@@ -106,6 +106,13 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> {
     serde_json::from_value(value).map_err(|e| format!("bad argument '{name}': {e}"))
 }
 
+/// An optional list argument: omitted or null is an empty list. The agent
+/// tools advertise such lists (`dependsOn`) as optional with none by default,
+/// and a plain `arg::<Vec<_>>` turned the omission into "expected a sequence".
+fn list_arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<Vec<T>, String> {
+    Ok(arg::<Option<Vec<T>>>(args, name)?.unwrap_or_default())
+}
+
 /// A command that answers with nothing.
 fn unit(r: Result<(), String>) -> Result<Value, String> {
     r.map(|_| Value::Null)
@@ -230,6 +237,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     // The coordinator's internal launch/message/report paths call their
     // implementations directly, without a client-controlled bypass flag.
     match cmd {
+        // A worker's test environment outlives its turns on purpose, so once
+        // its attempt has settled the person can stop or reset it from the
+        // Sandbox panel; that no longer drives the worker. A live worker's
+        // stays out of reach, like everything else a worker owns.
+        "sandbox_action"
+            if matches!(arg::<String>(&args, "action")?.as_str(), "stop" | "reset")
+                && svc
+                    .orchestrations
+                    .worker_card_live(&arg::<String>(&args, "key")?)?
+                    == Some(false) => {}
         "chat_start"
         | "sandbox_action"
         | "chat_send"
@@ -789,6 +806,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "safety_block_dismiss" => Ok(json!(crate::safety_block::dismiss(&arg::<String>(
             &args, "id"
         )?,))),
+        // Browser-only, like every card answer: the person allows exactly the
+        // action a Claude auto-mode card names, once. Not in the agent hook's
+        // whitelist, so no agent can approve its own refused call.
+        "safety_block_grant_exact" => to_value(crate::agent_chat::grant_exact_action(
+            &svc.chats,
+            &arg::<String>(&args, "id")?,
+        )),
         "safety_block_authorize_project" => {
             let id: String = arg(&args, "id")?;
             Ok(json!(crate::safety_block::authorize_for_project(&id)?))
@@ -846,8 +870,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             };
             let task_id: Option<String> = arg(&args, "taskId")?;
             let message_limit: Option<usize> = arg(&args, "messageLimit")?;
-            crate::orchestration::agent_view::agent_snapshot(
-                snapshot?,
+            let snapshot = snapshot?;
+            let full = snapshot.clone();
+            let mut view = crate::orchestration::agent_view::agent_snapshot(
+                snapshot,
                 &crate::orchestration::agent_view::AgentRead {
                     actor: &actor,
                     run_id: run_id.as_deref(),
@@ -855,7 +881,33 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     message_limit: message_limit
                         .unwrap_or(crate::orchestration::agent_view::DEFAULT_MESSAGES),
                 },
-            )
+            )?;
+            // Only when a task in view needs one: the sandbox record is read
+            // from disk, and most runs never touch it.
+            let shown: std::collections::BTreeSet<String> = view["runs"]
+                .as_array()
+                .map(|runs| {
+                    runs.iter()
+                        .filter_map(|r| r["id"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let needs = full.tasks.iter().any(|task| {
+                task.environment == crate::orchestration::TaskEnvironment::Sandbox
+                    && shown.contains(&task.run_id)
+            });
+            if needs {
+                if let (Ok(sandboxes), Some(out)) = (
+                    crate::sandbox::Store::profile().snapshot(),
+                    view.as_object_mut(),
+                ) {
+                    out.insert(
+                        "environments".into(),
+                        crate::orchestration::agent_view::environments(&full, &sandboxes, &shown),
+                    );
+                }
+            }
+            Ok(view)
         }
         "orchestration_service_register" => {
             let actor: String = arg(&args, "actorChatKey")?;
@@ -990,18 +1042,22 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "repository")?,
                 arg(&args, "worker")?,
             )?;
-            to_value(svc.orchestrations.create_carded_task(
-                &actor,
-                run_id,
-                arg(&args, "title")?,
-                arg(&args, "spec")?,
-                arg(&args, "dependsOn")?,
-                parent,
-                worker,
-                assignee,
-                destination,
-                card,
-            ))
+            to_value(
+                svc.orchestrations.create_task_full(
+                    &actor,
+                    run_id,
+                    arg(&args, "title")?,
+                    arg(&args, "spec")?,
+                    list_arg(&args, "dependsOn")?,
+                    parent,
+                    worker,
+                    assignee,
+                    destination,
+                    card,
+                    arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
+                        .unwrap_or_default(),
+                ),
+            )
         }
         // A lead changes or withdraws a task of a plan the person has not
         // approved yet. Owner and destination go through the same routing as
@@ -1068,6 +1124,38 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 },
             ))
         }
+        // A lead hands a task nobody is working on to another of its direct
+        // reports — the backup taking over. Routed exactly as a new task, so
+        // the org chart holds; the host keeps the task's destination and
+        // workspace and puts the new owner in front of the person.
+        "orchestration_task_reassign" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let task_id: String = arg(&args, "taskId")?;
+            let current = svc
+                .orchestrations
+                .snapshot(None)?
+                .tasks
+                .into_iter()
+                .find(|task| task.id == task_id)
+                .ok_or("The task does not exist.")?;
+            let kept = current.destination.as_ref();
+            let route = route_task(
+                svc,
+                &actor,
+                &current.run_id,
+                None,
+                Some(arg::<String>(&args, "assignee")?),
+                kept.map(|d| d.project_id.clone()),
+                kept.map(|d| d.repository.clone()),
+                current.worker.clone(),
+            )?;
+            to_value(svc.orchestrations.reassign_task(
+                &actor,
+                &task_id,
+                route,
+                arg(&args, "reason")?,
+            ))
+        }
         // Where the caller may send work: registered projects, their
         // repositories, and which of its direct reports can work in each.
         // Identity comes from the chat, never from the arguments.
@@ -1090,11 +1178,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         // Browser-only: the person approves an agents-mode lead's plan. Not in
         // the agent hook's whitelist, so no agent can approve its own plan.
-        "orchestration_plan_approve" => to_value(svc.orchestrations.approve_plan(
+        "orchestration_plan_approve" => to_value(svc.orchestrations.approve_plan_from_card(
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "runId")?,
             arg::<Option<Vec<String>>>(&args, "taskIds")?.as_deref(),
             arg::<Option<u32>>(&args, "revision")?,
+            crate::orchestration::CardView {
+                surface: arg::<Option<String>>(&args, "surface")?.unwrap_or_default(),
+                shown_ms: arg(&args, "shownMs")?,
+                updated_ms: arg(&args, "updatedMs")?,
+            },
         )),
         // Agent-reachable, and still the person's approval: the host reads
         // the message the lead is answering from its own record of what the
@@ -1283,6 +1376,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     outcome: arg(&args, "outcome")?,
                     summary: arg(&args, "summary")?,
                     files_modified: arg(&args, "filesModified")?,
+                    verdict: arg(&args, "verdict")?,
                 },
             )?;
             to_value(Ok(task))
@@ -1459,6 +1553,20 @@ mod tests {
         let empty = json!({});
         let missing: Option<String> = arg(&empty, "model").unwrap();
         assert!(missing.is_none());
+    }
+
+    /// Feedback ddf843b0 / a43d1a92: a root task created without dependsOn
+    /// failed with "invalid type: null, expected a sequence".
+    #[test]
+    fn an_omitted_optional_list_is_empty_not_an_error() {
+        let none: Vec<String> = list_arg(&json!({}), "dependsOn").unwrap();
+        assert!(none.is_empty());
+        let null: Vec<String> = list_arg(&json!({ "dependsOn": null }), "dependsOn").unwrap();
+        assert!(null.is_empty());
+        let some: Vec<String> = list_arg(&json!({ "depends_on": ["t1"] }), "dependsOn").unwrap();
+        assert_eq!(some, vec!["t1".to_string()]);
+        let err = list_arg::<String>(&json!({ "dependsOn": "t1" }), "dependsOn").unwrap_err();
+        assert!(err.contains("dependsOn"), "{err}");
     }
 
     #[test]

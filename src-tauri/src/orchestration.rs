@@ -193,7 +193,32 @@ pub struct PlanConsent {
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
+    /// A button approval: which card was clicked ("chat" at the end of the
+    /// lead's chat, "panel" in the run panel) and how long that revision had
+    /// been on it. Evidence of what was actually shown, not only that a
+    /// click arrived (feedback 713786e9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown_ms: Option<u64>,
 }
+
+/// Where a plan card was clicked, and how long it had shown the revision.
+#[derive(Clone, Debug)]
+pub struct CardView {
+    pub surface: String,
+    /// Since this revision appeared on the card, by opening or by a change.
+    pub shown_ms: Option<u64>,
+    /// Since this revision REPLACED another one on the same card; None when
+    /// the card opened on it.
+    pub updated_ms: Option<u64>,
+}
+
+/// A revision that replaced another on the card less than this long before
+/// Approve was clicked had only just replaced the one the person was reading.
+/// The card holds its button this long after a change; the host refuses
+/// anything quicker.
+pub const PLAN_SETTLE_MS: u64 = 1_500;
 
 /// A lead's change to a task of a plan still waiting for approval. `None`
 /// keeps a field; `route` is the host-resolved worker, owner and destination.
@@ -296,8 +321,58 @@ pub struct Task {
     pub active_attempt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// What the task needs running before its worker starts. See
+    /// `TaskEnvironment`; `None` is the default and needs nothing.
+    #[serde(default, skip_serializing_if = "TaskEnvironment::is_none")]
+    pub environment: TaskEnvironment,
+    /// The verdict its last report gave, when it gave one. A completed task
+    /// with a failing verdict does not release what depends on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Verdict>,
+    /// Every time the task changed hands before work finished, oldest first:
+    /// who had it, who took it, why, and when. See `reassign_task`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoffs: Vec<TaskHandoff>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// The pending host operation an attempt shows while its environment builds.
+const ENVIRONMENT_OPERATION: &str = "octiq:environment";
+
+/// A task's runtime prerequisite (feedback caa2ca88).
+///
+/// `Sandbox`: the task needs its project's runnable test environment — the
+/// Compose recipe in `.octiq/sandbox.json` — built from its own worktree and
+/// passing the recipe's readiness check before the worker starts. The host
+/// prepares it off the scheduler, per worker, so two worktrees never share
+/// data, sessions or ports; if it cannot be made ready the attempt fails with
+/// that cause and nothing that depends on the task starts. `None` (reviews,
+/// docs, unit-only work, and the task that repairs a broken environment)
+/// starts without one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEnvironment {
+    #[default]
+    None,
+    Sandbox,
+}
+
+impl TaskEnvironment {
+    pub fn is_none(&self) -> bool {
+        *self == TaskEnvironment::None
+    }
+}
+
+/// One change of hands: the evidence a takeover rests on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskHandoff {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<TaskAssignee>,
+    pub to: TaskAssignee,
+    pub reason: String,
+    pub at: i64,
 }
 
 /// A task as a plan shows it: why, what, and how it is judged done.
@@ -513,6 +588,19 @@ pub struct WorkerReport {
     pub summary: String,
     #[serde(default)]
     pub files_modified: Vec<String>,
+    /// For a review, check or acceptance task: whether what it checked
+    /// passed. Finishing the work and passing the check are different
+    /// answers (feedback ee0a43b0); a failing verdict holds dependants.
+    #[serde(default)]
+    pub verdict: Option<Verdict>,
+}
+
+/// What a checking task found, apart from whether it finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Pass,
+    Fail,
 }
 
 impl Default for OrchestrationStore {
@@ -978,7 +1066,9 @@ impl OrchestrationStore {
     /// `seen` is the plan the person was looking at: the ids of the tasks
     /// awaiting approval, and `revision` the version of it on screen. When
     /// the lead added or changed anything in the meantime, the approval is
-    /// refused rather than stretched over work nobody reviewed.
+    /// refused rather than stretched over work nobody reviewed. The browser
+    /// goes through `approve_plan_from_card`, which requires both.
+    #[cfg(test)]
     pub fn approve_plan(
         &self,
         actor_chat_key: &str,
@@ -993,8 +1083,58 @@ impl OrchestrationStore {
                 at: now_ms(),
                 turn_id: None,
                 words: None,
+                surface: None,
+                shown_ms: None,
             };
             approve_in(data, actor_chat_key, run_id, seen, revision, consent)
+        })
+        .inspect(|run| announce(&run.id, "plan_approved"))
+    }
+
+    /// The Approve button on a plan card, as the browser sends it. Unlike
+    /// `approve_plan`, the tasks and the revision on screen are required: a
+    /// click that cannot say what it saw approves nothing. A revision shown
+    /// for less than `PLAN_SETTLE_MS` had only just replaced the one being
+    /// read, and is refused rather than approved unseen.
+    pub fn approve_plan_from_card(
+        &self,
+        actor_chat_key: &str,
+        run_id: &str,
+        seen: Option<&[String]>,
+        revision: Option<u32>,
+        view: CardView,
+    ) -> Result<Run, String> {
+        let (Some(seen), Some(revision)) = (seen, revision) else {
+            return Err("This page did not say which version of the plan you approved. Reload OctiqFlow, look the plan over, then approve.".into());
+        };
+        if view.updated_ms.is_some_and(|ms| ms < PLAN_SETTLE_MS) {
+            return Err(
+                "The plan changed a moment before your click. Look it over again, then approve."
+                    .into(),
+            );
+        }
+        let surface = match view.surface.as_str() {
+            "chat" | "panel" => view.surface,
+            _ => "unknown".into(),
+        };
+        self.mutate(|data| {
+            let consent = PlanConsent {
+                via: ConsentVia::Button,
+                revision: 0,
+                at: now_ms(),
+                turn_id: None,
+                words: None,
+                surface: Some(surface),
+                shown_ms: view.shown_ms,
+            };
+            approve_in(
+                data,
+                actor_chat_key,
+                run_id,
+                Some(seen),
+                Some(revision),
+                consent,
+            )
         })
         .inspect(|run| announce(&run.id, "plan_approved"))
     }
@@ -1102,6 +1242,8 @@ impl OrchestrationStore {
                 at: now_ms(),
                 turn_id: Some(turn.turn_id.clone()),
                 words: Some(turn.text.trim().chars().take(200).collect()),
+                surface: None,
+                shown_ms: None,
             };
             approve_in(data, actor_chat_key, run_id, None, Some(revision), consent)
         })
@@ -1141,6 +1283,7 @@ impl OrchestrationStore {
     /// browser told `task_created`, ever sees the task without it. There is
     /// no setter afterwards — the card is part of the plan the person
     /// approves, so it is fixed once the task exists.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn create_carded_task(
         &self,
@@ -1154,6 +1297,38 @@ impl OrchestrationStore {
         assignee: Option<TaskAssignee>,
         destination: Option<TaskDestination>,
         card: Option<TaskCard>,
+    ) -> Result<Task, String> {
+        self.create_task_full(
+            actor_chat_key,
+            run_id,
+            title,
+            spec,
+            depends_on,
+            parent_task_id,
+            worker,
+            assignee,
+            destination,
+            card,
+            TaskEnvironment::None,
+        )
+    }
+
+    /// `create_carded_task` with the task's runtime prerequisite, which goes
+    /// in with the task in the same write, like its card.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_task_full(
+        &self,
+        actor_chat_key: &str,
+        run_id: String,
+        title: String,
+        spec: String,
+        depends_on: Vec<String>,
+        parent_task_id: Option<String>,
+        worker: Option<automation::WorkerSettings>,
+        assignee: Option<TaskAssignee>,
+        destination: Option<TaskDestination>,
+        card: Option<TaskCard>,
+        environment: TaskEnvironment,
     ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
@@ -1228,7 +1403,7 @@ impl OrchestrationStore {
             let ready = depends_on.iter().all(|dependency| {
                 data.tasks
                     .get(dependency)
-                    .is_some_and(|task| task.status == TaskStatus::Completed)
+                    .is_some_and(releases_dependants)
             });
             let task = Task {
                 id,
@@ -1251,6 +1426,9 @@ impl OrchestrationStore {
                 },
                 active_attempt_id: None,
                 result: None,
+                environment,
+                verdict: None,
+                handoffs: Vec::new(),
                 created_at: now,
                 updated_at: now,
             };
@@ -1297,6 +1475,125 @@ impl OrchestrationStore {
                 announce(&run_id_for_event, "plan_pending");
             }
         })
+    }
+
+    /// Hand a task nobody is working on to another of the lead's direct
+    /// reports: the backup taking over from the primary, at the person's
+    /// word or the lead's (feedback c890a843).
+    ///
+    /// `route` comes from the same routing as a new task, so the org chart
+    /// holds: only a direct report of the lead, in a project the task may run
+    /// in. The task keeps its id, card, dependencies, destination and any
+    /// workspace a settled attempt left, so a retry resumes that work. The
+    /// new owner changes what the person approved, so the task waits for the
+    /// person again and nobody, the old owner included, starts it meanwhile.
+    /// A task with a live attempt is refused: two writers in one checkout is
+    /// exactly what a handoff must not create.
+    pub fn reassign_task(
+        &self,
+        actor_chat_key: &str,
+        task_id: &str,
+        route: (
+            Option<automation::WorkerSettings>,
+            Option<TaskAssignee>,
+            Option<TaskDestination>,
+        ),
+        reason: String,
+    ) -> Result<Task, String> {
+        let reason = required_text("handoff reason", reason, 2_000)?;
+        let (worker, assignee, destination) = route;
+        let worker = worker
+            .map(automation::WorkerSettings::normalized)
+            .transpose()?;
+        let assignee = assignee.ok_or("Name the direct report taking the task over.")?;
+        // A task never started gets a fresh branch plan for its new worker; a
+        // started one keeps the workspace its attempts used.
+        let proposal = {
+            let inner = self.inner.lock().map_err(|error| error.to_string())?;
+            let task = inner.data.tasks.get(task_id);
+            let run = task
+                .and_then(|task| inner.data.runs.get(&task.run_id))
+                .cloned();
+            let fresh = task.is_some_and(|task| task.workspace.is_none());
+            drop(inner);
+            run.filter(|_| fresh).map(|run| {
+                workspaces::propose(&run, task_id, destination.as_ref(), worker.as_ref())
+            })
+        };
+        let mut run_id = String::new();
+        let mut reopened = false;
+        let task = self.mutate(|data| {
+            let task = data.tasks.get(task_id).ok_or("The task does not exist.")?;
+            let run = coordinator(data, &task.run_id, actor_chat_key)?;
+            run_id = run.id.clone();
+            if run_has_ended(run) || run.archived_at.is_some() {
+                return Err("This run has ended.".into());
+            }
+            if task.parent_task_id.is_some() {
+                return Err("This is a manager's subtask; its manager hands it on.".into());
+            }
+            if let Some(active) = task.active_attempt_id.as_deref().and_then(|id| data.attempts.get(id)) {
+                if matches!(active.status, AttemptStatus::Preparing | AttemptStatus::Running) {
+                    return Err(format!(
+                        "{} is still working on this task. Stop that attempt first; two writers in one checkout is what a handoff must not create.",
+                        task.assignee.as_ref().map_or("A worker", |a| a.name.as_str())
+                    ));
+                }
+            }
+            if !matches!(
+                task.status,
+                TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Failed | TaskStatus::Blocked
+            ) {
+                return Err("Only a task nobody is working on and that has not finished can change hands.".into());
+            }
+            if task.assignee.as_ref().is_some_and(|a| a.id == assignee.id) {
+                return Err(format!("{} already has this task.", assignee.name));
+            }
+            let ready = task.depends_on.iter().all(|dependency| {
+                data.tasks
+                    .get(dependency)
+                    .is_some_and(releases_dependants)
+            });
+            let now = now_ms();
+            let task = data.tasks.get_mut(task_id).ok_or("The task does not exist.")?;
+            task.handoffs.push(TaskHandoff {
+                from: task.assignee.clone(),
+                to: assignee.clone(),
+                reason,
+                at: now,
+            });
+            task.assignee = Some(assignee);
+            task.worker = worker;
+            if destination.is_some() {
+                task.destination = destination;
+            }
+            if let Some(proposal) = proposal {
+                task.workspace_proposal = Some(proposal);
+            }
+            task.approved_at = None;
+            task.status = if ready { TaskStatus::Ready } else { TaskStatus::Pending };
+            task.updated_at = now;
+            let task = task.clone();
+            if let Some(run) = data.runs.get_mut(&run_id) {
+                run.updated_at = now;
+                if let Some(plan) = run
+                    .plan_approval
+                    .as_mut()
+                    .filter(|plan| plan.status == PlanStatus::Approved)
+                {
+                    plan.status = PlanStatus::Pending;
+                    plan.requested_at = now;
+                    plan.decided_at = None;
+                    reopened = true;
+                }
+            }
+            Ok(task)
+        })?;
+        announce(&run_id, "task_reassigned");
+        if reopened {
+            announce(&run_id, "plan_pending");
+        }
+        Ok(task)
     }
 
     /// The lead changes, or withdraws, a task of a plan the person has not
@@ -1398,7 +1695,7 @@ impl OrchestrationStore {
                 deps.iter().all(|dependency| {
                     data.tasks
                         .get(dependency)
-                        .is_some_and(|task| task.status == TaskStatus::Completed)
+                        .is_some_and(releases_dependants)
                 })
             };
             let next_deps = revision
@@ -1515,12 +1812,11 @@ impl OrchestrationStore {
             if task.status == TaskStatus::Completed || task.status == TaskStatus::Cancelled {
                 return Err("This task no longer accepts workers.".into());
             }
-            if task.depends_on.iter().any(|dependency| {
-                !data
-                    .tasks
-                    .get(dependency)
-                    .is_some_and(|dependency| dependency.status == TaskStatus::Completed)
-            }) {
+            if task
+                .depends_on
+                .iter()
+                .any(|dependency| !data.tasks.get(dependency).is_some_and(releases_dependants))
+            {
                 return Err("This task is waiting for its dependencies.".into());
             }
             let previous = task
@@ -1849,29 +2145,202 @@ impl OrchestrationStore {
         }
         let mut worker_env = workspace.env.clone();
         worker_env.insert("OCTIQ_ORCHESTRATION_ATTEMPT".into(), reserved.id.clone());
-        let start = crate::agent_chat::chat_start_user_impl(
-            chats.clone(),
-            reserved.worker_chat_key.clone(),
-            prepared.cwd.clone(),
-            launch.agent,
-            launch.model.clone(),
-            Some(launch.access),
-            Some(prompt),
-            None,
-            None,
-            // A worker owns one isolated checkout. Giving it the workspace's
-            // other paths would silently widen its write boundary back to the
-            // primary checkout (or another repository) and defeat that
-            // isolation. Cross-repository work should be split into explicit
-            // tasks, each with its own run root and worker.
-            Some(Vec::new()),
-            Some(worker_env),
-            launch.effort.clone(),
-            None,
-            Some(false),
-            Some(format!("orchestration-{}", reserved.id)),
+        let start_chat = {
+            let chats = chats.clone();
+            let key = reserved.worker_chat_key.clone();
+            let cwd = prepared.cwd.clone();
+            let turn = format!("orchestration-{}", reserved.id);
+            move || {
+                crate::agent_chat::chat_start_user_impl(
+                    chats,
+                    key,
+                    cwd,
+                    launch.agent,
+                    launch.model.clone(),
+                    Some(launch.access),
+                    Some(prompt),
+                    None,
+                    None,
+                    // A worker owns one isolated checkout. Giving it the
+                    // workspace's other paths would silently widen its write
+                    // boundary back to the primary checkout (or another
+                    // repository) and defeat that isolation. Cross-repository
+                    // work should be split into explicit tasks, each with its
+                    // own run root and worker.
+                    Some(Vec::new()),
+                    Some(worker_env),
+                    launch.effort.clone(),
+                    None,
+                    Some(false),
+                    Some(turn),
+                )
+            }
+        };
+        if task.environment == TaskEnvironment::Sandbox {
+            return Self::start_after_environment(
+                chats.orchestrations.clone(),
+                crate::sandbox::Store::profile(),
+                active,
+                start_chat,
+            );
+        }
+        self.finish_dispatch(&active, start_chat())
+    }
+
+    /// A task that needs its runnable test environment (feedback caa2ca88):
+    /// select one owned by this worker, in its own worktree, then build and
+    /// check it OFF the scheduler thread — a Compose build can take minutes,
+    /// and every run's monitoring and notices share that thread. The agent
+    /// starts only once the recipe's readiness check has passed; the chat's
+    /// own start then hands it the environment (`sandbox::prepare_for_start`).
+    /// Anything else fails this attempt with the environment as its cause, so
+    /// no task that depends on it can start on a broken runtime.
+    fn start_after_environment(
+        store: Arc<OrchestrationStore>,
+        sandboxes: crate::sandbox::Store,
+        active: Attempt,
+        start_chat: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) -> Result<Attempt, String> {
+        if let Err(error) =
+            sandboxes.select(&active.worker_chat_key, &active.cwd, Some(true), false)
+        {
+            store.fail_environment(&active.id, &error)?;
+            return Err(error);
+        }
+        store.environment_preparing(&active.id)?;
+        let attempt = active.clone();
+        std::thread::spawn(move || {
+            let ready =
+                sandboxes.action_when_idle(&attempt.worker_chat_key, "start", None, || Ok(()));
+            // A run stopped, or the attempt superseded, while the environment
+            // was building: its services stay for the Sandbox panel, but no
+            // worker starts for work nobody wants any more.
+            let Ok(_operation) = store.workspace_ops.lock() else {
+                return;
+            };
+            if !store.attempt_is_live(&attempt.id) {
+                return;
+            }
+            let outcome = match ready {
+                Err(error) => store.fail_environment(&attempt.id, &error),
+                Ok(environment) => store
+                    .environment_prepared(&attempt.id, &environment)
+                    .and_then(|_| store.finish_dispatch(&attempt, start_chat()).map(|_| ())),
+            };
+            if let Err(error) = outcome {
+                eprintln!(
+                    "orchestration: environment dispatch for {} failed: {error}",
+                    attempt.id
+                );
+            }
+        });
+        Ok(active)
+    }
+
+    /// Whether this attempt is still the live one of its task.
+    fn attempt_is_live(&self, attempt_id: &str) -> bool {
+        let Ok(inner) = self.inner.lock() else {
+            return false;
+        };
+        inner.data.attempts.get(attempt_id).is_some_and(|attempt| {
+            matches!(
+                attempt.status,
+                AttemptStatus::Preparing | AttemptStatus::Running
+            ) && inner
+                .data
+                .tasks
+                .get(&attempt.task_id)
+                .is_some_and(|task| task.active_attempt_id.as_deref() == Some(attempt_id))
+        })
+    }
+
+    /// The host is building this attempt's environment: a pending host
+    /// operation, so the monitor waits on the tool threshold rather than
+    /// calling a Compose build a stalled worker.
+    fn environment_preparing(&self, attempt_id: &str) -> Result<(), String> {
+        let run_id = self.mutate(|data| {
+            let attempt = data
+                .attempts
+                .get_mut(attempt_id)
+                .ok_or("The attempt disappeared.")?;
+            let now = now_ms();
+            let e = &mut attempt.execution;
+            e.pending_tools.insert(
+                ENVIRONMENT_OPERATION.into(),
+                "Preparing test environment".into(),
+            );
+            e.state = execution::ExecutionState::WaitingTool;
+            e.current_operation = Some("Preparing test environment".into());
+            e.last_activity_at = Some(now);
+            e.last_progress_at = Some(now);
+            e.last_progress = Some("Preparing test environment".into());
+            Ok(attempt.run_id.clone())
+        })?;
+        announce(&run_id, "worker_environment");
+        Ok(())
+    }
+
+    fn environment_prepared(
+        &self,
+        attempt_id: &str,
+        environment: &crate::sandbox::Environment,
+    ) -> Result<(), String> {
+        let run_id = self.mutate(|data| {
+            let attempt = data
+                .attempts
+                .get_mut(attempt_id)
+                .ok_or("The attempt disappeared.")?;
+            let now = now_ms();
+            let e = &mut attempt.execution;
+            e.pending_tools.remove(ENVIRONMENT_OPERATION);
+            e.state = execution::ExecutionState::Executing;
+            e.current_operation = Some("Dispatching provider request".into());
+            e.last_activity_at = Some(now);
+            e.last_progress_at = Some(now);
+            e.last_progress = Some(format!(
+                "Test environment {} ready at {}",
+                environment.id,
+                environment.checked_at.unwrap_or_default()
+            ));
+            Ok(attempt.run_id.clone())
+        })?;
+        announce(&run_id, "worker_environment");
+        Ok(())
+    }
+
+    /// The environment could not be made ready: this attempt fails with
+    /// that cause and is never retried on its own. What depends on the task
+    /// stays waiting; a task with no environment requirement can repair it.
+    fn fail_environment(&self, attempt_id: &str, error: &str) -> Result<(), String> {
+        let message = format!(
+            "Test environment not ready: {error}\n\nThis task needs its project's runnable test environment (.octiq/sandbox.json), built from its worktree and passing the recipe's readiness check, before its worker starts. Nothing that depends on it will start. Repair the recipe or runtime (a task with environment \"none\" can do that), then retry this task; a retry rebuilds and rechecks it."
         );
-        self.finish_dispatch(&active, start)
+        let run_id = self.mutate(|data| {
+            let attempt = data
+                .attempts
+                .get_mut(attempt_id)
+                .ok_or("The attempt disappeared.")?;
+            attempt
+                .execution
+                .pending_tools
+                .remove(ENVIRONMENT_OPERATION);
+            let run_id = attempt.run_id.clone();
+            let now = now_ms();
+            execution::fail(
+                data,
+                attempt_id,
+                execution::ExecutionError {
+                    kind: "environment".into(),
+                    message,
+                    at: now,
+                    retryable: false,
+                },
+                now,
+            );
+            Ok(run_id)
+        })?;
+        announce(&run_id, "worker_failed");
+        Ok(())
     }
 
     fn finish_dispatch(
@@ -1982,12 +2451,25 @@ impl OrchestrationStore {
                 ws.state = workspaces::WorkspaceState::Retained;
             }
             task_mut.result = Some(summary);
+            task_mut.verdict = report.verdict;
             task_mut.updated_at = now;
             let settled = task_mut.clone();
             event_run_id = task_mut.run_id.clone();
             make_ready(data, &attempt.run_id);
             recompute_run(data, &attempt.run_id);
             let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
+            if settled.status == TaskStatus::Completed && settled.verdict == Some(Verdict::Fail) {
+                let held: Vec<String> = data
+                    .tasks
+                    .values()
+                    .filter(|t| t.depends_on.contains(&settled.id) && t.status == TaskStatus::Pending)
+                    .map(|t| format!("{} ({})", t.id, t.title))
+                    .collect();
+                if !held.is_empty() {
+                    inbox::enqueue(data, &attempt.run_id, actor_chat_key, &target, format!("verdict-fail:{}", attempt.id), "verdict",
+                        format!("Task {} ({}) finished with a FAILING verdict. Completed is not passed: its dependants stay waiting: {}. Fix what it found and reopen the task (orchestration_task_reopen), or revise the plan. Do not report the objective as done.", settled.id, settled.title, held.join(", ")));
+                }
+            }
             inbox::enqueue(data, &attempt.run_id, actor_chat_key, &target, format!("report:{}", attempt.id), "report",
                 format!("Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.", settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default()));
             Ok(settled)
@@ -2520,7 +3002,7 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
             if let Some(object) = proposal.as_object_mut() {
                 object.remove("proposedAt");
             }
-            json!({
+            let mut scope = json!({
                 "id": task.id,
                 "title": task.title,
                 "spec": task.spec,
@@ -2530,7 +3012,12 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
                 "destination": task.destination,
                 "proposal": proposal,
                 "dependsOn": task.depends_on,
-            })
+            });
+            // Only when set: plans made before environments keep their digest.
+            if !task.environment.is_none() {
+                scope["environment"] = json!(task.environment);
+            }
+            scope
         })
         .collect();
     let scope = json!({
@@ -2602,11 +3089,17 @@ fn attempt_is_unsettled(data: &Stored, attempt: &Attempt) -> bool {
     ) || (attempt.status == AttemptStatus::Blocked && attempt_has_open_gate(data, attempt))
 }
 
+/// Whether a task lets what depends on it start: completed, and not with a
+/// failing verdict.
+fn releases_dependants(task: &Task) -> bool {
+    task.status == TaskStatus::Completed && task.verdict != Some(Verdict::Fail)
+}
+
 fn make_ready(data: &mut Stored, run_id: &str) {
     let completed: BTreeSet<_> = data
         .tasks
         .values()
-        .filter(|task| task.run_id == run_id && task.status == TaskStatus::Completed)
+        .filter(|task| task.run_id == run_id && releases_dependants(task))
         .map(|task| task.id.clone())
         .collect();
     let now = now_ms();
@@ -2631,11 +3124,17 @@ fn recompute_run(data: &mut Stored, run_id: &str) {
         .gates
         .values()
         .any(|gate| gate.run_id == run_id && gate.status == GateStatus::Open);
+    // Held by a failing verdict: waiting on someone, not working.
+    let failed_check = data.tasks.values().any(|task| {
+        task.run_id == run_id
+            && task.status == TaskStatus::Completed
+            && task.verdict == Some(Verdict::Fail)
+    });
     let status = if tasks.is_empty() {
         RunStatus::Planning
     } else if tasks.iter().all(|status| *status == TaskStatus::Completed) {
         RunStatus::Completed
-    } else if has_open_gate || tasks.contains(&TaskStatus::Blocked) {
+    } else if has_open_gate || tasks.contains(&TaskStatus::Blocked) || failed_check {
         RunStatus::Waiting
     } else if tasks.iter().any(|status| {
         matches!(
@@ -2756,7 +3255,7 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
 
 fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     let brief = format!(
-        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Use task_status to report a short checklist at the start, then send the whole checklist when a step finishes or the plan changes. Set nextStep to the current stage. These reports drive the task board; never invent a completion percentage. Before settling, report the final checklist state. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection with a pending OctiqFlow approval card is not a settled task: report the rejected action in prose, do not create a gate or report the worker, and end the turn so the card can resume this same attempt. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
+        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Use task_status to report a short checklist at the start, then send the whole checklist when a step finishes or the plan changes. Set nextStep to the current stage. These reports drive the task board; never invent a completion percentage. Before settling, report the final checklist state. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection or a Claude auto-mode refusal with a pending OctiqFlow approval card is not a settled task: report the rejected action in prose, do not create a gate or report the worker, and end the turn so the card can resume this same attempt. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. If the task is a review, check or acceptance test, also pass verdict pass or fail: a review that finished and found blocking problems is outcome completed with verdict fail, which keeps dependent tasks waiting. A normal prose answer does not complete the task in OctiqFlow.",
         run.id,
         task.id,
         attempt.id,
@@ -3219,6 +3718,448 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// An environment-needing task, its dependant, and its first attempt
+    /// activated in `cwd`, as `start_worker_for` leaves it.
+    fn environment_task(store: &OrchestrationStore, cwd: &str) -> (Run, Task, Task, Attempt) {
+        let run = run(store);
+        let needs = store
+            .create_task_full(
+                "chat:master",
+                run.id.clone(),
+                "Browser-check the import".into(),
+                "Upload the workbook and check the preview.".into(),
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                TaskEnvironment::Sandbox,
+            )
+            .unwrap();
+        assert_eq!(needs.environment, TaskEnvironment::Sandbox);
+        let dependant = task(store, &run, vec![needs.id.clone()]);
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(&needs.id))
+            .unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, cwd.into(), "env".into(), true)
+            .unwrap();
+        (run, needs, dependant, attempt)
+    }
+
+    fn settle_within(
+        store: &OrchestrationStore,
+        attempt: &str,
+        done: impl Fn(&Attempt) -> bool,
+        secs: u64,
+    ) -> Attempt {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        loop {
+            let now = store.snapshot(None).unwrap();
+            let current = now.attempts.into_iter().find(|a| a.id == attempt).unwrap();
+            if done(&current) || std::time::Instant::now() > deadline {
+                return current;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn a_review_that_finished_but_failed_its_check_holds_what_depends_on_it() {
+        // Feedback ee0a43b0: a review that said NOT RELEASE-READY settled as
+        // completed and released the screenshot task behind it.
+        let settle = |verdict: Option<Verdict>| {
+            let store = OrchestrationStore::default();
+            let run = run(&store);
+            let review = task(&store, &run, Vec::new());
+            let screenshots = task(&store, &run, vec![review.id.clone()]);
+            let (_, _, attempt, _) = store
+                .reserve_attempt("chat:master", &launch_for(&review.id))
+                .unwrap();
+            let attempt = store
+                .activate_attempt(&attempt.id, "/tmp".into(), "review".into(), true)
+                .unwrap();
+            store
+                .report_worker(
+                    &attempt.worker_chat_key,
+                    WorkerReport {
+                        attempt_id: attempt.id,
+                        outcome: WorkerOutcome::Completed,
+                        summary: "Review completed: NOT RELEASE-READY".into(),
+                        files_modified: vec![],
+                        verdict,
+                    },
+                )
+                .unwrap();
+            (store, run, screenshots)
+        };
+
+        let (store, run, screenshots) = settle(Some(Verdict::Fail));
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let held = snapshot
+            .tasks
+            .iter()
+            .find(|t| t.id == screenshots.id)
+            .unwrap();
+        assert_eq!(
+            held.status,
+            TaskStatus::Pending,
+            "a failing check releases nothing"
+        );
+        assert_eq!(snapshot.runs[0].status, RunStatus::Waiting);
+        assert!(snapshot
+            .tasks
+            .iter()
+            .any(|t| t.verdict == Some(Verdict::Fail)));
+        assert!(snapshot.notifications.iter().any(|n| n.kind == "verdict"
+            && n.body.contains("FAILING verdict")
+            && n.body.contains(&screenshots.id)));
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&screenshots.id))
+            .unwrap_err()
+            .contains("waiting for its dependencies"));
+
+        // A pass, or no verdict at all (ordinary work), releases as before.
+        for verdict in [Some(Verdict::Pass), None] {
+            let (store, run, screenshots) = settle(verdict);
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            assert_eq!(
+                snapshot
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == screenshots.id)
+                    .unwrap()
+                    .status,
+                TaskStatus::Ready
+            );
+        }
+    }
+
+    #[test]
+    fn a_task_whose_environment_cannot_be_made_ready_never_starts_and_holds_its_dependants() {
+        // Feedback caa2ca88: dependent work ran on runtimes nobody had made
+        // ready. A task that needs its environment starts only once the
+        // recipe's check passes; without a recipe it fails with that cause.
+        let store = Arc::new(OrchestrationStore::default());
+        let project = std::env::temp_dir().join(format!("octiq-env-{}", compact_id()));
+        fs::create_dir_all(&project).unwrap();
+        let sandboxes = crate::sandbox::Store::at(project.join("sandboxes"));
+        let (run, needs, dependant, attempt) = environment_task(&store, project.to_str().unwrap());
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        OrchestrationStore::start_after_environment(
+            store.clone(),
+            sandboxes,
+            attempt.clone(),
+            move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let failed = settle_within(
+            &store,
+            &attempt.id,
+            |a| a.status == AttemptStatus::Failed,
+            30,
+        );
+        assert_eq!(failed.status, AttemptStatus::Failed);
+        let error = failed.execution.latest_error.unwrap();
+        assert_eq!(error.kind, "environment");
+        assert!(
+            !error.retryable,
+            "an environment failure is never replayed by itself"
+        );
+        assert!(
+            error.message.starts_with("Test environment not ready"),
+            "{}",
+            error.message
+        );
+        assert!(failed.execution.pending_tools.is_empty());
+        assert!(
+            !started.load(std::sync::atomic::Ordering::SeqCst),
+            "no worker on a broken runtime"
+        );
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let task_of = |id: &str| snapshot.tasks.iter().find(|t| t.id == id).unwrap().clone();
+        assert_eq!(task_of(&needs.id).status, TaskStatus::Failed);
+        assert_eq!(task_of(&dependant.id).status, TaskStatus::Pending);
+        assert!(snapshot
+            .notifications
+            .iter()
+            .any(|n| n.kind == "environment" && n.body.contains("Test environment not ready")));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn a_task_with_a_ready_environment_starts_with_it_and_reports_it_apart_from_its_status() {
+        let store = Arc::new(OrchestrationStore::default());
+        let project = std::env::temp_dir().join(format!("octiq-env-ready-{}", compact_id()));
+        fs::create_dir_all(project.join(".octiq")).unwrap();
+        fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","checkService":"verify","fixtureVersion":"env-test-v1","endpoints":{"app":{"service":"app","port":80,"path":"/"}}}"#).unwrap();
+        fs::write(project.join(".octiq/compose.json"), serde_json::to_vec(&json!({"services":{
+            "app":{"image":"nginx:1.27-alpine","ports":[{"target":80,"host_ip":"127.0.0.1"}]},
+            "verify":{"image":"alpine:3.22","profiles":["check"],"command":["sh","-c","wget -q -O /dev/null http://app"]}
+        }})).unwrap()).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&project)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ]);
+        let sandbox_root = std::env::temp_dir().join(format!("octiq-env-store-{}", compact_id()));
+        let (run, needs, _, attempt) = environment_task(&store, project.to_str().unwrap());
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        OrchestrationStore::start_after_environment(
+            store.clone(),
+            crate::sandbox::Store::at(sandbox_root.clone()),
+            attempt.clone(),
+            move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        // While it builds, the attempt waits on a named host operation.
+        let preparing = store
+            .snapshot(None)
+            .unwrap()
+            .attempts
+            .into_iter()
+            .find(|a| a.id == attempt.id)
+            .unwrap();
+        assert_eq!(
+            preparing.execution.current_operation.as_deref(),
+            Some("Preparing test environment")
+        );
+        let ready = settle_within(
+            &store,
+            &attempt.id,
+            |a| a.execution.pending_tools.is_empty(),
+            600,
+        );
+        assert!(
+            started.load(std::sync::atomic::Ordering::SeqCst),
+            "the worker starts once it is ready"
+        );
+        assert!(
+            ready
+                .execution
+                .last_progress
+                .as_deref()
+                .unwrap_or("")
+                .contains("ready"),
+            "{:?}",
+            ready.execution.last_progress
+        );
+        let sandboxes = crate::sandbox::Store::at(sandbox_root.clone());
+        let view = agent_view::environments(
+            &store.snapshot(None).unwrap(),
+            &sandboxes.snapshot().unwrap(),
+            &BTreeSet::from([run.id.clone()]),
+        );
+        let row = &view[0];
+        assert_eq!(row["taskId"], needs.id.as_str());
+        assert_eq!(row["state"], "ready");
+        assert!(row["urls"]["app"]
+            .as_str()
+            .unwrap()
+            .starts_with("http://octiq-sb-"));
+        assert!(row["sourceRevision"]
+            .as_str()
+            .is_some_and(|r| r.len() == 40));
+        // The task's own status is untouched by the environment's.
+        assert_eq!(
+            store
+                .snapshot(None)
+                .unwrap()
+                .tasks
+                .iter()
+                .find(|t| t.id == needs.id)
+                .unwrap()
+                .status,
+            TaskStatus::Running
+        );
+        let env_id = row["environmentId"].as_str().unwrap().to_owned();
+        sandboxes
+            .action(&attempt.worker_chat_key, "reset", Some(&env_id))
+            .ok();
+        sandboxes
+            .action(&attempt.worker_chat_key, "stop", None)
+            .ok();
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn a_backup_takes_over_a_task_only_through_the_person_and_never_beside_a_live_worker() {
+        // Feedback c890a843: the person asked Noah, Maya's designated
+        // backup, to take over a ready task, and nothing could hand it over.
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let who = |id: &str, name: &str| TaskAssignee {
+            id: id.into(),
+            name: name.into(),
+        };
+        let worker = |model: &str| automation::WorkerSettings {
+            agent: ChatAgent::Claude,
+            access: Access::Auto,
+            model: Some(model.into()),
+            effort: None,
+            recovery: None,
+        };
+        store
+            .reassign_task(
+                "chat:master",
+                &first.id,
+                (Some(worker("opus")), Some(who("maya", "Maya")), None),
+                "Start with Maya".into(),
+            )
+            .unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+
+        // Maya's attempt is live: no second writer.
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "maya".into(), true)
+            .unwrap();
+        let handoff = || {
+            store.reassign_task(
+                "chat:master",
+                &first.id,
+                (Some(worker("sonnet")), Some(who("noah", "Noah")), None),
+                "The person asked Noah to take over from Maya.".into(),
+            )
+        };
+        assert!(handoff().unwrap_err().contains("still working"));
+        assert!(store
+            .reassign_task(
+                "chat:worker",
+                &first.id,
+                (None, Some(who("noah", "Noah")), None),
+                "x".into()
+            )
+            .is_err());
+
+        // Maya's attempt settles without finishing: the backup takes it.
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "Provider limit".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        let task = handoff().unwrap();
+        assert_eq!(task.assignee.as_ref().unwrap().id, "noah");
+        assert_eq!(
+            task.worker.as_ref().unwrap().model.as_deref(),
+            Some("sonnet")
+        );
+        assert_eq!(task.handoffs.len(), 2);
+        let last = task.handoffs.last().unwrap();
+        assert_eq!(last.from.as_ref().map(|a| a.id.as_str()), Some("maya"));
+        assert_eq!(last.to.id, "noah");
+        assert!(last.reason.contains("take over"));
+        // The new owner is the person's to approve; nobody starts meanwhile.
+        assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Pending);
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .unwrap_err()
+            .contains("not approved"));
+        assert!(handoff().unwrap_err().contains("already has this task"));
+    }
+
+    #[test]
+    fn a_card_click_must_say_what_it_showed_and_for_how_long() {
+        // Feedback 713786e9: revision 6 was recorded as button-approved two
+        // seconds after the lead changed the plan, and the person never saw
+        // it. A click names its card and how long the revision had been on
+        // it; one that cannot say what it saw approves nothing.
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let revision = plan_of(&store, &run.id).revision;
+        let seen = [first.id.clone()];
+        let view = |shown_ms: Option<u64>| CardView {
+            surface: "chat".into(),
+            shown_ms,
+            updated_ms: shown_ms,
+        };
+        assert!(store
+            .approve_plan_from_card(
+                "chat:master",
+                &run.id,
+                None,
+                Some(revision),
+                view(Some(9_000))
+            )
+            .unwrap_err()
+            .contains("Reload"));
+        assert!(store
+            .approve_plan_from_card("chat:master", &run.id, Some(&seen), None, view(Some(9_000)))
+            .unwrap_err()
+            .contains("Reload"));
+        assert!(store
+            .approve_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(revision),
+                view(Some(400))
+            )
+            .unwrap_err()
+            .contains("a moment before your click"));
+        assert!(plan_of(&store, &run.id).status == PlanStatus::Pending);
+        // Opened on this revision a moment ago is not a change under the
+        // reader; nothing is held for it.
+        let opened = CardView {
+            surface: "panel".into(),
+            shown_ms: Some(300),
+            updated_ms: None,
+        };
+        assert!(store
+            .approve_plan_from_card("chat:worker", &run.id, Some(&seen), Some(revision), opened)
+            .unwrap_err()
+            .contains("coordinator"));
+        let approved = store
+            .approve_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(revision),
+                view(Some(4_200)),
+            )
+            .unwrap();
+        let consent = approved.plan_approval.unwrap().consent.unwrap();
+        assert_eq!(consent.via, ConsentVia::Button);
+        assert_eq!(consent.revision, revision);
+        assert_eq!(consent.surface.as_deref(), Some("chat"));
+        assert_eq!(consent.shown_ms, Some(4_200));
     }
 
     #[test]
@@ -3863,6 +4804,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -3896,6 +4838,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -4066,6 +5009,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: vec!["a.rs".into()],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -4115,6 +5059,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "late".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap_err();
@@ -4150,6 +5095,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "not mine".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap_err();
@@ -4182,6 +5128,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "needs a different approach".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -4193,6 +5140,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "late completion".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap_err();
@@ -4296,6 +5244,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "blocked".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -4351,6 +5300,7 @@ mod tests {
                 outcome: WorkerOutcome::Blocked,
                 summary: "Waiting for upload decision".into(),
                 files_modified: vec![],
+                verdict: None,
             },
         );
         crate::safety_block::forget_chat(&attempt.worker_chat_key);
@@ -4422,6 +5372,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "blocked".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();

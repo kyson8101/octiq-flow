@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { taskBoardFixture } from "./__fixtures__/agentTaskBoard";
-import { attemptIsLive, boardCounts, currentAttempt, runElapsed, shortBranch, taskElapsed, taskProgress, taskStage } from "./agentTaskBoard";
+import { attemptIsLive, boardCounts, currentAttempt, runElapsed, shortBranch, taskElapsed, taskProgress, taskStage, taskStateLabel } from "./agentTaskBoard";
+import type { OrchestrationAttempt, OrchestrationTask } from "./orchestration";
+
+describe("a task row's state word (feedback ee0a43b0)", () => {
+  const task = { id: "t", runId: "r", title: "Review", spec: "", dependsOn: [], status: "running", activeAttemptId: "a",
+    createdAt: 1, updatedAt: 1 } as OrchestrationTask;
+  const attempt = { id: "a", taskId: "t", status: "running",
+    execution: { state: "waiting_tool", pendingTools: {} } } as unknown as OrchestrationAttempt;
+
+  it("says a worker parked on an approval card is awaiting approval, with the card pending", () => {
+    expect(taskStateLabel(task, attempt, [{ attemptId: "a", status: "pending" }])).toBe("Awaiting approval");
+    expect(taskStateLabel(task, attempt, [{ attemptId: "a", status: "dismissed" }])).toBe("Waiting for a tool");
+    expect(taskStateLabel(task, attempt, [])).toBe("Waiting for a tool");
+  });
+
+  it("never calls a finished check that failed plain Done", () => {
+    const done = { ...task, status: "completed", activeAttemptId: undefined } as OrchestrationTask;
+    expect(taskStateLabel(done, undefined)).toBe("Done");
+    expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Done · check failed");
+    expect(taskStateLabel({ ...done, verdict: "pass" }, undefined)).toBe("Done");
+  });
+});
 
 describe("agent task progress", () => {
   it("counts assignments once, including unstarted and blocked work", () => {

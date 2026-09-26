@@ -872,7 +872,7 @@ mod tests {
             store.worker_disconnected(&attempt.worker_chat_key).unwrap();
             assert_eq!(latest(&store, &attempt.id).execution.state, ExecutionState::CapacityBlocked);
             assert_eq!(store.snapshot(None).unwrap().notifications.len(), 1);
-            assert!(store.report_worker(&attempt.worker_chat_key, WorkerReport { attempt_id: attempt.id, outcome: WorkerOutcome::Completed, summary:"Late completion".into(), files_modified:vec![] }).is_err());
+            assert!(store.report_worker(&attempt.worker_chat_key, WorkerReport { attempt_id: attempt.id, outcome: WorkerOutcome::Completed, summary:"Late completion".into(), files_modified:vec![], verdict: None }).is_err());
         }
     }
 

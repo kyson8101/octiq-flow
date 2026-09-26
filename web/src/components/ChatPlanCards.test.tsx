@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { renderToStaticMarkup } from "react-dom/server";
-import { ChatPlanCards } from "./ChatPlanCards";
+import { ApprovedPlan, ChatPlanCards } from "./ChatPlanCards";
 import { chatPlans } from "../lib/chatPlans";
 import type { OrchestrationRun, OrchestrationSnapshot, OrchestrationTask, PlanApproval } from "../lib/orchestration";
 
@@ -49,11 +49,27 @@ describe("ChatPlanCards", () => {
     expect(html).toContain("&quot;approve plan bbbb&quot;");
   });
 
-  it("folds an approved plan to one line that says how and which revision", () => {
-    const html = render([run("run_cccc33", {
+  it("a settled plan leaves the chat; a new revision waiting comes back", () => {
+    // The person's screenshot: "Approved · revision 4" still a full row
+    // above the message box after they had approved it.
+    const approved = run("run_cccc33", {
+      status: "approved", requestedAt: 1, revision: 4,
+      consent: { via: "button", revision: 4, at: 2, surface: "chat", shownMs: 5000 },
+    });
+    expect(render([approved], [task("a", "run_cccc33", { approvedAt: 2 })])).toBe("");
+    const reopened = run("run_cccc33", { status: "pending", requestedAt: 1, revision: 5 });
+    const html = render([reopened, run("run_eeee55", { status: "approved", requestedAt: 1, revision: 2 })],
+      [task("a", "run_cccc33", { approvedAt: 2 }), task("b", "run_cccc33"), task("c", "run_eeee55", { approvedAt: 2 })]);
+    expect(html).toContain("Plan cccc · revision 5");
+    expect(html).not.toContain("eeee");
+  });
+
+  it("the run panel keeps the approved plan, folded to how and which revision", () => {
+    const [plan] = chatPlans({ runs: [run("run_cccc33", {
       status: "approved", requestedAt: 1, revision: 4,
       consent: { via: "conversation", revision: 4, at: 2, turnId: "user-1", words: "approve this plan" },
-    })], [task("a", "run_cccc33", { approvedAt: 2 })]);
+    })], tasks: [task("a", "run_cccc33", { approvedAt: 2 })], attempts: [], gates: [], messages: [], notifications: [] } as unknown as OrchestrationSnapshot, "chat:lead");
+    const html = renderToStaticMarkup(<ApprovedPlan plan={plan} />);
     expect(html).toMatch(/<details class="chat-plan chat-plan-approved"><summary>/);
     expect(html).not.toContain("<details class=\"chat-plan chat-plan-approved\" open");
     expect(html).toContain("Approved in chat · revision 4");

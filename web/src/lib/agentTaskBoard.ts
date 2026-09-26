@@ -57,6 +57,24 @@ export const EXECUTION_LABELS: Record<ExecutionState, string> = {
   completed: "Completed", cancelled: "Cancelled",
 };
 
+/** The one word a task row leads with. A worker parked on an approval card
+ *  says so rather than "waiting for a tool" (feedback ee0a43b0), and a
+ *  check that finished but failed never reads as plain "Done". */
+export function taskStateLabel(
+  task: OrchestrationTask,
+  attempt: OrchestrationAttempt | undefined,
+  decisions: readonly { attemptId: string; status: string }[] = [],
+): string {
+  if (attempt?.execution && task.activeAttemptId === attempt.id) {
+    const state = attempt.execution.state;
+    const approval = decisions.some((d) => d.attemptId === attempt.id && d.status === "pending");
+    if (approval && (state === "waiting_tool" || state === "awaiting_report")) return "Awaiting approval";
+    return EXECUTION_LABELS[state];
+  }
+  if (task.status === "completed" && task.verdict === "fail") return "Done · check failed";
+  return TASK_LABELS[task.status];
+}
+
 export function executionNeedsAttention(attempt?: OrchestrationAttempt): boolean {
   return !!attempt?.execution && ["capacity_blocked", "stalled", "disconnected", "failed", "awaiting_report"].includes(attempt.execution.state);
 }

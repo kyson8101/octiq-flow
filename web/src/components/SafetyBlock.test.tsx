@@ -8,6 +8,7 @@ vi.mock("../lib/bridge", () => ({
 import {
   allowForProjectReply,
   allowOnceReply,
+  exactOnceReply,
   LOCAL_ONLY_REPLY,
   SAFER_APPROACH_REPLY,
   saferReply,
@@ -90,5 +91,44 @@ describe("SafetyBlock", () => {
     expect(allowForProjectReply(generic)).toContain(
       "same kind of action, files or resources, scope, and intended effect",
     );
+  });
+
+  describe("Claude auto-mode card (feedback d59f830a)", () => {
+    const claude: SafetyBlockNotice = {
+      id: "claude-1",
+      chatKey: "chat:w1",
+      kind: "high-risk-action",
+      title: "Claude's auto mode blocked an action",
+      summary: "Production Deploy",
+      detail: "Permission for this action was denied by the Claude Code auto mode classifier.",
+      provider: "claude",
+      action: "eas update --branch production",
+      exactGrant: "Bash(eas update --branch production)",
+    };
+    const drawClaude = (notice: SafetyBlockNotice) =>
+      renderToStaticMarkup(<SafetyBlock block={notice} onContinue={() => {}} onAnswered={() => {}} />);
+
+    it("names the exact line and offers exactly one grant, never a project-wide one", () => {
+      const html = drawClaude(claude);
+      expect(html).toContain("Claude auto-mode review");
+      expect(html).toContain("eas update --branch production");
+      expect(html).toContain("Allow this exact command once");
+      expect(html).toContain("Use safer approach");
+      expect(html).not.toContain("Always allow in this project");
+      expect(html).not.toContain("Codex");
+    });
+
+    it("says plainly when an action cannot be allowed exactly", () => {
+      const html = drawClaude({ ...claude, action: "git push && npm publish", exactGrant: null });
+      expect(html).not.toContain("Allow this exact command once");
+      expect(html).toContain("cannot be allowed from here");
+    });
+
+    it("tells the agent the grant covers that line only, unchanged", () => {
+      const reply = exactOnceReply(claude);
+      expect(reply).toContain("eas update --branch production");
+      expect(reply).toContain("exact line");
+      expect(reply).toContain("Do not alter, chain or repeat it");
+    });
   });
 });

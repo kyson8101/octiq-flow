@@ -1,6 +1,9 @@
-// Codex's tool router has already refused this action. Unlike a live Claude
+// A provider's own safety review has already refused this action: Codex's
+// tool router, or Claude's auto-mode classifier. Unlike a live Claude
 // permission ask, there is no suspended tool call for OctiqFlow to resume.
-// These buttons therefore send the user's decision as a fresh, explicit turn.
+// These buttons therefore send the user's decision as a fresh, explicit turn —
+// and for Claude, whose classifier text does not clear, "allow" becomes a real
+// permission rule for exactly the refused line, on the chat's next launch.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
 
@@ -11,7 +14,24 @@ export type SafetyBlockNotice = {
   title: string;
   summary: string;
   detail: string;
+  /** Whose review refused. Older servers send none: that was always Codex. */
+  provider?: "codex" | "claude";
+  /** The exact call that was refused, when the provider named it. */
+  action?: string | null;
+  /** The one permission rule that allows exactly `action`, when one can. */
+  exactGrant?: string | null;
 };
+
+type ExactGrantOutcome = { rule: string; deliveredToWorker: boolean };
+
+/** What the agent is told after the person allowed its exact line once. */
+export function exactOnceReply(block: SafetyBlockNotice): string {
+  return (
+    `I allowed exactly this command once: ${block.action ?? ""}\n\n` +
+    "OctiqFlow added a permission rule for that exact line to your next run, and nothing broader. " +
+    "Run it unchanged if it is still needed. Do not alter, chain or repeat it, and ask again before any other blocked action."
+  );
+}
 
 export const LOCAL_ONLY_REPLY =
   "Continue without sending any local data to an external service. Use only local tools and local reasoning for this task.";
@@ -54,6 +74,106 @@ export function allowForProjectReply(block: SafetyBlockNotice): string {
   );
 }
 
+/** Claude's auto-mode card: the refused line, and at most one exact grant. */
+function ClaudeSafetyBlock({
+  block,
+  onContinue,
+  onAnswered,
+  startOpen,
+}: {
+  block: SafetyBlockNotice;
+  onContinue: (message: string) => Promise<void> | void;
+  onAnswered: (id: string) => void;
+  startOpen: boolean;
+}) {
+  const [open, setOpen] = useState(startOpen);
+  const [sending, setSending] = useState<"safer" | "exact" | null>(null);
+  const [error, setError] = useState("");
+
+  const safer = async () => {
+    setSending("safer");
+    setError("");
+    try {
+      await bridge.invoke("safety_block_dismiss", { id: block.id });
+      onAnswered(block.id);
+      await onContinue(SAFER_APPROACH_REPLY);
+    } catch (why) {
+      setError(String((why as Error)?.message ?? why));
+      setSending(null);
+    }
+  };
+
+  const allowExactly = async () => {
+    setSending("exact");
+    setError("");
+    try {
+      // The host refuses while the agent is mid-turn or its attempt is over,
+      // and the card stays up; only a real grant takes it down.
+      const outcome = await bridge.invoke<ExactGrantOutcome>("safety_block_grant_exact", { id: block.id });
+      onAnswered(block.id);
+      // A worker is told by OctiqFlow itself; relaying it again would be a
+      // second, unverifiable copy of the person's decision.
+      if (!outcome?.deliveredToWorker) await onContinue(exactOnceReply(block));
+    } catch (why) {
+      setError(String((why as Error)?.message ?? why));
+      setSending(null);
+    }
+  };
+
+  return (
+    <div className="ask-card safety-card" role="alert" aria-label={block.title}>
+      <div className="safety-card-context">
+        <span>Claude auto-mode review</span>
+        <span className="safety-card-ok">OctiqFlow is okay</span>
+      </div>
+      <div className="ask-card-head">
+        <span className="safety-card-icon" aria-hidden="true">!</span>
+        <span className="ask-card-title"><strong>{block.title}</strong></span>
+      </div>
+
+      <div className="safety-card-label">Why it was blocked</div>
+      <p className="safety-card-summary">{block.summary}</p>
+      {block.action && <>
+        <div className="safety-card-label">What it tried</div>
+        <pre className="safety-card-action">{block.action}</pre>
+      </>}
+      <p className="safety-card-status">OctiqFlow is still running. The blocked action did not run.</p>
+
+      {open && (
+        <div className="ask-card-detail safety-card-detail">
+          <div className="ask-card-label">Technical details</div>
+          <pre className="ask-card-body">{block.detail}</pre>
+        </div>
+      )}
+
+      <div className="ask-card-buttons safety-card-buttons">
+        <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void safer()}>
+          {sending === "safer" ? "Continuing…" : "Use safer approach"}
+        </button>
+        <button className="ask-btn" type="button" disabled={!!sending} aria-expanded={open}
+          onClick={() => setOpen((shown) => !shown)}>
+          {open ? "Hide technical details" : "Technical details"}
+        </button>
+        {block.exactGrant && (
+          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+            title={`Adds the permission rule ${block.exactGrant} to this agent's next run, and nothing broader`}
+            onClick={() => void allowExactly()}>
+            {sending === "exact" ? "Allowing…" : "Allow this exact command once"}
+          </button>
+        )}
+      </div>
+
+      {error && <p className="ask-card-note safety-card-error">Could not allow it: {error}</p>}
+
+      <p className="ask-card-note">
+        {block.exactGrant
+          ? "Allowing gives the agent's next run a permission for exactly the line above, once. The refused call does not resume by itself: the agent runs it again, unchanged, or not at all."
+          : "Claude takes an exact permission only for one plain shell command. This action cannot be allowed from here: choose a safer approach, or change the permission yourself."}
+      </p>
+    </div>
+  );
+}
+
 export function SafetyBlock({
   block,
   onContinue,
@@ -64,6 +184,23 @@ export function SafetyBlock({
   onContinue: (message: string) => Promise<void> | void;
   onAnswered: (id: string) => void;
   startOpen?: boolean;
+}) {
+  if (block.provider === "claude") {
+    return <ClaudeSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
+  }
+  return <CodexSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
+}
+
+function CodexSafetyBlock({
+  block,
+  onContinue,
+  onAnswered,
+  startOpen,
+}: {
+  block: SafetyBlockNotice;
+  onContinue: (message: string) => Promise<void> | void;
+  onAnswered: (id: string) => void;
+  startOpen: boolean;
 }) {
   const [open, setOpen] = useState(startOpen);
   const [sending, setSending] = useState<"local" | "allow" | "always" | null>(null);

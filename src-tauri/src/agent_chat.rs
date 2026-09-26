@@ -661,6 +661,10 @@ pub struct ChatManager {
     /// What the person sent, as the browser handed it over — see
     /// `TurnEvidence`. Newest last, bounded.
     evidence: Mutex<VecDeque<TurnEvidence>>,
+    /// Chat keys whose process OctiqFlow is ending on purpose so the next
+    /// launch carries a changed exact grant. A worker's exit is otherwise
+    /// read as a lost worker and fails its attempt.
+    restarting: Mutex<std::collections::HashSet<String>>,
 }
 
 /// One message as the person sent it: their words BEFORE the host dressed
@@ -687,6 +691,39 @@ fn is_person_turn_id(turn_id: &str) -> bool {
 }
 
 impl ChatManager {
+    /// End an idle chat's process on purpose, without its exit counting as a
+    /// lost worker. True when it was ended (or had no process to end).
+    fn end_for_relaunch(&self, key: &str) -> Result<bool, String> {
+        if !self
+            .sessions
+            .lock()
+            .map_err(|e| e.to_string())?
+            .contains_key(key)
+        {
+            return Ok(true);
+        }
+        self.restarting
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(key.to_string());
+        let ended = end_process_when(self, key, Some(Duration::ZERO));
+        if ended != Ok(true) {
+            self.restarting
+                .lock()
+                .map_err(|e| e.to_string())?
+                .remove(key);
+        }
+        ended
+    }
+
+    /// Whether this exit was one `end_for_relaunch` asked for. Taken once.
+    fn take_restarting(&self, key: &str) -> bool {
+        self.restarting
+            .lock()
+            .map(|mut keys| keys.remove(key))
+            .unwrap_or(false)
+    }
+
     /// Keep the person's own words for a message the browser is sending. A
     /// retried send of the same turn keeps what was first recorded.
     pub(crate) fn note_person_turn(
@@ -1367,6 +1404,7 @@ fn build_command_with_context(
         mcp_config,
         persistent_authorizations,
         orchestration_worker: false,
+        exact_grants: &[],
     })
 }
 
@@ -1989,6 +2027,14 @@ pub(crate) fn start_session(
     } else {
         Cow::Borrowed(prompt.as_str())
     };
+    // Exact lines the person allowed once on an auto-mode card. They stay
+    // waiting until a call uses one (`consume_grant`), so a launch that dies
+    // before running it does not lose the person's decision.
+    let exact_grants = if agent == ChatAgent::Claude {
+        crate::safety_block::exact_grants(&key)
+    } else {
+        Vec::new()
+    };
     let line = provider.build_command(&AgentCommand {
         model: model.as_deref(),
         access,
@@ -2001,6 +2047,7 @@ pub(crate) fn start_session(
         mcp_config: mcp.as_deref(),
         persistent_authorizations: authorizations.as_deref(),
         orchestration_worker,
+        exact_grants: &exact_grants,
     });
     let process_cwd = if cwd.trim().is_empty() {
         // `home_dir` reads USERPROFILE too, so this does not land on "/" the
@@ -2225,9 +2272,11 @@ pub(crate) fn start_session(
         // The runtime the answer will be waited on. Captured HERE, on the thread
         // that still has one: `chat_start` is called from an async handler, the
         // reader below is a plain thread, and `Handle::current()` panics there.
-        // Absent only on the desktop build, which has no server runtime — see
-        // `answer_permission`.
-        let rt = tokio::runtime::Handle::try_current().ok();
+        // A chat started by the orchestration scheduler (an auto-dispatched
+        // worker, a coordinator resumed by a notice) is started from a plain
+        // thread too, so it falls back to the server's own runtime — without
+        // it every permission such a chat asked for was refused unasked.
+        let rt = answer_runtime();
         // The reader is where a chat learns its own session id.
         let reading = manager.clone();
         thread::spawn(move || {
@@ -2240,6 +2289,12 @@ pub(crate) fn start_session(
             // cleared the moment it is handed over. One turn's words must never
             // be read as the next one's answer.
             let mut carried = String::new();
+            // Claude's calls by tool_use id, so an auto-mode refusal naming
+            // one can say exactly what was refused (see `note_claude_calls`).
+            let mut claude_calls: HashMap<String, (String, Value)> = HashMap::new();
+            // A call used a one-shot exact grant. This process still carries
+            // the rule, so it is ended at this turn's full stop.
+            let mut spent_grant = false;
             let mut snapshot_reads = crate::record_trim::SnapshotResults::default();
             let prelude = app_server_prelude
                 .into_iter()
@@ -2392,6 +2447,23 @@ pub(crate) fn start_session(
                                 eprintln!("chat: cannot record background work: {error}");
                             }
                         }
+                        if stream_provider.kind() == ChatAgent::Claude {
+                            spent_grant |= note_claude_calls(&key, &event, &mut claude_calls);
+                            let called = event
+                                .get("tool_use_id")
+                                .and_then(Value::as_str)
+                                .and_then(|id| claude_calls.get(id))
+                                .map(|(name, input)| (name.as_str(), input));
+                            if crate::safety_block::observe_claude_denial(&key, &event, called) {
+                                if let Err(error) =
+                                    reading.orchestrations.capture_native_decisions()
+                                {
+                                    eprintln!(
+                                        "orchestration: cannot record native decision: {error}"
+                                    );
+                                }
+                            }
+                        }
                         // Anything the agent asks US, named in the log first.
                         //
                         // This whole path is invisible otherwise: a
@@ -2523,6 +2595,21 @@ pub(crate) fn start_session(
                             let said = observed.final_text.unwrap_or(&carried).to_string();
                             carried.clear();
                             crate::push::notify_chat(Some(&key), "done", &said);
+                            if std::mem::take(&mut spent_grant) {
+                                // "Once" means this process may not run the
+                                // line again; the next turn relaunches
+                                // without the rule. A queued message already
+                                // handed over keeps it busy, and then the rule
+                                // lasts until this process ends — logged.
+                                match reading.end_for_relaunch(&session_key) {
+                                    Ok(true) => eprintln!(
+                                        "[perm] {key} ended after using a one-shot exact grant"
+                                    ),
+                                    _ => eprintln!(
+                                        "[perm] {key} still busy after a one-shot exact grant; the rule lasts until this process ends"
+                                    ),
+                                }
+                            }
                         }
                         let mut event = event;
                         if let Ok(mut session) = asking.lock() {
@@ -2745,7 +2832,10 @@ pub(crate) fn start_session(
                     }
                 }
             }
-            if drained {
+            // Ended on purpose to relaunch with a changed exact grant: the
+            // worker is not lost, its next turn starts a fresh process.
+            let relaunching = manager_for_exit.take_restarting(&key);
+            if drained && !relaunching {
                 if let Err(error) = manager_for_exit.orchestrations.worker_disconnected(&key) {
                     eprintln!("orchestration: cannot record worker disconnect: {error}");
                 }
@@ -3787,6 +3877,108 @@ pub(crate) fn route_worker_questions(
     )))
 }
 
+/// What allowing an auto-mode card exactly did.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactGrantOutcome {
+    /// The permission rule the chat's next launch carries.
+    pub rule: String,
+    /// OctiqFlow told a worker itself; the browser sends nothing more.
+    pub delivered_to_worker: bool,
+}
+
+/// The person allowed exactly the action on a Claude auto-mode card, once.
+///
+/// The refused call is over, and a running `claude -p` cannot be given a new
+/// permission rule, so the rule reaches the chat's NEXT launch: the idle
+/// process is ended (on purpose — not a lost worker) and the next turn starts
+/// a fresh one that carries `Bash(<exact line>)`. A worker is told by the host
+/// directly; an ordinary chat's browser sends the continuation itself. A chat
+/// still mid-turn keeps its card: nothing is granted until it can take effect.
+pub fn grant_exact_action(manager: &ChatManager, id: &str) -> Result<ExactGrantOutcome, String> {
+    let staged = crate::safety_block::stage_exact(id)?;
+    let worker = match manager.orchestrations.worker_card_live(&staged.chat_key) {
+        Ok(Some(false)) => {
+            crate::safety_block::unstage_exact(&staged);
+            return Err("This worker attempt has settled or been superseded, so its card cannot continue it. Retry the task explicitly; a retry grants no permission.".into());
+        }
+        Ok(worker) => worker.is_some(),
+        Err(error) => {
+            crate::safety_block::unstage_exact(&staged);
+            return Err(error);
+        }
+    };
+    if manager.end_for_relaunch(&staged.chat_key) != Ok(true) {
+        crate::safety_block::unstage_exact(&staged);
+        return Err("The agent is still working on this turn. Allow this once the turn ends; the card stays until then.".into());
+    }
+    crate::safety_block::confirm_exact(&staged);
+    if worker {
+        manager
+            .orchestrations
+            .deliver_exact_grant(&staged.chat_key, &staged.id, &staged.action)?;
+    }
+    Ok(ExactGrantOutcome {
+        rule: staged.rule,
+        delivered_to_worker: worker,
+    })
+}
+
+/// Remember the tool calls in one Claude assistant message, and use up any
+/// one-shot exact grant a call matches. True when one was used.
+fn note_claude_calls(
+    key: &str,
+    event: &Value,
+    calls: &mut HashMap<String, (String, Value)>,
+) -> bool {
+    if event.get("type").and_then(Value::as_str) != Some("assistant") {
+        return false;
+    }
+    let Some(content) = event
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    if calls.len() > 256 {
+        calls.clear();
+    }
+    let mut used = false;
+    for block in content {
+        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let (Some(id), Some(name)) = (
+            block.get("id").and_then(Value::as_str),
+            block.get("name").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let input = block.get("input").cloned().unwrap_or(Value::Null);
+        used |= crate::safety_block::consume_grant(key, name, Some(&input));
+        calls.insert(id.to_string(), (name.to_string(), input));
+    }
+    used
+}
+
+/// The server's runtime, recorded once at startup by `remember_runtime`.
+static SERVER_RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Record the runtime permission and question answers are waited on, for
+/// chats started from threads that have none of their own.
+pub fn remember_runtime(handle: tokio::runtime::Handle) {
+    let _ = SERVER_RUNTIME.set(handle);
+}
+
+/// The runtime a chat's questions are answered on: the caller's own when it
+/// has one, else the server's. None only when neither exists.
+fn answer_runtime() -> Option<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .or_else(|| SERVER_RUNTIME.get().cloned())
+}
+
 /// Put the question to the person, then write the answer back to the agent.
 ///
 /// The agent is BLOCKED until that answer arrives, so nothing here may be
@@ -3971,6 +4163,7 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     // Outliving it would be a permission nobody remembers giving.
     crate::permission::forget_chat(&key);
     crate::safety_block::forget_chat(&key);
+    crate::safety_block::forget_grants(&key);
     with_access(|a| a.remove(&key));
     end_process(manager, &key)?;
     cancelled
@@ -4602,6 +4795,55 @@ mod tests {
 
     const CONVERSATION_URL: &str =
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
+
+    /// Feedback 467a6314: the orchestration scheduler starts workers from a
+    /// plain thread, where `Handle::try_current` finds nothing, and every
+    /// permission such a worker asked for was denied with "OctiqFlow could not
+    /// ask anyone". A chat started there must still find a runtime.
+    #[test]
+    fn a_claude_call_is_remembered_and_uses_up_a_matching_exact_grant() {
+        let key = format!("chat:grant-{}", uuid::Uuid::new_v4());
+        let line = "npm publish --tag next";
+        let denial = json!({"type":"system","subtype":"permission_denied","decision_reason":"[Publish]",
+            "decision_reason_type":"classifier","tool_name":"Bash","tool_use_id":"toolu_pub","message":"denied"});
+        let mut calls = HashMap::new();
+        let call = json!({"type":"assistant","message":{"content":[
+            {"type":"text","text":"Publishing."},
+            {"type":"tool_use","id":"toolu_pub","name":"Bash","input":{"command": line}}]}});
+        // Seen before any grant: remembered, nothing used.
+        assert!(!note_claude_calls(&key, &call, &mut calls));
+        let (name, input) = calls.get("toolu_pub").unwrap();
+        assert!(crate::safety_block::observe_claude_denial(
+            &key,
+            &denial,
+            Some((name, input))
+        ));
+        let card = crate::safety_block::pending()
+            .into_iter()
+            .find(|b| b.chat_key() == key)
+            .unwrap();
+        let staged = crate::safety_block::stage_exact(card.id()).unwrap();
+        crate::safety_block::confirm_exact(&staged);
+        // The relaunched agent runs the line again: that call spends it.
+        let again = json!({"type":"assistant","message":{"content":[
+            {"type":"tool_use","id":"toolu_pub2","name":"Bash","input":{"command": line}}]}});
+        assert!(note_claude_calls(&key, &again, &mut calls));
+        assert!(crate::safety_block::exact_grants(&key).is_empty());
+        assert!(!note_claude_calls(&key, &again, &mut calls));
+    }
+
+    #[test]
+    fn a_chat_started_off_the_runtime_can_still_ask_the_person() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        remember_runtime(runtime.handle().clone());
+        let found = std::thread::spawn(|| {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            answer_runtime().is_some()
+        })
+        .join()
+        .unwrap();
+        assert!(found, "a scheduler-started chat has a runtime to wait on");
+    }
 
     #[test]
     fn a_model_handoff_keeps_history_separate_from_the_new_user_message() {

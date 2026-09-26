@@ -89,7 +89,7 @@ fn service_notice(data: &mut Stored, service: &Service, reason: &str) {
 pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
     let pending: BTreeSet<String> = crate::safety_block::decision_summaries()
         .into_iter()
-        .map(|d| d.0)
+        .map(|d| d.id)
         .collect();
     for decision in &mut snapshot.native_decisions {
         let live = snapshot.attempts.iter().any(|a| {
@@ -101,36 +101,103 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
                     .any(|t| t.active_attempt_id.as_deref() == Some(&a.id))
         });
         if decision.status == "pending" && !pending.contains(&decision.id) {
-            decision.status = "closed".into();
+            // What the person chose, when this server saw it; "closed" says
+            // only that the card went away, never that it was approved.
+            decision.status = crate::safety_block::decision(&decision.id)
+                .unwrap_or("closed")
+                .into();
         }
         if decision.status == "pending" && live {
             decision.continuation = "new_turn_same_attempt".into();
             decision.recovery = "Use the existing safety card in the main chat. The rejected call already ended; a decision can authorize a new turn in this attempt, not resume that call.".into();
+        } else if decision.status == "allowed_exact" && live {
+            decision.continuation = "new_turn_same_attempt".into();
+            decision.recovery = "The person allowed exactly the blocked action, once, for this attempt's next agent launch. OctiqFlow delivered that decision to the worker; the rejected call itself did not resume. Anything else still needs its own decision.".into();
         } else {
             decision.continuation = "unavailable".into();
             if !live {
                 decision.recovery = "This attempt has settled or was superseded. Its old card cannot resume it. Inspect the task and explicitly retry if needed; a retry grants no permission.".into();
             } else if decision.status == "closed" {
                 decision.recovery = "The card is no longer pending. Its absence does not prove approval. Inspect the person's recorded decision before continuing.".into();
+            } else if decision.status == "dismissed" || decision.status == "superseded" {
+                decision.recovery = "The card was dismissed or superseded by a new message: the person did not allow the blocked action, and its absence does not prove approval. Do not retry it; follow the person's latest instruction.".into();
+            } else if decision.status == "authorized_project" {
+                decision.recovery = "The person saved a project-scoped authorization for this kind of action; it reaches the agent's next launch as instructions, not as a resumed call.".into();
             }
         }
     }
 }
 
 impl OrchestrationStore {
+    /// Whether a card raised in this chat can still continue a worker attempt:
+    /// None when the chat is no worker's, else whether its attempt is the live
+    /// one of its task. A settled or superseded attempt cannot be continued.
+    pub(crate) fn worker_card_live(&self, chat_key: &str) -> Result<Option<bool>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let data = &inner.data;
+        let mut attempts = data
+            .attempts
+            .values()
+            .filter(|a| a.worker_chat_key == chat_key)
+            .peekable();
+        if attempts.peek().is_none() {
+            return Ok(None);
+        }
+        Ok(Some(attempts.any(|a| {
+            matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running)
+                && data
+                    .tasks
+                    .get(&a.task_id)
+                    .is_some_and(|t| t.active_attempt_id.as_deref() == Some(&a.id))
+        })))
+    }
+
+    /// The person allowed one exact line on a worker's auto-mode card: tell
+    /// that worker (its next launch carries the rule) and its coordinator.
+    /// The rejected call does not resume; the worker decides whether to run
+    /// the line again, unchanged.
+    pub(crate) fn deliver_exact_grant(
+        &self,
+        chat_key: &str,
+        card_id: &str,
+        action: &str,
+    ) -> Result<(), String> {
+        let run = self.mutate(|data| {
+            let Some(attempt) = data
+                .attempts
+                .values()
+                .find(|a| {
+                    a.worker_chat_key == chat_key
+                        && matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running)
+                })
+                .cloned()
+            else {
+                return Err("This worker attempt is no longer live.".into());
+            };
+            let coordinator = data.runs[&attempt.run_id].coordinator_chat_key.clone();
+            inbox::enqueue(data, &attempt.run_id, "host", chat_key, format!("exact-grant:{card_id}"), "native_decision",
+                format!("The person allowed exactly this command once, on the auto-mode card for task {} (decision {card_id}):\n\n{action}\n\nYour next agent launch carries a permission rule for that exact line and nothing else. Run it unchanged if your task still needs it; do not alter, chain or repeat it. Any other blocked action still needs its own decision.", attempt.task_id));
+            inbox::enqueue(data, &attempt.run_id, "host", &coordinator, format!("exact-grant-note:{card_id}"), "native_decision",
+                format!("The person allowed one exact command for task {} (attempt {}) on decision {card_id}. OctiqFlow delivered it to the worker. Read nativeDecisions; do not relay or repeat the approval.", attempt.task_id, attempt.id));
+            Ok(attempt.run_id)
+        })?;
+        announce(&run, "native_decision");
+        Ok(())
+    }
+
     pub(crate) fn capture_native_decisions(&self) -> Result<(), String> {
         let pending = crate::safety_block::decision_summaries();
         let fresh: Vec<_> = {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
             pending
                 .into_iter()
-                .filter(|(id, chat, _)| {
-                    !inner.data.native_decisions.contains_key(id)
+                .filter(|card| {
+                    !inner.data.native_decisions.contains_key(&card.id)
                         && inner
                             .data
                             .attempts
                             .values()
-                            .any(|a| a.worker_chat_key == *chat)
+                            .any(|a| a.worker_chat_key == card.chat_key)
                 })
                 .collect()
         };
@@ -139,14 +206,20 @@ impl OrchestrationStore {
         }
         let runs = self.mutate(|data| {
             let mut runs = BTreeSet::new();
-            for (id, chat, reason) in fresh {
-                let Some(attempt) = data.attempts.values().find(|a| a.worker_chat_key == chat).cloned() else { continue; };
+            for card in fresh {
+                let (id, chat) = (card.id, card.chat_key);
+                // A retry can reuse a worker chat: the card belongs to the
+                // attempt that is live in it, not to an older settled one.
+                let owner = data.attempts.values().filter(|a| a.worker_chat_key == chat)
+                    .max_by_key(|a| (matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running), a.number));
+                let Some(attempt) = owner.cloned() else { continue; };
                 if data.native_decisions.contains_key(&id) { continue; }
                 runs.insert(attempt.run_id.clone());
                 let decision = NativeDecision {
                     id: id.clone(), run_id: attempt.run_id.clone(), task_id: attempt.task_id.clone(),
-                    attempt_id: attempt.id, chat_key: chat.clone(), reason: reason.chars().take(2_000).collect(),
-                    blocked_action: None, status: "pending".into(), continuation: "unverified".into(),
+                    attempt_id: attempt.id, chat_key: chat.clone(), reason: card.reason.chars().take(2_000).collect(),
+                    blocked_action: card.action.map(|a| a.chars().take(2_000).collect()),
+                    status: "pending".into(), continuation: "unverified".into(),
                     recovery: String::new(), observed_at: now_ms(),
                 };
                 let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
@@ -235,6 +308,23 @@ impl OrchestrationStore {
 
     /// Bounded local probes only, with no shell, DNS, credentials or HTTP payload.
     pub(crate) fn check_services(&self, now: i64) -> Result<(), String> {
+        self.check_services_with(now, |service| {
+            TcpStream::connect_timeout(
+                &SocketAddr::new(service.host, service.port),
+                Duration::from_millis(100),
+            )
+            .is_ok()
+        })
+    }
+
+    /// `check_services` with the reachability probe given, so a test can
+    /// say "nothing listens now" without releasing a port that a parallel
+    /// test may bind again the next moment.
+    fn check_services_with(
+        &self,
+        now: i64,
+        listening: impl Fn(&Service) -> bool,
+    ) -> Result<(), String> {
         let candidates: Vec<_> = {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
             inner
@@ -259,12 +349,12 @@ impl OrchestrationStore {
         let observations: Vec<_> = candidates
             .into_iter()
             .map(|service| {
-                let listening = TcpStream::connect_timeout(
-                    &SocketAddr::new(service.host, service.port),
-                    Duration::from_millis(100),
-                )
-                .is_ok();
-                (service, if listening { "listening" } else { "stopped" })
+                let state = if listening(&service) {
+                    "listening"
+                } else {
+                    "stopped"
+                };
+                (service, state)
             })
             .collect();
         let runs = self.mutate(|data| {
@@ -358,7 +448,8 @@ mod tests {
             .is_empty());
         crate::safety_block::forget_chat(&attempt.worker_chat_key);
         let snapshot = store.snapshot(Some(&run.id)).unwrap();
-        assert_eq!(snapshot.native_decisions[0].status, "closed");
+        // How it went, not merely that it went: a new message superseded it.
+        assert_eq!(snapshot.native_decisions[0].status, "superseded");
         assert_eq!(snapshot.native_decisions[0].continuation, "unavailable");
         assert!(snapshot.native_decisions[0]
             .recovery
@@ -371,12 +462,109 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "Upload remains blocked".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
         assert!(store.snapshot(Some(&run.id)).unwrap().native_decisions[0]
             .recovery
             .contains("settled"));
+    }
+
+    /// Feedback d59f830a / 56dd3f24: a Claude worker refused by auto mode
+    /// left no decision record (nativeDecisions empty, later "stalled") and
+    /// no way to allow the exact command it was refused.
+    #[test]
+    fn a_claude_auto_mode_refusal_is_a_decision_the_person_can_allow_exactly_once() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        let line = "eas update --branch production --message 'OTA 1.4.2'";
+        let input = json!({ "command": line });
+        let denial = json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "[Production Deploy]", "decision_reason_type": "classifier",
+            "message": "Permission for this action was denied by the Claude Code auto mode classifier.",
+            "tool_name": "Bash", "tool_use_id": "toolu_ota",
+        });
+        assert!(crate::safety_block::observe_claude_denial(
+            &chat,
+            &denial,
+            Some(("Bash", &input))
+        ));
+        store.capture_native_decisions().unwrap();
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let decision = &snapshot.native_decisions[0];
+        assert_eq!(decision.status, "pending");
+        assert_eq!(decision.attempt_id, attempt.id);
+        assert_eq!(decision.blocked_action.as_deref(), Some(line));
+        assert!(
+            decision.reason.contains("Production Deploy"),
+            "{}",
+            decision.reason
+        );
+        assert_eq!(decision.continuation, "new_turn_same_attempt");
+        assert_eq!(store.worker_card_live(&chat).unwrap(), Some(true));
+
+        let card = crate::safety_block::pending()
+            .into_iter()
+            .find(|b| b.chat_key() == chat)
+            .unwrap();
+        let staged = crate::safety_block::stage_exact(card.id()).unwrap();
+        assert_eq!(staged.rule, format!("Bash({line})"));
+        assert!(crate::safety_block::confirm_exact(&staged));
+        store
+            .deliver_exact_grant(&chat, &staged.id, &staged.action)
+            .unwrap();
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(snapshot.native_decisions[0].status, "allowed_exact");
+        assert_eq!(
+            snapshot.native_decisions[0].continuation,
+            "new_turn_same_attempt"
+        );
+        // The worker is told, with the exact line and nothing broader.
+        assert!(snapshot
+            .notifications
+            .iter()
+            .any(|n| n.target_chat_key == chat
+                && n.body.contains(line)
+                && n.body.contains("unchanged")));
+        // Its next launch carries the rule until a matching call uses it.
+        assert_eq!(
+            crate::safety_block::exact_grants(&chat),
+            vec![staged.rule.clone()]
+        );
+        let other = json!({ "command": "eas update --branch staging" });
+        assert!(!crate::safety_block::consume_grant(
+            &chat,
+            "Bash",
+            Some(&other)
+        ));
+        assert!(crate::safety_block::consume_grant(
+            &chat,
+            "Bash",
+            Some(&input)
+        ));
+        assert!(crate::safety_block::exact_grants(&chat).is_empty());
+
+        store
+            .report_worker(
+                &chat,
+                WorkerReport {
+                    attempt_id: attempt.id,
+                    outcome: WorkerOutcome::Completed,
+                    summary: "Published".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        // A settled attempt's card can no longer continue anything.
+        assert_eq!(store.worker_card_live(&chat).unwrap(), Some(false));
+        assert!(store
+            .worker_card_live("chat:not-a-worker")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -401,11 +589,15 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "Frontend started".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
+        // The frontend goes away. Probed as gone rather than by dropping the
+        // listener: a released ephemeral port is bound again by a parallel
+        // test often enough to make the real probe flaky here.
         drop(listener);
-        store.check_services(110_001).unwrap();
+        store.check_services_with(110_001, |_| false).unwrap();
         let snapshot = store.snapshot(Some(&run.id)).unwrap();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
         assert_eq!(snapshot.services[0].state, "stopped");
@@ -473,6 +665,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "Unaffected work completed".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();

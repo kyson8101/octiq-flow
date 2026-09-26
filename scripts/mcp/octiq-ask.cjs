@@ -1273,6 +1273,7 @@ const ORCHESTRATION_TASK_CREATE = {
       problem: { type: "string", description: "The plan card: the problem this task solves, in one short sentence (at most 300 characters). Shown to the person when they review the plan." },
       goal: { type: "string", description: "The plan card: the approach or outcome, in one short sentence (at most 300 characters)." },
       acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "The plan card: 2–5 checkable acceptance criteria, one line each (at most 240 characters). Criteria, not results; the plan card is fixed once the person approves it (before that, change it with orchestration_task_revise)." },
+      environment: { type: "string", enum: ["none", "sandbox"], description: "What must run before the worker starts. \"sandbox\" for implementation, integration and browser work that needs the application running: the host builds the project's runnable test environment (.octiq/sandbox.json) from this task's own worktree, starts the worker only after its readiness check passes, and fails the attempt with the cause otherwise, so nothing that depends on the task starts on a broken runtime. Omit, or \"none\", for reviews, docs, unit-only work and the task that repairs a broken environment. Its state appears under environments in orchestration_snapshot, separate from task status." },
     },
     required: ["runId", "title", "spec"],
   },
@@ -1301,6 +1302,25 @@ const ORCHESTRATION_TASK_REVISE = {
       withdraw: { type: "boolean", description: "Take this task out of the plan. Refused while another task depends on it." },
     },
     required: ["taskId"],
+  },
+};
+
+const ORCHESTRATION_TASK_REASSIGN = {
+  name: "orchestration_task_reassign",
+  description:
+    "Agents mode: hand a task nobody is working on to another of YOUR direct reports, for example a designated backup taking over " +
+    "from the primary when the person asks or the primary is unavailable. The host routes the new owner exactly as a new task " +
+    "(direct reports only, same destination), keeps the task's card, dependencies and any workspace a settled attempt left, and " +
+    "records the handoff. The new owner changes what the person approved, so the task waits for their approval again; nobody, " +
+    "the old owner included, starts it meanwhile. Refused while an attempt is still running: stop it first.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string" },
+      assignee: { type: "string", description: "The direct report taking the task over: id or exact name." },
+      reason: { type: "string", description: "Why it changes hands, in one line, e.g. \"The person asked Tofu to take over from Mango.\"" },
+    },
+    required: ["taskId", "assignee", "reason"],
   },
 };
 
@@ -1395,6 +1415,7 @@ const ORCHESTRATION_WORKER_REPORT = {
       outcome: { type: "string", enum: ["completed", "failed", "blocked"] },
       summary: { type: "string", description: "What changed, what was verified, and anything left." },
       filesModified: { type: "array", items: { type: "string" }, description: "Changed file paths, or an empty list." },
+      verdict: { type: "string", enum: ["pass", "fail"], description: "For a review, check or acceptance task: whether what you checked passed. Finishing a review that found blocking problems is outcome completed with verdict fail, which keeps dependent tasks waiting. Omit for ordinary work." },
     },
     required: ["attemptId", "outcome", "summary", "filesModified"],
   },
@@ -1490,6 +1511,7 @@ const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_RUN_CREATE,
   ORCHESTRATION_TASK_CREATE,
   ORCHESTRATION_TASK_REVISE,
+  ORCHESTRATION_TASK_REASSIGN,
   ORCHESTRATION_PLAN_APPROVE,
   ORCHESTRATION_DESTINATIONS,
   ORCHESTRATION_SNAPSHOT,
