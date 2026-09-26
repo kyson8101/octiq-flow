@@ -4532,8 +4532,14 @@ body {
   cursor: default;
 }
 .composer-identity > svg { flex: 0 0 auto; }
+/* Shrinks last, and only for a name too long for the row: whole, it ran under
+   Send on a phone. The chip's title still carries it in full. */
 .composer-identity-name {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--fg-0);
   font-weight: 500;
 }

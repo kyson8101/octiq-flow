@@ -136,6 +136,7 @@ import { ProjectSettings } from "./components/ProjectSettings";
 import { ProjectAvatar } from "./components/ProjectAvatar";
 import { Settings, type SettingsSection } from "./components/Settings";
 import { RecipientPicker } from "./components/AgentsSettings";
+import { AgentWelcome } from "./components/AgentRole";
 import { AgentsDashboard } from "./components/AgentsDashboard";
 import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import {
@@ -4599,7 +4600,7 @@ export default function App() {
           ) : chat.messages.length === 0 && currentWorkflow.runs.length > 0 ? (
             <div className="hero"><h2 className="hero-title">Main chat</h2><p className="hero-sub">Talk with the main agent here. Select a task to follow its conversation.</p></div>
           ) : chat.messages.length === 0 ? (
-            <div className={`hero ${project ? "" : "hero-start"}`}>
+            <div className={`hero ${project ? "" : "hero-start"}${newTask ? " is-agent-welcome" : ""}`}>
               <h1 className="hero-title">{newTask && lead
                 ? `Talk to ${lead.name}`
                 : newTask && recipients.length > 0
@@ -4608,11 +4609,17 @@ export default function App() {
                 ? (project ? `What's the task in ${project.name}?` : "What's the task?")
                 : project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
               {newTask && lead && (
-                <p className="hero-sub">
-                  {lead.role ? `${lead.role.replace(/[.\s]+$/, "")}. ` : ""}{headAtHome
-                    ? "Works across every project: picks the project, repository and teammate for each part, and you approve the plan before anyone starts."
-                    : `Works ${lead.projectId ? `only in ${project?.name ?? "its project"}` : "in any project"}: does the work itself or hands parts to its team, and you approve any plan first.`}
-                </p>
+                <AgentWelcome
+                  key={lead.id}
+                  name={lead.name}
+                  role={lead.role ?? ""}
+                  scope={headAtHome
+                    ? "Works across every project"
+                    : `Works ${lead.projectId ? `only in ${project?.name ?? "its project"}` : "in any project"}`}
+                  how={headAtHome
+                    ? "Picks the project, repository and teammate for each part, and you approve the plan before anyone starts."
+                    : "Does the work itself or hands parts to its team, and you approve any plan first."}
+                />
               )}
               {(!project || newTask) && (
                 newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>

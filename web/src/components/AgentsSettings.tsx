@@ -305,8 +305,10 @@ export function RecipientPicker({ agents, selectedId, projectName, onPick, onMan
           );
         })}
       </div>
+      {/* Who is offered is the org chart's top row; the chips say who, so
+          only the way to change it is left under them. */}
       <p className="lead-picker-note">
-        Agents who report to you. <button type="button" onClick={onManage}>Manage agents</button>
+        <button type="button" onClick={onManage}>Manage agents</button>
       </p>
     </div>
   );

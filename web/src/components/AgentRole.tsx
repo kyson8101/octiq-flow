@@ -38,6 +38,40 @@ export function AgentRole({ text, name, className }: {
   </div>;
 }
 
+/** Who a new conversation is with, under its heading. The same role, printed
+ *  whole, filled a phone and pushed the picker and the composer off the first
+ *  screen, so this is one line — the role's first sentence and where the agent
+ *  works — and the rest opens on request, in place. Keyed by agent where it is
+ *  used, so picking someone else starts shut. */
+export function AgentWelcome({ name, role, scope, how }: {
+  name: string;
+  role: string;
+  /** Where it works, short: "Works only in starfall". */
+  scope: string;
+  /** How a conversation with it goes, in a sentence. */
+  how: string;
+}) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const summary = [role.trim() ? rolePreview(role, 64) : "", scope].filter(Boolean).join(" · ");
+  return <>
+    <p className="hero-sub agent-welcome">
+      <span className="agent-welcome-summary">{summary}</span>
+      <button type="button" className="agent-welcome-toggle" aria-expanded={open} aria-controls={id}
+        aria-label={`Details about ${name}`} onClick={() => setOpen(!open)}>
+        Details
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+      </button>
+    </p>
+    <div className="agent-welcome-details" id={id} role="region" aria-label={`About ${name}`}
+      tabIndex={open ? 0 : -1} hidden={!open}>
+      {role.trim() && <p className="agent-welcome-role">{role.trim()}</p>}
+      <p>{how}</p>
+    </div>
+  </>;
+}
+
 /** A role short enough for one line of a picker: its first sentence, cut at a
  *  word near `max` characters. Only for labels — the role itself is untouched. */
 export function rolePreview(role: string, max = 56): string {
