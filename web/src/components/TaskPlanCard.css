@@ -18,13 +18,19 @@
   color: var(--fg-2); background: var(--bg-2);
 }
 .plan-card-state[data-state="confirmed"] { color: color-mix(in oklab, var(--ok) 80%, var(--fg-1)); background: color-mix(in srgb, var(--ok) 14%, transparent); }
-.plan-card-state[data-state="removed"] { color: color-mix(in oklab, var(--warn) 80%, var(--fg-1)); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.plan-card-state[data-state="removed"],
+.plan-card-state[data-state="conflict"],
+.plan-card-state[data-state="unplanned"] { color: color-mix(in oklab, var(--warn) 80%, var(--fg-1)); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.plan-card-note { flex-basis: 100%; min-width: 0; color: var(--fg-2); font-size: 11px; line-height: 1.4; }
 .plan-card-copy {
-  padding: 0 6px; border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: transparent; color: var(--fg-2); font: inherit; font-size: 10px; line-height: 16px; cursor: pointer;
+  display: inline-grid; place-items: center; vertical-align: -3px;
+  width: 18px; height: 18px; margin-left: 4px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-3); cursor: pointer;
   transition: background 150ms ease-out, color 150ms ease-out;
 }
-.plan-card-copy:hover { background: var(--bg-2); color: var(--fg-0); }
+.plan-card-copy:hover, .plan-card-copy:focus-visible { background: var(--bg-2); color: var(--fg-0); }
+.plan-card-copy[data-copied="done"] { color: var(--ok); }
+.plan-card-copy[data-copied="failed"] { color: var(--warn); }
 .plan-card-brief { padding-top: 8px; border-top: 1px solid var(--border); }
 .plan-card-brief dd { display: block; line-height: 1.45; }
 .plan-card-acceptance { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; }

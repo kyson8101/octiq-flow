@@ -107,14 +107,34 @@ describe("the plan card view", () => {
         }}
       />,
     );
-    expect(html).toContain("Work directory");
-    expect(html).toContain("Pending, allocated when the task starts");
-    expect(html).toContain('data-state="pending"');
+    expect(html).toContain("Allocated when the task starts");
+    expect(html.match(/data-state="pending"/g)).toHaveLength(1);
     expect(html).toContain("Chats hide their projects.");
     expect(html).toContain("Show destination badges.");
     expect(html).toContain('aria-label="Acceptance criteria"');
     expect(html).toContain("<li>Tests pass</li>");
     expect(html).not.toContain("long brief");
+  });
+
+  it("renders the host's planned branch with (new) right after its name", () => {
+    const plan = {
+      mode: "worktree" as const, cwd: "/code/.worktrees/octiq-flow/feature/octiq-t/", checkoutRoot: "/code/.worktrees/octiq-flow/feature/octiq-t",
+      repositoryRoot: "/code/octiq-flow", branch: "feature/octiq-t", baseBranch: "develop", baseSha: "abc", managed: true,
+      isRepo: true, warnings: [], initialStatus: "",
+    };
+    const html = renderToStaticMarkup(
+      <TaskPlanCard run={{ workspaceId: "p", rootPath: "/code/General" }}
+        task={{ id: "t", runId: "r", title: "Plan", spec: "s", dependsOn: [], status: "pending", createdAt: 1, updatedAt: 1,
+          workspaceProposal: { plan, newBranch: true, proposedAt: 1 } }} />,
+    );
+    expect(html).toContain(">feature/octiq-t (new) from develop<");
+    expect(html).toContain('aria-label="Copy branch name"');
+    expect(html).toContain('aria-label="Copy work directory path"');
+    expect(html).toContain('class="plan-card-path"');
+    expect(html).toContain(">/code/.worktrees/octiq-flow/feature/octiq-t/<");
+    expect(html).toContain('data-state="planned"');
+    expect(html).not.toContain('data-state="pending"');
+    expect(html).not.toContain('data-state="confirmed"');
   });
 
   it("says when the lead gave no card", () => {

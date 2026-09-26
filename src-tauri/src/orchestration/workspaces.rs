@@ -28,7 +28,221 @@ pub struct TaskWorkspace {
     pub validation_paths: Vec<String>,
 }
 
+/// What the host WILL allocate for a task that has no workspace yet, worked
+/// out read-only when the task is created, so the person approves an exact
+/// branch and path rather than "pending". It is never a workspace: no branch,
+/// directory or lease exists until launch, and a first launch refuses to
+/// allocate anything other than this (`approved_plan`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProposal {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<WorkspacePlan>,
+    /// Launch creates the branch; nothing by that name exists yet.
+    #[serde(default)]
+    pub new_branch: bool,
+    /// Something already holds the planned branch or path. Launch refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
+    /// Why nothing could be planned. Launch plans afresh, as before proposals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// No worker access was chosen yet, so this assumed a writer. A launch
+    /// the coordinator later makes read-only may use the current checkout
+    /// instead; every other departure from the plan is still refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provisional: bool,
+    pub proposed_at: i64,
+}
+
+/// The mode a first attempt gets: what `prepare_task_workspace` decides, less
+/// the legacy `new_worktree` refusal, which only a launch can ask for.
+pub(super) fn first_mode(run_mode: WorkspaceMode, access: Access) -> WorkspaceMode {
+    match run_mode {
+        WorkspaceMode::Auto if access == Access::Read => WorkspaceMode::Direct,
+        WorkspaceMode::Auto => WorkspaceMode::Worktree,
+        mode => mode,
+    }
+}
+
+/// Where a task's first attempt starts: its destination, or the run's root.
+pub(super) fn task_root<'a>(run: &'a Run, destination: Option<&'a TaskDestination>) -> &'a str {
+    destination.map_or(run.root_path.as_str(), |d| d.repository.as_str())
+}
+
+/// Plan a task's workspace without creating, locking or refreshing anything.
+pub(super) fn propose(
+    run: &Run,
+    task_id: &str,
+    destination: Option<&TaskDestination>,
+    worker: Option<&automation::WorkerSettings>,
+) -> WorkspaceProposal {
+    let chosen = worker
+        .map(|w| w.access)
+        .or_else(|| run.worker_defaults.as_ref().map(|d| d.access));
+    let mode = first_mode(run.workspace_mode, chosen.unwrap_or(Access::Auto));
+    let provisional = chosen.is_none() && run.workspace_mode == WorkspaceMode::Auto;
+    let proposed_at = now_ms();
+    match workflow::plan(task_root(run, destination), "", task_id, mode) {
+        Ok(plan) => {
+            let conflict = workflow::occupied(&plan);
+            WorkspaceProposal {
+                new_branch: plan.managed && conflict.is_none(),
+                conflict,
+                error: None,
+                plan: Some(plan),
+                provisional,
+                proposed_at,
+            }
+        }
+        Err(error) => WorkspaceProposal {
+            plan: None,
+            new_branch: false,
+            conflict: None,
+            error: Some(error),
+            provisional,
+            proposed_at,
+        },
+    }
+}
+
+fn mode_words(mode: WorkspaceMode) -> &'static str {
+    match mode {
+        WorkspaceMode::Direct => "the current checkout",
+        _ => "a new worktree",
+    }
+}
+
+/// A first launch allocates exactly the approved branch and path, from the
+/// approved base, or nothing. The base's tip may have moved on since; its name,
+/// the branch, the repository and the directory may not.
+fn approved_plan(
+    proposal: &WorkspaceProposal,
+    approved: &WorkspacePlan,
+    root: &str,
+    launch: &WorkerLaunch,
+    task_id: &str,
+    mode: WorkspaceMode,
+) -> Result<WorkspacePlan, String> {
+    if proposal.provisional && mode == WorkspaceMode::Direct && mode != approved.mode {
+        return workflow::plan(root, &launch.base_branch, task_id, mode);
+    }
+    if !launch.base_branch.is_empty() && launch.base_branch != approved.base_branch {
+        return Err(format!(
+            "The approved plan starts from {}, not {}. Create a new task to start from another branch.",
+            approved.base_branch, launch.base_branch
+        ));
+    }
+    if mode != approved.mode {
+        return Err(format!(
+            "The approved plan uses {}, but this launch would use {}. Launch with the planned access, or create a new task.",
+            mode_words(approved.mode),
+            mode_words(mode)
+        ));
+    }
+    // Current checkout mode never switches branches, so plan it as it is and
+    // say plainly when that is no longer the branch the person approved.
+    let base = if mode == WorkspaceMode::Direct {
+        ""
+    } else {
+        approved.base_branch.as_str()
+    };
+    let fresh = workflow::plan(root, base, task_id, mode)?;
+    if fresh.branch != approved.branch {
+        return Err(if mode == WorkspaceMode::Direct {
+            format!(
+                "The approved plan works on {} in the current checkout, which is now on {}. Switch it back, or create a new task.",
+                approved.branch, fresh.branch
+            )
+        } else {
+            format!(
+                "The approved plan uses branch {}; the host would now create {}. Create a new task.",
+                approved.branch, fresh.branch
+            )
+        });
+    }
+    if fresh.cwd != approved.cwd
+        || fresh.checkout_root != approved.checkout_root
+        || fresh.repository_root != approved.repository_root
+    {
+        return Err(format!(
+            "The approved plan works in {}; the host would now use {}. Create a new task for the new location.",
+            approved.cwd, fresh.cwd
+        ));
+    }
+    if let Some(conflict) = workflow::occupied(&fresh) {
+        return Err(format!(
+            "{conflict} The approved plan makes a new branch and worktree, so nothing already there is reused. Move it aside, or create a new task."
+        ));
+    }
+    Ok(fresh)
+}
+
 impl OrchestrationStore {
+    /// Give every unstarted task that has neither a workspace nor a proposal
+    /// one: tasks created before proposals existed, so an open plan shows its
+    /// branch too. Git runs outside the store lock; a task that gained either
+    /// in the meantime keeps what it has.
+    pub fn propose_missing_workspaces(&self) -> Result<(), String> {
+        let wanted: Vec<(Run, Task)> = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if inner.load_error.is_some() {
+                return Ok(());
+            }
+            inner
+                .data
+                .tasks
+                .values()
+                .filter(|t| t.workspace.is_none() && t.workspace_proposal.is_none())
+                .filter(|t| t.active_attempt_id.is_none())
+                .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::Ready))
+                .filter_map(|t| {
+                    let run = inner.data.runs.get(&t.run_id)?;
+                    let open = matches!(
+                        run.status,
+                        RunStatus::Planning | RunStatus::Running | RunStatus::Waiting
+                    ) && run.archived_at.is_none();
+                    open.then(|| (run.clone(), t.clone()))
+                })
+                .collect()
+        };
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let proposals: Vec<(String, WorkspaceProposal)> = wanted
+            .iter()
+            .map(|(run, task)| {
+                let proposal = propose(
+                    run,
+                    &task.id,
+                    task.destination.as_ref(),
+                    task.worker.as_ref(),
+                );
+                (task.id.clone(), proposal)
+            })
+            .collect();
+        let runs = self.mutate(|data| {
+            let mut runs = BTreeSet::new();
+            for (id, proposal) in proposals {
+                let Some(task) = data.tasks.get_mut(&id) else {
+                    continue;
+                };
+                if task.workspace.is_none()
+                    && task.workspace_proposal.is_none()
+                    && task.active_attempt_id.is_none()
+                {
+                    task.workspace_proposal = Some(proposal);
+                    runs.insert(task.run_id.clone());
+                }
+            }
+            Ok(runs)
+        })?;
+        for run in runs {
+            announce(&run, "workspace_proposed");
+        }
+        Ok(())
+    }
+
     pub(super) fn owned_task(&self, actor: &str, task_id: &str) -> Result<(Run, Task), String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         if let Some(error) = &inner.load_error {
@@ -95,11 +309,19 @@ impl OrchestrationStore {
             };
             // A routed task starts from its destination repository; one
             // without a destination from the run's root, as it always has.
-            let root = task
-                .destination
+            let root = task_root(run, task.destination.as_ref());
+            // What the person approved is what gets allocated. A task from
+            // before proposals, or one whose proposal failed, plans now.
+            match task
+                .workspace_proposal
                 .as_ref()
-                .map_or(run.root_path.as_str(), |d| d.repository.as_str());
-            workflow::plan(root, &launch.base_branch, &task.id, mode)?
+                .and_then(|p| Some((p, p.plan.as_ref()?)))
+            {
+                Some((proposal, approved)) => {
+                    approved_plan(proposal, approved, root, launch, &task.id, mode)?
+                }
+                None => workflow::plan(root, &launch.base_branch, &task.id, mode)?,
+            }
         };
         if writable
             && run.workspace_mode == WorkspaceMode::Auto
@@ -615,6 +837,297 @@ mod tests {
             workspace.is_worktree,
         )
     }
+    fn prepare_from(
+        store: &OrchestrationStore,
+        task: &Task,
+        access: Access,
+        base_branch: &str,
+    ) -> Result<Attempt, String> {
+        let launch = WorkerLaunch {
+            task_id: task.id.clone(),
+            agent: ChatAgent::Codex,
+            access,
+            model: None,
+            effort: None,
+            new_worktree: None,
+            base_branch: base_branch.into(),
+        };
+        let (run, task, reserved, previous) = store.reserve_attempt("chat:master", &launch)?;
+        // Settled the way start_worker settles it, so the task can launch again.
+        let workspace = store
+            .prepare_task_workspace(
+                &ChatManager::default(),
+                &run,
+                &task,
+                &reserved,
+                previous.as_ref(),
+                &launch,
+            )
+            .inspect_err(|error| {
+                store
+                    .fail_preparation(
+                        &reserved.id,
+                        error.clone(),
+                        String::new(),
+                        String::new(),
+                        false,
+                    )
+                    .unwrap()
+            })?;
+        store.activate_attempt(
+            &reserved.id,
+            workspace.cwd,
+            workspace.branch,
+            workspace.is_worktree,
+        )
+    }
+    fn stored(store: &OrchestrationStore, task: &Task) -> Task {
+        store.owned_task("chat:master", &task.id).unwrap().1
+    }
+    fn proposed(store: &OrchestrationStore, task: &Task) -> WorkspacePlan {
+        stored(store, task)
+            .workspace_proposal
+            .and_then(|p| p.plan)
+            .expect("a planned workspace")
+    }
+    /// Every path under `dir` with its size and modification time, `.git`
+    /// included, so a read that refreshed the index shows up too.
+    fn fingerprint(dir: &Path) -> Vec<(String, u64, std::time::SystemTime)> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(path) = stack.pop() {
+            let meta = fs::symlink_metadata(&path).unwrap();
+            out.push((
+                path.to_string_lossy().into_owned(),
+                meta.len(),
+                meta.modified().unwrap(),
+            ));
+            if meta.is_dir() {
+                for entry in fs::read_dir(&path).unwrap() {
+                    stack.push(entry.unwrap().path());
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_plan_names_the_new_branch_and_path_without_touching_git_or_disk() {
+        let repo = Repo::new();
+        // Something to refresh: an untracked file and a stale index stat.
+        fs::write(Path::new(&repo.root).join("untracked.txt"), "x").unwrap();
+        let before = fingerprint(&repo.dir);
+        let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+        assert_eq!(fingerprint(&repo.dir), before, "planning changed the disk");
+        let saved = stored(&store, &task);
+        assert!(saved.workspace.is_none(), "a plan is not a workspace");
+        let proposal = saved.workspace_proposal.unwrap();
+        let planned_at = proposal.proposed_at;
+        let plan = proposal.plan.unwrap();
+        let id = task.id.strip_prefix("task_").unwrap();
+        assert_eq!(plan.branch, format!("feature/octiq-{id}"));
+        assert_eq!(plan.base_branch, "main");
+        assert_eq!(plan.mode, WorkspaceMode::Worktree);
+        assert!(proposal.new_branch);
+        assert!(proposal.conflict.is_none());
+        assert_eq!(
+            Path::new(&plan.checkout_root),
+            repo.dir.join(".worktrees/repo").join(&plan.branch)
+        );
+        assert!(!Path::new(&plan.checkout_root).exists());
+        assert_eq!(repo.git(&["branch", "--list", &plan.branch]), "");
+        // The scheduler's backfill leaves a planned task alone.
+        store.propose_missing_workspaces().unwrap();
+        assert_eq!(fingerprint(&repo.dir), before);
+        let after = stored(&store, &task).workspace_proposal.unwrap();
+        assert_eq!(after.proposed_at, planned_at);
+    }
+
+    #[test]
+    fn the_plan_is_saved_with_the_task_and_survives_a_restart() {
+        let repo = Repo::new();
+        let path = repo.dir.join("orchestrations.json");
+        let store = OrchestrationStore::load(path.clone());
+        let run = store
+            .create_run_with_mode(
+                "chat:master".into(),
+                "Plan".into(),
+                "project".into(),
+                repo.root.clone(),
+                None,
+                WorkspaceMode::Worktree,
+            )
+            .unwrap();
+        let task = super::super::tests::task(&store, &run, vec![]);
+        let plan = proposed(&store, &task);
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let written = &saved["tasks"][&task.id]["workspaceProposal"];
+        assert_eq!(written["plan"]["branch"], plan.branch);
+        assert_eq!(written["plan"]["cwd"], plan.cwd);
+        assert_eq!(written["newBranch"], true);
+        let reloaded = OrchestrationStore::load(path);
+        let again = proposed(&reloaded, &task);
+        assert_eq!((again.branch, again.cwd), (plan.branch, plan.cwd));
+    }
+
+    #[test]
+    fn launch_creates_exactly_the_approved_branch_from_the_approved_base() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+        let plan = proposed(&store, &task);
+        // The person's checkout moves on after approval; the task does not.
+        repo.git(&["switch", "-c", "elsewhere"]);
+        let attempt = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!(attempt.branch, plan.branch);
+        assert_eq!(attempt.cwd, plan.cwd);
+        let workspace = stored(&store, &task).workspace.unwrap();
+        assert_eq!(workspace.plan.branch, plan.branch);
+        assert_eq!(workspace.plan.base_branch, "main");
+        assert_eq!(
+            repo.git(&["rev-parse", &plan.branch]),
+            repo.git(&["rev-parse", "main"])
+        );
+    }
+
+    #[test]
+    fn a_launch_that_would_leave_the_approved_plan_is_refused_before_anything_is_made() {
+        let repo = Repo::new();
+        let (store, run, _) = setup(&repo, WorkspaceMode::Auto);
+        // A task whose worker was chosen as a writer: its plan is binding.
+        let task = store
+            .create_task(
+                "chat:master",
+                run.id.clone(),
+                "Write".into(),
+                "Change it".into(),
+                vec![],
+                None,
+                Some(automation::WorkerSettings {
+                    agent: ChatAgent::Codex,
+                    access: Access::Auto,
+                    model: None,
+                    effort: None,
+                    recovery: None,
+                }),
+            )
+            .unwrap();
+        let plan = proposed(&store, &task);
+        assert!(
+            !stored(&store, &task)
+                .workspace_proposal
+                .unwrap()
+                .provisional
+        );
+        repo.git(&["branch", "other"]);
+        let err = prepare_from(&store, &task, Access::Auto, "other").unwrap_err();
+        assert!(err.contains("starts from main, not other"), "{err}");
+        let err = prepare_from(&store, &task, Access::Read, "").unwrap_err();
+        assert!(err.contains("uses a new worktree"), "{err}");
+        assert!(!Path::new(&plan.checkout_root).exists());
+        assert_eq!(repo.git(&["branch", "--list", &plan.branch]), "");
+        assert!(stored(&store, &task).workspace.is_none());
+    }
+
+    #[test]
+    fn a_plan_made_before_any_worker_was_chosen_still_lets_a_reader_use_the_checkout() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+        let proposal = stored(&store, &task).workspace_proposal.unwrap();
+        assert!(proposal.provisional);
+        let reader = prepare(&store, &task, Access::Read).unwrap();
+        assert_eq!(reader.cwd, repo.root);
+        assert!(!reader.is_worktree);
+        let plan = proposal.plan.unwrap();
+        assert!(!Path::new(&plan.checkout_root).exists());
+        assert_eq!(repo.git(&["branch", "--list", &plan.branch]), "");
+    }
+
+    #[test]
+    fn a_collision_shows_in_the_plan_and_is_refused_at_launch_rather_than_reused() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+        let plan = proposed(&store, &task);
+        // Someone else's branch appears under the planned name after approval.
+        repo.git(&["branch", &plan.branch]);
+        let err = prepare(&store, &task, Access::Auto).unwrap_err();
+        assert!(
+            err.contains(&format!("Branch {} already exists", plan.branch)),
+            "{err}"
+        );
+        assert!(!Path::new(&plan.checkout_root).exists());
+        // A plan made while the branch is there says so and does not say new.
+        let again = propose(&run, &task.id, None, None);
+        assert!(!again.new_branch);
+        assert!(again.conflict.unwrap().contains("already exists"));
+    }
+
+    #[test]
+    fn current_checkout_plans_its_own_branch_and_refuses_one_switched_since() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Direct);
+        let proposal = stored(&store, &task).workspace_proposal.unwrap();
+        let plan = proposal.plan.unwrap();
+        assert_eq!(
+            (plan.branch.as_str(), plan.cwd.as_str()),
+            ("main", repo.root.as_str())
+        );
+        assert!(!plan.managed);
+        assert!(!proposal.new_branch, "an existing branch is never new");
+        repo.git(&["switch", "-c", "moved"]);
+        let err = prepare_from(&store, &task, Access::Auto, "").unwrap_err();
+        assert!(
+            err.contains("works on main in the current checkout, which is now on moved"),
+            "{err}"
+        );
+        repo.git(&["switch", "main"]);
+        let attempt = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!(
+            (attempt.branch.as_str(), attempt.cwd.as_str()),
+            ("main", repo.root.as_str())
+        );
+    }
+
+    #[test]
+    fn a_retry_reuses_its_workspace_instead_of_replanning_it() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+        let plan = proposed(&store, &task);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &first, WorkerOutcome::Failed);
+        // The branch and path now exist — they are this task's own, so the
+        // retry is not a collision.
+        let retry = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!(
+            (retry.branch.as_str(), retry.cwd.as_str()),
+            (plan.branch.as_str(), plan.cwd.as_str())
+        );
+        assert_ne!(retry.id, first.id);
+    }
+
+    #[test]
+    fn tasks_from_before_plans_get_one_and_started_tasks_do_not() {
+        let repo = Repo::new();
+        let (store, run, legacy) = setup(&repo, WorkspaceMode::Auto);
+        let started = super::super::tests::task(&store, &run, vec![]);
+        prepare(&store, &started, Access::Auto).unwrap();
+        store
+            .mutate(|data| {
+                for task in data.tasks.values_mut() {
+                    task.workspace_proposal = None;
+                }
+                Ok(())
+            })
+            .unwrap();
+        store.propose_missing_workspaces().unwrap();
+        let id = legacy.id.strip_prefix("task_").unwrap();
+        assert_eq!(
+            proposed(&store, &legacy).branch,
+            format!("feature/octiq-{id}")
+        );
+        assert!(stored(&store, &started).workspace_proposal.is_none());
+    }
+
     fn report(store: &OrchestrationStore, attempt: &Attempt, outcome: WorkerOutcome) {
         store
             .report_worker(

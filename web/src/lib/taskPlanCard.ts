@@ -1,27 +1,34 @@
 // The standard plan card: every task in a plan answers the same questions in
 // the same order, as labels and short values rather than prose.
 //
-//   where    project · work directory · branch / base · worktree
+//   where    project · branch · work directory · worktree
 //   who      owner · model · effort
 //   what     one line of problem, one line of goal, 2–5 acceptance criteria
 //
-// Where a value is not allocated yet — a work directory and branch only exist
-// once the host prepares the task's workspace — the row says Pending. A value
-// from the plan says Planned, and is replaced by what the host actually
-// prepared (the attempt's directory and branch) the moment there is one.
+// Before a task starts, the branch and directory come from the host's
+// proposal (`workspaceProposal`): planned read-only when the task was created,
+// and the only thing its first launch may allocate. A branch that launch will
+// create reads "(new)" straight after its name. Once the host has allocated the
+// workspace, its plan replaces the proposal and nothing says new again. One
+// state chip, on the Worktree row, says how far that has got — Planned,
+// Confirmed, Removed, or Conflict — so the rows above it are not each tagged.
 import { modelFromReported } from "./agentProviders";
 import { planDestination } from "./planReview";
 import type { OrchestrationAttempt, OrchestrationRun, OrchestrationTask } from "./orchestration";
 
-export type CardState = "confirmed" | "planned" | "pending" | "removed";
+export type CardState = "confirmed" | "planned" | "pending" | "removed" | "conflict" | "unplanned";
 
 export type CardRow = {
-  key: "project" | "directory" | "branch" | "worktree" | "owner" | "model" | "effort";
+  key: "project" | "branch" | "directory" | "worktree" | "workspace" | "owner" | "model" | "effort";
   label: string;
   value: string;
   state?: CardState;
-  /** A full path the row can copy. */
-  path?: string;
+  /** Text the row can copy, and what to call it. */
+  copy?: { text: string; name: string };
+  /** The value is a path or a ref: set in the code face. */
+  code?: boolean;
+  /** One short line under the value: why a plan cannot be used as it is. */
+  note?: string;
 };
 
 export const CARD_STATE_LABEL: Record<CardState, string> = {
@@ -29,6 +36,8 @@ export const CARD_STATE_LABEL: Record<CardState, string> = {
   planned: "Planned",
   pending: "Pending",
   removed: "Removed",
+  conflict: "Conflict",
+  unplanned: "Not planned",
 };
 
 const WORKSPACE_STATE: Record<string, string> = {
@@ -45,46 +54,11 @@ export function taskCardRows(
   attempt?: OrchestrationAttempt | null,
   projectName?: (id: string) => string | undefined,
 ): CardRow[] {
-  const workspace = task.workspace;
-  const plan = workspace?.plan;
-  const removed = workspace?.state === "cleaned";
   const where = planDestination(task, run, projectName);
-  const prepared = attempt?.cwd ? attempt : undefined;
-
   const rows: CardRow[] = [
-    { key: "project", label: "Project", value: where.project, state: prepared ? "confirmed" : "planned", path: where.path },
+    { key: "project", label: "Project", value: where.project, copy: { text: where.path, name: "project path" } },
   ];
-
-  const dir = prepared?.cwd ?? plan?.cwd;
-  rows.push({
-    key: "directory",
-    label: "Work directory",
-    value: dir ?? "Pending, allocated when the task starts",
-    state: !dir ? "pending" : removed ? "removed" : prepared ? "confirmed" : "planned",
-    path: dir,
-  });
-
-  const branch = prepared?.branch || plan?.branch;
-  const base = plan?.baseBranch;
-  rows.push({
-    key: "branch",
-    label: "Branch · base",
-    value: branch
-      ? base ? `${branch} from ${base}` : branch
-      : base ? `Pending, from ${base}` : "Pending",
-    state: !branch ? "pending" : prepared?.branch ? "confirmed" : "planned",
-  });
-
-  const kind = plan ? (plan.managed ? "Worktree" : "Current checkout") : undefined;
-  rows.push({
-    key: "worktree",
-    label: "Worktree",
-    value: workspace && kind
-      ? `${kind} · ${WORKSPACE_STATE[workspace.state] ?? workspace.state}`
-      : "Not allocated yet",
-    state: !workspace ? "pending" : removed ? "removed" : workspace.state === "preparing" ? "planned" : "confirmed",
-    path: plan?.managed ? plan.checkoutRoot : undefined,
-  });
+  rows.push(...whereRows(task, attempt));
 
   const worker = task.worker;
   rows.push({ key: "owner", label: "Owner", value: task.assignee?.name ?? "Chosen by the lead" });
@@ -94,5 +68,62 @@ export function taskCardRows(
     rows.push({ key: "model", label: "Model", value: model });
     if (worker.effort) rows.push({ key: "effort", label: "Effort", value: worker.effort });
   }
+  return rows;
+}
+
+/** Branch, directory and worktree: allocated, proposed, or neither. */
+function whereRows(task: OrchestrationTask, attempt?: OrchestrationAttempt | null): CardRow[] {
+  const workspace = task.workspace;
+  // A proposal speaks only until something is allocated; after that it is
+  // history, and an allocated branch is never new.
+  const proposal = workspace ? undefined : task.workspaceProposal;
+  const plan = workspace?.plan ?? proposal?.plan;
+  const prepared = attempt?.cwd ? attempt : undefined;
+
+  if (!plan) {
+    if (proposal?.error) {
+      return [{ key: "workspace", label: "Workspace", value: "Could not be planned", state: "unplanned", note: proposal.error }];
+    }
+    return [{ key: "workspace", label: "Workspace", value: "Allocated when the task starts", state: "pending" }];
+  }
+
+  const state: CardState = workspace
+    ? workspace.state === "cleaned" ? "removed"
+      : prepared || workspace.state === "ready" || workspace.state === "retained" ? "confirmed"
+        : "planned"
+    : proposal?.conflict ? "conflict" : "planned";
+
+  const rows: CardRow[] = [];
+  const branch = prepared?.branch || plan.branch;
+  if (branch) {
+    const fresh = !!proposal?.newBranch && !proposal.conflict;
+    const from = plan.managed && plan.baseBranch && plan.baseBranch !== branch ? ` from ${plan.baseBranch}` : "";
+    rows.push({
+      key: "branch",
+      label: "Branch",
+      value: `${branch}${fresh ? " (new)" : ""}${from}`,
+      copy: { text: branch, name: "branch name" },
+    });
+  } else {
+    rows.push({ key: "branch", label: "Branch", value: plan.isRepo ? "Detached" : "No Git history" });
+  }
+
+  const dir = prepared?.cwd ?? plan.cwd;
+  rows.push({
+    key: "directory",
+    label: "Work directory",
+    value: dir,
+    code: true,
+    copy: { text: dir, name: "work directory path" },
+  });
+
+  const kind = plan.managed ? (workspace ? "Worktree" : "New worktree") : "Current checkout";
+  rows.push({
+    key: "worktree",
+    label: "Worktree",
+    value: workspace ? `${kind} · ${WORKSPACE_STATE[workspace.state] ?? workspace.state}` : kind,
+    state,
+    note: proposal?.conflict ? `${proposal.conflict} The task will not start over it.` : undefined,
+  });
   return rows;
 }

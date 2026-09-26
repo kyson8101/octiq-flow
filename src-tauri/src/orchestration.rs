@@ -34,7 +34,7 @@ mod retention;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
-use workspaces::TaskWorkspace;
+use workspaces::{TaskWorkspace, WorkspaceProposal};
 
 const STORE_VERSION: u32 = 4;
 const DEFAULT_MAX_CONCURRENT: u16 = 4;
@@ -181,6 +181,12 @@ pub struct Task {
     pub card: Option<TaskCard>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<TaskWorkspace>,
+    /// The branch and directory the host will allocate, planned read-only
+    /// when the task is created so the person approves them by name. Kept
+    /// after launch as the record of what was approved; `workspace` is what
+    /// actually exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_proposal: Option<WorkspaceProposal>,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -980,6 +986,15 @@ impl OrchestrationStore {
         let run_id_for_event = run_id.clone();
         let mut created_under: Option<String> = None;
         let mut reopened_plan = false;
+        // The workspace plan is read from Git before the store is locked and
+        // goes in with the task, so the plan the person sees names a branch.
+        let id = format!("task_{}", compact_id());
+        let planned_run = {
+            let inner = self.inner.lock().map_err(|error| error.to_string())?;
+            inner.data.runs.get(&run_id).cloned()
+        };
+        let proposal = planned_run
+            .map(|run| workspaces::propose(&run, &id, destination.as_ref(), worker.as_ref()));
         self.mutate(|data| {
             let run = match coordinator(data, &run_id, actor_chat_key) {
                 Ok(run) => run,
@@ -1039,7 +1054,7 @@ impl OrchestrationStore {
                     .is_some_and(|task| task.status == TaskStatus::Completed)
             });
             let task = Task {
-                id: format!("task_{}", compact_id()),
+                id,
                 run_id: run_id.clone(),
                 title,
                 spec,
@@ -1049,6 +1064,7 @@ impl OrchestrationStore {
                 approved_at: None,
                 card,
                 workspace: None,
+                workspace_proposal: proposal,
                 depends_on,
                 parent_task_id,
                 status: if ready {

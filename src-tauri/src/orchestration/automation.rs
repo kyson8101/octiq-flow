@@ -236,6 +236,9 @@ pub fn start_scheduler(
         if let Err(error) = super::inbox::deliver_pending(&chats, &workspaces) {
             eprintln!("orchestration: notification delivery failed: {error}");
         }
+        if let Err(error) = store.propose_missing_workspaces() {
+            eprintln!("orchestration: workspace planning failed: {error}");
+        }
         let Ok(snapshot) = store.snapshot(None) else {
             continue;
         };

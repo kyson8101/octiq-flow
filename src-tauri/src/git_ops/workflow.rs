@@ -55,6 +55,9 @@ fn git(root: &str, args: &[&str]) -> Result<String, String> {
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+        // A read (a plan preview's `git status` above all) must not refresh
+        // the index behind a person's back; mutations go through run_git_mut.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .map_err(|e| format!("Could not run Git: {e}"))?;
     if !output.status.success() {
@@ -183,6 +186,36 @@ pub fn plan(
         warnings: Vec::new(),
         initial_status: String::new(),
     })
+}
+
+/// What already occupies a managed plan's branch or path, read without
+/// touching either. `provision` adopts an existing path it recognises, which is
+/// right for a retry and wrong for a first launch: before a task has a
+/// workspace, anything already there belongs to someone else.
+pub fn occupied(plan: &WorkspacePlan) -> Option<String> {
+    if !plan.managed {
+        return None;
+    }
+    let branch = git(
+        &plan.repository_root,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{}", plan.branch),
+        ],
+    )
+    .is_ok();
+    let path = Path::new(&plan.checkout_root).exists();
+    match (branch, path) {
+        (false, false) => None,
+        (true, false) => Some(format!("Branch {} already exists.", plan.branch)),
+        (false, true) => Some(format!("{} already exists.", plan.checkout_root)),
+        (true, true) => Some(format!(
+            "Branch {} and {} already exist.",
+            plan.branch, plan.checkout_root
+        )),
+    }
 }
 
 /// A persisted plan is written before this runs. Retrying uses the SAME branch

@@ -259,6 +259,11 @@ fn compact(
                     }
                     if let Some(workspace) = full.get("workspace").filter(|w| !w.is_null()) {
                         item.insert("workspace".into(), compact_workspace(workspace, done));
+                    } else if let Some(proposal) = full
+                        .get("workspaceProposal")
+                        .filter(|p| !done && !p.is_null())
+                    {
+                        item.insert("plannedWorkspace".into(), compact_proposal(proposal));
                     }
                     let tries = attempts.iter().filter(|a| a.task_id == task.id).count();
                     item.insert("attemptCount".into(), tries.into());
@@ -421,6 +426,13 @@ fn compact_workspace(workspace: &Value, done: bool) -> Value {
     };
     let mut item = pick(plan, keys);
     item.extend(pick(workspace, &["state", "abandoned", "delivery"]));
+    Value::Object(item)
+}
+
+/// The branch and directory an unstarted task will get: planned, not made.
+fn compact_proposal(proposal: &Value) -> Value {
+    let mut item = pick(&proposal["plan"], &["cwd", "branch", "baseBranch"]);
+    item.extend(pick(proposal, &["newBranch", "conflict", "error"]));
     Value::Object(item)
 }
 

@@ -53,28 +53,39 @@ export function TaskPlanCard({ task, run, attempt, projectName }: {
 
 function Fact({ row, children }: { row: CardRow; children?: ReactNode }) {
   const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
+  const copy = row.copy;
   return (
     <>
       <dt>{row.label}</dt>
       <dd>
         {children}
-        <span className={row.path && row.value === row.path ? "plan-card-path" : undefined} title={row.path}>{row.value}</span>
+        {/* The copy control rides at the end of the text, so a long branch
+            or path does not push it onto a line of its own. */}
+        <span className={row.code ? "plan-card-path" : undefined} title={copy?.text}>
+          {row.value}
+          {copy && (
+            <button
+              type="button"
+              className="plan-card-copy"
+              data-copied={copied === "idle" ? undefined : copied}
+              aria-label={`Copy ${copy.name}`}
+              title={copied === "failed" ? "Could not copy" : copied === "done" ? "Copied" : `Copy ${copy.text}`}
+              onClick={async (event) => {
+                event.stopPropagation();
+                setCopied((await copyText(copy.text)) ? "done" : "failed");
+                setTimeout(() => setCopied("idle"), 1600);
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                {copied === "done"
+                  ? <path d="m5 12 5 5 9-10" />
+                  : <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" /></>}
+              </svg>
+            </button>
+          )}
+        </span>
         {row.state && <span className="plan-card-state" data-state={row.state}>{CARD_STATE_LABEL[row.state]}</span>}
-        {row.path && (
-          <button
-            type="button"
-            className="plan-card-copy"
-            aria-label={`Copy ${row.label.toLowerCase()} path`}
-            title={copied === "failed" ? "Could not copy" : copied === "done" ? "Copied" : `Copy ${row.path}`}
-            onClick={async (event) => {
-              event.stopPropagation();
-              setCopied((await copyText(row.path ?? "")) ? "done" : "failed");
-              setTimeout(() => setCopied("idle"), 1600);
-            }}
-          >
-            {copied === "done" ? "Copied" : "Copy"}
-          </button>
-        )}
+        {row.note && <span className="plan-card-note">{row.note}</span>}
       </dd>
     </>
   );

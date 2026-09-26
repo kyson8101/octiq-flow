@@ -22,6 +22,22 @@ export type TaskWorkspace = {
   } | null;
 };
 
+/** What the host WILL allocate for a task with no workspace yet: planned
+ *  read-only when the task was created, and the only thing its first launch
+ *  may allocate. Never evidence that the branch or directory exists. */
+export type WorkspaceProposal = {
+  plan?: TaskWorkspace["plan"];
+  /** Launch creates this branch; nothing by that name exists yet. */
+  newBranch: boolean;
+  /** Something already holds the planned branch or path; launch refuses it. */
+  conflict?: string;
+  /** Why nothing could be planned. */
+  error?: string;
+  /** Planned before a worker was chosen; a read-only launch may differ. */
+  provisional?: boolean;
+  proposedAt: number;
+};
+
 export const WORKSPACE_MODES: { value: WorkspaceMode; label: string; description: string }[] = [
   { value: "auto", label: "Auto", description: "Isolate writing tasks; let read-only workers use this checkout." },
   { value: "worktree", label: "New worktree", description: "Give each task an isolated branch and keep it through review." },
@@ -107,6 +123,9 @@ export type OrchestrationTask = {
    *  tasks from leads that did not give one. */
   card?: { problem: string; goal: string; acceptance: string[] };
   workspace?: TaskWorkspace;
+  /** The branch and directory planned for it before it starts. Kept after
+   *  launch as the record of what was approved; `workspace` is what exists. */
+  workspaceProposal?: WorkspaceProposal;
   dependsOn: string[];
   parentTaskId?: string;
   status: TaskStatus;
