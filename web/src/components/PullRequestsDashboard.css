@@ -10,8 +10,6 @@
 
 .chat-app-surface { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; flex-direction: column; }
 .chat-app-surface[hidden] { display: none; }
-.pr-dashboard-toggle { border: 1px solid transparent; }
-.pr-dashboard-toggle.is-on { border-color: var(--border); background: var(--bg-2); color: var(--fg-0); }
 
 .pr-agent-setting {
   display: grid;

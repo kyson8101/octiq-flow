@@ -1,0 +1,95 @@
+/* The Agents page: every agent and what it is doing now. Token colours only.
+   The one moving thing is a working agent's breathing ring; every other state
+   is a still, tinted chip. */
+.agents-dashboard-list { padding: 0; }
+/* On its page it shares the Projects page's reading column. */
+.agents-dashboard .agents-dashboard-list { width: 100%; max-width: 860px; margin-inline: auto; }
+
+.dash-summary { font-variant-numeric: tabular-nums; }
+.dash-stale {
+  margin-block: 0 8px; padding: 6px 10px; border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--fg-1); font-size: 12px;
+}
+
+.dash-agent {
+  padding: 11px 0 11px calc(var(--dash-depth, 0) * 22px);
+  border-bottom: 1px solid var(--border);
+}
+.dash-agent-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.dash-agent-head > .team-row-branch { margin-top: 6px; }
+
+.dash-avatar { margin-top: 1px; }
+.dash-avatar.is-working { position: relative; overflow: visible; }
+.dash-avatar.is-working::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 34%, transparent);
+  pointer-events: none;
+  animation: agent-avatar-breathe 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-avatar.is-working::after { animation: none; opacity: .8; }
+}
+
+.dash-agent-status {
+  display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px;
+  flex: 0 1 auto; max-width: 50%; margin-top: 2px;
+}
+.dash-state, .dash-count {
+  padding: 1px 8px; border-radius: var(--r-pill); font-size: 11px; line-height: 18px; white-space: nowrap;
+  background: var(--bg-2); color: var(--fg-2);
+  transition: background-color 180ms ease-out, color 180ms ease-out;
+}
+.dash-state { font-weight: 600; }
+.dash-state.is-working { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--fg-0); }
+.dash-state.is-needs_you,
+.dash-state.is-blocked,
+.dash-state.is-stalled { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--fg-0); }
+.dash-state.is-idle, .dash-state.is-unknown { color: var(--fg-3); }
+.dash-state.is-stale { background: var(--bg-2); color: var(--fg-2); font-weight: 500; }
+.dash-count { color: var(--fg-3); }
+.dash-count.is-needs_you, .dash-count.is-blocked, .dash-count.is-stalled { color: var(--fg-1); }
+
+.dash-agent-work { display: grid; gap: 1px; margin-top: 6px; padding-inline-start: 38px; min-width: 0; }
+.dash-item {
+  display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px;
+  border: 0; border-radius: var(--r-sm); background: none; color: var(--fg-1);
+  font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+  transition: background-color 130ms ease-out;
+}
+.dash-item:hover:not(:disabled) { background: var(--bg-2); }
+.dash-item:disabled { cursor: default; opacity: .7; }
+.dash-item:focus-visible, .dash-more:focus-visible, .dash-recent:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.dash-dot {
+  flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--fg-3); opacity: .55;
+}
+.dash-dot.is-working { background: var(--accent); opacity: 1; }
+.dash-dot.is-needs_you, .dash-dot.is-blocked, .dash-dot.is-stalled { background: var(--warn); opacity: 1; }
+.dash-item-copy { flex: 1 1 auto; min-width: 0; display: grid; gap: 1px; }
+.dash-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-0); }
+.dash-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--fg-3); font-size: 11.5px; min-width: 0; }
+.dash-item-project { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; }
+.dash-item-project bdi { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-item-open { flex: 0 0 auto; color: var(--fg-3); font-size: 11.5px; opacity: 0; transition: opacity 130ms ease-out; }
+.dash-item:hover:not(:disabled) .dash-item-open, .dash-item:focus-visible .dash-item-open { opacity: 1; }
+
+.dash-more, .dash-recent {
+  justify-self: start; display: inline-flex; gap: 4px; min-width: 0; max-width: 100%; padding: 4px 8px;
+  border: 0; border-radius: var(--r-sm); background: none; color: var(--fg-3);
+  font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.dash-more:hover, .dash-recent:hover { background: var(--bg-2); color: var(--fg-1); }
+.dash-recent .dash-item-title { color: inherit; }
+
+@media (max-width: 640px) {
+  .dash-agent { padding-inline-start: calc(var(--dash-depth, 0) * 12px); }
+  .dash-agent-status { max-width: 42%; }
+  .dash-agent-work { padding-inline-start: 30px; }
+  .dash-item { min-height: 44px; }
+  .dash-item-open { display: none; }
+}

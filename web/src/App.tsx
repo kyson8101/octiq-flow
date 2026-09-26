@@ -4029,20 +4029,6 @@ export default function App() {
           showWorkflowView("run");
         }}><span className="topbar-action-label">Run</span></button>}
       </>}
-      <button
-        className={`icon-btn pr-dashboard-toggle${prDashboardOpen ? " is-on" : ""}`}
-        type="button"
-        aria-label="Pull requests"
-        title="Pull requests"
-        aria-pressed={prDashboardOpen}
-        onClick={() => { if (prDashboardOpen) setPrDashboardOpen(false); else showPage("pulls"); }}
-      >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="6" cy="5" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="19" r="2" />
-          <path d="M6 7v10M8 5h4a6 6 0 0 1 6 6v-2" />
-        </svg>
-        <span className="topbar-action-label">Pull requests</span>
-      </button>
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
       {!mainPage && conversationId && <CopyChatIdButton chatId={conversationId} />}
@@ -4119,7 +4105,9 @@ export default function App() {
         onSettings={() => showPage("settings")}
         onAgents={agentsMode ? () => showPage("agents") : undefined}
         onProjects={() => showPage("projects")}
-        activeView={searchPage ? "search" : projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents" : appSettings ? "settings" : null}
+        onPullRequests={() => showPage("pulls")}
+        activeView={searchPage ? "search" : projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents"
+          : prDashboardOpen ? "pulls" : appSettings ? "settings" : null}
       />
       <div className="shell-main">
       {/* The workspace's ONE top bar. The app's name and logo belong to the
@@ -4288,16 +4276,31 @@ export default function App() {
 
           {agentsDashboard && agentsMode && (
             <AgentsDashboard
-              projectId={project?.id ?? null}
-              snapshot={orchestration}
+              snapshot={orchestrationState.snapshot}
+              ledgerError={orchestrationState.error}
+              connected={conn === "open"}
+              projects={[...workspaces, ...shelved]}
+              running={running}
+              busy={busySet}
+              waitingOn={(chatKey) => {
+                const id = chatKey.replace(/^chat:/, "");
+                return (asks[id]?.length ?? 0) + (questions[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0);
+              }}
               chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
+              chatExists={(chatKey) => conversations.some((c) => keyFor(c.id) === chatKey)}
+              // Both throw when the chat is not in this browser's list yet;
+              // the page says so and stays put.
               onOpenChat={(chatKey) => {
-                try {
-                  openWorkflowChat(chatKey);
-                  setAgentsDashboard(false);
-                } catch {
-                  /* not in this browser's list yet; the row stays put */
-                }
+                openWorkflowChat(chatKey);
+                setAgentsDashboard(false);
+              }}
+              onOpenRun={(chatKey, runId) => {
+                openWorkflowChat(chatKey);
+                const id = chatKey.replace(/^chat:/, "");
+                setRunOpened((before) => ({ ...before, [id]: true }));
+                setWorkflowViews((before) => ({ ...before, [id]: "run" }));
+                setDisplayedRuns((before) => ({ ...before, [chatKey]: runId }));
+                setAgentsDashboard(false);
               }}
               onManage={openAgentsSettings}
               onClose={() => setAgentsDashboard(false)}

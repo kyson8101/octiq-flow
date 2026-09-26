@@ -33,7 +33,7 @@ export type Project = ProjectAppearance & {
   env?: Record<string, string>;
 };
 
-export type SidebarView = "search" | "settings" | "agents" | "projects";
+export type SidebarView = "search" | "settings" | "agents" | "projects" | "pulls";
 
 const NONE: ReadonlySet<string> = new Set();
 const NO_PARENTS: ReadonlyMap<string, string> = new Map();
@@ -68,7 +68,7 @@ export function Sidebar({
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, newLabel = "New task", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
-  onSearch, onSettings, onAgents, onProjects, activeView = null,
+  onSearch, onSettings, onAgents, onProjects, onPullRequests, activeView = null,
 }: {
   orchestration?: OrchestrationSnapshot;
   /** Null while the first authoritative ledger read is pending. Undefined
@@ -116,6 +116,8 @@ export function Sidebar({
   onSettings?: () => void;
   onAgents?: () => void;
   onProjects?: () => void;
+  /** The pull request desk, the last place before Settings. */
+  onPullRequests?: () => void;
   /** Which of those places the main area is showing, for `aria-current`. */
   activeView?: SidebarView | null;
 } & ChatPreviewSource) {
@@ -511,6 +513,10 @@ export function Sidebar({
               aria-current={activeView === "agents" ? "page" : undefined}>
               <AgentsIcon /><span>Agents</span>
             </button></li>}
+            {onPullRequests && <li><button className="sidebar-place" type="button" onClick={onPullRequests}
+              aria-current={activeView === "pulls" ? "page" : undefined}>
+              <PullRequestIcon /><span>Pull requests</span>
+            </button></li>}
             {onSettings && <li><button className="sidebar-place" type="button" onClick={onSettings}
               aria-current={activeView === "settings" ? "page" : undefined}>
               <SettingsIcon /><span>Settings</span>
@@ -626,5 +632,6 @@ function PinIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill
 function ChevronIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>; }
 function SettingsIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>; }
 function AgentsIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="5" rx="1" /><rect x="3" y="16" width="6" height="5" rx="1" /><rect x="15" y="16" width="6" height="5" rx="1" /><path d="M12 8v4M6 16v-2h12v2" /></svg>; }
+function PullRequestIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="19" r="2" /><path d="M6 7v10M8 5h4a6 6 0 0 1 6 6v-2" /></svg>; }
 function ProjectsIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>; }
 function PencilIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>; }

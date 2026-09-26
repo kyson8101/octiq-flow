@@ -95,30 +95,3 @@
 }
 
 
-/* The Agents dashboard. */
-.agents-dashboard-list { padding: 0; }
-/* On its page it shares the Projects page's reading column. */
-.agents-dashboard .agents-dashboard-list { width: 100%; max-width: 860px; margin-inline: auto; }
-.dash-agent { border-bottom: 1px solid var(--border); }
-.dash-agent-row {
-  width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 11px 0;
-  border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
-}
-.dash-agent-row:focus-visible, .dash-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.dash-agent-counts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 0 auto; max-width: 45%; }
-.dash-count { padding: 1px 7px; border-radius: 999px; background: var(--bg-2); color: var(--fg-2); font-size: 11px; white-space: nowrap; }
-.dash-count.is-open { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--fg-1); }
-.dash-count.is-stuck { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--fg-1); }
-.dash-agent-work { display: grid; gap: 2px; padding: 0 0 10px 26px; }
-.dash-item {
-  display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px;
-  border: 0; border-radius: var(--r-sm); background: none; color: var(--fg-1);
-  font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
-  transition: background-color 130ms ease-out;
-}
-.dash-item:hover:not(:disabled) { background: var(--bg-2); }
-.dash-item:disabled { cursor: default; opacity: .7; }
-.dash-item-kind { flex: 0 0 auto; color: var(--fg-3); font-size: 11px; display: inline-flex; }
-.dash-item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dash-item-state { flex: 0 0 auto; color: var(--fg-3); font-size: 11px; }
-.dash-memory { margin: 0 0 4px; padding: 0 8px; color: var(--fg-3); font-size: 11.5px; overflow-wrap: anywhere; }

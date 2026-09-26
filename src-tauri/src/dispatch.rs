@@ -487,6 +487,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
         )),
         "chat_list" => to_value(crate::agent_chat::chat_list_impl(&svc.chats)),
+        "chat_activity" => to_value(crate::agent_chat::chat_activity_impl(&svc.chats)),
         "chat_queue_state" => to_value(crate::agent_chat::chat_queue_state_impl(
             &svc.chats,
             &arg::<String>(&args, "key")?,

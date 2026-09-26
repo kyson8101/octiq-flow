@@ -4413,6 +4413,30 @@ pub fn chat_list_impl(manager: &ChatManager) -> Result<Vec<String>, String> {
     Ok(sessions.keys().cloned().collect())
 }
 
+/// One running chat and whether a turn is in flight in it — the same `busy`
+/// the idle sweeper reads, so "working" means what it means there.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatActivity {
+    key: String,
+    busy: bool,
+}
+
+/// Every running chat with its turn state. The Agents page asks this for a
+/// lead's conversation, which a freshly loaded page has seen no events from
+/// and so cannot tell working from sitting idle. A session whose lock is
+/// poisoned says not busy rather than guessing.
+pub fn chat_activity_impl(manager: &ChatManager) -> Result<Vec<ChatActivity>, String> {
+    let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    Ok(sessions
+        .iter()
+        .map(|(key, session)| ChatActivity {
+            key: key.clone(),
+            busy: session.lock().map(|s| s.busy).unwrap_or(false),
+        })
+        .collect())
+}
+
 /// A transcript without an acknowledgement is not proof that a prompt is
 /// still queued: queues are held in memory and do not survive a server restart.
 #[derive(Serialize)]
@@ -6690,6 +6714,39 @@ mod idle_tests {
             chat_list_impl(&m).unwrap().is_empty(),
             "and it is gone from the map, so the next message starts a fresh one"
         );
+    }
+
+    #[test]
+    fn chat_activity_says_which_running_chats_are_mid_turn() {
+        let m = ChatManager::default();
+        put(
+            &m,
+            "chat:working",
+            still_session(true, Duration::from_secs(60)),
+        );
+        put(
+            &m,
+            "chat:idle",
+            still_session(false, Duration::from_secs(60)),
+        );
+        let mut activity = chat_activity_impl(&m).unwrap();
+        activity.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(
+            activity,
+            vec![
+                ChatActivity {
+                    key: "chat:idle".into(),
+                    busy: false
+                },
+                ChatActivity {
+                    key: "chat:working".into(),
+                    busy: true
+                },
+            ]
+        );
+        end_process(&m, "chat:working").unwrap();
+        end_process(&m, "chat:idle").unwrap();
+        assert!(chat_activity_impl(&m).unwrap().is_empty());
     }
 
     #[test]

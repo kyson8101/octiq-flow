@@ -218,11 +218,11 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain("Search chats</span>");
   });
 
-  it("lists New task, Search chats, Projects, Agents and Settings in that order", () => {
-    const out = html({ onSearch: () => {}, onSettings: () => {}, onAgents: () => {}, onProjects: () => {}, activeView: "search" });
+  it("lists New task, Search chats, Projects, Agents, Pull requests and Settings in that order", () => {
+    const out = html({ onSearch: () => {}, onSettings: () => {}, onAgents: () => {}, onProjects: () => {}, onPullRequests: () => {}, activeView: "search" });
     const places = out.indexOf('class="sidebar-places"');
     const list = out.slice(places, out.indexOf("</ul>", places));
-    const order = ["New task</span>", "Search chats</span>", "Projects</span>", "Agents</span>", "Settings</span>"]
+    const order = ["New task</span>", "Search chats</span>", "Projects</span>", "Agents</span>", "Pull requests</span>", "Settings</span>"]
       .map((label) => list.indexOf(label));
     expect(order.every((at) => at > 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -230,11 +230,18 @@ describe("task-oriented Sidebar", () => {
     expect(list.slice(list.indexOf('aria-current="page"'))).toContain("Search chats</span>");
   });
 
-  it("leaves Agents out when agents mode is off", () => {
-    const out = html({ onSettings: () => {}, onProjects: () => {} });
+  it("leaves Agents out when agents mode is off, and keeps Pull requests right before Settings", () => {
+    const out = html({ onSettings: () => {}, onProjects: () => {}, onPullRequests: () => {}, activeView: "pulls" });
     expect(out).toContain("Settings</span>");
     expect(out).toContain("Projects</span>");
     expect(out).not.toContain("Agents</span>");
+    const places = out.indexOf('class="sidebar-places"');
+    const list = out.slice(places, out.indexOf("</ul>", places));
+    const items = list.split("<li>").slice(1);
+    expect(items.at(-2)).toContain("Pull requests</span>");
+    expect(items.at(-1)).toContain("Settings</span>");
+    expect(list.match(/aria-current="page"/g)).toHaveLength(1);
+    expect(items.at(-2)).toContain('aria-current="page"');
   });
 
   it("groups pinned chats above recent chats without duplicating either row", () => {

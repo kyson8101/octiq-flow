@@ -84,6 +84,7 @@ async function mockBackend(context) {
       case 'chat_task': result = { chatId: args.chatId, prCompletion: workflow?.completion.state === 'completed' && args.chatId === workflow.chatId ? { root, number: 17, url: remotePr.url, headSha, trigger: workflow.completeOn, completedAt: 3 } : null }; break;
       case 'agent_installs': result = [{ id: 'codex', installed: true, path: '/test/codex' }]; break;
       case 'orchestration_snapshot': result = { runs: [], tasks: [], attempts: [], gates: [], messages: [], reports: {} }; break;
+      case 'sandbox_snapshot': result = { defaultEnabled: false, environments: {} }; break;
       case 'git_branches': result = { is_repo: true, current: 'feature/task', branches: ['develop', 'feature/task'], is_worktree: true }; break;
       case 'git_status_summary': result = (args.paths ?? []).map(path => ({ path, repo_root: root, branch: 'feature/task', changed: 0, insertions: 0, deletions: 0, ahead: 2, behind: 0, is_repo: true })); break;
       case 'pr_repositories': result = [{ root, name: 'octiq', branches: ['develop', 'feature/task'], defaultBase: 'develop' }]; break;
