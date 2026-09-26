@@ -485,12 +485,13 @@ export function Sidebar({
       <div className="task-chat-scroll" onScroll={(event) => {
         const scroller = event.currentTarget;
         const preserve = !!toolbar.current?.contains(document.activeElement);
-        setMenuScroll((state) => nextMobileMenuScroll(
-          state,
-          scroller.scrollTop,
-          toolbar.current?.offsetHeight ?? 0,
+        const reading = {
+          top: scroller.scrollTop,
+          range: scroller.scrollHeight - scroller.clientHeight,
+          menuHeight: toolbar.current?.offsetHeight ?? 0,
           preserve,
-        ));
+        };
+        setMenuScroll((state) => nextMobileMenuScroll(state, reading));
       }}>
         <div
           ref={toolbar}
