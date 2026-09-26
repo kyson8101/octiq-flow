@@ -14,7 +14,8 @@
 //     and other chats work; a lead that does the work itself must not write
 //     there. The host resolves the base branch and makes the worktree, and a
 //     folder that turns out not to be a repository simply runs in place.
-//   * A lead with no project coordinates from home, like the head.
+//   * A lead with no project coordinates from home, like the head, but is not
+//     cross-project: only the head routes work across projects.
 //
 // Advanced overrides are the person's: any field they set wins, and the plan
 // says it was theirs. The result is recorded on the chat (the index's
@@ -59,21 +60,15 @@ export type ExecutionPlan = {
   crossProject: boolean;
 };
 
-/** Is a new task the head's coordination conversation? Either it was opened
- *  with "Talk to", or the head was picked as the lead with no code project in
- *  front of it (so it would land in the home workspace anyway). A head picked
- *  inside a code project stays that project's lead, as before. */
+/** Is a new conversation the head's cross-project coordination? Whenever
+ *  the head is who it is with, from whichever page it was started: the head
+ *  belongs to no one project, and routes each task it hands out. Any other
+ *  agent at the top of the chart leads in the project the plan picks. */
 export function headCoordination(input: {
-  headDraft: boolean;
-  leadId: string | null | undefined;
+  recipientId: string | null | undefined;
   headId: string | null | undefined;
-  project: ExecutionProject | null;
-  homeId?: string | null;
 }): boolean {
-  if (input.headDraft) return true;
-  if (!input.headId || input.leadId !== input.headId) return false;
-  const project = input.project;
-  return !project || project.id === input.homeId || isHomeName(project.name);
+  return !!input.headId && input.recipientId === input.headId;
 }
 
 export function isHomeName(name: string | undefined): boolean {

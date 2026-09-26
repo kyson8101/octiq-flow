@@ -128,6 +128,47 @@ export function headConversation(
     .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
 }
 
+/** Who the person can start a conversation with: every agent reporting
+ *  directly to them, in any project. That is an agent with no manager, or one
+ *  whose manager is no longer registered (the org chart draws those at the
+ *  top too). Global or project scope plays no part, except that an agent
+ *  whose project is no longer `registered` has nowhere to work. The configured
+ *  head comes first, then the rest by name. The host checks the same rule
+ *  (`team::reports_to_person`). */
+export function conversationRecipients(
+  roster: readonly TeamAgent[],
+  headId: string | null | undefined,
+  registered: (projectId: string) => boolean = () => true,
+): TeamAgent[] {
+  const ids = new Set(roster.map((agent) => agent.id));
+  return roster
+    .filter((agent) => !agent.reportsTo || !ids.has(agent.reportsTo))
+    .filter((agent) => !agent.projectId || registered(agent.projectId))
+    .sort((a, b) => Number(b.id === headId) - Number(a.id === headId) || a.name.localeCompare(b.name));
+}
+
+/** Who a new conversation goes to. The agent picked for this draft, while the
+ *  project on screen is one it works in (picking a project agent moves the
+ *  draft to its project, so this only lapses when the person moves it
+ *  elsewhere). Otherwise the default: the configured head, else the first
+ *  global agent at the top, else one that works in the project on screen.
+ *  `null` when no one fits; the person then picks. */
+export function conversationRecipient(input: {
+  recipients: readonly TeamAgent[];
+  pickedId: string | null | undefined;
+  headId: string | null | undefined;
+  projectId: string | null | undefined;
+}): TeamAgent | null {
+  const { recipients, pickedId, headId, projectId } = input;
+  const worksHere = (agent: TeamAgent) => !agent.projectId || agent.projectId === projectId;
+  const picked = recipients.find((agent) => agent.id === pickedId);
+  if (picked && worksHere(picked)) return picked;
+  return recipients.find((agent) => agent.id === headId)
+    ?? recipients.find((agent) => !agent.projectId)
+    ?? recipients.find(worksHere)
+    ?? null;
+}
+
 /** What the composer shows in place of the model controls for an agents-mode
  *  conversation: who you are talking to, not which model to pick. */
 export type AgentIdentity = {

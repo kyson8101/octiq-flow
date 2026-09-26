@@ -569,6 +569,16 @@ pub fn resolve_in(
     Ok(found)
 }
 
+/// Whether `agent` sits at the top of the chart and so reports to the person:
+/// it has no manager, or its manager is no longer registered (the org chart
+/// draws such an agent at the top too). Independent of global or project scope.
+pub fn reports_to_person(agent: &TeamAgent, team: &[TeamAgent]) -> bool {
+    agent
+        .reports_to
+        .as_deref()
+        .is_none_or(|manager| !team.iter().any(|a| a.id == manager))
+}
+
 /// Whether `agent` may send work into `project_id`: a global agent anywhere, a
 /// project agent only into its own project.
 pub fn may_work_in(agent: &TeamAgent, project_id: &str) -> bool {
@@ -970,6 +980,21 @@ pub fn brief(
         .ok_or("The chosen agent no longer exists. Pick another one.")?;
     if !lead.visible_in(Some(project_id)) {
         return Err("The chosen agent no longer works in this project. Pick another one.".into());
+    }
+    // The person starts a conversation only with an agent who reports to
+    // them; anyone lower down is reached through their manager. A chat that
+    // already has a lead keeps it, whatever the chart says now, and handing
+    // it to anyone else is refused by `record_lead`.
+    let new_conversation = lead_for_chat(path, chat_key)?.is_none();
+    if new_conversation && !reports_to_person(&lead, &team) {
+        let manager = team
+            .iter()
+            .find(|a| Some(a.id.as_str()) == lead.reports_to.as_deref())
+            .map_or("someone else", |a| a.name.as_str());
+        return Err(format!(
+            "{} reports to {manager}. Start the conversation with {manager}, who can hand it on.",
+            lead.name
+        ));
     }
     // A global manager is authorized to route to registered projects, even
     // when the conversation was opened from one project's lead picker rather
@@ -1555,6 +1580,61 @@ mod tests {
     }
 
     #[test]
+    fn a_new_conversation_goes_only_to_an_agent_reporting_to_the_person() {
+        let path = temp();
+        let ryan = save(&path, draft("Ryan", None)).unwrap();
+        let vera = save(&path, draft("Vera", Some("p2"))).unwrap();
+        let maya = save(&path, under("Maya", Some("p2"), &ryan)).unwrap();
+        let glen = save(&path, under("Glen", None, &ryan)).unwrap();
+        let projects = [
+            ("p1".to_owned(), "General".to_owned()),
+            ("p2".to_owned(), "Shop".to_owned()),
+        ];
+        set_head(&path, Some(&ryan.id)).unwrap();
+
+        // A project-scoped agent at the top is a lead in its own project,
+        // briefed under its own name, and not as the cross-project head.
+        let text = brief(&path, "chat:vera", "p2", &vera.id, "Tidy", false, &projects).unwrap();
+        assert!(text.contains("Lead: Vera"), "{text}");
+        let record = lead_for_chat(&path, "chat:vera").unwrap().unwrap();
+        assert_eq!(
+            (record.lead_id.as_str(), record.project_id.as_str()),
+            (vera.id.as_str(), "p2")
+        );
+        assert!(!record.cross_project);
+        assert!(brief(
+            &path,
+            "chat:vera-x",
+            "p2",
+            &vera.id,
+            "Tidy",
+            true,
+            &projects
+        )
+        .is_err());
+
+        // Someone's report is never handed a new conversation, global or not.
+        for (report, project) in [(&maya, "p2"), (&glen, "p1")] {
+            let key = format!("chat:{}", report.name);
+            let err = brief(&path, &key, project, &report.id, "Hi", false, &projects).unwrap_err();
+            assert!(err.contains("reports to Ryan"), "{err}");
+            assert!(lead_for_chat(&path, &key).unwrap().is_none());
+        }
+
+        // A conversation that already belongs to a lead keeps it, even after
+        // that lead is moved under someone else.
+        save(
+            &path,
+            TeamDraft {
+                id: Some(vera.id.clone()),
+                ..under("Vera", Some("p2"), &ryan)
+            },
+        )
+        .unwrap();
+        assert!(brief(&path, "chat:vera", "p2", &vera.id, "More", false, &projects).is_ok());
+    }
+
+    #[test]
     fn a_global_lead_in_a_project_chat_sees_cross_project_reports() {
         let path = temp();
         let ryan = save(&path, draft("Ryan", None)).unwrap();
@@ -1647,7 +1727,7 @@ mod tests {
     fn project_scoped_managers_keep_project_scoped_rosters() {
         let path = temp();
         let ceo = save(&path, draft("Ceo", None)).unwrap();
-        let local = save(&path, under("Local lead", Some("p1"), &ceo)).unwrap();
+        let local = save(&path, draft("Local lead", Some("p1"))).unwrap();
         let local_dev = save(&path, under("Local dev", Some("p1"), &local)).unwrap();
         let foreign = save(&path, under("Foreign lead", Some("p2"), &ceo)).unwrap();
         let foreign_dev = save(&path, under("Foreign dev", Some("p2"), &foreign)).unwrap();
