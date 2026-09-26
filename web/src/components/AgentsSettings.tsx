@@ -1,7 +1,7 @@
 // Settings → Agents: the switch for agents mode, and the person's registered
 // agents — each a name, a role, and the provider/model/effort/access it runs
 // on, either global or belonging to one project.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import "./AgentsSettings.css";
 import {
   ACCESS, AGENT_NAME, EFFORTS,
@@ -244,44 +244,69 @@ export function AgentsSettings({ on, onToggle, projects }: {
   );
 }
 
-/** The new-task hero's "who gets this". Picking one sets the chat's model,
- *  effort and access to that agent's; the first message carries the brief. */
-export function LeadPicker({ team, leadId, onPick, onManage }: {
-  team: TeamAgent[];
-  leadId: string | null;
+/** A new conversation's "who is this with": the agents reporting directly to
+ *  the person (`conversationRecipients`), never anyone's report. Picking one
+ *  sets the chat's model, effort and access to that agent's; the first message
+ *  carries its brief. With a single choice already made there is nothing to
+ *  pick, so it draws nothing. A radio group: arrow keys move the choice, Tab
+ *  leaves it. */
+export function RecipientPicker({ agents, selectedId, projectName, onPick, onManage }: {
+  agents: readonly TeamAgent[];
+  selectedId: string | null;
+  /** A project agent's project, named on its chip. */
+  projectName: (id: string) => string | undefined;
   onPick: (agent: TeamAgent) => void;
   onManage: () => void;
 }) {
-  if (team.length === 0) {
+  if (agents.length === 0) {
     return (
       <div className="lead-picker">
         <p className="lead-picker-note">
-          No agents registered yet. <button type="button" onClick={onManage}>Add one in Settings</button> to hand tasks out.
+          No agent reports to you yet. <button type="button" onClick={onManage}>Add one in Settings</button> to start a conversation.
         </p>
       </div>
     );
   }
+  if (agents.length === 1 && agents[0].id === selectedId) return null;
+  const focusable = agents.some((agent) => agent.id === selectedId) ? selectedId : agents[0].id;
+  const move = (event: KeyboardEvent<HTMLDivElement>) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    const at = agents.findIndex((agent) => agent.id === focusable);
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? agents.length - 1
+      : step ? (at + step + agents.length) % agents.length
+      : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    onPick(agents[next]);
+    event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=radio]")[next]?.focus();
+  };
   return (
-    <div className="lead-picker" role="radiogroup" aria-label="Hand this task to">
-      <span className="lead-picker-label">Hand this task to</span>
-      <div className="lead-picker-list">
-        {team.map((agent) => (
-          <button
-            key={agent.id}
-            className={`lead-chip${agent.id === leadId ? " is-on" : ""}`}
-            type="button"
-            role="radio"
-            aria-checked={agent.id === leadId}
-            title={[agent.role, `${AGENT_NAME[agent.agent]} ${modelLabel(agent)}`].filter(Boolean).join("\n")}
-            onClick={() => onPick(agent)}
-          >
-            <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={20} decorative />
-            <span className="lead-chip-name">{agent.name}</span>
-          </button>
-        ))}
+    <div className="lead-picker">
+      <div className="lead-picker-list" role="radiogroup" aria-label="Talk to" onKeyDown={move}>
+        {agents.map((agent) => {
+          const project = agent.projectId ? projectName(agent.projectId) ?? "another project" : null;
+          return (
+            <button
+              key={agent.id}
+              className={`lead-chip${agent.id === selectedId ? " is-on" : ""}`}
+              type="button"
+              role="radio"
+              aria-checked={agent.id === selectedId}
+              tabIndex={agent.id === focusable ? 0 : -1}
+              title={[agent.role, project ? `Works in ${project}` : "Works in any project", `${AGENT_NAME[agent.agent]} ${modelLabel(agent)}`]
+                .filter(Boolean).join("\n")}
+              onClick={() => onPick(agent)}
+            >
+              <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={20} decorative />
+              <span className="lead-chip-name">{agent.name}</span>
+              {project && <span className="lead-chip-meta">{project}</span>}
+            </button>
+          );
+        })}
       </div>
       <p className="lead-picker-note">
-        It does the task itself, passes it on, or splits it across the team. <button type="button" onClick={onManage}>Manage agents</button>
+        Agents who report to you. <button type="button" onClick={onManage}>Manage agents</button>
       </p>
     </div>
   );

@@ -4,10 +4,10 @@ import type React from "react";
 import { modelFromId } from "../lib/agentProviders";
 import { buildChatTree, type ChatNode } from "../lib/chatTree";
 import { recall, remember } from "../lib/remember";
-import { latestResponse } from "../lib/chatPreview";
+import { latestResponse, plainSnippet } from "../lib/chatPreview";
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
-import { chatSnapshot, runSummary, workflowChatList } from "../lib/chatWorkflow";
+import { chatRunStatus, chatSnapshot, workflowChatList } from "../lib/chatWorkflow";
 import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
 } from "../lib/chatFilter";
@@ -270,7 +270,7 @@ export function Sidebar({
     const otherChildren = ownsRun ? children.filter((child) => !runChatKeys.has(`chat:${child.chat.id}`)) : children;
     const hasChildren = otherChildren.length > 0;
     const openWorker = ownsRun && runChatKeys.has(`chat:${currentConversation}`);
-    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? runSummary(workflow, run) : null;
+    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? chatRunStatus(workflow, run) : null;
     const branch = projectInfo.status === "home" ? (attempt?.branch || (parent ? "" : branches[chat.projectId])) : "";
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
@@ -341,12 +341,12 @@ export function Sidebar({
                   <span className="chat-title">{chat.title}</span>
                   <time className="chat-time" dateTime={new Date(chat.updatedAt).toISOString()} title={new Date(chat.updatedAt).toLocaleString()}>{chatTime(chat.updatedAt)}</time>
                 </span>
-                <span className="chat-snippet">{snippet.replace(/\s+/g, " ")}</span>
-                {workflowLabel && <span className="chat-workflow-status">{workflowLabel}</span>}
+                <span className="chat-snippet">{plainSnippet(snippet)}</span>
+                {workflowLabel && <span className="chat-workflow-status" title={workflowLabel}>{workflowLabel}</span>}
                 <span className="chat-meta">
                   {projectInfo.status === "home" ? <span className="chat-project">
                     <span className="chat-project-name" title={projectContext}>{projectContext}</span>
-                  </span> : <ConversationProjects info={projectInfo} projects={knownProjects} />}
+                  </span> : <ConversationProjects info={projectInfo} projects={knownProjects} taskCount={!run} />}
                   {persona ? (
                     <span className="chat-model chat-persona" title={`${persona.name}${model ? ` · ${model.name} ${model.model}` : ""}`}>
                       <AgentAvatar name={persona.name} avatar={persona.avatar} id={persona.id ?? persona.name} size={14} removed={persona.removed} decorative />

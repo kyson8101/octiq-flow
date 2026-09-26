@@ -118,7 +118,6 @@
 
 /* The new-task hero: who gets it. */
 .lead-picker { display: grid; gap: 8px; width: min(560px, 100%); margin: 14px auto 0; }
-.lead-picker-label { color: var(--fg-2); font-size: 12.5px; text-align: center; }
 .lead-picker-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .lead-chip {
   display: inline-flex; align-items: center; gap: 7px; max-width: 100%;

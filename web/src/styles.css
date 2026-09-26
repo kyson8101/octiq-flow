@@ -911,20 +911,59 @@ body {
 /* The left gutter holds the tick as well as the state dot now, and holds it at
    a fixed width whether or not the tick is showing: a control that appears on
    hover must not be able to move the title it sits beside. */
+/* At least three lines tall, and taller when a run adds its status line: a
+   fixed 78px held four lines (74px) in 62px of room, so they spilled out of
+   both edges and the meta line's chips were cut off at the bottom. */
 .task-chat-list .chat-btn {
   grid-column: 1;
   width: 100%;
-  height: 78px;
+  height: auto;
+  min-height: 78px;
   /* `.sidebar .task-chat-list .chat-btn` in MobileSidebar.css outranks this
      and carries the same numbers; change both or neither. */
-  padding: 8px 6px 8px 45px;
+  padding: 9px 6px 9px 45px;
 }
 .task-chat-list .chat-rename {
   grid-column: 1 / -1;
   height: 78px;
   padding: 0 12px;
 }
-.task-chat-list .chat-actions-trigger { grid-column: 2; grid-row: 1; }
+/* The whole cell stays the target — 32px, or 44px for a thumb — but only a
+   circle inside it is painted. Filling the cell put a slab against the row's
+   right edge, twice the size of the dots it was for. */
+.task-chat-list .chat-actions-trigger {
+  --chat-actions-mark: 28px;
+  position: relative;
+  isolation: isolate;
+  grid-column: 2;
+  grid-row: 1;
+}
+.task-chat-list .chat-actions-trigger::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 50%;
+  left: 50%;
+  width: var(--chat-actions-mark);
+  height: var(--chat-actions-mark);
+  border-radius: 50%;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  transition: background-color 140ms ease-out;
+}
+.task-chat-list .chat-actions-trigger:hover,
+.task-chat-list .chat-actions-trigger[aria-expanded="true"] { background: transparent; }
+/* Touch browsers keep :hover on whatever was tapped last, so a closed menu
+   would stay lit. Only a pointer that can hover gets the hover fill. */
+@media (hover: hover) {
+  .task-chat-list .chat-actions-trigger:hover::before { background: var(--bg-2); }
+}
+.task-chat-list .chat-actions-trigger[aria-expanded="true"]::before { background: var(--bg-2); }
+.task-chat-list .chat-actions-trigger:focus-visible { outline: none; }
+.task-chat-list .chat-actions-trigger:focus-visible::before {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .task-chat-list .chat-summary { display: block; }
 .task-chat-list .chat-heading { min-width: 0; }
 .task-chat-list .chat-title {
@@ -943,17 +982,24 @@ body {
 .task-chat-list .chat:hover .chat-snippet,
 .task-chat-list .chat:focus-within .chat-snippet,
 .task-chat-list .chat.is-pinned .chat-snippet { padding-right: 0; }
+.task-chat-list .chat-workflow-status { margin-top: 1px; line-height: 17px; }
+/* 18px: a project chip is 16px of text inside a 1px border, and at 17 the
+   line cut its bottom edge off. */
 .chat-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 17px;
+  gap: 8px;
+  height: 18px;
+  margin-top: 2px;
   overflow: hidden;
   color: var(--fg-3);
   font-size: 10.5px;
-  line-height: 17px;
+  line-height: 18px;
   white-space: nowrap;
 }
+/* Whoever the chat is with sits at the end of the line, so the agent lines up
+   down the list whatever the projects before it take. */
+.chat-meta > .chat-model { margin-left: auto; }
 .chat-project,
 .chat-model {
   min-width: 0;
@@ -1092,7 +1138,9 @@ body {
   stroke-width: 1.5;
   transition: stroke 140ms ease-out;
 }
-.chat.is-live .chat-badge-track { stroke: var(--fg-3); }
+/* Softer than the logo's own border, so the two read as a logo with a ring
+   round it rather than a double frame. */
+.chat.is-live .chat-badge-track { stroke: color-mix(in srgb, var(--fg-3) 62%, transparent); }
 /* Under a running snake the track stays, very faintly: without it the lit
    segment reads as a stray mark rather than as something going round. */
 .chat.is-busy .chat-badge-track { stroke: color-mix(in srgb, var(--ok) 18%, transparent); }
@@ -1202,8 +1250,9 @@ body {
   .sidebar-collapse { width: 40px; height: 40px; }
   .sidebar .sidebar-section-head .sidebar-filter-trigger { width: auto; height: 36px; }
   .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 44px; }
-  .task-chat-list .chat-btn { height: 82px; }
+  .task-chat-list .chat-btn { min-height: 82px; }
   .task-chat-list .chat-rename { height: 82px; }
+  .task-chat-list .chat-actions-trigger { --chat-actions-mark: 32px; }
 }
 
 @media (max-width: 859.98px) {

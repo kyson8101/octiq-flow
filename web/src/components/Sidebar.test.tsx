@@ -76,9 +76,33 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain("third-project, starfall-social, octiq-flow");
     expect(out).toContain(">+1</span>");
     expect(out).toContain(">+?</span>");
-    expect(out).toContain(">4 tasks</span>");
+    // One run: its own progress is the whole count, said once.
+    expect(out).toContain('class="chat-workflow-status" title="Completed · 4/4 done">Completed · 4/4 done</span>');
+    expect(out).not.toContain("conversation-project-task-count");
+    expect(out).toContain("1 task has no confirmed project, 4 tasks");
     expect(out).not.toContain(">General</span>");
     expect(out).toContain("pinned");
+  });
+
+  it("tells the run on show apart from every task the chat has had", () => {
+    const ledger = coordinatorLedger(["p1", "p1"]);
+    const out = html({
+      conversations: [chat("cto", "general")],
+      orchestration: {
+        ...ledger,
+        runs: [ledger.runs[0], { ...ledger.runs[0], id: "now", status: "running", createdAt: 3, updatedAt: 3 }],
+        tasks: [ledger.tasks[0], { ...ledger.tasks[1], runId: "now", status: "running" }],
+      },
+      coordinatorChatKeys: new Set(["chat:cto"]),
+    });
+    expect(out).toContain('title="Running · 0/1 done · 2 tasks in 2 runs">Running · 0/1 done · 2 tasks in 2 runs</span>');
+    expect(out).not.toContain(">2 tasks</span>");
+  });
+
+  it("shows an agent's Markdown answer as plain words in the row", () => {
+    const out = html({ conversations: [{ ...chat("a"),
+      latestResponse: "- **Mango Juice** · reviewed `44c1fc0` and the [plan](https://x.test)" }] });
+    expect(out).toContain('class="chat-snippet">Mango Juice · reviewed 44c1fc0 and the plan</span>');
   });
 
   it("keeps no-task and ledger-loading coordinator states truthful", () => {

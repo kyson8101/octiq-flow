@@ -6,16 +6,18 @@ manage a team of agents instead of prompting one.
 
 When it is on:
 
-- **New chat** becomes **New task**, in the top bar and the chat list.
-- A new task's empty page asks **Hand this task to**, listing the registered
-  agents this project can see. Picking one sets the chat's provider, model,
-  effort and access to that agent's settings. The last pick is remembered.
+- **New conversation** in the sidebar opens an empty conversation, the same
+  page a first load shows. It reads **Talk to <name>** and starts on the
+  configured head (see below). When more than one agent reports to you, a
+  compact **Talk to** picker lists them (see **Who a new conversation is
+  with**). Picking one sets the chat's provider, model, effort and access to
+  that agent's settings, for this conversation only. The next new
+  conversation starts on the head again.
 - The first message goes to that agent, the **lead**, with a brief after it.
   The brief names the lead, gives its role, and lists its direct reports. The
   chat shows only what you typed, plus a "task for <name>" label. The brief is
   kept in the transcript, so a resumed chat still knows its team.
-- The top bar gets **Talk to <name>** (see below) and an **Agents** button
-  that opens the dashboard.
+- The sidebar gets an **Agents** row that opens the dashboard.
 - The composer of a conversation with an agent is **compact**: the message
   box, attachments, the agent's avatar and name, and Send. It reads
   "Message <name>…". Role, provider and model are in the chip's tooltip and
@@ -26,15 +28,52 @@ When it is on:
   settings. Ordinary chats, and every chat when agents mode is off, keep the
   pickers and the location shelf exactly as before.
 
+## Who a new conversation is with
+
+A new conversation can only be with an agent who **reports directly to you**:
+one with no manager in the org chart, or one whose manager is no longer
+registered (the chart draws those at the top too). It does not matter whether
+the agent is global or belongs to one project, and no name is special.
+Anyone's report is left out, global or not. You reach them through their
+manager, who may pass the work on. An agent whose project is no longer an open
+project has nowhere to work, so it is left out as well.
+
+- The picker reads the whole roster (`team_list` with `all`), so a project
+  agent at the top, such as the head of one website, is offered from any page.
+  The configured head comes first, then the rest by name
+  (`lib/agentsMode.ts`, `conversationRecipients`).
+- The head is selected by default, however the page was reached, including a
+  first load inside another agent's project. With no head configured, the
+  default is the first global agent at the top, then one that works in the
+  project on screen (`conversationRecipient`). Picking someone never changes
+  **Settings → Agents → Talk to**.
+- **The head** is always the cross-project conversation from the home
+  workspace (below).
+- **A project agent** only works in its own project, so picking one moves the
+  draft to that project. Its repository, branch, worktree and sandbox are then
+  chosen exactly as for any lead in that project, and **Advanced** offers no
+  other project. If the draft is moved to another project anyway, the choice
+  goes back to the default, which the page shows. A send that would still put
+  a project agent in another project is refused, and nothing falls back to
+  someone else.
+- **Any other global agent at the top** leads in the project on screen, or
+  from home when there is none. It is not the cross-project conversation.
+- The host enforces the same rule: `team_brief` refuses to make someone's
+  report the lead of a **new** conversation (`team::reports_to_person`). A
+  conversation that already has a lead keeps it, even if the chart changes
+  later. Delegation inside a run is unchanged: an assignee must still be a
+  direct report of whoever assigns it.
+
 ## Where a new task runs (automatic, with Advanced overrides)
 
 The project, branch, worktree and sandbox controls are hidden on a new task.
 They are still decided: `lib/agentExecution.ts` (`autoExecution`) chooses them,
 and the send path applies exactly that plan:
 
-- **The head** coordinates from the home workspace (below). No git is
-  prepared and no sandbox is started for the conversation. Every task it hands
-  out gets its own destination and environment from the host.
+- **The head** coordinates from the home workspace (below), whichever page the
+  conversation was started from. No git is prepared and no sandbox is started
+  for the conversation. Every task it hands out gets its own destination and
+  environment from the host.
 - **A lead in a project** starts in a **new worktree** of that project, based
   on the branch the project is on. The host resolves the base and creates the
   worktree (`git_prepare_chat_workspace`). A folder that is not a repository
@@ -117,17 +156,17 @@ stored on the server, so every browser sees the same team.
 to across projects — typically a CTO. It is configured, never inferred from a
 name, and stored in `team.json` (`head`). Only a global agent qualifies; the
 host refuses to move it into one project while it is the head, and removing it
-clears the setting. With none configured, the top-bar button reads **Choose
-lead** and opens Settings.
+clears the setting. With none configured, a new conversation starts on another
+agent at the top of the chart (above). With no agent reporting to you at all,
+**New conversation** opens Settings. A head that has been put under a manager
+is someone's report, so it is not offered until it reports to you again.
 
-**Talk to <name>** is in the top bar, so it is there whatever project is on
-screen. It reopens the newest conversation handed to *that* agent, or starts a
-new one. The conversation lives in the General project and is recorded as a
-cross-project lead record (`crossProject: true`). A conversation keeps the lead
-it was first handed to: when you configure a different head, the button starts
-a new conversation with it, and the host refuses to hand an existing
-conversation to anyone else (`team::record_lead`), so no history is silently
-retargeted.
+It is the default of every new conversation, whatever project is on screen.
+Its conversations live in the home workspace and are recorded as cross-project
+lead records (`crossProject: true`). A conversation keeps the lead it was first
+handed to: when you configure a different head, the next new conversation
+starts with it, and the host refuses to hand an existing conversation to anyone
+else (`team::record_lead`), so no history is silently retargeted.
 
 The head's brief lists its direct reports from every project, each marked
 "works in any project" or "works only in project X", and tells it to:

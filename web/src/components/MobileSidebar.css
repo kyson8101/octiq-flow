@@ -101,7 +101,7 @@
 /* The left gutter holds the tick as well as the state dot, at a fixed width
    whether or not the tick is showing: a control that appears on hover must not
    move the title beside it. */
-.sidebar .task-chat-list .chat-btn { height: 78px; padding: 8px 6px 8px 45px; }
+.sidebar .task-chat-list .chat-btn { height: auto; min-height: 78px; padding: 9px 6px 9px 45px; }
 .sidebar .task-chat-list .chat-rename { height: 78px; padding-left: 12px; }
 .sidebar .task-chat-list .chat-snippet { margin: 1px 0 0; padding: 0; line-height: 18px; }
 
@@ -142,7 +142,7 @@
 @media (max-width: 859.98px), (pointer: coarse) {
   .sidebar .chat-children-toggle { min-height: 44px; }
   .sidebar .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 44px; }
-  .sidebar .task-chat-list .chat-btn,
+  .sidebar .task-chat-list .chat-btn { min-height: 82px; }
   .sidebar .task-chat-list .chat-rename { height: 82px; }
   /* Nothing hovers here, so the tick is always out — and wide enough to hit
      with a thumb, which the gutter widens to make room for. */

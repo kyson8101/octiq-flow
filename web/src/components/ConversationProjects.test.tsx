@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { ConversationProjectInfo } from "../lib/conversationProjects";
-import { ConversationProjects } from "./ConversationProjects";
+import { ConversationProjectAvatar, ConversationProjects } from "./ConversationProjects";
 
 const info = (over: Partial<ConversationProjectInfo>): ConversationProjectInfo => ({
   status: "projects", destinations: [], taskCount: 0, unknownTaskCount: 0, ...over,
@@ -37,5 +37,27 @@ describe("ConversationProjects", () => {
     expect(renderToStaticMarkup(<ConversationProjects projects={[]} info={info({ status: "discussion" })} />)).toContain("Discussion");
     expect(renderToStaticMarkup(<ConversationProjects projects={[]} info={info({ status: "loading" })} />)).toContain("Projects loading…");
     expect(renderToStaticMarkup(<ConversationProjects projects={[]} info={info({ status: "unknown" })} />)).toContain("Project unknown");
+  });
+
+  it("leaves the visible count to a status line that already has one, but keeps it in the label", () => {
+    const html = renderToStaticMarkup(<ConversationProjects projects={[]} taskCount={false}
+      info={info({ taskCount: 2, destinations: [{ projectId: "one", projectName: "OctiqFlow", repository: "/one" }] })} />);
+    expect(html).not.toContain("conversation-project-task-count");
+    expect(html).toContain('aria-label="Work projects: OctiqFlow, 2 tasks"');
+  });
+});
+
+describe("ConversationProjectAvatar", () => {
+  const avatar = (status: ConversationProjectInfo["status"]) =>
+    renderToStaticMarkup(<ConversationProjectAvatar projects={[]} info={info({ status })} />);
+
+  it("marks a discussion instead of leaving an empty tile", () => {
+    expect(avatar("discussion")).toContain("is-discussion");
+    expect(avatar("discussion")).toContain("<svg");
+  });
+
+  it("stays blank only while the ledger loads, and says ? when the project is unknown", () => {
+    expect(avatar("loading")).toMatch(/is-neutral"[^>]*><\/span>$/);
+    expect(avatar("unknown")).toContain(">?</span>");
   });
 });

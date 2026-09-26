@@ -42,16 +42,12 @@ describe("autoExecution", () => {
     expect(autoExecution({ toHead: false, project: flow, repo, sandboxDefault: false }).crossProject).toBe(false);
   });
 
-  it("treats the head picked at home as the coordination conversation", () => {
-    const base = { headDraft: false, leadId: "pj", headId: "pj", homeId: "p-general" };
-    expect(headCoordination({ ...base, project: null })).toBe(true);
-    expect(headCoordination({ ...base, project: general })).toBe(true);
-    // Picked inside a code project, the head stays that project's lead.
-    expect(headCoordination({ ...base, project: flow })).toBe(false);
-    // Another lead at home is an ordinary lead.
-    expect(headCoordination({ ...base, leadId: "maya", project: null })).toBe(false);
-    expect(headCoordination({ ...base, headId: null, project: null })).toBe(false);
-    expect(headCoordination({ ...base, headDraft: true, leadId: "maya", project: flow })).toBe(true);
+  it("makes every new conversation with the head its cross-project coordination", () => {
+    expect(headCoordination({ recipientId: "pj", headId: "pj" })).toBe(true);
+    // Whatever page it was started from: there is no project in the rule.
+    expect(headCoordination({ recipientId: "maya", headId: "pj" })).toBe(false);
+    expect(headCoordination({ recipientId: "pj", headId: null })).toBe(false);
+    expect(headCoordination({ recipientId: null, headId: null })).toBe(false);
   });
 
   it("lets Advanced overrides win and says so", () => {
