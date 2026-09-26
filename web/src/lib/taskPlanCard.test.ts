@@ -31,6 +31,12 @@ const proposal = (patch: Partial<WorkspaceProposal> = {}): WorkspaceProposal => 
 });
 
 describe("the standard plan card", () => {
+  it("says when a task's worker waits for its test environment (feedback caa2ca88)", () => {
+    expect(taskCardRows(task(), run, null, names).some((r) => r.key === "environment")).toBe(false);
+    const rows = taskCardRows(task({ environment: "sandbox" }), run, null, names);
+    expect(row(rows, "environment").value).toBe("Test environment, checked before the worker starts");
+  });
+
   it("says the workspace is pending in one row when nothing is planned yet", () => {
     const rows = taskCardRows(task(), run, null, names);
     expect(row(rows, "project")).toMatchObject({ value: "octiq-flow", copy: { text: "/code/octiq-flow" } });

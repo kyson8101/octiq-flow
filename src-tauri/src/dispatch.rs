@@ -860,8 +860,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             };
             let task_id: Option<String> = arg(&args, "taskId")?;
             let message_limit: Option<usize> = arg(&args, "messageLimit")?;
-            crate::orchestration::agent_view::agent_snapshot(
-                snapshot?,
+            let snapshot = snapshot?;
+            let full = snapshot.clone();
+            let mut view = crate::orchestration::agent_view::agent_snapshot(
+                snapshot,
                 &crate::orchestration::agent_view::AgentRead {
                     actor: &actor,
                     run_id: run_id.as_deref(),
@@ -869,7 +871,33 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     message_limit: message_limit
                         .unwrap_or(crate::orchestration::agent_view::DEFAULT_MESSAGES),
                 },
-            )
+            )?;
+            // Only when a task in view needs one: the sandbox record is read
+            // from disk, and most runs never touch it.
+            let shown: std::collections::BTreeSet<String> = view["runs"]
+                .as_array()
+                .map(|runs| {
+                    runs.iter()
+                        .filter_map(|r| r["id"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let needs = full.tasks.iter().any(|task| {
+                task.environment == crate::orchestration::TaskEnvironment::Sandbox
+                    && shown.contains(&task.run_id)
+            });
+            if needs {
+                if let (Ok(sandboxes), Some(out)) = (
+                    crate::sandbox::Store::profile().snapshot(),
+                    view.as_object_mut(),
+                ) {
+                    out.insert(
+                        "environments".into(),
+                        crate::orchestration::agent_view::environments(&full, &sandboxes, &shown),
+                    );
+                }
+            }
+            Ok(view)
         }
         "orchestration_service_register" => {
             let actor: String = arg(&args, "actorChatKey")?;
@@ -1004,18 +1032,22 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "repository")?,
                 arg(&args, "worker")?,
             )?;
-            to_value(svc.orchestrations.create_carded_task(
-                &actor,
-                run_id,
-                arg(&args, "title")?,
-                arg(&args, "spec")?,
-                list_arg(&args, "dependsOn")?,
-                parent,
-                worker,
-                assignee,
-                destination,
-                card,
-            ))
+            to_value(
+                svc.orchestrations.create_task_full(
+                    &actor,
+                    run_id,
+                    arg(&args, "title")?,
+                    arg(&args, "spec")?,
+                    list_arg(&args, "dependsOn")?,
+                    parent,
+                    worker,
+                    assignee,
+                    destination,
+                    card,
+                    arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
+                        .unwrap_or_default(),
+                ),
+            )
         }
         // A lead changes or withdraws a task of a plan the person has not
         // approved yet. Owner and destination go through the same routing as

@@ -59,8 +59,28 @@ separate checks; a reachable port alone cannot mark an environment ready.
 ## Scope boundary
 
 This MVP prepares an environment before a sandbox-enabled chat starts and gives
-the agent its private handoff path. Automatic provisioning per orchestrated task,
-coordinator dependency gates and product acceptance workflows remain future work.
+the agent its private handoff path.
+
+**Orchestrated tasks.** A task created with `environment: "sandbox"` gets its
+own environment at dispatch. The environment is owned by that attempt's worker
+chat and built from that task's worktree. The host builds and checks it off
+the scheduler thread; meanwhile the attempt shows the pending host operation
+**Preparing test environment**. The worker starts only after the recipe's
+readiness check passes, and its chat start hands over the environment ID,
+URLs and handoff file. If the environment cannot be made ready (no recipe,
+no Docker, a failed build or check), the attempt fails with kind
+`environment` and is never retried on its own. The coordinator is told why,
+and nothing that depends on the task starts. A task with `environment:
+"none"` (the default) starts without one, so a review, a docs task or the
+task that repairs the recipe is never blocked by it. Every dispatch builds and
+checks the environment again, so readiness is fresh for each dependent job.
+A server restart makes earlier readiness `unverified`.
+`orchestration_snapshot` lists `environments` (state, `checkedAt`, URLs,
+source revision) separately from task status. The plan card says
+**Environment: Test environment, checked before the worker starts**, so the
+person approves the requirement too.
+
+Product acceptance workflows remain future work.
 Existing progress UI now says **Tasks completed** and **Acceptance: unverified**;
 completed tasks or reviews do not establish product acceptance. The broader two
 feedback reports remain open until their remaining acceptance criteria are handled.

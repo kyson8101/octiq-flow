@@ -1273,6 +1273,7 @@ const ORCHESTRATION_TASK_CREATE = {
       problem: { type: "string", description: "The plan card: the problem this task solves, in one short sentence (at most 300 characters). Shown to the person when they review the plan." },
       goal: { type: "string", description: "The plan card: the approach or outcome, in one short sentence (at most 300 characters)." },
       acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "The plan card: 2–5 checkable acceptance criteria, one line each (at most 240 characters). Criteria, not results; the plan card is fixed once the person approves it (before that, change it with orchestration_task_revise)." },
+      environment: { type: "string", enum: ["none", "sandbox"], description: "What must run before the worker starts. \"sandbox\" for implementation, integration and browser work that needs the application running: the host builds the project's runnable test environment (.octiq/sandbox.json) from this task's own worktree, starts the worker only after its readiness check passes, and fails the attempt with the cause otherwise, so nothing that depends on the task starts on a broken runtime. Omit, or \"none\", for reviews, docs, unit-only work and the task that repairs a broken environment. Its state appears under environments in orchestration_snapshot, separate from task status." },
     },
     required: ["runId", "title", "spec"],
   },

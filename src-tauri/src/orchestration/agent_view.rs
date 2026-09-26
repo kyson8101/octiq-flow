@@ -30,6 +30,50 @@ pub struct AgentRead<'a> {
     pub message_limit: usize,
 }
 
+/// Each environment-needing task's runnable test environment, as the host
+/// last saw it (feedback caa2ca88): whose attempt owns it, its state and
+/// when its readiness check last passed. Reported apart from task status on
+/// purpose: a completed task says nothing about whether its services still
+/// run, and a ready environment says nothing about the task.
+pub fn environments(
+    snapshot: &Snapshot,
+    sandboxes: &crate::sandbox::Snapshot,
+    runs: &BTreeSet<String>,
+) -> Value {
+    let rows: Vec<Value> = snapshot
+        .tasks
+        .iter()
+        .filter(|task| task.environment == TaskEnvironment::Sandbox && runs.contains(&task.run_id))
+        .map(|task| {
+            let attempt = task
+                .active_attempt_id
+                .as_deref()
+                .and_then(|id| snapshot.attempts.iter().find(|a| a.id == id));
+            let env = attempt.and_then(|a| sandboxes.environments.get(&a.worker_chat_key));
+            match env {
+                Some(env) => json!({
+                    "taskId": task.id,
+                    "attemptId": attempt.map(|a| a.id.clone()),
+                    "environmentId": env.id,
+                    "state": env.state,
+                    "checkedAt": env.checked_at,
+                    "error": env.error.as_deref().map(|e| clip(e, TEXT_LIMIT)),
+                    "urls": env.urls,
+                    "sourceRevision": env.source_revision,
+                    "sourceDirty": env.source_dirty,
+                    "fixtureVersion": env.fixture_version,
+                }),
+                None => json!({
+                    "taskId": task.id,
+                    "attemptId": attempt.map(|a| a.id.clone()),
+                    "state": "not_prepared",
+                }),
+            }
+        })
+        .collect();
+    Value::Array(rows)
+}
+
 pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, String> {
     let Snapshot {
         runs,
@@ -249,6 +293,7 @@ fn compact(
                             "activeAttemptId",
                             "worker",
                             "assignee",
+                            "environment",
                             "updatedAt",
                         ]
                     };

@@ -149,6 +149,8 @@ export type OrchestrationTask = {
   status: TaskStatus;
   activeAttemptId?: string;
   result?: string;
+  /** "sandbox": the worker waits for its runnable test environment. */
+  environment?: "none" | "sandbox";
   /** Every change of hands before the work finished, oldest first. */
   handoffs?: { from?: { id: string; name: string }; to: { id: string; name: string }; reason: string; at: number }[];
   createdAt: number;

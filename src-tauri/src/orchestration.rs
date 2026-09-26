@@ -321,12 +321,43 @@ pub struct Task {
     pub active_attempt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// What the task needs running before its worker starts. See
+    /// `TaskEnvironment`; `None` is the default and needs nothing.
+    #[serde(default, skip_serializing_if = "TaskEnvironment::is_none")]
+    pub environment: TaskEnvironment,
     /// Every time the task changed hands before work finished, oldest first:
     /// who had it, who took it, why, and when. See `reassign_task`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs: Vec<TaskHandoff>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// The pending host operation an attempt shows while its environment builds.
+const ENVIRONMENT_OPERATION: &str = "octiq:environment";
+
+/// A task's runtime prerequisite (feedback caa2ca88).
+///
+/// `Sandbox`: the task needs its project's runnable test environment — the
+/// Compose recipe in `.octiq/sandbox.json` — built from its own worktree and
+/// passing the recipe's readiness check before the worker starts. The host
+/// prepares it off the scheduler, per worker, so two worktrees never share
+/// data, sessions or ports; if it cannot be made ready the attempt fails with
+/// that cause and nothing that depends on the task starts. `None` (reviews,
+/// docs, unit-only work, and the task that repairs a broken environment)
+/// starts without one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEnvironment {
+    #[default]
+    None,
+    Sandbox,
+}
+
+impl TaskEnvironment {
+    pub fn is_none(&self) -> bool {
+        *self == TaskEnvironment::None
+    }
 }
 
 /// One change of hands: the evidence a takeover rests on.
@@ -1247,6 +1278,38 @@ impl OrchestrationStore {
         destination: Option<TaskDestination>,
         card: Option<TaskCard>,
     ) -> Result<Task, String> {
+        self.create_task_full(
+            actor_chat_key,
+            run_id,
+            title,
+            spec,
+            depends_on,
+            parent_task_id,
+            worker,
+            assignee,
+            destination,
+            card,
+            TaskEnvironment::None,
+        )
+    }
+
+    /// `create_carded_task` with the task's runtime prerequisite, which goes
+    /// in with the task in the same write, like its card.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_task_full(
+        &self,
+        actor_chat_key: &str,
+        run_id: String,
+        title: String,
+        spec: String,
+        depends_on: Vec<String>,
+        parent_task_id: Option<String>,
+        worker: Option<automation::WorkerSettings>,
+        assignee: Option<TaskAssignee>,
+        destination: Option<TaskDestination>,
+        card: Option<TaskCard>,
+        environment: TaskEnvironment,
+    ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
         let worker = worker
@@ -1343,6 +1406,7 @@ impl OrchestrationStore {
                 },
                 active_attempt_id: None,
                 result: None,
+                environment,
                 handoffs: Vec::new(),
                 created_at: now,
                 updated_at: now,
@@ -2061,29 +2125,202 @@ impl OrchestrationStore {
         }
         let mut worker_env = workspace.env.clone();
         worker_env.insert("OCTIQ_ORCHESTRATION_ATTEMPT".into(), reserved.id.clone());
-        let start = crate::agent_chat::chat_start_user_impl(
-            chats.clone(),
-            reserved.worker_chat_key.clone(),
-            prepared.cwd.clone(),
-            launch.agent,
-            launch.model.clone(),
-            Some(launch.access),
-            Some(prompt),
-            None,
-            None,
-            // A worker owns one isolated checkout. Giving it the workspace's
-            // other paths would silently widen its write boundary back to the
-            // primary checkout (or another repository) and defeat that
-            // isolation. Cross-repository work should be split into explicit
-            // tasks, each with its own run root and worker.
-            Some(Vec::new()),
-            Some(worker_env),
-            launch.effort.clone(),
-            None,
-            Some(false),
-            Some(format!("orchestration-{}", reserved.id)),
+        let start_chat = {
+            let chats = chats.clone();
+            let key = reserved.worker_chat_key.clone();
+            let cwd = prepared.cwd.clone();
+            let turn = format!("orchestration-{}", reserved.id);
+            move || {
+                crate::agent_chat::chat_start_user_impl(
+                    chats,
+                    key,
+                    cwd,
+                    launch.agent,
+                    launch.model.clone(),
+                    Some(launch.access),
+                    Some(prompt),
+                    None,
+                    None,
+                    // A worker owns one isolated checkout. Giving it the
+                    // workspace's other paths would silently widen its write
+                    // boundary back to the primary checkout (or another
+                    // repository) and defeat that isolation. Cross-repository
+                    // work should be split into explicit tasks, each with its
+                    // own run root and worker.
+                    Some(Vec::new()),
+                    Some(worker_env),
+                    launch.effort.clone(),
+                    None,
+                    Some(false),
+                    Some(turn),
+                )
+            }
+        };
+        if task.environment == TaskEnvironment::Sandbox {
+            return Self::start_after_environment(
+                chats.orchestrations.clone(),
+                crate::sandbox::Store::profile(),
+                active,
+                start_chat,
+            );
+        }
+        self.finish_dispatch(&active, start_chat())
+    }
+
+    /// A task that needs its runnable test environment (feedback caa2ca88):
+    /// select one owned by this worker, in its own worktree, then build and
+    /// check it OFF the scheduler thread — a Compose build can take minutes,
+    /// and every run's monitoring and notices share that thread. The agent
+    /// starts only once the recipe's readiness check has passed; the chat's
+    /// own start then hands it the environment (`sandbox::prepare_for_start`).
+    /// Anything else fails this attempt with the environment as its cause, so
+    /// no task that depends on it can start on a broken runtime.
+    fn start_after_environment(
+        store: Arc<OrchestrationStore>,
+        sandboxes: crate::sandbox::Store,
+        active: Attempt,
+        start_chat: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) -> Result<Attempt, String> {
+        if let Err(error) =
+            sandboxes.select(&active.worker_chat_key, &active.cwd, Some(true), false)
+        {
+            store.fail_environment(&active.id, &error)?;
+            return Err(error);
+        }
+        store.environment_preparing(&active.id)?;
+        let attempt = active.clone();
+        std::thread::spawn(move || {
+            let ready =
+                sandboxes.action_when_idle(&attempt.worker_chat_key, "start", None, || Ok(()));
+            // A run stopped, or the attempt superseded, while the environment
+            // was building: its services stay for the Sandbox panel, but no
+            // worker starts for work nobody wants any more.
+            let Ok(_operation) = store.workspace_ops.lock() else {
+                return;
+            };
+            if !store.attempt_is_live(&attempt.id) {
+                return;
+            }
+            let outcome = match ready {
+                Err(error) => store.fail_environment(&attempt.id, &error),
+                Ok(environment) => store
+                    .environment_prepared(&attempt.id, &environment)
+                    .and_then(|_| store.finish_dispatch(&attempt, start_chat()).map(|_| ())),
+            };
+            if let Err(error) = outcome {
+                eprintln!(
+                    "orchestration: environment dispatch for {} failed: {error}",
+                    attempt.id
+                );
+            }
+        });
+        Ok(active)
+    }
+
+    /// Whether this attempt is still the live one of its task.
+    fn attempt_is_live(&self, attempt_id: &str) -> bool {
+        let Ok(inner) = self.inner.lock() else {
+            return false;
+        };
+        inner.data.attempts.get(attempt_id).is_some_and(|attempt| {
+            matches!(
+                attempt.status,
+                AttemptStatus::Preparing | AttemptStatus::Running
+            ) && inner
+                .data
+                .tasks
+                .get(&attempt.task_id)
+                .is_some_and(|task| task.active_attempt_id.as_deref() == Some(attempt_id))
+        })
+    }
+
+    /// The host is building this attempt's environment: a pending host
+    /// operation, so the monitor waits on the tool threshold rather than
+    /// calling a Compose build a stalled worker.
+    fn environment_preparing(&self, attempt_id: &str) -> Result<(), String> {
+        let run_id = self.mutate(|data| {
+            let attempt = data
+                .attempts
+                .get_mut(attempt_id)
+                .ok_or("The attempt disappeared.")?;
+            let now = now_ms();
+            let e = &mut attempt.execution;
+            e.pending_tools.insert(
+                ENVIRONMENT_OPERATION.into(),
+                "Preparing test environment".into(),
+            );
+            e.state = execution::ExecutionState::WaitingTool;
+            e.current_operation = Some("Preparing test environment".into());
+            e.last_activity_at = Some(now);
+            e.last_progress_at = Some(now);
+            e.last_progress = Some("Preparing test environment".into());
+            Ok(attempt.run_id.clone())
+        })?;
+        announce(&run_id, "worker_environment");
+        Ok(())
+    }
+
+    fn environment_prepared(
+        &self,
+        attempt_id: &str,
+        environment: &crate::sandbox::Environment,
+    ) -> Result<(), String> {
+        let run_id = self.mutate(|data| {
+            let attempt = data
+                .attempts
+                .get_mut(attempt_id)
+                .ok_or("The attempt disappeared.")?;
+            let now = now_ms();
+            let e = &mut attempt.execution;
+            e.pending_tools.remove(ENVIRONMENT_OPERATION);
+            e.state = execution::ExecutionState::Executing;
+            e.current_operation = Some("Dispatching provider request".into());
+            e.last_activity_at = Some(now);
+            e.last_progress_at = Some(now);
+            e.last_progress = Some(format!(
+                "Test environment {} ready at {}",
+                environment.id,
+                environment.checked_at.unwrap_or_default()
+            ));
+            Ok(attempt.run_id.clone())
+        })?;
+        announce(&run_id, "worker_environment");
+        Ok(())
+    }
+
+    /// The environment could not be made ready: this attempt fails with
+    /// that cause and is never retried on its own. What depends on the task
+    /// stays waiting; a task with no environment requirement can repair it.
+    fn fail_environment(&self, attempt_id: &str, error: &str) -> Result<(), String> {
+        let message = format!(
+            "Test environment not ready: {error}\n\nThis task needs its project's runnable test environment (.octiq/sandbox.json), built from its worktree and passing the recipe's readiness check, before its worker starts. Nothing that depends on it will start. Repair the recipe or runtime (a task with environment \"none\" can do that), then retry this task; a retry rebuilds and rechecks it."
         );
-        self.finish_dispatch(&active, start)
+        let run_id = self.mutate(|data| {
+            let attempt = data
+                .attempts
+                .get_mut(attempt_id)
+                .ok_or("The attempt disappeared.")?;
+            attempt
+                .execution
+                .pending_tools
+                .remove(ENVIRONMENT_OPERATION);
+            let run_id = attempt.run_id.clone();
+            let now = now_ms();
+            execution::fail(
+                data,
+                attempt_id,
+                execution::ExecutionError {
+                    kind: "environment".into(),
+                    message,
+                    at: now,
+                    retryable: false,
+                },
+                now,
+            );
+            Ok(run_id)
+        })?;
+        announce(&run_id, "worker_failed");
+        Ok(())
     }
 
     fn finish_dispatch(
@@ -2732,7 +2969,7 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
             if let Some(object) = proposal.as_object_mut() {
                 object.remove("proposedAt");
             }
-            json!({
+            let mut scope = json!({
                 "id": task.id,
                 "title": task.title,
                 "spec": task.spec,
@@ -2742,7 +2979,12 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
                 "destination": task.destination,
                 "proposal": proposal,
                 "dependsOn": task.depends_on,
-            })
+            });
+            // Only when set: plans made before environments keep their digest.
+            if !task.environment.is_none() {
+                scope["environment"] = json!(task.environment);
+            }
+            scope
         })
         .collect();
     let scope = json!({
@@ -3431,6 +3673,223 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// An environment-needing task, its dependant, and its first attempt
+    /// activated in `cwd`, as `start_worker_for` leaves it.
+    fn environment_task(store: &OrchestrationStore, cwd: &str) -> (Run, Task, Task, Attempt) {
+        let run = run(store);
+        let needs = store
+            .create_task_full(
+                "chat:master",
+                run.id.clone(),
+                "Browser-check the import".into(),
+                "Upload the workbook and check the preview.".into(),
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                TaskEnvironment::Sandbox,
+            )
+            .unwrap();
+        assert_eq!(needs.environment, TaskEnvironment::Sandbox);
+        let dependant = task(store, &run, vec![needs.id.clone()]);
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(&needs.id))
+            .unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, cwd.into(), "env".into(), true)
+            .unwrap();
+        (run, needs, dependant, attempt)
+    }
+
+    fn settle_within(
+        store: &OrchestrationStore,
+        attempt: &str,
+        done: impl Fn(&Attempt) -> bool,
+        secs: u64,
+    ) -> Attempt {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        loop {
+            let now = store.snapshot(None).unwrap();
+            let current = now.attempts.into_iter().find(|a| a.id == attempt).unwrap();
+            if done(&current) || std::time::Instant::now() > deadline {
+                return current;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn a_task_whose_environment_cannot_be_made_ready_never_starts_and_holds_its_dependants() {
+        // Feedback caa2ca88: dependent work ran on runtimes nobody had made
+        // ready. A task that needs its environment starts only once the
+        // recipe's check passes; without a recipe it fails with that cause.
+        let store = Arc::new(OrchestrationStore::default());
+        let project = std::env::temp_dir().join(format!("octiq-env-{}", compact_id()));
+        fs::create_dir_all(&project).unwrap();
+        let sandboxes = crate::sandbox::Store::at(project.join("sandboxes"));
+        let (run, needs, dependant, attempt) = environment_task(&store, project.to_str().unwrap());
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        OrchestrationStore::start_after_environment(
+            store.clone(),
+            sandboxes,
+            attempt.clone(),
+            move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let failed = settle_within(
+            &store,
+            &attempt.id,
+            |a| a.status == AttemptStatus::Failed,
+            30,
+        );
+        assert_eq!(failed.status, AttemptStatus::Failed);
+        let error = failed.execution.latest_error.unwrap();
+        assert_eq!(error.kind, "environment");
+        assert!(
+            !error.retryable,
+            "an environment failure is never replayed by itself"
+        );
+        assert!(
+            error.message.starts_with("Test environment not ready"),
+            "{}",
+            error.message
+        );
+        assert!(failed.execution.pending_tools.is_empty());
+        assert!(
+            !started.load(std::sync::atomic::Ordering::SeqCst),
+            "no worker on a broken runtime"
+        );
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let task_of = |id: &str| snapshot.tasks.iter().find(|t| t.id == id).unwrap().clone();
+        assert_eq!(task_of(&needs.id).status, TaskStatus::Failed);
+        assert_eq!(task_of(&dependant.id).status, TaskStatus::Pending);
+        assert!(snapshot
+            .notifications
+            .iter()
+            .any(|n| n.kind == "environment" && n.body.contains("Test environment not ready")));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn a_task_with_a_ready_environment_starts_with_it_and_reports_it_apart_from_its_status() {
+        let store = Arc::new(OrchestrationStore::default());
+        let project = std::env::temp_dir().join(format!("octiq-env-ready-{}", compact_id()));
+        fs::create_dir_all(project.join(".octiq")).unwrap();
+        fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","checkService":"verify","fixtureVersion":"env-test-v1","endpoints":{"app":{"service":"app","port":80,"path":"/"}}}"#).unwrap();
+        fs::write(project.join(".octiq/compose.json"), serde_json::to_vec(&json!({"services":{
+            "app":{"image":"nginx:1.27-alpine","ports":[{"target":80,"host_ip":"127.0.0.1"}]},
+            "verify":{"image":"alpine:3.22","profiles":["check"],"command":["sh","-c","wget -q -O /dev/null http://app"]}
+        }})).unwrap()).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&project)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ]);
+        let sandbox_root = std::env::temp_dir().join(format!("octiq-env-store-{}", compact_id()));
+        let (run, needs, _, attempt) = environment_task(&store, project.to_str().unwrap());
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        OrchestrationStore::start_after_environment(
+            store.clone(),
+            crate::sandbox::Store::at(sandbox_root.clone()),
+            attempt.clone(),
+            move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        // While it builds, the attempt waits on a named host operation.
+        let preparing = store
+            .snapshot(None)
+            .unwrap()
+            .attempts
+            .into_iter()
+            .find(|a| a.id == attempt.id)
+            .unwrap();
+        assert_eq!(
+            preparing.execution.current_operation.as_deref(),
+            Some("Preparing test environment")
+        );
+        let ready = settle_within(
+            &store,
+            &attempt.id,
+            |a| a.execution.pending_tools.is_empty(),
+            600,
+        );
+        assert!(
+            started.load(std::sync::atomic::Ordering::SeqCst),
+            "the worker starts once it is ready"
+        );
+        assert!(
+            ready
+                .execution
+                .last_progress
+                .as_deref()
+                .unwrap_or("")
+                .contains("ready"),
+            "{:?}",
+            ready.execution.last_progress
+        );
+        let sandboxes = crate::sandbox::Store::at(sandbox_root.clone());
+        let view = agent_view::environments(
+            &store.snapshot(None).unwrap(),
+            &sandboxes.snapshot().unwrap(),
+            &BTreeSet::from([run.id.clone()]),
+        );
+        let row = &view[0];
+        assert_eq!(row["taskId"], needs.id.as_str());
+        assert_eq!(row["state"], "ready");
+        assert!(row["urls"]["app"]
+            .as_str()
+            .unwrap()
+            .starts_with("http://octiq-sb-"));
+        assert!(row["sourceRevision"]
+            .as_str()
+            .is_some_and(|r| r.len() == 40));
+        // The task's own status is untouched by the environment's.
+        assert_eq!(
+            store
+                .snapshot(None)
+                .unwrap()
+                .tasks
+                .iter()
+                .find(|t| t.id == needs.id)
+                .unwrap()
+                .status,
+            TaskStatus::Running
+        );
+        let env_id = row["environmentId"].as_str().unwrap().to_owned();
+        sandboxes
+            .action(&attempt.worker_chat_key, "reset", Some(&env_id))
+            .ok();
+        sandboxes
+            .action(&attempt.worker_chat_key, "stop", None)
+            .ok();
+        let _ = fs::remove_dir_all(&project);
     }
 
     #[test]

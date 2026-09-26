@@ -19,7 +19,7 @@ import type { OrchestrationAttempt, OrchestrationRun, OrchestrationTask } from "
 export type CardState = "confirmed" | "planned" | "pending" | "removed" | "conflict" | "unplanned";
 
 export type CardRow = {
-  key: "project" | "branch" | "directory" | "worktree" | "workspace" | "owner" | "model" | "effort";
+  key: "project" | "branch" | "directory" | "worktree" | "workspace" | "owner" | "model" | "effort" | "environment";
   label: string;
   value: string;
   state?: CardState;
@@ -67,6 +67,11 @@ export function taskCardRows(
     const model = choice ? `${choice.name} ${choice.model}` : worker.model || "Provider default";
     rows.push({ key: "model", label: "Model", value: model });
     if (worker.effort) rows.push({ key: "effort", label: "Effort", value: worker.effort });
+  }
+  // Part of what the person approves: this task's worker waits for a
+  // runnable test environment, built from its own worktree and checked.
+  if (task.environment === "sandbox") {
+    rows.push({ key: "environment", label: "Environment", value: "Test environment, checked before the worker starts" });
   }
   return rows;
 }
