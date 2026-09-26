@@ -237,6 +237,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     // The coordinator's internal launch/message/report paths call their
     // implementations directly, without a client-controlled bypass flag.
     match cmd {
+        // A worker's test environment outlives its turns on purpose, so once
+        // its attempt has settled the person can stop or reset it from the
+        // Sandbox panel; that no longer drives the worker. A live worker's
+        // stays out of reach, like everything else a worker owns.
+        "sandbox_action"
+            if matches!(arg::<String>(&args, "action")?.as_str(), "stop" | "reset")
+                && svc
+                    .orchestrations
+                    .worker_card_live(&arg::<String>(&args, "key")?)?
+                    == Some(false) => {}
         "chat_start"
         | "sandbox_action"
         | "chat_send"
