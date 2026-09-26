@@ -2277,6 +2277,12 @@ export default function App() {
     for (const id of running) if (chats[id]?.busy) out.add(id);
     return out;
   }, [running, chats]);
+  /** How many cards a chat holds for the person. A worker parked on one is
+   *  waiting on you, not working. */
+  const waitingOn = (chatKey: string) => {
+    const id = chatKey.replace(/^chat:/, "");
+    return (asks[id]?.length ?? 0) + (questions[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0);
+  };
 
   /** The calls whose background work is still running, for the cards. Memoised
    *  on the roster itself: it is a context value read by every card on screen,
@@ -4279,6 +4285,7 @@ export default function App() {
         currentConversation={conversationId}
         running={running}
         busy={busySet}
+        waitingOn={waitingOn}
         deleting={deleting}
         leaving={leaving}
         deleteMs={UNDO_MS}
@@ -4489,10 +4496,7 @@ export default function App() {
               projects={[...workspaces, ...shelved]}
               running={running}
               busy={busySet}
-              waitingOn={(chatKey) => {
-                const id = chatKey.replace(/^chat:/, "");
-                return (asks[id]?.length ?? 0) + (questions[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0);
-              }}
+              waitingOn={waitingOn}
               chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
               chatExists={(chatKey) => conversations.some((c) => keyFor(c.id) === chatKey)}
               // Both throw when the chat is not in this browser's list yet;

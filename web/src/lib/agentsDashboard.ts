@@ -190,6 +190,23 @@ export function taskState(
   }
 }
 
+/** How many tasks in `snapshot` are being worked on right now, by the same
+ *  reading as `taskState`: an attempt executing or running a tool. Queued,
+ *  waiting on the person, stalled, failed and settled tasks are not work, and
+ *  nor is anything in a run that is over or archived. Pass a chat's own
+ *  snapshot (`chatSnapshot`) to ask about one main chat and none of the others
+ *  sharing its project. */
+export function workingTaskCount(snapshot: OrchestrationSnapshot, waitingOn: (chatKey: string) => number): number {
+  const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
+  const gated = new Set(snapshot.gates
+    .filter((gate) => gate.status === "open" && gate.taskId).map((gate) => gate.taskId!));
+  return snapshot.tasks.filter((task) => {
+    const attempt = latestAttempt(snapshot, task);
+    const waiting = attempt ? waitingOn(attempt.workerChatKey) : 0;
+    return taskState(task, runs.get(task.runId), attempt, gated.has(task.id), waiting)?.state === "working";
+  }).length;
+}
+
 /** A lead conversation's current state, or null when it is not doing
  *  anything: ended, or idle between turns. */
 export function leadState(

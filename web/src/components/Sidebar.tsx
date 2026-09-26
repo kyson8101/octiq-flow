@@ -8,6 +8,7 @@ import { latestResponse, plainSnippet } from "../lib/chatPreview";
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
 import { chatRunStatus, chatSnapshot, workflowChatList } from "../lib/chatWorkflow";
+import { workingTaskCount } from "../lib/agentsDashboard";
 import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
 } from "../lib/chatFilter";
@@ -37,6 +38,7 @@ export type SidebarView = "search" | "settings" | "agents" | "projects" | "pulls
 
 const NONE: ReadonlySet<string> = new Set();
 const NO_PARENTS: ReadonlyMap<string, string> = new Map();
+const NOTHING_WAITING = () => 0;
 const COLLAPSED_KEY = "octiq.chat.collapsed-agents";
 const FILTER_KEY = "octiq.chat.filter";
 
@@ -64,7 +66,7 @@ export function Sidebar({
   ledgerUnavailable = false,
   coordinatorChatKeys = NONE,
   projects, shelved, deletedCount = 0, onShowDeleted,
-  conversations: everyChat, currentConversation, running, busy, deleting = NONE,
+  conversations: everyChat, currentConversation, running, busy, waitingOn = NOTHING_WAITING, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, newLabel = "New task", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
@@ -90,6 +92,9 @@ export function Sidebar({
   currentConversation: string | null;
   running: Set<string>;
   busy: Set<string>;
+  /** How many cards (permission, question, safety) a chat is holding for the
+   *  person. A worker parked on one is waiting, not working. */
+  waitingOn?: (chatKey: string) => number;
   deleting?: ReadonlySet<string>;
   leaving?: ReadonlySet<string>;
   deleteMs?: number;
@@ -270,7 +275,11 @@ export function Sidebar({
     const otherChildren = ownsRun ? children.filter((child) => !runChatKeys.has(`chat:${child.chat.id}`)) : children;
     const hasChildren = otherChildren.length > 0;
     const openWorker = ownsRun && runChatKeys.has(`chat:${currentConversation}`);
-    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? chatRunStatus(workflow, run) : null;
+    // A main chat idle between turns while its workers run is still running:
+    // its ring goes round for them. Only this chat's own runs count, so a
+    // neighbour in the same project keeps still.
+    const tasksWorking = workingTaskCount(workflow, waitingOn);
+    const workflowLabel = task ?`${task.title} · ${archived ? "archived" : attempt?.status}` : run ? chatRunStatus(workflow, run) : null;
     const branch = projectInfo.status === "home" ? (attempt?.branch || (parent ? "" : branches[chat.projectId])) : "";
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
@@ -286,6 +295,7 @@ export function Sidebar({
         <div className={[
           "chat", chat.id === currentConversation ? "is-on" : "",
           running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
+          tasksWorking > 0 ? "is-tasks-running" : "",
           going ? "is-going" : "", isLeaving ? "is-leaving" : "",
           chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
           unread ? "is-unread" : "", done ? "is-done" : "", openWorker ? "is-worker-on" : "",
@@ -313,7 +323,7 @@ export function Sidebar({
             <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
               busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
               className="chat-btn" type="button"
-              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
+              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${tasksWorking > 0 ? `, ${tasksWorking} ${tasksWorking === 1 ? "task" : "tasks"} running` : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
               disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
               aria-description={`${parent ? `Agent chat under ${parent.title}. ` : ""}Hover to preview. Hold for chat actions.`}
               onPointerDown={(event) => {
@@ -374,7 +384,9 @@ export function Sidebar({
               turn is in flight; a tick badge sits on it once the chat has been
               ticked off; and under the pointer the logo gives way to the tick
               itself, which is what double-tapping does. Nothing moves when it
-              changes: every state is drawn inside the same 30px square. */}
+              changes: every state is drawn inside the same 30px square.
+              The ring also goes round while the chat's tasks are working,
+              even with the chat itself idle between turns. */}
           <button className="chat-badge" type="button" aria-pressed={done}
             title={done ? "Double-click or double-tap to mark not done" : "Double-click or double-tap to mark done"}
             aria-label={`${done ? "Mark not done" : "Mark done"}: ${chat.title}`}
@@ -397,8 +409,8 @@ export function Sidebar({
             {/* Three strokes on one path, all of them always rendered and
                 transparent at rest: a ring that appeared by mounting would
                 arrive a frame late and jump. The track is the still ring; the
-                snake and the pellet only have a colour while a turn is in
-                flight. */}
+                snake and the pellet only have a colour while a turn or a
+                task is in flight. */}
             <svg className="chat-badge-ring" viewBox="0 0 32 32" aria-hidden="true">
               <rect className="chat-badge-track" x="1" y="1" width="30" height="30" rx="8" />
               <rect className="chat-badge-snake" x="1" y="1" width="30" height="30" rx="8" />

@@ -1107,6 +1107,10 @@ body {
    It is the only moving thing in the sidebar, which is what makes a working
    chat findable when it is not the one on screen. A session that is merely UP
    gets the same ring, still and grey — green is kept for work in flight.
+   Work in flight is the chat's own turn (`is-busy`) OR one of its tasks
+   executing (`is-tasks-running`), so a main chat idle between turns still
+   goes round while its workers run. Only the ring: the green snippet and time
+   stay the chat's own turn's.
 
    Three strokes share one rounded-rect path, positioned by `stroke-dashoffset`
    along a perimeter of
@@ -1143,14 +1147,14 @@ body {
 .chat.is-live .chat-badge-track { stroke: color-mix(in srgb, var(--fg-3) 62%, transparent); }
 /* Under a running snake the track stays, very faintly: without it the lit
    segment reads as a stray mark rather than as something going round. */
-.chat.is-busy .chat-badge-track { stroke: color-mix(in srgb, var(--ok) 18%, transparent); }
-.chat.is-busy .chat-badge-snake {
+.chat:is(.is-busy, .is-tasks-running) .chat-badge-track { stroke: color-mix(in srgb, var(--ok) 18%, transparent); }
+.chat:is(.is-busy, .is-tasks-running) .chat-badge-snake {
   stroke: var(--ok);
   stroke-linecap: round;
   stroke-dasharray: 22 84.27;
   animation: chat-badge-snake 2.2s linear infinite;
 }
-.chat.is-busy .chat-badge-pellet {
+.chat:is(.is-busy, .is-tasks-running) .chat-badge-pellet {
   stroke: var(--ok);
   stroke-linecap: round;
   stroke-width: 2.6;
@@ -1205,9 +1209,9 @@ body {
   .chat-badge-check,
   .chat-badge-ring rect { transition: none; }
   /* Still says "working", without anything moving: the whole ring lights. */
-  .chat.is-busy .chat-badge-track { stroke: var(--ok); }
-  .chat.is-busy .chat-badge-snake,
-  .chat.is-busy .chat-badge-pellet { stroke: transparent; animation: none; }
+  .chat:is(.is-busy, .is-tasks-running) .chat-badge-track { stroke: var(--ok); }
+  .chat:is(.is-busy, .is-tasks-running) .chat-badge-snake,
+  .chat:is(.is-busy, .is-tasks-running) .chat-badge-pellet { stroke: transparent; animation: none; }
 }
 
 .sidebar-empty {
