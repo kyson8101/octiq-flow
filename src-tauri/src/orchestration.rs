@@ -1066,7 +1066,9 @@ impl OrchestrationStore {
     /// `seen` is the plan the person was looking at: the ids of the tasks
     /// awaiting approval, and `revision` the version of it on screen. When
     /// the lead added or changed anything in the meantime, the approval is
-    /// refused rather than stretched over work nobody reviewed.
+    /// refused rather than stretched over work nobody reviewed. The browser
+    /// goes through `approve_plan_from_card`, which requires both.
+    #[cfg(test)]
     pub fn approve_plan(
         &self,
         actor_chat_key: &str,
@@ -1281,6 +1283,7 @@ impl OrchestrationStore {
     /// browser told `task_created`, ever sees the task without it. There is
     /// no setter afterwards — the card is part of the plan the person
     /// approves, so it is fixed once the task exists.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn create_carded_task(
         &self,

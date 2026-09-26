@@ -43,6 +43,7 @@ pub struct BlockedAction {
     exact_grant: Option<String>,
 }
 
+#[cfg(test)]
 impl BlockedAction {
     pub fn id(&self) -> &str {
         &self.id
