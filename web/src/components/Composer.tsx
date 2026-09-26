@@ -11,7 +11,7 @@
 //
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
 // still has a real keyboard and should still send on Enter.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { transitionZen } from "../lib/zenMotion";
 import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
@@ -319,6 +319,7 @@ export function withPutBack(current: string, words: readonly string[]): string {
 export function Composer({
   focusMode = false,
   session,
+  draftStore,
   focusOn,
   choice,
   onChoice,
@@ -384,6 +385,11 @@ export function Composer({
   /** Which chat this is, so Up walks back through ITS input and no one else's.
    *  Absent for a chat that has not been saved yet. */
   session?: string;
+  /** Where half-typed messages wait, when that has to outlive this box. A
+   *  read-only task chat draws no composer, so opening one full-width and
+   *  coming back to its main chat mounts a new box — which, holding its own
+   *  drafts, would come back empty. Absent, the box keeps its own. */
+  draftStore?: Drafts<Attachment>;
   /** Changes when someone has asked for a new chat by pressing a button, and
    *  the box should take the focus. Only the CHANGE is read — the number is
    *  a way of saying "again", not a value. */
@@ -821,9 +827,26 @@ export function Composer({
   const box = useRef<Draft<Attachment>>({ text: "", attached: [] });
   box.current = { text, attached };
   /** Half-typed messages, one per chat, for as long as this page is open. */
-  const drafts = useRef(new Drafts<Attachment>());
+  const drafts = useRef(draftStore ?? new Drafts<Attachment>());
   /** The chat whose words the box is currently showing. */
   const shownFor = useRef(session);
+
+  // A store that outlives the box: arriving, take this chat's words back out;
+  // leaving, put them away. Before the paint, so the box is never drawn empty
+  // over a chat that had words waiting. `box` is set by hand as well as by the
+  // render, so a mount undone and redone at once (StrictMode) puts back what
+  // it took.
+  useLayoutEffect(() => {
+    if (!draftStore) return;
+    drafts.current = draftStore;
+    const back = draftStore.take(shownFor.current);
+    if (back.text || back.attached.length) {
+      box.current = back;
+      setText(back.text);
+      setAttached(back.attached);
+    }
+    return () => draftStore.keep(shownFor.current, box.current);
+  }, [draftStore]);
 
   // The box belongs to the CHAT, not to the screen.
   //

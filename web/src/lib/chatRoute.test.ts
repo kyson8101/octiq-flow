@@ -11,6 +11,16 @@ describe("single chat navigation", () => {
       expect(readChatRoute(chatRouteHash(route))).toEqual(route);
     }
   });
+  it("carries a task chat open beside the main chat", () => {
+    expect(readChatRoute("#/p/general/c/lead/beside/orch-1")).toEqual({ project: "general", chat: "lead", beside: "orch-1" });
+    expect(readChatRoute("#/c/lead/beside/orch-1")).toEqual({ chat: "lead", beside: "orch-1" });
+    for (const route of [{ project: "general", chat: "lead", beside: "orch/1 ?" }, { chat: "a", beside: "b" }]) {
+      expect(readChatRoute(chatRouteHash(route))).toEqual(route);
+    }
+    // Nothing to be beside without a chat.
+    expect(chatRouteHash({ project: "general", beside: "orch-1" })).toBe("#/p/general");
+    expect(readChatRoute("#/p/general/beside/orch-1")).toEqual({});
+  });
   it("opens the focused chat from retired split links", () => {
     expect(readChatRoute("#/split?left=a&right=b&focus=right")).toEqual({ chat: "b" });
     expect(readChatRoute("#/split?left=a&right=b")).toEqual({ chat: "a" });

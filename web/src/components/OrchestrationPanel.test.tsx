@@ -425,6 +425,23 @@ describe("embedded chat runs", () => {
     expect(html).toContain('aria-current="page" aria-label="Open task chat: Build the host ledger"');
     expect(html).not.toContain("Back to main chat");
   });
+  it("offers Open beside main as its own button, never in place of the row's full-width open", () => {
+    const render = (currentChatKey: string, besideChatKey: string | null) => renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey={currentChatKey}
+      initialSnapshot={snapshot} onOpenChat={() => {}} onOpenBeside={() => {}} besideChatKey={besideChatKey} onClose={() => {}} />);
+    const main = render("chat:master", null);
+    expect(main).toContain('aria-label="Open task chat: Build the host ledger"');
+    expect(main).toMatch(/<button type="button" class="open-beside orch-task-beside" aria-label="Open beside main: Build the host ledger" title="Open beside main">/);
+    // Already beside main: marked like an open task, and no second button.
+    const beside = render("chat:master", "chat:worker");
+    expect(beside).toContain('aria-current="page" aria-label="Open task chat: Build the host ledger"');
+    expect(beside).not.toContain("Open beside main: Build the host ledger");
+    // Open full-width: its own header carries the button, the row does not.
+    expect(render("chat:worker", null)).not.toContain("Open beside main: Build the host ledger");
+    // Nobody asked for it: no button.
+    expect(renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />)).not.toContain("Open beside main");
+  });
   it("scopes the ledger to the current chat and keeps the surrounding app visible", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:other"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);

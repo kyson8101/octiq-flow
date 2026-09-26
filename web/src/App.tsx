@@ -101,6 +101,7 @@ import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { MessageList } from "./components/MessageList";
 import { Composer, type Attachment, type ReclaimedMessage } from "./components/Composer";
+import { Drafts } from "./lib/drafts";
 import {
   accessFor,
   accessLabel as providerAccessLabel,
@@ -142,7 +143,7 @@ import {
   recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
-import { personaFor, senderName } from "./lib/agentPersona";
+import { personaFor, senderName, type Persona } from "./lib/agentPersona";
 import type { LaunchPlan } from "./lib/taskEnvironment";
 import { AgentRosterContext, ChatPersonaContext } from "./lib/agentRoster";
 
@@ -165,11 +166,13 @@ import { ChatDeleteButton } from "./components/ChatDeleteButton";
 import { CopyChatIdButton } from "./components/CopyChatIdButton";
 import { TopbarActionLayout } from "./components/TopbarActionsMenu";
 import { ChatTaskBar } from "./components/ChatTaskBar";
+import { BesideBar, BesideMainHead, TaskChatPane } from "./components/TaskChatPane";
+import { besideFor, besideTask, readBeside, roomBeside, type Beside } from "./lib/chatBeside";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
-import { WorkerChatNotice } from "./components/WorkerChatNotice";
+import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
 import {
   provesLiveTurn,
@@ -319,12 +322,15 @@ const TERM_KEY = "octiq.v2.terminalOpen";
  *  open yet. */
 function readLocation(): ChatRoute { return readChatRoute(location.hash); }
 
-function writeLocation(project: string | null, chat: string | null): void {
-  replaceChatRoute(location, history, { project: project ?? undefined, chat: chat ?? undefined });
+function writeLocation(project: string | null, chat: string | null, beside: string | null = null): void {
+  replaceChatRoute(location, history, { project: project ?? undefined, chat: chat ?? undefined, beside: beside ?? undefined });
 }
 
 /** The chat that was on screen when the page was last left. */
 const LAST_KEY = "octiq.v2.lastChat";
+/** The task chat last opened beside its main chat (lib/chatBeside), for a
+ *  reload from an address that names no chat. */
+const BESIDE_KEY = "octiq.v2.beside";
 /** The git column, open. A NEW key rather than the old `gitOpen`: for a while
  *  the desktop column was permanent and this flag only tracked what the smaller
  *  layouts did, so most saved copies of it read "shut" for reasons that no
@@ -410,6 +416,30 @@ export default function App() {
     loadConversations().filter((c) => !isDeleted(c.id)),
   );
   const [conversationId, setConversationId] = useState<string | null>(null);
+  /** [ Main | Task ]: the task chat the person chose to open beside a main
+   *  chat (lib/chatBeside). Their layout choice, so it is kept while they are
+   *  in other chats and across resizes; only Close split or Expand ends it.
+   *  A link naming one wins over the remembered one. */
+  const [beside, setBeside] = useState<Beside | null>(() => {
+    const route = opened.current;
+    if (route.chat && route.beside && route.chat !== route.beside) return { main: route.chat, task: route.beside };
+    return readBeside(recall(BESIDE_KEY));
+  });
+  /** Where there is no room for both, which one is on screen. */
+  const [besideShows, setBesideShows] = useState<"main" | "task">("task");
+  /** The chat area's own width — after the sidebar, the run column and any
+   *  side panel — which is what decides whether two panes fit. */
+  const [chatAreaWidth, setChatAreaWidth] = useState(0);
+  const [chatArea, setChatArea] = useState<HTMLDivElement | null>(null);
+  /** The task chat drawn beside the main one, readable from callbacks: its
+   *  deltas render as urgently as the main chat's. Null while it is hidden. */
+  const besideRef = useRef<string | null>(null);
+  /** The task pane's heading, focused when the pane opens. */
+  const besideHeading = useRef<HTMLHeadingElement | null>(null);
+  /** Half-typed messages per chat, held here rather than in the composer: a
+   *  task chat opened full-width draws none, and the main chat's words must
+   *  still be there when it comes back. */
+  const composerDrafts = useRef(new Drafts<Attachment>());
   /** The host-side execution location for the next new chat. These choices
    *  are applied before `chat_start`, so the agent never has to ask how its
    *  branch or worktree should be prepared. */
@@ -553,7 +583,6 @@ export default function App() {
   const displayedRun = displayedRunId === null ? null
     : runWorkflow.runs.find((run) => run.id === displayedRunId)
       ?? runWorkflow.runs.find((run) => run.archivedAt == null) ?? runWorkflow.runs[0];
-  const coordinatorConversation = conversations.find((chat) => chat.id === coordinatorId);
   // The coordinator the ledger names for this worker's own run. The chat tree
   // walks to the top-most head, which for a delegated run is not the chat
   // that coordinates it.
@@ -956,7 +985,8 @@ export default function App() {
     // The server has this covered, and its banner arrives whether or not this
     // page is still here. Raising one too would only double it.
     if (viaPush) return;
-    const focus = focusNow(reading);
+    // A task chat open beside the main one is being read as much as it is.
+    const focus = focusNow(id === besideRef.current ? id : reading);
     if (!owed({ enabled: on, permission: permissionNow() }, focus, id)) return;
     const chat = list.find((c) => c.id === id);
     const notice = noticeFor({
@@ -1383,7 +1413,7 @@ export default function App() {
       // Urgent only for the chat being read. The rest is the whole point of
       // `writeChats`: a background answer still folds in immediately, it is
       // only the RENDER of it that waits for the others to catch up.
-      writeChats({ ...held, [id]: after }, id === visibleRef.current);
+      writeChats({ ...held, [id]: after }, id === visibleRef.current || id === besideRef.current);
     },
     [writeChats],
   );
@@ -1473,8 +1503,7 @@ export default function App() {
     [patch],
   );
 
-  const loadEarlier = useCallback(async () => {
-    const id = visibleRef.current;
+  const loadEarlierFor = useCallback(async (id: string | null) => {
     if (!id || !chatHistory.current.hasEarlier(id)) return;
     setEarlierReads((prev) => ({ ...prev, [id]: { loading: true } }));
     try {
@@ -1487,6 +1516,9 @@ export default function App() {
       setEarlierReads((prev) => ({ ...prev, [id]: { loading: false, error: String(error) } }));
     }
   }, [catchUpChat]);
+  // Stable, for the memoised transcripts: each pane asks for its own chat.
+  const loadEarlier = useCallback(() => loadEarlierFor(visibleRef.current), [loadEarlierFor]);
+  const loadEarlierBeside = useCallback(() => loadEarlierFor(besideRef.current), [loadEarlierFor]);
 
   // Reconnected: ask each live chat for everything that happened while we were
   // away. Without this, closing a laptop mid-answer loses the rest of it — the
@@ -1499,10 +1531,12 @@ export default function App() {
   useEffect(() => {
     if (conn !== "open") return;
     const visible = visibleRef.current;
+    const shownBeside = besideRef.current;
     const ids = new Set(runningRef.current);
     if (visible) ids.add(visible);
+    if (shownBeside) ids.add(shownBeside);
     for (const id of ids) {
-      if (id !== visible && !catchUp.current.holds(keyFor(id))) continue;
+      if (id !== visible && id !== shownBeside && !catchUp.current.holds(keyFor(id))) continue;
       const storedSeq = conversationsRef.current.find((c) => c.id === id)?.seq;
       catchUpChat(id, storedSeq).catch(() => {});
     }
@@ -1746,7 +1780,10 @@ export default function App() {
     // has not arrived, so a reload does not blank the address.
     const ws = workspaces.find((w) => w.id === projectId);
     if (restored.current && !awaited.current) {
-      writeLocation(ws ? projectSlug(ws.name) : projectId, unavailableChat ?? conversationId);
+      // A task open beside this chat is part of where you are, so a reload
+      // or a copied link comes back to both.
+      writeLocation(ws ? projectSlug(ws.name) : projectId, unavailableChat ?? conversationId,
+        !unavailableChat && beside && beside.main === conversationId ? beside.task : null);
     }
     // Said to the browser chrome too: the tab, the phone's top bar, and a
     // home-screen shortcut all name the page by its <title>, and with several
@@ -1760,7 +1797,7 @@ export default function App() {
     // A store that will not take it is survivable here: the URL is still the
     // way back.
     if (conversationId) remember(LAST_KEY, conversationId);
-  }, [projectId, conversationId, workspaces, unavailableChat]);
+  }, [projectId, conversationId, workspaces, unavailableChat, beside]);
 
   const project = useMemo(
     () => workspaces.find((w) => w.id === projectId) ?? null,
@@ -1808,6 +1845,21 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+
+  // [ Main | Task ] (lib/chatBeside). The chat on screen stays the MAIN one:
+  // its composer, requests, side panels and sends are exactly what they are
+  // without a split. The task beside it is drawn read-only from the same held
+  // chats, so nothing here can send to it.
+  const besideId = focusMode || mainPage || unavailableChat ? null
+    : besideTask(beside, conversationId, orchestrationState.snapshot, (id) => conversations.some((c) => c.id === id));
+  const besideConversation = besideId ? conversations.find((c) => c.id === besideId) : undefined;
+  const besideFits = roomBeside(chatAreaWidth);
+  /** Both side by side, or — without the room — one at a time. */
+  const besideSplit = !!besideId && besideFits;
+  const mainShown = !besideId || besideFits || besideShows === "main";
+  const besideShown = !!besideId && (besideFits || besideShows === "task");
+  besideRef.current = besideShown ? besideId : null;
+  const besideChat = (besideId && chats[besideId]) || EMPTY;
 
   // Agents mode: the agents this project can hand a task to, and which one a
   // new task goes to. Re-read when Settings closes, where they are edited.
@@ -1921,14 +1973,13 @@ export default function App() {
   // attempt, sandbox state and registered persona with live host verification.
   // Keep this at the App boundary: isolated task-panel renders cannot prove
   // that the real conversation has all of those sources wired together.
-  const panelContext = useMemo(() => {
-    if (!conversationId) return undefined;
-    const key = keyFor(conversationId);
+  const contextFor = useCallback((id: string, chatPersona: Persona | null, model: ModelChoice) => {
+    const key = keyFor(id);
     const attempt = orchestration.attempts
       .filter((candidate) => candidate.workerChatKey === key)
       .sort((a, b) => b.createdAt - a.createdAt)[0];
     const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
-    const held = conversations.find((conversation) => conversation.id === conversationId);
+    const held = conversations.find((conversation) => conversation.id === id);
     const sandbox = Object.values(sandboxes.snapshot?.environments ?? {})
       .find((environment) => environment.chatKey === key) ?? null;
     const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
@@ -1936,11 +1987,30 @@ export default function App() {
       launch: held?.launch ?? null,
       worker: task ? { task, attempt } : null,
       sandbox,
-      projectName: (id: string) => names.get(id),
-      persona,
-      runsOn: persona ? `${providerFor(choice.agent).name} ${choice.model}` : undefined,
+      projectName: (projectId: string) => names.get(projectId),
+      persona: chatPersona,
+      runsOn: chatPersona ? `${providerFor(model.agent).name} ${model.model}` : undefined,
     };
-  }, [conversationId, orchestration, conversations, sandboxes.snapshot, workspaces, shelved, persona, choice]);
+  }, [orchestration, conversations, sandboxes.snapshot, workspaces, shelved]);
+  const panelContext = useMemo(
+    () => (conversationId ? contextFor(conversationId, persona, choice) : undefined),
+    [conversationId, contextFor, persona, choice],
+  );
+  // The task beside the main chat: its own agent, model and task — never the
+  // main chat's, which is what `persona` and `choice` describe.
+  const besideModel = useMemo(
+    () => modelFromId(besideConversation?.modelId ?? null) ?? MODELS[0],
+    [besideConversation?.modelId],
+  );
+  const besidePersona = useMemo(
+    () => (besideId ? personaForChat(keyFor(besideId)) : null),
+    [besideId, personaForChat],
+  );
+  const besideContext = useMemo(
+    () => (besideId ? contextFor(besideId, besidePersona, besideModel) : undefined),
+    [besideId, contextFor, besidePersona, besideModel],
+  );
+  const besideCalls = useMemo(() => backgroundCalls(besideChat.background), [besideChat.background]);
   const pickLead = useCallback((agent: TeamAgent) => {
     setLeadId(agent.id);
     remember(LEAD_KEY, agent.id);
@@ -1974,9 +2044,10 @@ export default function App() {
   // change while open rather than once. Scalar dependencies, not `openRecord`
   // itself, so this reacts to only ITS OWN chat's activity, not every other
   // row's.
-  useEffect(() => {
-    if (!openRecord || !isUnread(openRecord, null)) return;
-    const id = openRecord.id;
+  //
+  // "On screen" is literal: with a task beside it and no room for both, the
+  // pane that is not showing is not read.
+  const markRead = useCallback((id: string) => {
     const at = Date.now();
     markChatRead(id, at);
     setConversations((prev) => {
@@ -1984,7 +2055,69 @@ export default function App() {
       saveConversations(list);
       return list;
     });
-  }, [openRecord?.id, openRecord?.updatedAt, openRecord?.readAt]);
+  }, []);
+  useEffect(() => {
+    if (!mainShown || !openRecord || !isUnread(openRecord, null)) return;
+    markRead(openRecord.id);
+  }, [openRecord?.id, openRecord?.updatedAt, openRecord?.readAt, mainShown, markRead]);
+  // The task beside the main chat, on the same terms.
+  useEffect(() => {
+    if (!besideShown || !besideConversation || !isUnread(besideConversation, null)) return;
+    markRead(besideConversation.id);
+  }, [besideShown, besideConversation?.id, besideConversation?.updatedAt, besideConversation?.readAt, markRead]);
+
+  // The chat area's width, measured rather than inferred from the window: the
+  // sidebar, the run column and the side panels all take their share first.
+  useLayoutEffect(() => {
+    const area = chatArea;
+    if (!area) return;
+    const measure = () => setChatAreaWidth(Math.round(area.getBoundingClientRect().width));
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(area);
+    return () => observer.disconnect();
+  }, [chatArea]);
+
+  // The choice itself outlives a reload from an address that names no chat.
+  useEffect(() => {
+    if (beside) remember(BESIDE_KEY, JSON.stringify(beside));
+    else {
+      try { localStorage.removeItem(BESIDE_KEY); } catch { /* storage blocked */ }
+    }
+  }, [beside]);
+
+  /** Open a task's chat beside the main chat that coordinates its run. Never
+   *  creates a chat or a run: both must already be here. */
+  const openBeside = (taskChatKey: string) => {
+    const pair = besideFor(orchestrationState.snapshot, taskChatKey);
+    if (!pair) throw new Error("This task's main chat is not known yet. Wait for the run to load and try again.");
+    const main = conversationsRef.current.find((item) => item.id === pair.main);
+    if (!main) throw new Error("The main chat for this task is not available in this browser yet.");
+    if (!conversationsRef.current.some((item) => item.id === pair.task)) throw new Error("This task's chat is not available yet.");
+    setBeside(pair);
+    setBesideShows("task");
+    setWorkflowViews((before) => ({ ...before, [pair.main]: "chat" }));
+    if (conversationId !== pair.main) openConversation(main);
+    requestAnimationFrame(() => besideHeading.current?.focus({ preventScroll: true }));
+  };
+  /** Whether "Open beside main" has both chats to put side by side. */
+  const canOpenBeside = (taskChatKey: string) => {
+    const pair = besideFor(orchestrationState.snapshot, taskChatKey);
+    return !!pair && conversations.some((item) => item.id === pair.main) && conversations.some((item) => item.id === pair.task);
+  };
+  /** Leave the split for the task's own full-width chat. */
+  const expandBeside = () => {
+    const task = besideId;
+    if (!task) return;
+    setBeside(null);
+    openWorkflowChat(keyFor(task));
+  };
+  /** Back to the main chat alone. The task keeps running; only the pane goes. */
+  const closeBeside = () => {
+    setBeside(null);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(".composer textarea")?.focus({ preventScroll: true }));
+  };
   /** A worktree chat belongs to its parent project but runs from its own cwd.
    *  Every local surface follows that exact directory: agent, Git panel,
    *  terminal, file pins and path rendering. */
@@ -2344,17 +2477,11 @@ export default function App() {
     [workspaces, projectId, conversationId, access, effort, patch],
   );
 
-  const openConversation = useCallback((c: Conversation) => {
-    setUnavailableChat(null);
-    setNewChatError(null);
-    awaited.current = null;
-    const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
-    const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
-    meta.current[c.id] = {
-      projectId: c.projectId,
-      modelId: model.id,
-      access: conversationAccess,
-    };
+  /** Put a conversation's transcript in front of the reader: seed what is
+   *  stored and read back whatever this device has not seen. The half of
+   *  opening a chat that does not change which chat is on screen — the task
+   *  pane beside a main chat is loaded through this too. */
+  const holdConversation = useCallback((c: Conversation) => {
     // Seed the stored transcript unless this page already HOLDS the chat: one
     // that has been running in the background holds more than what was last
     // written to storage, and must not be rewound to it.
@@ -2410,6 +2537,20 @@ export default function App() {
           return next;
         });
       });
+  }, [catchUpChat, writeChats]);
+
+  const openConversation = useCallback((c: Conversation) => {
+    setUnavailableChat(null);
+    setNewChatError(null);
+    awaited.current = null;
+    const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
+    const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
+    meta.current[c.id] = {
+      projectId: c.projectId,
+      modelId: model.id,
+      access: conversationAccess,
+    };
+    holdConversation(c);
     setProjectId(c.projectId);
     setConversationId(c.id);
     if (c.modelId) setChoice(model);
@@ -2420,7 +2561,27 @@ export default function App() {
     setSearchPage(false);
     setAppSettings(false);
     setAgentsDashboard(false);
-  }, [catchUpChat, writeChats]);
+  }, [holdConversation]);
+
+  // Load the task beside the main chat the way opening it would, once per
+  // task: its stored words at once, then whatever this device has not seen.
+  // Live events already fold into every chat, so nothing else subscribes.
+  const besideHeld = useRef<string | null>(null);
+  useEffect(() => {
+    if (!besideConversation) { besideHeld.current = null; return; }
+    if (besideHeld.current === besideConversation.id) return;
+    besideHeld.current = besideConversation.id;
+    if (!meta.current[besideConversation.id]) {
+      const model = modelFromId(besideConversation.modelId ?? null) ?? MODELS[0];
+      meta.current[besideConversation.id] = {
+        projectId: besideConversation.projectId,
+        modelId: model.id,
+        access: accessFor(model.agent, (besideConversation.permission as AccessLevel) ?? "read"),
+      };
+    }
+    holdConversation(besideConversation);
+    flushChats();
+  }, [besideConversation, holdConversation, flushChats]);
 
   // The half that opens a chat a banner asked for lives further down, with the
   // panel closers it needs — see `showConversation`.
@@ -2709,6 +2870,12 @@ export default function App() {
   useEffect(() => {
     const navigate = () => {
       const route = readLocation();
+      // A link to a split brings the split; a link to a chat alone leaves the
+      // person's layout choice as it was.
+      if (route.chat && route.beside && route.beside !== route.chat) {
+        setBeside({ main: route.chat, task: route.beside });
+        setBesideShows("task");
+      }
       if (route.chat) onOpenChat.current(route.chat);
       else if (route.project) {
         const project = notifying.current.projects.find(p => p.id === route.project || projectSlug(p.name) === projectSlug(route.project!));
@@ -4314,6 +4481,12 @@ export default function App() {
             // Main agent chat button is that way, so the bar does not repeat it.
             onBackToMain={workerChat && (workerCoordinatorKey ?? runChatKey) && !(workflowVisible && (workflowSplit || workflowView === "run"))
               ? () => openWorkflowChat((workerCoordinatorKey ?? runChatKey)!) : undefined}
+            // The way back to [ Main | Task ] from a task opened full-width —
+            // the only place it is offered for the task on screen.
+            onOpenBeside={workerChat && conversationId && !focusMode && canOpenBeside(keyFor(conversationId))
+              ? () => openBeside(keyFor(conversationId)) : undefined}
+            besideTitle={openRecord?.title}
+            readOnly={workerChat}
             planPending={!!plan}
             pendingApprovals={pendingApprovals}
             onView={showWorkflowView} />}
@@ -4334,6 +4507,8 @@ export default function App() {
               initialSnapshot={orchestration} currentCwd={effectiveCwd}
               onEnsureCoordinator={ensureCoordinator} onStartMaster={startWorkflowMaster}
               onOpenChat={openWorkflowChat} onClose={() => showWorkflowView("chat")}
+              onOpenBeside={focusMode ? undefined : openBeside}
+              besideChatKey={besideId ? keyFor(besideId) : null}
               setupContext={<div className="workflow-setup-context">
                 <label>Project<select aria-label="Run project" value={project?.id ?? ""} disabled={!!conversationId} onChange={(event) => chooseProject(event.target.value || null)}>
                   <option value="">Choose a project</option>
@@ -4348,7 +4523,16 @@ export default function App() {
                 <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
               </div>} />
           </div>}
-          <div className="workflow-chat-surface" hidden={!workflowSplit && workflowView === "run"}>
+          <div className="workflow-chat-surface" hidden={!workflowSplit && workflowView === "run"} ref={setChatArea}>
+          {besideId && besideConversation && !besideFits && <BesideBar showing={besideShows}
+            taskTitle={besideConversation.title} onShow={setBesideShows} onClose={closeBeside} />}
+          <div className={`beside-panes${besideSplit ? " is-split" : ""}`}>
+          <div className="beside-pane is-main" hidden={!mainShown}
+            {...(besideId ? { role: "region", "aria-label": "Main chat" } : {})}>
+          {besideSplit && <BesideMainHead persona={persona} />}
+          {/* The run line carries a task chat's Read-only badge; while that
+              line is not drawn, it rides here. */}
+          {workerChat && !workflowVisible && <div className="read-only-strip"><ReadOnlyBadge /></div>}
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>
           )}
@@ -4608,12 +4792,12 @@ export default function App() {
             </section>
           ))}
 
-          {workerChat ? <WorkerChatNotice
-            busy={chat.busy && !cutOff}
-            onOpenMain={coordinatorConversation ? () => openWorkflowChat(keyFor(coordinatorConversation.id)) : undefined}
-          /> : <Composer
+          {/* A task chat takes no messages: no composer, and no block in its
+              place — the Read-only badge by its title says so. */}
+          {!workerChat && <Composer
             focusMode={focusMode}
             session={conversationId ?? undefined}
+            draftStore={composerDrafts.current}
             focusOn={focusBox}
             choice={choice}
             onChoice={changeModel}
@@ -4688,6 +4872,33 @@ export default function App() {
             }
           />}
 
+          </div>
+          {besideId && besideConversation && <TaskChatPane
+            ref={besideHeading}
+            chatId={besideId}
+            title={besideConversation.title}
+            messages={besideChat.messages}
+            busy={besideChat.busy && !interruptedIds.has(besideId)}
+            stoppedAt={besideChat.stoppedAt}
+            compactingSince={besideChat.compactingSince}
+            reading={!!reading[besideId]}
+            hostName={senderName(besidePersona, providerFor(besideModel.agent).name)}
+            persona={besidePersona}
+            cwd={besideChat.cwd ?? besideConversation.cwd ?? ""}
+            runningCalls={besideCalls}
+            hasEarlier={chatHistory.current.hasEarlier(besideId)}
+            loadingEarlier={!!earlierReads[besideId]?.loading}
+            earlierError={earlierReads[besideId]?.error}
+            onLoadEarlier={loadEarlierBeside}
+            connected={conn === "open"}
+            context={besideContext}
+            waiting={(asks[besideId]?.length ?? 0) + (questions[besideId]?.length ?? 0) + (safetyBlocks[besideId]?.length ?? 0) > 0}
+            split={besideSplit}
+            hidden={!besideShown}
+            onExpand={expandBeside}
+            onClose={closeBeside}
+          />}
+          </div>
           </div>
           </div>
           </>}

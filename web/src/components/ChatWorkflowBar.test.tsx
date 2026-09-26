@@ -17,6 +17,23 @@ describe("ChatWorkflowBar", () => {
     expect(html.indexOf("Ship the unified workspace")).toBeLessThan(html.indexOf('aria-label="Conversation view"'));
   });
 
+  it("offers a full-width task chat the way back beside its main chat, next to Back", () => {
+    const run = { id: "run", coordinatorChatKey: "chat:main", objective: "Ship it", status: "running" as const, workspaceId: "project", rootPath: "/repo", createdAt: 1, updatedAt: 1, maxConcurrent: 2 };
+    const html = renderToStaticMarkup(<ChatWorkflowBar unified worker selectedRun={run} snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }}
+      orchestrated view="chat" onView={() => {}} onBackToMain={() => {}} onOpenBeside={() => {}} besideTitle="Build the roster" />);
+    expect(html).toContain('aria-label="Back to main chat"');
+    expect(html).toMatch(/<button type="button" class="open-beside is-bar" aria-label="Open beside main: Build the roster" title="Open beside main">/);
+    expect(html.indexOf("Back to main chat")).toBeLessThan(html.indexOf("Open beside main"));
+    expect(html).not.toContain("read-only-badge");
+    const readOnly = renderToStaticMarkup(<ChatWorkflowBar unified worker readOnly selectedRun={run} snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }}
+      orchestrated view="chat" onView={() => {}} />);
+    // A task chat's line says it is read-only, right after its title.
+    expect(readOnly).toMatch(/Ship it<\/h1>[\s\S]*<span class="read-only-badge workflow-read-only" role="note" aria-label="Read-only. Send instructions in the main chat."/);
+    const without = renderToStaticMarkup(<ChatWorkflowBar unified worker selectedRun={run} snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }}
+      orchestrated view="chat" onView={() => {}} />);
+    expect(without).not.toContain("Open beside main");
+  });
+
   it("shows the selected historical run title without duplicating status from task details", () => {
     const run = { id: "history", coordinatorChatKey: "chat:main", objective: "Earlier work", status: "completed" as const, workspaceId: "project", rootPath: "/repo", createdAt: 1, updatedAt: 1, maxConcurrent: 2 };
     const html = renderToStaticMarkup(<ChatWorkflowBar unified selectedRun={run}

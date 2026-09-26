@@ -33,6 +33,43 @@ remain supported. Retired `#/split?...` bookmarks open their focused chat in the
 single workspace, falling back to an available target if necessary. Old saved
 split layouts and widths are ignored.
 
+## A task chat beside its main chat
+
+Clicking a task in the run panel opens its chat full-width, as it always has.
+**Open beside main** (the split icon on a task row, or beside *Back to main
+chat* in a full-width task chat's run line) opens exactly two panes instead:
+the main chat on the left, the task chat on the right. The layout never
+switches to this on its own, however wide the window gets.
+
+- **Main** is the coordinator the ledger names for that task's run
+  (`lib/chatBeside`), never the configured head or whichever chat was open.
+- Only two panes. Opening another task beside the same main replaces the
+  right pane. A plain click on a task row still opens it full-width.
+- The chat on screen stays the main chat: its composer, requests, side panels
+  and sends are unchanged. The task pane is read-only, like a task chat
+  opened on its own, and has no composer; worker approval cards stay in the
+  main pane. Nothing here creates a chat or a run.
+- A task chat says it is read-only with a small **Read-only** badge by its
+  title, in the pane header and in a full-width task chat's run line. It no
+  longer has a notice block with an Open main chat button under the
+  transcript.
+- The task pane's header offers **Expand to full chat** (leaves the split)
+  and **Close split** (keeps the main chat). A full-width task chat offers
+  Open beside main to go back.
+- The split needs two 360px panes in the chat area as measured, after the
+  sidebar, the run column and any side panel. Without that room, a bar says
+  so and switches between Main and Task, one at a time. The choice is kept,
+  so the split comes back when there is room. A pane that is not showing is
+  not marked read.
+- The choice is written into the address as `#/p/<project>/c/<main>/beside/<task>`
+  and remembered locally, so a reload or a copied link restores both panes.
+- Drafts belong to the chat (`lib/drafts`), and the store is App's, so the
+  main chat's half-typed message survives a trip to a full-width task chat.
+
+`node scripts/test-task-beside.mjs` drives the real App with a mocked socket.
+It covers two live streams, replace, expand, close, a plain row click, send
+routing, resize fallback, reload and 390px. It needs no dev server.
+
 ## Browser regression check
 
 Run a Vite dev server, then `node scripts/test-chat-layout.mjs`.

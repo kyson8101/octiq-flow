@@ -39,7 +39,12 @@
 /* Neither column gets a hard floor. A git or files panel can open beside these
    at any moment, and a column that refuses to shrink puts a horizontal scroll
    bar under the whole app — worse than a cramped run column. */
-.workflow-surfaces.is-split > .workflow-chat-surface { flex: 1 1 auto; min-width: 0; }
+/* Basis 0, not auto: the chat takes what the run column leaves. With `auto`
+   the transcript's own content width set the split, squeezing the run column
+   below its dragged width — and a task open beside the main chat (two panes'
+   worth of content) squeezed it further, so the chat area could never be
+   measured narrower than both panes. */
+.workflow-surfaces.is-split > .workflow-chat-surface { flex: 1 1 0; min-width: 0; }
 /* Its width is dragged (`--run-w`, from `useDockWidth`); the chat always keeps
    340px of whatever is left, so a wide drag squeezes this column, not the chat. */
 .workflow-surfaces.is-split > .workflow-run-surface {

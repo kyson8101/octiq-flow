@@ -3,13 +3,15 @@ import type { OrchestrationRun, OrchestrationSnapshot } from "../lib/orchestrati
 import { isActiveRun } from "../lib/chatWorkflow";
 import { createPortal } from "react-dom";
 import { useWorkspaceSlot } from "./WorkspaceHeader";
+import { OpenBesideButton } from "./OpenBesideButton";
+import { ReadOnlyBadge } from "./ReadOnlyBadge";
 import "./ChatWorkflowBar.css";
 
 /** The line over a chat that has work in a run: its title and Tasks/Chat.
  *  Progress and approvals stay in the task details. A chat with no run draws
  *  nothing here; the agent decides how to work, and a run exists only once
  *  one is explicitly started. */
-export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPending = false, split = false, unified = false, selectedRun, onBackToMain }: {
+export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPending = false, split = false, unified = false, selectedRun, onBackToMain, onOpenBeside, besideTitle = "this task", readOnly = false }: {
   snapshot: OrchestrationSnapshot; orchestrated: boolean; view: "chat" | "run";
   onView: (view: "chat" | "run") => void;
   pendingApprovals?: number;
@@ -22,6 +24,11 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
   worker?: boolean;
   /** Worker chats return to their coordinator from beside the run title. */
   onBackToMain?: () => void;
+  /** A worker chat open full-width can go back beside its main chat. */
+  onOpenBeside?: () => void;
+  besideTitle?: string;
+  /** A task (worker) chat: it takes no messages, and the line says so. */
+  readOnly?: boolean;
 }) {
   const slot = useWorkspaceSlot("context");
   const active = snapshot.runs.find(isActiveRun);
@@ -37,7 +44,9 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
     {onBackToMain && <button type="button" className="workflow-back-main" title="Back to main chat" aria-label="Back to main chat" onClick={onBackToMain}>
       <BackIcon />
     </button>}
+    {onOpenBeside && <OpenBesideButton className="is-bar" title={besideTitle} onClick={onOpenBeside} />}
     <RunTitle text={run?.objective ?? "New run"} />
+    {readOnly && <ReadOnlyBadge className="workflow-read-only" />}
   </>;
   const nav = views ? <nav className="chat-workflow-bar" aria-label="Chat workflow">
     <div className="chat-workflow-views" role="group" aria-label="Conversation view">

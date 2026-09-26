@@ -640,6 +640,10 @@
 .orch-task-expand { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-3); cursor: pointer; transition: background 130ms ease-out, color 130ms ease-out; }
 .orch-task-expand:hover { background: var(--bg-2); color: var(--fg-0); }
 .orch-task-expand:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+/* Open beside main: as quiet as the disclosure next to it. */
+.orch-task-heading .orch-task-beside { flex: 0 0 32px; width: 32px; height: 32px; color: var(--fg-3); }
+.orch-task-heading .orch-task-beside:hover { color: var(--fg-0); }
+.orch-task-heading .orch-task-beside:focus-visible { outline-offset: -2px; }
 
 .orch-task-glyph {
   grid-row: 1 / span 2;
@@ -908,7 +912,7 @@
 /* Touch targets, without turning the row into a card. */
 @media (max-width: 859.98px), (pointer: coarse) {
   .orch-task-summary { padding-block: 13px; }
-  .orch-task-expand { flex-basis: 44px; width: 44px; height: 44px; }
+  .orch-task-expand, .orch-task-heading .orch-task-beside { flex-basis: 44px; width: 44px; height: 44px; }
   .orch-task-filters button,
   .orch-settings-toggle,
   .orch-tool,

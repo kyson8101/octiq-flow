@@ -1,0 +1,94 @@
+/* [ Main | Task ] — see lib/chatBeside. Without a task beside it the wrapper
+   and the main pane are the plain column the chat surface always was. */
+.beside-panes { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
+.beside-pane { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; min-height: 0; }
+.beside-pane.is-task { container-type: inline-size; }
+.beside-pane[hidden] { display: none; }
+/* Side by side: two equal halves. No min-width here on purpose — the split is
+   only chosen once the measured chat area holds two 360px panes
+   (lib/chatBeside), and a CSS minimum would stop that area from ever
+   measuring narrower than two panes, so the fallback could never be reached. */
+.beside-panes.is-split > .beside-pane.is-task {
+  border-left: 1px solid var(--border);
+  animation: beside-in 180ms ease-out;
+}
+@keyframes beside-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.beside-head {
+  display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+  min-height: 48px; padding: 6px 12px 6px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.beside-head-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+.beside-title-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.beside-title-row .beside-title { flex: 0 1 auto; min-width: 0; }
+.beside-title {
+  margin: 0; overflow: hidden; color: var(--fg-0); font-size: 13px; font-weight: 620;
+  line-height: 1.35; text-overflow: ellipsis; white-space: nowrap;
+}
+.beside-title:focus { outline: none; }
+.beside-title:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
+.beside-sub { overflow: hidden; color: var(--fg-2); font-size: 11.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.beside-head .chat-task { flex: 0 1 auto; min-width: 0; }
+.beside-actions { display: flex; gap: 2px; flex: 0 0 auto; margin-left: 2px; }
+
+.beside-btn, .open-beside {
+  display: inline-grid; place-items: center; flex: 0 0 auto;
+  width: 30px; height: 30px; padding: 0;
+  border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-2); cursor: pointer;
+  transition: background 130ms ease-out, color 130ms ease-out;
+}
+.beside-btn:hover, .open-beside:hover { background: var(--bg-2); color: var(--fg-0); }
+.beside-btn:focus-visible, .open-beside:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* In the top bar's run line, beside "Back to main chat" — the same frame. */
+.open-beside.is-bar { border: 1px solid var(--border); }
+
+/* Not enough room: one chat at a time, and a line that says why. */
+.beside-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; flex: 0 0 auto;
+  padding: 8px 12px 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+.beside-note {
+  display: flex; align-items: center; gap: 6px; flex: 1 1 220px; min-width: 0; margin: 0;
+  color: var(--fg-2); font-size: 12px; line-height: 1.4;
+}
+.beside-note svg { flex: 0 0 auto; }
+.beside-switch { display: flex; gap: 2px; flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.beside-switch button {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-2); font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background 130ms ease-out, color 130ms ease-out, border-color 130ms ease-out;
+}
+.beside-switch button:last-child { flex: 0 1 auto; }
+.beside-switch button:hover { background: var(--bg-2); color: var(--fg-0); }
+.beside-switch button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg-0);
+}
+.beside-switch button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.beside-switch-title { min-width: 0; overflow: hidden; color: var(--fg-2); text-overflow: ellipsis; white-space: nowrap; }
+
+/* A narrow pane: the task's status gets a line of its own under the title
+   rather than being squeezed to a few letters beside it. */
+@container (max-width: 480px) {
+  .beside-head { flex-wrap: wrap; row-gap: 4px; }
+  .beside-head .chat-task { order: 3; flex: 1 0 100%; padding-left: 32px; }
+}
+@media (max-width: 859.98px) {
+  .beside-head { padding-left: 12px; }
+  .beside-bar { padding-inline: 12px; }
+  .beside-switch button, .beside-btn { min-height: 40px; }
+  .beside-btn { width: 40px; height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .beside-panes.is-split > .beside-pane.is-task { animation: none; }
+}

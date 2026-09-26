@@ -1,5 +1,6 @@
-/** Chat links accept both project slugs and legacy workspace IDs. */
-export type ChatRoute = { project?: string; chat?: string };
+/** Chat links accept both project slugs and legacy workspace IDs. `beside` is
+ *  the task chat open beside this (main) chat — see lib/chatBeside. */
+export type ChatRoute = { project?: string; chat?: string; beside?: string };
 
 export function readChatRoute(hash: string): ChatRoute {
   try {
@@ -9,15 +10,20 @@ export function readChatRoute(hash: string): ChatRoute {
       const chat = params.get(params.get("focus") === "right" ? "right" : "left") || params.get("left") || params.get("right");
       return chat ? { chat } : {};
     }
-    const project = /^#\/p\/([^/]+)(?:\/c\/([^/?]+))?$/.exec(hash);
-    if (project) return { project: decodeURIComponent(project[1]), ...(project[2] ? { chat: decodeURIComponent(project[2]) } : {}) };
-    const chat = /^#\/c\/([^/?]+)$/.exec(hash);
-    return chat ? { chat: decodeURIComponent(chat[1]) } : {};
+    const project = /^#\/p\/([^/]+)(?:\/c\/([^/?]+)(?:\/beside\/([^/?]+))?)?$/.exec(hash);
+    if (project) return {
+      project: decodeURIComponent(project[1]),
+      ...(project[2] ? { chat: decodeURIComponent(project[2]) } : {}),
+      ...(project[2] && project[3] ? { beside: decodeURIComponent(project[3]) } : {}),
+    };
+    const chat = /^#\/c\/([^/?]+)(?:\/beside\/([^/?]+))?$/.exec(hash);
+    return chat ? { chat: decodeURIComponent(chat[1]), ...(chat[2] ? { beside: decodeURIComponent(chat[2]) } : {}) } : {};
   } catch { return {}; }
 }
 export function chatRouteHash(route: ChatRoute): string {
-  if (route.project) return `#/p/${encodeURIComponent(route.project)}${route.chat ? `/c/${encodeURIComponent(route.chat)}` : ""}`;
-  return route.chat ? `#/c/${encodeURIComponent(route.chat)}` : "";
+  const beside = route.chat && route.beside ? `/beside/${encodeURIComponent(route.beside)}` : "";
+  if (route.project) return `#/p/${encodeURIComponent(route.project)}${route.chat ? `/c/${encodeURIComponent(route.chat)}${beside}` : ""}`;
+  return route.chat ? `#/c/${encodeURIComponent(route.chat)}${beside}` : "";
 }
 
 /** Keep the address bar linkable without turning chat selections into browser

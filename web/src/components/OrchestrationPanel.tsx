@@ -25,6 +25,7 @@ import { PlanReview } from "./PlanReview";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
 import { BranchIcon, ClockIcon, TaskStatusIcon } from "./TaskMeter";
+import { OpenBesideButton } from "./OpenBesideButton";
 
 import {
   deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel,
@@ -68,6 +69,8 @@ export function OrchestrationPanel({
   currentChatKey = null,
   currentCwd,
   onOpenChat,
+  onOpenBeside,
+  besideChatKey = null,
   onClose,
   initialSnapshot = EMPTY,
   readOnly = false,
@@ -89,6 +92,11 @@ export function OrchestrationPanel({
   currentChatKey?: string | null;
   currentCwd?: string;
   onOpenChat: (chatKey: string, message?: string) => void;
+  /** Open a task's chat beside its main chat instead of in its place. A row
+   *  click still opens it full-width; this is the separate, explicit way. */
+  onOpenBeside?: (chatKey: string) => void;
+  /** The task chat already open beside the main chat, marked like an open one. */
+  besideChatKey?: string | null;
   onClose: () => void;
   initialSnapshot?: OrchestrationSnapshot;
   readOnly?: boolean;
@@ -381,6 +389,10 @@ export function OrchestrationPanel({
       onWorkspaceAction={(command, args) => void workspaceAction(run, command, args)}
       onOpenChat={onOpenChat}
       currentChatKey={currentChatKey}
+      onOpenBeside={onOpenBeside ? (chatKey) => {
+        try { onOpenBeside(chatKey); } catch (problem) { setError(messageOf(problem)); }
+      } : undefined}
+      besideChatKey={besideChatKey}
       coordinatorBusy={coordinatorBusy}
       sharedHeading={sharedHeading || accordionMode}
       compactControls={!allowManualRun}
@@ -654,6 +666,8 @@ function RunDetail({
   onWorkspaceAction,
   onOpenChat,
   currentChatKey,
+  onOpenBeside,
+  besideChatKey,
   onAskStop,
   onCancelStop,
   onStop,
@@ -691,6 +705,8 @@ function RunDetail({
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
   onOpenChat: (chatKey: string) => void;
   currentChatKey: string | null;
+  onOpenBeside?: (chatKey: string) => void;
+  besideChatKey?: string | null;
   onAskStop: () => void;
   onCancelStop: () => void;
   onStop: (archive: boolean) => void;
@@ -910,7 +926,9 @@ function RunDetail({
           <RunTask key={task.id} run={run} snapshot={snapshot} task={task} attempts={attempts} gates={gates}
             taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
             archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
+            onOpenBeside={onOpenBeside}
             open={!!currentChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === currentChatKey)}
+            beside={!!besideChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === besideChatKey)}
             projectName={projectName} />
         ))}
       </div>
@@ -1024,8 +1042,11 @@ function AttentionButton({ attention, planPending, onShow }: { attention: RunAtt
 const ACCEPTANCE_NOTE = "OctiqFlow does not yet track acceptance results. Review the test evidence separately.";
 
 /** The row opens the worker chat; the separate disclosure shows its checklist. */
-function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onRetry, onWorkspaceAction, open, projectName }: {
+function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName }: {
   projectName?: (id: string) => string | undefined;
+  onOpenBeside?: (chatKey: string) => void;
+  /** This task's chat is open beside the main chat. */
+  beside?: boolean;
   run: OrchestrationRun;
   snapshot: OrchestrationSnapshot;
   task: OrchestrationTask;
@@ -1068,10 +1089,10 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
     && (task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt));
 
   return (
-    <article className={`orch-task is-${task.status}${open ? " is-open" : ""}`} data-status={task.status}>
+    <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""}`} data-status={task.status}>
       <div className="orch-task-heading">
         <button type="button" className="orch-task-summary" disabled={!attempt} data-attention={owed || undefined}
-          aria-current={open ? "page" : undefined}
+          aria-current={open || beside ? "page" : undefined}
           aria-label={`Open task chat: ${task.title}`}
           title={attempt ? `Open task chat: ${task.title}` : "No worker chat yet"}
           onClick={() => attempt && onOpenChat(attempt.workerChatKey)}>
@@ -1088,6 +1109,11 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
             {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
           </span>
         </button>
+        {/* Only where it would change something: not for the task already
+            beside main, and not for the one open full-width, whose own header
+            carries the same button. */}
+        {attempt && onOpenBeside && !open && !beside && <OpenBesideButton className="orch-task-beside" title={task.title}
+          onClick={() => onOpenBeside(attempt.workerChatKey)} />}
         <button type="button" className="orch-task-expand" aria-expanded={expanded} aria-controls={detailId}
           aria-label={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`}
           title={expanded ? "Collapse task progress" : "Expand task progress"}
