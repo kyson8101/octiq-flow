@@ -81,6 +81,9 @@ function whereRows(task: OrchestrationTask, attempt?: OrchestrationAttempt | nul
   const prepared = attempt?.cwd ? attempt : undefined;
 
   if (!plan) {
+    // An older task can have run with no plan or proposal saved. What its
+    // attempt actually ran in is still a fact, and outranks "Pending".
+    if (prepared) return attemptRows(prepared);
     if (proposal?.error) {
       return [{ key: "workspace", label: "Workspace", value: "Could not be planned", state: "unplanned", note: proposal.error }];
     }
@@ -123,7 +126,24 @@ function whereRows(task: OrchestrationTask, attempt?: OrchestrationAttempt | nul
     label: "Worktree",
     value: workspace ? `${kind} · ${WORKSPACE_STATE[workspace.state] ?? workspace.state}` : kind,
     state,
-    note: proposal?.conflict ? `${proposal.conflict} The task will not start over it.` : undefined,
+    note: proposal?.conflict ? `${proposal.conflict} The task will not start over it.`
+      // No worker access was chosen when this was planned: a read-only
+      // worker may still be started in the current checkout instead.
+      : proposal?.provisional ? "Provisional: a read-only worker runs in the current checkout instead." : undefined,
   });
+  return rows;
+}
+
+/** Where an attempt ran, straight off the attempt, for a task with no plan. */
+function attemptRows(attempt: OrchestrationAttempt): CardRow[] {
+  const rows: CardRow[] = [];
+  if (attempt.branch) {
+    rows.push({ key: "branch", label: "Branch", value: attempt.branch, copy: { text: attempt.branch, name: "branch name" } });
+  }
+  rows.push({
+    key: "directory", label: "Work directory", value: attempt.cwd, code: true,
+    copy: { text: attempt.cwd, name: "work directory path" },
+  });
+  rows.push({ key: "worktree", label: "Worktree", value: attempt.isWorktree ? "Worktree" : "Current checkout", state: "confirmed" });
   return rows;
 }

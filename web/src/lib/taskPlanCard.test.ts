@@ -105,6 +105,33 @@ describe("the standard plan card", () => {
     expect(row(rows, "worktree")).toMatchObject({ value: "Worktree · Removed", state: "removed" });
   });
 
+  it("says a provisional plan is not guaranteed, and a firm one says nothing extra", () => {
+    const provisional = taskCardRows(task({ workspaceProposal: proposal({ provisional: true }) }), run, null, names);
+    expect(row(provisional, "worktree")).toMatchObject({ state: "planned" });
+    expect(row(provisional, "worktree").note).toMatch(/^Provisional: .*current checkout/);
+    const firm = taskCardRows(task({ workspaceProposal: proposal() }), run, null, names);
+    expect(row(firm, "worktree").note).toBeUndefined();
+    // A conflict says why it cannot start; that outranks the provisional note.
+    const clash = taskCardRows(task({ workspaceProposal: proposal({ provisional: true, conflict: "Branch exists." }) }), run, null, names);
+    expect(row(clash, "worktree").note).toContain("Branch exists.");
+  });
+
+  it("keeps an older task's real attempt branch and directory when it has no plan", () => {
+    const attempt = { cwd: "/code/.worktrees/octiq-flow/feature/legacy", branch: "feature/legacy", isWorktree: true } as OrchestrationAttempt;
+    const rows = taskCardRows(task({ status: "running" }), run, attempt, names);
+    expect(rows.some((r) => r.key === "workspace")).toBe(false);
+    expect(row(rows, "branch")).toMatchObject({ value: "feature/legacy", copy: { text: "feature/legacy", name: "branch name" } });
+    expect(row(rows, "directory")).toMatchObject({ value: "/code/.worktrees/octiq-flow/feature/legacy", code: true });
+    expect(row(rows, "worktree")).toMatchObject({ value: "Worktree", state: "confirmed" });
+    expect(rows.some((r) => r.state === "pending")).toBe(false);
+
+    const inPlace = taskCardRows(task({ status: "running" }), run,
+      { cwd: "/code/octiq-flow", branch: "", isWorktree: false } as OrchestrationAttempt, names);
+    expect(rows.find((r) => r.key === "branch")).toBeDefined();
+    expect(inPlace.some((r) => r.key === "branch")).toBe(false);
+    expect(row(inPlace, "worktree")).toMatchObject({ value: "Current checkout", state: "confirmed" });
+  });
+
   it("falls back to the run's project for a task without a destination", () => {
     const rows = taskCardRows(task({ destination: undefined, assignee: undefined, worker: undefined }), run, null, names);
     expect(row(rows, "project").value).toBe("General");
