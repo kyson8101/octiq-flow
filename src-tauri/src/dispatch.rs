@@ -1082,6 +1082,38 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 },
             ))
         }
+        // A lead hands a task nobody is working on to another of its direct
+        // reports — the backup taking over. Routed exactly as a new task, so
+        // the org chart holds; the host keeps the task's destination and
+        // workspace and puts the new owner in front of the person.
+        "orchestration_task_reassign" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let task_id: String = arg(&args, "taskId")?;
+            let current = svc
+                .orchestrations
+                .snapshot(None)?
+                .tasks
+                .into_iter()
+                .find(|task| task.id == task_id)
+                .ok_or("The task does not exist.")?;
+            let kept = current.destination.as_ref();
+            let route = route_task(
+                svc,
+                &actor,
+                &current.run_id,
+                None,
+                Some(arg::<String>(&args, "assignee")?),
+                kept.map(|d| d.project_id.clone()),
+                kept.map(|d| d.repository.clone()),
+                current.worker.clone(),
+            )?;
+            to_value(svc.orchestrations.reassign_task(
+                &actor,
+                &task_id,
+                route,
+                arg(&args, "reason")?,
+            ))
+        }
         // Where the caller may send work: registered projects, their
         // repositories, and which of its direct reports can work in each.
         // Identity comes from the chat, never from the arguments.

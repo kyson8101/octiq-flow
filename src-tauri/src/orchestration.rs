@@ -321,8 +321,23 @@ pub struct Task {
     pub active_attempt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// Every time the task changed hands before work finished, oldest first:
+    /// who had it, who took it, why, and when. See `reassign_task`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoffs: Vec<TaskHandoff>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// One change of hands: the evidence a takeover rests on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskHandoff {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<TaskAssignee>,
+    pub to: TaskAssignee,
+    pub reason: String,
+    pub at: i64,
 }
 
 /// A task as a plan shows it: why, what, and how it is judged done.
@@ -1328,6 +1343,7 @@ impl OrchestrationStore {
                 },
                 active_attempt_id: None,
                 result: None,
+                handoffs: Vec::new(),
                 created_at: now,
                 updated_at: now,
             };
@@ -1374,6 +1390,125 @@ impl OrchestrationStore {
                 announce(&run_id_for_event, "plan_pending");
             }
         })
+    }
+
+    /// Hand a task nobody is working on to another of the lead's direct
+    /// reports: the backup taking over from the primary, at the person's
+    /// word or the lead's (feedback c890a843).
+    ///
+    /// `route` comes from the same routing as a new task, so the org chart
+    /// holds: only a direct report of the lead, in a project the task may run
+    /// in. The task keeps its id, card, dependencies, destination and any
+    /// workspace a settled attempt left, so a retry resumes that work. The
+    /// new owner changes what the person approved, so the task waits for the
+    /// person again and nobody, the old owner included, starts it meanwhile.
+    /// A task with a live attempt is refused: two writers in one checkout is
+    /// exactly what a handoff must not create.
+    pub fn reassign_task(
+        &self,
+        actor_chat_key: &str,
+        task_id: &str,
+        route: (
+            Option<automation::WorkerSettings>,
+            Option<TaskAssignee>,
+            Option<TaskDestination>,
+        ),
+        reason: String,
+    ) -> Result<Task, String> {
+        let reason = required_text("handoff reason", reason, 2_000)?;
+        let (worker, assignee, destination) = route;
+        let worker = worker
+            .map(automation::WorkerSettings::normalized)
+            .transpose()?;
+        let assignee = assignee.ok_or("Name the direct report taking the task over.")?;
+        // A task never started gets a fresh branch plan for its new worker; a
+        // started one keeps the workspace its attempts used.
+        let proposal = {
+            let inner = self.inner.lock().map_err(|error| error.to_string())?;
+            let task = inner.data.tasks.get(task_id);
+            let run = task
+                .and_then(|task| inner.data.runs.get(&task.run_id))
+                .cloned();
+            let fresh = task.is_some_and(|task| task.workspace.is_none());
+            drop(inner);
+            run.filter(|_| fresh).map(|run| {
+                workspaces::propose(&run, task_id, destination.as_ref(), worker.as_ref())
+            })
+        };
+        let mut run_id = String::new();
+        let mut reopened = false;
+        let task = self.mutate(|data| {
+            let task = data.tasks.get(task_id).ok_or("The task does not exist.")?;
+            let run = coordinator(data, &task.run_id, actor_chat_key)?;
+            run_id = run.id.clone();
+            if run_has_ended(run) || run.archived_at.is_some() {
+                return Err("This run has ended.".into());
+            }
+            if task.parent_task_id.is_some() {
+                return Err("This is a manager's subtask; its manager hands it on.".into());
+            }
+            if let Some(active) = task.active_attempt_id.as_deref().and_then(|id| data.attempts.get(id)) {
+                if matches!(active.status, AttemptStatus::Preparing | AttemptStatus::Running) {
+                    return Err(format!(
+                        "{} is still working on this task. Stop that attempt first; two writers in one checkout is what a handoff must not create.",
+                        task.assignee.as_ref().map_or("A worker", |a| a.name.as_str())
+                    ));
+                }
+            }
+            if !matches!(
+                task.status,
+                TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Failed | TaskStatus::Blocked
+            ) {
+                return Err("Only a task nobody is working on and that has not finished can change hands.".into());
+            }
+            if task.assignee.as_ref().is_some_and(|a| a.id == assignee.id) {
+                return Err(format!("{} already has this task.", assignee.name));
+            }
+            let ready = task.depends_on.iter().all(|dependency| {
+                data.tasks
+                    .get(dependency)
+                    .is_some_and(|other| other.status == TaskStatus::Completed)
+            });
+            let now = now_ms();
+            let task = data.tasks.get_mut(task_id).ok_or("The task does not exist.")?;
+            task.handoffs.push(TaskHandoff {
+                from: task.assignee.clone(),
+                to: assignee.clone(),
+                reason,
+                at: now,
+            });
+            task.assignee = Some(assignee);
+            task.worker = worker;
+            if destination.is_some() {
+                task.destination = destination;
+            }
+            if let Some(proposal) = proposal {
+                task.workspace_proposal = Some(proposal);
+            }
+            task.approved_at = None;
+            task.status = if ready { TaskStatus::Ready } else { TaskStatus::Pending };
+            task.updated_at = now;
+            let task = task.clone();
+            if let Some(run) = data.runs.get_mut(&run_id) {
+                run.updated_at = now;
+                if let Some(plan) = run
+                    .plan_approval
+                    .as_mut()
+                    .filter(|plan| plan.status == PlanStatus::Approved)
+                {
+                    plan.status = PlanStatus::Pending;
+                    plan.requested_at = now;
+                    plan.decided_at = None;
+                    reopened = true;
+                }
+            }
+            Ok(task)
+        })?;
+        announce(&run_id, "task_reassigned");
+        if reopened {
+            announce(&run_id, "plan_pending");
+        }
+        Ok(task)
     }
 
     /// The lead changes, or withdraws, a task of a plan the person has not
@@ -3296,6 +3431,92 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn a_backup_takes_over_a_task_only_through_the_person_and_never_beside_a_live_worker() {
+        // Feedback c890a843: the person asked Noah, Maya's designated
+        // backup, to take over a ready task, and nothing could hand it over.
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let who = |id: &str, name: &str| TaskAssignee {
+            id: id.into(),
+            name: name.into(),
+        };
+        let worker = |model: &str| automation::WorkerSettings {
+            agent: ChatAgent::Claude,
+            access: Access::Auto,
+            model: Some(model.into()),
+            effort: None,
+            recovery: None,
+        };
+        store
+            .reassign_task(
+                "chat:master",
+                &first.id,
+                (Some(worker("opus")), Some(who("maya", "Maya")), None),
+                "Start with Maya".into(),
+            )
+            .unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+
+        // Maya's attempt is live: no second writer.
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "maya".into(), true)
+            .unwrap();
+        let handoff = || {
+            store.reassign_task(
+                "chat:master",
+                &first.id,
+                (Some(worker("sonnet")), Some(who("noah", "Noah")), None),
+                "The person asked Noah to take over from Maya.".into(),
+            )
+        };
+        assert!(handoff().unwrap_err().contains("still working"));
+        assert!(store
+            .reassign_task(
+                "chat:worker",
+                &first.id,
+                (None, Some(who("noah", "Noah")), None),
+                "x".into()
+            )
+            .is_err());
+
+        // Maya's attempt settles without finishing: the backup takes it.
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "Provider limit".into(),
+                    files_modified: vec![],
+                },
+            )
+            .unwrap();
+        let task = handoff().unwrap();
+        assert_eq!(task.assignee.as_ref().unwrap().id, "noah");
+        assert_eq!(
+            task.worker.as_ref().unwrap().model.as_deref(),
+            Some("sonnet")
+        );
+        assert_eq!(task.handoffs.len(), 2);
+        let last = task.handoffs.last().unwrap();
+        assert_eq!(last.from.as_ref().map(|a| a.id.as_str()), Some("maya"));
+        assert_eq!(last.to.id, "noah");
+        assert!(last.reason.contains("take over"));
+        // The new owner is the person's to approve; nobody starts meanwhile.
+        assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Pending);
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .unwrap_err()
+            .contains("not approved"));
+        assert!(handoff().unwrap_err().contains("already has this task"));
     }
 
     #[test]

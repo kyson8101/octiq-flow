@@ -1304,6 +1304,25 @@ const ORCHESTRATION_TASK_REVISE = {
   },
 };
 
+const ORCHESTRATION_TASK_REASSIGN = {
+  name: "orchestration_task_reassign",
+  description:
+    "Agents mode: hand a task nobody is working on to another of YOUR direct reports, for example a designated backup taking over " +
+    "from the primary when the person asks or the primary is unavailable. The host routes the new owner exactly as a new task " +
+    "(direct reports only, same destination), keeps the task's card, dependencies and any workspace a settled attempt left, and " +
+    "records the handoff. The new owner changes what the person approved, so the task waits for their approval again; nobody, " +
+    "the old owner included, starts it meanwhile. Refused while an attempt is still running: stop it first.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string" },
+      assignee: { type: "string", description: "The direct report taking the task over: id or exact name." },
+      reason: { type: "string", description: "Why it changes hands, in one line, e.g. \"The person asked Tofu to take over from Mango.\"" },
+    },
+    required: ["taskId", "assignee", "reason"],
+  },
+};
+
 const ORCHESTRATION_PLAN_APPROVE = {
   name: "orchestration_plan_approve",
   description:
@@ -1490,6 +1509,7 @@ const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_RUN_CREATE,
   ORCHESTRATION_TASK_CREATE,
   ORCHESTRATION_TASK_REVISE,
+  ORCHESTRATION_TASK_REASSIGN,
   ORCHESTRATION_PLAN_APPROVE,
   ORCHESTRATION_DESTINATIONS,
   ORCHESTRATION_SNAPSHOT,
