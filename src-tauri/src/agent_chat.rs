@@ -727,10 +727,15 @@ fn is_person_turn_id(turn_id: &str) -> bool {
 }
 
 impl ChatManager {
-    /// The chat a hook caller is, from the capability its launch was given
-    /// (`LaunchCapability`). `None` unless `secret` is the current capability
-    /// of the process running under `session_key` right now.
-    pub(crate) fn chat_for_capability(&self, session_key: &str, secret: &str) -> Option<String> {
+    /// The chat a hook caller is, and the launch it is, from the capability
+    /// that launch was given (`LaunchCapability`). `None` unless `secret` is
+    /// the current capability of the process running under `session_key`
+    /// right now.
+    pub(crate) fn caller_for_capability(
+        &self,
+        session_key: &str,
+        secret: &str,
+    ) -> Option<(String, String)> {
         if secret.is_empty() {
             return None;
         }
@@ -748,7 +753,7 @@ impl ChatManager {
         }
         let session = self.sessions.lock().ok()?.get(session_key).cloned()?;
         let live = session.lock().ok()?.launch_id == known.launch_id;
-        live.then_some(known.chat_key)
+        live.then_some((known.chat_key, known.launch_id))
     }
 
     /// Give the launch about to run under `session_key` its capability, and
@@ -2163,9 +2168,19 @@ pub(crate) fn start_session(
         .env("OCTIQ_CHAT_AGENT", agent.id())
         .env("OCTIQ_SESSION_KEY", &session_key)
         .env("OCTIQ_LAUNCH_ID", &launch_id)
-        // Which chat this is, as the orchestration hook will believe it — see
-        // `LaunchCapability`. `OCTIQ_CHAT_KEY` only names it.
+        // Which chat this is, as every hook will believe it — see
+        // `LaunchCapability`. `OCTIQ_CHAT_KEY` only names it. It is the
+        // agent's only credential: the MCP is told where the hooks are and
+        // never reads the person's token, and a server started with the
+        // token in its own environment does not pass it down.
         .env("OCTIQ_CHAT_CAPABILITY", &capability)
+        .env(
+            "OCTIQ_HOOK_PORT",
+            crate::web::hook_port()
+                .map(|port| port.to_string())
+                .unwrap_or_default(),
+        )
+        .env_remove("OCTIQ_WEB_TOKEN")
         // The conversation reader in that MCP must use this exact profile.
         // A standalone install can follow config.json; an in-app agent should
         // not have to rediscover a value the server already knows.

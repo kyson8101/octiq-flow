@@ -91,11 +91,26 @@ function profileRoot() {
   }
 }
 
-function serverConfig() {
-  const root = profileRoot();
-  const cfg = JSON.parse(fs.readFileSync(path.join(root, "web.json"), "utf8"));
-  if (!cfg.port || !cfg.token) throw new Error("no port or token");
-  return cfg;
+/** Where the host's hooks answer, as the host told this launch.
+ *
+ * Only the port: this process is never given the person's token, and every
+ * hook takes the launch's own capability (`OCTIQ_CHAT_CAPABILITY`) instead.
+ * With no port there is no host to call — `web.json` is not a fallback. */
+function hookPort() {
+  const port = Number(process.env.OCTIQ_HOOK_PORT || "");
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("no hook port");
+  return port;
+}
+
+/** Headers every hook call carries: the body, and the launch's capability. */
+function hookHeaders(body) {
+  return {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body),
+    // Which launch of which chat this is, as the host checks it. The chatKey
+    // in the body is only a claim.
+    "x-octiq-chat-capability": process.env.OCTIQ_CHAT_CAPABILITY || "",
+  };
 }
 
 function readJson(file, label) {
@@ -733,9 +748,9 @@ async function conversationSearch(args = {}) {
  *  handed — but there is no reason for anything NEW to speak two dialects. */
 function askOctiq(questions) {
   return new Promise((resolve) => {
-    let cfg;
+    let port;
     try {
-      cfg = serverConfig();
+      port = hookPort();
     } catch {
       return resolve("OctiqFlow is not reachable, so the user could not be asked.");
     }
@@ -743,13 +758,10 @@ function askOctiq(questions) {
     const req = http.request(
       {
         host: "127.0.0.1",
-        port: cfg.port,
-        path: `/hook/ask?token=${encodeURIComponent(cfg.token)}`,
+        port,
+        path: "/hook/ask",
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body),
-        },
+        headers: hookHeaders(body),
       },
       (res) => {
         let out = "";
@@ -783,30 +795,24 @@ function askOctiq(questions) {
 function callHook(route, action, args = {}, timeoutMs = 30 * 60 * 1000, label = "call") {
   return new Promise((resolve, reject) => {
     if (!CHAT_KEY) return reject(new Error("This tool requires an OctiqFlow chat."));
-    let cfg;
+    let port;
     try {
-      cfg = serverConfig();
+      port = hookPort();
     } catch {
       return reject(new Error("OctiqFlow is not reachable."));
     }
     // An additional agent in a chat runs under its own process key, which is
-    // what its orchestration capability was issued to.
+    // what its capability was issued to.
     const sessionKey = process.env.OCTIQ_SESSION_KEY || CHAT_KEY;
-    const session = route === "orchestration" && sessionKey !== CHAT_KEY ? { sessionKey } : {};
+    const session = sessionKey !== CHAT_KEY ? { sessionKey } : {};
     const body = JSON.stringify({ chatKey: CHAT_KEY, ...session, action, args });
     const req = http.request(
       {
         host: "127.0.0.1",
-        port: cfg.port,
-        path: `/hook/${route}?token=${encodeURIComponent(cfg.token)}`,
+        port,
+        path: `/hook/${route}`,
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body),
-          // Which chat this is, as the host checks it: the secret this launch
-          // was started with. The chatKey above is only a claim.
-          "x-octiq-chat-capability": process.env.OCTIQ_CHAT_CAPABILITY || "",
-        },
+        headers: hookHeaders(body),
       },
       (res) => {
         let out = "";

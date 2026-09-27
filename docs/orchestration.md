@@ -210,8 +210,9 @@ The bundled chat-bound MCP exposes:
 - `orchestration_message_send`
 - `orchestration_run_stop`
 
-The authenticated local `/hook/orchestration` endpoint injects the calling chat
-identity; callers cannot claim another worker's attempt. Browser actions use
+The local `/hook/orchestration` endpoint takes the calling chat from its
+launch capability (never the body or the server token) and injects it;
+callers cannot claim another worker's attempt. Browser actions use
 the same dispatch commands as the MCP path.
 
 A `rootPath` passed to `orchestration_run_create` must be the chat's own folder

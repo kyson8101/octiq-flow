@@ -80,6 +80,8 @@ pub async fn run_headless() {
     // on here.
     agent_chat::remember_runtime(tokio::runtime::Handle::current());
     let cfg = web::load_config();
+    // Before the scheduler can start a worker: every agent is told this port.
+    web::remember_hook_port(cfg.port);
     let services = dispatch::Services::load();
     println!("[server] OctiqFlow backend — no window, agents run here");
     web::start_headless(cfg, services).await;

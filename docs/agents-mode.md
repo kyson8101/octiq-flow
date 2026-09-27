@@ -419,19 +419,29 @@ words them.
   subtask, from a worker chat of the parent task, where the manager is the
   parent's assignee. Nobody accepts their own work. Every accept names the
   completed attempt it reviewed; a newer result refuses it.
-- **Who is calling.** Which chat a hook call comes from is decided by the
-  host, never by the request body. Each launch of a chat's agent gets a fresh
-  secret, `OCTIQ_CHAT_CAPABILITY`, and the MCP sends it as the
-  `x-octiq-chat-capability` header on every hook call. `/hook/orchestration`
-  refuses a call without a current one (401) and one whose body names a
-  different chat (403), and uses the chat the capability belongs to as the
-  actor. The capability dies with its process and is replaced on relaunch.
-  The server token is still required as well; every agent can read it, so on
-  its own it proves nothing about which chat is calling. Limits: the secret
-  sits in the agent's process environment, so another process of the same OS
-  user that inspects it can read it, and the server token itself opens the
-  browser's socket, where every command acts as the person. Neither is a
-  boundary against an agent with unrestricted shell access.
+- **Who is calling.** Two callers, two credentials. The person holds the
+  server token, which opens the browser's routes (`/ws`, `/file`, `/auth`):
+  the socket acts as the person, so the person's own decisions (accepting a
+  result, approving a plan, sizing a task) are socket commands. An agent is
+  one launch of one chat: each launch gets a fresh secret,
+  `OCTIQ_CHAT_CAPABILITY`, and the MCP sends it as the
+  `x-octiq-chat-capability` header on every hook call, to `127.0.0.1` on the
+  port the host passes as `OCTIQ_HOOK_PORT`. That capability is the only
+  thing every `/hook/*` route takes: the server token is neither needed nor
+  enough there, and an agent is never given it (the MCP does not read
+  `web.json`, and a server started with `OCTIQ_WEB_TOKEN` does not pass it to
+  agents). A hook refuses a call with no current capability (401) and one
+  whose body names another chat, session or launch (403), and acts for the
+  chat, session and launch the capability belongs to. The capability dies
+  with its process and is replaced on relaunch, and it opens none of the
+  person's routes. The socket in turn refuses the lead-only commands
+  (`orchestration_task_accept_in_chat`, `orchestration_plan_approve_in_chat`),
+  so a lead's acceptance on record always came from that lead's chat.
+  Limits: this separates what OctiqFlow hands out; it is not an OS boundary.
+  Agents run as the person's own OS user, so a process that goes looking can
+  read `web.json` or another process's environment, or ask `GET /token` as a
+  loopback browser while `local_token` is on. Only OS-level isolation (another
+  user, a sandbox with no read access to the profile) closes that.
 - **Ledgers.** Two, in `orchestrations.json`, both written in the same write
   as the acceptance. `acceptances` records every acceptance as it was made:
   task, accepted attempt, the agent it ran as, who accepted and when, the size,

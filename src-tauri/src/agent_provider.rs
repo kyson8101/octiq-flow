@@ -562,7 +562,7 @@ fn append_codex_mcp(cmd: &mut String, mcp: Option<&Path>) {
         toml_string(&script.to_string_lossy()),
         toml_string("--disable-ask-user"),
     );
-    let env_vars = "mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\",\"OCTIQ_SESSION_KEY\",\"OCTIQ_LAUNCH_ID\",\"OCTIQ_CHAT_CAPABILITY\"]";
+    let env_vars = "mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\",\"OCTIQ_SESSION_KEY\",\"OCTIQ_LAUNCH_ID\",\"OCTIQ_CHAT_CAPABILITY\",\"OCTIQ_HOOK_PORT\"]";
     cmd.push_str(&format!(
         " -c {} -c {} -c {}",
         sh_quote(&command),
@@ -1194,7 +1194,7 @@ mod tests {
         assert!(codex.starts_with("codex app-server --enable default_mode_request_user_input"));
         assert!(codex.contains("mcp_servers.octiq.command=\"node\""));
         assert!(codex.contains("mcp_servers.octiq.args=[\"octiq-ask.cjs\",\"--disable-ask-user\"]"));
-        assert!(codex.contains("mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\",\"OCTIQ_SESSION_KEY\",\"OCTIQ_LAUNCH_ID\",\"OCTIQ_CHAT_CAPABILITY\"]"));
+        assert!(codex.contains("mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\",\"OCTIQ_SESSION_KEY\",\"OCTIQ_LAUNCH_ID\",\"OCTIQ_CHAT_CAPABILITY\",\"OCTIQ_HOOK_PORT\"]"));
         assert!(!codex.contains("mcp_servers.octiq.tool_timeout_sec"));
         assert!(!codex.contains("--permission-mode"));
 

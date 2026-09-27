@@ -10,7 +10,7 @@ const { spawn } = require("node:child_process");
 function call(root, chatKey, method, params, flags = []) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...flags], {
-      env: { ...process.env, OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: chatKey }, stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: chatKey }, stdio: ["pipe", "pipe", "pipe"],
     });
     const timer = setTimeout(() => { child.kill(); reject(new Error("MCP timed out")); }, 5000);
     let out = "";
@@ -61,13 +61,16 @@ test("vault calls route to the native host with process identity and bounded sch
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
+  // The person's token sits in web.json; the MCP must neither need nor send it.
   fs.writeFileSync(path.join(root, "web.json"), JSON.stringify({ port: server.address().port, token: "test-token" }));
+  process.env.OCTIQ_HOOK_PORT = String(server.address().port);
+  t.after(() => { delete process.env.OCTIQ_HOOK_PORT; });
   const write = args => call(root, "chat:current", "tools/call", { name: "vault_write", arguments: args });
   const args = { path: "project/progress.md", content: "共享 memory", mode: "append", expectedRevision: "old", requestId: "one" };
   const saved = await write({ ...args, chatKey: "chat:other", root: "/etc", writable: true, actor: "browser" });
   assert.equal(saved.isError, undefined);
   assert.deepEqual(JSON.parse(saved.content[0].text), response.result);
-  assert.deepEqual(requests[0], { url: "/hook/vault?token=test-token", body: { chatKey: "chat:current", action: "write", args } });
+  assert.deepEqual(requests[0], { url: "/hook/vault", body: { chatKey: "chat:current", action: "write", args } });
   response = { result: { status: "needs_review", id: "receipt" } };
   assert.equal((await write(args)).isError, true);
   status = 400; response = { error: "Revision conflict: read the current note before retrying." };

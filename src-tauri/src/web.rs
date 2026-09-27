@@ -61,6 +61,24 @@
 //! (`ssh -L`, `socat`, an nginx `proxy_pass` with no `proxy_set_header`). Those
 //! arrive indistinguishable from a browser on this desk, so the endpoint has to
 //! be closed by hand rather than detected.
+//!
+//! ## Two callers, two credentials
+//!
+//! * **The person** is whoever holds the token: `/ws`, `/file`, `/auth` and
+//!   `/token`. The socket acts as the person, so everything the person alone
+//!   decides (accepting a result, approving a plan) is a socket command.
+//! * **An agent** is one launch of one chat, and proves it with the
+//!   capability the host minted for that launch (`OCTIQ_CHAT_CAPABILITY`,
+//!   see `LaunchCapability`). That is the ONLY thing the `/hook/*` routes take:
+//!   the token is neither needed nor enough there, the chat, session and
+//!   launch come from the capability, and a body that names another is
+//!   refused. An agent is never handed the token, and the capability opens
+//!   none of the person's routes.
+//!
+//! That separates what OctiqFlow hands out. It is not an OS boundary: an agent
+//! runs as the person's own user, so a process that goes looking can read
+//! `web.json`, read another process's environment, or ask `/token` as a
+//! loopback browser (while `local_token` is on). Nothing here claims otherwise.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -275,6 +293,21 @@ struct Ctx {
     services: crate::dispatch::Services,
 }
 
+/// The port the hooks answer on, for agents to be told (`OCTIQ_HOOK_PORT`).
+/// 0 until the server knows it.
+static HOOK_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// Remember where the hooks are, before anything can start an agent.
+pub(crate) fn remember_hook_port(port: u16) {
+    HOOK_PORT.store(port, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Where an agent's MCP reaches the hooks: `127.0.0.1:<this>`. An agent is
+/// told the port and never the token, so it no longer reads `web.json`.
+pub(crate) fn hook_port() -> Option<u16> {
+    Some(HOOK_PORT.load(std::sync::atomic::Ordering::Relaxed)).filter(|port| *port != 0)
+}
+
 #[derive(Deserialize)]
 struct TokenQuery {
     token: Option<String>,
@@ -319,6 +352,9 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
                 return;
             }
         };
+        if let Ok(bound) = listener.local_addr() {
+            remember_hook_port(bound.port());
+        }
         // The whole URL, token and all. Without it the first thing a browser
         // does is fail to connect, and the token lives in a JSON file most
         // people would have to go hunting for. It is the user's own machine and
@@ -877,7 +913,8 @@ async fn auth_handler(AxumState(ctx): AxumState<Ctx>, Query(q): Query<TokenQuery
     }
 }
 
-/// Constant-time token check shared by /auth, /ws, /file and the hooks.
+/// Constant-time token check for the person's routes: /auth, /ws and /file.
+/// Never the hooks — an agent is never given the token (see `hook_caller`).
 fn token_ok(ctx: &Ctx, given: &str) -> bool {
     let expected = ctx
         .state
@@ -912,31 +949,62 @@ async fn ws_handler(
 
 /// A hook asking whether the agent may use a tool.
 ///
-/// Called from `permission-ask.cjs`, which is holding a tool call open until
-/// this answers. It is on the same token as everything else, and only reachable
-/// from this machine in practice — the hook and the server are always the same
-/// host.
+/// Nothing in this repository calls it any more (`permission-ask.cjs` went
+/// with the desktop app); it stays for an agent's own hook config. Like every
+/// hook it answers only a running launch's capability, and asks for the chat
+/// that capability proves.
 async fn permission_handler(
     AxumState(ctx): AxumState<Ctx>,
-    Query(q): Query<TokenQuery>,
-    Json(request): Json<crate::permission::Request>,
+    headers: axum::http::HeaderMap,
+    Json(mut request): Json<crate::permission::Request>,
 ) -> Response {
-    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
-        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
-    }
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        ..HookClaim::default()
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    request.chat_key = Some(caller.chat_key);
     let answer = crate::permission::ask(request).await;
     axum::Json(json!({ "decision": answer.decision, "reason": answer.reason })).into_response()
 }
 
 /// The agent asking the user something, through its `ask_user` MCP tool.
+///
+/// The question is attached to the chat, process and launch the capability
+/// proves — the same three `question_origin` checks the turn against.
 async fn ask_handler(
     AxumState(ctx): AxumState<Ctx>,
-    Query(q): Query<TokenQuery>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<crate::question::Request>,
 ) -> Response {
-    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
-        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    let mut batch = match request {
+        crate::question::Request::Many(batch) => batch,
+        crate::question::Request::One(question) => crate::question::Batch {
+            session_key: None,
+            launch_id: None,
+            chat_key: question.chat_key.clone(),
+            questions: vec![question],
+        },
+    };
+    let claim = HookClaim {
+        chat_key: batch.chat_key.as_deref(),
+        session_key: batch.session_key.as_deref(),
+        launch_id: batch.launch_id.as_deref(),
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    for question in &mut batch.questions {
+        question.chat_key = Some(caller.chat_key.clone());
     }
+    batch.chat_key = Some(caller.chat_key);
+    batch.session_key = Some(caller.session_key);
+    batch.launch_id = Some(caller.launch_id);
+    let request = crate::question::Request::Many(batch);
     let answer = crate::question::ask_request(ctx.services.chats.clone(), request).await;
     axum::Json(json!({ "answer": answer })).into_response()
 }
@@ -965,19 +1033,40 @@ struct OrchestrationHook {
 /// The header an agent's MCP proves its chat with (`OCTIQ_CHAT_CAPABILITY`).
 const CHAT_CAPABILITY_HEADER: &str = "x-octiq-chat-capability";
 
-/// Which chat is calling `/hook/orchestration`, from the capability the host
-/// gave that chat's current launch, or why the call is refused.
+/// One launch of one chat, as its capability proves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HookCaller {
+    chat_key: String,
+    /// The process key the capability was issued to: the chat's own, or an
+    /// additional agent's.
+    session_key: String,
+    launch_id: String,
+}
+
+/// What a hook call says about who is calling. Claims only: each is checked
+/// against the capability, never believed on its own.
+#[derive(Default)]
+struct HookClaim<'a> {
+    chat_key: Option<&'a str>,
+    session_key: Option<&'a str>,
+    launch_id: Option<&'a str>,
+}
+
+/// Which launch of which chat is calling a `/hook/*` route, from the
+/// capability the host gave that launch, or why the call is refused.
 ///
-/// Every agent can read the server token, so it cannot tell one chat from
-/// another: with the token alone, a worker could name its run's coordinator
-/// in the body and act as it — accept its own work, approve, stop the run.
-/// The body's `chatKey` is therefore only a claim, and one that disagrees
-/// with the capability is refused rather than silently corrected.
-fn orchestration_caller(
+/// The token says nothing about which chat is calling, and an agent is never
+/// given it, so it counts for nothing here. The body's `chatKey` is only a
+/// claim — with no capability behind it a worker could name its run's
+/// coordinator and act as it: accept its own work, approve, stop the run —
+/// and one that disagrees with the capability is refused rather than
+/// silently corrected. A missing, made-up, ended or replaced capability is
+/// 401; a claim of another chat, session or launch is 403.
+fn hook_caller(
     chats: &crate::agent_chat::ChatManager,
     headers: &axum::http::HeaderMap,
-    request: &OrchestrationHook,
-) -> Result<String, (StatusCode, &'static str)> {
+    claim: HookClaim<'_>,
+) -> Result<HookCaller, (StatusCode, &'static str)> {
     let secret = headers
         .get(CHAT_CAPABILITY_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -985,76 +1074,99 @@ fn orchestration_caller(
     if secret.is_empty() {
         return Err((
             StatusCode::UNAUTHORIZED,
-            "This call has no chat capability. Orchestration tools work only from a chat OctiqFlow started.",
+            "This call has no chat capability. OctiqFlow's agent tools work only from a chat OctiqFlow started.",
         ));
     }
-    let claimed = request.chat_key.as_deref().filter(|key| !key.is_empty());
-    let session_key = request
-        .session_key
-        .as_deref()
-        .filter(|key| !key.is_empty())
+    let claimed = present(claim.chat_key);
+    let session_key = present(claim.session_key)
         .or(claimed)
         .ok_or((StatusCode::BAD_REQUEST, "This call names no chat."))?;
-    let chat_key = chats.chat_for_capability(session_key, secret).ok_or((
+    let (chat_key, launch_id) = chats.caller_for_capability(session_key, secret).ok_or((
         StatusCode::UNAUTHORIZED,
         "This chat capability is not current: its agent is no longer running, or it was issued to another chat.",
     ))?;
-    if claimed.is_some_and(|claimed| claimed != chat_key) {
+    if claimed.is_some_and(|claimed| claimed != chat_key)
+        || present(claim.launch_id).is_some_and(|claimed| claimed != launch_id)
+    {
         return Err((
             StatusCode::FORBIDDEN,
             "The chat named in this call is not the chat its capability belongs to.",
         ));
     }
-    Ok(chat_key)
+    Ok(HookCaller {
+        chat_key,
+        session_key: session_key.to_string(),
+        launch_id,
+    })
+}
+
+/// An empty claim is no claim.
+fn present(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
+}
+
+/// A refused hook call, as the MCP reads one.
+fn hook_refusal((status, error): (StatusCode, &'static str)) -> Response {
+    (status, axum::Json(json!({ "error": error }))).into_response()
+}
+
+/// Every action an agent may take on `/hook/orchestration`, and the command
+/// each one runs. A whitelist, not a bridge: nothing the person alone decides
+/// is on it (see the `the_hook_reaches_no_person_only_command` test).
+const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
+    ("run_create", "orchestration_run_create"),
+    ("task_create", "orchestration_task_create"),
+    ("task_revise", "orchestration_task_revise"),
+    ("task_reassign", "orchestration_task_reassign"),
+    // NOT the browser's `orchestration_plan_approve`: this one approves
+    // only on the person's own message, which the host reads itself.
+    ("plan_approve", "orchestration_plan_approve_in_chat"),
+    ("destinations", "orchestration_destinations"),
+    ("snapshot", "orchestration_snapshot"),
+    ("worker_start", "orchestration_worker_start"),
+    ("worker_report", "orchestration_worker_report"),
+    ("service_register", "orchestration_service_register"),
+    ("workspace_refresh", "orchestration_workspace_refresh"),
+    ("task_reopen", "orchestration_task_reopen"),
+    // A lead accepting a report's result; never the person's acceptance.
+    ("task_accept", "orchestration_task_accept_in_chat"),
+    ("validation_create", "orchestration_validation_create"),
+    ("validation_remove", "orchestration_validation_remove"),
+    ("automation_configure", "orchestration_automation_configure"),
+    ("dispatch_ready", "orchestration_dispatch_ready"),
+    ("gate_create", "orchestration_gate_create"),
+    ("gate_resolve", "orchestration_gate_resolve"),
+    ("message_send", "orchestration_message_send"),
+    ("run_stop", "orchestration_run_stop"),
+];
+
+fn orchestration_hook_command(action: &str) -> Option<&'static str> {
+    ORCHESTRATION_HOOK_ACTIONS
+        .iter()
+        .find(|(name, _)| *name == action)
+        .map(|(_, command)| *command)
 }
 
 async fn orchestration_handler(
     AxumState(ctx): AxumState<Ctx>,
-    Query(q): Query<TokenQuery>,
     headers: axum::http::HeaderMap,
     Json(request): Json<OrchestrationHook>,
 ) -> Response {
-    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
-        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
-    }
-    let actor = match orchestration_caller(&ctx.services.chats, &headers, &request) {
-        Ok(actor) => actor,
-        Err((status, error)) => {
-            return (status, axum::Json(json!({ "error": error }))).into_response()
-        }
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: None,
     };
-    let command = match request.action.as_str() {
-        "run_create" => "orchestration_run_create",
-        "task_create" => "orchestration_task_create",
-        "task_revise" => "orchestration_task_revise",
-        "task_reassign" => "orchestration_task_reassign",
-        // NOT the browser's `orchestration_plan_approve`: this one approves
-        // only on the person's own message, which the host reads itself.
-        "plan_approve" => "orchestration_plan_approve_in_chat",
-        "destinations" => "orchestration_destinations",
-        "snapshot" => "orchestration_snapshot",
-        "worker_start" => "orchestration_worker_start",
-        "worker_report" => "orchestration_worker_report",
-        "service_register" => "orchestration_service_register",
-        "workspace_refresh" => "orchestration_workspace_refresh",
-        "task_reopen" => "orchestration_task_reopen",
-        // A lead accepting a report's result; never the person's acceptance.
-        "task_accept" => "orchestration_task_accept_in_chat",
-        "validation_create" => "orchestration_validation_create",
-        "validation_remove" => "orchestration_validation_remove",
-        "automation_configure" => "orchestration_automation_configure",
-        "dispatch_ready" => "orchestration_dispatch_ready",
-        "gate_create" => "orchestration_gate_create",
-        "gate_resolve" => "orchestration_gate_resolve",
-        "message_send" => "orchestration_message_send",
-        "run_stop" => "orchestration_run_stop",
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(json!({ "error": "Unknown orchestration action." })),
-            )
-                .into_response()
-        }
+    let actor = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller.chat_key,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let Some(command) = orchestration_hook_command(&request.action) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "Unknown orchestration action." })),
+        )
+            .into_response();
     };
     let mut args = match request.args {
         Value::Object(args) => args,
@@ -1082,34 +1194,54 @@ async fn orchestration_handler(
 
 /// What an agent may say about its own task, and nothing else.
 ///
-/// The MCP supplies the chat key from its process environment, not its tool
-/// arguments; this handler replaces any supplied chatId with that key. As with the
+/// The chat is the one the caller's capability proves; this handler replaces
+/// any supplied chatId with it. As with the
 /// orchestration hook this is a whitelist, not a generic bridge to
 /// the command table.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskHook {
-    chat_key: String,
+    /// A claim, checked against the capability like the orchestration hook's.
+    #[serde(default)]
+    chat_key: Option<String>,
+    /// An additional agent's own process key (`OCTIQ_SESSION_KEY`).
+    #[serde(default)]
+    session_key: Option<String>,
     action: String,
     #[serde(default)]
     args: Value,
+}
+
+/// The chat a task, vault or feedback hook call acts for.
+fn task_hook_caller(
+    ctx: &Ctx,
+    headers: &axum::http::HeaderMap,
+    request: &TaskHook,
+) -> Result<String, (StatusCode, &'static str)> {
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: None,
+    };
+    hook_caller(&ctx.services.chats, headers, claim).map(|caller| caller.chat_key)
 }
 
 /// Native vault operations only. Configuration is a browser setting, never an
 /// agent tool; neither the root nor the write permission comes from tool args.
 async fn vault_handler(
     AxumState(ctx): AxumState<Ctx>,
-    Query(q): Query<TokenQuery>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<TaskHook>,
 ) -> Response {
-    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
-        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
-    }
+    let chat_key = match task_hook_caller(&ctx, &headers, &request) {
+        Ok(chat_key) => chat_key,
+        Err(refused) => return hook_refusal(refused),
+    };
     match run_command(
         &ctx,
         "memory_vault_agent".into(),
         json!({
-            "chatKey": request.chat_key, "action": request.action, "args": request.args,
+            "chatKey": chat_key, "action": request.action, "args": request.args,
         }),
     )
     .await
@@ -1123,17 +1255,18 @@ async fn vault_handler(
 
 async fn feedback_handler(
     AxumState(ctx): AxumState<Ctx>,
-    Query(q): Query<TokenQuery>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<TaskHook>,
 ) -> Response {
-    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
-        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
-    }
+    let chat_key = match task_hook_caller(&ctx, &headers, &request) {
+        Ok(chat_key) => chat_key,
+        Err(refused) => return hook_refusal(refused),
+    };
     match run_command(
         &ctx,
         "feedback_agent".into(),
         json!({
-            "chatKey": request.chat_key, "action": request.action, "args": request.args,
+            "chatKey": chat_key, "action": request.action, "args": request.args,
         }),
     )
     .await
@@ -1147,14 +1280,34 @@ async fn feedback_handler(
     }
 }
 
+/// A task hook's arguments, acting on `chat_key` whatever they say.
+fn task_hook_args(
+    chat_key: &str,
+    args: Value,
+) -> Result<serde_json::Map<String, Value>, &'static str> {
+    let mut args = match args {
+        Value::Object(args) => args,
+        Value::Null => serde_json::Map::new(),
+        _ => return Err("Task arguments must be an object."),
+    };
+    // `chat:<id>` is the key an agent knows itself by; the status store is
+    // keyed by the chat id alone.
+    let chat_id = chat_key.strip_prefix("chat:").unwrap_or(chat_key);
+    args.insert("chatId".into(), Value::String(chat_id.into()));
+    args.entry("setBy")
+        .or_insert_with(|| Value::String("agent".into()));
+    Ok(args)
+}
+
 async fn task_handler(
     AxumState(ctx): AxumState<Ctx>,
-    Query(q): Query<TokenQuery>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<TaskHook>,
 ) -> Response {
-    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
-        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
-    }
+    let chat_key = match task_hook_caller(&ctx, &headers, &request) {
+        Ok(chat_key) => chat_key,
+        Err(refused) => return hook_refusal(refused),
+    };
     let command = match request.action.as_str() {
         "report" => "chat_task_report",
         "target" => "chat_task_set_target",
@@ -1168,27 +1321,16 @@ async fn task_handler(
                 .into_response()
         }
     };
-    let mut args = match request.args {
-        Value::Object(args) => args,
-        Value::Null => serde_json::Map::new(),
-        _ => {
+    let args = match task_hook_args(&chat_key, request.args) {
+        Ok(args) => args,
+        Err(error) => {
             return (
                 StatusCode::BAD_REQUEST,
-                axum::Json(json!({ "error": "Task arguments must be an object." })),
+                axum::Json(json!({ "error": error })),
             )
                 .into_response()
         }
     };
-    // `chat:<id>` is the key an agent knows itself by; the status store is
-    // keyed by the chat id alone.
-    let chat_id = request
-        .chat_key
-        .strip_prefix("chat:")
-        .unwrap_or(&request.chat_key)
-        .to_string();
-    args.insert("chatId".into(), Value::String(chat_id));
-    args.entry("setBy")
-        .or_insert_with(|| Value::String("agent".into()));
     match run_command(&ctx, command.into(), Value::Object(args)).await {
         Ok(result) => axum::Json(json!({ "result": result })).into_response(),
         Err(error) => (
@@ -1197,6 +1339,22 @@ async fn task_handler(
         )
             .into_response(),
     }
+}
+
+/// Commands that act as one particular lead chat, and so answer only that
+/// chat's capability on `/hook/orchestration`. The socket is the person, who
+/// has commands of their own for the same decisions; letting it run these
+/// would record a lead's acceptance or approval that no lead gave.
+const CHAT_ONLY_COMMANDS: &[&str] = &[
+    "orchestration_task_accept_in_chat",
+    "orchestration_plan_approve_in_chat",
+];
+
+/// Why the person's socket will not run `cmd`, if it will not.
+fn socket_refusal(cmd: &str) -> Option<String> {
+    CHAT_ONLY_COMMANDS.contains(&cmd).then(|| {
+        format!("'{cmd}' is an agent's own command and only runs from its chat; use the person's command instead.")
+    })
 }
 
 /// One connected browser: forward its invokes, stream events back.
@@ -1256,7 +1414,11 @@ async fn client(ctx: Ctx, socket: WebSocket) {
         let ctx = ctx.clone();
         let out = sink.clone();
         tokio::spawn(async move {
-            let reply = match run_command(&ctx, cmd, args).await {
+            let outcome = match socket_refusal(&cmd) {
+                Some(refused) => Err(refused),
+                None => run_command(&ctx, cmd, args).await,
+            };
+            let reply = match outcome {
                 Ok(result) => json!({ "t": "reply", "id": id, "ok": true, "result": result }),
                 Err(error) => json!({ "t": "reply", "id": id, "ok": false, "error": error }),
             };
@@ -1557,9 +1719,19 @@ mod tests {
 
     // ---- /hook/orchestration: the caller is its capability, not its body ---
 
-    /// POST to the running server as an agent's MCP would, token and all.
-    async fn hook(base: &str, capability: Option<&str>, body: Value) -> (u16, Value) {
-        let url = format!("{base}/hook/orchestration?token=hook-token");
+    /// POST to one of the running server's hooks. `token` goes in the query
+    /// the way the MCP used to send the person's token; the MCP sends none.
+    async fn post_hook(
+        base: &str,
+        route: &str,
+        token: Option<&str>,
+        capability: Option<&str>,
+        body: Value,
+    ) -> (u16, Value) {
+        let url = match token {
+            Some(token) => format!("{base}/hook/{route}?token={token}"),
+            None => format!("{base}/hook/{route}"),
+        };
         let capability = capability.map(str::to_owned);
         tokio::task::spawn_blocking(move || {
             let mut request = ureq::post(&url);
@@ -1579,6 +1751,264 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    /// POST to `/hook/orchestration` as an agent's MCP does: its capability
+    /// and nothing else.
+    async fn hook(base: &str, capability: Option<&str>, body: Value) -> (u16, Value) {
+        post_hook(base, "orchestration", None, capability, body).await
+    }
+
+    /// GET a person surface with extra headers; the status is all that counts.
+    async fn get_status(url: String, headers: Vec<(&'static str, String)>) -> u16 {
+        tokio::task::spawn_blocking(move || {
+            let mut request = ureq::get(&url);
+            for (name, value) in &headers {
+                request = request.set(name, value);
+            }
+            match request.call() {
+                Ok(response) => response.status(),
+                Err(ureq::Error::Status(code, _)) => code,
+                Err(error) => panic!("{url} could not be reached: {error}"),
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    /// A server with the web token `hook-token`, on an ephemeral loopback
+    /// port, over the given chats and store.
+    async fn test_server(
+        chats: Arc<crate::agent_chat::ChatManager>,
+        store: Arc<crate::orchestration::OrchestrationStore>,
+    ) -> (Ctx, String) {
+        let ctx = Ctx {
+            state: Arc::new(WebState::new(WebConfig {
+                token: "hook-token".into(),
+                ..WebConfig::default()
+            })),
+            services: crate::dispatch::Services {
+                workspaces: Arc::new(crate::workspaces::WorkspaceState::load()),
+                chats,
+                watch: Arc::new(crate::file_watch::FileWatchState::default()),
+                git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
+                orchestrations: store,
+                ptys: Arc::new(crate::pty::PtyManager::default()),
+            },
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let service = router(ctx.clone()).into_make_service_with_connect_info::<SocketAddr>();
+        tokio::spawn(async move { axum::serve(listener, service).await });
+        (ctx, base)
+    }
+
+    // ---- two principals: a launch's capability is not the person ----------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_launch_capability_opens_no_person_surface() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let cap = chats.test_launch("chat:worker");
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let file = std::env::temp_dir().join(format!(
+            "octiq-person-surface-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&file, "person only").unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        // The person's token opens each of them — the control.
+        assert_eq!(
+            get_status(format!("{base}/auth?token=hook-token"), vec![]).await,
+            200
+        );
+        assert_eq!(
+            get_status(format!("{base}/file?token=hook-token&path={path}"), vec![]).await,
+            200
+        );
+        // A running agent's capability, handed over as if it were the token,
+        // or in the header the hooks read, opens none of them.
+        for (given, header) in [
+            (cap.as_str(), vec![]),
+            ("", vec![(CHAT_CAPABILITY_HEADER, cap.clone())]),
+        ] {
+            assert_eq!(
+                get_status(format!("{base}/auth?token={given}"), header.clone()).await,
+                401,
+                "/auth"
+            );
+            assert_eq!(
+                get_status(
+                    format!("{base}/file?token={given}&path={path}"),
+                    header.clone()
+                )
+                .await,
+                401,
+                "/file"
+            );
+            let mut upgrade = header.clone();
+            upgrade.extend([
+                ("Connection", "Upgrade".to_string()),
+                ("Upgrade", "websocket".to_string()),
+                ("Sec-WebSocket-Version", "13".to_string()),
+                ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==".to_string()),
+            ]);
+            assert_eq!(
+                get_status(format!("{base}/ws?token={given}"), upgrade).await,
+                401,
+                "/ws"
+            );
+        }
+        chats.test_end("chat:worker");
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_hook_takes_its_chat_from_the_capability_and_never_from_the_token() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let worker = chats.test_launch("chat:worker");
+        let ended = chats.test_launch("chat:ended");
+        chats.test_end("chat:ended");
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let question = json!([{ "question": "Which one?", "header": "Pick" }]);
+        // Actions no hook knows: a call that got past authentication would
+        // fail on them without touching anything, so a 400 here means the
+        // credential check was passed.
+        let bodies = |chat: &str| {
+            [
+                (
+                    "orchestration",
+                    json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
+                ),
+                (
+                    "task",
+                    json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
+                ),
+                (
+                    "vault",
+                    json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
+                ),
+                (
+                    "feedback",
+                    json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
+                ),
+                ("ask", json!({ "chatKey": chat, "questions": question })),
+                ("permission", json!({ "chatKey": chat, "toolName": "Bash" })),
+            ]
+        };
+
+        for (route, body) in bodies("chat:worker") {
+            // The person's token, with no capability: not an agent at all.
+            let (status, answer) =
+                post_hook(&base, route, Some("hook-token"), None, body.clone()).await;
+            assert_eq!(status, 401, "/hook/{route} on the person's token: {answer}");
+            // A made-up capability, and the capability of an ended launch.
+            for cap in ["0123456789abcdef", ended.as_str()] {
+                let (status, _) =
+                    post_hook(&base, route, Some("hook-token"), Some(cap), body.clone()).await;
+                assert_eq!(status, 401, "/hook/{route} on a dead capability");
+            }
+        }
+        // A live capability naming another chat is refused, not corrected:
+        // looked up as that chat it is nobody's (401), looked up under its
+        // own session it is not that chat's (403).
+        for (route, body) in bodies("chat:master") {
+            let (status, answer) = post_hook(&base, route, None, Some(&worker), body.clone()).await;
+            assert_eq!(status, 401, "/hook/{route} as another chat: {answer}");
+            if route == "permission" {
+                continue; // it names no session
+            }
+            let mut own_session = body;
+            own_session["sessionKey"] = json!("chat:worker");
+            let (status, answer) = post_hook(&base, route, None, Some(&worker), own_session).await;
+            assert_eq!(status, 403, "/hook/{route} naming another chat: {answer}");
+        }
+        // Nor may a question claim another launch of its own chat.
+        let (status, _) = post_hook(
+            &base,
+            "ask",
+            None,
+            Some(&worker),
+            json!({ "chatKey": "chat:worker", "launchId": "not-this-launch", "questions": question }),
+        )
+        .await;
+        assert_eq!(status, 403, "a question claiming another launch");
+        // Its own capability, no token: the question reaches the chat the
+        // capability proves, whose turn is not running, and says so.
+        let (status, answer) = post_hook(
+            &base,
+            "ask",
+            None,
+            Some(&worker),
+            json!({ "chatKey": "chat:worker", "questions": question }),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert!(
+            answer["answer"]
+                .as_str()
+                .unwrap()
+                .contains("turn has already ended"),
+            "{answer}"
+        );
+        chats.test_end("chat:worker");
+    }
+
+    #[test]
+    fn a_task_hook_acts_on_the_proven_chat() {
+        let args =
+            task_hook_args("chat:worker", json!({ "chatId": "master", "branch": "x" })).unwrap();
+        assert_eq!(args["chatId"], json!("worker"));
+        assert_eq!(args["setBy"], json!("agent"));
+        assert_eq!(args["branch"], json!("x"));
+        assert!(task_hook_args("chat:worker", json!("nope")).is_err());
+    }
+
+    /// Commands only the person gives. Nothing on a hook may reach them.
+    const PERSON_ONLY: &[&str] = &[
+        "orchestration_task_accept",
+        "orchestration_task_size",
+        "orchestration_plan_approve",
+        "orchestration_run_archive",
+        "orchestration_master_start",
+        "team_head_set",
+    ];
+
+    #[test]
+    fn the_hook_reaches_no_person_only_command() {
+        for (action, command) in ORCHESTRATION_HOOK_ACTIONS {
+            assert!(
+                !PERSON_ONLY.contains(command),
+                "hook action {action} reaches the person's {command}"
+            );
+            assert_eq!(orchestration_hook_command(action), Some(*command));
+        }
+        for command in PERSON_ONLY {
+            assert_eq!(orchestration_hook_command(command), None);
+        }
+        assert_eq!(
+            orchestration_hook_command("task_accept"),
+            Some("orchestration_task_accept_in_chat")
+        );
+    }
+
+    #[test]
+    fn the_socket_refuses_what_only_a_proven_lead_chat_may_do() {
+        for command in [
+            "orchestration_task_accept_in_chat",
+            "orchestration_plan_approve_in_chat",
+        ] {
+            assert!(socket_refusal(command).is_some(), "{command}");
+        }
+        for command in [
+            "orchestration_task_accept",
+            "orchestration_plan_approve",
+            "chat_send",
+        ] {
+            assert!(socket_refusal(command).is_none(), "{command}");
+        }
     }
 
     fn accept(chat_key: &str, session_key: Option<&str>, task: &str, attempt: &str) -> Value {
@@ -1660,24 +2090,7 @@ mod tests {
         let worker_cap = chats.test_launch(&worker);
         let stale_cap = chats.test_launch("chat:master");
         let other_cap = chats.test_launch("chat:other");
-        let ctx = Ctx {
-            state: Arc::new(WebState::new(WebConfig {
-                token: "hook-token".into(),
-                ..WebConfig::default()
-            })),
-            services: crate::dispatch::Services {
-                workspaces: Arc::new(crate::workspaces::WorkspaceState::load()),
-                chats: chats.clone(),
-                watch: Arc::new(crate::file_watch::FileWatchState::default()),
-                git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
-                orchestrations: store.clone(),
-                ptys: Arc::new(crate::pty::PtyManager::default()),
-            },
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let service = router(ctx.clone()).into_make_service_with_connect_info::<SocketAddr>();
-        tokio::spawn(async move { axum::serve(listener, service).await });
+        let (ctx, base) = test_server(chats.clone(), store.clone()).await;
 
         let nothing_accepted = |store: &OrchestrationStore| {
             let snapshot = store.snapshot(None).unwrap();
@@ -1707,9 +2120,11 @@ mod tests {
             status, 403,
             "forged coordinator, looked up as itself: {answer}"
         );
-        // The shared token alone, naming the coordinator.
-        let (status, _) = hook(
+        // The person's token alone, naming the coordinator.
+        let (status, _) = post_hook(
             &base,
+            "orchestration",
+            Some("hook-token"),
             None,
             accept("chat:master", None, &task.id, &attempt.id),
         )
@@ -1810,23 +2225,23 @@ mod tests {
             answer["result"]["award"]["acceptedBy"]["agentId"],
             json!("agent_lead")
         );
-        // The token is still required with a good capability.
-        let (status, _) = tokio::task::spawn_blocking({
-            let url = format!("{base}/hook/orchestration?token=wrong");
-            let cap = master_cap.clone();
-            let body = accept("chat:master", None, &task.id, &attempt.id);
-            move || match ureq::post(&url)
-                .set(CHAT_CAPABILITY_HEADER, &cap)
-                .send_json(body)
-            {
-                Ok(r) => (r.status(), ()),
-                Err(ureq::Error::Status(code, _)) => (code, ()),
-                Err(error) => panic!("{error}"),
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(status, 401);
+        // The person's token is neither needed nor enough on a hook: the MCP
+        // is never given it, and a wrong one beside a good capability is the
+        // same call.
+        let (status, answer) = post_hook(
+            &base,
+            "orchestration",
+            Some("wrong"),
+            Some(&master_cap),
+            accept("chat:master", None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(
+            answer["result"]["awarded"],
+            json!(false),
+            "XP once per task"
+        );
 
         // The person, through the command the browser's socket runs.
         let accepted = run_command(

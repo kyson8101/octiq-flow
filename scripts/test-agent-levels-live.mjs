@@ -155,8 +155,9 @@ assert.equal(legacyRow.unpaid, "unsized");
 assert.deepEqual(before.awaiting.map((a) => a.taskId).sort(), [reopened, unsizedWaiting].sort());
 assert.ok(before.awaiting.every((a) => a.unscored));
 
-// The hook, with the shared token and no chat capability, naming the run's
-// coordinator: refused before anything is looked at.
+// The hook, with the person's token and no chat capability, naming the run's
+// coordinator: refused before anything is looked at. The token is not an
+// agent credential at all.
 for (const capability of [undefined, "not-a-real-capability"]) {
   const response = await fetch(`${base}/hook/orchestration?token=${TOKEN}`, {
     method: "POST",
@@ -166,6 +167,14 @@ for (const capability of [undefined, "not-a-real-capability"]) {
   });
   assert.equal(response.status, 401, `forged coordinator, capability ${capability ?? "absent"}`);
 }
+// Nor is the person's socket a lead: it has its own accept command, and the
+// lead's refuses to run there, whatever chat it names.
+await assert.rejects(
+  invoke("orchestration_task_accept_in_chat", {
+    actorChatKey: "chat:lead-demo", taskId: reopened, attemptId: tasks[reopened].activeAttemptId,
+  }),
+  /only runs from its chat/,
+);
 const unchanged = await invoke("agent_level_profile", { agentId: "agent_mango" });
 assert.equal(unchanged.historyTotal, 5, "the forged calls accepted nothing");
 
