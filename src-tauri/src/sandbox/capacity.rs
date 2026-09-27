@@ -362,5 +362,19 @@ mod tests {
         assert_eq!(held(), keys(&["chat:new", "chat:x"]).into_iter().collect());
         drop(reservation);
         assert!(held().is_empty());
+        // Full, but a retry whose taken-over environment is already live
+        // needs no new slot: it goes, and counts that one only once.
+        let full: BTreeSet<String> = keys(&["chat:x", "chat:y", "chat:z"]).into_iter().collect();
+        let retry = acquire(
+            &keys(&["chat:x", "chat:x"]),
+            "retry",
+            1,
+            || full.clone(),
+            || false,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(held(), keys(&["chat:x"]).into_iter().collect());
+        drop(retry);
     }
 }

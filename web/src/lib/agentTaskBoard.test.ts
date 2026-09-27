@@ -29,6 +29,18 @@ describe("a task row's state word (feedback ee0a43b0)", () => {
     expect(taskStateLabel(done, undefined)).toBe("Done · no verdict");
     // Ordinary work with no kind keeps its plain word: nothing is invented.
     expect(taskStateLabel({ ...done, kind: undefined }, undefined)).toBe("Done");
+    // With its worker's execution evidence too, as a real settled task has.
+    const settled = { ...attempt, status: "completed", execution: { state: "completed", pendingTools: {} } } as unknown as OrchestrationAttempt;
+    const withAttempt = { ...done, activeAttemptId: "a" };
+    expect(taskStateLabel({ ...withAttempt, verdict: "pass" }, settled)).toBe("Done · passed");
+    expect(taskStateLabel({ ...withAttempt, kind: undefined, verdict: "fail" }, settled)).toBe("Done · check failed");
+    expect(taskStateLabel({ ...withAttempt, kind: undefined }, settled)).toBe("Completed");
+  });
+
+  it("says the host is preparing, or queueing for, the task's environment rather than a tool", () => {
+    const on = (label: string) => ({ ...attempt, execution: { state: "waiting_tool", pendingTools: { "octiq:environment": label } } }) as unknown as OrchestrationAttempt;
+    expect(taskStateLabel(task, on("Preparing test environment"))).toBe("Preparing environment");
+    expect(taskStateLabel(task, on("Waiting for environment capacity: 3 of 3 in use, position 1 in line"))).toBe("Waiting for an environment slot");
   });
 
   it("names the native decision only when one was observed", () => {

@@ -121,6 +121,31 @@ pub struct Environment {
     /// When a health probe last looked, as a read sees it. Never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probed_at: Option<u64>,
+    /// A probe is queued or running, as a read sees it. Never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probing: Option<bool>,
+}
+
+impl Environment {
+    /// What leaves this store for a browser, an agent or a handoff file:
+    /// digests say only that they were recorded. A recipe digest covers the
+    /// private env file's bytes, and a dirty-content digest untracked files;
+    /// neither is anyone else's to compare against.
+    pub fn public(mut self) -> Self {
+        let recorded = |d: &mut Option<String>| {
+            if d.is_some() {
+                *d = Some("recorded".into());
+            }
+        };
+        recorded(&mut self.frozen_recipe);
+        if let Some(fingerprint) = self.fingerprint.as_mut() {
+            recorded(&mut fingerprint.recipe);
+            for source in &mut fingerprint.sources {
+                source.digest = None;
+            }
+        }
+        self
+    }
 }
 
 /// States in which an environment's services have been started and not
@@ -244,6 +269,7 @@ impl Store {
                 urls: BTreeMap::new(), source_revision: None, source_dirty: None, fixture_version: None,
                 host_instance: instance().into(), docker_endpoint: None, fingerprint: None,
                 frozen_recipe: None, invalidated: None, lease: None, stopped: None, probed_at: None,
+                probing: None,
             });
             Ok(())
         })
@@ -267,6 +293,7 @@ impl Store {
         self.mutate(|data| {
             let mut env = env.clone();
             env.probed_at = None;
+            env.probing = None;
             data.environments.insert(env.chat_key.clone(), env);
             Ok(())
         })
@@ -438,6 +465,7 @@ impl Store {
                 self.save(env)?;
             }
         }
+        let existed = compose.exists();
         if !compose.exists() {
             if matches!(action, "stop" | "reset") {
                 return Err("No owned Compose configuration has been prepared yet.".into());
@@ -508,6 +536,17 @@ impl Store {
         }
         let config: Value = serde_json::from_slice(&fs::read(&compose).map_err(|e| e.to_string())?)
             .map_err(|_| "Saved Compose configuration is unreadable.")?;
+        if action == "start" && existed && !matches!(self.stale_reason(env), Ok(None)) {
+            // Rebuilding a stack whose sources moved: take it all down first
+            // (volumes kept). `up` would replace only the rebuilt services,
+            // and one that stays (a gateway) can keep serving the addresses
+            // of containers that no longer exist.
+            let mut args = base.clone();
+            args.extend(["down".into(), "--remove-orphans".into()]);
+            run(&docker, &args, &dir, Some(env), 120)
+                .map_err(|e| format!("Could not stop the stack before rebuilding it: {e}"))?;
+            env.urls.clear();
+        }
         if matches!(action, "start" | "reset") {
             // What the images are built from, read before the build: an
             // edit made while it runs is not what the check will prove.
@@ -570,7 +609,7 @@ impl Store {
         private_write(&dir.join("handoff.json"), &serde_json::to_vec_pretty(&json!({
             "environmentId": env.id, "cwd": env.cwd, "urls": env.urls, "checkedAt": env.checked_at,
             "sourceRevision": env.source_revision, "sourceDirty": env.source_dirty,
-            "fixtureVersion": env.fixture_version, "fingerprint": env.fingerprint,
+            "fixtureVersion": env.fixture_version, "fingerprint": env.clone().public().fingerprint,
             "note": "Project test services on this OctiqFlow host. The recipe's readiness command passed at checkedAt. Recheck before testing; task completion is not application acceptance. This does not change agent tool permissions."
         })).map_err(|e| e.to_string())?)?;
         Ok(())
@@ -588,10 +627,12 @@ impl Store {
             .filter(|e| e.enabled && e.state == "ready")
             .map(|e| e.chat_key.clone())
             .collect();
+        health::request(&self.root, ready, now());
         for env in data.environments.values_mut() {
             env.probed_at = health::probed_at(&self.root, &env.chat_key);
+            env.probing = Some(health::in_flight(&self.root, &env.chat_key));
+            *env = env.clone().public();
         }
-        health::request(&self.root, ready, now());
         let mut live = self.live_in(&data);
         live.extend(capacity::held());
         data.capacity = Some(CapacityView {
@@ -814,8 +855,19 @@ impl Store {
         if self.busy(key) {
             return Ok(());
         }
-        if let Some(reason) = self.stale_reason(&env)? {
-            return self.invalidate(key, env.checked_at, "stale", reason);
+        // A probe that cannot finish does not leave "ready" standing: it
+        // could not confirm it, so it says so.
+        match self.stale_reason(&env) {
+            Ok(Some(reason)) => return self.invalidate(key, env.checked_at, "stale", reason),
+            Ok(None) => {}
+            Err(error) => {
+                return self.invalidate(
+                    key,
+                    env.checked_at,
+                    "unhealthy",
+                    format!("The health probe could not finish: {error}"),
+                )
+            }
         }
         if let Some(reason) = self.container_problem(&env) {
             return self.invalidate(key, env.checked_at, "unhealthy", reason);
@@ -1729,6 +1781,32 @@ mod tests {
     }
 
     #[test]
+    fn a_probe_that_cannot_finish_never_leaves_ready_standing_and_digests_stay_private() {
+        let store = store();
+        let (_project, env) = checked(&store, "v1");
+        let public = env.clone().public();
+        assert_eq!(public.frozen_recipe.as_deref(), Some("recorded"));
+        let fingerprint = public.fingerprint.unwrap();
+        assert_eq!(fingerprint.recipe.as_deref(), Some("recorded"));
+        assert!(fingerprint.sources.iter().all(|s| s.digest.is_none()));
+        assert!(env.frozen_recipe.as_deref().is_some_and(|d| d.len() == 64));
+        // What a browser or agent reads never carries a digest.
+        let read = serde_json::to_string(&store.snapshot_probed().unwrap()).unwrap();
+        assert!(!read.contains(env.frozen_recipe.as_deref().unwrap()));
+
+        fs::remove_file(store.directory(&env).unwrap().join("compose.json")).unwrap();
+        store.probe("chat:a").unwrap();
+        let after = store.snapshot().unwrap().environments["chat:a"].clone();
+        assert_eq!(after.state, "unhealthy");
+        assert!(after
+            .invalidated
+            .unwrap()
+            .reason
+            .starts_with("The health probe could not finish"));
+        fs::remove_dir_all(store.root).unwrap();
+    }
+
+    #[test]
     fn a_probe_only_demotes_the_check_it_looked_at() {
         let store = store();
         let (_project, _env) = checked(&store, "v1");
@@ -1904,6 +1982,33 @@ mod tests {
             "kept",
             "volumes survive a rebuild"
         );
+
+        // Sources moved: the rebuild takes the whole stack down first, so no
+        // service that stays keeps addresses of replaced containers.
+        let before = compose_cmd(&rebuilt, &["ps", "-q", "app"]).unwrap();
+        commit(&project, "moved");
+        store.probe("chat:a").unwrap();
+        assert_eq!(
+            store.snapshot().unwrap().environments["chat:a"].state,
+            "stale"
+        );
+        let fresh = store.host_action("chat:a", "start").unwrap();
+        assert_eq!(fresh.state, "ready");
+        assert_ne!(
+            compose_cmd(&fresh, &["ps", "-q", "app"]).unwrap().trim(),
+            before.trim(),
+            "every service was recreated"
+        );
+        assert_eq!(
+            compose_cmd(&fresh, &["exec", "-T", "app", "cat", "/data/marker"])
+                .unwrap()
+                .trim(),
+            "kept"
+        );
+        // Unchanged sources: a start leaves running services alone.
+        let same = compose_cmd(&fresh, &["ps", "-q", "app"]).unwrap();
+        store.host_action("chat:a", "start").unwrap();
+        assert_eq!(compose_cmd(&fresh, &["ps", "-q", "app"]).unwrap(), same);
 
         // The host stops what nothing needs; data stays for the next start.
         assert!(store.host_stop("chat:a", "nothing needs it").unwrap());

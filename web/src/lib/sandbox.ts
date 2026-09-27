@@ -18,6 +18,8 @@ export type SandboxEnvironment = {
   stopped?: { by: string; reason: string; at: number } | null;
   /** When a health probe last looked. */
   probedAt?: number | null;
+  /** A health probe is queued or running now. */
+  probing?: boolean | null;
 };
 export type SandboxCapacity = {
   limit: number;

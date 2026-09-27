@@ -65,16 +65,18 @@ export function taskStateLabel(
   attempt: OrchestrationAttempt | undefined,
   decisions: readonly { attemptId: string; status: string }[] = [],
 ): string {
+  // A settled check's answer outranks how its worker's process ended:
+  // "Completed" alone is exactly the word that hid a failed review.
+  if (task.status === "completed" && (task.verdict === "fail" || (task.kind && task.kind !== "work"))) {
+    return task.verdict === "fail" ? "Done · check failed" : task.verdict === "pass" ? "Done · passed" : "Done · no verdict";
+  }
   if (attempt?.execution && task.activeAttemptId === attempt.id) {
     const state = attempt.execution.state;
     const approval = decisions.some((d) => d.attemptId === attempt.id && d.status === "pending");
     if (approval && (state === "waiting_tool" || state === "awaiting_report")) return "Awaiting approval";
+    const environment = attempt.execution.pendingTools?.["octiq:environment"];
+    if (environment) return environment.startsWith("Waiting for environment capacity") ? "Waiting for an environment slot" : "Preparing environment";
     return EXECUTION_LABELS[state];
-  }
-  if (task.status === "completed" && task.verdict === "fail") return "Done · check failed";
-  // A check's finishing is not its answer: say which answer it gave.
-  if (task.status === "completed" && task.kind && task.kind !== "work") {
-    return task.verdict === "pass" ? "Done · passed" : "Done · no verdict";
   }
   return TASK_LABELS[task.status];
 }

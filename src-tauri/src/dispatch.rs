@@ -480,12 +480,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let key: String = arg(&args, "key")?;
             let action: String = arg(&args, "action")?;
             let confirmation: Option<String> = arg(&args, "confirmation")?;
-            to_value(crate::sandbox::Store::profile().person_action(
-                &key,
-                &action,
-                confirmation.as_deref(),
-                || crate::agent_chat::end_idle_for_sandbox(&svc.chats, &key),
-            ))
+            to_value(
+                crate::sandbox::Store::profile()
+                    .person_action(&key, &action, confirmation.as_deref(), || {
+                        crate::agent_chat::end_idle_for_sandbox(&svc.chats, &key)
+                    })
+                    .map(crate::sandbox::Environment::public),
+            )
         }
         "chat_start" => {
             let key: String = arg(&args, "key")?;

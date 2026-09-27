@@ -51,6 +51,14 @@ pub fn probed_at(root: &std::path::Path, key: &str) -> Option<u64> {
         .copied()
 }
 
+/// Whether a probe of this environment is queued or running.
+pub fn in_flight(root: &std::path::Path, key: &str) -> bool {
+    let (lock, _) = queue();
+    lock.lock()
+        .map(|q| q.queued.contains(&(root.to_path_buf(), key.to_owned())))
+        .unwrap_or(false)
+}
+
 /// Queue a probe of each of `keys` not probed within `FRESH_MS`. Returns at
 /// once; the answer lands in the store and raises `sandbox-changed`.
 pub fn request(root: &std::path::Path, keys: impl IntoIterator<Item = String>, now: u64) {

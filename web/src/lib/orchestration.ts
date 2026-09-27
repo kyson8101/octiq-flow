@@ -195,6 +195,9 @@ export type WorkerExecution = {
   lastProgressAt?: number | null;
   lastProgress?: string | null;
   currentOperation?: string | null;
+  /** Operations in flight, by id. `octiq:environment` is the host's own:
+   *  building the task's test environment, or waiting for a slot for it. */
+  pendingTools?: Record<string, string>;
   latestError?: { kind: string; message: string; at: number; retryable: boolean } | null;
   retryCount: number;
   nextRetryAt?: number | null;

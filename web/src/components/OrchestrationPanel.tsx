@@ -1176,7 +1176,12 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
             {task.verdict === "fail" && <span className="orch-task-blocker" title="It finished, and what it checked did not pass. Tasks that depend on it wait.">Check failed</span>}
             {requiresVerdict(task) && task.verdict !== "fail" && <span className="orch-task-kind" title="It settles only with a pass or fail verdict, and only a pass releases the tasks that depend on it.">{KIND_LABEL[task.kind!]}</span>}
             {environment && <span className="orch-task-env" data-tone={environment.tone} title={environment.detail.join("\n")}>{environment.label}</span>}
-            {decision && <span className="orch-task-decision" title={[decision.reason, decision.blockedAction ? `Action: ${decision.blockedAction}` : "The provider gave no exact action."].join("\n")}>Decision {decision.id.slice(0, 12)}</span>}
+            {decision && <span className="orch-task-decision" title={[
+              `Native decision ${decision.id}`,
+              decision.reason,
+              decision.blockedAction ? `Action: ${decision.blockedAction}` : "The provider gave no exact action.",
+              decision.continuation === "unavailable" ? "This attempt cannot continue from here; a new attempt is needed." : decision.continuation === "new_turn_same_attempt" ? "Answering resumes this same attempt." : "Whether it can resume is not known.",
+            ].join("\n")}>{decision.continuation === "unavailable" ? "Decision recorded · cannot resume" : "Native decision"} {decision.id.slice(0, 10)}</span>}
             {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
             {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
             {attempt && <span className="orch-task-agent" title={`${task.assignee ? `${assigneeFace?.name ?? task.assignee.name} · ` : ""}${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}>{task.assignee

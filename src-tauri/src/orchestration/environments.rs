@@ -265,6 +265,7 @@ mod tests {
             lease: None,
             stopped: None,
             probed_at: None,
+            probing: None,
         }
     }
 
@@ -434,6 +435,173 @@ mod tests {
             .unwrap();
         let w = read(&store, &[&first.worker_chat_key, &second.worker_chat_key]);
         assert_eq!(w.stops(false), vec![first.worker_chat_key.clone()]);
+    }
+
+    /// Wait until the attempt's environment work is over (ready or failed).
+    fn environment_done(store: &OrchestrationStore, id: &str) -> Attempt {
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        loop {
+            let attempt = store
+                .snapshot(None)
+                .unwrap()
+                .attempts
+                .into_iter()
+                .find(|a| a.id == id)
+                .unwrap();
+            if !attempt
+                .execution
+                .pending_tools
+                .contains_key(super::super::ENVIRONMENT_OPERATION)
+            {
+                return attempt;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "environment never settled"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn docker_a_retry_reuses_its_stack_and_a_settled_task_stack_is_stopped_with_data_kept() {
+        let _serial = capacity::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("octiq-life-{}", compact_id()));
+        let project = root.join("project");
+        fs::create_dir_all(project.join(".octiq")).unwrap();
+        fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","checkService":"verify","endpoints":{"app":{"service":"app","port":80,"path":"/"}}}"#).unwrap();
+        fs::write(project.join(".octiq/compose.json"), serde_json::to_vec(&json!({"services":{
+            "app":{"image":"nginx:1.27-alpine","ports":[{"target":80,"host_ip":"127.0.0.1"}],"volumes":["data:/data"]},
+            "verify":{"image":"alpine:3.22","profiles":["check"],"command":["sh","-c","wget -q -O /dev/null http://app"]}
+        },"volumes":{"data":{}}})).unwrap()).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&project)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        fs::write(project.join(".gitignore"), ".octiq/\n").unwrap();
+        git(&["add", ".gitignore"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ]);
+        let cwd = project.to_str().unwrap().to_owned();
+        let sandboxes = || crate::sandbox::Store::at(root.join("sandboxes"));
+
+        let store = Arc::new(OrchestrationStore::default());
+        let run = crate::orchestration::tests::run(&store);
+        let task = store
+            .create_task_full(
+                "chat:master",
+                run.id.clone(),
+                "Build".into(),
+                "Build it".into(),
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                TaskEnvironment::Sandbox,
+                TaskKind::Work,
+            )
+            .unwrap();
+        let start = |store: &Arc<OrchestrationStore>| {
+            let (_, _, attempt, _) = store
+                .reserve_attempt(
+                    "chat:master",
+                    &crate::orchestration::tests::launch_for(&task.id),
+                )
+                .unwrap();
+            let attempt = store
+                .activate_attempt(&attempt.id, cwd.clone(), "b".into(), true)
+                .unwrap();
+            OrchestrationStore::start_after_environment(
+                store.clone(),
+                sandboxes(),
+                attempt.clone(),
+                || Ok(()),
+            )
+            .unwrap();
+            environment_done(store, &attempt.id)
+        };
+        let first = start(&store);
+        let env = sandboxes().snapshot().unwrap().environments[&first.worker_chat_key].clone();
+        assert_eq!(env.state, "ready");
+        let id = env.id.clone();
+        // The attempt fails; its retry takes the same stack over.
+        store
+            .report_worker(
+                &first.worker_chat_key,
+                WorkerReport {
+                    attempt_id: first.id.clone(),
+                    outcome: WorkerOutcome::Failed,
+                    summary: "flaky".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        let second = start(&store);
+        let envs = sandboxes().snapshot().unwrap();
+        assert!(!envs.environments.contains_key(&first.worker_chat_key));
+        assert_eq!(
+            envs.environments[&second.worker_chat_key].id, id,
+            "no second stack"
+        );
+        assert_eq!(envs.environments[&second.worker_chat_key].state, "ready");
+        assert_eq!(sandboxes().live_keys().len(), 1);
+
+        // While the attempt is live, the reconciler leaves it alone.
+        let mut backoff = BTreeMap::new();
+        reconcile(&store, &sandboxes(), &mut backoff).unwrap();
+        assert_eq!(
+            sandboxes().snapshot().unwrap().environments[&second.worker_chat_key].state,
+            "ready"
+        );
+        // Settled with nothing depending on it: stopped, data kept.
+        store
+            .report_worker(
+                &second.worker_chat_key,
+                WorkerReport {
+                    attempt_id: second.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "done".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        reconcile(&store, &sandboxes(), &mut backoff).unwrap();
+        let stopped = sandboxes().snapshot().unwrap().environments[&second.worker_chat_key].clone();
+        assert_eq!(stopped.state, "stopped");
+        assert_eq!(stopped.stopped.as_ref().unwrap().by, "host");
+        assert!(sandboxes().live_keys().is_empty());
+        let docker = crate::proc::find_executable("docker").unwrap();
+        let volumes = std::process::Command::new(&docker)
+            .args(["volume", "ls", "-q", "--filter", &format!("name={id}_data")])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&volumes.stdout).contains(&format!("{id}_data")),
+            "volume kept"
+        );
+        let _ = std::process::Command::new(&docker)
+            .args(["volume", "rm", &format!("{id}_data")])
+            .output();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -112,7 +112,13 @@ export function taskEnvironment(
     if (env.stopped && env.state === "stopped") detail.push(`${env.stopped.by === "person" ? "Stopped by you" : "Stopped by OctiqFlow"}: ${env.stopped.reason}`);
     if (env.lease) detail.push("Kept running from its Sandbox panel; OctiqFlow will not stop it.");
     detail.push(env.checkedAt ? `Last passing check ${ago(env.checkedAt)}` : "No passing check on this server");
-    if (env.probedAt) detail.push(`Health looked at ${ago(env.probedAt)}`);
+    // A read is never a fresh probe: say what was looked at, and when.
+    if (env.probing) detail.push("Health probe in progress");
+    if (env.state === "ready" && env.probedAt && env.checkedAt && env.probedAt >= env.checkedAt) {
+      detail.push(`Health looked at ${ago(env.probedAt)}; nothing wrong found`);
+    } else if (env.state === "ready") {
+      detail.push("Health not looked at since this check");
+    }
     for (const source of env.fingerprint?.sources ?? []) {
       detail.push(`${source.path} @ ${short(source.revision)}${source.dirty ? " + local changes" : ""}`);
     }

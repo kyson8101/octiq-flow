@@ -83,7 +83,10 @@ describe("a task's environment, apart from its status (feedback caa2ca88 B4)", (
     expect(view.label).toBe("Env ready · at 1000");
     expect(view.tone).toBe("ok");
     expect(view.detail).toContain("/repo/api @ 01234567 + local changes");
-    expect(view.detail).toContain("Health looked at at 2000");
+    expect(view.detail).toContain("Health looked at at 2000; nothing wrong found");
+    const unprobed = taskEnvironment(sandboxTask, attempts, { defaultEnabled: false, environments: { "chat:w2": env("chat:w2", { probing: true }) } }, ago)!;
+    expect(unprobed.detail).toContain("Health probe in progress");
+    expect(unprobed.detail).toContain("Health not looked at since this check");
     expect(view.detail.at(-1)).toContain("not a release");
   });
 
