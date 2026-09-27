@@ -477,7 +477,7 @@ fn the_person_chooses_manual_for_a_claude_task_before_approving_and_must_approve
     let seen = revision(&store, &run);
 
     let chosen = store
-        .set_task_access(&run.id, &task.id, Access::Manual, Some(seen))
+        .set_task_access(&run.id, &task.id, Access::Manual, seen)
         .unwrap();
     assert_eq!(chosen.worker.as_ref().unwrap().access, Access::Manual);
     assert_eq!(chosen.worker.as_ref().unwrap().agent, ChatAgent::Claude);
@@ -504,15 +504,15 @@ fn the_person_chooses_manual_for_a_claude_task_before_approving_and_must_approve
     assert!(old.is_err());
     // A choice made against an out-of-date card is refused too.
     assert!(store
-        .set_task_access(&run.id, &task.id, Access::Auto, Some(seen))
+        .set_task_access(&run.id, &task.id, Access::Auto, seen)
         .unwrap_err()
         .contains("changed to revision"));
     // Only Auto and Manual are offered here.
     assert!(store
-        .set_task_access(&run.id, &task.id, Access::Full, Some(moved))
+        .set_task_access(&run.id, &task.id, Access::Full, moved)
         .is_err());
     assert!(store
-        .set_task_access(&run.id, &task.id, Access::Read, Some(moved))
+        .set_task_access(&run.id, &task.id, Access::Read, moved)
         .is_err());
 
     store
@@ -524,9 +524,9 @@ fn the_person_chooses_manual_for_a_claude_task_before_approving_and_must_approve
             view,
         )
         .unwrap();
-    // Approved is fixed.
+    // Approved is fixed, even named at the revision that was approved.
     assert!(store
-        .set_task_access(&run.id, &task.id, Access::Auto, None)
+        .set_task_access(&run.id, &task.id, Access::Auto, revision(&store, &run))
         .unwrap_err()
         .contains("waits for your approval"));
     // And the worker it launches is Manual.
@@ -560,18 +560,23 @@ fn manual_is_not_offered_for_codex_or_for_other_access_levels() {
         )
         .unwrap();
     assert!(store
-        .set_task_access(&run.id, &codex.id, Access::Manual, None)
+        .set_task_access(&run.id, &codex.id, Access::Manual, revision(&store, &run))
         .unwrap_err()
         .contains("Claude tasks only"));
     let (full_run, full) = claude_plan(&store, Access::Full);
     assert!(store
-        .set_task_access(&full_run.id, &full.id, Access::Manual, None)
+        .set_task_access(
+            &full_run.id,
+            &full.id,
+            Access::Manual,
+            revision(&store, &full_run)
+        )
         .unwrap_err()
         .contains("only Auto and Manual"));
     // A task with no worker chosen yet.
     let bare = task(&store, &run, Vec::new());
     assert!(store
-        .set_task_access(&run.id, &bare.id, Access::Manual, None)
+        .set_task_access(&run.id, &bare.id, Access::Manual, revision(&store, &run))
         .unwrap_err()
         .contains("no worker"));
 }

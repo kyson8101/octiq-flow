@@ -1871,7 +1871,7 @@ impl OrchestrationStore {
         run_id: &str,
         task_id: &str,
         access: Access,
-        seen_revision: Option<u32>,
+        seen_revision: u32,
     ) -> Result<Task, String> {
         if !matches!(access, Access::Auto | Access::Manual) {
             return Err("Choose Auto or Manual for this task.".into());
@@ -1885,11 +1885,10 @@ impl OrchestrationStore {
             if !run.awaiting_plan_approval() || run_has_ended(run) {
                 return Err("Command approval can be chosen only while the plan waits for your approval.".into());
             }
-            if let Some(seen) = seen_revision {
-                let current = run.plan_approval.as_ref().map_or(0, |plan| plan.revision);
-                if seen != current {
-                    return Err(format!("The plan changed to revision {current} while you were reading it. Look it over and choose again."));
-                }
+            // The choice names the plan it was made on, like an approval.
+            let current = run.plan_approval.as_ref().map_or(0, |plan| plan.revision);
+            if seen_revision != current {
+                return Err(format!("The plan changed to revision {current} while you were reading it. Look it over and choose again."));
             }
             if task.parent_task_id.is_some() || task.approved_at.is_some() {
                 return Err("This task is already approved and fixed.".into());

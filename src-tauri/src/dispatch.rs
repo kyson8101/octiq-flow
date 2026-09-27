@@ -1398,20 +1398,27 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "orchestration_report_confirm" => {
             let actor: String = arg(&args, "actorChatKey")?;
             let attempt: String = arg(&args, "attemptId")?;
-            // The store refuses a worker still in a turn; the live process is
-            // the other half of "idle".
-            if let Some(worker) = svc.orchestrations.attempt_worker_chat(&attempt)? {
-                if svc.chats.chat_busy(&worker) {
-                    return Err("The worker is in a turn again. Wait for it to end; a new turn withdraws the proposal.".into());
-                }
-            }
-            to_value(svc.orchestrations.confirm_proposed_report(
-                &actor,
-                &attempt,
-                &arg::<String>(&args, "proposalId")?,
-                arg(&args, "outcome")?,
-                arg(&args, "verdict")?,
-            ))
+            let proposal: String = arg(&args, "proposalId")?;
+            let outcome = arg(&args, "outcome")?;
+            let verdict = arg(&args, "verdict")?;
+            let confirm = || {
+                svc.orchestrations
+                    .confirm_proposed_report(&actor, &attempt, &proposal, outcome, verdict)
+            };
+            // Decided while the worker's session is held idle: a message
+            // reaching the worker cannot start a turn — which would withdraw
+            // the words — between the check and the settlement.
+            let settled = match svc.orchestrations.attempt_worker_chat(&attempt)? {
+                Some(worker) => svc.chats.while_idle(&worker, confirm).map_err(|why| {
+                    if why.starts_with("That chat is in a turn") {
+                        "The worker is in a turn again; that withdraws its proposed report. Wait for the turn to end and read the snapshot again.".to_string()
+                    } else {
+                        why
+                    }
+                })?,
+                None => confirm()?,
+            };
+            to_value(Ok::<_, String>(settled))
         }
         "orchestration_relay_send" => to_value(svc.orchestrations.relay_between_runs(
             &arg::<String>(&args, "actorChatKey")?,
@@ -1428,7 +1435,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "runId")?,
             &arg::<String>(&args, "taskId")?,
             arg(&args, "access")?,
-            arg(&args, "revision")?,
+            arg::<u32>(&args, "revision")?,
         )),
         "orchestration_gate_create" => {
             let gate = svc.orchestrations.create_gate(
