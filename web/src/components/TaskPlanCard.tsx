@@ -7,6 +7,7 @@ import { useRosterAgent } from "../lib/agentRoster";
 import type { OrchestrationAttempt, OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 import { CARD_STATE_LABEL, taskCardRows, type CardRow } from "../lib/taskPlanCard";
 import { AgentAvatar } from "./AgentAvatar";
+import { TaskAcceptanceLine, TaskSizeFact } from "./TaskLevel";
 import "./TaskPlanCard.css";
 
 export function TaskPlanCard({ task, run, attempt, projectName }: {
@@ -28,6 +29,7 @@ export function TaskPlanCard({ task, run, attempt, projectName }: {
             )}
           </Fact>
         ))}
+        {task.assignee && <TaskSizeFact task={task} />}
       </dl>
       {card ? (
         <dl className="plan-card-facts plan-card-brief">
@@ -47,6 +49,7 @@ export function TaskPlanCard({ task, run, attempt, projectName }: {
       ) : (
         <p className="plan-card-missing">No problem, goal or acceptance criteria were given for this task.</p>
       )}
+      {task.assignee && task.status === "completed" && <TaskAcceptanceLine task={task} />}
     </section>
   );
 }

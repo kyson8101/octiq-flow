@@ -10,7 +10,7 @@ const { spawn } = require("node:child_process");
 function mcp(root, chatKey, method, params, scriptArgs = []) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...scriptArgs], {
-      env: { ...process.env, OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: chatKey },
+      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: chatKey },
       stdio: ["pipe", "pipe", "pipe"],
     });
     const timer = setTimeout(() => { child.kill(); reject(new Error("MCP timed out")); }, 5000);
@@ -60,14 +60,17 @@ test("title calls use the process chat, propagate kept titles and surface host e
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
+  // The person's token sits in web.json; the MCP must neither need nor send it.
   fs.writeFileSync(path.join(root, "web.json"), JSON.stringify({ port: server.address().port, token: "test-token" }));
+  process.env.OCTIQ_HOOK_PORT = String(server.address().port);
+  t.after(() => { delete process.env.OCTIQ_HOOK_PORT; });
   const call = (args) => mcp(root, "chat:current", "tools/call", { name: "set_chat_title", arguments: args });
 
   const updated = await call({ title: "Fix chat titles", chatId: "other", chatKey: "chat:other" });
   assert.ok(!updated.isError);
   assert.deepEqual(JSON.parse(updated.content[0].text), response.result);
   assert.deepEqual(requests, [{
-    url: "/hook/task?token=test-token",
+    url: "/hook/task",
     body: { chatKey: "chat:current", action: "title", args: { title: "Fix chat titles" } },
   }]);
 

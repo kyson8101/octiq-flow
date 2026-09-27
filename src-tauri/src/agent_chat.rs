@@ -645,6 +645,8 @@ enum QueueTurnResult {
 #[derive(Default)]
 pub struct ChatManager {
     background: crate::background_tasks::Store,
+    /// Tokens each registered agent's chats used (`agent_usage.rs`).
+    pub(crate) usage: crate::agent_usage::Store,
     pub(crate) orchestrations: Arc<crate::orchestration::OrchestrationStore>,
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     pub(crate) auto_resumes: crate::auto_resume::Store,
@@ -661,6 +663,44 @@ pub struct ChatManager {
     /// What the person sent, as the browser handed it over — see
     /// `TurnEvidence`. Newest last, bounded.
     evidence: Mutex<VecDeque<TurnEvidence>>,
+    /// Each running agent's hook credential — see `LaunchCapability`. Keyed
+    /// by process key.
+    capabilities: Mutex<HashMap<String, LaunchCapability>>,
+}
+
+/// The secret one launch of one agent proves itself with on
+/// `/hook/orchestration`, handed to it as `OCTIQ_CHAT_CAPABILITY`.
+///
+/// The server token opens that hook for every agent alike, and every agent
+/// can read it, so it says nothing about WHICH chat is calling. This does:
+/// the host minted it for this launch and knows whose it is, so the caller's
+/// chat comes from here and never from the request body. It is good only
+/// while that launch is the process running under its key — a relaunch mints
+/// a new one and an ended chat's is dead.
+///
+/// It is a bearer secret in a process environment. Another process of the
+/// same OS user that inspects this one can read it; nothing here claims
+/// otherwise.
+#[derive(Clone)]
+struct LaunchCapability {
+    chat_key: String,
+    launch_id: String,
+    /// SHA-256 of the secret, so a lookup compares digests, not the secret.
+    digest: [u8; 32],
+}
+
+fn capability_digest(secret: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(secret.as_bytes()).into()
+}
+
+/// A fresh capability secret: 244 random bits.
+fn mint_capability() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 /// One message as the person sent it: their words BEFORE the host dressed
@@ -687,6 +727,60 @@ fn is_person_turn_id(turn_id: &str) -> bool {
 }
 
 impl ChatManager {
+    /// The chat a hook caller is, and the launch it is, from the capability
+    /// that launch was given (`LaunchCapability`). `None` unless `secret` is
+    /// the current capability of the process running under `session_key`
+    /// right now.
+    pub(crate) fn caller_for_capability(
+        &self,
+        session_key: &str,
+        secret: &str,
+    ) -> Option<(String, String)> {
+        if secret.is_empty() {
+            return None;
+        }
+        let known = self.capabilities.lock().ok()?.get(session_key).cloned()?;
+        let given = capability_digest(secret);
+        // Constant time over the digest.
+        if known
+            .digest
+            .iter()
+            .zip(given.iter())
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            != 0
+        {
+            return None;
+        }
+        let session = self.sessions.lock().ok()?.get(session_key).cloned()?;
+        let live = session.lock().ok()?.launch_id == known.launch_id;
+        live.then_some((known.chat_key, known.launch_id))
+    }
+
+    /// Give the launch about to run under `session_key` its capability, and
+    /// forget those of processes no longer running. Called with the session
+    /// table held, so `live` is exact.
+    fn grant_capability(
+        &self,
+        live: &HashMap<String, Arc<Mutex<ChatSession>>>,
+        session_key: &str,
+        chat_key: &str,
+        launch_id: &str,
+    ) -> String {
+        let secret = mint_capability();
+        if let Ok(mut capabilities) = self.capabilities.lock() {
+            capabilities.retain(|key, _| live.contains_key(key));
+            capabilities.insert(
+                session_key.to_string(),
+                LaunchCapability {
+                    chat_key: chat_key.to_string(),
+                    launch_id: launch_id.to_string(),
+                    digest: capability_digest(&secret),
+                },
+            );
+        }
+        secret
+    }
+
     /// Keep the person's own words for a message the browser is sending. A
     /// retried send of the same turn keeps what was first recorded.
     pub(crate) fn note_person_turn(
@@ -781,8 +875,10 @@ impl ChatManager {
     pub(crate) fn with_saved_questions(path: std::path::PathBuf) -> Self {
         let auto_resume_path = path.with_file_name("auto-resumes.json");
         let background_path = path.with_file_name("background-tasks.json");
+        let usage_path = path.with_file_name("agent-usage.json");
         Self {
             background: crate::background_tasks::Store::load(background_path),
+            usage: crate::agent_usage::Store::load(usage_path),
             questions: Arc::new(crate::question_store::QuestionStore::load(path)),
             auto_resumes: crate::auto_resume::Store::load(auto_resume_path),
             ..Self::default()
@@ -2051,6 +2147,7 @@ pub(crate) fn start_session(
     )
     .map_err(|e| format!("could not start {}: {e}", provider.bin()))?;
     let launch_id = uuid::Uuid::new_v4().to_string();
+    let capability = manager.grant_capability(&sessions, &session_key, &key, &launch_id);
     let mut child = Command::new(&shell.program)
         .args(&shell.args)
         .arg(format!("exec {line}"))
@@ -2071,6 +2168,19 @@ pub(crate) fn start_session(
         .env("OCTIQ_CHAT_AGENT", agent.id())
         .env("OCTIQ_SESSION_KEY", &session_key)
         .env("OCTIQ_LAUNCH_ID", &launch_id)
+        // Which chat this is, as every hook will believe it — see
+        // `LaunchCapability`. `OCTIQ_CHAT_KEY` only names it. It is the
+        // agent's only credential: the MCP is told where the hooks are and
+        // never reads the person's token, and a server started with the
+        // token in its own environment does not pass it down.
+        .env("OCTIQ_CHAT_CAPABILITY", &capability)
+        .env(
+            "OCTIQ_HOOK_PORT",
+            crate::web::hook_port()
+                .map(|port| port.to_string())
+                .unwrap_or_default(),
+        )
+        .env_remove("OCTIQ_WEB_TOKEN")
         // The conversation reader in that MCP must use this exact profile.
         // A standalone install can follow config.json; an in-app agent should
         // not have to rediscover a value the server already knows.
@@ -2246,6 +2356,9 @@ pub(crate) fn start_session(
             // one can say exactly what was refused (see `note_claude_calls`).
             let mut claude_calls: HashMap<String, (String, Value)> = HashMap::new();
             let mut snapshot_reads = crate::record_trim::SnapshotResults::default();
+            // This process's usage. Claude's totals restart with each process,
+            // and so does this.
+            let mut usage_meter = crate::agent_usage::Meter::default();
             let prelude = app_server_prelude
                 .into_iter()
                 .map(|message| Ok(message.to_string()));
@@ -2348,6 +2461,17 @@ pub(crate) fn start_session(
                             reading.orchestrations.observe_worker_event(&key, &event)
                         {
                             eprintln!("orchestration: cannot record provider event: {error}");
+                        }
+                        if let Some(used) = usage_meter.observe(stream_provider.kind(), &event) {
+                            if let Err(error) = reading.usage.record(
+                                &key,
+                                stream_provider.kind(),
+                                &used,
+                                crate::agent_usage::now_ms(),
+                                || crate::agent_usage::attribute(&reading.orchestrations, &key),
+                            ) {
+                                eprintln!("usage: cannot record tokens: {error}");
+                            }
                         }
                         if transport.is_app_server()
                             && event.get("type").and_then(Value::as_str) == Some("turn.started")
@@ -4107,6 +4231,42 @@ pub fn end_idle_for_sandbox(manager: &ChatManager, key: &str) -> Result<(), Stri
 /// was waiting on.
 fn end_process(manager: &ChatManager, key: &str) -> Result<bool, String> {
     end_process_when(manager, key, None)
+}
+
+#[cfg(test)]
+impl ChatManager {
+    /// A stand-in agent under `key`, holding the capability a real launch
+    /// is given. Returns that secret.
+    pub(crate) fn test_launch(&self, key: &str) -> String {
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("a stand-in agent");
+        let launch_id = uuid::Uuid::new_v4().to_string();
+        let mut sessions = self.sessions.lock().unwrap();
+        let secret = self.grant_capability(&sessions, key, key, &launch_id);
+        sessions.insert(
+            key.to_string(),
+            Arc::new(Mutex::new(ChatSession {
+                launch_id,
+                user_turn_id: None,
+                answering: None,
+                child,
+                stdin: None,
+                codex: None,
+                agent: ChatAgent::Claude,
+                busy: false,
+                last_active: Instant::now(),
+            })),
+        );
+        secret
+    }
+
+    /// End a stand-in from `test_launch`, as the chat ending would.
+    pub(crate) fn test_end(&self, key: &str) {
+        end_process(self, key).expect("end the stand-in");
+    }
 }
 
 fn end_process_when(

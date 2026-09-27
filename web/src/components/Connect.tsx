@@ -19,9 +19,10 @@ export function Connect() {
       <div className="gate-card">
         <h1 className="gate-title">Connect to OctiqFlow</h1>
         <p className="gate-body">
-          This browser needs the access token of the machine running OctiqFlow. It is printed in
-          that machine's terminal at startup, and stored in <code>web.json</code> inside its
-          profile folder.
+          This browser needs the access token of the machine running OctiqFlow, even on that same
+          machine: being local is not enough to be let in. The token is printed at startup (the
+          service's <code>server.log</code>) and stored in <code>web.json</code> inside its profile
+          folder.
         </p>
 
         <form

@@ -91,11 +91,26 @@ function profileRoot() {
   }
 }
 
-function serverConfig() {
-  const root = profileRoot();
-  const cfg = JSON.parse(fs.readFileSync(path.join(root, "web.json"), "utf8"));
-  if (!cfg.port || !cfg.token) throw new Error("no port or token");
-  return cfg;
+/** Where the host's hooks answer, as the host told this launch.
+ *
+ * Only the port: this process is never given the person's token, and every
+ * hook takes the launch's own capability (`OCTIQ_CHAT_CAPABILITY`) instead.
+ * With no port there is no host to call — `web.json` is not a fallback. */
+function hookPort() {
+  const port = Number(process.env.OCTIQ_HOOK_PORT || "");
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("no hook port");
+  return port;
+}
+
+/** Headers every hook call carries: the body, and the launch's capability. */
+function hookHeaders(body) {
+  return {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body),
+    // Which launch of which chat this is, as the host checks it. The chatKey
+    // in the body is only a claim.
+    "x-octiq-chat-capability": process.env.OCTIQ_CHAT_CAPABILITY || "",
+  };
 }
 
 function readJson(file, label) {
@@ -733,9 +748,9 @@ async function conversationSearch(args = {}) {
  *  handed — but there is no reason for anything NEW to speak two dialects. */
 function askOctiq(questions) {
   return new Promise((resolve) => {
-    let cfg;
+    let port;
     try {
-      cfg = serverConfig();
+      port = hookPort();
     } catch {
       return resolve("OctiqFlow is not reachable, so the user could not be asked.");
     }
@@ -743,13 +758,10 @@ function askOctiq(questions) {
     const req = http.request(
       {
         host: "127.0.0.1",
-        port: cfg.port,
-        path: `/hook/ask?token=${encodeURIComponent(cfg.token)}`,
+        port,
+        path: "/hook/ask",
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body),
-        },
+        headers: hookHeaders(body),
       },
       (res) => {
         let out = "";
@@ -783,23 +795,24 @@ function askOctiq(questions) {
 function callHook(route, action, args = {}, timeoutMs = 30 * 60 * 1000, label = "call") {
   return new Promise((resolve, reject) => {
     if (!CHAT_KEY) return reject(new Error("This tool requires an OctiqFlow chat."));
-    let cfg;
+    let port;
     try {
-      cfg = serverConfig();
+      port = hookPort();
     } catch {
       return reject(new Error("OctiqFlow is not reachable."));
     }
-    const body = JSON.stringify({ chatKey: CHAT_KEY, action, args });
+    // An additional agent in a chat runs under its own process key, which is
+    // what its capability was issued to.
+    const sessionKey = process.env.OCTIQ_SESSION_KEY || CHAT_KEY;
+    const session = sessionKey !== CHAT_KEY ? { sessionKey } : {};
+    const body = JSON.stringify({ chatKey: CHAT_KEY, ...session, action, args });
     const req = http.request(
       {
         host: "127.0.0.1",
-        port: cfg.port,
-        path: `/hook/${route}?token=${encodeURIComponent(cfg.token)}`,
+        port,
+        path: `/hook/${route}`,
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body),
-        },
+        headers: hookHeaders(body),
       },
       (res) => {
         let out = "";
@@ -1274,6 +1287,7 @@ const ORCHESTRATION_TASK_CREATE = {
       goal: { type: "string", description: "The plan card: the approach or outcome, in one short sentence (at most 300 characters)." },
       acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "The plan card: 2–5 checkable acceptance criteria, one line each (at most 240 characters). Criteria, not results; the plan card is fixed once the person approves it (before that, change it with orchestration_task_revise)." },
       environment: { type: "string", enum: ["none", "sandbox"], description: "What must run before the worker starts. \"sandbox\" for implementation, integration and browser work that needs the application running: the host builds the project's runnable test environment (.octiq/sandbox.json) from this task's own worktree, starts the worker only after its readiness check passes, and fails the attempt with the cause otherwise, so nothing that depends on the task starts on a broken runtime. Omit, or \"none\", for reviews, docs, unit-only work and the task that repairs a broken environment. Its state appears under environments in orchestration_snapshot, separate from task status." },
+      size: { type: "string", enum: ["small", "medium", "large"], description: "Agents mode: what the task is worth when its result is accepted — small 25 XP, medium 75 XP (the default), large 150 XP. Judge by scope and risk, not effort spent. Fixed once the task starts." },
     },
     required: ["runId", "title", "spec"],
   },
@@ -1299,6 +1313,7 @@ const ORCHESTRATION_TASK_REVISE = {
       problem: { type: "string", description: "The plan card's problem, one short sentence." },
       goal: { type: "string", description: "The plan card's goal, one short sentence." },
       acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "Replaces the plan card's acceptance criteria." },
+      size: { type: "string", enum: ["small", "medium", "large"], description: "Agents mode: what the task is worth when its result is accepted — small 25 XP, medium 75 XP (the default), large 150 XP. Judge by scope and risk, not effort spent. Fixed once the task starts." },
       withdraw: { type: "boolean", description: "Take this task out of the plan. Refused while another task depends on it." },
     },
     required: ["taskId"],
@@ -1491,6 +1506,8 @@ const WORKSPACE_TOOLS = [
     inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "orchestration_task_reopen", description: "Reopen a completed task for review fixes in its retained workspace. The next attempt gets a new ID. Merged, cleaned, abandoned workspaces and already-started dependants prevent reopening.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, spec: { type: "string" } }, required: ["taskId", "spec"] } },
+  { name: "orchestration_task_accept", description: "Agents mode: accept a report's completed task after you have checked its result against the task's acceptance criteria. This is what pays the assignee the task's XP, once per task. Only the run's lead, or the manager who split a subtask, may accept; never your own task. Pass the completed attempt you reviewed; if it is no longer the current one, review again. A worker saying it finished is not acceptance.",
+    inputSchema: { type: "object", properties: { taskId: { type: "string" }, attemptId: { type: "string", description: "The completed attempt whose result you reviewed." } }, required: ["taskId", "attemptId"] } },
   { name: "orchestration_validation_create", description: "Create a detached temporary validation worktree from an exact base commit and optional selected commits. Does not alter the preserved task tree. Git conflicts remain available for inspection. Only this task's active worker or coordinator.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, baseSha: { type: "string" }, commits: { type: "array", items: { type: "string" } } }, required: ["taskId", "baseSha"] } },
   { name: "orchestration_validation_remove", description: "Remove an owned validation checkout only if Git considers it clean. Never forces removal or accepts an unregistered path.",

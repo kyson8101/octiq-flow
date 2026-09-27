@@ -157,8 +157,14 @@ off `PATH`.
 The token is the only thing standing between a request and the machine, so:
 
 - it is compared in constant time;
-- `GET /token` answers only a browser that typed a loopback address, and only
-  when no proxy header is present;
+- `GET /token` hands the token only to a Cloudflare Access sign-in. Being on
+  the same machine is not enough, since every local process (the agents this
+  server starts included) can send a request that looks local. A new browser
+  opens the `?token=…` link the server prints at startup, or pastes the token
+  on the Connect page; either is remembered;
+- agents never get the token: the agent hooks take only the capability
+  OctiqFlow mints for each launch (see `docs/agents-mode.md`). None of this is
+  an OS boundary — a process running as your user can still read `web.json`;
 - **Cloudflare Access** can be turned on instead (`access` in `web.json`), in
   which case the JWT Access puts on every request is verified against your
   team's published keys, with the audience tag checked.

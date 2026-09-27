@@ -76,7 +76,8 @@ The list refreshes on feedback events and reconnection. On a phone, use
 - `<profile dir>/feedback.json`, independent of chat deletion and worktrees.
 - `src-tauri/src/feedback.rs`: validated, serialized, atomic writes; unreadable
   data is preserved and reported as an error. Files are private on Unix.
-- `POST /hook/feedback`: existing token authentication; agent actions limited
+- `POST /hook/feedback`: the calling launch's capability (see agents-mode.md,
+  "Who is calling"); agent actions limited
   to `submit`, `list`, and `get`, with an active source chat required.
 - Browser commands: `feedback_list`, `feedback_get`, and `feedback_update`.
 - `feedback-changed`: sent after successful writes, carrying only the report ID.

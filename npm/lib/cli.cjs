@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { resolveRuntime, runForeground } = require('./runtime.cjs');
@@ -64,12 +65,47 @@ function parseOptions(args) {
   return { options, rest };
 }
 
-async function localUrl(port, fetchImpl = fetch) {
+/** The active profile's data root, resolved as the server does (profile.rs):
+ *  `~/.octiqflow/config.json` names the base and the active profile. */
+function profileRoot(home = os.homedir()) {
+  try {
+    const pointer = JSON.parse(fs.readFileSync(path.join(home, '.octiqflow', 'config.json'), 'utf8'));
+    const base = String(pointer.base || '').trim();
+    const active = String(pointer.active || '').trim();
+    if (base && active) return path.join(base, active);
+  } catch (_error) {
+    // No pointer yet: the server uses the default profile too.
+  }
+  return path.join(home, '.octiqflow', 'profiles', 'default');
+}
+
+/** The browser token, read where the server keeps it.
+ *
+ *  The server hands it out over HTTP (`/token`) only to a Cloudflare Access
+ *  sign-in: a request from this machine alone could be any local process,
+ *  agents included. This CLI is the person's own command, run as them, so it
+ *  reads their profile's `web.json` the way the Connect page tells a person
+ *  to. `OCTIQ_WEB_TOKEN` wins, as it does for the server. */
+function readToken({ env = process.env, home = os.homedir() } = {}) {
+  const fromEnv = String(env.OCTIQ_WEB_TOKEN || '').trim();
+  if (fromEnv) return fromEnv;
+  const file = path.join(profileRoot(home), 'web.json');
+  let token = '';
+  try {
+    token = String(JSON.parse(fs.readFileSync(file, 'utf8')).token || '').trim();
+  } catch (_error) {
+    // Reported below with the path, which is what the person needs.
+  }
+  if (!token) throw new Error(`no token in ${file}`);
+  return token;
+}
+
+/** The link that signs a browser in, once the server answers. */
+async function localUrl(port, fetchImpl = fetch, readTokenImpl = readToken) {
   const origin = `http://127.0.0.1:${port}`;
-  const tokenResponse = await fetchImpl(`${origin}/token`);
-  if (!tokenResponse.ok) throw new Error(`server answered ${tokenResponse.status} at /token`);
-  const token = (await tokenResponse.text()).trim();
-  return `${origin}/?token=${encodeURIComponent(token)}`;
+  const health = await fetchImpl(`${origin}/healthz`);
+  if (!health.ok) throw new Error(`server answered ${health.status} at /healthz`);
+  return `${origin}/?token=${encodeURIComponent(readTokenImpl())}`;
 }
 
 async function waitForUrl(port, options = {}) {
@@ -79,7 +115,7 @@ async function waitForUrl(port, options = {}) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const response = await fetchImpl(`http://127.0.0.1:${port}/healthz`);
-      if (response.ok) return localUrl(port, fetchImpl);
+      if (response.ok) return localUrl(port, fetchImpl, options.readToken);
     } catch (_error) {
       // launchd has accepted the job but the socket is not ready yet.
     }
@@ -186,4 +222,14 @@ async function main(args, dependencies = {}) {
   throw new Error(`unknown command: ${command}; run octiqflow --help`);
 }
 
-module.exports = { HELP, localUrl, main, openBrowser, packageVersion, parseOptions, waitForUrl };
+module.exports = {
+  HELP,
+  localUrl,
+  main,
+  openBrowser,
+  packageVersion,
+  parseOptions,
+  profileRoot,
+  readToken,
+  waitForUrl,
+};

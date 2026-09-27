@@ -265,14 +265,27 @@ pub(crate) fn normalize_notification(message: &Value) -> Option<Value> {
             // Using the cumulative value would eventually exceed the context
             // window even after compaction.
             let last = usage.get("last")?;
+            let count =
+                |value: &Value, key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0);
             Some(json!({
                 "type": "token_count",
                 "info": {
                     "total_token_usage": {
-                        "input_tokens": last.get("totalTokens").and_then(Value::as_u64).unwrap_or(0),
-                        "output_tokens": last.get("outputTokens").and_then(Value::as_u64).unwrap_or(0),
+                        "input_tokens": count(last, "totalTokens"),
+                        "output_tokens": count(last, "outputTokens"),
                     },
                     "context_window": usage.get("modelContextWindow").cloned().unwrap_or(Value::Null),
+                    // What this response used, with Codex's subsets inside
+                    // their totals, and the thread's running total that tells
+                    // a new response from a repeated notification
+                    // (`agent_usage.rs`).
+                    "last_token_usage": {
+                        "input_tokens": count(last, "inputTokens"),
+                        "cached_input_tokens": count(last, "cachedInputTokens"),
+                        "output_tokens": count(last, "outputTokens"),
+                        "reasoning_output_tokens": count(last, "reasoningOutputTokens"),
+                    },
+                    "thread_total_tokens": usage.get("total").and_then(|total| total.get("totalTokens")).cloned().unwrap_or(Value::Null),
                 },
             }))
         }
@@ -501,12 +514,23 @@ mod tests {
             "method": "thread/tokenUsage/updated",
             "params": { "tokenUsage": {
                 "total": { "totalTokens": 42, "outputTokens": 7 },
-                "last": { "totalTokens": 12, "outputTokens": 3 },
+                "last": { "totalTokens": 12, "inputTokens": 9, "cachedInputTokens": 4,
+                          "outputTokens": 3, "reasoningOutputTokens": 2 },
                 "modelContextWindow": 1000
             }}
         }))
         .unwrap();
         assert_eq!(usage["info"]["total_token_usage"]["input_tokens"], 12);
         assert_eq!(usage["info"]["context_window"], 1000);
+        let last = &usage["info"]["last_token_usage"];
+        assert_eq!(
+            (
+                last["input_tokens"].as_u64(),
+                last["cached_input_tokens"].as_u64()
+            ),
+            (Some(9), Some(4))
+        );
+        assert_eq!(last["reasoning_output_tokens"], 2);
+        assert_eq!(usage["info"]["thread_total_tokens"], 42);
     }
 }
