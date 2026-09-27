@@ -1392,6 +1392,44 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             )?;
             to_value(Ok(task))
         }
+        // The coordinator settles a read-only worker's attempt from the
+        // closing words the host held for it — that proposal, by id, with an
+        // outcome and verdict the coordinator states. Never inferred.
+        "orchestration_report_confirm" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let attempt: String = arg(&args, "attemptId")?;
+            // The store refuses a worker still in a turn; the live process is
+            // the other half of "idle".
+            if let Some(worker) = svc.orchestrations.attempt_worker_chat(&attempt)? {
+                if svc.chats.chat_busy(&worker) {
+                    return Err("The worker is in a turn again. Wait for it to end; a new turn withdraws the proposal.".into());
+                }
+            }
+            to_value(svc.orchestrations.confirm_proposed_report(
+                &actor,
+                &attempt,
+                &arg::<String>(&args, "proposalId")?,
+                arg(&args, "outcome")?,
+                arg(&args, "verdict")?,
+            ))
+        }
+        "orchestration_relay_send" => to_value(svc.orchestrations.relay_between_runs(
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "fromRunId")?,
+            &arg::<String>(&args, "toRunId")?,
+            arg(&args, "subject")?,
+            arg(&args, "body")?,
+            arg(&args, "originAttemptId")?,
+        )),
+        // Browser-only: the person picks Auto or Manual command approval for
+        // a Claude task on its plan card, before approving the plan. Not in
+        // the agent hook's whitelist.
+        "orchestration_task_access" => to_value(svc.orchestrations.set_task_access(
+            &arg::<String>(&args, "runId")?,
+            &arg::<String>(&args, "taskId")?,
+            arg(&args, "access")?,
+            arg(&args, "revision")?,
+        )),
         "orchestration_gate_create" => {
             let gate = svc.orchestrations.create_gate(
                 &arg::<String>(&args, "actorChatKey")?,

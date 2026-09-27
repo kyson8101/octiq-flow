@@ -30,6 +30,7 @@ import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
 import { BranchIcon, ClockIcon, TaskStatusIcon } from "./TaskMeter";
 import { OpenBesideButton } from "./OpenBesideButton";
+import { ProposedReportNote } from "./ProposedReportNote";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 
 import {
@@ -1236,7 +1237,8 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
               {attempt.archivedAt != null && <span>Archived</span>}
               {archiveControl(attempt)}
               {attempt.isWorktree && <span>worktree</span>}
-              {attempt.summary && <p>{attempt.summary}</p>}
+              {attempt.summary && !attempt.proposedReport?.confirmedAt && <p>{attempt.summary}</p>}
+              <ProposedReportNote attempt={attempt} ago={(at) => agoLabel(at, now)} />
               {(retryable || reviewReady) && !readOnly && run.status !== "stopped" && (
                 <div className="orch-attempt-retry">
                   <small>{attempt.cwd
@@ -1254,7 +1256,8 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
               <span>{statusLabel(previous.status)}</span>
               {previous.archivedAt != null && <span>Archived</span>}
               {archiveControl(previous)}
-              {previous.summary && <p>{previous.summary}</p>}
+              {previous.summary && !previous.proposedReport?.confirmedAt && <p>{previous.summary}</p>}
+              <ProposedReportNote attempt={previous} ago={(at) => agoLabel(at, now)} />
             </div>)}
           </details>}
           {task.workspace && <WorkspaceDelivery task={task} busy={busy} readOnly={readOnly} stopped={run.status === "stopped"}

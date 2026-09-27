@@ -408,7 +408,7 @@ impl OrchestrationStore {
     }
 
     /// Ignore ordinary chats without cloning or persisting the orchestration ledger.
-    fn observed_attempt(&self, key: &str) -> Option<Attempt> {
+    pub(super) fn observed_attempt(&self, key: &str) -> Option<Attempt> {
         let inner = self.inner.lock().ok()?;
         inner
             .data
@@ -452,6 +452,14 @@ impl OrchestrationStore {
                     return Ok(if fail(data, &before.id, error, now) { Touched::Ledger } else { Touched::Nothing });
                 }
                 let attempt = data.attempts.get_mut(&before.id).unwrap();
+                // A new turn: whatever it says replaces the words held from
+                // the last one, so they can no longer be confirmed.
+                if matches!(observation, Observation::Executing)
+                    && attempt.proposed_report.as_ref().is_some_and(|p| p.confirmed_at.is_none())
+                {
+                    attempt.proposed_report = None;
+                    ledger = true;
+                }
                 let e = &mut attempt.execution;
                 e.last_activity_at = Some(now);
                 match observation {
@@ -534,8 +542,13 @@ impl OrchestrationStore {
         let Some(before) = self.observed_attempt(key) else {
             return Ok(());
         };
-        // A one-shot provider may exit while a durable decision waits.
-        if before.status == AttemptStatus::Blocked || crate::safety_block::awaits_decision(key) {
+        // A one-shot provider may exit while a durable decision waits, and an
+        // idle read-only worker's process may be reaped while its proposed
+        // report waits for the coordinator: its work is done, not lost.
+        if before.status == AttemptStatus::Blocked
+            || crate::safety_block::awaits_decision(key)
+            || before.proposed_report.is_some()
+        {
             return Ok(());
         }
         let changed = self.mutate(|data| {
@@ -564,7 +577,11 @@ impl OrchestrationStore {
             .iter()
             .filter(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running))
         {
-            if crate::safety_block::awaits_decision(&before.worker_chat_key) {
+            // A proposed report is an idle worker waiting on its coordinator,
+            // who was told when the words were held.
+            if crate::safety_block::awaits_decision(&before.worker_chat_key)
+                || before.proposed_report.is_some()
+            {
                 continue;
             }
             // The host's own environment work is bounded by its commands'

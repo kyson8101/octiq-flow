@@ -923,6 +923,17 @@ impl ChatManager {
             .unwrap_or(true)
     }
 
+    /// A turn is in flight in this chat's live process. A chat with no
+    /// process has none; a poisoned lock says busy rather than guessing idle.
+    pub(crate) fn chat_busy(&self, key: &str) -> bool {
+        let Ok(sessions) = self.sessions.lock() else {
+            return true;
+        };
+        sessions
+            .get(key)
+            .is_some_and(|session| session.lock().map(|s| s.busy).unwrap_or(true))
+    }
+
     pub(crate) fn require_checkout_idle(&self, checkout: &str) -> Result<(), String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let starts = self.starts.lock().map_err(|e| e.to_string())?;
@@ -2544,6 +2555,13 @@ pub(crate) fn start_session(
                             }
                             let said = observed.final_text.unwrap_or(&carried).to_string();
                             carried.clear();
+                            // A read-only worker cannot call the host; what it
+                            // said last is held for its coordinator to confirm.
+                            if let Err(error) =
+                                reading.orchestrations.propose_worker_report(&key, &said)
+                            {
+                                eprintln!("orchestration: cannot hold proposed report: {error}");
+                            }
                             crate::push::notify_chat(Some(&key), "done", &said);
                         }
                         let mut event = event;

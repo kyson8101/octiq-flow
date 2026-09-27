@@ -30,6 +30,16 @@ export const CLAUDE_REFUSAL_NOTE =
   "OctiqFlow cannot allow a command Claude's auto mode refused, and will not retry it. " +
   "If it should run, run it yourself, or change Claude's permissions outside OctiqFlow if you mean to allow it for good.";
 
+/**
+ * The one supported way to approve an exact command yourself (feedback
+ * d59f830a): a NEW task whose commands wait for you. It is chosen on the plan
+ * card before approving, and never reruns the refused call by itself.
+ */
+export const CLAUDE_MANUAL_ROUTE_NOTE =
+  "To approve a command like this yourself, ask the main agent for a new task and choose Manual command approval " +
+  "on its plan card before you approve the plan. That task asks you before each command runs. " +
+  "This refused command does not run again unless you approve it there.";
+
 export const LOCAL_ONLY_REPLY =
   "Continue without sending any local data to an external service. Use only local tools and local reasoning for this task.";
 export const SAFER_APPROACH_REPLY =
@@ -144,6 +154,7 @@ function ClaudeSafetyBlock({
       {error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
 
       <p className="ask-card-note">{CLAUDE_REFUSAL_NOTE}</p>
+      <p className="ask-card-note safety-card-route">{CLAUDE_MANUAL_ROUTE_NOTE}</p>
     </div>
   );
 }

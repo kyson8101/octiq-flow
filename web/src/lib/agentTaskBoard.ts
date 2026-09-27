@@ -70,6 +70,10 @@ export function taskStateLabel(
   if (task.status === "completed" && (task.verdict === "fail" || (task.kind && task.kind !== "work"))) {
     return task.verdict === "fail" ? "Done · check failed" : task.verdict === "pass" ? "Done · passed" : "Done · no verdict";
   }
+  if (task.activeAttemptId === attempt?.id && proposedReportState(attempt) === "proposed"
+    && (attempt?.status === "running" || attempt?.status === "preparing")) {
+    return "Report proposed · coordinator to confirm";
+  }
   if (attempt?.execution && task.activeAttemptId === attempt.id) {
     const state = attempt.execution.state;
     const approval = decisions.some((d) => d.attemptId === attempt.id && d.status === "pending");
@@ -79,6 +83,14 @@ export function taskStateLabel(
     return EXECUTION_LABELS[state];
   }
   return TASK_LABELS[task.status];
+}
+
+/** A read-only worker's closing words the host held as its report: waiting
+ *  for the coordinator, or the words it settled the task from. */
+export function proposedReportState(attempt: OrchestrationAttempt | undefined): "proposed" | "confirmed" | null {
+  const proposal = attempt?.proposedReport;
+  if (!proposal) return null;
+  return proposal.confirmedAt ? "confirmed" : "proposed";
 }
 
 /** The native safety decision an attempt is parked on, when the host

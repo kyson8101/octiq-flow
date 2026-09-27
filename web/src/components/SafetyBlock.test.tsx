@@ -125,5 +125,14 @@ describe("SafetyBlock", () => {
       expect(html).toContain("cannot allow a command");
       expect(CLAUDE_REFUSAL_NOTE).toContain("will not retry it");
     });
+
+    it("points to the supported route: a new task with Manual approval, never a rerun (d59f830a)", () => {
+      const html = drawClaude(claude);
+      expect(html).toContain("choose Manual command approval");
+      expect(html).toContain("before you approve the plan");
+      expect(html).toContain("does not run again unless you approve it there");
+      // Still no button that could let the refused line through.
+      expect(html).not.toMatch(/Allow|Retry/);
+    });
   });
 });

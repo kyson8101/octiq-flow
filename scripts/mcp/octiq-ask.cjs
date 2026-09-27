@@ -1472,6 +1472,48 @@ const ORCHESTRATION_MESSAGE_SEND = {
   },
 };
 
+const ORCHESTRATION_REPORT_CONFIRM = {
+  name: "orchestration_report_confirm",
+  description:
+    "Coordinator only. Settle a read-only worker's attempt from the closing words the host " +
+    "held as its proposed report (attempt.proposedReport in orchestration_snapshot) when its " +
+    "sandbox could not call orchestration_worker_report. Name that exact attemptId and " +
+    "proposalId. The outcome and, for a check, review or acceptance task, the verdict are " +
+    "your own judgement of the words; nothing is inferred from them, and only verdict pass " +
+    "releases dependants. A new worker turn withdraws the proposal.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      attemptId: { type: "string" },
+      proposalId: { type: "string", description: "attempt.proposedReport.id, exactly as the snapshot shows it." },
+      outcome: { type: "string", enum: ["completed", "failed", "blocked"] },
+      verdict: { type: "string", enum: ["pass", "fail"], description: "Required with outcome completed when the task's kind is check, review or acceptance." },
+    },
+    required: ["attemptId", "proposalId", "outcome"],
+  },
+};
+
+const ORCHESTRATION_RELAY_SEND = {
+  name: "orchestration_relay_send",
+  description:
+    "Record a notice from one run in another run, when this chat coordinates BOTH (for " +
+    "example two runs editing the same files). It lands in the receiving run's messages " +
+    "with its origin run and, optionally, the worker attempt it came from. It is data for " +
+    "the coordinator only: it reaches no worker, approves and starts nothing. The same " +
+    "relay sent twice is recorded once. Runs with different coordinators cannot relay.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      fromRunId: { type: "string" },
+      toRunId: { type: "string" },
+      subject: { type: "string" },
+      body: { type: "string" },
+      originAttemptId: { type: "string", description: "Optional: the fromRun worker attempt whose message this relays." },
+    },
+    required: ["fromRunId", "toRunId", "subject", "body"],
+  },
+};
+
 const ORCHESTRATION_RUN_STOP = {
   name: "orchestration_run_stop",
   description:
@@ -1519,9 +1561,11 @@ const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_SNAPSHOT,
   ORCHESTRATION_WORKER_START,
   ORCHESTRATION_WORKER_REPORT,
+  ORCHESTRATION_REPORT_CONFIRM,
   ORCHESTRATION_GATE_CREATE,
   ORCHESTRATION_GATE_RESOLVE,
   ORCHESTRATION_MESSAGE_SEND,
+  ORCHESTRATION_RELAY_SEND,
   ORCHESTRATION_RUN_STOP,
   ...WORKSPACE_TOOLS,
 ];

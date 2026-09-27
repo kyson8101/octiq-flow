@@ -18,6 +18,7 @@ import { cardView, nextShown, PLAN_SETTLE_MS, settling, type PlanShown } from ".
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
 import { TaskPlanCard } from "./TaskPlanCard";
+import { CommandApprovalChoice } from "./CommandApprovalChoice";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
 
@@ -214,6 +215,7 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
       <details>
         <summary>{summary}<span className="plan-task-chevron" aria-hidden="true" /></summary>
         <TaskPlanCard task={task} run={run} projectName={projectName} />
+        <CommandApprovalChoice task={task} run={run} />
         {spec && (
           <details className="plan-task-brief">
             <summary>Full brief</summary>

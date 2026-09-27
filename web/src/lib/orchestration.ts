@@ -184,8 +184,20 @@ export type OrchestrationAttempt = {
   filesModified: string[];
   finishedAt?: number;
   archivedAt?: number | null;
+  /** A read-only worker's closing words, held when its turn ended without a
+   *  report. Not a settlement until the coordinator confirms this id. */
+  proposedReport?: ProposedReport | null;
   createdAt: number;
   updatedAt: number;
+};
+
+export type ProposedReport = {
+  id: string;
+  text: string;
+  capturedAt: number;
+  truncated?: boolean;
+  confirmedAt?: number | null;
+  confirmedBy?: string | null;
 };
 
 export type ExecutionState = "queued" | "executing" | "waiting_tool" | "retrying" | "capacity_blocked" | "stalled" | "disconnected" | "awaiting_report" | "blocked" | "failed" | "completed" | "cancelled";
@@ -228,6 +240,17 @@ export type OrchestrationMessage = {
   subject: string;
   body: string;
   createdAt: number;
+  /** A notice relayed between two runs of the same coordinator. */
+  relay?: RelayOrigin | null;
+};
+
+export type RelayOrigin = {
+  fromRunId: string;
+  originAttemptId?: string | null;
+  originTaskId?: string | null;
+  originChatKey?: string | null;
+  digest: string;
+  pairedMessageId?: string | null;
 };
 
 export type OrchestrationNotification = {

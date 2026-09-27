@@ -970,6 +970,8 @@ async fn orchestration_handler(
         "snapshot" => "orchestration_snapshot",
         "worker_start" => "orchestration_worker_start",
         "worker_report" => "orchestration_worker_report",
+        "report_confirm" => "orchestration_report_confirm",
+        "relay_send" => "orchestration_relay_send",
         "service_register" => "orchestration_service_register",
         "workspace_refresh" => "orchestration_workspace_refresh",
         "task_reopen" => "orchestration_task_reopen",

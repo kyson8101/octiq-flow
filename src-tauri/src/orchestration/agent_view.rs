@@ -364,6 +364,24 @@ fn compact(
                             ],
                         )
                     };
+                    // Held closing words are what the coordinator must act on;
+                    // confirmed ones say who settled the task from them.
+                    if let Some(proposal) = &attempt.proposed_report {
+                        let mut held = pick(
+                            &to_json(proposal),
+                            &[
+                                "id",
+                                "capturedAt",
+                                "truncated",
+                                "confirmedAt",
+                                "confirmedBy",
+                            ],
+                        );
+                        if proposal.confirmed_at.is_none() {
+                            held.insert("text".into(), clip(&proposal.text, TEXT_LIMIT));
+                        }
+                        item.insert("proposedReport".into(), Value::Object(held));
+                    }
                     // A completed attempt's summary is its task's result, word
                     // for word; a failed or blocked one's says why.
                     if let Some(summary) = attempt.summary.as_deref() {
@@ -535,6 +553,9 @@ fn latest_messages<'a>(
                 ],
             );
             item.insert("body".into(), clip(&message.body, text_limit));
+            if let Some(relay) = &message.relay {
+                item.insert("relay".into(), to_json(relay));
+            }
             Value::Object(item)
         })
         .collect();
