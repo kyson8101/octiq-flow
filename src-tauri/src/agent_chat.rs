@@ -2225,9 +2225,11 @@ pub(crate) fn start_session(
         // The runtime the answer will be waited on. Captured HERE, on the thread
         // that still has one: `chat_start` is called from an async handler, the
         // reader below is a plain thread, and `Handle::current()` panics there.
-        // Absent only on the desktop build, which has no server runtime — see
-        // `answer_permission`.
-        let rt = tokio::runtime::Handle::try_current().ok();
+        // A chat started by the orchestration scheduler (an auto-dispatched
+        // worker, a coordinator resumed by a notice) is started from a plain
+        // thread too, so it falls back to the server's own runtime — without
+        // it every permission such a chat asked for was refused unasked.
+        let rt = answer_runtime();
         // The reader is where a chat learns its own session id.
         let reading = manager.clone();
         thread::spawn(move || {
@@ -2240,6 +2242,9 @@ pub(crate) fn start_session(
             // cleared the moment it is handed over. One turn's words must never
             // be read as the next one's answer.
             let mut carried = String::new();
+            // Claude's calls by tool_use id, so an auto-mode refusal naming
+            // one can say exactly what was refused (see `note_claude_calls`).
+            let mut claude_calls: HashMap<String, (String, Value)> = HashMap::new();
             let mut snapshot_reads = crate::record_trim::SnapshotResults::default();
             let prelude = app_server_prelude
                 .into_iter()
@@ -2390,6 +2395,23 @@ pub(crate) fn start_session(
                                 reading.background.observe(&key, &session.launch_id, &event)
                             {
                                 eprintln!("chat: cannot record background work: {error}");
+                            }
+                        }
+                        if stream_provider.kind() == ChatAgent::Claude {
+                            note_claude_calls(&event, &mut claude_calls);
+                            let called = event
+                                .get("tool_use_id")
+                                .and_then(Value::as_str)
+                                .and_then(|id| claude_calls.get(id))
+                                .map(|(name, input)| (name.as_str(), input));
+                            if crate::safety_block::observe_claude_denial(&key, &event, called) {
+                                if let Err(error) =
+                                    reading.orchestrations.capture_native_decisions()
+                                {
+                                    eprintln!(
+                                        "orchestration: cannot record native decision: {error}"
+                                    );
+                                }
                             }
                         }
                         // Anything the agent asks US, named in the log first.
@@ -3787,6 +3809,54 @@ pub(crate) fn route_worker_questions(
     )))
 }
 
+/// Remember the tool calls in one Claude assistant message by id, so an
+/// auto-mode refusal naming one can say exactly what was refused.
+fn note_claude_calls(event: &Value, calls: &mut HashMap<String, (String, Value)>) {
+    if event.get("type").and_then(Value::as_str) != Some("assistant") {
+        return;
+    }
+    let Some(content) = event
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    if calls.len() > 256 {
+        calls.clear();
+    }
+    for block in content {
+        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let (Some(id), Some(name)) = (
+            block.get("id").and_then(Value::as_str),
+            block.get("name").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let input = block.get("input").cloned().unwrap_or(Value::Null);
+        calls.insert(id.to_string(), (name.to_string(), input));
+    }
+}
+
+/// The server's runtime, recorded once at startup by `remember_runtime`.
+static SERVER_RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Record the runtime permission and question answers are waited on, for
+/// chats started from threads that have none of their own.
+pub fn remember_runtime(handle: tokio::runtime::Handle) {
+    let _ = SERVER_RUNTIME.set(handle);
+}
+
+/// The runtime a chat's questions are answered on: the caller's own when it
+/// has one, else the server's. None only when neither exists.
+fn answer_runtime() -> Option<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .or_else(|| SERVER_RUNTIME.get().cloned())
+}
+
 /// Put the question to the person, then write the answer back to the agent.
 ///
 /// The agent is BLOCKED until that answer arrives, so nothing here may be
@@ -4602,6 +4672,51 @@ mod tests {
 
     const CONVERSATION_URL: &str =
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
+
+    /// Feedback 56dd3f24: a refusal names the exact call it refused, from the
+    /// assistant message that made it. The card is a record and a decision;
+    /// nothing about it lets the call run.
+    #[test]
+    fn a_claude_refusal_card_names_the_call_it_refused() {
+        let key = format!("chat:refusal-{}", uuid::Uuid::new_v4());
+        let line = "npm publish --tag next";
+        let denial = json!({"type":"system","subtype":"permission_denied","decision_reason":"[Publish]",
+            "decision_reason_type":"classifier","tool_name":"Bash","tool_use_id":"toolu_pub","message":"denied"});
+        let mut calls = HashMap::new();
+        let call = json!({"type":"assistant","message":{"content":[
+            {"type":"text","text":"Publishing."},
+            {"type":"tool_use","id":"toolu_pub","name":"Bash","input":{"command": line}}]}});
+        note_claude_calls(&call, &mut calls);
+        let (name, input) = calls.get("toolu_pub").unwrap();
+        assert!(crate::safety_block::observe_claude_denial(
+            &key,
+            &denial,
+            Some((name, input))
+        ));
+        let card = crate::safety_block::pending()
+            .into_iter()
+            .find(|b| b.chat_key() == key)
+            .unwrap();
+        assert_eq!(card.action(), Some(line));
+        crate::safety_block::forget_chat(&key);
+    }
+
+    /// Feedback 467a6314: the orchestration scheduler starts workers from a
+    /// plain thread, where `Handle::try_current` finds nothing, and every
+    /// permission such a worker asked for was denied with "OctiqFlow could not
+    /// ask anyone". A chat started there must still find a runtime.
+    #[test]
+    fn a_chat_started_off_the_runtime_can_still_ask_the_person() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        remember_runtime(runtime.handle().clone());
+        let found = std::thread::spawn(|| {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            answer_runtime().is_some()
+        })
+        .join()
+        .unwrap();
+        assert!(found, "a scheduler-started chat has a runtime to wait on");
+    }
 
     #[test]
     fn a_model_handoff_keeps_history_separate_from_the_new_user_message() {

@@ -67,6 +67,16 @@ describe("chat plans", () => {
       status: "approved", requestedAt: 1, revision: 2, consent: { via: "button", revision: 2, at: 2 },
     })]), "chat:lead");
     expect(approvalLabel(button)).toBe("Approved · revision 2");
+    const [panel] = chatPlans(snapshot([run("run_aaaa1", {
+      status: "approved", requestedAt: 1, revision: 6,
+      consent: { via: "button", revision: 6, at: 2, surface: "panel", shownMs: 9000 },
+    })]), "chat:lead");
+    expect(approvalLabel(panel)).toBe("Approved in the run panel · revision 6");
+  });
+
+  it("says a chat reply approves only a plan already on screen", () => {
+    const [plan] = chatPlans(snapshot([run("run_aaaa1", pending(1))]), "chat:lead");
+    expect(chatApprovalHint(plan, 1)).toContain("after this card appeared");
   });
 
   it("asks for the handle only when several plans wait", () => {

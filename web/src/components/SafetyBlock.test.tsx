@@ -8,6 +8,7 @@ vi.mock("../lib/bridge", () => ({
 import {
   allowForProjectReply,
   allowOnceReply,
+  CLAUDE_REFUSAL_NOTE,
   LOCAL_ONLY_REPLY,
   SAFER_APPROACH_REPLY,
   saferReply,
@@ -90,5 +91,39 @@ describe("SafetyBlock", () => {
     expect(allowForProjectReply(generic)).toContain(
       "same kind of action, files or resources, scope, and intended effect",
     );
+  });
+
+  describe("Claude auto-mode card (feedback d59f830a stays open)", () => {
+    const claude: SafetyBlockNotice = {
+      id: "claude-1",
+      chatKey: "chat:w1",
+      kind: "high-risk-action",
+      title: "Claude's auto mode blocked an action",
+      summary: "Production Deploy",
+      detail: "Permission for this action was denied by the Claude Code auto mode classifier.",
+      provider: "claude",
+      action: "eas update --branch production",
+    };
+    const drawClaude = (notice: SafetyBlockNotice) =>
+      renderToStaticMarkup(<SafetyBlock block={notice} onContinue={() => {}} onAnswered={() => {}} />);
+
+    it("names the refused line and offers no way to allow it", () => {
+      const html = drawClaude(claude);
+      expect(html).toContain("Claude auto-mode review");
+      expect(html).toContain("eas update --branch production");
+      expect(html).toContain("Use safer approach");
+      expect(html).toContain("Dismiss");
+      expect(html).not.toMatch(/Allow/);
+      expect(html).not.toContain("Codex");
+    });
+
+    it("says plainly that the refusal stands, even if an older server still sends a grant", () => {
+      const stale = { ...claude, exactGrant: "Bash(eas update --branch production)" } as SafetyBlockNotice;
+      const html = drawClaude(stale);
+      expect(html).not.toContain("Allow this exact command once");
+      expect(html).not.toContain("Bash(");
+      expect(html).toContain("cannot allow a command");
+      expect(CLAUDE_REFUSAL_NOTE).toContain("will not retry it");
+    });
   });
 });

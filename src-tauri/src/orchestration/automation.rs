@@ -456,6 +456,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "Done".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -547,6 +548,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "Needs another approach".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();

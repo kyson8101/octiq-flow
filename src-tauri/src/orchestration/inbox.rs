@@ -95,7 +95,17 @@ pub(super) fn enqueue(
     );
 }
 
+/// A notice of a one-time command allowance from a build that offered one.
+/// The allowance was withdrawn (`safety_block::EXACT_GRANT_WITHDRAWN`), so
+/// the notice is false and is never delivered.
+pub(super) fn withdrawn_exact_grant(n: &Notification) -> bool {
+    n.source.starts_with("exact-grant:") || n.source.starts_with("exact-grant-note:")
+}
+
 fn valid(data: &Stored, n: &Notification) -> bool {
+    if withdrawn_exact_grant(n) {
+        return false;
+    }
     let Some(run) = data.runs.get(&n.run_id) else {
         return false;
     };
@@ -370,6 +380,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -560,6 +571,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();

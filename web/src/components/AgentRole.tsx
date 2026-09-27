@@ -4,6 +4,7 @@
 // lines; the rest opens on request, in place, and is never cut from what is
 // stored — this only decides how much of it is on screen.
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import "./AgentRole.css";
 
 export function AgentRole({ text, name, className }: {
   text: string;

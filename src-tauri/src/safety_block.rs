@@ -31,9 +31,54 @@ pub struct BlockedAction {
     detail: String,
     #[serde(skip_serializing)]
     project_scope: Option<String>,
+    /// Whose review refused: "codex" (its tool router) or "claude" (its auto
+    /// mode classifier).
+    provider: &'static str,
+    /// The exact action as the agent called it — a shell line, or a tool and
+    /// what it named. None when the provider did not say, as Codex's router
+    /// diagnostics never do.
+    action: Option<String>,
+}
+
+#[cfg(test)]
+impl BlockedAction {
+    pub fn chat_key(&self) -> &str {
+        &self.chat_key
+    }
+
+    pub fn action(&self) -> Option<&str> {
+        self.action.as_deref()
+    }
 }
 
 static PENDING: Mutex<Option<HashMap<String, BlockedAction>>> = Mutex::new(None);
+/// How each card that is no longer pending was decided, so the orchestration
+/// record can say what happened rather than only that the card went away.
+static DECIDED: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
+
+fn with_decided<T>(f: impl FnOnce(&mut HashMap<String, &'static str>) -> T) -> T {
+    let mut guard = DECIDED.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Remember how a card was decided. Bounded: a long-lived server must not
+/// grow this forever, and an old decision only loses its label, never turns
+/// into an approval.
+fn record_decision(id: &str, decision: &'static str) {
+    with_decided(|decided| {
+        if decided.len() >= 512 {
+            decided.clear();
+        }
+        decided.insert(id.to_string(), decision);
+    });
+}
+
+/// How a card that is no longer pending was decided, when this server saw it:
+/// "authorized_project", "dismissed" or "superseded". Nothing records
+/// "allowed_exact" any more; see `EXACT_GRANT_WITHDRAWN`.
+pub(crate) fn decision(id: &str) -> Option<&'static str> {
+    with_decided(|decided| decided.get(id).copied())
+}
 static DRAFTS: Mutex<Option<HashMap<String, SafetyDraft>>> = Mutex::new(None);
 static PROJECT_SCOPES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 static AUTHORIZATIONS: Mutex<()> = Mutex::new(());
@@ -153,8 +198,13 @@ fn save_authorization(path: &Path, block: &BlockedAction) -> Result<(), String> 
 pub fn authorize_for_project(id: &str) -> Result<bool, String> {
     let block = with_pending(|pending| pending.get(id).cloned())
         .ok_or("This safety request is no longer pending.")?;
+    if block.provider != "codex" {
+        // Claude's classifier does not read these instructions; a saved
+        // grant would look like permission and change nothing.
+        return Err("Only Codex safety reviews can be allowed for a whole project.".into());
+    }
     save_authorization(&authorization_path(), &block)?;
-    Ok(dismiss(id))
+    Ok(dismiss_as(id, "authorized_project"))
 }
 
 fn project_authorizations_at(path: &Path, cwd: &str) -> Option<String> {
@@ -196,34 +246,147 @@ pub fn pending() -> Vec<BlockedAction> {
     with_pending(|pending| pending.values().cloned().collect())
 }
 
-pub(crate) fn has_pending_for_chat(chat_key: &str) -> bool {
-    with_pending(|pending| pending.values().any(|block| block.chat_key == chat_key))
-}
-
-/// Coordinator evidence deliberately excludes the raw router diagnostic.
-pub(crate) fn decision_summaries() -> Vec<(String, String, String)> {
+/// Whether a card in this chat is waiting on a choice that can continue its
+/// work: a Codex card, whose "allow" starts a new turn. Such a card keeps a
+/// worker's attempt open and unsettled. A Claude auto-mode card cannot be
+/// allowed (`EXACT_GRANT_WITHDRAWN`), so it holds nothing open: the worker
+/// carries on another way or settles blocked, and the card stays a record.
+pub(crate) fn awaits_decision(chat_key: &str) -> bool {
     with_pending(|pending| {
         pending
             .values()
-            .map(|block| {
-                (
-                    block.id.clone(),
-                    block.chat_key.clone(),
-                    block.summary.clone(),
-                )
+            .any(|block| block.chat_key == chat_key && block.provider == "codex")
+    })
+}
+
+/// Coordinator evidence deliberately excludes the raw router diagnostic.
+pub(crate) fn decision_summaries() -> Vec<PendingCard> {
+    with_pending(|pending| {
+        pending
+            .values()
+            .map(|block| PendingCard {
+                id: block.id.clone(),
+                chat_key: block.chat_key.clone(),
+                reason: match &block.action {
+                    Some(_) => format!("{}: {}", block.title, block.summary),
+                    None => block.summary.clone(),
+                },
+                action: block.action.clone(),
             })
             .collect()
     })
 }
 
+/// What the orchestration record keeps of a pending card.
+pub(crate) struct PendingCard {
+    pub id: String,
+    pub chat_key: String,
+    pub reason: String,
+    /// The exact call, when the provider named it.
+    pub action: Option<String>,
+}
+
 /// Remove one card after the person chooses a path or dismisses it.
 pub fn dismiss(id: &str) -> bool {
+    dismiss_as(id, "dismissed")
+}
+
+fn dismiss_as(id: &str, decision: &'static str) -> bool {
     let removed = with_pending(|pending| pending.remove(id).is_some());
     if removed {
+        record_decision(id, decision);
         crate::bus::emit("safety-block-expired", serde_json::json!({ "id": id }));
     }
     removed
 }
+
+/// What the agent tried, in one line: the shell line, or the tool and the
+/// file or path it named.
+fn describe_call(tool: &str, input: Option<&serde_json::Value>) -> String {
+    let named = input.and_then(|input| {
+        ["command", "file_path", "path", "url", "notebook_path"]
+            .iter()
+            .find_map(|key| input.get(key).and_then(|v| v.as_str()))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    });
+    match named {
+        Some(named) if tool == "Bash" => named.to_string(),
+        Some(named) => format!("{tool} {named}"),
+        None => tool.to_string(),
+    }
+}
+
+/// Turn Claude's own record of an auto-mode refusal into a decision card.
+///
+/// `claude -p` reports it as `{"type":"system","subtype":"permission_denied",
+/// "decision_reason_type":"classifier",...}` naming the tool call; `called` is
+/// that call's name and input, from the assistant message that made it. Only
+/// classifier refusals become cards: a deny rule or the person's own "no" is
+/// a decision already made.
+///
+/// The card records the refusal; it cannot turn it into an approval. Claude
+/// refuses a classifier-blocked call without asking anyone: its stdio
+/// `can_use_tool` callback, the one place OctiqFlow is asked before a call
+/// runs, is used only for "ask" outcomes, and `permission_denied` is the
+/// "deny" short-circuit (Claude 2.1.281's own SDK schema says so). Nothing
+/// continues a refused call, and an allow rule on a later launch is not
+/// "once" — see `EXACT_GRANT_WITHDRAWN`.
+pub fn observe_claude_denial(
+    chat_key: &str,
+    event: &serde_json::Value,
+    called: Option<(&str, &serde_json::Value)>,
+) -> bool {
+    let text = |name: &str| event.get(name).and_then(serde_json::Value::as_str);
+    if text("type") != Some("system")
+        || text("subtype") != Some("permission_denied")
+        || text("decision_reason_type") != Some("classifier")
+    {
+        return false;
+    }
+    let tool = text("tool_name")
+        .or(called.map(|(name, _)| name))
+        .unwrap_or("A tool");
+    let input = called.map(|(_, input)| input);
+    let reason = text("decision_reason")
+        .map(|r| {
+            r.trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim()
+        })
+        .filter(|r| !r.is_empty())
+        .unwrap_or("Blocked by auto mode");
+    let action = describe_call(tool, input);
+    let mut detail = text("message").unwrap_or_default().trim().to_string();
+    if let Some(id) = text("tool_use_id") {
+        // Two refusals of the same line are two decisions, not one card.
+        detail.push_str(&format!("\n\nTool call: {id}"));
+    }
+    publish_block(BlockedAction {
+        id: uuid::Uuid::new_v4().to_string(),
+        chat_key: chat_key.to_string(),
+        kind: "high-risk-action",
+        title: "Claude's auto mode blocked an action",
+        summary: reason.to_string(),
+        detail,
+        project_scope: None,
+        provider: "claude",
+        action: Some(action),
+    })
+}
+
+/// Why OctiqFlow no longer offers "Allow this exact command once" on a Claude
+/// auto-mode card, for a page from an older build that still asks.
+///
+/// It was built as a `--allowedTools Bash(<line>)` rule on the chat's next
+/// launch, taken back by ending the process once a call used it. A rule lasts
+/// as long as the process and matches every call of that line, and OctiqFlow
+/// learns of a call only after Claude has emitted it: a real claude 2.1.281
+/// ran one rule's line twice in a single response. Ending the process after
+/// the fact is not authorization. Claude offers no approval that pauses one
+/// classifier-refused call before it runs, so the refusal stands.
+pub const EXACT_GRANT_WITHDRAWN: &str = "OctiqFlow cannot allow a command Claude's auto mode refused. Claude refuses it without asking anyone, and gives no way to approve one call before it runs; a permission rule would allow every later call of that line too. The refusal stands. Dismiss the card, run the command yourself, or change Claude's permissions outside OctiqFlow if you mean to allow it for good.";
 
 /// A new user turn supersedes any unanswered post-hoc choice in that chat.
 pub fn forget_chat(chat_key: &str) {
@@ -239,6 +402,7 @@ pub fn forget_chat(chat_key: &str) {
         ids
     });
     for id in removed {
+        record_decision(&id, "superseded");
         crate::bus::emit("safety-block-expired", serde_json::json!({ "id": id }));
     }
     with_drafts(|drafts| {
@@ -299,20 +463,8 @@ pub fn observe(agent: AgentKind, chat_key: &str, line: &str) -> bool {
 }
 
 fn publish(chat_key: &str, summary: String, detail: String) -> bool {
-    let (kind, title, notification) = presentation(&summary);
-
-    // A provider can mirror one diagnostic onto both streams. One decision is
-    // enough, and duplicate cards make a one-time grant look reusable.
-    let existing = with_pending(|pending| {
-        pending
-            .values()
-            .any(|block| block.chat_key == chat_key && block.detail == detail)
-    });
-    if existing {
-        return false;
-    }
-
-    let block = BlockedAction {
+    let (kind, title) = presentation(&summary);
+    publish_block(BlockedAction {
         id: uuid::Uuid::new_v4().to_string(),
         chat_key: chat_key.to_string(),
         kind,
@@ -320,16 +472,34 @@ fn publish(chat_key: &str, summary: String, detail: String) -> bool {
         summary,
         detail,
         project_scope: with_project_scopes(|scopes| scopes.get(chat_key).cloned()),
-    };
+        provider: "codex",
+        action: None,
+    })
+}
+
+/// Put one card up, unless the same refusal already has one.
+fn publish_block(block: BlockedAction) -> bool {
+    // A provider can mirror one diagnostic onto both streams. One decision is
+    // enough, and duplicate cards make a one-time grant look reusable.
+    let existing = with_pending(|pending| {
+        pending
+            .values()
+            .any(|old| old.chat_key == block.chat_key && old.detail == block.detail)
+    });
+    if existing {
+        return false;
+    }
+    let chat_key = block.chat_key.clone();
+    let title = block.title;
     with_pending(|pending| {
         pending.insert(block.id.clone(), block.clone());
     });
     crate::bus::emit("safety-blocked", block);
-    crate::push::notify_chat(Some(chat_key), "permission", notification);
+    crate::push::notify_chat(Some(&chat_key), "permission", title);
     true
 }
 
-fn presentation(summary: &str) -> (&'static str, &'static str, &'static str) {
+fn presentation(summary: &str) -> (&'static str, &'static str) {
     let lower = summary.to_ascii_lowercase();
     let external = (lower.contains("external") || summary.contains("外部"))
         && (lower.contains("send")
@@ -339,17 +509,9 @@ fn presentation(summary: &str) -> (&'static str, &'static str, &'static str) {
             || summary.contains("发送")
             || summary.contains("外传"));
     if external {
-        (
-            "external-data",
-            "Codex blocked external data sharing",
-            "Codex blocked external data sharing",
-        )
+        ("external-data", "Codex blocked external data sharing")
     } else {
-        (
-            "high-risk-action",
-            "Codex blocked a high-risk action",
-            "Codex blocked a high-risk action",
-        )
+        ("high-risk-action", "Codex blocked a high-risk action")
     }
 }
 
@@ -467,6 +629,8 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
                 .into(),
             detail: "review detail".into(),
             project_scope: Some(scope),
+            provider: "codex",
+            action: None,
         };
 
         save_authorization(&path, &block).unwrap();
@@ -483,6 +647,66 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         fs::remove_file(&path).unwrap();
         fs::remove_dir(&root).unwrap();
         fs::remove_dir(&other).unwrap();
+    }
+
+    fn classifier_denial(tool: &str, id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "[Production Deploy]", "decision_reason_type": "classifier",
+            "message": "Permission for this action was denied by the Claude Code auto mode classifier.",
+            "tool_name": tool, "tool_use_id": id,
+        })
+    }
+
+    #[test]
+    fn a_claude_classifier_refusal_becomes_a_card_naming_the_exact_call() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let input = serde_json::json!({ "command": "eas update --branch production" });
+        assert!(observe_claude_denial(
+            &chat,
+            &classifier_denial("Bash", "toolu_1"),
+            Some(("Bash", &input))
+        ));
+        // The same refusal, seen twice, is still one decision.
+        assert!(!observe_claude_denial(
+            &chat,
+            &classifier_denial("Bash", "toolu_1"),
+            Some(("Bash", &input))
+        ));
+        let card = pending().into_iter().find(|b| b.chat_key == chat).unwrap();
+        assert_eq!(card.provider, "claude");
+        assert_eq!(card.summary, "Production Deploy");
+        assert_eq!(
+            card.action.as_deref(),
+            Some("eas update --branch production")
+        );
+        // What the browser sees offers nothing to approve: no rule, no grant.
+        let shown = serde_json::to_value(&card).unwrap();
+        assert!(shown.get("exactGrant").is_none(), "{shown}");
+        assert!(!shown.to_string().contains("Bash("), "{shown}");
+        // A Claude card cannot be turned into a project-wide instruction.
+        assert!(authorize_for_project(&card.id).is_err());
+        assert!(dismiss(&card.id));
+        assert_eq!(decision(&card.id), Some("dismissed"));
+    }
+
+    #[test]
+    fn a_rule_or_person_denial_is_not_a_card() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let mut ruled = classifier_denial("Bash", "toolu_2");
+        ruled["decision_reason_type"] = "rule".into();
+        assert!(!observe_claude_denial(&chat, &ruled, None));
+        assert!(pending().iter().all(|b| b.chat_key != chat));
+
+        let chain = serde_json::json!({ "command": "git push && npm publish" });
+        assert!(observe_claude_denial(
+            &chat,
+            &classifier_denial("Bash", "toolu_3"),
+            Some(("Bash", &chain))
+        ));
+        let card = pending().into_iter().find(|b| b.chat_key == chat).unwrap();
+        forget_chat(&chat);
+        assert_eq!(decision(&card.id), Some("superseded"));
     }
 
     #[test]

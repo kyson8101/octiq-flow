@@ -87,6 +87,12 @@ impl Store {
         }
     }
 
+    /// A store kept under `root`, for other modules' tests.
+    #[cfg(test)]
+    pub(crate) fn at(root: PathBuf) -> Self {
+        Self { root }
+    }
+
     fn read(&self) -> Result<Snapshot, String> {
         match fs::read(self.root.join("state.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -209,7 +215,12 @@ impl Store {
         if Path::new(cwd).canonicalize().ok().as_ref() != Some(&env.cwd) {
             return Err("Sandbox folder changed. Start a new chat for that folder.".into());
         }
-        self.execute(&mut env, "start", None)?;
+        // An orchestrated worker's environment was built and checked just
+        // before its chat starts (orchestration `start_after_environment`);
+        // checking it again a moment later would only double the wait.
+        if !just_checked(&env, now()) {
+            self.execute(&mut env, "start", None)?;
+        }
         env.locked = true;
         self.save(&env)?;
         let handoff = self.directory(&env)?.join("handoff.json");
@@ -432,6 +443,15 @@ impl Store {
         })).map_err(|e| e.to_string())?)?;
         Ok(())
     }
+}
+
+/// Ready on this server within the last two minutes.
+fn just_checked(env: &Environment, now: u64) -> bool {
+    env.state == "ready"
+        && env.host_instance == instance()
+        && env
+            .checked_at
+            .is_some_and(|at| now.saturating_sub(at) < 120_000)
 }
 
 struct Operation(String);

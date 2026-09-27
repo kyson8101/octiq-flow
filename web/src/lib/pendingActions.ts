@@ -4,9 +4,11 @@
 // the host gave it:
 //
 // - a permission card (`permission_pending`), keyed by its request id;
-// - a safety card, an auto-mode refusal the person may allow once
+// - a safety card, an action a provider's own review refused
 //   (`safety_block_pending`), keyed by its id — the ledger's `nativeDecisions`
-//   are the same cards seen from a run, so they are never counted twice;
+//   are the same cards seen from a run, so they are never counted twice. It
+//   waits for the person to choose how the agent goes on, but a Claude refusal
+//   can never be allowed, so the badge says "review", not "approve";
 // - an unanswered question (`question_pending`), one per card: a batch asked
 //   in one call is one card, and stays until its last question is answered.
 //   The host keeps an answered call listed until its answers reach the agent:
@@ -166,7 +168,7 @@ export function pendingByTask(actions: readonly PendingAction[]): ReadonlyMap<st
 
 const LABEL: Record<PendingActionKind, string> = {
   permission: "Permission needed",
-  safety: "Approval needed",
+  safety: "Review needed",
   question: "Answer needed",
   delivery: "Delivery failed",
   gate: "Decision needed",

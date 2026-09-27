@@ -122,6 +122,11 @@ describe("OrchestrationPanel", () => {
     approved.runs[0].planApproval = { status: "approved", requestedAt: 1 };
     expect(render(approved)).not.toContain("Approve plan");
     expect(render(approved)).toContain('<span class="orch-task-title">Build the host ledger</span>');
+    // The approval record left the chat; the run keeps it, folded.
+    approved.runs[0].planApproval = { status: "approved", requestedAt: 1, revision: 4,
+      consent: { via: "button", revision: 4, at: 2, surface: "chat", shownMs: 5_000 } };
+    expect(render(approved)).toContain('class="chat-plan chat-plan-approved"');
+    expect(render(approved)).toContain("Approved on its card in chat · revision 4");
   });
 
   it("keeps acceptance unverified even when every task has completed", () => {

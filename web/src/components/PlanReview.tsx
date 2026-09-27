@@ -5,7 +5,7 @@
 // because a 0% bar over a column of "pending" rows says nothing about a plan.
 // No worker starts until Approve: the host refuses them, this view only asks.
 // Specs are the agent's prose, so each sits behind its task's disclosure.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { approvePlan } from "../lib/agentsMode";
 import { modelFromReported } from "../lib/agentProviders";
 import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
@@ -14,13 +14,14 @@ import {
 } from "../lib/planReview";
 import { planHandle } from "../lib/chatPlans";
 import { approveOnce, useApproving } from "../lib/planApproving";
+import { cardView, nextShown, PLAN_SETTLE_MS, settling, type PlanShown } from "../lib/planShown";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
 import { TaskPlanCard } from "./TaskPlanCard";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
 
-export function PlanReview({ run, tasks: allTasks, drafting, projectName, onApproved, onRequestChanges, chatHint, approved = false }: {
+export function PlanReview({ run, tasks: allTasks, drafting, projectName, onApproved, onRequestChanges, chatHint, approved = false, surface = "panel" }: {
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
   /** The main agent is still in its turn: the plan may not be finished. */
@@ -35,6 +36,8 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   chatHint?: string;
   /** The approved plan, for reading back: no answers to give. */
   approved?: boolean;
+  /** Which card this is, recorded with an approval as what was clicked. */
+  surface?: "chat" | "panel";
 }) {
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
@@ -50,13 +53,26 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   const empty = tasks.length === 0;
   const revision = run.planApproval?.revision;
   const handle = planHandle(run.id);
+  // What this card has shown, and since when (see lib/planShown).
+  const shownRef = useRef<PlanShown | null>(null);
+  shownRef.current = nextShown(shownRef.current, revision, Date.now());
+  const shown = shownRef.current;
+  const [, recheck] = useState(0);
+  const holding = !approved && settling(shown, Date.now());
+  useEffect(() => {
+    if (!holding || shown.replacedAt === null) return;
+    const left = PLAN_SETTLE_MS - (Date.now() - shown.replacedAt);
+    const timer = window.setTimeout(() => recheck((n) => n + 1), Math.max(0, left));
+    return () => window.clearTimeout(timer);
+  }, [holding, shown]);
 
   const approve = async () => {
     setError("");
     try {
       // The revision on screen goes with the click: a plan the lead changed
       // a moment ago is refused, not approved unseen.
-      const sent = await approveOnce(run.id, () => approvePlan(run.coordinatorChatKey, run.id, waiting, revision));
+      const sent = await approveOnce(run.id, () => approvePlan(run.coordinatorChatKey, run.id, waiting, revision,
+        { surface, ...cardView(shownRef.current ?? shown, Date.now()) }));
       if (sent) onApproved?.();
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
@@ -80,10 +96,12 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   // the tasks it saw, and the host refuses it if the plan changed since.
   const stillDrafting = !approved && drafting && empty;
   const waitReason = stillDrafting ? "The main agent is still writing the plan." : empty ? "The plan has no tasks yet."
+    : holding ? `Updated just now to revision ${revision}. Look it over, then approve.`
     : drafting ? "The main agent is still active. Approving covers the tasks shown." : "";
   const titleId = `plan-review-title-${run.id}`;
   return (
     <section className="plan-review" aria-labelledby={titleId} data-drafting={stillDrafting || undefined}
+      data-updated={holding || undefined}
       data-approved={approved || undefined} data-plan={run.id} data-revision={revision}>
       <header className="plan-review-head">
         <div className="plan-review-state">
@@ -145,7 +163,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
         </div>}
         <div className="plan-review-approve">
           <span className="plan-review-hint">{waitReason || (blocked ? "Some tasks wait on each other and will never start." : "No worker starts until you approve.")}</span>
-          <button className="orch-primary" type="button" disabled={busy || empty} onClick={() => void approve()}>
+          <button className="orch-primary" type="button" disabled={busy || empty || holding} onClick={() => void approve()}>
             {busy ? "Approving…" : "Approve plan"}
           </button>
         </div>

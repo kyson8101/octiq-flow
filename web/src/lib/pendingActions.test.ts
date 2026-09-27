@@ -63,6 +63,14 @@ describe("pending actions", () => {
     expect(actions.find((a) => a.kind === "gate")).toMatchObject({ surface: "run", openChatId: "main", taskId: "t1" });
   });
 
+  it("asks for a review of a refused action, never an approval", () => {
+    // A Claude auto-mode refusal can no longer be allowed from OctiqFlow; the
+    // card only lets the person choose how the agent goes on.
+    const actions = pendingActions(input(ledger(), { safetyBlocks: { w1: [{ id: "s1" }] } }));
+    expect(pendingLabel(actions)).toBe("Review needed");
+    expect(pendingDescription(actions)).toBe("1 blocked action to review");
+  });
+
   it("counts an action once even when it reaches the list twice", () => {
     const actions = pendingActions(input(ledger({ gates: [gate("g1", "r1"), gate("g1", "r1")] }), {
       asks: { w1: [{ id: "p1" }, { id: "p1" }] },

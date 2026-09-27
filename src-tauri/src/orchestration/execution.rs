@@ -473,7 +473,7 @@ impl OrchestrationStore {
                     Observation::TurnEnded => {
                         e.provider_retry_started_at = None;
                         if attempt.status == AttemptStatus::Blocked { continue; }
-                        if crate::safety_block::has_pending_for_chat(key) {
+                        if crate::safety_block::awaits_decision(key) {
                             e.state = ExecutionState::WaitingTool;
                             e.current_operation = Some("Waiting for safety approval".into());
                         } else {
@@ -535,7 +535,7 @@ impl OrchestrationStore {
             return Ok(());
         };
         // A one-shot provider may exit while a durable decision waits.
-        if before.status == AttemptStatus::Blocked || crate::safety_block::has_pending_for_chat(key)
+        if before.status == AttemptStatus::Blocked || crate::safety_block::awaits_decision(key)
         {
             return Ok(());
         }
@@ -565,7 +565,7 @@ impl OrchestrationStore {
             .iter()
             .filter(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running))
         {
-            if crate::safety_block::has_pending_for_chat(&before.worker_chat_key) {
+            if crate::safety_block::awaits_decision(&before.worker_chat_key) {
                 continue;
             }
             let p = snapshot
@@ -872,7 +872,7 @@ mod tests {
             store.worker_disconnected(&attempt.worker_chat_key).unwrap();
             assert_eq!(latest(&store, &attempt.id).execution.state, ExecutionState::CapacityBlocked);
             assert_eq!(store.snapshot(None).unwrap().notifications.len(), 1);
-            assert!(store.report_worker(&attempt.worker_chat_key, WorkerReport { attempt_id: attempt.id, outcome: WorkerOutcome::Completed, summary:"Late completion".into(), files_modified:vec![] }).is_err());
+            assert!(store.report_worker(&attempt.worker_chat_key, WorkerReport { attempt_id: attempt.id, outcome: WorkerOutcome::Completed, summary:"Late completion".into(), files_modified:vec![], verdict: None }).is_err());
         }
     }
 

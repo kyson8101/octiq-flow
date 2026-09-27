@@ -342,10 +342,22 @@ Approval is for exactly the plan you saw:
 - The browser sends the ids of the tasks it showed as awaiting approval; if the
   lead added a task in the meantime the host refuses ("The plan changed while
   you were reviewing it").
-- Approving stamps each task `approvedAt`. An approved task's destination and
-  assignee cannot be changed — re-routing means a new task. Before approval
-  the lead may revise it (`orchestration_task_revise`), which moves the
-  revision.
+- Approving stamps each task `approvedAt`. An approved task's destination
+  cannot be changed — re-routing means a new task. Before approval the lead
+  may revise it (`orchestration_task_revise`), which moves the revision.
+- A task nobody is working on can change hands: `orchestration_task_reassign`
+  gives it to another of the lead's direct reports, for example a designated
+  backup taking over from the primary. The new owner is routed like a new
+  task, so the org chart holds. The task keeps its card, destination and any
+  workspace a settled attempt left, and records the handoff on
+  `task.handoffs`. A new owner is not what you approved, so the task waits for
+  you again and nobody, including the old owner, starts it meanwhile. A task
+  with a running attempt is refused; stop that attempt first.
+- The Approve button sends the revision and tasks it showed, the card it was
+  clicked on (`surface`) and how long that revision had been on it
+  (`shownMs`). A revision that replaced another less than 1.5 s before the
+  click is refused, and the card holds its button that long after a change.
+  Once approved, the plan leaves the chat; its record stays in the run panel.
 - A task the lead adds **after** approval puts the whole run back to waiting
   for you; it is marked **New** in the review, and no worker starts (retries
   included) until you approve again. Running workers carry on.

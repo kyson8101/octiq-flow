@@ -84,6 +84,7 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     "orchestration_run_create",
     "orchestration_task_create",
     "orchestration_task_revise",
+    "orchestration_task_reassign",
     "orchestration_plan_approve",
     "orchestration_destinations",
     "orchestration_snapshot",

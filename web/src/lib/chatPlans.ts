@@ -55,7 +55,12 @@ export function seenPlans(plans: ChatPlan[]): SeenPlan[] {
  *  words stay behind the card's disclosure. */
 export function approvalLabel(plan: ChatPlan): string {
   const consent = plan.run.planApproval?.consent;
-  const how = consent?.via === "conversation" ? "Approved in chat" : "Approved";
+  // Which card a button approval came from, when the host recorded it: the
+  // evidence behind "approved", shown rather than implied (feedback 713786e9).
+  const how = consent?.via === "conversation" ? "Approved in chat"
+    : consent?.surface === "chat" ? "Approved on its card in chat"
+    : consent?.surface === "panel" ? "Approved in the run panel"
+    : "Approved";
   const revision = consent?.revision ?? plan.revision;
   return revision ? `${how} · revision ${revision}` : how;
 }
@@ -63,7 +68,10 @@ export function approvalLabel(plan: ChatPlan): string {
 /** What a pending card tells the person about approving by chat: a plain
  *  "approve this plan" works when one plan waits; with several, the handle. */
 export function chatApprovalHint(plan: ChatPlan, waiting: number): string {
+  // A reply counts only for a plan already on screen when it was sent, so an
+  // "approve" typed before this card appeared does not approve it
+  // (feedback d6187a67). Say so where the person reads the card.
   return waiting > 1
-    ? `Reply "approve plan ${plan.handle}" below, or ask for changes.`
-    : `Reply "approve this plan" below, or ask for changes.`;
+    ? `Reply "approve plan ${plan.handle}" below, or ask for changes. Only a reply sent after this card appeared approves it.`
+    : `Reply "approve this plan" below, or ask for changes. Only a reply sent after this card appeared approves it.`;
 }

@@ -62,8 +62,9 @@ permission to delete a directory the new workflow did not create.
   processes, not arbitrary external terminals or other Git tools. OS sandbox and
   tool approval controls remain in force.
 - A settled worker is stopped before its checkout is handed to a replacement.
-  Messages to settled or stale attempts are rejected. A pending safety card
-  retains the same attempt and is not another settled block.
+  Messages to settled or stale attempts are rejected. A pending Codex safety
+  card retains the same attempt and is not another settled block. A Claude
+  auto-mode card cannot be approved, so it retains nothing.
 - A restart fails interrupted attempts and releases their process leases while
   retaining the workspace and changes. Task decision gates belonging to those
   interrupted attempts are cancelled. Retrying requires a new attempt ID.

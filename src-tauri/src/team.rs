@@ -643,6 +643,49 @@ pub fn memory_seed(agent: &TeamAgent) -> String {
     )
 }
 
+/// The header OctiqFlow seeded (`memory_seed`) relabelled for `name`: the
+/// frontmatter `agent:`, the `# … — memory` heading and the "Working memory
+/// for …" line. Answers the exact old block and its replacement, or None when
+/// the header already names `name` or is not one OctiqFlow wrote. Only lines
+/// before the first dated entry are ever looked at.
+pub fn relabel_memory_header(head: &str, name: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = head.split('\n').collect();
+    if lines.first() != Some(&"---") || !lines.contains(&"type: agent-memory") {
+        return None;
+    }
+    let mut new_lines: Vec<String> = Vec::new();
+    let mut last = None;
+    let mut in_front = true;
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with("## ") {
+            break;
+        }
+        let relabelled = if in_front && index > 0 && *line == "---" {
+            in_front = false;
+            None
+        } else if in_front && line.starts_with("agent: ") {
+            Some(format!("agent: {name}"))
+        } else if !in_front && line.starts_with("# ") && line.ends_with(" — memory") {
+            Some(format!("# {name} — memory"))
+        } else if !in_front && line.starts_with("Working memory for ") {
+            line.split_once(", a registered OctiqFlow agent.")
+                .map(|(_, rest)| {
+                    format!("Working memory for {name}, a registered OctiqFlow agent.{rest}")
+                })
+        } else {
+            None
+        };
+        if relabelled.is_some() {
+            last = Some(index);
+        }
+        new_lines.push(relabelled.unwrap_or_else(|| line.to_string()));
+    }
+    let last = last?;
+    let old = lines[..=last].join("\n");
+    let new = new_lines[..=last].join("\n");
+    (old != new).then_some((old, new))
+}
+
 /// How an agent's memory is described in its brief.
 pub fn memory_brief(agent: &TeamAgent, team: &[TeamAgent]) -> String {
     let reports = direct_reports(team, &agent.id);
@@ -717,14 +760,37 @@ pub fn ensure_memory(
     agent: &TeamAgent,
 ) -> Result<(), String> {
     let path = note_of(agent)?;
-    let exists = vault
-        .call(
-            actor,
-            "read",
-            &serde_json::json!({ "path": path, "lineCount": 1 }),
-        )
-        .is_ok();
-    if exists {
+    let head = vault.call(
+        actor,
+        "read",
+        &serde_json::json!({ "path": path, "lineCount": 12 }),
+    );
+    if let Ok(head) = head {
+        // A renamed agent keeps its note (the path is fixed), but the lines
+        // OctiqFlow wrote at the top still named its old self (feedback
+        // 10cc5a23). Relabel them; the dated entries below are history and
+        // are never touched.
+        let content = head.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        let Some((old, new)) = relabel_memory_header(content, &agent.name) else {
+            return Ok(());
+        };
+        // A label is not worth failing a save or an append over.
+        let relabelled = vault
+            .call(
+                actor,
+                "patch",
+                &serde_json::json!({
+                    "path": path,
+                    "oldText": old,
+                    "newText": new,
+                    "expectedRevision": head.get("revision").cloned().unwrap_or_default(),
+                    "requestId": format!("agent-memory-relabel-{}-{}", agent.id, slug(&agent.name)),
+                }),
+            )
+            .and_then(saved);
+        if let Err(error) = relabelled {
+            eprintln!("team: could not relabel {path} for {}: {error}", agent.name);
+        }
         return Ok(());
     }
     let receipt = vault.call(
@@ -1499,6 +1565,78 @@ mod tests {
                 .unwrap_err()
                 .contains("does not report to you")
         );
+    }
+
+    #[test]
+    fn a_renamed_agents_memory_header_names_it_and_its_history_is_untouched() {
+        // Feedback 10cc5a23: after Settings renamed Maya to Mango Juice, the
+        // note still read "agent: Maya" and "# Maya — memory".
+        let base = std::env::temp_dir().join(format!("octiq-memory-{}", uuid::Uuid::new_v4()));
+        let root = base.join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = crate::memory_vault::Vault::at(base.join("profile"));
+        vault
+            .configure(crate::memory_vault::Config {
+                path: root.to_string_lossy().into_owned(),
+                writable: true,
+            })
+            .unwrap();
+        let path = temp();
+        let maya = save(&path, draft("Maya", None)).unwrap();
+        ensure_memory(&vault, "octiq:team", &maya).unwrap();
+        memory_append(
+            &vault,
+            "chat:lead",
+            &maya,
+            "Maya decided X.",
+            Some("2026-09-25"),
+            "r1",
+        )
+        .unwrap();
+
+        let mut renamed = draft("Mango Juice", None);
+        renamed.id = Some(maya.id.clone());
+        let mango = save(&path, renamed).unwrap();
+        assert_eq!(
+            mango.memory_note, maya.memory_note,
+            "the note path is fixed"
+        );
+        ensure_memory(&vault, "octiq:team", &mango).unwrap();
+        // Idempotent: a second save changes nothing.
+        ensure_memory(&vault, "octiq:team", &mango).unwrap();
+
+        let text = std::fs::read_to_string(root.join(mango.memory_note.as_ref().unwrap())).unwrap();
+        assert!(text.contains("agent: Mango Juice\n"), "{text}");
+        assert!(text.contains("# Mango Juice — memory\n"), "{text}");
+        assert!(
+            text.contains("Working memory for Mango Juice, a registered OctiqFlow agent."),
+            "{text}"
+        );
+        assert!(text.contains(&format!("agent-id: {}", maya.id)));
+        assert!(text.contains("Maya decided X."), "history is kept: {text}");
+        assert!(!text.contains("agent: Maya\n"), "{text}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn only_the_seeded_header_is_ever_relabelled() {
+        let seeded = memory_seed(&TeamAgent {
+            name: "Ryan".into(),
+            ..save(&temp(), draft("Ryan", None)).unwrap()
+        });
+        let (old, new) = relabel_memory_header(&seeded, "Potato Juice").unwrap();
+        assert!(seeded.starts_with(&old));
+        assert!(new.contains("agent: Potato Juice") && new.contains("# Potato Juice — memory"));
+        assert!(
+            relabel_memory_header(&seeded, "Ryan").is_none(),
+            "already right"
+        );
+        // A note OctiqFlow did not seed is left alone.
+        assert!(relabel_memory_header("# My notes\n\nagent: Ryan", "Potato").is_none());
+        // Nothing past the first dated entry is looked at.
+        let later = format!("{seeded}\n## 2026-09-25\n\n# Ryan — memory\n");
+        let (old, _) = relabel_memory_header(&later, "Potato").unwrap();
+        assert!(!old.contains("## 2026-09-25"));
     }
 
     #[test]

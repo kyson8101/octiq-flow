@@ -1,6 +1,10 @@
-// Codex's tool router has already refused this action. Unlike a live Claude
+// A provider's own safety review has already refused this action: Codex's
+// tool router, or Claude's auto-mode classifier. Unlike a live Claude
 // permission ask, there is no suspended tool call for OctiqFlow to resume.
 // These buttons therefore send the user's decision as a fresh, explicit turn.
+// Claude's card offers no "allow": Claude refuses without asking anyone and
+// has no way to approve one refused call before it runs, so the card records
+// the refusal and says so.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
 
@@ -11,7 +15,20 @@ export type SafetyBlockNotice = {
   title: string;
   summary: string;
   detail: string;
+  /** Whose review refused. Older servers send none: that was always Codex. */
+  provider?: "codex" | "claude";
+  /** The exact call that was refused, when the provider named it. */
+  action?: string | null;
 };
+
+/**
+ * Why a Claude refusal has no "allow" here. Claude refuses without asking
+ * anyone and offers no way to approve one call before it runs; a permission
+ * rule would allow every later call of the line, so OctiqFlow adds none.
+ */
+export const CLAUDE_REFUSAL_NOTE =
+  "OctiqFlow cannot allow a command Claude's auto mode refused, and will not retry it. " +
+  "If it should run, run it yourself, or change Claude's permissions outside OctiqFlow if you mean to allow it for good.";
 
 export const LOCAL_ONLY_REPLY =
   "Continue without sending any local data to an external service. Use only local tools and local reasoning for this task.";
@@ -54,6 +71,83 @@ export function allowForProjectReply(block: SafetyBlockNotice): string {
   );
 }
 
+/** Claude's auto-mode card: what was refused, and that nothing here can allow it. */
+function ClaudeSafetyBlock({
+  block,
+  onContinue,
+  onAnswered,
+  startOpen,
+}: {
+  block: SafetyBlockNotice;
+  onContinue: (message: string) => Promise<void> | void;
+  onAnswered: (id: string) => void;
+  startOpen: boolean;
+}) {
+  const [open, setOpen] = useState(startOpen);
+  const [sending, setSending] = useState<"safer" | "dismiss" | null>(null);
+  const [error, setError] = useState("");
+
+  // "Dismiss" only takes the card down: for when the person has dealt with
+  // the command themselves and the agent needs no new instruction.
+  const answer = async (choice: "safer" | "dismiss") => {
+    setSending(choice);
+    setError("");
+    try {
+      await bridge.invoke("safety_block_dismiss", { id: block.id });
+      onAnswered(block.id);
+      if (choice === "safer") await onContinue(SAFER_APPROACH_REPLY);
+    } catch (why) {
+      setError(String((why as Error)?.message ?? why));
+      setSending(null);
+    }
+  };
+
+  return (
+    <div className="ask-card safety-card" role="alert" aria-label={block.title}>
+      <div className="safety-card-context">
+        <span>Claude auto-mode review</span>
+        <span className="safety-card-ok">OctiqFlow is okay</span>
+      </div>
+      <div className="ask-card-head">
+        <span className="safety-card-icon" aria-hidden="true">!</span>
+        <span className="ask-card-title"><strong>{block.title}</strong></span>
+      </div>
+
+      <div className="safety-card-label">Why it was blocked</div>
+      <p className="safety-card-summary">{block.summary}</p>
+      {block.action && <>
+        <div className="safety-card-label">What it tried</div>
+        <pre className="safety-card-action">{block.action}</pre>
+      </>}
+      <p className="safety-card-status">OctiqFlow is still running. The blocked action did not run.</p>
+
+      {open && (
+        <div className="ask-card-detail safety-card-detail">
+          <div className="ask-card-label">Technical details</div>
+          <pre className="ask-card-body">{block.detail}</pre>
+        </div>
+      )}
+
+      <div className="ask-card-buttons safety-card-buttons">
+        <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void answer("safer")}>
+          {sending === "safer" ? "Continuing…" : "Use safer approach"}
+        </button>
+        <button className="ask-btn" type="button" disabled={!!sending} aria-expanded={open}
+          onClick={() => setOpen((shown) => !shown)}>
+          {open ? "Hide technical details" : "Technical details"}
+        </button>
+        <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("dismiss")}>
+          {sending === "dismiss" ? "Dismissing…" : "Dismiss"}
+        </button>
+      </div>
+
+      {error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
+
+      <p className="ask-card-note">{CLAUDE_REFUSAL_NOTE}</p>
+    </div>
+  );
+}
+
 export function SafetyBlock({
   block,
   onContinue,
@@ -64,6 +158,23 @@ export function SafetyBlock({
   onContinue: (message: string) => Promise<void> | void;
   onAnswered: (id: string) => void;
   startOpen?: boolean;
+}) {
+  if (block.provider === "claude") {
+    return <ClaudeSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
+  }
+  return <CodexSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
+}
+
+function CodexSafetyBlock({
+  block,
+  onContinue,
+  onAnswered,
+  startOpen,
+}: {
+  block: SafetyBlockNotice;
+  onContinue: (message: string) => Promise<void> | void;
+  onAnswered: (id: string) => void;
+  startOpen: boolean;
 }) {
   const [open, setOpen] = useState(startOpen);
   const [sending, setSending] = useState<"local" | "allow" | "always" | null>(null);

@@ -52,6 +52,12 @@ impl Vault {
         }
     }
 
+    /// A vault whose settings live under `profile`, for other modules' tests.
+    #[cfg(test)]
+    pub(crate) fn at(profile: PathBuf) -> Self {
+        Self { profile }
+    }
+
     fn load_config(&self) -> Result<Config, String> {
         match fs::read(self.profile.join("memory-vault.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes)

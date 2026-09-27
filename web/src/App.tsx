@@ -4043,7 +4043,8 @@ export default function App() {
     [workspaces, shelved],
   );
   const planTail = useMemo(
-    () => (plansHere.length ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : undefined),
+    () => (plansHere.some((plan) => plan.pending)
+      ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : undefined),
     [plansHere, planDrafting, planProjectName],
   );
 
@@ -4675,6 +4676,9 @@ export default function App() {
                 : newTask
                 ? (project ? `What's the task in ${project.name}?` : "What's the task?")
                 : project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
+              {/* A role runs to a thousand characters: one line, and the rest
+                  on request, so the picker and the message box stay in reach
+                  on a phone (feedback 020e4309). */}
               {newTask && lead && (
                 <AgentWelcome
                   key={lead.id}
