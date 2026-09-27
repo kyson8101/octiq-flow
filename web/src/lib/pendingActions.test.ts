@@ -7,6 +7,8 @@ import {
   pendingActions, pendingByRow, pendingByTask, pendingDescription, pendingLabel, pendingSelector,
   type PendingActionInput,
 } from "./pendingActions";
+import { PendingRequests, type RequestState } from "./pendingRequests";
+import type { Question } from "../components/UserQuestion";
 
 const run = (id: string, over: Partial<OrchestrationRun> = {}): OrchestrationRun => ({
   id, objective: id, coordinatorChatKey: "chat:main", workspaceId: "p", rootPath: "/r",
@@ -76,6 +78,75 @@ describe("pending actions", () => {
     expect(pendingLabel(oneLeft)).toBe("Answer needed");
     // A lone question is its own card.
     expect(pendingActions(input(EMPTY_ORCHESTRATION, { questions: { c: [{ id: "q9" }] } }))[0].key).toBe("question:q9");
+  });
+
+  // question_store reports one status per ask_user call: "pending" until every
+  // answer is in, "saved" while the answers wait to be delivered, "failed"
+  // when delivery failed or could not be confirmed. Older servers send none.
+  const questions = (list: object[]) => pendingActions(input(EMPTY_ORCHESTRATION, { questions: { c: list } }));
+
+  it("does not ask again for answers that are saved and waiting to be delivered", () => {
+    expect(questions([{ id: "q1", status: "saved", answer: "Yes" }])).toEqual([]);
+    expect(questions([{ id: "q1", batch: "b", status: "saved" }, { id: "q2", batch: "b", status: "saved" }])).toEqual([]);
+  });
+
+  it("keeps a batch only while one of its questions still needs the person", () => {
+    const mixed = questions([{ id: "q1", batch: "b", status: "saved" }, { id: "q2", batch: "b", status: "pending" }]);
+    expect(mixed.map((a) => a.key)).toEqual(["question:b"]);
+    expect(pendingLabel(mixed)).toBe("Answer needed");
+    // Two calls in one chat: the saved one drops out, the other keeps its key.
+    const two = questions([
+      { id: "q1", batch: "b1", status: "saved" }, { id: "q2", batch: "b1", status: "saved" },
+      { id: "q3", batch: "b2", status: "pending" }, { id: "q4", batch: "b2", status: "pending" },
+    ]);
+    expect(two.map((a) => a.key)).toEqual(["question:b2"]);
+  });
+
+  it("names a failed delivery as its own action, never as an unanswered question", () => {
+    const failed = questions([{ id: "q1", batch: "b", status: "failed", answer: "Yes", error: "Could not continue", retryable: true }, { id: "q2", batch: "b", status: "failed", answer: "No" }]);
+    expect(failed).toEqual([{ key: "delivery:b", kind: "delivery", rowId: "c", openChatId: "c", surface: "chat", runId: undefined, taskId: undefined }]);
+    expect(pendingLabel(failed)).toBe("Delivery failed");
+    expect(pendingDescription(failed)).toBe("1 failed answer delivery");
+    // An unconfirmed delivery (not retryable) still waits on the person: the
+    // card's Cancel is the only way it closes.
+    expect(questions([{ id: "q9", status: "failed", retryable: false }]).map((a) => a.key)).toEqual(["delivery:q9"]);
+    // Saved beside failed is the failure; unanswered beside failed is the question.
+    expect(questions([{ id: "q1", batch: "b", status: "saved" }, { id: "q2", batch: "b", status: "failed" }]).map((a) => a.key)).toEqual(["delivery:b"]);
+    expect(questions([{ id: "q1", batch: "b", status: "pending" }, { id: "q2", batch: "b", status: "failed" }]).map((a) => a.key)).toEqual(["question:b"]);
+  });
+
+  it("reads an older server's status-less question as unanswered", () => {
+    expect(questions([{ id: "q1" }]).map((a) => a.key)).toEqual(["question:q1"]);
+    expect(questions([{ id: "q1", status: "pending" }]).map((a) => a.key)).toEqual(["question:q1"]);
+  });
+
+  it("follows a question from asked to saved to delivered, and back from a reconnect", () => {
+    const store = new PendingRequests<Question>();
+    const at = (state: RequestState<Question>) => pendingActions(input(EMPTY_ORCHESTRATION, { questions: state })).map((a) => a.key);
+    // Shaped as question_store's Asked view sends it.
+    const mine = (status: Question["status"], id = "q1"): Question => ({
+      id, chatKey: "chat:c", question: id === "q1" ? "Which?" : "And?", batch: "b", batchSize: 2, status,
+      ...(status === "pending" ? {} : { answer: "Yes" }),
+      ...(status === "failed" ? { error: "Your answers are saved. Could not continue the agent: gone", retryable: true } : {}),
+    });
+    // user-question, twice for a batch of two
+    store.add(mine("pending"));
+    expect(at(store.add(mine("pending", "q2")))).toEqual(["question:b"]);
+    // question-updated once the answers are in: saved, waiting for delivery
+    store.add(mine("saved"));
+    expect(at(store.current)).toEqual(["question:b"]); // mid-update, q2 still pending
+    expect(at(store.add(mine("saved", "q2")))).toEqual([]);
+    // Reconnect: question_pending still lists the saved record, and it stays quiet.
+    const token = store.begin();
+    expect(at(store.finish(token, [mine("saved"), mine("saved", "q2")])!)).toEqual([]);
+    // Delivery fails: now the card needs the person, under its own name.
+    store.add(mine("failed"));
+    expect(at(store.add(mine("failed", "q2")))).toEqual(["delivery:b"]);
+    // Retry puts it back to saved; delivery removes it.
+    store.add(mine("saved"));
+    expect(at(store.add(mine("saved", "q2")))).toEqual([]);
+    store.remove("q1");
+    expect(at(store.remove("q2"))).toEqual([]);
   });
 
   it("leaves out a worker's question, which no screen draws a card for", () => {

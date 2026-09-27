@@ -295,9 +295,56 @@ try {
   await eventually(() => textOf(badge(page, "Ship the roster")), "Permission needed", "after reload");
   assert.equal(await textOf(badge(page, "Plan the release")), "Plan approval");
   assert.equal(await textOf(badge(page, "Pick a layout")), "Answer needed");
+
+  // 9b. Answers saved and waiting for delivery ask nothing more; a failed
+  //     delivery is its own action. Records are question_store's `Asked`
+  //     view: status is per call — pending, saved or failed.
+  step("9b saved and failed answers");
+  const asked = (id, batch, question, status, over = {}) => ({
+    id, chatKey: "chat:solo", batch, batchSize: 2, question, options: [{ label: "Yes" }, { label: "No" }], status,
+    ...(status === "pending" ? {} : { answer: "Yes" }), retryable: false, ...over,
+  });
+  const failure = { error: "Your answers are saved. Could not continue the agent: the agent is not running", retryable: true };
+  // A second call arrives in the same chat: two cards' worth, one badge each.
+  for (const q of [asked("q3", "batch-2", "Ship today?", "pending"), asked("q4", "batch-2", "Tell the team?", "pending")]) send("user-question", q);
+  await eventually(() => textOf(badge(page, "Pick a layout")), "Action needed · 2", "two calls waiting");
+  // The first call's last answer is saved: only the second call remains, under its own key.
+  send("question-updated", asked("q2", "batch-1", "Which colour?", "saved"));
+  await eventually(() => textOf(badge(page, "Pick a layout")), "Answer needed", "saved call drops out of the count");
+  await badge(page, "Pick a layout").click();
+  results.secondCall = await waitForFocus(page, "question:batch-2");
+  assert.equal(await page.locator('[data-pending-keys~="question:batch-1"]').count(), 0, "saved call is no target");
+  // Every call saved: the card stays, saying so, and the badge goes.
+  for (const id of ["q3", "q4"]) send("question-updated", asked(id, "batch-2", id === "q3" ? "Ship today?" : "Tell the team?", "saved"));
+  await eventually(() => badge(page, "Pick a layout").count(), 0, "all answers saved");
+  assert.equal(await page.locator(".sidebar .chat.has-pending").filter({ has: page.locator(".chat-title", { hasText: "Pick a layout" }) }).count(), 0);
+  await page.locator(".qa-card").getByText("Answers saved · waiting for agent").waitFor();
+  await page.screenshot({ path: join(artifacts, "desktop-saved-no-badge.png") });
+  // A reload asks question_pending, which still lists the saved records.
+  questions = [asked("q2", "batch-1", "Which colour?", "saved"), asked("q3", "batch-2", "Ship today?", "saved"), asked("q4", "batch-2", "Tell the team?", "saved")];
+  await page.goto("about:blank");
+  await page.goto(base, { waitUntil: "domcontentloaded" });
+  await eventually(() => textOf(badge(page, "Ship the roster")), "Permission needed", "reloaded");
+  await page.waitForTimeout(400);
+  assert.equal(await badge(page, "Pick a layout").count(), 0, "saved answers stay quiet after a reload");
+  // Delivery fails: the person's Retry or Cancel is the only way on.
+  for (const id of ["q3", "q4"]) send("question-updated", asked(id, "batch-2", id === "q3" ? "Ship today?" : "Tell the team?", "failed", failure));
+  await eventually(() => textOf(badge(page, "Pick a layout")), "Delivery failed", "failed delivery");
+  assert.match(await badge(page, "Pick a layout").getAttribute("aria-label"), /1 failed answer delivery/);
+  await badge(page, "Pick a layout").click();
+  results.delivery = await waitForFocus(page, "delivery:batch-2");
+  await page.locator(".qa-card .qa-restore").click();
+  await page.getByRole("button", { name: "Retry delivery" }).waitFor();
+  // The card opens out of its strip with an animation; shoot it settled.
+  await page.waitForFunction(() => document.querySelector(".qa-card")?.getAnimations({ subtree: true }).length === 0);
+  assert.deepEqual(calls.filter(({ cmd }) => /^question_(retry|cancel|answer)/.test(cmd)), [], "showing a failed card retries nothing");
+  await page.screenshot({ path: join(artifacts, "desktop-delivery-failed-revealed.png") });
+  // The retry is taken: saved again, then delivered.
+  for (const id of ["q3", "q4"]) send("question-updated", asked(id, "batch-2", "Again?", "saved"));
+  await eventually(() => badge(page, "Pick a layout").count(), 0, "retried delivery");
   questions = [];
-  send("question-expired", { id: "q2" });
-  await eventually(() => badge(page, "Pick a layout").count(), 0, "last question answered");
+  for (const id of ["q2", "q3", "q4"]) send("question-expired", { id });
+  await eventually(() => page.locator(".qa-card").count(), 0, "delivered answers leave");
 
   // 10. A phone: the list is its own screen, every badge fits its row, and
   //     tapping one lands on the card in the chat.
@@ -325,6 +372,36 @@ try {
   assert(await noSideScroll(page));
   await page.screenshot({ path: join(artifacts, "phone-permission-revealed.png") });
   assert.deepEqual(decisions(), []);
+
+  // 11. A phone, after a reconnect: a saved call is quiet, a failed one says
+  //     so, fits its row, and a tap lands on the card.
+  step("11 phone saved and failed");
+  questions = [
+    { ...asked("q5", "batch-5", "Keep notes?", "saved"), chatKey: "chat:quiet" },
+    { ...asked("q6", "batch-5", "Share them?", "saved"), chatKey: "chat:quiet" },
+    asked("q7", "batch-7", "Deploy now?", "failed", failure),
+    asked("q8", "batch-7", "Post a note?", "failed", failure),
+  ];
+  await page.goto("about:blank");
+  await page.goto(base, { waitUntil: "domcontentloaded" });
+  if (await showChats.isVisible().catch(() => false)) await showChats.click();
+  await eventually(() => textOf(badge(page, "Pick a layout")), "Delivery failed", "phone failed delivery");
+  assert.equal(await badge(page, "Quiet notes").count(), 0, "phone: saved answers ask nothing");
+  const failedFit = await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".sidebar .chat.has-pending")].find((r) => r.textContent.includes("Pick a layout"));
+    const r = row.getBoundingClientRect();
+    const b = row.querySelector(".pending-action-badge").getBoundingClientRect();
+    return { inside: b.left >= r.left && b.right <= r.right + 0.5 && b.bottom <= r.bottom + 0.5, height: b.height };
+  });
+  assert(failedFit.inside && failedFit.height >= 28, `failed badge fits: ${JSON.stringify(failedFit)}`);
+  assert(await noSideScroll(page));
+  results.phoneDeliveryFit = failedFit;
+  await page.screenshot({ path: join(artifacts, "phone-saved-and-failed-list.png") });
+  await badge(page, "Pick a layout").click();
+  results.phoneDelivery = await waitForFocus(page, "delivery:batch-7");
+  assert(await noSideScroll(page));
+  await page.screenshot({ path: join(artifacts, "phone-delivery-failed-revealed.png") });
+  assert.deepEqual(calls.filter(({ cmd }) => /^question_(retry|cancel|answer)/.test(cmd)), []);
 
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, artifacts, results }));

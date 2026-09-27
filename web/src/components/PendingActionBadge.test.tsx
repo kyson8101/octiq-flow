@@ -118,6 +118,19 @@ describe("pending action badge", () => {
     expect(html).toContain(">Permission needed</span>");
   });
 
+  it("drops Answer needed once the answers are saved, and says so when delivery fails", () => {
+    const saved = [{ id: "q1", chatKey: "chat:quiet", question: "One?", batch: "b", batchSize: 2, answer: "Yes", status: "saved" as const },
+      { id: "q2", chatKey: "chat:quiet", question: "Two?", batch: "b", batchSize: 2, answer: "No", status: "saved" as const }];
+    const quiet = (questions: object[]) => row(sidebar(view({ questions: { quiet: questions as never } })), "quiet");
+    expect(quiet(saved)).not.toContain("pending-action-badge");
+    expect(quiet(saved)).not.toContain("has-pending");
+    const failed = saved.map((q) => ({ ...q, status: "failed", error: "Could not continue the agent", retryable: true }));
+    expect(quiet(failed)).toContain(">Delivery failed</span>");
+    expect(quiet(failed)).toContain('data-kind="delivery"');
+    expect(quiet(failed)).not.toContain("Answer needed");
+    expect(quiet([{ ...saved[0], status: "pending", answer: undefined }, saved[1]])).toContain(">Answer needed</span>");
+  });
+
   it("renders nothing with nothing pending", () => {
     expect(renderToStaticMarkup(<PendingActionBadge actions={[]} subject="x" />)).toBe("");
   });
@@ -134,6 +147,18 @@ describe("cards carry the identity a badge looks for", () => {
     expect(html).toContain('data-pending-keys="permission:p1"');
     expect(html).toContain('data-pending-keys="safety:s1"');
     expect(html).toContain('data-pending-keys="question:b1 question:q3"');
+  });
+
+  it("keys a question card by what it still needs: nothing once saved, the delivery once that fails", () => {
+    const card = (questions: object[]) => renderToStaticMarkup(<ChatRequests asks={[]} safetyBlocks={[]}
+      questions={questions as never} {...callbacks} />);
+    const saved = { id: "q1", batch: "b1", question: "One?", answer: "Yes", status: "saved" };
+    // The saved card is still drawn (its Cancel is still there) but is no badge's target.
+    const quiet = card([saved, { ...saved, id: "q2" }]);
+    expect(quiet).toContain("Answers saved · waiting for agent");
+    expect(quiet).not.toContain("data-pending-keys");
+    expect(card([{ ...saved, status: "failed", error: "gone", retryable: true }])).toContain('data-pending-keys="delivery:b1"');
+    expect(card([saved, { id: "q3", question: "Three?", status: "pending" }])).toContain('data-pending-keys="question:q3"');
   });
 
   it("labels a waiting plan by its revision", () => {

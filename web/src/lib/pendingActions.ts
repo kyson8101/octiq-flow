@@ -8,7 +8,12 @@
 //   (`safety_block_pending`), keyed by its id — the ledger's `nativeDecisions`
 //   are the same cards seen from a run, so they are never counted twice;
 // - an unanswered question (`question_pending`), one per card: a batch asked
-//   in one call is one card, and stays until its last question is answered;
+//   in one call is one card, and stays until its last question is answered.
+//   The host keeps an answered call listed until its answers reach the agent:
+//   `saved` is that wait, and asks nothing of the person. `failed` (delivery
+//   failed or could not be confirmed) is never re-sent on its own — only the
+//   card's Retry or Cancel closes it — so it is an action, but a different
+//   one: its answers are in, and it is never called unanswered;
 // - an open decision gate, keyed by gate id;
 // - a plan waiting for approval, keyed by run AND revision, so a plan the lead
 //   changes after approval comes back as a new action rather than the old one.
@@ -20,8 +25,9 @@
 // its chat was ever opened, and costs no request of its own.
 import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
 import { planTasks } from "./planReview";
+import type { Question } from "../components/UserQuestion";
 
-export type PendingActionKind = "permission" | "safety" | "question" | "gate" | "plan";
+export type PendingActionKind = "permission" | "safety" | "question" | "delivery" | "gate" | "plan";
 
 export type PendingAction = {
   /** The host's own identity for it, prefixed by kind: stable across reloads
@@ -39,8 +45,24 @@ export type PendingAction = {
   taskId?: string;
 };
 
-type Request = { id?: string; batch?: string | null };
+type Request = { id?: string; batch?: string | null; status?: Question["status"] };
 type Requests = Readonly<Record<string, readonly Request[] | undefined>>;
+
+/** What one question card still needs, per `batch || id`: `question` while any
+ *  of its questions is unanswered (a status-less one comes from a server older
+ *  than the durable store, which only ever lists unanswered questions), else
+ *  `delivery` when its delivery failed, else nothing — saved and on its way.
+ *  Shared with the card itself, so the keys it carries are the badge's. */
+export function questionActions(questions: readonly Request[]): Map<string, "question" | "delivery"> {
+  const needs = new Map<string, "question" | "delivery">();
+  for (const item of questions) {
+    if (!item?.id) continue;
+    const identity = item.batch || item.id;
+    if (item.status === undefined || item.status === "pending") needs.set(identity, "question");
+    else if (item.status === "failed" && !needs.has(identity)) needs.set(identity, "delivery");
+  }
+  return needs;
+}
 
 export type PendingActionInput = {
   orchestration: OrchestrationSnapshot;
@@ -51,7 +73,7 @@ export type PendingActionInput = {
 };
 
 const LIVE_RUNS = new Set(["planning", "running", "waiting"]);
-const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, question: 2, gate: 3, plan: 4 };
+const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, question: 2, delivery: 3, gate: 4, plan: 5 };
 
 const chatId = (chatKey: string | undefined) => chatKey?.startsWith("chat:") ? chatKey.slice(5) || null : null;
 
@@ -71,30 +93,31 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
     }
   }
 
-  const requests = (kind: "permission" | "safety" | "question", lists: Requests | undefined) => {
+  const request = (kind: PendingActionKind, identity: string, conversationId: string) => {
+    const row = rowOf(conversationId);
+    const task = taskOf.get(conversationId);
+    add({
+      key: `${kind}:${identity}`, kind, rowId: row,
+      // Worker cards are drawn in the main chat, where they are answered.
+      openChatId: task ? row : conversationId, surface: "chat",
+      runId: task?.runId, taskId: task?.taskId,
+    });
+  };
+  const requests = (kind: "permission" | "safety", lists: Requests | undefined) => {
     for (const [conversationId, list] of Object.entries(lists ?? {})) {
-      for (const item of list ?? []) {
-        if (!item?.id) continue;
-        const row = rowOf(conversationId);
-        const task = taskOf.get(conversationId);
-        // The main chat draws its workers' permission and safety cards, but
-        // never their questions (a worker asks through a gate), so a worker's
-        // question has no card a badge could lead to.
-        if (kind === "question" && row !== conversationId) continue;
-        // One card holds a whole batch, so the batch is the action.
-        const identity = kind === "question" ? item.batch || item.id : item.id;
-        add({
-          key: `${kind}:${identity}`, kind, rowId: row,
-          // Worker cards are drawn in the main chat, where they are answered.
-          openChatId: task ? row : conversationId, surface: "chat",
-          runId: task?.runId, taskId: task?.taskId,
-        });
-      }
+      for (const item of list ?? []) if (item?.id) request(kind, item.id, conversationId);
     }
   };
   requests("permission", input.asks);
   requests("safety", input.safetyBlocks);
-  requests("question", input.questions);
+  for (const [conversationId, list] of Object.entries(input.questions ?? {})) {
+    // The main chat draws its workers' permission and safety cards, but
+    // never their questions (a worker asks through a gate), so a worker's
+    // question has no card a badge could lead to.
+    if (rowOf(conversationId) !== conversationId) continue;
+    // One card holds a whole batch, so the batch is the action.
+    for (const [identity, kind] of questionActions(list ?? [])) request(kind, identity, conversationId);
+  }
 
   const runs = new Map(orchestration.runs.map((run) => [run.id, run]));
   for (const gate of orchestration.gates) {
@@ -145,6 +168,7 @@ const LABEL: Record<PendingActionKind, string> = {
   permission: "Permission needed",
   safety: "Approval needed",
   question: "Answer needed",
+  delivery: "Delivery failed",
   gate: "Decision needed",
   plan: "Plan approval",
 };
@@ -153,6 +177,7 @@ const NOUN: Record<PendingActionKind, [string, string]> = {
   permission: ["permission request", "permission requests"],
   safety: ["blocked action to review", "blocked actions to review"],
   question: ["question to answer", "questions to answer"],
+  delivery: ["failed answer delivery", "failed answer deliveries"],
   gate: ["decision", "decisions"],
   plan: ["plan to approve", "plans to approve"],
 };

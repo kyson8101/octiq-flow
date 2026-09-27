@@ -1,6 +1,7 @@
 import { PermissionAsk, type Ask } from "./PermissionAsk";
 import { SafetyBlock, type SafetyBlockNotice } from "./SafetyBlock";
 import { UserQuestion, type Question } from "./UserQuestion";
+import { questionActions } from "../lib/pendingActions";
 import "./PendingActionBadge.css";
 
 /** Keep each request mounted under its own identity while new requests arrive.
@@ -18,8 +19,10 @@ export function ChatRequests({
   onQuestionsAnswered: (ids: string[]) => void;
   onContinue: (message: string) => Promise<void>;
 }) {
-  // One card answers every batch of this chat's questions.
-  const questionKeys = [...new Set(questions.map((q) => `question:${q.batch || q.id}`))].join(" ");
+  // One card answers every batch of this chat's questions, and is the target
+  // only of what they still need: a saved batch waiting for delivery, still
+  // drawn with its Cancel, is no badge's.
+  const questionKeys = [...questionActions(questions)].map(([identity, kind]) => `${kind}:${identity}`).join(" ") || undefined;
   return (
     <>
       {asks.map((ask) => (
