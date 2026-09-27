@@ -1511,11 +1511,14 @@ const ORCHESTRATION_REPORT_CONFIRM = {
 const ORCHESTRATION_RELAY_SEND = {
   name: "orchestration_relay_send",
   description:
-    "Record a notice from one run in another run, when this chat coordinates BOTH (for " +
-    "example two runs editing the same files). It lands in the receiving run's messages " +
-    "with its origin run and, optionally, the worker attempt it came from. It is data for " +
-    "the coordinator only: it reaches no worker, approves and starts nothing. The same " +
-    "relay sent twice is recorded once. Runs with different coordinators cannot relay.",
+    "Record a notice from one run in another run (for example two runs editing the same " +
+    "files). It lands in the receiving run's messages with its origin run and, optionally, " +
+    "the worker attempt it came from. It is data for the coordinator only: it reaches no " +
+    "worker, approves and starts nothing. The same relay sent twice is recorded once. When " +
+    "this chat coordinates BOTH runs it can always relay. A run of another coordinator " +
+    "receives a note only over a one-way bridge the person opened from your run to it " +
+    "(at most 4000 characters, delivered to that coordinator as quoted data); you cannot " +
+    "open one yourself, so ask the person.",
   inputSchema: {
     type: "object",
     properties: {

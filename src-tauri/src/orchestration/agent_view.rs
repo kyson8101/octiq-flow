@@ -97,6 +97,14 @@ pub fn capacity(sandboxes: &crate::sandbox::Snapshot) -> Value {
     json!(sandboxes.capacity)
 }
 
+/// A relay, its audit entry and a bridge's log entries are for the
+/// coordinators they are addressed between. Any agent can name any run, so
+/// the filter is by addressee, not by run: a worker never reads them.
+fn may_read(message: &OrchestrationMessage, actor: &str) -> bool {
+    let coordinators_only = message.relay.is_some() || message.kind.starts_with("bridge_");
+    !coordinators_only || message.from_chat_key == actor || message.to_chat_key == actor
+}
+
 pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, String> {
     let Snapshot {
         runs,
@@ -108,6 +116,7 @@ pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, Str
         reports,
         native_decisions,
         services,
+        bridges,
     } = snapshot;
     let limit = read.message_limit.clamp(1, MAX_MESSAGES);
 
@@ -145,7 +154,18 @@ pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, Str
         .collect();
     let messages: Vec<_> = messages
         .into_iter()
-        .filter(|message| scope.contains(&message.run_id))
+        .filter(|message| scope.contains(&message.run_id) && may_read(message, read.actor))
+        .collect();
+    // Only a bridge's own two coordinators learn of it.
+    let bridges: Vec<_> = bridges
+        .into_iter()
+        .filter(|b| {
+            b.from_coordinator_chat_key == read.actor || b.to_coordinator_chat_key == read.actor
+        })
+        .collect();
+    let notifications: Vec<_> = notifications
+        .into_iter()
+        .filter(|n| n.kind != "relay" || n.target_chat_key == read.actor)
         .collect();
 
     let mut omitted = Map::new();
@@ -220,6 +240,9 @@ pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, Str
                 .collect::<BTreeMap<_, _>>(),
         ),
     );
+    if !bridges.is_empty() {
+        out.insert("bridges".into(), to_json(&bridges));
+    }
     out.insert("runs".into(), to_json(&runs));
     out.insert(
         "view".into(),
@@ -731,6 +754,7 @@ mod tests {
             reports: BTreeMap::new(),
             native_decisions: vec![],
             services: vec![],
+            bridges: vec![],
         }
     }
 

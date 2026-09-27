@@ -112,6 +112,11 @@ fn valid(data: &Stored, n: &Notification) -> bool {
     if run.status == RunStatus::Stopped {
         return false;
     }
+    if let Some(id) = n.source.strip_prefix("relay:") {
+        if !bridge::delivers(data, id, &n.target_chat_key) {
+            return false;
+        }
+    }
     if let Some(id) = n.source.strip_prefix("gate:") {
         if !data
             .gates

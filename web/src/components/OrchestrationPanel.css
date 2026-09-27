@@ -414,6 +414,25 @@
   line-height: 1.45;
 }
 
+/* A run's bridges to other coordinators' runs, in its options. */
+.orch-bridges { display: grid; gap: 7px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.orch-bridges h4 { margin: 0; color: var(--fg-2); font-size: 11.5px; font-weight: 600; }
+.orch-bridges > ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.orch-bridge { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.orch-bridge p { flex: 1 1 auto; min-width: 0; margin: 0; color: var(--fg-1); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.orch-bridge-count { color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.orch-bridge-open { display: grid; gap: 7px; }
+.orch-bridge-open label { color: var(--fg-1); font-size: 11.5px; }
+.orch-bridge-open select {
+  min-height: 32px; max-width: 100%; padding: 0 8px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-1); color: var(--fg-0); font: inherit; font-size: 12px;
+}
+.orch-bridge-scope { display: grid; gap: 4px; margin: 0; padding: 8px 10px 8px 24px; border-radius: var(--r-sm); background: var(--bg-2); color: var(--fg-1); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.orch-bridge-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.orch-quiet.is-primary { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--fg-0); }
+.orch-quiet:disabled { opacity: 0.5; cursor: default; }
+
 .orch-stop-confirm button.is-danger { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); color: var(--danger); }
 
 /* The run's state in one line: done of total, its state, what is still owed

@@ -151,7 +151,12 @@ impl OrchestrationStore {
                 run.archived_at = archived.then_some(now);
                 run.updated_at = now;
             }
-            Ok(run.clone())
+            let run = run.clone();
+            // Restoring the run does not reopen them: the person does that.
+            if archived {
+                bridge::close_touching(data, run_id, "One of its runs was archived.");
+            }
+            Ok(run)
         })
         .inspect(|run| announce(&run.id, "run_archive_changed"))
     }

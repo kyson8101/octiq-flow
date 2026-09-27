@@ -31,6 +31,7 @@ import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
 import { BranchIcon, ClockIcon, TaskStatusIcon } from "./TaskMeter";
 import { OpenBesideButton } from "./OpenBesideButton";
 import { ProposedReportNote } from "./ProposedReportNote";
+import { RunBridges } from "./RunBridges";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 
 import {
@@ -293,6 +294,19 @@ export function OrchestrationPanel({
     } finally { setBusy(false); }
   };
 
+  // The person's own decision, so no coordinator is named as its actor.
+  const bridgeAction = async (run: OrchestrationRun, command: string, args: Record<string, unknown>) => {
+    if (readOnly) return;
+    setBusy(true);
+    setRunError(null);
+    try {
+      await bridge.invoke(command, args);
+      await read();
+    } catch (problem) {
+      setRunError({ runId: run.id, text: messageOf(problem) });
+    } finally { setBusy(false); }
+  };
+
   const stop = async (run: OrchestrationRun, archive: boolean) => {
     if (readOnly) return;
     setBusy(true);
@@ -412,6 +426,7 @@ export function OrchestrationPanel({
       onResolve={(gate, answer) => void resolveGate(run, gate, answer)}
       onRetry={(task, attempt) => void retryTask(run, task, attempt)}
       onWorkspaceAction={(command, args) => void workspaceAction(run, command, args)}
+      onBridge={(command, args) => void bridgeAction(run, command, args)}
       onOpenChat={onOpenChat}
       currentChatKey={currentChatKey}
       onOpenBeside={onOpenBeside ? (chatKey) => {
@@ -689,6 +704,7 @@ function RunDetail({
   onResolve,
   onRetry,
   onWorkspaceAction,
+  onBridge,
   onOpenChat,
   currentChatKey,
   onOpenBeside,
@@ -728,6 +744,7 @@ function RunDetail({
   onResolve: (gate: OrchestrationGate, answer: string) => void;
   onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
+  onBridge: (command: string, args: Record<string, unknown>) => void;
   onOpenChat: (chatKey: string) => void;
   currentChatKey: string | null;
   onOpenBeside?: (chatKey: string) => void;
@@ -942,6 +959,7 @@ function RunDetail({
             )}
             {!readOnly && archived && <button className="orch-quiet" type="button" disabled={busy} onClick={() => onArchive(false)}>Restore run</button>}
           </div>
+          <RunBridges run={run} snapshot={snapshot} busy={busy} readOnly={readOnly} onBridge={onBridge} />
           {runError && <p className="orch-run-error" role="alert">{runError}</p>}
         </div>
       </div>
@@ -975,7 +993,7 @@ function RunDetail({
         {notifications.length === 0 ? <p className="orch-task-none">No notifications for this run.</p> : <>
           <p>{awaitingReceipt} awaiting receipt. Delivery waits while the main agent is busy or user messages are queued. Receipt confirms delivery, not completion of the requested action.</p>
           {[...notifications].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, NOTIFICATIONS_SHOWN).map((item) => <article key={item.id}>
-            <strong>{item.kind === "progress" ? "Progress update" : item.kind === "decision" ? "Decision needed" : item.kind === "report" ? "Worker report" : item.kind === "resolution" ? "Decision reply" : item.kind === "capacity" ? "Capacity error" : item.kind === "disconnected" ? "Worker disconnected" : item.kind === "stalled" ? "Worker stalled" : item.kind === "provider" ? "Provider error" : "Agent message"}</strong>
+            <strong>{item.kind === "progress" ? "Progress update" : item.kind === "decision" ? "Decision needed" : item.kind === "report" ? "Worker report" : item.kind === "resolution" ? "Decision reply" : item.kind === "capacity" ? "Capacity error" : item.kind === "disconnected" ? "Worker disconnected" : item.kind === "stalled" ? "Worker stalled" : item.kind === "provider" ? "Provider error" : item.kind === "relay" ? "Note from another run" : "Agent message"}</strong>
             <span>{({ pending: "Queued", delivering: "Awaiting receipt", acknowledged: "Received by agent", cancelled: "No longer needed" })[item.state]}</span>
             {["capacity", "provider", "disconnected", "stalled"].includes(item.kind) && <p>{item.body}</p>}
             {item.coalesced > 0 && <small>{item.coalesced + 1} updates combined</small>}

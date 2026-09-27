@@ -1480,6 +1480,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "body")?,
             arg(&args, "originAttemptId")?,
         )),
+        // Browser-only: the person opens or closes a one-way bridge between
+        // two runs of different coordinators. Neither is in the agent hook's
+        // whitelist, and neither reads an actor: only the person decides.
+        "orchestration_bridge_open" => to_value(svc.orchestrations.open_bridge(
+            &arg::<String>(&args, "fromRunId")?,
+            &arg::<String>(&args, "toRunId")?,
+            &arg::<String>(&args, "fromCoordinator")?,
+            &arg::<String>(&args, "toCoordinator")?,
+        )),
+        "orchestration_bridge_close" => to_value(
+            svc.orchestrations
+                .close_bridge(&arg::<String>(&args, "bridgeId")?),
+        ),
         // Browser-only: the person picks Auto or Manual command approval for
         // a Claude task on its plan card, before approving the plan. Not in
         // the agent hook's whitelist.

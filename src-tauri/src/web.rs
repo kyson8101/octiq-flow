@@ -1037,7 +1037,8 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     // The run's coordinator settling a read-only worker from the words the
     // host held for it. Coordinator provenance is this capability's chat.
     ("report_confirm", "orchestration_report_confirm"),
-    // A data-only notice to another run of the same coordinator.
+    // A data-only notice to another run: same coordinator, or over a bridge
+    // the person opened for exactly this pair and direction.
     ("relay_send", "orchestration_relay_send"),
     ("service_register", "orchestration_service_register"),
     ("workspace_refresh", "orchestration_workspace_refresh"),
@@ -1912,6 +1913,9 @@ mod tests {
         "orchestration_plan_approve",
         "orchestration_run_archive",
         "orchestration_master_start",
+        "orchestration_bridge_open",
+        "orchestration_bridge_close",
+        "orchestration_task_access",
         "team_head_set",
     ];
 
@@ -1946,6 +1950,8 @@ mod tests {
         for command in [
             "orchestration_task_accept",
             "orchestration_plan_approve",
+            "orchestration_bridge_open",
+            "orchestration_bridge_close",
             "chat_send",
         ] {
             assert!(socket_refusal(command).is_none(), "{command}");
@@ -2200,5 +2206,377 @@ mod tests {
             chats.test_end(key);
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn confirm(chat_key: &str, session_key: Option<&str>, args: Value) -> Value {
+        let mut body = json!({ "chatKey": chat_key, "action": "report_confirm", "args": args });
+        if let Some(session_key) = session_key {
+            body["sessionKey"] = json!(session_key);
+        }
+        body
+    }
+
+    fn relay(
+        chat_key: &str,
+        session_key: Option<&str>,
+        from: &str,
+        to: &str,
+        words: &str,
+    ) -> Value {
+        let mut body = json!({ "chatKey": chat_key, "action": "relay_send", "args": {
+            "fromRunId": from, "toRunId": to, "subject": "Shared file", "body": words } });
+        if let Some(session_key) = session_key {
+            body["sessionKey"] = json!(session_key);
+        }
+        body
+    }
+
+    fn error(answer: &Value) -> &str {
+        answer["error"].as_str().unwrap_or_default()
+    }
+
+    /// A read-only worker's proposed report is settled only by its run's
+    /// coordinator, proven by that coordinator's own live capability, naming
+    /// the current attempt and proposal, with its own verdict, while the
+    /// worker is not in a turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_the_coordinators_live_capability_confirms_a_proposed_report() {
+        use crate::orchestration::OrchestrationStore;
+        let store = Arc::new(OrchestrationStore::default());
+        let run = crate::orchestration::tests::run(&store);
+        store
+            .create_run(
+                "chat:other".into(),
+                "Another run".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                Some(1),
+            )
+            .unwrap();
+        let (review, after, attempt, proposal) = crate::orchestration::tests::proposed_review(
+            &store,
+            &run,
+            "README reviewed. No blocking problems.",
+        );
+        let mut chats = crate::agent_chat::ChatManager::default();
+        chats.orchestrations = store.clone();
+        let chats = Arc::new(chats);
+        let worker = attempt.worker_chat_key.clone();
+        let worker_cap = chats.test_launch(&worker);
+        let other_cap = chats.test_launch("chat:other");
+        let stale_cap = chats.test_launch("chat:master");
+        let (_ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let good = json!({ "attemptId": attempt.id, "proposalId": proposal.id,
+                           "outcome": "completed", "verdict": "pass" });
+        let unsettled = |store: &OrchestrationStore| {
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            let task = snapshot.tasks.iter().find(|t| t.id == review.id).unwrap();
+            assert_eq!(task.status, crate::orchestration::TaskStatus::Running);
+        };
+
+        // The person's token alone, naming the coordinator: no capability.
+        let (status, _) = post_hook(
+            &base,
+            "orchestration",
+            Some("hook-token"),
+            None,
+            confirm("chat:master", None, good.clone()),
+        )
+        .await;
+        assert_eq!(
+            status, 401,
+            "token plus a body chatKey is not the coordinator"
+        );
+        // The worker naming its coordinator, with its own capability.
+        let (status, _) = hook(
+            &base,
+            Some(&worker_cap),
+            confirm("chat:master", None, good.clone()),
+        )
+        .await;
+        assert_eq!(status, 401);
+        let (status, _) = hook(
+            &base,
+            Some(&worker_cap),
+            confirm("chat:master", Some(&worker), good.clone()),
+        )
+        .await;
+        assert_eq!(status, 403, "a worker claiming its coordinator");
+        // The worker as itself, and another run's coordinator: proven, but
+        // not this run's coordinator.
+        let (status, answer) = hook(
+            &base,
+            Some(&worker_cap),
+            confirm(&worker, None, good.clone()),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(
+            error(&answer).contains("Only this run's coordinator"),
+            "{answer}"
+        );
+        let (status, answer) = hook(
+            &base,
+            Some(&other_cap),
+            confirm("chat:other", None, good.clone()),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(
+            error(&answer).contains("Only this run's coordinator"),
+            "{answer}"
+        );
+        unsettled(&store);
+
+        // The coordinator's launch ends and it starts again: the old
+        // capability is dead.
+        chats.test_end("chat:master");
+        let master_cap = chats.test_launch("chat:master");
+        let (status, _) = hook(
+            &base,
+            Some(&stale_cap),
+            confirm("chat:master", None, good.clone()),
+        )
+        .await;
+        assert_eq!(status, 401, "a replaced launch's capability");
+
+        // The coordinator, but not the exact current attempt and proposal, or
+        // with no verdict for a review.
+        for (args, expect) in [
+            (
+                json!({ "attemptId": "attempt_nope", "proposalId": proposal.id, "outcome": "completed", "verdict": "pass" }),
+                "does not exist",
+            ),
+            (
+                json!({ "attemptId": attempt.id, "proposalId": "proposal_forged", "outcome": "completed", "verdict": "pass" }),
+                "not this attempt's current proposed report",
+            ),
+            (
+                json!({ "attemptId": attempt.id, "proposalId": proposal.id, "outcome": "completed" }),
+                "verdict",
+            ),
+        ] {
+            let (status, answer) =
+                hook(&base, Some(&master_cap), confirm("chat:master", None, args)).await;
+            assert_eq!(status, 400, "{answer}");
+            assert!(error(&answer).contains(expect), "{expect}: {answer}");
+        }
+        // A new worker turn is in flight: nothing is decided under it.
+        chats.test_busy(&worker, true);
+        let (status, answer) = hook(
+            &base,
+            Some(&master_cap),
+            confirm("chat:master", None, good.clone()),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(error(&answer).contains("in a turn again"), "{answer}");
+        chats.test_busy(&worker, false);
+        unsettled(&store);
+
+        // The coordinator's own live capability, the exact proposal, its own
+        // verdict: settled once.
+        let (status, answer) = hook(
+            &base,
+            Some(&master_cap),
+            confirm("chat:master", None, good.clone()),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let settled = snapshot.tasks.iter().find(|t| t.id == review.id).unwrap();
+        assert_eq!(settled.verdict, Some(crate::orchestration::Verdict::Pass));
+        let held = snapshot
+            .attempts
+            .iter()
+            .find(|a| a.id == attempt.id)
+            .unwrap();
+        assert_eq!(
+            held.proposed_report
+                .as_ref()
+                .unwrap()
+                .confirmed_by
+                .as_deref(),
+            Some("chat:master")
+        );
+        assert_eq!(
+            snapshot
+                .tasks
+                .iter()
+                .find(|t| t.id == after.id)
+                .unwrap()
+                .status,
+            crate::orchestration::TaskStatus::Ready
+        );
+        let (status, _) = hook(&base, Some(&master_cap), confirm("chat:master", None, good)).await;
+        assert_eq!(status, 400, "a repeat changes nothing");
+
+        for key in [worker.as_str(), "chat:master", "chat:other"] {
+            chats.test_end(key);
+        }
+    }
+
+    /// Between two coordinators a note goes only over the person's bridge,
+    /// only from the source coordinator's own live capability, and stops the
+    /// moment the person closes it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relay_between_coordinators_needs_the_persons_bridge_and_the_senders_capability() {
+        use crate::orchestration::OrchestrationStore;
+        let store = Arc::new(OrchestrationStore::default());
+        let source = crate::orchestration::tests::run(&store);
+        let target = store
+            .create_run(
+                "chat:other".into(),
+                "The other team's run".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                Some(1),
+            )
+            .unwrap();
+        let mut chats = crate::agent_chat::ChatManager::default();
+        chats.orchestrations = store.clone();
+        let chats = Arc::new(chats);
+        let master_cap = chats.test_launch("chat:master");
+        let other_cap = chats.test_launch("chat:other");
+        let (ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let notes = |store: &OrchestrationStore| {
+            store
+                .snapshot(None)
+                .unwrap()
+                .messages
+                .into_iter()
+                .filter(|m| m.kind == "relay")
+                .count()
+        };
+
+        let (status, answer) = hook(
+            &base,
+            Some(&master_cap),
+            relay(
+                "chat:master",
+                None,
+                &source.id,
+                &target.id,
+                "Both edit README.md.",
+            ),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(error(&answer).contains("No bridge is open"), "{answer}");
+
+        // The agent cannot open its own bridge: the hook has no such action.
+        let (status, _) = hook(
+            &base,
+            Some(&master_cap),
+            json!({ "chatKey": "chat:master", "action": "bridge_open", "args": {
+                "fromRunId": source.id, "toRunId": target.id,
+                "fromCoordinator": "chat:master", "toCoordinator": "chat:other" } }),
+        )
+        .await;
+        assert_eq!(status, 400);
+        // The person, through the command the browser's socket runs.
+        let bridge = run_command(
+            &ctx,
+            "orchestration_bridge_open".into(),
+            json!({ "fromRunId": source.id, "toRunId": target.id,
+                    "fromCoordinator": "chat:master", "toCoordinator": "chat:other" }),
+        )
+        .await
+        .unwrap();
+
+        // Not the token, not the target coordinator claiming the source, not
+        // the target back the other way.
+        let (status, _) = post_hook(
+            &base,
+            "orchestration",
+            Some("hook-token"),
+            None,
+            relay("chat:master", None, &source.id, &target.id, "Forged"),
+        )
+        .await;
+        assert_eq!(status, 401);
+        let (status, _) = hook(
+            &base,
+            Some(&other_cap),
+            relay(
+                "chat:master",
+                Some("chat:other"),
+                &source.id,
+                &target.id,
+                "Forged",
+            ),
+        )
+        .await;
+        assert_eq!(status, 403);
+        let (status, answer) = hook(
+            &base,
+            Some(&other_cap),
+            relay("chat:other", None, &target.id, &source.id, "Reply"),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(error(&answer).contains("No bridge is open"), "{answer}");
+        assert_eq!(notes(&store), 0);
+
+        let (status, answer) = hook(
+            &base,
+            Some(&master_cap),
+            relay(
+                "chat:master",
+                None,
+                &source.id,
+                &target.id,
+                "Both edit README.md.",
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["result"]["fromChatKey"], json!("chat:master"));
+        assert_eq!(answer["result"]["toChatKey"], json!("chat:other"));
+        assert_eq!(answer["result"]["relay"]["bridgeId"], bridge["id"]);
+        assert_eq!(notes(&store), 1);
+
+        // A stale capability, then the person closing the bridge.
+        chats.test_end("chat:master");
+        let (status, _) = hook(
+            &base,
+            Some(&master_cap),
+            relay(
+                "chat:master",
+                None,
+                &source.id,
+                &target.id,
+                "After the relaunch",
+            ),
+        )
+        .await;
+        assert_eq!(status, 401);
+        let master_cap = chats.test_launch("chat:master");
+        run_command(
+            &ctx,
+            "orchestration_bridge_close".into(),
+            json!({ "bridgeId": bridge["id"] }),
+        )
+        .await
+        .unwrap();
+        let (status, answer) = hook(
+            &base,
+            Some(&master_cap),
+            relay(
+                "chat:master",
+                None,
+                &source.id,
+                &target.id,
+                "After the close",
+            ),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(error(&answer).contains("No bridge is open"), "{answer}");
+        assert_eq!(notes(&store), 1);
+
+        for key in ["chat:master", "chat:other"] {
+            chats.test_end(key);
+        }
     }
 }

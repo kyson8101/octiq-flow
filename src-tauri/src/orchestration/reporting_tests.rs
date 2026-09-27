@@ -1,5 +1,6 @@
 //! A read-only worker's proposed report (feedback e15fabde), relaying between
-//! runs of one coordinator (a495b2f2), and the person's Auto/Manual choice on
+//! runs of one coordinator (a495b2f2; between different coordinators see
+//! `bridge.rs`), and the person's Auto/Manual choice on
 //! a plan card (d59f830a).
 use super::tests::{self, run, task};
 use super::*;
@@ -351,18 +352,19 @@ fn a_relay_needs_the_same_coordinator_on_both_runs_and_is_recorded_once() {
         )
     };
 
-    // Another coordinator's run, in either direction, and a worker naming
-    // its own coordinator's runs: all refused.
+    // Another coordinator's run, in either direction, without the person's
+    // bridge (`bridge.rs`), and a worker naming its own coordinator's runs:
+    // all refused.
     assert!(relay("chat:master", &levels.id, &foreign.id, None)
         .unwrap_err()
-        .contains("BOTH"));
+        .contains("No bridge is open"));
     assert!(relay("chat:other", &foreign.id, &levels.id, None)
         .unwrap_err()
-        .contains("BOTH"));
+        .contains("No bridge is open"));
     assert!(
         relay(&worker.worker_chat_key, &levels.id, &feedback.id, None)
             .unwrap_err()
-            .contains("BOTH")
+            .contains("Only the coordinator of both runs")
     );
     assert!(relay("chat:master", &levels.id, &levels.id, None)
         .unwrap_err()

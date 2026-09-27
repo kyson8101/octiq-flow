@@ -4295,6 +4295,12 @@ impl ChatManager {
         secret
     }
 
+    /// Put a stand-in from `test_launch` in a turn, or end its turn.
+    pub(crate) fn test_busy(&self, key: &str, busy: bool) {
+        let session = self.sessions.lock().unwrap().get(key).cloned().unwrap();
+        session.lock().unwrap().busy = busy;
+    }
+
     /// End a stand-in from `test_launch`, as the chat ending would.
     pub(crate) fn test_end(&self, key: &str) {
         end_process(self, key).expect("end the stand-in");

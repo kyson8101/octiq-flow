@@ -246,7 +246,8 @@ export type OrchestrationMessage = {
   subject: string;
   body: string;
   createdAt: number;
-  /** A notice relayed between two runs of the same coordinator. */
+  /** A notice relayed from another run: of the same coordinator, or over a
+   *  bridge the person opened. */
   relay?: RelayOrigin | null;
 };
 
@@ -255,8 +256,24 @@ export type RelayOrigin = {
   originAttemptId?: string | null;
   originTaskId?: string | null;
   originChatKey?: string | null;
+  /** The person's bridge it went over, between different coordinators. */
+  bridgeId?: string | null;
   digest: string;
   pairedMessageId?: string | null;
+};
+
+/** A one-way bridge the person opened from one run's coordinator to
+ *  another's (`orchestration/bridge.rs`). */
+export type RunBridge = {
+  id: string;
+  fromRunId: string;
+  toRunId: string;
+  fromCoordinatorChatKey: string;
+  toCoordinatorChatKey: string;
+  openedAt: number;
+  closedAt?: number | null;
+  closedReason?: string | null;
+  sends: { digest: string; messageId: string; sentAt: number }[];
 };
 
 export type OrchestrationNotification = {
@@ -277,6 +294,8 @@ export type OrchestrationSnapshot = {
   gates: OrchestrationGate[];
   messages: OrchestrationMessage[];
   notifications?: OrchestrationNotification[];
+  /** Absent from servers older than bridges. */
+  bridges?: RunBridge[];
 };
 
 export type NativeDecision = {
