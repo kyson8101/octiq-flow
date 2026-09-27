@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { Message } from "../lib/chat";
 import type { Conversation } from "../lib/store";
 import type { OrchestrationSnapshot } from "../lib/orchestration";
+import type { PendingAction } from "../lib/pendingActions";
+import { NO_PENDING_ACTIONS, PendingActionsContext, type PendingActionsView } from "./PendingActionBadge";
 import { Sidebar, type Project } from "./Sidebar";
 
 const projects: Project[] = [
@@ -27,14 +29,18 @@ const coordinatorLedger = (destinations: (string | null)[]): OrchestrationSnapsh
   attempts: [], gates: [], messages: [],
 });
 
-function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
-  return renderToStaticMarkup(<Sidebar
-    projects={projects} shelved={[]}
-    conversations={[]} currentConversation={null} running={new Set()} busy={new Set()}
-    onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}}
-    onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
-    {...over}
-  />);
+function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}, pendingView: PendingActionsView = NO_PENDING_ACTIONS) {
+  return renderToStaticMarkup(
+    <PendingActionsContext.Provider value={pendingView}>
+      <Sidebar
+        projects={projects} shelved={[]}
+        conversations={[]} currentConversation={null} running={new Set()} busy={new Set()}
+        onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}}
+        onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
+        {...over}
+      />
+    </PendingActionsContext.Provider>,
+  );
 }
 
 describe("task-oriented Sidebar", () => {
@@ -295,6 +301,53 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain('class="chat is-live is-busy"');
     expect(out).toContain('class="chat-snippet">Working…</span>');
     expect(out).toContain('aria-label="Task a, octiq-flow, working"');
+  });
+
+  it("runs the logo ring on the one main chat whose tasks are working, pinned or not", () => {
+    const ledger = (state: "executing" | "queued", taskStatus: "running" | "completed" = "running"): OrchestrationSnapshot => ({
+      runs: [{ id: "run", coordinatorChatKey: "chat:lead", objective: "Ship", workspaceId: "p1", rootPath: "/r", status: "running", maxConcurrent: 2, createdAt: 1, updatedAt: 1 }],
+      tasks: [{ id: "t", runId: "run", title: "Build", spec: "", dependsOn: [], status: taskStatus, activeAttemptId: "att", createdAt: 1, updatedAt: 1,
+        destination: { projectId: "p1", projectName: "octiq-flow", repository: "/work/p1" } }],
+      attempts: [{ id: "att", runId: "run", taskId: "t", number: 1, workerChatKey: "chat:orch-t", agent: "claude", access: "auto",
+        status: "running", execution: { state, retryCount: 0 }, cwd: "/w", branch: "b", isWorktree: true, filesModified: [], createdAt: 1, updatedAt: 1 }],
+      gates: [], messages: [],
+    });
+    const conversations = [chat("lead"), chat("neighbour"), { ...chat("pinned-lead"), pinned: true }];
+    // The row's own opening tag, up to its title.
+    const rowOf = (out: string, id: string) => {
+      const title = out.indexOf(`class="chat-title">Task ${id}</span>`);
+      return out.slice(Math.max(out.lastIndexOf('<div class="chat ', title), out.lastIndexOf('<div class="chat"', title)), title);
+    };
+
+    const working = html({ conversations, orchestration: ledger("executing") });
+    expect(rowOf(working, "lead")).toContain("is-tasks-running");
+    expect(working).toContain('aria-label="Task lead, octiq-flow, 1 task, 1 task running"');
+    // The logo stays the project's own under the ring.
+    const leadBadge = working.slice(working.indexOf('aria-label="Mark done: Task lead"'));
+    expect(leadBadge.slice(0, leadBadge.indexOf("chat-badge-ring"))).toContain('project-avatar-text">OF</span>');
+    // Same project, no runs of its own: still.
+    expect(rowOf(working, "neighbour")).not.toContain("is-tasks-running");
+    // The chat's own turn keeps its own marks; the task only adds the ring.
+    expect(rowOf(working, "lead")).not.toContain("is-busy");
+
+    for (const idle of [ledger("queued"), ledger("executing", "completed")]) {
+      expect(html({ conversations, orchestration: idle })).not.toContain("is-tasks-running");
+    }
+    // A worker parked on an action classified by the current pending-action
+    // system is waiting on you, not working.
+    const permission: PendingAction = {
+      key: "permission:p", kind: "permission", rowId: "lead", openChatId: "lead",
+      surface: "chat", runId: "run", taskId: "t",
+    };
+    expect(html({ conversations, orchestration: ledger("executing") }, {
+      ...NO_PENDING_ACTIONS,
+      forTask: (taskId) => taskId === "t" ? [permission] : [],
+    })).not.toContain("is-tasks-running");
+
+    const pinned = { ...ledger("executing"), runs: [{ ...ledger("executing").runs[0], coordinatorChatKey: "chat:pinned-lead" }] };
+    const out = html({ conversations, orchestration: pinned });
+    expect(out.indexOf("is-tasks-running")).toBeGreaterThan(out.indexOf('class="sidebar-section-heading">Pinned'));
+    expect(out.indexOf("is-tasks-running")).toBeLessThan(out.indexOf('class="sidebar-section-heading">Recent'));
   });
 
   it("keeps a streaming response visible while the task is working", () => {

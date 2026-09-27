@@ -600,9 +600,21 @@
 .orch-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: orch-pulse 1.4s ease-in-out infinite; }
 @keyframes orch-pulse { 50% { opacity: 0.25; } }
 
-/* Two lines, whatever the task. Line one is what it is and what became of
-   it; line two is what it is doing, how far it got, and where. */
-.orch-task { --task-color: var(--fg-3); border-top: 1px solid var(--border); }
+/* Line one is the title, alone and whole: it wraps rather than being cut,
+   because a title is what tells two tasks apart. Line two is what became of
+   it, what it is doing, how far it got and where, with the row's controls at
+   its end. The controls sit OVER the summary button's bottom corner (one grid
+   cell) so the whole row still opens the chat; the summary keeps an empty
+   column the controls' width so nothing runs under them.
+   --task-control: one control's side. --task-pad: the summary's padding. */
+.orch-task {
+  --task-color: var(--fg-3);
+  --task-control: 32px;
+  --task-pad: 9px;
+  --task-controls: var(--task-control);
+  border-top: 1px solid var(--border);
+}
+.orch-task-heading:has(> .orch-task-actions > .orch-task-beside) { --task-controls: calc(var(--task-control) * 2 + 6px); }
 .orch-task[data-status="running"] { --task-color: var(--link); }
 .orch-task[data-status="completed"] { --task-color: var(--ok); }
 .orch-task[data-status="blocked"] { --task-color: var(--warn); }
@@ -611,20 +623,20 @@
 /* The row is the surface: hover and the open-chat tint cover the summary AND
    its chevron, with room inside the edge, rather than hugging the text. */
 .orch-task-heading {
-  display: flex; align-items: center; gap: 6px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
   margin: 3px 0; padding: 0 6px 0 12px;
   border-radius: var(--r-md);
   transition: background 130ms ease-out;
 }
 .orch-task-summary {
-  flex: 1;
+  grid-area: 1 / 1 / 2 / 3;
   min-width: 0;
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) auto;
+  grid-template-columns: 26px minmax(0, 1fr) var(--task-controls);
   align-items: center;
   column-gap: 12px;
   row-gap: 4px;
-  padding: 9px 0;
+  padding: var(--task-pad) 0;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -642,16 +654,26 @@
 .orch-task.is-open .orch-task-title { color: var(--fg-0); }
 .orch-task-summary:disabled { opacity: 1; cursor: default; }
 .orch-task-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.orch-task-expand { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-3); cursor: pointer; transition: background 130ms ease-out, color 130ms ease-out; }
+/* Level with line two: 4px proud of it top and bottom, which the row gap
+   above and the summary's padding below both have room for. */
+.orch-task-actions {
+  grid-area: 1 / 2;
+  align-self: end;
+  position: relative;
+  display: flex; gap: 6px;
+  margin-bottom: calc(var(--task-pad) - 4px);
+}
+.orch-task-expand { display: grid; place-items: center; flex: 0 0 var(--task-control); width: var(--task-control); height: var(--task-control); padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-3); cursor: pointer; transition: background 130ms ease-out, color 130ms ease-out; }
 .orch-task-expand:hover { background: var(--bg-2); color: var(--fg-0); }
 .orch-task-expand:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 /* Open beside main: as quiet as the disclosure next to it. */
-.orch-task-heading .orch-task-beside { flex: 0 0 32px; width: 32px; height: 32px; color: var(--fg-3); }
+.orch-task-heading .orch-task-beside { flex: 0 0 var(--task-control); width: var(--task-control); height: var(--task-control); color: var(--fg-3); }
 .orch-task-heading .orch-task-beside:hover { color: var(--fg-0); }
 .orch-task-heading .orch-task-beside:focus-visible { outline-offset: -2px; }
 
 .orch-task-glyph {
   grid-row: 1 / span 2;
+  align-self: start;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -662,25 +684,37 @@
   background: color-mix(in srgb, var(--task-color) 12%, transparent);
 }
 
+/* Level with the glyph's middle on one line; its own line-height after that. */
 .orch-task-title {
-  grid-column: 2;
+  grid-column: 2 / span 2;
+  align-self: start;
   min-width: 0;
-  overflow: hidden;
   margin: 0;
+  padding-top: 4px;
   color: var(--fg-0);
   font-size: 13px;
   font-weight: 620;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
-.orch-task-state { grid-column: 3; color: var(--task-color); font-size: 10.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.orch-task-meta { grid-column: 2 / span 2; display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--fg-3); font-size: 10.5px; }
+/* At least a control tall, less the 4px the controls stand proud by. Wraps
+   whole items rather than squeezing them when a narrow row runs out. */
+.orch-task-meta {
+  grid-column: 2;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px;
+  min-width: 0;
+  min-height: calc(var(--task-control) - 8px);
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+.orch-task-state { color: var(--task-color); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .orch-task-track { width: 52px; height: 3px; flex: 0 0 auto; overflow: hidden; border-radius: 2px; background: var(--bg-2); }
 .orch-task-track > span { display: block; height: 100%; border-radius: 2px; background: var(--task-color); transition: width 200ms ease-out; }
-.orch-task-stage { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.orch-task-agent { display: inline-flex; flex: 0 0 auto; margin-left: auto; }
-.orch-task-branch { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; max-width: 42%; overflow: hidden; white-space: nowrap; }
+.orch-task-stage { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.orch-task-agent { display: inline-flex; flex: 0 0 auto; }
+.orch-task-branch { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Under the title: the row's 12px inset + the 26px glyph + its 12px gap. */
 .orch-task-detail { padding: 4px 18px 16px 50px; }
@@ -916,8 +950,7 @@
 
 /* Touch targets, without turning the row into a card. */
 @media (max-width: 859.98px), (pointer: coarse) {
-  .orch-task-summary { padding-block: 13px; }
-  .orch-task-expand, .orch-task-heading .orch-task-beside { flex-basis: 44px; width: 44px; height: 44px; }
+  .orch-task { --task-control: 44px; --task-pad: 10px; }
   .orch-task-filters button,
   .orch-settings-toggle,
   .orch-tool,

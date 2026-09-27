@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
 import {
-  agentRoster, orgChart, pendingPlan, rosterSummary,
+  agentRoster, orgChart, pendingPlan, rosterSummary, workingTaskCount,
   type ChatActivity, type LeadRecord, type RosterInput,
 } from "./agentsDashboard";
 import {
@@ -240,5 +240,66 @@ describe("agents dashboard", () => {
     expect(pendingPlan(snapshot, "chat:other")).toBeNull();
     expect(pendingPlan({ ...snapshot, runs: [{ ...pending, status: "stopped" }] }, "chat:lead")).toBeNull();
     expect(pendingPlan({ ...snapshot, runs: [run()] }, "chat:lead")).toBeNull();
+  });
+});
+
+describe("working tasks, for the chat row's running ring", () => {
+  const executing = (taskId: string, state: NonNullable<OrchestrationAttempt["execution"]>["state"] = "executing", over: Partial<OrchestrationAttempt> = {}) =>
+    attempt(taskId, { execution: { state, retryCount: 0 }, ...over });
+  const none = () => 0;
+
+  it("follows one task from queued through executing to each way it can end", () => {
+    const at = (status: OrchestrationTask["status"], attempts: OrchestrationAttempt[] = []) =>
+      workingTaskCount(snap({ tasks: [task("a", status)], attempts }), none);
+    expect(at("pending")).toBe(0);
+    expect(at("ready")).toBe(0);
+    expect(at("running", [executing("a", "queued")])).toBe(0);
+    expect(at("running", [attempt("a", { status: "preparing" })])).toBe(0);
+    expect(at("running", [executing("a")])).toBe(1);
+    expect(at("running", [executing("a", "waiting_tool")])).toBe(1);
+    // An older backend's attempt carries no execution; its status speaks.
+    expect(at("running", [attempt("a")])).toBe(1);
+    expect(at("running", [executing("a", "retrying")])).toBe(0);
+    expect(at("running", [executing("a", "stalled")])).toBe(0);
+    expect(at("running", [executing("a", "awaiting_report")])).toBe(0);
+    expect(at("completed", [executing("a", "completed", { status: "completed" })])).toBe(0);
+    expect(at("failed", [executing("a", "failed", { status: "failed" })])).toBe(0);
+    expect(at("cancelled", [executing("a", "cancelled", { status: "cancelled" })])).toBe(0);
+    expect(at("blocked", [executing("a", "blocked", { status: "blocked" })])).toBe(0);
+  });
+
+  it("does not count a worker waiting on the person, by card or by decision", () => {
+    const snapshot = snap({ tasks: [task("a", "running")], attempts: [executing("a", "waiting_tool")] });
+    expect(workingTaskCount(snapshot, (taskId) => taskId === "a" ? 1 : 0)).toBe(0);
+    const gate = { id: "g", runId: "run_1", taskId: "a", createdByChatKey: "chat:orch-a", targetChatKey: "chat:lead",
+      question: "Which?", options: [], status: "open" as const, createdAt: 1, updatedAt: 1 };
+    expect(workingTaskCount({ ...snapshot, gates: [gate] }, none)).toBe(0);
+    expect(workingTaskCount({ ...snapshot, gates: [{ ...gate, status: "resolved" }] }, none)).toBe(1);
+  });
+
+  it("reads the task's current attempt, not an earlier one still marked running", () => {
+    const tasks = [task("a", "running", undefined, { activeAttemptId: "att_new" })];
+    const attempts = [executing("a", "executing", { id: "att_old", number: 1 }), executing("a", "queued", { id: "att_new", number: 2 })];
+    expect(workingTaskCount(snap({ tasks, attempts }), none)).toBe(0);
+  });
+
+  it("counts across several runs and keeps counting while any task still works", () => {
+    const tasks = [task("a", "running"), task("b", "running", undefined, { runId: "run_2" }), task("c", "ready"), task("d", "completed")];
+    const attempts = [executing("a"), executing("b", "executing", { runId: "run_2" })];
+    const both = snap({ runs: [run(), run({ id: "run_2" })], tasks, attempts });
+    expect(workingTaskCount(both, none)).toBe(2);
+    // One finishes; the other still holds the ring.
+    const one = { ...both, tasks: [{ ...tasks[0], status: "completed" as const }, ...tasks.slice(1)] };
+    expect(workingTaskCount(one, none)).toBe(1);
+  });
+
+  it("ignores work left behind in a run that is over or put away", () => {
+    const tasks = [task("a", "running")];
+    const attempts = [executing("a")];
+    for (const status of ["completed", "failed", "stopped"] as const) {
+      expect(workingTaskCount(snap({ runs: [run({ status })], tasks, attempts }), none)).toBe(0);
+    }
+    expect(workingTaskCount(snap({ runs: [run({ archivedAt: 9 })], tasks, attempts }), none)).toBe(0);
+    expect(workingTaskCount(snap({ runs: [], tasks, attempts }), none)).toBe(0);
   });
 });
