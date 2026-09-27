@@ -52,7 +52,26 @@ frozen configuration, then freezes and validates the new recipe, so cleanup
 never follows an altered recipe to other resources. A start whose sources moved
 takes the whole stack down before rebuilding (volumes kept), so a service that
 would otherwise stay up — a gateway — cannot keep addresses of replaced
-containers. Endpoint ports are read again after every start.
+containers.
+
+That alone did not cover every start. `up --build` also replaces or restarts
+services when nothing was stale: a rebuild that yields new images (the
+Performance recipe's .NET, Next.js and Vite builds do), a lost container, or a
+restart outside OctiqFlow. The gateway stayed up with the addresses it resolved
+at its own start, and on the recreated network Core and the API traded addresses.
+Sign-in through the host-issued URL reached the API and got a 404, while the host
+said ready (feedback f6886885). So after every `up`, for any reason, the host
+reads each running service's start time through the frozen configuration. It
+recreates, with `--no-deps --force-recreate` and no build, every running service
+that started before a service it depends on (directly or through others in
+`depends_on`, one-shots included), and every service that depends on one of
+those. Dependencies are never restarted to do it, volumes are kept, and nothing
+outside the environment's own Compose project is named. Because this is
+stateless, a dependency restarted outside OctiqFlow is repaired by the next
+start too. Endpoint ports are read after this, so a recreated gateway's new
+loopback port is what the URLs carry. Services a recipe does not declare with
+`depends_on` are not refreshed; the readiness check through the gateway, below,
+is what catches those.
 
 ## Isolation and seed
 
@@ -91,9 +110,15 @@ files before backing up the distributable seed. Private artifacts stay outside G
 
 Readiness exercises normal login, selected actor/company, an authenticated
 appraisal read, anonymous rejection, an unrelated-profile rejection, frontend and
-SSO availability. The checker has a separate identity, so it does not revoke a
-person's ordinary sandbox session. Database integrity and reset isolation are
-separate checks; a reachable port alone cannot mark an environment ready.
+SSO availability. Every one of those requests goes through the gateway, by the
+paths a browser on the host-issued URL uses. Core and the API answering on the
+internal network proved nothing about the routes a person takes: the checker used
+to call them directly and passed while sign-in through the gateway failed. The
+permitted appraisal read runs before the denials, so a refusal is the API
+refusing, not a route that is missing. The checker has a separate identity, so it
+does not revoke a person's ordinary sandbox session. Database integrity and reset
+isolation are separate checks; a reachable port alone cannot mark an environment
+ready.
 
 ## Scope boundary
 

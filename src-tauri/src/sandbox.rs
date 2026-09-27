@@ -12,6 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub mod capacity;
+pub mod dependants;
 pub mod fingerprint;
 pub mod health;
 
@@ -599,6 +600,10 @@ impl Store {
                 .map(str::to_string),
             );
             run(&docker, &args, &dir, Some(env), 900)?;
+            // Whatever made `up` replace or restart a service (a rebuild,
+            // a lost container, a restart outside OctiqFlow), a dependant it
+            // kept can still route to the old containers (`dependants`).
+            refresh_dependants(&docker, &base, &dir, env, &config)?;
         }
         let mut args = base.clone();
         args.extend(["run", "--rm", "--no-deps", "-T"].map(str::to_string));
@@ -1214,6 +1219,57 @@ fn validate_compose(config: &Value, project: &str, check: &str) -> Result<(), St
     Ok(())
 }
 
+/// Recreate, through the frozen configuration `base` names, every running
+/// service that started before a service it depends on (`dependants`),
+/// without touching those dependencies. A recreated service can come back
+/// on another loopback port, so the caller reads endpoints only after this.
+fn refresh_dependants(
+    docker: &str,
+    base: &[String],
+    dir: &Path,
+    env: &Environment,
+    config: &Value,
+) -> Result<(), String> {
+    let mut args = base.to_vec();
+    args.extend(["ps", "--quiet"].map(str::to_string));
+    let ids: Vec<String> = run(docker, &args, dir, Some(env), 30)?
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    // `base` starts `--host <endpoint>`: the same local engine, nothing else.
+    let mut args = base[..2].to_vec();
+    args.extend(["inspect", "--format", dependants::INSPECT_FORMAT].map(str::to_string));
+    args.extend(ids);
+    let running = dependants::running(&run(docker, &args, dir, None, 30)?);
+    let stale = dependants::stale(config, &running);
+    if stale.is_empty() {
+        return Ok(());
+    }
+    let mut args = base.to_vec();
+    args.extend(
+        [
+            "up",
+            "--detach",
+            "--no-build",
+            "--no-deps",
+            "--force-recreate",
+            "--wait",
+            "--wait-timeout",
+            "180",
+        ]
+        .map(str::to_string),
+    );
+    args.extend(stale);
+    run(docker, &args, dir, Some(env), 300)
+        .map(|_| ())
+        .map_err(|e| {
+            format!("Could not recreate the services still routing to replaced containers: {e}")
+        })
+}
+
 /// Whether a frozen model read back by Compose is the one validated. A
 /// Compose that did not escape its own `config` output would read resolved
 /// dollars as interpolations again; that is refused, never started.
@@ -1380,7 +1436,7 @@ fn git(cwd: &Path, args: &[&str]) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     fn store() -> Store {
         Store {
@@ -1701,6 +1757,365 @@ mod tests {
         args.extend(tail.iter().map(|s| s.to_string()));
         let docker = crate::proc::find_executable("docker").unwrap();
         run(&docker, &args, &dir, Some(env), 120)
+    }
+
+    /// Two upstreams that answer with their own name behind an nginx
+    /// gateway, which resolves them once when it starts, like the
+    /// Performance recipe's. `routed`: the check goes through the gateway
+    /// (as the bundled kit's now does), otherwise straight to the upstreams
+    /// (as it used to). `misrouted`: the gateway's routes are crossed.
+    pub(crate) fn gateway_project(store: &Store, routed: bool, misrouted: bool) -> String {
+        let project = store.root.join("project");
+        fs::create_dir_all(project.join(".octiq")).unwrap();
+        // A clean checkout, so no start below is a stale rebuild (which
+        // takes the whole stack down): the recovery must hold without that.
+        assert!(git(&project, &["init", "-q"]).is_some());
+        fs::write(project.join(".gitignore"), ".octiq/\n").unwrap();
+        assert!(git(&project, &["add", ".gitignore"]).is_some());
+        commit(&project, "first");
+        fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","checkService":"verify","fixtureVersion":"gateway-v1","endpoints":{"gateway":{"service":"gateway","port":80,"path":"/"}}}"#).unwrap();
+        // Configuration is written by each container's own command: a bind
+        // mount from a temp folder is not shared into a Colima VM.
+        let nginx = |server: String| {
+            json!([
+                "sh",
+                "-c",
+                format!(
+                "echo '{server}' > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"
+            )
+            ])
+        };
+        let upstream = |name: &str| {
+            json!({"image":"nginx:1.27-alpine","command":nginx(format!(
+                "server {{ listen 8080; location / {{ return 200 {name}; }} }}"
+            ))})
+        };
+        let (to_a, to_b) = if misrouted { ("b", "a") } else { ("a", "b") };
+        let check = if routed {
+            "test \"$$(wget -qO- http://gateway/a/)\" = a && test \"$$(wget -qO- http://gateway/b/)\" = b"
+        } else {
+            "test \"$$(wget -qO- http://a:8080/)\" = a && test \"$$(wget -qO- http://b:8080/)\" = b"
+        };
+        let config = json!({"services":{
+            "a": upstream("a"),
+            "b": upstream("b"),
+            "gateway":{"image":"nginx:1.27-alpine","depends_on":["a","b"],
+                "command":nginx(format!("server {{ listen 80; location /a/ {{ proxy_pass http://{to_a}:8080/; }} location /b/ {{ proxy_pass http://{to_b}:8080/; }} }}")),
+                "ports":[{"target":80,"host_ip":"127.0.0.1"}],
+                "volumes":["keep:/keep"]},
+            "verify":{"image":"alpine:3.22","profiles":["check"],"command":["sh","-c",check]}
+        },"volumes":{"keep":{}}});
+        fs::write(
+            project.join(".octiq/compose.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        project.to_string_lossy().into_owned()
+    }
+
+    /// What the host-issued URL serves at `/a/` and `/b/`, from the host.
+    fn routes(env: &Environment) -> (String, String) {
+        let url = &env.urls["gateway"];
+        let port = url
+            .rsplit_once(':')
+            .and_then(|(_, rest)| rest.trim_end_matches('/').parse::<u16>().ok())
+            .unwrap();
+        let get = |path: &str| match ureq::get(&format!("http://127.0.0.1:{port}{path}"))
+            .timeout(Duration::from_secs(10))
+            .call()
+        {
+            Ok(response) => response.into_string().unwrap_or_default(),
+            Err(error) => format!("failed: {error}"),
+        };
+        (get("/a/"), get("/b/"))
+    }
+
+    /// Feedback f6886885: after a person's start brought back lost upstreams,
+    /// the gateway kept the addresses it resolved before, and the host still
+    /// said ready. Recovery must mend the routes through the URL it hands
+    /// out, and never restart a dependency or lose a volume to do it.
+    fn gateway_recovery(routed: bool) {
+        let store = store();
+        let cwd = gateway_project(&store, routed, false);
+        store.select("chat:a", &cwd, Some(true), false).unwrap();
+        // Keep diagnostics on a failed test; a pass removes its own resources.
+        let a = store.host_action("chat:a", "start").unwrap();
+        assert_eq!(a.state, "ready", "{:?}", a.error);
+        assert_eq!(routes(&a), ("a".into(), "b".into()));
+        frozen_compose(
+            &store,
+            &a,
+            &[
+                "exec",
+                "-T",
+                "gateway",
+                "sh",
+                "-c",
+                "echo kept > /keep/marker",
+            ],
+        )
+        .unwrap();
+        let id = |service: &str| {
+            frozen_compose(&store, &a, &["ps", "-q", service])
+                .unwrap()
+                .trim()
+                .to_owned()
+        };
+        let docker = crate::proc::find_executable("docker").unwrap();
+        let address = |service: &str| -> std::net::Ipv4Addr {
+            let args: Vec<String> = vec![
+                "--host".into(),
+                a.docker_endpoint.clone().unwrap(),
+                "inspect".into(),
+                "--format".into(),
+                "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}".into(),
+                id(service),
+            ];
+            let dir = store.directory(&a).unwrap();
+            run(&docker, &args, &dir, None, 20)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap()
+        };
+
+        // Container loss: both upstreams die, and the one that held the
+        // higher address comes back first, taking the other's. The host's
+        // start brings back the second, which takes the one left over.
+        let first = if address("a") > address("b") {
+            "a"
+        } else {
+            "b"
+        };
+        frozen_compose(&store, &a, &["kill", "a", "b"]).unwrap();
+        frozen_compose(&store, &a, &["start", first]).unwrap();
+        let (gateway, kept) = (id("gateway"), id(first));
+        let now = store.snapshot().unwrap().environments["chat:a"].clone();
+        assert_eq!(
+            store.stale_reason(&now).unwrap(),
+            None,
+            "not a stale rebuild"
+        );
+        let lost = store
+            .person_action("chat:a", "start", None, || Ok(()))
+            .unwrap();
+        assert_eq!(lost.state, "ready", "{:?}", lost.error);
+        assert_eq!(
+            routes(&lost),
+            ("a".into(), "b".into()),
+            "the host-issued URL routes to the right services"
+        );
+        assert_ne!(id("gateway"), gateway, "the gateway was recreated");
+        assert_eq!(id(first), kept, "a dependency is never restarted for it");
+        assert_eq!(lost.lease.as_ref().unwrap().by, "person");
+
+        // Upstreams recreated behind the gateway's back (what a rebuild
+        // does): the next start mends the gateway the same way.
+        frozen_compose(
+            &store,
+            &a,
+            &["up", "--detach", "--no-deps", "--force-recreate", "a", "b"],
+        )
+        .unwrap();
+        let gateway = id("gateway");
+        let rebuilt = store.host_action("chat:a", "start").unwrap();
+        assert_eq!(rebuilt.state, "ready", "{:?}", rebuilt.error);
+        assert_eq!(routes(&rebuilt), ("a".into(), "b".into()));
+        assert_ne!(id("gateway"), gateway);
+
+        // Nothing changed: a start recreates nothing.
+        let (gateway, upstream) = (id("gateway"), id("a"));
+        let again = store.host_action("chat:a", "start").unwrap();
+        assert_eq!((id("gateway"), id("a")), (gateway, upstream));
+        assert_eq!(routes(&again), ("a".into(), "b".into()));
+        assert_eq!(
+            frozen_compose(
+                &store,
+                &a,
+                &["exec", "-T", "gateway", "cat", "/keep/marker"]
+            )
+            .unwrap()
+            .trim(),
+            "kept",
+            "the gateway's volume survived its recreation"
+        );
+        frozen_compose(&store, &a, &["down", "--volumes"]).unwrap();
+        fs::remove_dir_all(store.root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn docker_a_start_after_upstream_loss_mends_the_gateway_even_behind_a_direct_check() {
+        gateway_recovery(false);
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn docker_a_start_after_upstream_loss_passes_a_check_through_the_gateway() {
+        gateway_recovery(true);
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn docker_a_gateway_that_routes_wrongly_is_never_ready_and_starts_no_chat() {
+        // Direct reachability is what the old check proved; it cannot
+        // certify the routes a person's browser takes.
+        let store = store();
+        let cwd = gateway_project(&store, true, true);
+        store.select("chat:a", &cwd, Some(true), false).unwrap();
+        let error = store.host_action("chat:a", "start").unwrap_err();
+        assert!(error.starts_with("Sandbox command failed"), "{error}");
+        let env = store.snapshot().unwrap().environments["chat:a"].clone();
+        assert_eq!(env.state, "error");
+        assert_eq!(env.checked_at, None);
+        assert!(env.urls.is_empty(), "no URL is handed out for it");
+        // Every service is up and answering; only the routes are wrong, and
+        // it is the check through the gateway that said so.
+        let published = frozen_compose(&store, &env, &["port", "gateway", "80"]).unwrap();
+        let mut served = env.clone();
+        served.urls.insert(
+            "gateway".into(),
+            format!(
+                "http://x.localhost:{}/",
+                published.trim().rsplit(':').next().unwrap()
+            ),
+        );
+        assert_eq!(routes(&served), ("b".into(), "a".into()));
+        // The chat launch path refuses too, so no agent runs against it.
+        assert!(store.prepare("chat:a", &cwd).is_err());
+        assert!(!fs::exists(store.directory(&env).unwrap().join("handoff.json")).unwrap());
+        frozen_compose(&store, &env, &["down", "--volumes"]).unwrap();
+        fs::remove_dir_all(store.root).unwrap();
+    }
+
+    /// Synthetic stand-ins for Core, the Performance API, the frontend and
+    /// SSO: just the routes the bundled Performance check calls, answering
+    /// like the real services did in acceptance. Everything else is a 404.
+    const PERFORMANCE_STAND_IN: &str = r#"import http from 'node:http';
+const role = process.env.ROLE;
+const f = {password: 'synthetic-readiness', userId: 3, companyId: 2, appraisalId: 79};
+const send = (res, status, body) => { res.writeHead(status, {'content-type': 'application/json'}); res.end(JSON.stringify(body)); };
+http.createServer(async (req, res) => {
+  let raw = ''; for await (const chunk of req) raw += chunk;
+  const body = raw ? JSON.parse(raw) : {};
+  const url = new URL(req.url, 'http://stand-in');
+  const p = url.pathname, bearer = req.headers.authorization || '';
+  if (p === '/health/ready' && (role === 'api' || role === 'core')) return send(res, 200, {});
+  if (role === 'core') {
+    if (p === '/api/v1/auth/credentials-login') return body.password === f.password ? send(res, 200, {data: {accessToken: 'access', sessionId: 's1', mfaAuthenticated: true}}) : send(res, 400, {});
+    if (p === '/api/v1/auth/profile-switch' && bearer === 'Bearer access') return body.userId === f.userId ? send(res, 200, {data: {sessionId: 's1'}}) : send(res, 400, {});
+    if (p === '/api/v2/auth/session/s1') return send(res, 200, {data: {selectedProfileId: Number(url.searchParams.get('profileId')), companyId: f.companyId, token: 'app'}});
+    if (p === '/api/v1/i18n/en' && bearer === 'Bearer app') return send(res, 200, {data: {}});
+  }
+  if (role === 'api' && p === '/api/v1/appraisals/' + f.appraisalId) return bearer === 'Bearer app' ? send(res, 200, {data: {id: f.appraisalId}}) : send(res, 401, {});
+  if (role === 'frontend' && p.startsWith('/performanceV2/')) return send(res, 200, {});
+  if (role === 'sso' && p === '/sso/auth/signin') return send(res, 200, {});
+  send(res, 404, {});
+}).listen(Number(process.env.PORT));
+"#;
+
+    /// The bundled Performance kit's own `gateway.conf` and `verify.mjs`,
+    /// in front of the stand-ins, wired as its `compose.yaml` wires them.
+    /// Files are built into images: a temp folder is not shared into a
+    /// Colima VM, so it cannot be bind-mounted.
+    fn performance_kit_project(store: &Store) -> String {
+        let project = store.root.join("project");
+        let kit = project.join(".octiq/kit");
+        fs::create_dir_all(&kit).unwrap();
+        assert!(git(&project, &["init", "-q"]).is_some());
+        fs::write(project.join(".gitignore"), ".octiq/\n").unwrap();
+        assert!(git(&project, &["add", ".gitignore"]).is_some());
+        commit(&project, "first");
+        let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../sandboxes/performance");
+        for file in ["gateway.conf", "verify.mjs"] {
+            fs::copy(bundled.join(file), kit.join(file)).unwrap();
+        }
+        fs::write(kit.join("stand-in.mjs"), PERFORMANCE_STAND_IN).unwrap();
+        fs::write(kit.join("fixture.json"), json!({"version":"ihrms-tomei-v1","password":"synthetic-readiness",
+            "check":{"login":"sandbox-check","userId":3,"companyId":2,"appraisalId":79,"deniedUserId":4}}).to_string()).unwrap();
+        fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","checkService":"verify","fixtureVersion":"ihrms-tomei-v1","endpoints":{"Performance":{"service":"gateway","port":80,"path":"/performanceV2/"}}}"#).unwrap();
+        let build =
+            |dockerfile: &str| json!({"context":"./.octiq/kit","dockerfile_inline":dockerfile});
+        let stand_in = |role: &str, port: u16| {
+            json!({"build":build("FROM node:22-alpine\nCOPY stand-in.mjs /stand-in.mjs\nCMD [\"node\", \"/stand-in.mjs\"]"),
+                "environment":{"ROLE":role,"PORT":port.to_string()}})
+        };
+        let config = json!({"services":{
+            "core": stand_in("core", 8080),
+            "api": stand_in("api", 8080),
+            "frontend": stand_in("frontend", 80),
+            "sso": stand_in("sso", 3000),
+            // The kit's image, not built, so an `up --build` keeps it running
+            // as it kept the real one; its configuration comes in by value.
+            "gateway":{"image":"nginx:1.27-alpine",
+                "environment":{"GATEWAY_CONF":fs::read_to_string(kit.join("gateway.conf")).unwrap().replace('$', "$$")},
+                "command":["sh","-c","printf '%s' \"$$GATEWAY_CONF\" > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"],
+                "ports":[{"target":80,"host_ip":"127.0.0.1"}],"networks":["default","browser"],
+                "depends_on":["core","api","frontend","sso"],
+                "healthcheck":{"test":["CMD-SHELL","wget -q -O /dev/null http://127.0.0.1/performanceV2/"],"interval":"1s","timeout":"5s","retries":20}},
+            "verify":{"build":build("FROM node:22-alpine\nCOPY verify.mjs /verify.mjs\nCOPY fixture.json /fixture.json"),
+                "profiles":["check"],"command":["node","/verify.mjs"]}
+        },"networks":{"default":{"internal":true},"browser":{}}});
+        fs::write(
+            project.join(".octiq/compose.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        project.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn docker_the_performance_kit_signs_in_through_its_gateway_after_a_start_recovers_lost_services(
+    ) {
+        // Feedback f6886885, in miniature: a person's start after Core and
+        // the API were lost rebuilt the upstreams and kept the gateway,
+        // whose routes then reached the wrong services or none, while the
+        // host said ready. Which address lands where varies from run to run.
+        let store = store();
+        let cwd = performance_kit_project(&store);
+        store.select("chat:a", &cwd, Some(true), false).unwrap();
+        let a = store.host_action("chat:a", "start").unwrap();
+        assert_eq!(a.state, "ready", "{:?}", a.error);
+        let sign_in = |env: &Environment| {
+            let url = &env.urls["Performance"];
+            let port = url.split(':').nth(2).unwrap().split('/').next().unwrap();
+            match ureq::post(&format!(
+                "http://127.0.0.1:{port}/performance-api/api/v1/auth/credentials-login"
+            ))
+            .timeout(Duration::from_secs(10))
+            .send_json(json!({"username":"sandbox-check","password":"synthetic-readiness"}))
+            {
+                Ok(response) => response.status(),
+                Err(ureq::Error::Status(status, _)) => status,
+                Err(_) => 0,
+            }
+        };
+        assert_eq!(sign_in(&a), 200);
+        let gateway = frozen_compose(&store, &a, &["ps", "-q", "gateway"]).unwrap();
+        frozen_compose(&store, &a, &["kill", "core", "api"]).unwrap();
+        let now = store.snapshot().unwrap().environments["chat:a"].clone();
+        assert_eq!(
+            store.stale_reason(&now).unwrap(),
+            None,
+            "not a stale rebuild"
+        );
+        let recovered = store
+            .person_action("chat:a", "start", None, || Ok(()))
+            .unwrap();
+        assert_eq!(recovered.state, "ready", "{:?}", recovered.error);
+        assert_ne!(
+            frozen_compose(&store, &a, &["ps", "-q", "gateway"]).unwrap(),
+            gateway,
+            "the gateway was recreated after its upstreams"
+        );
+        assert_eq!(
+            sign_in(&recovered),
+            200,
+            "sign-in through the host-issued URL"
+        );
+        frozen_compose(&store, &a, &["down", "--volumes", "--rmi", "local"]).unwrap();
+        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]

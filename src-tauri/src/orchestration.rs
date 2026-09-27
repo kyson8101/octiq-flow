@@ -4964,6 +4964,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn a_task_whose_gateway_routes_wrongly_never_starts_although_every_service_is_up() {
+        let _serial = crate::sandbox::capacity::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Feedback f6886885: services answering directly is not a person
+        // being able to use them. A check through the gateway that fails
+        // holds the worker back like any other environment failure.
+        let root = std::env::temp_dir().join(format!("octiq-env-gateway-{}", compact_id()));
+        let sandboxes = crate::sandbox::Store::at(root.clone());
+        let cwd = crate::sandbox::tests::gateway_project(&sandboxes, true, true);
+        let store = Arc::new(OrchestrationStore::default());
+        let (run, needs, dependant, attempt) = environment_task(&store, &cwd);
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        OrchestrationStore::start_after_environment(
+            store.clone(),
+            crate::sandbox::Store::at(root.clone()),
+            attempt.clone(),
+            move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let failed = settle_within(
+            &store,
+            &attempt.id,
+            |a| a.status == AttemptStatus::Failed,
+            300,
+        );
+        assert_eq!(failed.status, AttemptStatus::Failed);
+        assert_eq!(failed.execution.latest_error.unwrap().kind, "environment");
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let task_of = |id: &str| snapshot.tasks.iter().find(|t| t.id == id).unwrap().clone();
+        assert_eq!(task_of(&needs.id).status, TaskStatus::Failed);
+        assert_eq!(task_of(&dependant.id).status, TaskStatus::Pending);
+        let env = sandboxes.snapshot().unwrap().environments[&attempt.worker_chat_key].clone();
+        assert_eq!(env.state, "error");
+        // Its services stay for the lifecycle; remove this test's own.
+        let down = std::process::Command::new("docker")
+            .args(["compose", "--project-name", &env.id, "down", "--volumes"])
+            .output()
+            .unwrap();
+        assert!(down.status.success());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_backup_takes_over_a_task_only_through_the_person_and_never_beside_a_live_worker() {
         // Feedback c890a843: the person asked Noah, Maya's designated
         // backup, to take over a ready task, and nothing could hand it over.

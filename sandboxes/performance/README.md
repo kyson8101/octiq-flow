@@ -42,9 +42,20 @@ The other three sources remain the paths selected at installation.
 
 Readiness includes ordinary credentials login, profile/company selection,
 authenticated appraisal access, anonymous denial and denial of another identity's
-profile. Its dedicated `sandbox-check` identity avoids logging the person out
+profile, all through the gateway by the paths the browser uses. Core and the API
+answering directly does not prove a person can sign in on the host-issued URL.
+Its dedicated `sandbox-check` identity avoids logging the person out
 when checks repeat. User-facing test credentials are in the private fixture
 manifest. All emails are synthetic `example.invalid` addresses.
+
+A recipe installed before this check went through the gateway keeps the old
+`verify.mjs`, and the installer refuses to overwrite a recipe. To update one,
+copy only this kit's `verify.mjs` over `<project>/.octiq/performance/verify.mjs`.
+The private env file, credentials and seed are left as they are. The recipe
+digest then changes, so the environment reads **stale** ("The sandbox recipe
+changed"). Its next Start takes the old stack down with its old frozen
+configuration, keeping volumes, then freezes the recipe again and runs the new
+check.
 
 ## Ownership and lifecycle
 
