@@ -131,7 +131,36 @@ struct Stored {
 static LOCK: Mutex<()> = Mutex::new(());
 
 pub fn default_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_PATH.lock().ok().and_then(|path| path.clone()) {
+        return path;
+    }
     crate::profile::profile_dir().join("team.json")
+}
+
+/// A test that has to go through a command which reads `default_path` points
+/// it at a throwaway file instead of the real profile, for as long as the
+/// returned guard lives. One such test at a time.
+#[cfg(test)]
+static TEST_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+#[cfg(test)]
+static TEST_PATH_TURN: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct TestTeamPath(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+pub(crate) fn use_test_path(path: PathBuf) -> TestTeamPath {
+    let turn = TEST_PATH_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    *TEST_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+    TestTeamPath(turn)
+}
+
+#[cfg(test)]
+impl Drop for TestTeamPath {
+    fn drop(&mut self) {
+        *TEST_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 fn now_ms() -> i64 {

@@ -178,6 +178,8 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | agent diagnostics | `~/.octiqflow/logs/agent-diagnostics.jsonl` (one rotated predecessor) | `diagnostics.rs` |
 | chat task status | `<chats dir>/task-status.json` | `chat_task.rs` |
 | registered agents (agents mode) | `<profile dir>/team.json` | `team.rs` — see `docs/agents-mode.md` |
+| XP awards (agents mode) | `xp_awards` in `<profile dir>/orchestrations.json` | `orchestration/levels.rs` |
+| agent token usage | `<chats dir>/agent-usage.json` | `agent_usage.rs` |
 
 `profile.rs` decides the profile dir; `profile_lock.rs` makes sure only one
 process owns a profile at a time (a second one refuses to start rather than

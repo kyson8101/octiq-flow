@@ -19,6 +19,8 @@ import { bridge } from "../lib/bridge";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentRole } from "./AgentRole";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
+import { AgentProfile, LevelChip } from "./AgentLevel";
+import { loadLevels, type LevelSummary } from "../lib/agentLevels";
 
 /** How many of an agent's current items show before "Show all". */
 const SHOWN = 3;
@@ -55,6 +57,26 @@ export function AgentsDashboard({
   const [serverActivity, setServerActivity] = useState<ReadonlyMap<string, boolean> | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [openError, setOpenError] = useState("");
+  const [levels, setLevels] = useState<ReadonlyMap<string, LevelSummary>>(new Map());
+  const [levelsRead, setLevelsRead] = useState(0);
+  const [profileId, setProfileId] = useState<string | null>(null);
+
+  // Levels move only when a task is accepted, so they are read again when an
+  // acceptance appears in the ledger (or this page makes one), never on a
+  // timer.
+  const accepted = useMemo(() => (snapshot?.tasks ?? [])
+    .filter((task) => task.acceptance)
+    .map((task) => `${task.id}:${task.acceptance!.attemptId}`)
+    .sort().join(","), [snapshot]);
+  useEffect(() => {
+    if (!connected) return;
+    let alive = true;
+    loadLevels()
+      .then((list) => { if (alive) setLevels(new Map((list ?? []).map((item) => [item.agentId, item]))); })
+      // An older backend has no levels: every chip reads level 1.
+      .catch(() => { if (alive) setLevels(new Map()); });
+    return () => { alive = false; };
+  }, [connected, accepted, levelsRead]);
 
   // Every registered agent, not the current chat's project's: this page is
   // the whole roster. Read again on every reconnect, since agents may have
@@ -121,6 +143,22 @@ export function AgentsDashboard({
   const canOpen = (activity: AgentActivity) => !!activity.chatKey
     || (!!activity.runId && !!snapshot?.runs.some((run) => run.id === activity.runId));
 
+  const profileRow = profileId ? rows.find((row) => row.id === profileId) : undefined;
+  if (profileId && profileRow) {
+    return (
+      <section className="projects-page agents-dashboard" aria-label="Agents">
+        <WorkspaceHeader root back={{ label: "All agents", ariaLabel: "Back to all agents", onClick: () => setProfileId(null) }}
+          title={<h1>{profileRow.name}</h1>}
+          actions={<button type="button" className="projects-page-secondary" onClick={onManage}>Manage agents</button>} />
+        <div className="projects-page-body">
+          <AgentProfile agent={profileRow} connected={connected}
+            onOpenRun={onOpenRun}
+            onChanged={() => setLevelsRead((n) => n + 1)} />
+        </div>
+      </section>
+    );
+  }
+
   const toggle = (id: string) => setExpanded((before) => {
     const next = new Set(before);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -158,6 +196,7 @@ export function AgentsDashboard({
               <AgentRowItem key={row.id} row={row} stale={stale}
                 expanded={expanded.has(row.id)} onToggle={() => toggle(row.id)}
                 appearance={appearance} canOpen={canOpen} onOpen={open}
+                level={levels.get(row.id)} onProfile={() => setProfileId(row.id)}
                 onOpenRecent={(chatKey) => {
                   setOpenError("");
                   try { onOpenChat(chatKey); } catch (problem) { setOpenError(String((problem as Error).message ?? problem)); }
@@ -170,8 +209,10 @@ export function AgentsDashboard({
   );
 }
 
-function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onOpen, onOpenRecent }: {
+function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onOpen, onOpenRecent, level, onProfile }: {
   row: AgentRow;
+  level?: LevelSummary;
+  onProfile: () => void;
   stale: boolean;
   expanded: boolean;
   onToggle: () => void;
@@ -193,7 +234,9 @@ function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onO
           className={working ? "dash-avatar is-working" : "dash-avatar"}
           label={`${row.name}, ${stateText.toLowerCase()}`} />
         <span className="team-row-copy">
-          <span className="team-row-name"><bdi>{row.name}</bdi></span>
+          <span className="team-row-name"><bdi>{row.name}</bdi>
+            {!row.removed && <LevelChip name={row.name} progress={level} onOpen={onProfile} />}
+          </span>
           <span className="team-row-meta">
             <bdi>{row.detail}</bdi>
             <span aria-hidden="true"> · </span>

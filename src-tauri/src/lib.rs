@@ -13,6 +13,7 @@ mod agent_avatar;
 mod agent_chat;
 mod agent_history;
 mod agent_provider;
+mod agent_usage;
 mod agents;
 mod auto_resume;
 mod background_tasks;

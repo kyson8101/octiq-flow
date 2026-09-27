@@ -76,6 +76,7 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   assert.equal(taskTool.inputSchema.properties.problem.type, "string");
   assert.equal(taskTool.inputSchema.properties.goal.type, "string");
   assert.equal(taskTool.inputSchema.properties.acceptance.maxItems, 5);
+  assert.deepEqual(taskTool.inputSchema.properties.size.enum, ["small", "medium", "large"]);
   const orchestration = bound.result.tools
     .filter(tool => tool.name.startsWith("orchestration_"))
     .map(tool => tool.name);
@@ -98,6 +99,7 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     "orchestration_dispatch_ready",
     "orchestration_workspace_refresh",
     "orchestration_task_reopen",
+    "orchestration_task_accept",
     "orchestration_validation_create",
     "orchestration_validation_remove",
   ]);
