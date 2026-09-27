@@ -112,6 +112,12 @@ pub struct Environment {
     /// `None` on an environment frozen before digests were kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen_recipe: Option<String>,
+    /// The frozen Compose configuration was proved to read back as the
+    /// model that was validated (`freeze`). `false` on one frozen before
+    /// that proof, whose dollars were escaped twice: the next start or
+    /// reset freezes it again in place.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frozen_replays: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalidated: Option<Invalidation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,8 +274,8 @@ impl Store {
                 locked: true, cwd, state: "unverified".into(), checked_at: None, error: None,
                 urls: BTreeMap::new(), source_revision: None, source_dirty: None, fixture_version: None,
                 host_instance: instance().into(), docker_endpoint: None, fingerprint: None,
-                frozen_recipe: None, invalidated: None, lease: None, stopped: None, probed_at: None,
-                probing: None,
+                frozen_recipe: None, frozen_replays: false, invalidated: None, lease: None,
+                stopped: None, probed_at: None, probing: None,
             });
             Ok(())
         })
@@ -466,8 +472,14 @@ impl Store {
             }
         }
         let existed = compose.exists();
-        if !compose.exists() {
-            if matches!(action, "stop" | "reset") {
+        // One frozen before its read-back was proved has its dollars
+        // escaped twice, so a `$$VAR` healthcheck reached the shell as `$$`
+        // (its PID). Its recipe is unchanged, so it is frozen again from the
+        // same recipe in place: nothing is taken down, no volume touched,
+        // and the old file stays until the new one has proved itself.
+        let legacy = existed && !env.frozen_replays && matches!(action, "start" | "reset");
+        if !existed || legacy {
+            if !existed && matches!(action, "stop" | "reset") {
                 return Err("No owned Compose configuration has been prepared yet.".into());
             }
             let (recipe, source) = read_recipe(&env.cwd)?;
@@ -499,23 +511,41 @@ impl Store {
                 "json".into(),
             ]);
             let text = run(&docker, &args, &dir, Some(env), 30)?;
-            let mut config: Value = serde_json::from_str(&text)
+            let config: Value = serde_json::from_str(&text)
                 .map_err(|_| "Docker returned an invalid Compose configuration.")?;
             validate_compose(&config, &env.id, &recipe.check_service)?;
-            // Compose parses interpolations again when reading a JSON model.
-            escape_dollars(&mut config);
+            *base.last_mut().unwrap() = compose.to_string_lossy().into();
+            base[8] = dir.join("empty.env").to_string_lossy().into();
+            // Compose interpolates a JSON model again when it reads one, and
+            // `config` already prints every `$` escaped as `$$` for exactly
+            // that (seen in Compose 2.16 through 5.1). So the model is kept
+            // as printed, and it must read back, with no env file, as the
+            // model validated above before anything runs from it.
+            let candidate = dir.join("compose.replay.json");
+            private_write(
+                &candidate,
+                &serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
+            )?;
+            let mut args = base.clone();
+            *args.last_mut().unwrap() = candidate.to_string_lossy().into();
+            args.extend(["--profile", "*", "config", "--format", "json"].map(str::to_string));
+            let replayed = run(&docker, &args, &dir, Some(env), 30).and_then(|text| {
+                serde_json::from_str::<Value>(&text)
+                    .map_err(|_| "Docker returned an invalid Compose configuration.".into())
+            });
+            if let Err(problem) = replays_as(&config, replayed) {
+                let _ = fs::remove_file(&candidate);
+                return Err(problem);
+            }
             private_write(
                 &frozen_recipe,
                 &serde_json::to_vec_pretty(&recipe).map_err(|e| e.to_string())?,
             )?;
-            private_write(
-                &compose,
-                &serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
-            )?;
+            fs::rename(&candidate, &compose)
+                .map_err(|e| format!("Could not save sandbox state: {e}"))?;
             env.frozen_recipe = Some(digest);
+            env.frozen_replays = true;
             self.save(env)?;
-            *base.last_mut().unwrap() = compose.to_string_lossy().into();
-            base[8] = dir.join("empty.env").to_string_lossy().into();
         }
         let recipe: Recipe =
             serde_json::from_slice(&fs::read(&frozen_recipe).map_err(|e| e.to_string())?)
@@ -1184,12 +1214,14 @@ fn validate_compose(config: &Value, project: &str, check: &str) -> Result<(), St
     Ok(())
 }
 
-fn escape_dollars(value: &mut Value) {
-    match value {
-        Value::String(text) => *text = text.replace('$', "$$"),
-        Value::Array(values) => values.iter_mut().for_each(escape_dollars),
-        Value::Object(values) => values.values_mut().for_each(escape_dollars),
-        _ => {}
+/// Whether a frozen model read back by Compose is the one validated. A
+/// Compose that did not escape its own `config` output would read resolved
+/// dollars as interpolations again; that is refused, never started.
+fn replays_as(validated: &Value, replayed: Result<Value, String>) -> Result<(), String> {
+    match replayed {
+        Ok(replayed) if &replayed == validated => Ok(()),
+        Ok(_) => Err("Docker Compose does not read its own configuration back unchanged (a `$` in it would be read as a variable), so it was not frozen and nothing was started.".into()),
+        Err(error) => Err(format!("Could not read back the frozen Compose configuration: {error}")),
     }
 }
 
@@ -1619,6 +1651,180 @@ mod tests {
             )
             .unwrap();
         }
+        fs::remove_dir_all(store.root).unwrap();
+    }
+
+    /// A project whose healthcheck and check read `$$VAR` shell variables
+    /// holding literal dollars: resolved from the private env file (`$` and
+    /// `$$`), written in the recipe (`a$$b` is `a$b`), and a runtime secret.
+    /// Synthetic values only.
+    fn dollar_project(store: &Store) -> String {
+        let project = store.root.join("project");
+        fs::create_dir_all(project.join(".octiq")).unwrap();
+        fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","envFile":"private.env","checkService":"verify","fixtureVersion":"dollars-v1"}"#).unwrap();
+        fs::write(
+            project.join(".octiq/private.env"),
+            "SYN_SECRET='p$w0rd'\nSYN_DD='d$$d'\n",
+        )
+        .unwrap();
+        let values = json!({"SYN":"${SYN_SECRET}","DD":"${SYN_DD}","LIT":"a$$b","DBP":"${OCTIQ_SANDBOX_DB_PASSWORD}"});
+        let config = json!({"services":{
+            "db":{"image":"alpine:3.22","environment":values,"volumes":["data:/data"],
+                "command":["sh","-c","echo \"$$SYN\" > /data/seen && exec sleep 3600"],
+                "healthcheck":{"test":["CMD-SHELL","test \"$$SYN\" = 'p$$w0rd' && test \"$$DD\" = 'd$$$$d' && test \"$$LIT\" = 'a$$b'"],
+                    "interval":"1s","timeout":"5s","retries":3}},
+            "verify":{"image":"alpine:3.22","profiles":["check"],"environment":values,"volumes":["data:/data"],
+                "command":["sh","-c","test \"$$SYN\" = 'p$$w0rd' && test \"$$DD\" = 'd$$$$d' && test \"$$LIT\" = 'a$$b' && test \"$${DBP#Sb!}\" != \"$$DBP\" && test \"$$(cat /data/seen)\" = 'p$$w0rd'"]}
+        },"volumes":{"data":{}}});
+        fs::write(
+            project.join(".octiq/compose.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        project.to_string_lossy().into_owned()
+    }
+
+    /// `docker compose` against an environment's frozen configuration.
+    fn frozen_compose(store: &Store, env: &Environment, tail: &[&str]) -> Result<String, String> {
+        let dir = store.directory(env).unwrap();
+        let mut args: Vec<String> = vec![
+            "--host".into(),
+            env.docker_endpoint.clone().unwrap(),
+            "compose".into(),
+            "-p".into(),
+            env.id.clone(),
+            "--env-file".into(),
+            dir.join("empty.env").to_string_lossy().into(),
+            "-f".into(),
+            dir.join("compose.json").to_string_lossy().into(),
+        ];
+        args.extend(tail.iter().map(|s| s.to_string()));
+        let docker = crate::proc::find_executable("docker").unwrap();
+        run(&docker, &args, &dir, Some(env), 120)
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn docker_dollars_keep_their_meaning_through_freeze_and_replay() {
+        let store = store();
+        let cwd = dollar_project(&store);
+        store.select("chat:a", &cwd, Some(true), false).unwrap();
+        // Keep diagnostics on a failed test; a pass removes its own resources.
+        let a = store.host_action("chat:a", "start").unwrap();
+        assert_eq!(a.state, "ready", "{:?}", a.error);
+        // Stop, then start again from the frozen file alone.
+        store.host_action("chat:a", "stop").unwrap();
+        let resumed = store.host_action("chat:a", "start").unwrap();
+        assert_eq!(resumed.state, "ready", "{:?}", resumed.error);
+        let reset = store.action("chat:a", "reset", Some(&a.id)).unwrap();
+        assert_eq!(reset.state, "ready", "{:?}", reset.error);
+        frozen_compose(&store, &a, &["down", "--volumes"]).unwrap();
+        fs::remove_dir_all(store.root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires local Docker; creates and removes only its own test project"]
+    fn docker_a_double_escaped_freeze_is_frozen_again_in_place_keeping_volumes() {
+        let store = store();
+        let cwd = dollar_project(&store);
+        store.select("chat:a", &cwd, Some(true), false).unwrap();
+        let a = store.host_action("chat:a", "start").unwrap();
+        assert_eq!(a.state, "ready", "{:?}", a.error);
+        assert!(a.frozen_replays);
+        frozen_compose(
+            &store,
+            &a,
+            &["exec", "-T", "db", "sh", "-c", "echo kept > /data/marker"],
+        )
+        .unwrap();
+        // What a freeze before the read-back proof left: every dollar escaped
+        // once more than Compose had already escaped it.
+        fn escape(value: &mut Value) {
+            match value {
+                Value::String(text) => *text = text.replace('$', "$$"),
+                Value::Array(values) => values.iter_mut().for_each(escape),
+                Value::Object(values) => values.values_mut().for_each(escape),
+                _ => {}
+            }
+        }
+        let path = store.directory(&a).unwrap().join("compose.json");
+        let mut legacy: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        escape(&mut legacy);
+        private_write(&path, &serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        store
+            .mutate(|data| {
+                data.environments.get_mut("chat:a").unwrap().frozen_replays = false;
+                Ok(())
+            })
+            .unwrap();
+        // The defect itself: that file's healthcheck cannot pass.
+        assert!(frozen_compose(
+            &store,
+            &a,
+            &["up", "--detach", "--wait", "--wait-timeout", "60"]
+        )
+        .is_err());
+        // A stop still works from the old file.
+        store.host_action("chat:a", "stop").unwrap();
+        let repaired = store.host_action("chat:a", "start").unwrap();
+        assert_eq!(repaired.state, "ready", "{:?}", repaired.error);
+        assert!(repaired.frozen_replays);
+        assert_eq!(repaired.id, a.id, "same owned project");
+        assert_eq!(repaired.frozen_recipe, a.frozen_recipe);
+        let now: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_ne!(now, legacy, "the malformed file is replaced");
+        assert_eq!(
+            frozen_compose(
+                &store,
+                &repaired,
+                &["exec", "-T", "db", "cat", "/data/marker"]
+            )
+            .unwrap()
+            .trim(),
+            "kept",
+            "volumes survive the repair"
+        );
+        frozen_compose(&store, &a, &["down", "--volumes"]).unwrap();
+        fs::remove_dir_all(store.root).unwrap();
+    }
+
+    #[test]
+    fn a_frozen_model_is_kept_only_when_compose_reads_it_back_unchanged() {
+        let validated = json!({"services":{"db":{"environment":{"SYN":"p$$w0rd"}}}});
+        assert!(replays_as(&validated, Ok(validated.clone())).is_ok());
+        // What a Compose that printed resolved dollars raw would read back.
+        let reread = json!({"services":{"db":{"environment":{"SYN":"p"}}}});
+        assert!(replays_as(&validated, Ok(reread))
+            .unwrap_err()
+            .contains("not frozen"));
+        assert!(replays_as(&validated, Err("Sandbox command failed (1).".into())).is_err());
+    }
+
+    #[test]
+    fn an_environment_frozen_before_the_read_back_proof_is_marked_for_refreezing() {
+        let store = store();
+        store
+            .select(
+                "chat:a",
+                std::env::temp_dir().to_str().unwrap(),
+                Some(true),
+                false,
+            )
+            .unwrap();
+        let mut env = store.snapshot().unwrap().environments["chat:a"].clone();
+        let mut stored = serde_json::to_value(&env).unwrap();
+        assert!(
+            stored.get("frozenReplays").is_none(),
+            "an old record has no flag"
+        );
+        assert!(
+            !serde_json::from_value::<Environment>(stored.clone())
+                .unwrap()
+                .frozen_replays
+        );
+        env.frozen_replays = true;
+        stored = serde_json::to_value(&env).unwrap();
+        assert_eq!(stored["frozenReplays"], true);
         fs::remove_dir_all(store.root).unwrap();
     }
 

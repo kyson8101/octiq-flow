@@ -261,6 +261,7 @@ mod tests {
             docker_endpoint: None,
             fingerprint: None,
             frozen_recipe: None,
+            frozen_replays: false,
             invalidated: None,
             lease: None,
             stopped: None,

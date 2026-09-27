@@ -58,7 +58,21 @@ containers. Endpoint ports are read again after every start.
 
 Each environment owns its Compose resources, random SQL password/JWT key and
 loopback port. Distinct `*.localhost` hostnames prevent browser cookie collisions.
-The host retains a validated resolved configuration for safe stop/reset. Recipes
+The host retains a validated resolved configuration for safe stop/reset.
+
+That frozen configuration is Compose's own `config --format json` output, kept
+as printed: Compose reads a JSON model through interpolation again, and its
+`config` output already writes every `$` as `$$` for exactly that (checked in
+Compose 2.16 through 5.1.0). So a recipe's `$$VAR` healthcheck reaches the shell
+as `$VAR`, and a resolved value holding `$` or `$$` stays literal. Before freezing,
+the host reads the file back through Compose and refuses to start unless it
+reads back as the model it validated. An environment frozen before this check
+had every dollar escaped once more (a `$$VAR` healthcheck ran as `$$`, the
+shell's PID); its next start or reset freezes it again from the same recipe in
+place, keeping the stack and its volumes, and stop keeps working from the old
+file until then.
+
+Recipes
 cannot use external/shared volumes, privileged/host namespaces, writable host
 binds, Docker sockets, fixed container names or fixed/public published ports.
 Recipes are trusted setup, not a security boundary around agent tools.
