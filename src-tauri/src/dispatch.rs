@@ -806,13 +806,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "safety_block_dismiss" => Ok(json!(crate::safety_block::dismiss(&arg::<String>(
             &args, "id"
         )?,))),
-        // Browser-only, like every card answer: the person allows exactly the
-        // action a Claude auto-mode card names, once. Not in the agent hook's
-        // whitelist, so no agent can approve its own refused call.
-        "safety_block_grant_exact" => to_value(crate::agent_chat::grant_exact_action(
-            &svc.chats,
-            &arg::<String>(&args, "id")?,
-        )),
+        // Withdrawn: a page from an older build may still offer "Allow this
+        // exact command once". It is answered, not "unknown command", so the
+        // card says why the refusal stands. It grants nothing and leaves the
+        // card up.
+        "safety_block_grant_exact" => Err(crate::safety_block::EXACT_GRANT_WITHDRAWN.to_string()),
         "safety_block_authorize_project" => {
             let id: String = arg(&args, "id")?;
             Ok(json!(crate::safety_block::authorize_for_project(&id)?))

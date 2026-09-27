@@ -8,7 +8,7 @@ vi.mock("../lib/bridge", () => ({
 import {
   allowForProjectReply,
   allowOnceReply,
-  exactOnceReply,
+  CLAUDE_REFUSAL_NOTE,
   LOCAL_ONLY_REPLY,
   SAFER_APPROACH_REPLY,
   saferReply,
@@ -93,7 +93,7 @@ describe("SafetyBlock", () => {
     );
   });
 
-  describe("Claude auto-mode card (feedback d59f830a)", () => {
+  describe("Claude auto-mode card (feedback d59f830a stays open)", () => {
     const claude: SafetyBlockNotice = {
       id: "claude-1",
       chatKey: "chat:w1",
@@ -103,32 +103,27 @@ describe("SafetyBlock", () => {
       detail: "Permission for this action was denied by the Claude Code auto mode classifier.",
       provider: "claude",
       action: "eas update --branch production",
-      exactGrant: "Bash(eas update --branch production)",
     };
     const drawClaude = (notice: SafetyBlockNotice) =>
       renderToStaticMarkup(<SafetyBlock block={notice} onContinue={() => {}} onAnswered={() => {}} />);
 
-    it("names the exact line and offers exactly one grant, never a project-wide one", () => {
+    it("names the refused line and offers no way to allow it", () => {
       const html = drawClaude(claude);
       expect(html).toContain("Claude auto-mode review");
       expect(html).toContain("eas update --branch production");
-      expect(html).toContain("Allow this exact command once");
       expect(html).toContain("Use safer approach");
-      expect(html).not.toContain("Always allow in this project");
+      expect(html).toContain("Dismiss");
+      expect(html).not.toMatch(/Allow/);
       expect(html).not.toContain("Codex");
     });
 
-    it("says plainly when an action cannot be allowed exactly", () => {
-      const html = drawClaude({ ...claude, action: "git push && npm publish", exactGrant: null });
+    it("says plainly that the refusal stands, even if an older server still sends a grant", () => {
+      const stale = { ...claude, exactGrant: "Bash(eas update --branch production)" } as SafetyBlockNotice;
+      const html = drawClaude(stale);
       expect(html).not.toContain("Allow this exact command once");
-      expect(html).toContain("cannot be allowed from here");
-    });
-
-    it("tells the agent the grant covers that line only, unchanged", () => {
-      const reply = exactOnceReply(claude);
-      expect(reply).toContain("eas update --branch production");
-      expect(reply).toContain("exact line");
-      expect(reply).toContain("Do not alter, chain or repeat it");
+      expect(html).not.toContain("Bash(");
+      expect(html).toContain("cannot allow a command");
+      expect(CLAUDE_REFUSAL_NOTE).toContain("will not retry it");
     });
   });
 });

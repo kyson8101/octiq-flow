@@ -2382,7 +2382,7 @@ impl OrchestrationStore {
         report: WorkerReport,
     ) -> Result<Task, String> {
         self.capture_native_decisions()?;
-        if crate::safety_block::has_pending_for_chat(actor_chat_key) {
+        if crate::safety_block::awaits_decision(actor_chat_key) {
             return Err("A native safety decision is still pending. End the turn without settling; the existing safety card must keep this attempt resumable.".into());
         }
         let mut event_run_id = String::new();

@@ -81,9 +81,9 @@ function resultFor(request) {
     case "permission_pending": return [];
     case "question_pending": return [];
     case "safety_block_pending": return pendingCards;
-    case "safety_block_grant_exact":
+    case "safety_block_dismiss":
       pendingCards = pendingCards.filter((card) => card.id !== request.args?.id);
-      return { rule: "Bash(eas update --branch production)", deliveredToWorker: false };
+      return true;
     case "memory_usage": return { totalMb: 0, procs: 0, rows: [] };
     case "usage_summary": return {};
     case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }];
@@ -244,7 +244,9 @@ try {
       await context.close();
     }
 
-    // ── d59f830a: a Claude auto-mode card, allowed exactly once.
+    // ── 56dd3f24 / d59f830a: a Claude auto-mode card records the refusal and
+    // offers no way to allow it (d59f830a stays open), even when an older
+    // server still sends exactGrant.
     {
       calls.length = 0;
       snapshot = { runs: [], tasks: [], attempts: [], gates: [], messages: [], notifications: [] };
@@ -262,15 +264,16 @@ try {
       assert.equal(await card.getByRole("button", { name: "Always allow in this project" }).count(), 0);
       assert.equal(await noHorizontalScroll(page), true, `claude-card-${label}: no sideways scroll`);
       await page.screenshot({ path: join(artifacts, `claude-card-${label}.png`), fullPage: false });
-      await card.getByRole("button", { name: "Allow this exact command once" }).click();
+      assert.equal(await card.getByRole("button", { name: /allow/i }).count(), 0,
+        `claude-card-${label}: nothing on the card allows the command`);
+      assert.match(await card.innerText(), /cannot allow a command/);
+      await card.getByRole("button", { name: "Dismiss" }).click();
       await card.waitFor({ state: "detached" });
-      const granted = calls.find((call) => call.cmd === "safety_block_grant_exact");
-      assert.equal(granted?.args?.id, "card-1");
-      await page.waitForFunction(() => true);
-      const told = () => calls.find((call) => ["chat_send", "chat_start"].includes(call.cmd)
-        && JSON.stringify(call.args).includes("I allowed exactly this command once"));
-      for (let i = 0; i < 50 && !told(); i++) await page.waitForTimeout(100);
-      assert(told(), `claude-card-${label}: the agent is told the exact grant`);
+      assert.equal(calls.find((call) => call.cmd === "safety_block_dismiss")?.args?.id, "card-1");
+      await page.waitForTimeout(300);
+      assert.equal(calls.filter((call) => call.cmd === "safety_block_grant_exact").length, 0);
+      assert.equal(calls.filter((call) => ["chat_send", "chat_start"].includes(call.cmd)).length, 0,
+        `claude-card-${label}: dismissing sends the agent nothing`);
       await context.close();
       pendingCards = [];
     }

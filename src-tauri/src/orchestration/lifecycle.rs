@@ -13,7 +13,8 @@ pub struct NativeDecision {
     pub attempt_id: String,
     pub chat_key: String,
     pub reason: String,
-    /// Router diagnostics provide a reason, not the original tool arguments.
+    /// Codex's router diagnostics provide a reason, not the original tool
+    /// arguments; only a Claude auto-mode refusal names the call.
     pub blocked_action: Option<String>,
     pub status: String,
     pub continuation: String,
@@ -54,6 +55,21 @@ pub(super) fn recover(data: &mut Stored) -> bool {
             decision.status = "expired".into();
             decision.continuation = "unavailable".into();
             decision.recovery = "The host restarted; the old card cannot continue. Inspect the retained task and explicitly retry if still needed. A retry grants no permission.".into();
+            changed = true;
+        }
+    }
+    // An earlier build told a worker its next launch would carry a one-time
+    // rule for a refused command. That rule no longer exists, so the message
+    // would be false; one still waiting is cancelled, never delivered.
+    for n in data.notifications.values_mut() {
+        if inbox::withdrawn_exact_grant(n)
+            && matches!(
+                n.state,
+                inbox::DeliveryState::Pending | inbox::DeliveryState::Delivering
+            )
+        {
+            n.state = inbox::DeliveryState::Cancelled;
+            n.updated_at = now_ms();
             changed = true;
         }
     }
@@ -107,16 +123,22 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
                 .unwrap_or("closed")
                 .into();
         }
-        if decision.status == "pending" && live {
+        // Only a Claude auto-mode refusal names the call it refused; Codex's
+        // router diagnostics never do (`safety_block::BlockedAction::action`).
+        let claude_refusal = decision.blocked_action.is_some();
+        if decision.status == "pending" && live && !claude_refusal {
             decision.continuation = "new_turn_same_attempt".into();
             decision.recovery = "Use the existing safety card in the main chat. The rejected call already ended; a decision can authorize a new turn in this attempt, not resume that call.".into();
-        } else if decision.status == "allowed_exact" && live {
-            decision.continuation = "new_turn_same_attempt".into();
-            decision.recovery = "The person allowed exactly the blocked action, once, for this attempt's next agent launch. OctiqFlow delivered that decision to the worker; the rejected call itself did not resume. Anything else still needs its own decision.".into();
         } else {
             decision.continuation = "unavailable".into();
             if !live {
                 decision.recovery = "This attempt has settled or was superseded. Its old card cannot resume it. Inspect the task and explicitly retry if needed; a retry grants no permission.".into();
+            } else if claude_refusal && decision.status == "allowed_exact" {
+                // Recorded by an earlier build that offered a one-time
+                // rule. It stays as history and authorizes nothing now.
+                decision.recovery = "History only: an earlier OctiqFlow build recorded a one-time allowance for this exact command. That allowance was withdrawn because it could not be enforced as one use, and it authorizes nothing now. Do not run the command on the strength of it. Claude's auto mode refusal stands: continue another safe way, or settle the attempt blocked and name the refused command.".into();
+            } else if claude_refusal {
+                decision.recovery = "Claude's auto mode refused this call without asking anyone, and OctiqFlow cannot approve it: there is no supported way to allow one refused call before it runs. The card only records the refusal. Do not retry the call or reword it to get past the classifier. Continue another safe way, or settle the attempt blocked and name the refused command so the person can decide.".into();
             } else if decision.status == "closed" {
                 decision.recovery = "The card is no longer pending. Its absence does not prove approval. Inspect the person's recorded decision before continuing.".into();
             } else if decision.status == "dismissed" || decision.status == "superseded" {
@@ -150,39 +172,6 @@ impl OrchestrationStore {
                     .get(&a.task_id)
                     .is_some_and(|t| t.active_attempt_id.as_deref() == Some(&a.id))
         })))
-    }
-
-    /// The person allowed one exact line on a worker's auto-mode card: tell
-    /// that worker (its next launch carries the rule) and its coordinator.
-    /// The rejected call does not resume; the worker decides whether to run
-    /// the line again, unchanged.
-    pub(crate) fn deliver_exact_grant(
-        &self,
-        chat_key: &str,
-        card_id: &str,
-        action: &str,
-    ) -> Result<(), String> {
-        let run = self.mutate(|data| {
-            let Some(attempt) = data
-                .attempts
-                .values()
-                .find(|a| {
-                    a.worker_chat_key == chat_key
-                        && matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running)
-                })
-                .cloned()
-            else {
-                return Err("This worker attempt is no longer live.".into());
-            };
-            let coordinator = data.runs[&attempt.run_id].coordinator_chat_key.clone();
-            inbox::enqueue(data, &attempt.run_id, "host", chat_key, format!("exact-grant:{card_id}"), "native_decision",
-                format!("The person allowed exactly this command once, on the auto-mode card for task {} (decision {card_id}):\n\n{action}\n\nYour next agent launch carries a permission rule for that exact line and nothing else. Run it unchanged if your task still needs it; do not alter, chain or repeat it. Any other blocked action still needs its own decision.", attempt.task_id));
-            inbox::enqueue(data, &attempt.run_id, "host", &coordinator, format!("exact-grant-note:{card_id}"), "native_decision",
-                format!("The person allowed one exact command for task {} (attempt {}) on decision {card_id}. OctiqFlow delivered it to the worker. Read nativeDecisions; do not relay or repeat the approval.", attempt.task_id, attempt.id));
-            Ok(attempt.run_id)
-        })?;
-        announce(&run, "native_decision");
-        Ok(())
     }
 
     pub(crate) fn capture_native_decisions(&self) -> Result<(), String> {
@@ -471,11 +460,12 @@ mod tests {
             .contains("settled"));
     }
 
-    /// Feedback d59f830a / 56dd3f24: a Claude worker refused by auto mode
-    /// left no decision record (nativeDecisions empty, later "stalled") and
-    /// no way to allow the exact command it was refused.
+    /// Feedback 56dd3f24: a Claude worker refused by auto mode left no
+    /// decision record (nativeDecisions empty, later "stalled"). It is a
+    /// decision now, naming the refused call. d59f830a (a way to allow that
+    /// exact call) stays open: nothing can approve it, and the record says so.
     #[test]
-    fn a_claude_auto_mode_refusal_is_a_decision_the_person_can_allow_exactly_once() {
+    fn a_claude_auto_mode_refusal_is_recorded_and_offers_no_approval() {
         let store = OrchestrationStore::default();
         let (run, attempt) = worker(&store);
         let chat = attempt.worker_chat_key.clone();
@@ -503,68 +493,126 @@ mod tests {
             "{}",
             decision.reason
         );
-        assert_eq!(decision.continuation, "new_turn_same_attempt");
-        assert_eq!(store.worker_card_live(&chat).unwrap(), Some(true));
-
-        let card = crate::safety_block::pending()
-            .into_iter()
-            .find(|b| b.chat_key() == chat)
-            .unwrap();
-        let staged = crate::safety_block::stage_exact(card.id()).unwrap();
-        assert_eq!(staged.rule, format!("Bash({line})"));
-        assert!(crate::safety_block::confirm_exact(&staged));
-        store
-            .deliver_exact_grant(&chat, &staged.id, &staged.action)
-            .unwrap();
-        let snapshot = store.snapshot(Some(&run.id)).unwrap();
-        assert_eq!(snapshot.native_decisions[0].status, "allowed_exact");
-        assert_eq!(
-            snapshot.native_decisions[0].continuation,
-            "new_turn_same_attempt"
+        // Honest: the card cannot continue anything, and says what can.
+        assert_eq!(decision.continuation, "unavailable");
+        assert!(
+            decision.recovery.contains("cannot approve it"),
+            "{}",
+            decision.recovery
         );
-        // The worker is told, with the exact line and nothing broader.
-        assert!(snapshot
+        assert!(decision.recovery.contains("settle the attempt blocked"));
+        // Nothing reached the worker telling it a rule is on its way.
+        assert!(!snapshot
             .notifications
             .iter()
-            .any(|n| n.target_chat_key == chat
-                && n.body.contains(line)
-                && n.body.contains("unchanged")));
-        // Its next launch carries the rule until a matching call uses it.
-        assert_eq!(
-            crate::safety_block::exact_grants(&chat),
-            vec![staged.rule.clone()]
-        );
-        let other = json!({ "command": "eas update --branch staging" });
-        assert!(!crate::safety_block::consume_grant(
-            &chat,
-            "Bash",
-            Some(&other)
-        ));
-        assert!(crate::safety_block::consume_grant(
-            &chat,
-            "Bash",
-            Some(&input)
-        ));
-        assert!(crate::safety_block::exact_grants(&chat).is_empty());
-
+            .any(|n| n.target_chat_key == chat && n.kind == "native_decision"));
+        // Nothing can allow it, so it holds nothing open: the worker can
+        // settle blocked while the card is still up (a Codex card, whose
+        // "allow" can continue the attempt, would refuse this).
+        assert!(!crate::safety_block::awaits_decision(&chat));
         store
             .report_worker(
                 &chat,
                 WorkerReport {
                     attempt_id: attempt.id,
-                    outcome: WorkerOutcome::Completed,
-                    summary: "Published".into(),
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "Auto mode refused `eas update`; the person must run it.".into(),
                     files_modified: vec![],
                     verdict: None,
                 },
             )
             .unwrap();
-        // A settled attempt's card can no longer continue anything.
-        assert_eq!(store.worker_card_live(&chat).unwrap(), Some(false));
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// A record from the build that offered "allow this exact command once"
+    /// — the decision it labelled allowed_exact and the notice it queued for
+    /// the worker — is history. The notice is never delivered, and the
+    /// decision authorizes nothing.
+    #[test]
+    fn a_stale_one_time_allowance_is_history_not_authority() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        store
+            .mutate(|data| {
+                data.native_decisions.insert(
+                    "old-card".into(),
+                    NativeDecision {
+                        id: "old-card".into(),
+                        run_id: run.id.clone(),
+                        task_id: attempt.task_id.clone(),
+                        attempt_id: attempt.id.clone(),
+                        chat_key: chat.clone(),
+                        reason: "Claude's auto mode blocked an action: Production Deploy".into(),
+                        blocked_action: Some("eas update --branch production".into()),
+                        status: "allowed_exact".into(),
+                        continuation: "new_turn_same_attempt".into(),
+                        recovery: String::new(),
+                        observed_at: 1,
+                    },
+                );
+                inbox::enqueue(
+                    data,
+                    &run.id,
+                    "host",
+                    &chat,
+                    "exact-grant:old-card".into(),
+                    "native_decision",
+                    "Your next agent launch carries a permission rule for that exact line.".into(),
+                );
+                Ok(())
+            })
+            .unwrap();
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let decision = &snapshot.native_decisions[0];
+        assert_eq!(decision.status, "allowed_exact", "kept as history");
+        assert_eq!(decision.continuation, "unavailable");
+        assert!(
+            decision.recovery.starts_with("History only"),
+            "{}",
+            decision.recovery
+        );
+        assert!(decision.recovery.contains("authorizes nothing"));
+
+        // Due, but never handed to the worker: claiming it cancels it.
+        let due = store.due_notifications(i64::MAX).unwrap();
+        let stale = due
+            .iter()
+            .find(|n| n.source == "exact-grant:old-card")
+            .expect("queued");
         assert!(store
-            .worker_card_live("chat:not-a-worker")
+            .claim_notification(&stale.id, now_ms())
             .unwrap()
             .is_none());
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        assert!(snapshot
+            .notifications
+            .iter()
+            .filter(|n| n.source.starts_with("exact-grant"))
+            .all(|n| n.state == inbox::DeliveryState::Cancelled));
+
+        // And a restart cancels one before anything tries to deliver it.
+        store
+            .mutate(|data| {
+                inbox::enqueue(
+                    data,
+                    &run.id,
+                    "host",
+                    &chat,
+                    "exact-grant-note:old-card".into(),
+                    "native_decision",
+                    "OctiqFlow delivered it to the worker.".into(),
+                );
+                assert!(recover(data));
+                assert!(data
+                    .notifications
+                    .values()
+                    .filter(|n| n.source.starts_with("exact-grant"))
+                    .all(|n| n.state == inbox::DeliveryState::Cancelled));
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]

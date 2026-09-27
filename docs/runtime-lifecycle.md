@@ -22,10 +22,19 @@ remain unverified regardless of what a worker previously wrote.
 Snapshots also expose `nativeDecisions`, including the observed host card ID,
 owning task/attempt/chat, provider reason, current card status, and continuation
 viability. Raw diagnostic dumps are excluded. Exact tool arguments are not
-present in router diagnostics, so `blockedAction` remains null rather than
+present in Codex router diagnostics, so `blockedAction` remains null rather than
 inventing them. An absent or closed card is not evidence of approval. A pending
-safety card prevents its worker from settling, preserving a continuation into
-the same attempt. The rejected tool call itself has already ended. Settled or
+Codex safety card prevents its worker from settling, preserving a continuation
+into the same attempt. The rejected tool call itself has already ended.
+
+A Claude auto-mode refusal is recorded too, with the exact call in
+`blockedAction`, but nothing can approve it: Claude refuses without asking
+OctiqFlow (its `can_use_tool` callback carries only "ask" outcomes), and an
+allow rule on a later launch would cover every call of the line, not one. Its
+continuation is `unavailable`; the worker carries on another way or settles
+blocked, naming the command. An `allowed_exact` status from an earlier build is
+history and authorizes nothing, and that build's queued "exact-grant" notices
+are cancelled rather than delivered. Settled or
 superseded attempts require an explicit retry, which does not grant permission.
 Host restart expires earlier cards. Historical rejections that produced no host
 card cannot be reconstructed from worker prose.

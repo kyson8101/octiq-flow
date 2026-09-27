@@ -1,9 +1,10 @@
 // A provider's own safety review has already refused this action: Codex's
 // tool router, or Claude's auto-mode classifier. Unlike a live Claude
 // permission ask, there is no suspended tool call for OctiqFlow to resume.
-// These buttons therefore send the user's decision as a fresh, explicit turn —
-// and for Claude, whose classifier text does not clear, "allow" becomes a real
-// permission rule for exactly the refused line, on the chat's next launch.
+// These buttons therefore send the user's decision as a fresh, explicit turn.
+// Claude's card offers no "allow": Claude refuses without asking anyone and
+// has no way to approve one refused call before it runs, so the card records
+// the refusal and says so.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
 
@@ -18,20 +19,16 @@ export type SafetyBlockNotice = {
   provider?: "codex" | "claude";
   /** The exact call that was refused, when the provider named it. */
   action?: string | null;
-  /** The one permission rule that allows exactly `action`, when one can. */
-  exactGrant?: string | null;
 };
 
-type ExactGrantOutcome = { rule: string; deliveredToWorker: boolean };
-
-/** What the agent is told after the person allowed its exact line once. */
-export function exactOnceReply(block: SafetyBlockNotice): string {
-  return (
-    `I allowed exactly this command once: ${block.action ?? ""}\n\n` +
-    "OctiqFlow added a permission rule for that exact line to your next run, and nothing broader. " +
-    "Run it unchanged if it is still needed. Do not alter, chain or repeat it, and ask again before any other blocked action."
-  );
-}
+/**
+ * Why a Claude refusal has no "allow" here. Claude refuses without asking
+ * anyone and offers no way to approve one call before it runs; a permission
+ * rule would allow every later call of the line, so OctiqFlow adds none.
+ */
+export const CLAUDE_REFUSAL_NOTE =
+  "OctiqFlow cannot allow a command Claude's auto mode refused, and will not retry it. " +
+  "If it should run, run it yourself, or change Claude's permissions outside OctiqFlow if you mean to allow it for good.";
 
 export const LOCAL_ONLY_REPLY =
   "Continue without sending any local data to an external service. Use only local tools and local reasoning for this task.";
@@ -74,7 +71,7 @@ export function allowForProjectReply(block: SafetyBlockNotice): string {
   );
 }
 
-/** Claude's auto-mode card: the refused line, and at most one exact grant. */
+/** Claude's auto-mode card: what was refused, and that nothing here can allow it. */
 function ClaudeSafetyBlock({
   block,
   onContinue,
@@ -87,33 +84,18 @@ function ClaudeSafetyBlock({
   startOpen: boolean;
 }) {
   const [open, setOpen] = useState(startOpen);
-  const [sending, setSending] = useState<"safer" | "exact" | null>(null);
+  const [sending, setSending] = useState<"safer" | "dismiss" | null>(null);
   const [error, setError] = useState("");
 
-  const safer = async () => {
-    setSending("safer");
+  // "Dismiss" only takes the card down: for when the person has dealt with
+  // the command themselves and the agent needs no new instruction.
+  const answer = async (choice: "safer" | "dismiss") => {
+    setSending(choice);
     setError("");
     try {
       await bridge.invoke("safety_block_dismiss", { id: block.id });
       onAnswered(block.id);
-      await onContinue(SAFER_APPROACH_REPLY);
-    } catch (why) {
-      setError(String((why as Error)?.message ?? why));
-      setSending(null);
-    }
-  };
-
-  const allowExactly = async () => {
-    setSending("exact");
-    setError("");
-    try {
-      // The host refuses while the agent is mid-turn or its attempt is over,
-      // and the card stays up; only a real grant takes it down.
-      const outcome = await bridge.invoke<ExactGrantOutcome>("safety_block_grant_exact", { id: block.id });
-      onAnswered(block.id);
-      // A worker is told by OctiqFlow itself; relaying it again would be a
-      // second, unverifiable copy of the person's decision.
-      if (!outcome?.deliveredToWorker) await onContinue(exactOnceReply(block));
+      if (choice === "safer") await onContinue(SAFER_APPROACH_REPLY);
     } catch (why) {
       setError(String((why as Error)?.message ?? why));
       setSending(null);
@@ -147,29 +129,21 @@ function ClaudeSafetyBlock({
       )}
 
       <div className="ask-card-buttons safety-card-buttons">
-        <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void safer()}>
+        <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void answer("safer")}>
           {sending === "safer" ? "Continuing…" : "Use safer approach"}
         </button>
         <button className="ask-btn" type="button" disabled={!!sending} aria-expanded={open}
           onClick={() => setOpen((shown) => !shown)}>
           {open ? "Hide technical details" : "Technical details"}
         </button>
-        {block.exactGrant && (
-          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-            title={`Adds the permission rule ${block.exactGrant} to this agent's next run, and nothing broader`}
-            onClick={() => void allowExactly()}>
-            {sending === "exact" ? "Allowing…" : "Allow this exact command once"}
-          </button>
-        )}
+        <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("dismiss")}>
+          {sending === "dismiss" ? "Dismissing…" : "Dismiss"}
+        </button>
       </div>
 
-      {error && <p className="ask-card-note safety-card-error">Could not allow it: {error}</p>}
+      {error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
 
-      <p className="ask-card-note">
-        {block.exactGrant
-          ? "Allowing gives the agent's next run a permission for exactly the line above, once. The refused call does not resume by itself: the agent runs it again, unchanged, or not at all."
-          : "Claude takes an exact permission only for one plain shell command. This action cannot be allowed from here: choose a safer approach, or change the permission yourself."}
-      </p>
+      <p className="ask-card-note">{CLAUDE_REFUSAL_NOTE}</p>
     </div>
   );
 }

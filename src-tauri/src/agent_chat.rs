@@ -28,7 +28,7 @@
 //! interactive shell's PATH, so `claude` would simply not be found.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -384,10 +384,6 @@ struct ChatSession {
     /// When this last started or finished a turn. Only read while `busy` is
     /// false, so it means "still since".
     last_active: Instant,
-    /// This process used a one-shot exact grant and is being ended so the
-    /// rule dies with it (`revoke_spent_grant`). Nothing is written to it
-    /// again: sends wait in the queue and ride the relaunch.
-    revoking: bool,
 }
 
 #[derive(Debug)]
@@ -665,10 +661,6 @@ pub struct ChatManager {
     /// What the person sent, as the browser handed it over — see
     /// `TurnEvidence`. Newest last, bounded.
     evidence: Mutex<VecDeque<TurnEvidence>>,
-    /// Chat keys whose process OctiqFlow is ending on purpose so the next
-    /// launch carries a changed exact grant. A worker's exit is otherwise
-    /// read as a lost worker and fails its attempt.
-    restarting: Mutex<std::collections::HashSet<String>>,
 }
 
 /// One message as the person sent it: their words BEFORE the host dressed
@@ -695,39 +687,6 @@ fn is_person_turn_id(turn_id: &str) -> bool {
 }
 
 impl ChatManager {
-    /// End an idle chat's process on purpose, without its exit counting as a
-    /// lost worker. True when it was ended (or had no process to end).
-    fn end_for_relaunch(&self, key: &str) -> Result<bool, String> {
-        if !self
-            .sessions
-            .lock()
-            .map_err(|e| e.to_string())?
-            .contains_key(key)
-        {
-            return Ok(true);
-        }
-        self.restarting
-            .lock()
-            .map_err(|e| e.to_string())?
-            .insert(key.to_string());
-        let ended = end_process_when(self, key, Some(Duration::ZERO));
-        if ended != Ok(true) {
-            self.restarting
-                .lock()
-                .map_err(|e| e.to_string())?
-                .remove(key);
-        }
-        ended
-    }
-
-    /// Whether this exit was one `end_for_relaunch` asked for. Taken once.
-    fn take_restarting(&self, key: &str) -> bool {
-        self.restarting
-            .lock()
-            .map(|mut keys| keys.remove(key))
-            .unwrap_or(false)
-    }
-
     /// Keep the person's own words for a message the browser is sending. A
     /// retried send of the same turn keeps what was first recorded.
     pub(crate) fn note_person_turn(
@@ -1408,7 +1367,6 @@ fn build_command_with_context(
         mcp_config,
         persistent_authorizations,
         orchestration_worker: false,
-        exact_grants: &[],
     })
 }
 
@@ -1790,17 +1748,18 @@ fn start_queued_command_turn_inner(
     let start = manager
         .start_context(session_key)
         .ok_or_else(|| format!("nothing here knows how to resume '{session_key}'"))?;
-    // A persistent provider gets here only when its process was ended to take
-    // back a spent one-shot grant; its launch writes the prompt on stdin.
-    let persistent = provider_for(start.agent)
+    if provider_for(start.agent)
         .capabilities()
         .input
-        .accepts_stdin();
+        .accepts_stdin()
+    {
+        return Err(format!("'{session_key}' no longer uses command-line turns"));
+    }
     let QueuedTurn {
         text,
         images,
         turn_id,
-        appended_turn_ids,
+        appended_turn_ids: _,
         // Already in the transcript — that is what `recorded` means, and it is
         // why `start_session` below is told not to write it a second time.
         recorded: _,
@@ -1823,33 +1782,7 @@ fn start_queued_command_turn_inner(
         turn_id,
         false,
         None,
-    )?;
-    // The launch recorded the lead message's delivery; the messages folded
-    // into it went with it (as `dispatch_next_persistent_turn` records them).
-    if persistent {
-        for appended in &appended_turn_ids {
-            record_delivery(stream_key, Some(appended), "dispatched");
-        }
-    }
-    Ok(())
-}
-
-/// What becomes of the queue when a process is reaped. A one-shot provider's
-/// next turn rides the resume command, and so does a persistent one ended to
-/// take back a spent grant (`revoke_spent_grant`). Any other persistent
-/// process's stdin died with it, so what waited for it is dropped rather than
-/// left to surface in whatever is started under this key later.
-fn reaped_queue(
-    manager: &ChatManager,
-    session_key: &str,
-    agent: ChatAgent,
-    revoking: bool,
-) -> Option<QueuedTurn> {
-    if provider_for(agent).capabilities().input.accepts_stdin() && !revoking {
-        manager.forget_queued_turns(session_key);
-        return None;
-    }
-    manager.take_queued_turn(session_key)
+    )
 }
 
 fn write_json_line(stdin: &mut ChildStdin, value: &Value) -> Result<(), String> {
@@ -2056,14 +1989,6 @@ pub(crate) fn start_session(
     } else {
         Cow::Borrowed(prompt.as_str())
     };
-    // Exact lines the person allowed once on an auto-mode card. They stay
-    // waiting until a call uses one (`consume_grant`), so a launch that dies
-    // before running it does not lose the person's decision.
-    let exact_grants = if agent == ChatAgent::Claude {
-        crate::safety_block::exact_grants(&key)
-    } else {
-        Vec::new()
-    };
     let line = provider.build_command(&AgentCommand {
         model: model.as_deref(),
         access,
@@ -2076,7 +2001,6 @@ pub(crate) fn start_session(
         mcp_config: mcp.as_deref(),
         persistent_authorizations: authorizations.as_deref(),
         orchestration_worker,
-        exact_grants: &exact_grants,
     });
     let process_cwd = if cwd.trim().is_empty() {
         // `home_dir` reads USERPROFILE too, so this does not land on "/" the
@@ -2256,7 +2180,6 @@ pub(crate) fn start_session(
         // from birth, and the sweeper is right to treat it that way.
         busy: has_prompt && (!prompt.trim().is_empty() || !images.is_empty()),
         last_active: Instant::now(),
-        revoking: false,
     }));
     sessions.insert(session_key.clone(), session.clone());
     // The level the hook will be answered with, from here until it changes.
@@ -2322,13 +2245,6 @@ pub(crate) fn start_session(
             // Claude's calls by tool_use id, so an auto-mode refusal naming
             // one can say exactly what was refused (see `note_claude_calls`).
             let mut claude_calls: HashMap<String, (String, Value)> = HashMap::new();
-            // The one-shot exact rules THIS process was launched with, and
-            // which of them a call has used. A used rule is still live in the
-            // process, so the process is ended at this turn's full stop —
-            // before anything queued is handed to it — or at once if a call
-            // tries the same line again (see `note_claude_calls`).
-            let carried_grants = exact_grants;
-            let mut spent_grants: HashSet<String> = HashSet::new();
             let mut snapshot_reads = crate::record_trim::SnapshotResults::default();
             let prelude = app_server_prelude
                 .into_iter()
@@ -2482,31 +2398,7 @@ pub(crate) fn start_session(
                             }
                         }
                         if stream_provider.kind() == ChatAgent::Claude {
-                            let used = note_claude_calls(
-                                &key,
-                                &event,
-                                &mut claude_calls,
-                                &carried_grants,
-                                &mut spent_grants,
-                            );
-                            if used == GrantUse::Again {
-                                // "Once" already happened. The rule cannot be
-                                // taken out of a running process, so the
-                                // process goes, mid-turn; what was queued
-                                // rides the relaunch.
-                                if let Ok(mut s) = asking.lock() {
-                                    revoke_spent_grant(&reading, &key, &mut s);
-                                }
-                                emit_status(
-                                    stream_provider.kind(),
-                                    ChatStatus {
-                                        key: key.clone(),
-                                        kind: "error".into(),
-                                        text: "Stopped: the agent called a command it was allowed to run once a second time. Ask again on a new card if it really needs to run it again.".into(),
-                                        code: None,
-                                    },
-                                );
-                            }
+                            note_claude_calls(&event, &mut claude_calls);
                             let called = event
                                 .get("tool_use_id")
                                 .and_then(Value::as_str)
@@ -2628,12 +2520,11 @@ pub(crate) fn start_session(
                                     codex.active_turn_id = None;
                                 }
                                 s.turn_ended();
-                                refused = finish_persistent_turn(
+                                refused = dispatch_next_persistent_turn(
                                     &reading,
                                     &session_key,
                                     &key,
                                     &mut s,
-                                    !spent_grants.is_empty(),
                                 );
                             }
                             if let Some(why) = refused {
@@ -2805,13 +2696,13 @@ pub(crate) fn start_session(
                         // to ride: its stdin died with it, so anything still
                         // waiting is dropped here rather than left to surface
                         // in whatever is started under this key later.
-                        //
-                        // Except a process ended to take back a spent one-shot
-                        // grant: what waited for it is the person's, and
-                        // rides a fresh launch that carries no rule.
-                        let revoking = session.lock().map(|s| s.revoking).unwrap_or(false);
                         let queued_turn =
-                            reaped_queue(&manager_for_exit, &session_key_for_exit, agent, revoking);
+                            if provider_for(agent).capabilities().input.accepts_stdin() {
+                                manager_for_exit.forget_queued_turns(&session_key_for_exit);
+                                None
+                            } else {
+                                manager_for_exit.take_queued_turn(&session_key_for_exit)
+                            };
                         if queued_turn.is_some() {
                             manager_for_exit
                                 .handoffs
@@ -2851,16 +2742,7 @@ pub(crate) fn start_session(
             // exit, carry it into the next resume command instead. Keep the
             // UI's running state alive across that handoff: an `exit` here
             // would make a second quick message race the replacement.
-            //
-            // A persistent process ended to take back a spent one-shot grant
-            // hands its queue over the same way.
-            // Ended on purpose to relaunch with a changed exact grant: the
-            // worker is not lost, its next turn starts a fresh process.
-            let relaunching = manager_for_exit.take_restarting(&key);
-            let revoking = session.lock().map(|s| s.revoking).unwrap_or(false);
-            if was_current
-                && (revoking || !provider_for(agent).capabilities().input.accepts_stdin())
-            {
+            if was_current && !provider_for(agent).capabilities().input.accepts_stdin() {
                 if let Some(turn) = queued_turn {
                     match start_queued_command_turn(
                         manager_for_exit.clone(),
@@ -2885,7 +2767,7 @@ pub(crate) fn start_session(
                     }
                 }
             }
-            if drained && !relaunching {
+            if drained {
                 if let Err(error) = manager_for_exit.orchestrations.worker_disconnected(&key) {
                     eprintln!("orchestration: cannot record worker disconnect: {error}");
                 }
@@ -2983,57 +2865,6 @@ fn write_user_message_locked(
     Ok(())
 }
 
-/// A persistent provider reached its full stop. Normally the next queued turn
-/// is handed over right here; after a one-shot exact grant was used, the
-/// process is ended instead, because it still carries the rule and anything
-/// written to it could run the line again. The queue stays where it is and
-/// rides the relaunch (see the reaper in `start_session`).
-fn finish_persistent_turn(
-    manager: &ChatManager,
-    session_key: &str,
-    stream_key: &str,
-    session: &mut ChatSession,
-    spent_grant: bool,
-) -> Option<String> {
-    if spent_grant {
-        revoke_spent_grant(manager, stream_key, session);
-        return None;
-    }
-    dispatch_next_persistent_turn(manager, session_key, stream_key, session)
-}
-
-/// End a process that holds a spent one-shot exact grant, so the rule dies
-/// with it. `--allowedTools` cannot be taken back from a running `claude -p`;
-/// only its end takes the privilege away.
-///
-/// Unlike the idle sweeper this does not wait for native background work:
-/// that work runs inside the same process and could use the rule too. It is
-/// recorded as interrupted, announced, and handed to the next launch as a
-/// continuation (`background_tasks::continuation`), the same recovery an
-/// explicit end gets. Queued turns are kept — the reaper relaunches with the
-/// first of them, and the relaunch carries no rule because the call already
-/// took it out of `safety_block::GRANTS`. The exit is marked as a relaunch so
-/// a worker is not read as lost.
-fn revoke_spent_grant(manager: &ChatManager, key: &str, session: &mut ChatSession) {
-    if session.revoking {
-        return;
-    }
-    session.revoking = true;
-    if let Ok(mut keys) = manager.restarting.lock() {
-        keys.insert(key.to_string());
-    }
-    // Working until the reaper takes over: the idle sweeper must not end it
-    // first and drop the queue with it.
-    session.turn_started();
-    if let Err(error) = manager.background.interrupt(key, &session.launch_id,
-        "The provider process was ended to take back a command allowed once. Background work is no longer attached; inspect retained output before retrying.") {
-        eprintln!("chat: cannot record interrupted background work: {error}");
-    }
-    session.stdin.take();
-    let _ = session.child.kill();
-    eprintln!("[perm] {key} ended after using a one-shot exact grant");
-}
-
 /// Hand the next host-owned queue unit to a persistent provider at the exact
 /// turn boundary. The caller holds the session lock from `turn_ended` through
 /// this write, so an append either joins this unit first or becomes the next
@@ -3044,9 +2875,6 @@ fn dispatch_next_persistent_turn(
     stream_key: &str,
     session: &mut ChatSession,
 ) -> Option<String> {
-    if session.revoking {
-        return None;
-    }
     if !provider_for(session.agent)
         .capabilities()
         .input
@@ -3384,9 +3212,7 @@ fn chat_send_with_user_turn(
                 .capabilities()
                 .input
                 .accepts_stdin();
-            // A process being ended to take back a spent one-shot grant is
-            // never written to again; the message rides its relaunch.
-            if one_shot || guard.busy || guard.revoking || manager.has_queued_turns(&session_key) {
+            if one_shot || guard.busy || manager.has_queued_turns(&session_key) {
                 // Every provider gets the same durable queue envelope. Native
                 // echoes reconcile by the exact turn id when it is dispatched.
                 queue_waiting_turn(
@@ -3983,96 +3809,22 @@ pub(crate) fn route_worker_questions(
     )))
 }
 
-/// What allowing an auto-mode card exactly did.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExactGrantOutcome {
-    /// The permission rule the chat's next launch carries.
-    pub rule: String,
-    /// OctiqFlow told a worker itself; the browser sends nothing more.
-    pub delivered_to_worker: bool,
-}
-
-/// The person allowed exactly the action on a Claude auto-mode card, once.
-///
-/// The refused call is over, and a running `claude -p` cannot be given a new
-/// permission rule, so the rule reaches the chat's NEXT launch: the idle
-/// process is ended (on purpose — not a lost worker) and the next turn starts
-/// a fresh one that carries `Bash(<exact line>)`. A worker is told by the host
-/// directly; an ordinary chat's browser sends the continuation itself. A chat
-/// still mid-turn keeps its card: nothing is granted until it can take effect.
-pub fn grant_exact_action(manager: &ChatManager, id: &str) -> Result<ExactGrantOutcome, String> {
-    let staged = crate::safety_block::stage_exact(id)?;
-    let worker = match manager.orchestrations.worker_card_live(&staged.chat_key) {
-        Ok(Some(false)) => {
-            crate::safety_block::unstage_exact(&staged);
-            return Err("This worker attempt has settled or been superseded, so its card cannot continue it. Retry the task explicitly; a retry grants no permission.".into());
-        }
-        Ok(worker) => worker.is_some(),
-        Err(error) => {
-            crate::safety_block::unstage_exact(&staged);
-            return Err(error);
-        }
-    };
-    if manager.end_for_relaunch(&staged.chat_key) != Ok(true) {
-        crate::safety_block::unstage_exact(&staged);
-        return Err("The agent is still working on this turn. Allow this once the turn ends; the card stays until then.".into());
-    }
-    crate::safety_block::confirm_exact(&staged);
-    if worker {
-        manager
-            .orchestrations
-            .deliver_exact_grant(&staged.chat_key, &staged.id, &staged.action)?;
-    }
-    Ok(ExactGrantOutcome {
-        rule: staged.rule,
-        delivered_to_worker: worker,
-    })
-}
-
-/// What the calls in one assistant message did with this process's one-shot
-/// exact grants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GrantUse {
-    /// No call matched a rule this process carries.
-    None,
-    /// A call used a carried rule for the first time.
-    First,
-    /// A call matched a rule this process had already used: a second run of
-    /// a line allowed once.
-    Again,
-}
-
-/// Remember the tool calls in one Claude assistant message, and note which of
-/// this process's one-shot exact grants they use.
-///
-/// Only a rule the process was LAUNCHED with (`carried`) counts: a call from
-/// a process that does not carry the rule was refused by Claude anyway and
-/// must not waste the person's decision. The first use takes the rule out of
-/// the host's waiting grants, so no later launch carries it; a second call of
-/// the same line in the same process is `Again`. A tool call seen twice (by
-/// id) is one call.
-fn note_claude_calls(
-    key: &str,
-    event: &Value,
-    calls: &mut HashMap<String, (String, Value)>,
-    carried: &[String],
-    spent: &mut HashSet<String>,
-) -> GrantUse {
+/// Remember the tool calls in one Claude assistant message by id, so an
+/// auto-mode refusal naming one can say exactly what was refused.
+fn note_claude_calls(event: &Value, calls: &mut HashMap<String, (String, Value)>) {
     if event.get("type").and_then(Value::as_str) != Some("assistant") {
-        return GrantUse::None;
+        return;
     }
     let Some(content) = event
         .get("message")
         .and_then(|m| m.get("content"))
         .and_then(Value::as_array)
     else {
-        return GrantUse::None;
+        return;
     };
     if calls.len() > 256 {
         calls.clear();
     }
-    let mut used = GrantUse::None;
     for block in content {
         if block.get("type").and_then(Value::as_str) != Some("tool_use") {
             continue;
@@ -4083,25 +3835,9 @@ fn note_claude_calls(
         ) else {
             continue;
         };
-        if calls.contains_key(id) {
-            continue;
-        }
         let input = block.get("input").cloned().unwrap_or(Value::Null);
-        let rule = crate::safety_block::exact_rule(name, Some(&input))
-            .filter(|rule| carried.contains(rule));
-        if let Some(rule) = rule {
-            if spent.insert(rule) {
-                crate::safety_block::consume_grant(key, name, Some(&input));
-                if used == GrantUse::None {
-                    used = GrantUse::First;
-                }
-            } else {
-                used = GrantUse::Again;
-            }
-        }
         calls.insert(id.to_string(), (name.to_string(), input));
     }
-    used
 }
 
 /// The server's runtime, recorded once at startup by `remember_runtime`.
@@ -4305,7 +4041,6 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     // Outliving it would be a permission nobody remembers giving.
     crate::permission::forget_chat(&key);
     crate::safety_block::forget_chat(&key);
-    crate::safety_block::forget_grants(&key);
     with_access(|a| a.remove(&key));
     end_process(manager, &key)?;
     cancelled
@@ -4938,26 +4673,20 @@ mod tests {
     const CONVERSATION_URL: &str =
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
 
-    /// Feedback 467a6314: the orchestration scheduler starts workers from a
-    /// plain thread, where `Handle::try_current` finds nothing, and every
-    /// permission such a worker asked for was denied with "OctiqFlow could not
-    /// ask anyone". A chat started there must still find a runtime.
+    /// Feedback 56dd3f24: a refusal names the exact call it refused, from the
+    /// assistant message that made it. The card is a record and a decision;
+    /// nothing about it lets the call run.
     #[test]
-    fn a_claude_call_is_remembered_and_uses_up_a_matching_exact_grant() {
-        let key = format!("chat:grant-{}", uuid::Uuid::new_v4());
+    fn a_claude_refusal_card_names_the_call_it_refused() {
+        let key = format!("chat:refusal-{}", uuid::Uuid::new_v4());
         let line = "npm publish --tag next";
         let denial = json!({"type":"system","subtype":"permission_denied","decision_reason":"[Publish]",
             "decision_reason_type":"classifier","tool_name":"Bash","tool_use_id":"toolu_pub","message":"denied"});
         let mut calls = HashMap::new();
-        let mut spent = HashSet::new();
         let call = json!({"type":"assistant","message":{"content":[
             {"type":"text","text":"Publishing."},
             {"type":"tool_use","id":"toolu_pub","name":"Bash","input":{"command": line}}]}});
-        // Seen before any grant: remembered, nothing used.
-        assert_eq!(
-            note_claude_calls(&key, &call, &mut calls, &[], &mut spent),
-            GrantUse::None
-        );
+        note_claude_calls(&call, &mut calls);
         let (name, input) = calls.get("toolu_pub").unwrap();
         assert!(crate::safety_block::observe_claude_denial(
             &key,
@@ -4968,307 +4697,14 @@ mod tests {
             .into_iter()
             .find(|b| b.chat_key() == key)
             .unwrap();
-        let staged = crate::safety_block::stage_exact(card.id()).unwrap();
-        crate::safety_block::confirm_exact(&staged);
-        // The relaunch carries the rule; its call of the line spends it.
-        let carried = crate::safety_block::exact_grants(&key);
-        assert_eq!(carried, vec![format!("Bash({line})")]);
-        let rerun = json!({"type":"assistant","message":{"content":[
-            {"type":"tool_use","id":"toolu_pub2","name":"Bash","input":{"command": line}}]}});
-        assert_eq!(
-            note_claude_calls(&key, &rerun, &mut calls, &carried, &mut spent),
-            GrantUse::First
-        );
-        assert!(crate::safety_block::exact_grants(&key).is_empty());
-        // The same call reported twice is still one call.
-        assert_eq!(
-            note_claude_calls(&key, &rerun, &mut calls, &carried, &mut spent),
-            GrantUse::None
-        );
-        // A second call of the line in the same process is a second run.
-        let twice = json!({"type":"assistant","message":{"content":[
-            {"type":"tool_use","id":"toolu_pub3","name":"Bash","input":{"command": line}}]}});
-        assert_eq!(
-            note_claude_calls(&key, &twice, &mut calls, &carried, &mut spent),
-            GrantUse::Again
-        );
+        assert_eq!(card.action(), Some(line));
+        crate::safety_block::forget_chat(&key);
     }
 
-    /// The grant belongs to the line the person saw and the launch that
-    /// carries it. Nothing else may spend it — and two identical calls in one
-    /// message are two runs.
-    #[test]
-    fn an_exact_grant_is_spent_only_by_its_own_line_in_a_process_that_carries_it() {
-        let key = format!("chat:grant-negative-{}", uuid::Uuid::new_v4());
-        let line = "npm publish --tag next";
-        let rule = format!("Bash({line})");
-        let denial = json!({"type":"system","subtype":"permission_denied","decision_reason":"[Publish]",
-            "decision_reason_type":"classifier","tool_name":"Bash","tool_use_id":"toolu_a","message":"denied"});
-        let input = json!({"command": line});
-        assert!(crate::safety_block::observe_claude_denial(
-            &key,
-            &denial,
-            Some(("Bash", &input))
-        ));
-        let card = crate::safety_block::pending()
-            .into_iter()
-            .find(|b| b.chat_key() == key)
-            .unwrap();
-        let staged = crate::safety_block::stage_exact(card.id()).unwrap();
-        crate::safety_block::confirm_exact(&staged);
-        let call = |id: &str, command: &str| {
-            json!({"type":"assistant","message":{"content":[
-            {"type":"tool_use","id": id,"name":"Bash","input":{"command": command}}]}})
-        };
-
-        // A process launched before the grant does not carry it: Claude
-        // refused the call, and the person's decision is still waiting.
-        let mut calls = HashMap::new();
-        let mut spent = HashSet::new();
-        assert_eq!(
-            note_claude_calls(&key, &call("toolu_b", line), &mut calls, &[], &mut spent),
-            GrantUse::None
-        );
-        assert_eq!(crate::safety_block::exact_grants(&key), vec![rule.clone()]);
-
-        // In the process that carries it, only the exact line counts.
-        let carried = vec![rule.clone()];
-        for (id, other) in [
-            ("toolu_c", "npm publish"),
-            ("toolu_d", "npm publish --tag latest"),
-            ("toolu_e", "npm publish --tag next && echo done"),
-            ("toolu_f", "npm publish --tag next; rm -rf dist"),
-        ] {
-            assert_eq!(
-                note_claude_calls(&key, &call(id, other), &mut calls, &carried, &mut spent),
-                GrantUse::None,
-                "{other}"
-            );
-        }
-        let edit = json!({"type":"assistant","message":{"content":[
-            {"type":"tool_use","id":"toolu_g","name":"Edit","input":{"file_path":"/x","old_string":"a","new_string":"b"}}]}});
-        assert_eq!(
-            note_claude_calls(&key, &edit, &mut calls, &carried, &mut spent),
-            GrantUse::None
-        );
-        assert_eq!(crate::safety_block::exact_grants(&key), vec![rule.clone()]);
-
-        // Two identical calls in one message: the first uses it, the second
-        // is a second run.
-        let both = json!({"type":"assistant","message":{"content":[
-            {"type":"tool_use","id":"toolu_h","name":"Bash","input":{"command": line}},
-            {"type":"tool_use","id":"toolu_i","name":"Bash","input":{"command": line}}]}});
-        assert_eq!(
-            note_claude_calls(&key, &both, &mut calls, &carried, &mut spent),
-            GrantUse::Again
-        );
-        assert!(crate::safety_block::exact_grants(&key).is_empty());
-    }
-
-    /// Review finding on 59f6808: the turn that spent a grant handed the next
-    /// queued message to the SAME process — which still carried the rule —
-    /// before trying to end it, and a busy process could not be ended. The
-    /// process is now ended first, nothing is written to it, and the queue
-    /// waits for the relaunch.
-    #[test]
-    fn a_spent_grant_ends_the_process_before_a_queued_turn_reaches_it() {
-        use std::io::Read;
-
-        let manager = Arc::new(ChatManager::default());
-        let key = format!("claude-revoke-queue-{}", uuid::Uuid::new_v4().simple());
-        let (session, mut stdout) = capturing_claude_session();
-        hold(&manager, &key, session.clone());
-        for (text, id) in [("first detail", "user-1"), ("second detail", "user-2")] {
-            chat_send_user_impl(
-                manager.clone(),
-                key.clone(),
-                text.into(),
-                None,
-                None,
-                Some(id.into()),
-                None,
-            )
-            .unwrap();
-        }
-        assert!(manager.has_queued_turns(&key));
-
-        {
-            let mut running = session.lock().unwrap();
-            running.turn_ended();
-            assert_eq!(
-                finish_persistent_turn(&manager, &key, &key, &mut running, true),
-                None
-            );
-            assert!(running.revoking);
-            assert!(
-                running.busy,
-                "the sweeper must not end it before the reaper"
-            );
-            assert!(running.stdin.is_none());
-            running.child.wait().expect("the process was ended");
-        }
-        // Nothing reached the old process: its output closed without a line.
-        let mut written = String::new();
-        stdout.read_to_string(&mut written).unwrap();
-        assert_eq!(
-            written, "",
-            "no queued turn was written to the process holding the rule"
-        );
-        assert!(
-            manager.restarting.lock().unwrap().contains(&key),
-            "a relaunch, not a lost worker"
-        );
-
-        // A message sent in the gap waits too, never on the old stdin.
-        chat_send_user_impl(
-            manager.clone(),
-            key.clone(),
-            "third".into(),
-            None,
-            None,
-            Some("user-3".into()),
-            None,
-        )
-        .expect("queued behind the revocation");
-        assert!(manager.has_queued_turns(&key));
-
-        // The reaper keeps the queue for the relaunch instead of dropping it.
-        let front = reaped_queue(&manager, &key, ChatAgent::Claude, true)
-            .expect("the queue rides the relaunch");
-        assert_eq!(front.text, "first detail\nsecond detail\nthird");
-        assert_eq!(
-            front.turn_ids().collect::<Vec<_>>(),
-            vec!["user-1", "user-2", "user-3"]
-        );
-        let deliveries: Vec<_> = crate::transcript::since(&key, 0)
-            .into_iter()
-            .filter(|e| e.event["type"] == "octiq_user_turn_delivery")
-            .map(|e| e.event["state"].as_str().unwrap_or_default().to_string())
-            .collect();
-        assert!(
-            !deliveries.iter().any(|s| s == "failed"),
-            "nothing was dropped: {deliveries:?}"
-        );
-
-        manager.sessions.lock().unwrap().remove(&key);
-        manager.restarting.lock().unwrap().remove(&key);
-        crate::transcript::forget(&key);
-    }
-
-    /// An ordinary persistent exit still drops what waited for it: only a
-    /// revocation hands its queue on.
-    #[test]
-    fn only_a_revoked_process_hands_its_queue_to_the_relaunch() {
-        let manager = Arc::new(ChatManager::default());
-        let key = format!("claude-exit-queue-{}", uuid::Uuid::new_v4().simple());
-        let session = claude_session(true);
-        hold(&manager, &key, session);
-        chat_send_user_impl(
-            manager.clone(),
-            key.clone(),
-            "later".into(),
-            None,
-            None,
-            Some("user-1".into()),
-            None,
-        )
-        .unwrap();
-        assert!(reaped_queue(&manager, &key, ChatAgent::Claude, false).is_none());
-        assert!(!manager.has_queued_turns(&key));
-        end_process(&manager, &key).unwrap();
-        crate::transcript::forget(&key);
-    }
-
-    /// Native background work runs inside the process that holds the rule,
-    /// so it cannot keep that process alive the way it keeps an idle chat
-    /// alive. It is recorded as interrupted and handed to the next launch.
-    #[test]
-    fn a_spent_grant_ends_the_process_even_with_background_work_and_records_it() {
-        let manager = Arc::new(ChatManager::default());
-        let key = format!("claude-revoke-background-{}", uuid::Uuid::new_v4().simple());
-        let (session, _stdout) = capturing_claude_session();
-        hold(&manager, &key, session.clone());
-        manager.background.observe(&key, "test-launch", &json!({
-            "type": "system", "subtype": "task_started", "task_id": "native-agent-7", "task_type": "local_agent"
-        })).unwrap();
-        chat_send_user_impl(
-            manager.clone(),
-            key.clone(),
-            "next".into(),
-            None,
-            None,
-            Some("user-1".into()),
-            None,
-        )
-        .unwrap();
-        session.lock().unwrap().turn_ended();
-        // The old path: an idle end refuses while background work runs, and
-        // the process kept the rule.
-        assert_eq!(
-            end_process_when(&manager, &key, Some(Duration::ZERO)),
-            Ok(false)
-        );
-
-        {
-            let mut running = session.lock().unwrap();
-            assert_eq!(
-                finish_persistent_turn(&manager, &key, &key, &mut running, true),
-                None
-            );
-            running.child.wait().expect("ended despite background work");
-        }
-        assert!(!manager.background.has_running(&key));
-        let continuation = manager
-            .background
-            .continuation(&key)
-            .expect("handed to the next launch");
-        assert!(continuation.contains("native-agent-7"));
-        assert!(crate::transcript::since(&key, 0)
-            .iter()
-            .any(|e| e.event["type"] == "octiq_background_interrupted"));
-        assert_eq!(
-            reaped_queue(&manager, &key, ChatAgent::Claude, true).map(|t| t.text),
-            Some("next".into())
-        );
-
-        manager.sessions.lock().unwrap().remove(&key);
-        manager.restarting.lock().unwrap().remove(&key);
-        crate::transcript::forget(&key);
-    }
-
-    /// Without a spent grant the boundary is what it was: the queue is
-    /// handed to the same process.
-    #[test]
-    fn a_turn_with_no_spent_grant_still_hands_the_queue_over() {
-        let manager = Arc::new(ChatManager::default());
-        let key = format!("claude-no-grant-{}", uuid::Uuid::new_v4().simple());
-        let (session, _stdout) = capturing_claude_session();
-        hold(&manager, &key, session.clone());
-        chat_send_user_impl(
-            manager.clone(),
-            key.clone(),
-            "next".into(),
-            None,
-            None,
-            Some("user-1".into()),
-            None,
-        )
-        .unwrap();
-        {
-            let mut running = session.lock().unwrap();
-            running.turn_ended();
-            assert_eq!(
-                finish_persistent_turn(&manager, &key, &key, &mut running, false),
-                None
-            );
-            assert!(!running.revoking);
-            assert_eq!(running.user_turn_id.as_deref(), Some("user-1"));
-        }
-        assert!(!manager.has_queued_turns(&key));
-        end_process(&manager, &key).unwrap();
-        crate::transcript::forget(&key);
-    }
-
+    /// Feedback 467a6314: the orchestration scheduler starts workers from a
+    /// plain thread, where `Handle::try_current` finds nothing, and every
+    /// permission such a worker asked for was denied with "OctiqFlow could not
+    /// ask anyone". A chat started there must still find a runtime.
     #[test]
     fn a_chat_started_off_the_runtime_can_still_ask_the_person() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -6470,7 +5906,6 @@ mod tests {
                 agent: ChatAgent::Claude,
                 busy: false,
                 last_active: Instant::now(),
-                revoking: false,
             })),
         );
 
@@ -6504,7 +5939,6 @@ mod tests {
                 agent: ChatAgent::Codex,
                 busy: true,
                 last_active: Instant::now(),
-                revoking: false,
             })),
         );
 
@@ -6767,7 +6201,6 @@ mod tests {
             agent: ChatAgent::Claude,
             busy,
             last_active: Instant::now(),
-            revoking: false,
         }))
     }
 
@@ -6790,7 +6223,6 @@ mod tests {
                 agent: ChatAgent::Claude,
                 busy: true,
                 last_active: Instant::now(),
-                revoking: false,
             })),
             stdout,
         )
@@ -7193,7 +6625,6 @@ mod tests {
             agent: ChatAgent::Codex,
             busy: true,
             last_active: Instant::now(),
-            revoking: false,
         }));
         manager
             .sessions
@@ -7286,7 +6717,6 @@ mod tests {
                 agent: ChatAgent::Codex,
                 busy: true,
                 last_active: Instant::now(),
-                revoking: false,
             })),
         );
 
@@ -7402,7 +6832,6 @@ mod tests {
             agent: ChatAgent::Codex,
             busy: true,
             last_active: Instant::now(),
-            revoking: false,
         }));
         manager
             .sessions
@@ -7572,7 +7001,6 @@ mod idle_tests {
             last_active: Instant::now()
                 .checked_sub(ago)
                 .expect("a clock with some run-up behind it"),
-            revoking: false,
         }))
     }
 
@@ -8017,7 +7445,6 @@ mod question_delivery_tests {
                 agent: ChatAgent::Codex,
                 busy: true,
                 last_active: Instant::now(),
-                revoking: false,
             })),
         );
         let request = serde_json::from_value(json!({ "chatKey": key, "launchId": "launch-1", "questions": [{"question":"Which database?"}] })).unwrap();
@@ -8212,7 +7639,6 @@ mod question_delivery_tests {
                 agent: ChatAgent::Claude,
                 busy: false,
                 last_active: Instant::now(),
-                revoking: false,
             })),
         );
         let (id, _rx) = manager
