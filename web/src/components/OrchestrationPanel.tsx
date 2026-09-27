@@ -3,9 +3,11 @@ import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 import { AGENT_NAME } from "../lib/agentProviders";
 import {
-  attemptIsExecuting, boardCounts, executionNeedsAttention, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
+  attemptIsExecuting, boardCounts, executionNeedsAttention, pendingDecision, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
   sortTasksByActivity, taskElapsed, taskProgress, taskStage, taskStateLabel, TASK_LABELS, useElapsedTick,
 } from "../lib/agentTaskBoard";
+import { acceptanceLine, checkCoverage, KIND_LABEL, requiresVerdict, runStages, taskEnvironment } from "../lib/runAcceptance";
+import { useSandboxes, type SandboxSnapshot } from "../lib/sandbox";
 import {
   attentionLabel, mainChatTarget, nextRunTab, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
   type PersonState, type RunAttention, type RunTab,
@@ -748,6 +750,8 @@ function RunDetail({
   const detailRef = useRef<HTMLElement>(null);
   const tabRefs = useRef<Partial<Record<RunTab, HTMLButtonElement | null>>>({});
   const archived = run.archivedAt != null;
+  // Read only for a run with a task that needs a test environment.
+  const sandboxes = useSandboxes(tasks.some((task) => task.environment === "sandbox")).snapshot;
   // Plan mode: until the person approves, the plan IS the run.
   const planPending = !readOnly && run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
   const now = useElapsedTick(runIsLive(snapshot, run.id));
@@ -901,7 +905,6 @@ function RunDetail({
             <dt>Dispatch</dt><dd>{run.workerDefaults ? "Automatic" : "Coordinator"}</dd>
             <dt>Workers</dt><dd>{run.workerDefaults?.agent ? `Chosen per task · ${AGENT_NAME[run.workerDefaults.agent]} fallback` : "Chosen per task by the main agent"}</dd>
             <dt>Worker limit</dt><dd>{run.maxConcurrent}</dd>
-            <dt>Acceptance</dt><dd title={ACCEPTANCE_NOTE}>Unverified</dd>
           </dl>}
           <div className="orch-run-actions">
             {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && !confirmStop && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
@@ -945,6 +948,7 @@ function RunDetail({
       {runError && !settingsOpen && <p className="orch-run-error" role="alert">{runError}</p>}
 
       <div className="orch-tab-panel" role="tabpanel" id={`${tabsId}-tasks-panel`} aria-labelledby={`${tabsId}-tasks`} hidden={tab !== "tasks"}>
+        {!planPending && tasks.length > 0 && <RunStages tasks={tasks} attempts={attempts} sandboxes={sandboxes} />}
         {tasks.length > FILTERS_WORTH_SHOWING && !planPending && <div className="orch-task-filters" role="group" aria-label="Filter tasks">
           {TASK_FILTERS.map((option) => <button key={option.key} type="button" className={option.key === filter ? "is-on" : ""}
             aria-pressed={option.key === filter} onClick={() => setFilter(option.key)}>{option.label}</button>)}
@@ -956,7 +960,7 @@ function RunDetail({
         ) : visible.length === 0 ? (
           <p className="orch-task-none">Nothing is {active.label.toLowerCase()} right now.</p>
         ) : visible.map((task) => (
-          <RunTask key={task.id} run={run} snapshot={snapshot} task={task} attempts={attempts} gates={gates}
+          <RunTask key={task.id} run={run} snapshot={snapshot} task={task} attempts={attempts} gates={gates} sandboxes={sandboxes}
             taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
             archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
             onOpenBeside={onOpenBeside}
@@ -1010,6 +1014,8 @@ function RunLine({ snapshot, run, tasks, attempts }: {
   const settled = counts.total > 0 && counts.done === counts.total;
   // Finished is not passed: a check that failed is said out loud.
   const failedChecks = tasks.filter((task) => task.status === "completed" && task.verdict === "fail").length;
+  const planned = checkCoverage(tasks).total > 0;
+  const acceptance = acceptanceLine(runStages(tasks, attempts, null));
   const parts = [
     `${counts.done}/${counts.total} tasks`,
     run.archivedAt != null ? `${statusLabel(run.status)} · archived` : statusLabel(run.status),
@@ -1022,8 +1028,8 @@ function RunLine({ snapshot, run, tasks, attempts }: {
     <span>{parts.join(" · ")}</span>
     {elapsed !== null && <span className="orch-run-elapsed" title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{elapsedLabel(elapsed)}</span>}
     {/* Every task done reads as "finished", which is exactly when it needs
-        saying that nothing checked the outcome. */}
-    {settled && <span className="orch-progress-acceptance" title={ACCEPTANCE_NOTE}>Acceptance: unverified</span>}
+        saying what, if anything, checked the outcome. */}
+    {(settled || planned) && <span className="orch-progress-acceptance" data-tone={acceptance.tone} title={acceptance.note}>Acceptance: {acceptance.value.toLowerCase()}</span>}
   </small>;
 }
 
@@ -1075,11 +1081,34 @@ function AttentionButton({ attention, planPending, onShow }: { attention: RunAtt
   </button>;
 }
 
-const ACCEPTANCE_NOTE = "OctiqFlow does not yet track acceptance results. Review the test evidence separately.";
+/** Where the run stands, one line per kind of evidence (feedback ee0a43b0):
+ *  tasks settled, checks, merged source, test environments, deployment and
+ *  acceptance never collapse into one number. Closed, it is the acceptance
+ *  line; open, each stage with what it rests on. */
+function RunStages({ tasks, attempts, sandboxes }: {
+  tasks: OrchestrationTask[];
+  attempts: OrchestrationAttempt[];
+  sandboxes: SandboxSnapshot | null;
+}) {
+  const stages = runStages(tasks, attempts, sandboxes);
+  const acceptance = acceptanceLine(stages);
+  return <details className="orch-stages">
+    <summary><span>Acceptance</span><span className="orch-stage-value" data-tone={acceptance.tone}>{acceptance.value}</span></summary>
+    <dl>
+      {stages.map((stage) => <div key={stage.key} className="orch-stage">
+        <dt>{stage.label}</dt>
+        <dd><span className="orch-stage-value" data-tone={stage.tone}>{stage.value}</span>
+          {stage.note && <small>{stage.note}</small>}</dd>
+      </div>)}
+    </dl>
+  </details>;
+}
 
 /** The row opens the worker chat; the separate disclosure shows its checklist. */
-function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName }: {
+function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName }: {
   projectName?: (id: string) => string | undefined;
+  /** Test environments, when the run has a task that needs one. */
+  sandboxes: SandboxSnapshot | null;
   onOpenBeside?: (chatKey: string) => void;
   /** This task's chat is open beside the main chat. */
   beside?: boolean;
@@ -1126,6 +1155,10 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
   // Cards this task is holding for the person; answered in the main chat or
   // in this panel, never on the row.
   const pending = usePendingActions().forTask(task.id);
+  // Its test environment has a state of its own: a done task's services may
+  // be stopped, and a running task's may have gone stale.
+  const environment = taskEnvironment(task, attempts, sandboxes, (at) => agoLabel(at, now));
+  const decision = task.activeAttemptId === attempt?.id ? pendingDecision(attempt, snapshot.nativeDecisions) : undefined;
 
   return (
     <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""}`} data-status={task.status}>
@@ -1141,6 +1174,9 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
           <span className="orch-task-meta">
             {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
             {task.verdict === "fail" && <span className="orch-task-blocker" title="It finished, and what it checked did not pass. Tasks that depend on it wait.">Check failed</span>}
+            {requiresVerdict(task) && task.verdict !== "fail" && <span className="orch-task-kind" title="It settles only with a pass or fail verdict, and only a pass releases the tasks that depend on it.">{KIND_LABEL[task.kind!]}</span>}
+            {environment && <span className="orch-task-env" data-tone={environment.tone} title={environment.detail.join("\n")}>{environment.label}</span>}
+            {decision && <span className="orch-task-decision" title={[decision.reason, decision.blockedAction ? `Action: ${decision.blockedAction}` : "The provider gave no exact action."].join("\n")}>Decision {decision.id.slice(0, 12)}</span>}
             {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
             {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
             {attempt && <span className="orch-task-agent" title={`${task.assignee ? `${assigneeFace?.name ?? task.assignee.name} · ` : ""}${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}>{task.assignee
@@ -1178,6 +1214,10 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
         <details className="orch-task-more">
           <summary>Task details</summary>
           <TaskLifecycleEvidence snapshot={snapshot} taskId={task.id} now={now} />
+          {environment && <div className="orch-task-env-detail">
+            <p>Test environment: {environment.label}</p>
+            <ul>{environment.detail.map((line, index) => <li key={index}>{line}</li>)}</ul>
+          </div>}
           {attempt?.execution && <><p>Task: {TASK_LABELS[task.status]}</p><WorkerExecutionEvidence execution={attempt.execution} /></>}
           {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
           {task.dependsOn.length > 0 && <p className="orch-task-after">After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}

@@ -535,8 +535,7 @@ impl OrchestrationStore {
             return Ok(());
         };
         // A one-shot provider may exit while a durable decision waits.
-        if before.status == AttemptStatus::Blocked || crate::safety_block::awaits_decision(key)
-        {
+        if before.status == AttemptStatus::Blocked || crate::safety_block::awaits_decision(key) {
             return Ok(());
         }
         let changed = self.mutate(|data| {
@@ -566,6 +565,16 @@ impl OrchestrationStore {
             .filter(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running))
         {
             if crate::safety_block::awaits_decision(&before.worker_chat_key) {
+                continue;
+            }
+            // The host's own environment work is bounded by its commands'
+            // timeouts, and a wait for capacity by the attempt staying live;
+            // neither is a quiet worker.
+            if before
+                .execution
+                .pending_tools
+                .contains_key(super::ENVIRONMENT_OPERATION)
+            {
                 continue;
             }
             let p = snapshot
@@ -630,6 +639,15 @@ impl OrchestrationStore {
             .iter()
             .filter(|a| a.status == AttemptStatus::Running)
         {
+            // No process yet is expected while the host builds its test
+            // environment or waits for a slot: the worker starts after.
+            if attempt
+                .execution
+                .pending_tools
+                .contains_key(super::ENVIRONMENT_OPERATION)
+            {
+                continue;
+            }
             if !chats.has_process(&attempt.worker_chat_key)
                 && now
                     - attempt
@@ -971,6 +989,43 @@ mod tests {
             .execution
             .next_retry_at
             .is_none());
+    }
+
+    #[test]
+    fn a_worker_waiting_on_its_test_environment_is_neither_lost_nor_stalled() {
+        // No chat process exists while the host builds the environment or
+        // waits for a slot: the worker starts afterwards. The lost-worker
+        // sweep used to fail such an attempt as disconnected after 30s.
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        store.environment_preparing(&attempt.id).unwrap();
+        let chats = Arc::new(ChatManager::default());
+        let workspaces = crate::workspaces::WorkspaceState::with_projects(Vec::new());
+        let later = now_ms() + 3_600_000;
+        store
+            .recover_due_workers(chats.clone(), &workspaces, later)
+            .unwrap();
+        let current = latest(&store, &attempt.id);
+        assert_eq!(current.status, AttemptStatus::Running);
+        assert_eq!(current.execution.state, ExecutionState::WaitingTool);
+        assert!(store.snapshot(None).unwrap().notifications.is_empty());
+        // Without the host's operation, the same silence is a lost worker.
+        store
+            .mutate(|data| {
+                data.attempts
+                    .get_mut(&attempt.id)
+                    .unwrap()
+                    .execution
+                    .pending_tools
+                    .clear();
+                Ok(())
+            })
+            .unwrap();
+        store
+            .recover_due_workers(chats, &workspaces, later)
+            .unwrap();
+        assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Failed);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { taskBoardFixture } from "./__fixtures__/agentTaskBoard";
-import { attemptIsLive, boardCounts, currentAttempt, runElapsed, shortBranch, taskElapsed, taskProgress, taskStage, taskStateLabel } from "./agentTaskBoard";
+import { attemptIsLive, boardCounts, currentAttempt, pendingDecision, runElapsed, shortBranch, taskElapsed, taskProgress, taskStage, taskStateLabel } from "./agentTaskBoard";
 import type { OrchestrationAttempt, OrchestrationTask } from "./orchestration";
 
 describe("a task row's state word (feedback ee0a43b0)", () => {
@@ -20,6 +20,22 @@ describe("a task row's state word (feedback ee0a43b0)", () => {
     expect(taskStateLabel(done, undefined)).toBe("Done");
     expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Done · check failed");
     expect(taskStateLabel({ ...done, verdict: "pass" }, undefined)).toBe("Done");
+  });
+
+  it("says what a check found, and never lets a check without a verdict read as done", () => {
+    const done = { ...task, status: "completed", activeAttemptId: undefined, kind: "review" } as OrchestrationTask;
+    expect(taskStateLabel({ ...done, verdict: "pass" }, undefined)).toBe("Done · passed");
+    expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Done · check failed");
+    expect(taskStateLabel(done, undefined)).toBe("Done · no verdict");
+    // Ordinary work with no kind keeps its plain word: nothing is invented.
+    expect(taskStateLabel({ ...done, kind: undefined }, undefined)).toBe("Done");
+  });
+
+  it("names the native decision only when one was observed", () => {
+    const decisions = [{ attemptId: "a", status: "pending", id: "nd_1" }, { attemptId: "b", status: "pending", id: "nd_2" }];
+    expect(pendingDecision(attempt, decisions)?.id).toBe("nd_1");
+    expect(pendingDecision(attempt, [])).toBeUndefined();
+    expect(pendingDecision(attempt, [{ attemptId: "a", status: "dismissed", id: "x" }])).toBeUndefined();
   });
 });
 

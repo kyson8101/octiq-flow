@@ -152,6 +152,11 @@ export type OrchestrationTask = {
   /** A review or check's own answer, apart from finishing: "fail" holds
    *  whatever depends on it. */
   verdict?: "pass" | "fail";
+  /** What the task is for. "check", "review" and "acceptance" judge
+   *  something: they settle only with a pass or fail verdict, and only a pass
+   *  releases their dependants. Absent: "work" (every task made before
+   *  kinds existed, which never has a verdict invented for it). */
+  kind?: "work" | "check" | "review" | "acceptance";
   /** "sandbox": the worker waits for its runnable test environment. */
   environment?: "none" | "sandbox";
   /** Every change of hands before the work finished, oldest first. */

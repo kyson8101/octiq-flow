@@ -72,7 +72,22 @@ export function taskStateLabel(
     return EXECUTION_LABELS[state];
   }
   if (task.status === "completed" && task.verdict === "fail") return "Done · check failed";
+  // A check's finishing is not its answer: say which answer it gave.
+  if (task.status === "completed" && task.kind && task.kind !== "work") {
+    return task.verdict === "pass" ? "Done · passed" : "Done · no verdict";
+  }
   return TASK_LABELS[task.status];
+}
+
+/** The native safety decision an attempt is parked on, when the host
+ *  observed one: its id and, only if the provider gave it, the exact action.
+ *  Nothing when no card was observed — absence is not an approval. */
+export function pendingDecision<D extends { attemptId: string; status: string }>(
+  attempt: OrchestrationAttempt | undefined,
+  decisions: readonly D[] = [],
+): D | undefined {
+  if (!attempt) return undefined;
+  return decisions.find((d) => d.attemptId === attempt.id && d.status === "pending");
 }
 
 export function executionNeedsAttention(attempt?: OrchestrationAttempt): boolean {

@@ -19,7 +19,7 @@ import type { OrchestrationAttempt, OrchestrationRun, OrchestrationTask } from "
 export type CardState = "confirmed" | "planned" | "pending" | "removed" | "conflict" | "unplanned";
 
 export type CardRow = {
-  key: "project" | "branch" | "directory" | "worktree" | "workspace" | "owner" | "model" | "effort" | "environment";
+  key: "project" | "branch" | "directory" | "worktree" | "workspace" | "owner" | "model" | "effort" | "environment" | "kind";
   label: string;
   value: string;
   state?: CardState;
@@ -72,6 +72,12 @@ export function taskCardRows(
   // runnable test environment, built from its own worktree and checked.
   if (task.environment === "sandbox") {
     rows.push({ key: "environment", label: "Environment", value: "Test environment, checked before the worker starts" });
+  }
+  // Also part of what is approved: this task judges, and only its pass
+  // releases what depends on it.
+  if (task.kind && task.kind !== "work") {
+    const name = { check: "Check", review: "Review", acceptance: "Acceptance check" }[task.kind];
+    rows.push({ key: "kind", label: "Kind", value: `${name}: settles only with a pass or fail verdict; only a pass releases what depends on it` });
   }
   return rows;
 }
