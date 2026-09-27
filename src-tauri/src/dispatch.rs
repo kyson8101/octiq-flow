@@ -70,6 +70,7 @@ impl Services {
             chats.clone(),
             workspaces.clone(),
         );
+        crate::orchestration::environments::start_reconciler(orchestrations.clone());
         Self {
             workspaces,
             chats,
@@ -238,15 +239,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     // implementations directly, without a client-controlled bypass flag.
     match cmd {
         // A worker's test environment outlives its turns on purpose, so once
-        // its attempt has settled the person can stop or reset it from the
-        // Sandbox panel; that no longer drives the worker. A live worker's
-        // stays out of reach, like everything else a worker owns.
+        // its attempt has settled the person can start, check, stop or reset
+        // it from the Sandbox panel to inspect it; that no longer drives the
+        // worker, and starting holds it against the host's lifecycle until
+        // they stop it. A live worker's stays out of reach, like everything
+        // else a worker owns.
         "sandbox_action"
-            if matches!(arg::<String>(&args, "action")?.as_str(), "stop" | "reset")
-                && svc
-                    .orchestrations
-                    .worker_card_live(&arg::<String>(&args, "key")?)?
-                    == Some(false) => {}
+            if matches!(
+                arg::<String>(&args, "action")?.as_str(),
+                "start" | "check" | "stop" | "reset"
+            ) && svc
+                .orchestrations
+                .worker_card_live(&arg::<String>(&args, "key")?)?
+                == Some(false) => {}
         "chat_start"
         | "sandbox_action"
         | "chat_send"
@@ -467,7 +472,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
 
         // ---- chats --------------------------------------------------------
-        "sandbox_snapshot" => to_value(crate::sandbox::Store::profile().snapshot()),
+        "sandbox_snapshot" => to_value(crate::sandbox::Store::profile().snapshot_probed()),
         "sandbox_configure" => {
             to_value(crate::sandbox::Store::profile().configure(arg(&args, "enabled")?))
         }
@@ -475,12 +480,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let key: String = arg(&args, "key")?;
             let action: String = arg(&args, "action")?;
             let confirmation: Option<String> = arg(&args, "confirmation")?;
-            to_value(crate::sandbox::Store::profile().action_when_idle(
-                &key,
-                &action,
-                confirmation.as_deref(),
-                || crate::agent_chat::end_idle_for_sandbox(&svc.chats, &key),
-            ))
+            to_value(
+                crate::sandbox::Store::profile()
+                    .person_action(&key, &action, confirmation.as_deref(), || {
+                        crate::agent_chat::end_idle_for_sandbox(&svc.chats, &key)
+                    })
+                    .map(crate::sandbox::Environment::public),
+            )
         }
         "chat_start" => {
             let key: String = arg(&args, "key")?;
@@ -896,12 +902,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             });
             if needs {
                 if let (Ok(sandboxes), Some(out)) = (
-                    crate::sandbox::Store::profile().snapshot(),
+                    crate::sandbox::Store::profile().snapshot_probed(),
                     view.as_object_mut(),
                 ) {
                     out.insert(
                         "environments".into(),
                         crate::orchestration::agent_view::environments(&full, &sandboxes, &shown),
+                    );
+                    out.insert(
+                        "environmentCapacity".into(),
+                        crate::orchestration::agent_view::capacity(&sandboxes),
                     );
                 }
             }
@@ -1054,6 +1064,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     card,
                     arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
                         .unwrap_or_default(),
+                    arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?
+                        .unwrap_or_default(),
                 ),
             )
         }
@@ -1117,6 +1129,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     spec: arg(&args, "spec")?,
                     card,
                     depends_on: arg(&args, "dependsOn")?,
+                    kind: arg(&args, "kind")?,
                     route,
                     withdraw: arg::<Option<bool>>(&args, "withdraw")?.unwrap_or(false),
                 },

@@ -20,8 +20,8 @@ export function SandboxStatus({ environment: env, running, onRefresh }: {
   }
   const disabled = busy || running || env.state === "preparing";
   return <details className="sandbox-status">
-    <summary>Sandbox · {busy || env.state === "preparing" ? "Preparing…" : env.state === "ready" ? "Checks passed" : env.state}
-      {env.checkedAt && <span>Checked {new Date(env.checkedAt).toLocaleTimeString()}</span>}
+    <summary>Sandbox · {busy || env.state === "preparing" ? "Preparing…" : env.state === "ready" ? "Checks passed" : env.state === "stale" ? "Stale" : env.state === "unhealthy" ? "Unhealthy" : env.state}
+      {env.checkedAt && <span>{env.state === "ready" ? "Checked" : "Last passed"} {new Date(env.checkedAt).toLocaleTimeString()}</span>}
     </summary>
     <div className="sandbox-status-body">
       <p>Test services run on the OctiqFlow host. {env.state === "ready" ? "Readiness checks passed; application acceptance is still unverified." : "Services must pass readiness checks before this chat can run."}</p>
@@ -29,6 +29,10 @@ export function SandboxStatus({ environment: env, running, onRefresh }: {
         <a key={name} href={url} target="_blank" rel="noreferrer">{name} ↗</a>)}
       </div>}
       {Object.keys(env.urls).length > 0 && <p>Local links open on the host computer.</p>}
+      {env.invalidated && <p role="status">{env.invalidated.kind === "stale" ? "No longer matches its check" : "A service went down after its check"}: {env.invalidated.reason} Start it again to rebuild and recheck.</p>}
+      {env.state === "stopped" && env.stopped && <p>{env.stopped.by === "person" ? "You stopped it." : `OctiqFlow stopped it: ${env.stopped.reason}`}</p>}
+      {env.lease && <p>Kept running for you: OctiqFlow will not stop it until you press Stop services.</p>}
+      {env.probedAt && <small>Health looked at {new Date(env.probedAt).toLocaleTimeString()}</small>}
       <small>{env.fixtureVersion ? `Fixture: ${env.fixtureVersion} · ` : ""}{env.sourceRevision?.slice(0, 8)}{env.sourceDirty ? " (local changes)" : ""}</small>
       {(error || env.error) && <p role="alert">{error || env.error}</p>}
       <div className="sandbox-actions">

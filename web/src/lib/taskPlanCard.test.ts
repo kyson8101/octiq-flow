@@ -37,6 +37,13 @@ describe("the standard plan card", () => {
     expect(row(rows, "environment").value).toBe("Test environment, checked before the worker starts");
   });
 
+  it("says a check task needs a verdict, and says nothing for ordinary work (feedback ee0a43b0)", () => {
+    expect(taskCardRows(task(), run, null, names).some((r) => r.key === "kind")).toBe(false);
+    expect(taskCardRows(task({ kind: "work" }), run, null, names).some((r) => r.key === "kind")).toBe(false);
+    expect(row(taskCardRows(task({ kind: "review" }), run, null, names), "kind").value)
+      .toBe("Review: settles only with a pass or fail verdict; only a pass releases what depends on it");
+  });
+
   it("says the workspace is pending in one row when nothing is planned yet", () => {
     const rows = taskCardRows(task(), run, null, names);
     expect(row(rows, "project")).toMatchObject({ value: "octiq-flow", copy: { text: "/code/octiq-flow" } });

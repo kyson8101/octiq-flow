@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { taskBoardFixture } from "./__fixtures__/agentTaskBoard";
-import { attemptIsLive, boardCounts, currentAttempt, runElapsed, shortBranch, taskElapsed, taskProgress, taskStage, taskStateLabel } from "./agentTaskBoard";
+import { attemptIsLive, boardCounts, currentAttempt, pendingDecision, runElapsed, shortBranch, taskElapsed, taskProgress, taskStage, taskStateLabel } from "./agentTaskBoard";
 import type { OrchestrationAttempt, OrchestrationTask } from "./orchestration";
 
 describe("a task row's state word (feedback ee0a43b0)", () => {
@@ -20,6 +20,34 @@ describe("a task row's state word (feedback ee0a43b0)", () => {
     expect(taskStateLabel(done, undefined)).toBe("Done");
     expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Done · check failed");
     expect(taskStateLabel({ ...done, verdict: "pass" }, undefined)).toBe("Done");
+  });
+
+  it("says what a check found, and never lets a check without a verdict read as done", () => {
+    const done = { ...task, status: "completed", activeAttemptId: undefined, kind: "review" } as OrchestrationTask;
+    expect(taskStateLabel({ ...done, verdict: "pass" }, undefined)).toBe("Done · passed");
+    expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Done · check failed");
+    expect(taskStateLabel(done, undefined)).toBe("Done · no verdict");
+    // Ordinary work with no kind keeps its plain word: nothing is invented.
+    expect(taskStateLabel({ ...done, kind: undefined }, undefined)).toBe("Done");
+    // With its worker's execution evidence too, as a real settled task has.
+    const settled = { ...attempt, status: "completed", execution: { state: "completed", pendingTools: {} } } as unknown as OrchestrationAttempt;
+    const withAttempt = { ...done, activeAttemptId: "a" };
+    expect(taskStateLabel({ ...withAttempt, verdict: "pass" }, settled)).toBe("Done · passed");
+    expect(taskStateLabel({ ...withAttempt, kind: undefined, verdict: "fail" }, settled)).toBe("Done · check failed");
+    expect(taskStateLabel({ ...withAttempt, kind: undefined }, settled)).toBe("Completed");
+  });
+
+  it("says the host is preparing, or queueing for, the task's environment rather than a tool", () => {
+    const on = (label: string) => ({ ...attempt, execution: { state: "waiting_tool", pendingTools: { "octiq:environment": label } } }) as unknown as OrchestrationAttempt;
+    expect(taskStateLabel(task, on("Preparing test environment"))).toBe("Preparing environment");
+    expect(taskStateLabel(task, on("Waiting for environment capacity: 3 of 3 in use, position 1 in line"))).toBe("Waiting for an environment slot");
+  });
+
+  it("names the native decision only when one was observed", () => {
+    const decisions = [{ attemptId: "a", status: "pending", id: "nd_1" }, { attemptId: "b", status: "pending", id: "nd_2" }];
+    expect(pendingDecision(attempt, decisions)?.id).toBe("nd_1");
+    expect(pendingDecision(attempt, [])).toBeUndefined();
+    expect(pendingDecision(attempt, [{ attemptId: "a", status: "dismissed", id: "x" }])).toBeUndefined();
   });
 });
 

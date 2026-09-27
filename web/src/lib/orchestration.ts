@@ -152,6 +152,11 @@ export type OrchestrationTask = {
   /** A review or check's own answer, apart from finishing: "fail" holds
    *  whatever depends on it. */
   verdict?: "pass" | "fail";
+  /** What the task is for. "check", "review" and "acceptance" judge
+   *  something: they settle only with a pass or fail verdict, and only a pass
+   *  releases their dependants. Absent: "work" (every task made before
+   *  kinds existed, which never has a verdict invented for it). */
+  kind?: "work" | "check" | "review" | "acceptance";
   /** "sandbox": the worker waits for its runnable test environment. */
   environment?: "none" | "sandbox";
   /** Every change of hands before the work finished, oldest first. */
@@ -190,6 +195,9 @@ export type WorkerExecution = {
   lastProgressAt?: number | null;
   lastProgress?: string | null;
   currentOperation?: string | null;
+  /** Operations in flight, by id. `octiq:environment` is the host's own:
+   *  building the task's test environment, or waiting for a slot for it. */
+  pendingTools?: Record<string, string>;
   latestError?: { kind: string; message: string; at: number; retryable: boolean } | null;
   retryCount: number;
   nextRetryAt?: number | null;
