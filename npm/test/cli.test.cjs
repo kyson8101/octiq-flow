@@ -1,7 +1,10 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
-const { main, parseOptions, waitForUrl } = require('../lib/cli.cjs');
+const { main, parseOptions, profileRoot, readToken, waitForUrl } = require('../lib/cli.cjs');
 
 test('parses service options and validates the port', () => {
   assert.deepEqual(parseOptions(['--port', '1555', '--bind', '127.0.0.1', '--no-open']), {
@@ -69,21 +72,37 @@ test('status distinguishes launchd ownership from endpoint health', async () => 
   assert.deepEqual(output, ['Service: installed', 'Endpoint: not responding']);
 });
 
-test('readiness uses the public health endpoint before asking for the local token', async () => {
+test('readiness uses the public health endpoint and never asks the server for the token', async () => {
   const requests = [];
   const fetch = async (url) => {
     requests.push(url);
-    return {
-      ok: true,
-      text: async () => 'token with spaces',
-    };
+    return { ok: true, text: async () => 'must not be read' };
   };
-  const url = await waitForUrl(1777, { attempts: 1, fetch });
-  assert.deepEqual(requests, [
-    'http://127.0.0.1:1777/healthz',
-    'http://127.0.0.1:1777/token',
-  ]);
+  const url = await waitForUrl(1777, { attempts: 1, fetch, readToken: () => 'token with spaces' });
+  assert.ok(requests.length > 0);
+  assert.ok(requests.every((url) => url === 'http://127.0.0.1:1777/healthz'), requests.join(' '));
   assert.equal(url, 'http://127.0.0.1:1777/?token=token%20with%20spaces');
+});
+
+test('the token is read from the active profile, as the server resolves it', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octiq-cli-token-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const write = (file, value) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(value));
+  };
+  // No profile yet: the path is named, so the person knows where to look.
+  assert.throws(() => readToken({ env: {}, home }), /no token in .*profiles\/default\/web\.json/);
+  write(path.join(home, '.octiqflow', 'profiles', 'default', 'web.json'), { token: 'default-token' });
+  assert.equal(readToken({ env: {}, home }), 'default-token');
+  // The bootstrap pointer moves it, as it moves the server.
+  const base = path.join(home, 'elsewhere');
+  write(path.join(home, '.octiqflow', 'config.json'), { base, active: 'work' });
+  write(path.join(base, 'work', 'web.json'), { token: 'work-token' });
+  assert.equal(profileRoot(home), path.join(base, 'work'));
+  assert.equal(readToken({ env: {}, home }), 'work-token');
+  // A one-run override wins, as it does for the server.
+  assert.equal(readToken({ env: { OCTIQ_WEB_TOKEN: 'env-token' }, home }), 'env-token');
 });
 
 test('foreground run opens the browser once the server answers', async () => {

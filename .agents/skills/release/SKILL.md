@@ -164,7 +164,9 @@ actually answers:
    honest general check is a command the browser uses, over the real socket:
 
    ```bash
-   T=$(curl -s http://127.0.0.1:1421/token)
+   # /token no longer hands the token to a local request; take it from the
+   # URL the new server printed at startup (the one step 3 shows the user).
+   T=$(grep 'OctiqFlow:' ~/.octiqflow/logs/server.log | tail -1 | sed 's/.*token=//')
    node -e '
    const ws=new WebSocket("ws://127.0.0.1:1421/ws?token="+encodeURIComponent(process.argv[1]));
    ws.onopen=()=>ws.send(JSON.stringify({t:"invoke",id:1,cmd:"list_workspaces",args:{}}));

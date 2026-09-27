@@ -437,11 +437,17 @@ words them.
   person's routes. The socket in turn refuses the lead-only commands
   (`orchestration_task_accept_in_chat`, `orchestration_plan_approve_in_chat`),
   so a lead's acceptance on record always came from that lead's chat.
+  Nor does a request from this machine on its own: `GET /token` hands the
+  token only to a Cloudflare Access sign-in (it used to answer any request
+  whose `Host` said loopback, which any local process can send). A new
+  browser opens the `?token=…` link the server prints at startup or pastes
+  the token on the Connect page; `local_token` in an old `web.json` is
+  ignored.
   Limits: this separates what OctiqFlow hands out; it is not an OS boundary.
   Agents run as the person's own OS user, so a process that goes looking can
-  read `web.json` or another process's environment, or ask `GET /token` as a
-  loopback browser while `local_token` is on. Only OS-level isolation (another
-  user, a sandbox with no read access to the profile) closes that.
+  read `web.json`, the server's startup log, or another process's
+  environment. Only OS-level isolation (another user, a sandbox with no read
+  access to the profile) closes that.
 - **Ledgers.** Two, in `orchestrations.json`, both written in the same write
   as the acceptance. `acceptances` records every acceptance as it was made:
   task, accepted attempt, the agent it ran as, who accepted and when, the size,

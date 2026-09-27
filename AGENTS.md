@@ -124,8 +124,9 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 
 - **`web.rs`** serves the client from `web/dist` and holds the socket. It is
   also the whole auth surface: the token comparison (`ct_eq`, constant time),
-  the `local_token` guard, the proxy check (`came_through_a_proxy`) and the
-  Cloudflare Access hand-off. Treat changes here as sensitive.
+  the Cloudflare Access hand-off (`/token` issues the token to nothing else),
+  and the agent hooks, which take only a launch's capability (`hook_caller`).
+  Treat changes here as sensitive.
 - **`dispatch.rs`** is the single command table: a name plus JSON args in, a
   backend call out. **To add a backend command: write the fn in its module, then
   add a `"name" => …` arm to the `dispatch` match.** That is the only wiring

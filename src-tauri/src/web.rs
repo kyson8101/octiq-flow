@@ -29,8 +29,7 @@
 //! active profile dir:
 //!
 //! ```json
-//! { "enabled": true, "port": 1421, "bind": "0.0.0.0", "token": "…",
-//!   "local_token": true }
+//! { "enabled": true, "port": 1421, "bind": "0.0.0.0", "token": "…" }
 //! ```
 //!
 //! A missing token is generated and written back on first start. The file is
@@ -46,26 +45,20 @@
 //!
 //! * **The token is compared in constant time** (`ct_eq`). `==` stops at the
 //!   first byte that differs, and that timing is an oracle.
-//! * **`/token` answers only a browser that typed a loopback address**
-//!   (`host_is_local`). A loopback peer address is not enough on its own: a page
-//!   can point its own hostname at `127.0.0.1` and become same-origin with this
-//!   server, at which point asking for the token is all it has to do. The `Host`
-//!   header is the one part of that request the attacker cannot rewrite.
+//! * **`/token` answers only a Cloudflare Access sign-in.** It once answered
+//!   any request that came from this machine and spelled its `Host` as
+//!   loopback, which every local process can do — including the agents this
+//!   server starts. A browser without the token now gets the Connect page, or
+//!   opens the `?token=…` link printed at startup; either is remembered.
 //! * **The socket refuses a page we did not serve** (`origin_ok`). A WebSocket
 //!   handshake is exempt from the same-origin policy, so `Origin` is the only
 //!   place the browser says who is calling. Clients that are not browsers send
 //!   none and are unaffected — the token is what gates them.
 //!
-//! `local_token: false` switches the first of those off entirely, for a setup
-//! where something forwards to this server WITHOUT adding a proxy header
-//! (`ssh -L`, `socat`, an nginx `proxy_pass` with no `proxy_set_header`). Those
-//! arrive indistinguishable from a browser on this desk, so the endpoint has to
-//! be closed by hand rather than detected.
-//!
 //! ## Two callers, two credentials
 //!
-//! * **The person** is whoever holds the token: `/ws`, `/file`, `/auth` and
-//!   `/token`. The socket acts as the person, so everything the person alone
+//! * **The person** is whoever holds the token: `/ws`, `/file` and `/auth`,
+//!   and `/token` hands it only to a Cloudflare Access sign-in. The socket acts as the person, so everything the person alone
 //!   decides (accepting a result, approving a plan) is a socket command.
 //! * **An agent** is one launch of one chat, and proves it with the
 //!   capability the host minted for that launch (`OCTIQ_CHAT_CAPABILITY`,
@@ -75,10 +68,12 @@
 //!   refused. An agent is never handed the token, and the capability opens
 //!   none of the person's routes.
 //!
-//! That separates what OctiqFlow hands out. It is not an OS boundary: an agent
-//! runs as the person's own user, so a process that goes looking can read
-//! `web.json`, read another process's environment, or ask `/token` as a
-//! loopback browser (while `local_token` is on). Nothing here claims otherwise.
+//! That separates what OctiqFlow hands out: nothing the server gives an agent,
+//! and no request from this machine on its own, carries the person's
+//! authority. It is not an OS boundary: an agent runs as the person's own
+//! user, so a process that goes looking can read `web.json` (or the server's
+//! startup log, which prints the link) or another process's environment.
+//! Nothing here claims otherwise; only OS-level isolation closes that.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -86,7 +81,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Form, Query, State as AxumState};
+use axum::extract::{Form, Query, State as AxumState};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -116,21 +111,6 @@ pub struct WebConfig {
     /// means off, and the token stays the only way in.
     #[serde(default)]
     pub access: crate::access::AccessConfig,
-    /// Whether a browser on this machine may ask for the token (`GET /token`).
-    ///
-    /// On by default, because the usual case is a browser on the same desk and
-    /// the token is already readable on the same disk. Turn it OFF when
-    /// something sits in front of this server that does NOT add a forwarding
-    /// header — an `ssh -L` tunnel, `socat`, an nginx `proxy_pass` with no
-    /// `proxy_set_header`. Those arrive looking exactly like a local browser,
-    /// and `came_through_a_proxy` cannot see them, so the endpoint would hand
-    /// the token to whoever reached the far end.
-    #[serde(default = "default_local_token")]
-    pub local_token: bool,
-}
-
-fn default_local_token() -> bool {
-    true
 }
 
 fn default_port() -> u16 {
@@ -157,7 +137,6 @@ impl Default for WebConfig {
             bind: default_bind(),
             token: String::new(),
             access: Default::default(),
-            local_token: default_local_token(),
         }
     }
 }
@@ -524,59 +503,6 @@ async fn health_handler() -> Response {
     Json(json!({ "status": "ok", "service": "octiq-flow" })).into_response()
 }
 
-/// Whether this request reached us through a reverse proxy.
-///
-/// The peer address stops meaning anything the moment something sits in front:
-/// `cloudflared` runs on this machine and connects to 127.0.0.1, so a request
-/// from the other side of the planet arrives looking exactly like a browser on
-/// this desk. Anything deciding trust from the peer address has to ask this
-/// first.
-///
-/// Presence is what matters, not the value — these headers can say anything,
-/// and none of them is here at all on a request that really came straight from
-/// a local browser.
-fn came_through_a_proxy(headers: &axum::http::HeaderMap) -> bool {
-    const FORWARDED: [&str; 5] = [
-        "cf-connecting-ip",
-        "x-forwarded-for",
-        "x-forwarded-host",
-        "x-real-ip",
-        "forwarded",
-    ];
-    FORWARDED.iter().any(|h| headers.contains_key(*h))
-}
-
-/// Whether the browser typed OUR OWN address into the bar, rather than a name
-/// that merely points here.
-///
-/// This is the DNS-rebinding gate, and it exists because the peer address
-/// cannot answer the question. A page on `evil.example` can give its own
-/// hostname a second DNS answer of `127.0.0.1`, wait for the browser to switch
-/// to it, and from then on its scripts are same-origin with this server: it can
-/// read replies, so `GET /token` hands it the token and the socket behind it.
-/// Nothing about that request looks remote — the connection really does come
-/// from loopback.
-///
-/// The one thing the attacker cannot forge is this header. A browser writes
-/// `Host` from the URL it was given, so a rebound request still says
-/// `evil.example`. Insisting the header spells a loopback address is therefore
-/// the whole defence, and it costs a real local browser nothing: it got here by
-/// typing one.
-fn host_is_local(headers: &axum::http::HeaderMap) -> bool {
-    let Some(host) = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-    else {
-        // Every browser sends one. Something that does not is not the local
-        // browser this rule is here to recognise.
-        return false;
-    };
-    matches!(
-        hostname_of(host).as_deref(),
-        Some("localhost" | "127.0.0.1" | "::1")
-    )
-}
-
 /// The name out of a `host:port`, with an IPv6 literal's brackets removed.
 /// `None` when there is nothing left, which is not a host.
 fn hostname_of(value: &str) -> Option<String> {
@@ -704,23 +630,22 @@ fn safe_relative_path(rel: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-/// Hand the token to a browser running on THIS machine.
+/// Hand the token to someone Cloudflare Access has signed in, and to nobody
+/// else.
 ///
-/// A request from 127.0.0.1 already comes from something with the run of the
-/// machine — it can read `web.json` itself, where the token sits in plain text.
-/// Making a local browser type it in buys nothing and costs a gate every time,
-/// so loopback gets it for the asking. Every other address still has to know
-/// it: a phone, another laptop, anything across Tailscale.
-async fn token_handler(
-    AxumState(ctx): AxumState<Ctx>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap,
-) -> Response {
+/// This used to hand it to any request from this machine that spelled its
+/// `Host` as loopback, so a browser opened on the same desk was let in without
+/// asking. Every part of that request is written by the caller, so it could
+/// not tell a browser from any other local process — an agent this server
+/// started, say, which would come away holding the person's authority. Now a
+/// browser without the token is shown the Connect page, where the person
+/// pastes it, or opens the `?token=…` link the server prints at startup; both
+/// are remembered, and reconnects use what was remembered.
+async fn token_handler(AxumState(ctx): AxumState<Ctx>, headers: axum::http::HeaderMap) -> Response {
     // Someone Cloudflare Access has already identified. They got past a sign-in
-    // to be here, which is a stronger claim than "this request came from
-    // 127.0.0.1" ever was — so they are handed the token and every later
-    // request looks like any other. This is what makes signing in replace
-    // pasting a token, rather than sit on top of it.
+    // to be here, so they are handed the token and every later request looks
+    // like any other. This is what makes signing in replace pasting a token,
+    // rather than sit on top of it.
     let cfg_access = ctx.state.cfg.lock().ok().map(|c| c.access.clone());
     if let Some(access) = cfg_access.filter(|a| a.is_configured()) {
         let assertion = headers
@@ -738,30 +663,14 @@ async fn token_handler(
                 eprintln!("[web] Access assertion refused: {why}");
                 return (StatusCode::FORBIDDEN, "not signed in").into_response();
             }
-            // No header at all: not an Access request. Fall through to the
-            // local-browser rule below.
             Err(_) => {}
         }
     }
-
-    // Turned off for the setups this cannot see: a tunnel that adds no
-    // forwarding header arrives indistinguishable from a browser on this desk.
-    if !ctx.state.cfg.lock().map(|c| c.local_token).unwrap_or(true) {
-        return (StatusCode::FORBIDDEN, "not local").into_response();
-    }
-
-    // Order matters: the proxy check comes FIRST, because a forwarded request
-    // passes the loopback test. Exposing this through a tunnel without it would
-    // publish the token to anyone who asked for it.
-    //
-    // The host check is the other half. A loopback peer address proves the
-    // connection came from this machine and NOT that the browser meant to talk
-    // to this machine — a rebound hostname gives an attacker's page both. Only
-    // an address typed as loopback gets an answer.
-    if came_through_a_proxy(&headers) || !peer.ip().is_loopback() || !host_is_local(&headers) {
-        return (StatusCode::FORBIDDEN, "not local").into_response();
-    }
-    token_body(&ctx)
+    (
+        StatusCode::FORBIDDEN,
+        "sign in with the access token: open the ?token= link the server printed, or paste it",
+    )
+        .into_response()
 }
 
 /// The token itself, for whichever of the two ways in got here.
@@ -1449,51 +1358,6 @@ mod tests {
         map
     }
 
-    // ---- host_is_local: the DNS-rebinding gate ----------------------------
-
-    #[test]
-    fn the_loopback_spellings_a_browser_can_send_are_local() {
-        for host in [
-            "localhost",
-            "localhost:1421",
-            "127.0.0.1",
-            "127.0.0.1:1421",
-            "[::1]",
-            "[::1]:1421",
-        ] {
-            assert!(
-                host_is_local(&headers(&[("host", host)])),
-                "{host} should count as local"
-            );
-        }
-    }
-
-    #[test]
-    fn a_rebound_hostname_is_not_local_however_it_resolves() {
-        // The whole DNS-rebinding trick: `rebind.evil.com` is made to resolve to
-        // 127.0.0.1, so the request arrives on loopback and the peer address
-        // says nothing. What the attacker CANNOT change is the Host header —
-        // the browser copies it from the URL, and that still names their domain.
-        for host in [
-            "rebind.evil.com",
-            "rebind.evil.com:1421",
-            "octiq.example.com",
-            "127.0.0.1.nip.io:1421",
-        ] {
-            assert!(
-                !host_is_local(&headers(&[("host", host)])),
-                "{host} must not count as local"
-            );
-        }
-    }
-
-    #[test]
-    fn a_request_with_no_host_header_is_not_local() {
-        // Every browser sends one. Something that does not is not the local
-        // browser this endpoint exists for.
-        assert!(!host_is_local(&headers(&[])));
-    }
-
     // ---- origin_ok: no cross-site page may open the socket -----------------
 
     #[test]
@@ -1539,9 +1403,10 @@ mod tests {
             ("origin", "http://rebind.evil.com:1421"),
         ]);
         assert!(origin_ok(&rebound), "same origin is same origin");
-        // What stops it is that the address was never ours, which is the rule
-        // /token is guarded by.
-        assert!(!host_is_local(&rebound));
+        // What stops it is that nothing here hands a token to a request that
+        // does not already carry one (see
+        // `a_request_from_this_machine_alone_is_never_handed_the_token`), and
+        // the socket asks for it.
     }
 
     #[test]
@@ -1608,34 +1473,6 @@ mod tests {
             safe_relative_path("/etc/passwd"),
             Some(std::path::PathBuf::from("etc/passwd"))
         );
-    }
-
-    #[test]
-    fn a_request_forwarded_by_a_proxy_is_not_treated_as_local() {
-        // cloudflared runs on this machine and connects to 127.0.0.1, so every
-        // request through a tunnel arrives with a loopback peer address.
-        // Trusting that address would hand the token to the whole internet.
-        for header in [
-            "cf-connecting-ip",
-            "x-forwarded-for",
-            "x-forwarded-host",
-            "x-real-ip",
-            "forwarded",
-        ] {
-            let mut headers = axum::http::HeaderMap::new();
-            headers.insert(header, "203.0.113.7".parse().unwrap());
-            assert!(
-                came_through_a_proxy(&headers),
-                "{header} should mark the request as forwarded"
-            );
-        }
-    }
-
-    #[test]
-    fn a_direct_request_carries_no_proxy_headers() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("user-agent", "curl".parse().unwrap());
-        assert!(!came_through_a_proxy(&headers));
     }
 
     // ---- network binds: a token is not a public identity system ----------
@@ -1782,11 +1619,20 @@ mod tests {
         chats: Arc<crate::agent_chat::ChatManager>,
         store: Arc<crate::orchestration::OrchestrationStore>,
     ) -> (Ctx, String) {
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        test_server_with(cfg, chats, store).await
+    }
+
+    async fn test_server_with(
+        cfg: WebConfig,
+        chats: Arc<crate::agent_chat::ChatManager>,
+        store: Arc<crate::orchestration::OrchestrationStore>,
+    ) -> (Ctx, String) {
         let ctx = Ctx {
-            state: Arc::new(WebState::new(WebConfig {
-                token: "hook-token".into(),
-                ..WebConfig::default()
-            })),
+            state: Arc::new(WebState::new(cfg)),
             services: crate::dispatch::Services {
                 workspaces: Arc::new(crate::workspaces::WorkspaceState::load()),
                 chats,
@@ -1862,6 +1708,90 @@ mod tests {
         }
         chats.test_end("chat:worker");
         let _ = std::fs::remove_file(file);
+    }
+
+    /// GET a route and read the body too.
+    async fn get_body(url: String, headers: Vec<(&'static str, String)>) -> (u16, String) {
+        tokio::task::spawn_blocking(move || {
+            let mut request = ureq::get(&url);
+            for (name, value) in &headers {
+                request = request.set(name, value);
+            }
+            match request.call() {
+                Ok(response) => (
+                    response.status(),
+                    response.into_string().unwrap_or_default(),
+                ),
+                Err(ureq::Error::Status(code, response)) => {
+                    (code, response.into_string().unwrap_or_default())
+                }
+                Err(error) => panic!("{url} could not be reached: {error}"),
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_from_this_machine_alone_is_never_handed_the_token() {
+        // A web.json from before: the server wrote `local_token: true` into
+        // every one, so it is not a choice anyone made and changes nothing.
+        let cfg: WebConfig =
+            serde_json::from_value(json!({ "token": "person-token", "local_token": true }))
+                .unwrap();
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let (_ctx, base) = test_server_with(cfg, chats, store).await;
+        let port = base.rsplit(':').next().unwrap().to_string();
+        // Loopback peer, loopback Host, no proxy header: everything the old
+        // rule asked for, and all of it said by the caller.
+        for host in [
+            format!("127.0.0.1:{port}"),
+            format!("localhost:{port}"),
+            "[::1]".into(),
+        ] {
+            let (status, body) =
+                get_body(format!("{base}/token"), vec![("Host", host.clone())]).await;
+            assert_eq!(status, 403, "{host}");
+            assert!(!body.contains("person-token"), "{host}: {body}");
+        }
+        // Nor does anything an agent holds open it.
+        let (status, body) = get_body(
+            format!("{base}/token"),
+            vec![(CHAT_CAPABILITY_HEADER, "any".into())],
+        )
+        .await;
+        assert_eq!(status, 403);
+        assert!(!body.contains("person-token"));
+        // The token itself still opens the person's routes: a browser that has
+        // it, from a link or the Connect page, is in.
+        assert_eq!(
+            get_status(format!("{base}/auth?token=person-token"), vec![]).await,
+            200
+        );
+        assert_eq!(get_status(format!("{base}/auth?token="), vec![]).await, 401);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn with_access_configured_only_a_verified_sign_in_is_handed_the_token() {
+        let mut cfg = WebConfig {
+            token: "person-token".into(),
+            ..WebConfig::default()
+        };
+        cfg.access.team_domain = "example.cloudflareaccess.com".into();
+        cfg.access.aud = "aud-tag".into();
+        assert!(cfg.access.is_configured());
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let (_ctx, base) = test_server_with(cfg, chats, store).await;
+        for headers in [
+            vec![],
+            vec![(crate::access::ASSERTION_HEADER, "not-a-jwt".to_string())],
+        ] {
+            let (status, body) = get_body(format!("{base}/token"), headers).await;
+            assert_eq!(status, 403);
+            assert!(!body.contains("person-token"), "{body}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

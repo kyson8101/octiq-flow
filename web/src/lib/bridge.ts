@@ -77,26 +77,38 @@ class Bridge {
     void this.start();
   }
 
-  /** Get a token before the first connect if we do not have one. A browser on
-   *  the server's own machine can just ask for it (/token, loopback only), so
-   *  the common "I opened it on this Mac" case never sees a gate. */
+  /** Get a token before the first connect if we do not have one. The server
+   *  hands one out only to a browser Cloudflare Access has signed in; anyone
+   *  else — a browser on the server's own machine included — goes to Connect,
+   *  where the person pastes it or opens the `?token=` link. Only a server we
+   *  could not reach at all is worth connecting to anyway: that is the
+   *  "keep retrying" case, not the "ask the person" one. */
   private async start() {
-    if (!readToken()) await this.tryLocalToken();
+    if (!readToken() && (await this.tryIssuedToken()) === "refused") {
+      this.setState("unauthorized");
+      return; // nothing changes until a token is supplied
+    }
     this.connect();
   }
 
-  /** Ask the server for its token. Only loopback gets an answer. */
-  private async tryLocalToken(): Promise<boolean> {
+  /** Ask the server for its token, which it gives only to an Access sign-in.
+   *  "unreachable" means no answer at all, as opposed to a no. */
+  private async tryIssuedToken(): Promise<"issued" | "refused" | "unreachable"> {
     const scheme = location.protocol === "https:" ? "https" : "http";
+    let res: Response;
     try {
-      const res = await fetch(`${scheme}://${serverHost()}/token`, { cache: "no-store" });
-      if (!res.ok) return false;
-      const token = (await res.text()).trim();
-      if (!token) return false;
-      localStorage.setItem(TOKEN_KEY, token);
-      return true;
+      res = await fetch(`${scheme}://${serverHost()}/token`, { cache: "no-store" });
     } catch {
-      return false;
+      return "unreachable";
+    }
+    try {
+      if (!res.ok) return "refused";
+      const token = (await res.text()).trim();
+      if (!token) return "refused";
+      localStorage.setItem(TOKEN_KEY, token);
+      return "issued";
+    } catch {
+      return "refused";
     }
   }
 
@@ -163,9 +175,9 @@ class Bridge {
       // the close event cannot tell us and the right response differs: a bad
       // token needs the user, a dropped network needs patience.
       if (await this.tokenRejected()) {
-        // A local browser can be handed a fresh one — the stored token may just
-        // be stale (the server was reinstalled, the profile changed).
-        if (await this.tryLocalToken()) {
+        // An Access sign-in can be handed a fresh one — the stored token may
+        // just be stale (the server was reinstalled, the profile changed).
+        if ((await this.tryIssuedToken()) === "issued") {
           this.connect();
           return;
         }
