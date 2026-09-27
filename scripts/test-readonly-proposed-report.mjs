@@ -13,9 +13,15 @@
 //     a missing verdict cannot settle it; the coordinator can, once, with the
 //     verdict it states; a repeat changes nothing;
 //   - a relay between two runs of the same coordinator is recorded once, and
-//     one to another coordinator's run, or from a worker, is refused.
-// What it does NOT show: the capability-bound hook identity (not on this
-// base), or any model's judgement beyond this one run.
+//     one to another coordinator's run with no bridge, or from a worker, is
+//     refused.
+// The two coordinators are stand-in `claude` chats the server launched: each
+// hook call carries that chat's own launch capability, which the stand-in
+// writes into this run's scratch folder, exactly as its MCP would send it.
+// The Codex worker's capability never leaves its process, so a call "as the
+// worker" here has none and is refused before any rule is read.
+// test-run-bridge-live.mjs covers bridges and a worker's own capability.
+// What it does NOT show: any model's judgement beyond this one run.
 //
 //   cd src-tauri && cargo build --bin octiq-server && cd ..
 //   node scripts/test-readonly-proposed-report.mjs [path/to/octiq-server] [evidence-dir]
@@ -45,8 +51,42 @@ git("-c", "user.email=t@example.invalid", "-c", "user.name=t", "add", "README.md
 git("-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "-m", "fixture");
 const fixtureHead = git("rev-parse", "HEAD").trim();
 
+// Stand-in coordinators: a `claude` that records its launch capability and
+// answers every message with one line. Codex stays the real one.
+const BIN = path.join(DIR, "bin");
+const CAPS = path.join(DIR, "caps");
+fs.mkdirSync(BIN, { recursive: true });
+fs.mkdirSync(CAPS, { recursive: true });
+function stubClaude() {
+  const fs = require("fs");
+  const path = require("path");
+  const key = process.env.OCTIQ_CHAT_KEY || "unknown";
+  fs.writeFileSync(path.join(process.env.STUB_CAPS, encodeURIComponent(key)), process.env.OCTIQ_CHAT_CAPABILITY || "");
+  const out = (event) => process.stdout.write(JSON.stringify({ session_id: "stub-" + process.pid, ...event }) + "\n");
+  out({ type: "system", subtype: "init", model: "stub", tools: [] });
+  require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
+    let msg;
+    try { msg = JSON.parse(line); } catch { return; }
+    if (msg.type === "control_request" && msg.request?.subtype === "initialize") {
+      out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: {} } });
+    } else if (msg.type === "user") {
+      out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Noted." }] } });
+      out({ type: "result", subtype: "success", is_error: false, result: "Noted.", duration_ms: 1, num_turns: 1 });
+    }
+  });
+}
+fs.writeFileSync(path.join(BIN, "claude"), `#!/usr/bin/env node\n(${stubClaude.toString()})();\n`, { mode: 0o755 });
+const capOf = (key) => {
+  const file = path.join(CAPS, encodeURIComponent(key));
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+};
+
 const ENV = { ...process.env, HOME, CODEX_HOME: path.join(os.homedir(), ".codex"), SHELL: "/bin/zsh",
-  OCTIQ_WEB_PORT: String(PORT), OCTIQ_WEB_TOKEN: TOKEN, OCTIQ_CHAT_IDLE_MINS: "0" };
+  OCTIQ_WEB_PORT: String(PORT), OCTIQ_WEB_TOKEN: TOKEN, OCTIQ_CHAT_IDLE_MINS: "0",
+  PATH: `${BIN}:${process.env.PATH}`, STUB_CAPS: CAPS };
+for (const name of ["OCTIQ_CHAT_KEY", "OCTIQ_SESSION_KEY", "OCTIQ_LAUNCH_ID", "OCTIQ_CHAT_CAPABILITY", "OCTIQ_HOOK_PORT", "OCTIQ_ROOT"]) {
+  delete ENV[name];
+}
 
 const wait = async (what, test, ms = 30_000) => {
   const end = Date.now() + ms;
@@ -73,8 +113,11 @@ const invoke = (cmd, args = {}) => new Promise((resolve, reject) => {
   ws.send(JSON.stringify({ t: "invoke", id, cmd, args }));
 });
 const hook = async (chatKey, action, args) => {
-  const response = await fetch(`http://127.0.0.1:${PORT}/hook/orchestration?token=${TOKEN}`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chatKey, action, args }),
+  const capability = capOf(chatKey);
+  const response = await fetch(`http://127.0.0.1:${PORT}/hook/orchestration`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(capability ? { "x-octiq-chat-capability": capability } : {}) },
+    body: JSON.stringify({ chatKey, action, args }),
   });
   const body = await response.json();
   return { status: response.status, ...body };
@@ -98,6 +141,14 @@ try {
   };
 
   const project = await invoke("add_workspace", { name: "Fixture", primaryPath: repo });
+  for (const key of [COORD, OTHER]) {
+    const id = key.slice("chat:".length);
+    await invoke("chat_index_save", { meta: { id, projectId: project.id, title: id, cwd: repo, modelId: "claude:sonnet",
+      access: "auto", createdAt: Date.now(), updatedAt: Date.now(), generation: 0 } });
+    await invoke("chat_start", { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false,
+      prompt: "Coordinate.", turnId: `user-${id}` });
+  }
+  await wait("both coordinators' capabilities", () => capOf(COORD) && capOf(OTHER));
   const run = await invoke("orchestration_run_create", { actorChatKey: COORD, objective: "Review the fixture read-only",
     workspaceId: project.id, rootPath: repo, maxConcurrent: 2 });
   const review = await invoke("orchestration_task_create", { actorChatKey: COORD, runId: run.id, dependsOn: [], kind: "review",
@@ -162,7 +213,8 @@ try {
     noVerdict: await confirm(COORD, { verdict: undefined }),
   };
   for (const [name, reply] of Object.entries(results.refusals)) {
-    assert.equal(reply.status, 400, `${name} must be refused: ${JSON.stringify(reply)}`);
+    // No capability of the worker's is available here: refused at the door.
+    assert.equal(reply.status, name === "worker" ? 401 : 400, `${name} must be refused: ${JSON.stringify(reply)}`);
   }
   s = await snapshot();
   assert.equal(s.tasks.find((t) => t.id === review.id).status, "running", "refusals changed nothing");
@@ -197,7 +249,11 @@ try {
   };
   assert.equal(results.relay.sent.status, 200);
   assert.equal(results.relay.repeat.result.id, results.relay.sent.result.id, "recorded once");
-  for (const name of ["toOtherCoordinator", "fromOtherCoordinator", "asWorker"]) assert.equal(results.relay[name].status, 400, name);
+  for (const name of ["toOtherCoordinator", "fromOtherCoordinator"]) {
+    assert.equal(results.relay[name].status, 400, name);
+    assert.match(results.relay[name].error, /No bridge is open/);
+  }
+  assert.equal(results.relay.asWorker.status, 401, "asWorker");
   const siblingView = await invoke("orchestration_snapshot", { runId: sibling.id });
   results.relay.siblingMessages = siblingView.messages.map((m) => ({ kind: m.kind, relay: m.relay }));
   assert.equal(siblingView.messages.filter((m) => m.kind === "relay").length, 1);
