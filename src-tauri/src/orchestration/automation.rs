@@ -99,6 +99,18 @@ impl WorkerDefaults {
     }
 }
 
+/// The worker a task will get: its own selection, or the run's defaults.
+pub(super) fn settings_for_task(run: &Run, task: &Task) -> Result<Option<WorkerSettings>, String> {
+    match &run.worker_defaults {
+        Some(defaults) => defaults.settings_for(task),
+        None => task
+            .worker
+            .clone()
+            .map(WorkerSettings::normalized)
+            .transpose(),
+    }
+}
+
 impl OrchestrationStore {
     pub fn configure_automation(
         &self,

@@ -35,11 +35,22 @@ pub struct AgentRead<'a> {
 /// when its readiness check last passed. Reported apart from task status on
 /// purpose: a completed task says nothing about whether its services still
 /// run, and a ready environment says nothing about the task.
+///
+/// `state` is the environment's own (`preparing`, `ready`, `stale`,
+/// `unhealthy`, `stopped`, `error`, `unverified`), or `waiting_for_capacity`
+/// while its attempt waits in line for a host slot, or `not_prepared`.
+/// `invalidated` says why a ready one stopped being ready; `stopped` who
+/// stopped it and why; `heldBy` that the person keeps it running.
 pub fn environments(
     snapshot: &Snapshot,
     sandboxes: &crate::sandbox::Snapshot,
     runs: &BTreeSet<String>,
 ) -> Value {
+    let waiting: BTreeSet<&String> = sandboxes
+        .capacity
+        .iter()
+        .flat_map(|c| c.waiting.iter().flat_map(|w| w.keys.first()))
+        .collect();
     let rows: Vec<Value> = snapshot
         .tasks
         .iter()
@@ -49,29 +60,41 @@ pub fn environments(
                 .active_attempt_id
                 .as_deref()
                 .and_then(|id| snapshot.attempts.iter().find(|a| a.id == id));
-            let env = attempt.and_then(|a| sandboxes.environments.get(&a.worker_chat_key));
+            let key = attempt.map(|a| &a.worker_chat_key);
+            let env = key.and_then(|k| sandboxes.environments.get(k));
+            let queued = key.is_some_and(|k| waiting.contains(k));
             match env {
                 Some(env) => json!({
                     "taskId": task.id,
                     "attemptId": attempt.map(|a| a.id.clone()),
                     "environmentId": env.id,
-                    "state": env.state,
+                    "state": if queued { "waiting_for_capacity" } else { env.state.as_str() },
                     "checkedAt": env.checked_at,
+                    "probedAt": env.probed_at,
                     "error": env.error.as_deref().map(|e| clip(e, TEXT_LIMIT)),
+                    "invalidated": env.invalidated,
+                    "stopped": env.stopped,
+                    "heldBy": env.lease.as_ref().map(|l| l.by.clone()),
                     "urls": env.urls,
                     "sourceRevision": env.source_revision,
                     "sourceDirty": env.source_dirty,
                     "fixtureVersion": env.fixture_version,
+                    "sources": env.fingerprint.as_ref().map(|f| &f.sources),
                 }),
                 None => json!({
                     "taskId": task.id,
                     "attemptId": attempt.map(|a| a.id.clone()),
-                    "state": "not_prepared",
+                    "state": if queued { "waiting_for_capacity" } else { "not_prepared" },
                 }),
             }
         })
         .collect();
     Value::Array(rows)
+}
+
+/// Host-wide environment slots, for a coordinator deciding what to run.
+pub fn capacity(sandboxes: &crate::sandbox::Snapshot) -> Value {
+    json!(sandboxes.capacity)
 }
 
 pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, String> {
@@ -279,6 +302,7 @@ fn compact(
                             "runId",
                             "title",
                             "status",
+                            "kind",
                             "verdict",
                             "assignee",
                             "activeAttemptId",
@@ -295,6 +319,7 @@ fn compact(
                             "worker",
                             "assignee",
                             "environment",
+                            "kind",
                             "updatedAt",
                         ]
                     };
@@ -339,6 +364,24 @@ fn compact(
                             ],
                         )
                     };
+                    // Held closing words are what the coordinator must act on;
+                    // confirmed ones say who settled the task from them.
+                    if let Some(proposal) = &attempt.proposed_report {
+                        let mut held = pick(
+                            &to_json(proposal),
+                            &[
+                                "id",
+                                "capturedAt",
+                                "truncated",
+                                "confirmedAt",
+                                "confirmedBy",
+                            ],
+                        );
+                        if proposal.confirmed_at.is_none() {
+                            held.insert("text".into(), clip(&proposal.text, TEXT_LIMIT));
+                        }
+                        item.insert("proposedReport".into(), Value::Object(held));
+                    }
                     // A completed attempt's summary is its task's result, word
                     // for word; a failed or blocked one's says why.
                     if let Some(summary) = attempt.summary.as_deref() {
@@ -510,6 +553,9 @@ fn latest_messages<'a>(
                 ],
             );
             item.insert("body".into(), clip(&message.body, text_limit));
+            if let Some(relay) = &message.relay {
+                item.insert("relay".into(), to_json(relay));
+            }
             Value::Object(item)
         })
         .collect();

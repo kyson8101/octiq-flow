@@ -25,9 +25,34 @@ needed to change its selected mode. Resumes retain the database and environment 
 The Sandbox panel reports last checked readiness, app links, fixture version and
 selected source revision. Start/check rebuilds and verifies; stop preserves data;
 confirmed reset deletes only that environment's volumes and restores its seed.
-These operations refuse active turns and queued/background work. Server restarts
-invalidate readiness. Readiness is explicitly timestamped evidence, not a liveness
-monitor or acceptance of every application feature.
+These operations refuse active turns and queued/background work. Readiness is
+timestamped evidence, not acceptance of every application feature.
+
+## When "ready" stops being true
+
+A passing check records what it covered (`fingerprint`): `HEAD` and, when dirty,
+a digest of the uncommitted contents of every repository the services are built
+from — the chat's own folder plus each build context in the frozen Compose
+configuration — a digest of the recipe folder and its private env file, and the
+fixture version. Digests never leave the host's private state; reads show only
+that one was recorded.
+
+Reading the Sandbox panel, the run panel or an agent's snapshot queues a probe of
+each ready environment not looked at in the last 20 seconds. One background
+thread works the queue; readers never wait for it and nothing polls. A probe that
+finds a source, recipe or fixture change marks the environment **stale**; a
+service with no container, exited, or reporting unhealthy (a one-shot seed or
+restore must have exited 0) marks it **unhealthy**; a probe that cannot finish
+marks it unhealthy too. Each keeps `checkedAt`, the last check that passed, and
+says why in `invalidated`. Only a new start or check makes it ready again. A
+server restart makes earlier readiness `unverified`.
+
+A start after the recipe changed first takes the old stack down with the OLD
+frozen configuration, then freezes and validates the new recipe, so cleanup
+never follows an altered recipe to other resources. A start whose sources moved
+takes the whole stack down before rebuilding (volumes kept), so a service that
+would otherwise stay up — a gateway — cannot keep addresses of replaced
+containers. Endpoint ports are read again after every start.
 
 ## Isolation and seed
 
@@ -75,12 +100,45 @@ and nothing that depends on the task starts. A task with `environment:
 task that repairs the recipe is never blocked by it. Every dispatch builds and
 checks the environment again, so readiness is fresh for each dependent job.
 A server restart makes earlier readiness `unverified`.
-`orchestration_snapshot` lists `environments` (state, `checkedAt`, URLs,
-source revision) separately from task status. The plan card says
+`orchestration_snapshot` lists `environments` (state, `checkedAt`,
+`probedAt`, `invalidated`, `stopped`, `heldBy`, URLs, sources) and
+`environmentCapacity` separately from task status. The plan card says
 **Environment: Test environment, checked before the worker starts**, so the
 person approves the requirement too.
 
-Product acceptance workflows remain future work.
-Existing progress UI now says **Tasks completed** and **Acceptance: unverified**;
-completed tasks or reviews do not establish product acceptance. The broader two
-feedback reports remain open until their remaining acceptance criteria are handled.
+**Lifecycle** (`orchestration/environments.rs`). A retry takes over its previous
+attempt's environment for the same worktree — same Compose project and volumes —
+instead of building a second stack. One reconciler thread, woken by orchestration
+and sandbox changes, stops (volumes kept) orchestrated environments nothing
+needs. An environment is kept while its attempt is live, while a task that
+depends on its passed task is running, while the person holds it (starting or
+checking a settled worker's environment from its Sandbox panel holds it; Stop
+releases it), and — softly — while a dependant has still to run. Soft holds give
+way only when another task is waiting for a slot. A stopped run stops its
+environments except held ones; cleaning up a task's workspace stops its
+environment first. Ordinary chats' sandboxes are never touched.
+
+**Capacity.** At most `OCTIQ_SANDBOX_LIMIT` (default 3) environments run or
+build at once on the host. A sandbox task asks for its own environment and those
+of the sandbox tasks it depends on in ONE request: it gets all of them or waits,
+in order, as **Waiting for environment capacity** — never half of them, so two
+validations that each need two environments cannot deadlock. A request larger
+than the limit fails at once with that cause. Leaving the queue (the run stops,
+the attempt is replaced) frees nothing it never had. Before its worker starts,
+each dependency environment is rechecked, or rebuilt if it went stale, stopped
+or unhealthy.
+
+## Checks and acceptance
+
+A task's `kind` is `work` (the default), `check`, `review` or `acceptance`. The
+last three judge something: their worker must settle `completed` with a `pass` or
+`fail` verdict (a completed report without one is refused), and only a pass
+releases their dependants. The kind is part of the plan the person approves.
+Tasks created before kinds existed are `work`; no verdict is inferred for them.
+
+The run panel keeps the evidence apart: tasks settled; checks passed, failed and
+awaiting (from explicit check tasks, plus verdicts other tasks reported); task
+branches merged; sandbox runtime states; deployed runtime (not tracked per run);
+and acceptance, which is never inferred from counts — "every planned check
+passed" is reported as exactly that. Each sandbox task shows its environment's
+state, age, revision and reason beside, not inside, its status.

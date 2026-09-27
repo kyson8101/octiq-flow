@@ -70,6 +70,7 @@ impl Services {
             chats.clone(),
             workspaces.clone(),
         );
+        crate::orchestration::environments::start_reconciler(orchestrations.clone());
         Self {
             workspaces,
             chats,
@@ -238,15 +239,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     // implementations directly, without a client-controlled bypass flag.
     match cmd {
         // A worker's test environment outlives its turns on purpose, so once
-        // its attempt has settled the person can stop or reset it from the
-        // Sandbox panel; that no longer drives the worker. A live worker's
-        // stays out of reach, like everything else a worker owns.
+        // its attempt has settled the person can start, check, stop or reset
+        // it from the Sandbox panel to inspect it; that no longer drives the
+        // worker, and starting holds it against the host's lifecycle until
+        // they stop it. A live worker's stays out of reach, like everything
+        // else a worker owns.
         "sandbox_action"
-            if matches!(arg::<String>(&args, "action")?.as_str(), "stop" | "reset")
-                && svc
-                    .orchestrations
-                    .worker_card_live(&arg::<String>(&args, "key")?)?
-                    == Some(false) => {}
+            if matches!(
+                arg::<String>(&args, "action")?.as_str(),
+                "start" | "check" | "stop" | "reset"
+            ) && svc
+                .orchestrations
+                .worker_card_live(&arg::<String>(&args, "key")?)?
+                == Some(false) => {}
         "chat_start"
         | "sandbox_action"
         | "chat_send"
@@ -467,7 +472,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
 
         // ---- chats --------------------------------------------------------
-        "sandbox_snapshot" => to_value(crate::sandbox::Store::profile().snapshot()),
+        "sandbox_snapshot" => to_value(crate::sandbox::Store::profile().snapshot_probed()),
         "sandbox_configure" => {
             to_value(crate::sandbox::Store::profile().configure(arg(&args, "enabled")?))
         }
@@ -475,12 +480,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let key: String = arg(&args, "key")?;
             let action: String = arg(&args, "action")?;
             let confirmation: Option<String> = arg(&args, "confirmation")?;
-            to_value(crate::sandbox::Store::profile().action_when_idle(
-                &key,
-                &action,
-                confirmation.as_deref(),
-                || crate::agent_chat::end_idle_for_sandbox(&svc.chats, &key),
-            ))
+            to_value(
+                crate::sandbox::Store::profile()
+                    .person_action(&key, &action, confirmation.as_deref(), || {
+                        crate::agent_chat::end_idle_for_sandbox(&svc.chats, &key)
+                    })
+                    .map(crate::sandbox::Environment::public),
+            )
         }
         "chat_start" => {
             let key: String = arg(&args, "key")?;
@@ -896,12 +902,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             });
             if needs {
                 if let (Ok(sandboxes), Some(out)) = (
-                    crate::sandbox::Store::profile().snapshot(),
+                    crate::sandbox::Store::profile().snapshot_probed(),
                     view.as_object_mut(),
                 ) {
                     out.insert(
                         "environments".into(),
                         crate::orchestration::agent_view::environments(&full, &sandboxes, &shown),
+                    );
+                    out.insert(
+                        "environmentCapacity".into(),
+                        crate::orchestration::agent_view::capacity(&sandboxes),
                     );
                 }
             }
@@ -1055,6 +1065,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
                         .unwrap_or_default(),
                     arg(&args, "size")?,
+                    arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?
+                        .unwrap_or_default(),
                 ),
             )
         }
@@ -1118,6 +1130,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     spec: arg(&args, "spec")?,
                     card,
                     depends_on: arg(&args, "dependsOn")?,
+                    kind: arg(&args, "kind")?,
                     route,
                     withdraw: arg::<Option<bool>>(&args, "withdraw")?.unwrap_or(false),
                     size: arg(&args, "size")?,
@@ -1431,6 +1444,51 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             )?;
             to_value(Ok(task))
         }
+        // The coordinator settles a read-only worker's attempt from the
+        // closing words the host held for it — that proposal, by id, with an
+        // outcome and verdict the coordinator states. Never inferred.
+        "orchestration_report_confirm" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let attempt: String = arg(&args, "attemptId")?;
+            let proposal: String = arg(&args, "proposalId")?;
+            let outcome = arg(&args, "outcome")?;
+            let verdict = arg(&args, "verdict")?;
+            let confirm = || {
+                svc.orchestrations
+                    .confirm_proposed_report(&actor, &attempt, &proposal, outcome, verdict)
+            };
+            // Decided while the worker's session is held idle: a message
+            // reaching the worker cannot start a turn — which would withdraw
+            // the words — between the check and the settlement.
+            let settled = match svc.orchestrations.attempt_worker_chat(&attempt)? {
+                Some(worker) => svc.chats.while_idle(&worker, confirm).map_err(|why| {
+                    if why.starts_with("That chat is in a turn") {
+                        "The worker is in a turn again; that withdraws its proposed report. Wait for the turn to end and read the snapshot again.".to_string()
+                    } else {
+                        why
+                    }
+                })?,
+                None => confirm()?,
+            };
+            to_value(Ok::<_, String>(settled))
+        }
+        "orchestration_relay_send" => to_value(svc.orchestrations.relay_between_runs(
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "fromRunId")?,
+            &arg::<String>(&args, "toRunId")?,
+            arg(&args, "subject")?,
+            arg(&args, "body")?,
+            arg(&args, "originAttemptId")?,
+        )),
+        // Browser-only: the person picks Auto or Manual command approval for
+        // a Claude task on its plan card, before approving the plan. Not in
+        // the agent hook's whitelist.
+        "orchestration_task_access" => to_value(svc.orchestrations.set_task_access(
+            &arg::<String>(&args, "runId")?,
+            &arg::<String>(&args, "taskId")?,
+            arg(&args, "access")?,
+            arg::<u32>(&args, "revision")?,
+        )),
         "orchestration_gate_create" => {
             let gate = svc.orchestrations.create_gate(
                 &arg::<String>(&args, "actorChatKey")?,

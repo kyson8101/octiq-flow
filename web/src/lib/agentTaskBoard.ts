@@ -65,14 +65,43 @@ export function taskStateLabel(
   attempt: OrchestrationAttempt | undefined,
   decisions: readonly { attemptId: string; status: string }[] = [],
 ): string {
+  // A settled check's answer outranks how its worker's process ended:
+  // "Completed" alone is exactly the word that hid a failed review.
+  if (task.status === "completed" && (task.verdict === "fail" || (task.kind && task.kind !== "work"))) {
+    return task.verdict === "fail" ? "Done · check failed" : task.verdict === "pass" ? "Done · passed" : "Done · no verdict";
+  }
+  if (task.activeAttemptId === attempt?.id && proposedReportState(attempt) === "proposed"
+    && (attempt?.status === "running" || attempt?.status === "preparing")) {
+    return "Report proposed · coordinator to confirm";
+  }
   if (attempt?.execution && task.activeAttemptId === attempt.id) {
     const state = attempt.execution.state;
     const approval = decisions.some((d) => d.attemptId === attempt.id && d.status === "pending");
     if (approval && (state === "waiting_tool" || state === "awaiting_report")) return "Awaiting approval";
+    const environment = attempt.execution.pendingTools?.["octiq:environment"];
+    if (environment) return environment.startsWith("Waiting for environment capacity") ? "Waiting for an environment slot" : "Preparing environment";
     return EXECUTION_LABELS[state];
   }
-  if (task.status === "completed" && task.verdict === "fail") return "Done · check failed";
   return TASK_LABELS[task.status];
+}
+
+/** A read-only worker's closing words the host held as its report: waiting
+ *  for the coordinator, or the words it settled the task from. */
+export function proposedReportState(attempt: OrchestrationAttempt | undefined): "proposed" | "confirmed" | null {
+  const proposal = attempt?.proposedReport;
+  if (!proposal) return null;
+  return proposal.confirmedAt ? "confirmed" : "proposed";
+}
+
+/** The native safety decision an attempt is parked on, when the host
+ *  observed one: its id and, only if the provider gave it, the exact action.
+ *  Nothing when no card was observed — absence is not an approval. */
+export function pendingDecision<D extends { attemptId: string; status: string }>(
+  attempt: OrchestrationAttempt | undefined,
+  decisions: readonly D[] = [],
+): D | undefined {
+  if (!attempt) return undefined;
+  return decisions.find((d) => d.attemptId === attempt.id && d.status === "pending");
 }
 
 export function executionNeedsAttention(attempt?: OrchestrationAttempt): boolean {

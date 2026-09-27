@@ -408,7 +408,7 @@ impl OrchestrationStore {
     }
 
     /// Ignore ordinary chats without cloning or persisting the orchestration ledger.
-    fn observed_attempt(&self, key: &str) -> Option<Attempt> {
+    pub(super) fn observed_attempt(&self, key: &str) -> Option<Attempt> {
         let inner = self.inner.lock().ok()?;
         inner
             .data
@@ -452,6 +452,14 @@ impl OrchestrationStore {
                     return Ok(if fail(data, &before.id, error, now) { Touched::Ledger } else { Touched::Nothing });
                 }
                 let attempt = data.attempts.get_mut(&before.id).unwrap();
+                // A new turn: whatever it says replaces the words held from
+                // the last one, so they can no longer be confirmed.
+                if matches!(observation, Observation::Executing)
+                    && attempt.proposed_report.as_ref().is_some_and(|p| p.confirmed_at.is_none())
+                {
+                    attempt.proposed_report = None;
+                    ledger = true;
+                }
                 let e = &mut attempt.execution;
                 e.last_activity_at = Some(now);
                 match observation {
@@ -534,8 +542,12 @@ impl OrchestrationStore {
         let Some(before) = self.observed_attempt(key) else {
             return Ok(());
         };
-        // A one-shot provider may exit while a durable decision waits.
-        if before.status == AttemptStatus::Blocked || crate::safety_block::awaits_decision(key)
+        // A one-shot provider may exit while a durable decision waits, and an
+        // idle read-only worker's process may be reaped while its proposed
+        // report waits for the coordinator: its work is done, not lost.
+        if before.status == AttemptStatus::Blocked
+            || crate::safety_block::awaits_decision(key)
+            || before.proposed_report.is_some()
         {
             return Ok(());
         }
@@ -565,7 +577,21 @@ impl OrchestrationStore {
             .iter()
             .filter(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running))
         {
-            if crate::safety_block::awaits_decision(&before.worker_chat_key) {
+            // A proposed report is an idle worker waiting on its coordinator,
+            // who was told when the words were held.
+            if crate::safety_block::awaits_decision(&before.worker_chat_key)
+                || before.proposed_report.is_some()
+            {
+                continue;
+            }
+            // The host's own environment work is bounded by its commands'
+            // timeouts, and a wait for capacity by the attempt staying live;
+            // neither is a quiet worker.
+            if before
+                .execution
+                .pending_tools
+                .contains_key(super::ENVIRONMENT_OPERATION)
+            {
                 continue;
             }
             let p = snapshot
@@ -630,6 +656,15 @@ impl OrchestrationStore {
             .iter()
             .filter(|a| a.status == AttemptStatus::Running)
         {
+            // No process yet is expected while the host builds its test
+            // environment or waits for a slot: the worker starts after.
+            if attempt
+                .execution
+                .pending_tools
+                .contains_key(super::ENVIRONMENT_OPERATION)
+            {
+                continue;
+            }
             if !chats.has_process(&attempt.worker_chat_key)
                 && now
                     - attempt
@@ -971,6 +1006,43 @@ mod tests {
             .execution
             .next_retry_at
             .is_none());
+    }
+
+    #[test]
+    fn a_worker_waiting_on_its_test_environment_is_neither_lost_nor_stalled() {
+        // No chat process exists while the host builds the environment or
+        // waits for a slot: the worker starts afterwards. The lost-worker
+        // sweep used to fail such an attempt as disconnected after 30s.
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        store.environment_preparing(&attempt.id).unwrap();
+        let chats = Arc::new(ChatManager::default());
+        let workspaces = crate::workspaces::WorkspaceState::with_projects(Vec::new());
+        let later = now_ms() + 3_600_000;
+        store
+            .recover_due_workers(chats.clone(), &workspaces, later)
+            .unwrap();
+        let current = latest(&store, &attempt.id);
+        assert_eq!(current.status, AttemptStatus::Running);
+        assert_eq!(current.execution.state, ExecutionState::WaitingTool);
+        assert!(store.snapshot(None).unwrap().notifications.is_empty());
+        // Without the host's operation, the same silence is a lost worker.
+        store
+            .mutate(|data| {
+                data.attempts
+                    .get_mut(&attempt.id)
+                    .unwrap()
+                    .execution
+                    .pending_tools
+                    .clear();
+                Ok(())
+            })
+            .unwrap();
+        store
+            .recover_due_workers(chats, &workspaces, later)
+            .unwrap();
+        assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Failed);
     }
 
     #[test]

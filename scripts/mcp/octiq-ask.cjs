@@ -1286,6 +1286,7 @@ const ORCHESTRATION_TASK_CREATE = {
       problem: { type: "string", description: "The plan card: the problem this task solves, in one short sentence (at most 300 characters). Shown to the person when they review the plan." },
       goal: { type: "string", description: "The plan card: the approach or outcome, in one short sentence (at most 300 characters)." },
       acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "The plan card: 2–5 checkable acceptance criteria, one line each (at most 240 characters). Criteria, not results; the plan card is fixed once the person approves it (before that, change it with orchestration_task_revise)." },
+      kind: { type: "string", enum: ["work", "check", "review", "acceptance"], description: "What the task is for. \"work\" (the default) produces something. \"check\", \"review\" and \"acceptance\" judge something: their worker must settle completed with verdict pass or fail (a completed report without one is refused), and only a pass releases the tasks that depend on them. Use one for every task whose result gates later work, such as a code review, a test run or an acceptance check. Shown on the plan card and counted as acceptance coverage." },
       environment: { type: "string", enum: ["none", "sandbox"], description: "What must run before the worker starts. \"sandbox\" for implementation, integration and browser work that needs the application running: the host builds the project's runnable test environment (.octiq/sandbox.json) from this task's own worktree, starts the worker only after its readiness check passes, and fails the attempt with the cause otherwise, so nothing that depends on the task starts on a broken runtime. Omit, or \"none\", for reviews, docs, unit-only work and the task that repairs a broken environment. Its state appears under environments in orchestration_snapshot, separate from task status." },
       size: { type: "string", enum: ["small", "medium", "large"], description: "Agents mode: what the task is worth when its result is accepted — small 25 XP, medium 75 XP (the default), large 150 XP. Judge by scope and risk, not effort spent. Fixed once the task starts." },
     },
@@ -1306,6 +1307,7 @@ const ORCHESTRATION_TASK_REVISE = {
       title: { type: "string" },
       spec: { type: "string" },
       dependsOn: { type: "array", items: { type: "string" }, description: "Replaces the task's dependencies: task IDs of this plan." },
+      kind: { type: "string", enum: ["work", "check", "review", "acceptance"], description: "What the task is for. \"work\" (the default) produces something. \"check\", \"review\" and \"acceptance\" judge something: their worker must settle completed with verdict pass or fail (a completed report without one is refused), and only a pass releases the tasks that depend on them. Use one for every task whose result gates later work, such as a code review, a test run or an acceptance check. Shown on the plan card and counted as acceptance coverage." },
       worker: { type: "object", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
       assignee: { type: "string", description: "Another of your direct reports." },
       project: { type: "string", description: "A new destination project, from orchestration_destinations." },
@@ -1430,7 +1432,7 @@ const ORCHESTRATION_WORKER_REPORT = {
       outcome: { type: "string", enum: ["completed", "failed", "blocked"] },
       summary: { type: "string", description: "What changed, what was verified, and anything left." },
       filesModified: { type: "array", items: { type: "string" }, description: "Changed file paths, or an empty list." },
-      verdict: { type: "string", enum: ["pass", "fail"], description: "For a review, check or acceptance task: whether what you checked passed. Finishing a review that found blocking problems is outcome completed with verdict fail, which keeps dependent tasks waiting. Omit for ordinary work." },
+      verdict: { type: "string", enum: ["pass", "fail"], description: "For a review, check or acceptance task: whether what you checked passed. Required with outcome completed when the task's kind is check, review or acceptance; the host refuses the report without it. Finishing a review that found blocking problems is outcome completed with verdict fail, which keeps dependent tasks waiting. Omit for ordinary work." },
     },
     required: ["attemptId", "outcome", "summary", "filesModified"],
   },
@@ -1485,6 +1487,48 @@ const ORCHESTRATION_MESSAGE_SEND = {
   },
 };
 
+const ORCHESTRATION_REPORT_CONFIRM = {
+  name: "orchestration_report_confirm",
+  description:
+    "Coordinator only. Settle a read-only worker's attempt from the closing words the host " +
+    "held as its proposed report (attempt.proposedReport in orchestration_snapshot) when its " +
+    "sandbox could not call orchestration_worker_report. Name that exact attemptId and " +
+    "proposalId. The outcome and, for a check, review or acceptance task, the verdict are " +
+    "your own judgement of the words; nothing is inferred from them, and only verdict pass " +
+    "releases dependants. A new worker turn withdraws the proposal.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      attemptId: { type: "string" },
+      proposalId: { type: "string", description: "attempt.proposedReport.id, exactly as the snapshot shows it." },
+      outcome: { type: "string", enum: ["completed", "failed", "blocked"] },
+      verdict: { type: "string", enum: ["pass", "fail"], description: "Required with outcome completed when the task's kind is check, review or acceptance." },
+    },
+    required: ["attemptId", "proposalId", "outcome"],
+  },
+};
+
+const ORCHESTRATION_RELAY_SEND = {
+  name: "orchestration_relay_send",
+  description:
+    "Record a notice from one run in another run, when this chat coordinates BOTH (for " +
+    "example two runs editing the same files). It lands in the receiving run's messages " +
+    "with its origin run and, optionally, the worker attempt it came from. It is data for " +
+    "the coordinator only: it reaches no worker, approves and starts nothing. The same " +
+    "relay sent twice is recorded once. Runs with different coordinators cannot relay.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      fromRunId: { type: "string" },
+      toRunId: { type: "string" },
+      subject: { type: "string" },
+      body: { type: "string" },
+      originAttemptId: { type: "string", description: "Optional: the fromRun worker attempt whose message this relays." },
+    },
+    required: ["fromRunId", "toRunId", "subject", "body"],
+  },
+};
+
 const ORCHESTRATION_RUN_STOP = {
   name: "orchestration_run_stop",
   description:
@@ -1534,9 +1578,11 @@ const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_SNAPSHOT,
   ORCHESTRATION_WORKER_START,
   ORCHESTRATION_WORKER_REPORT,
+  ORCHESTRATION_REPORT_CONFIRM,
   ORCHESTRATION_GATE_CREATE,
   ORCHESTRATION_GATE_RESOLVE,
   ORCHESTRATION_MESSAGE_SEND,
+  ORCHESTRATION_RELAY_SEND,
   ORCHESTRATION_RUN_STOP,
   ...WORKSPACE_TOOLS,
 ];

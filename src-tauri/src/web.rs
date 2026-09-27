@@ -1034,6 +1034,11 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     ("snapshot", "orchestration_snapshot"),
     ("worker_start", "orchestration_worker_start"),
     ("worker_report", "orchestration_worker_report"),
+    // The run's coordinator settling a read-only worker from the words the
+    // host held for it. Coordinator provenance is this capability's chat.
+    ("report_confirm", "orchestration_report_confirm"),
+    // A data-only notice to another run of the same coordinator.
+    ("relay_send", "orchestration_relay_send"),
     ("service_register", "orchestration_service_register"),
     ("workspace_refresh", "orchestration_workspace_refresh"),
     ("task_reopen", "orchestration_task_reopen"),
@@ -1257,6 +1262,10 @@ async fn task_handler(
 const CHAT_ONLY_COMMANDS: &[&str] = &[
     "orchestration_task_accept_in_chat",
     "orchestration_plan_approve_in_chat",
+    // Both record a coordinator as their author: a settled attempt's
+    // confirmer, a relay's sender. Only that coordinator's capability says so.
+    "orchestration_report_confirm",
+    "orchestration_relay_send",
 ];
 
 /// Why the person's socket will not run `cmd`, if it will not.
@@ -1929,6 +1938,8 @@ mod tests {
         for command in [
             "orchestration_task_accept_in_chat",
             "orchestration_plan_approve_in_chat",
+            "orchestration_report_confirm",
+            "orchestration_relay_send",
         ] {
             assert!(socket_refusal(command).is_some(), "{command}");
         }

@@ -154,6 +154,7 @@ mod tests {
                             subject: "s".into(),
                             body: "b".into(),
                             created_at: n,
+                            relay: None,
                         },
                     );
                     Ok(())

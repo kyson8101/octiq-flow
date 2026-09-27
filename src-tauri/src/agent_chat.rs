@@ -1019,6 +1019,31 @@ impl ChatManager {
             .unwrap_or(true)
     }
 
+    /// Run `decide` only while this chat has no turn in flight, holding its
+    /// session so that no turn can START until `decide` returns: a message
+    /// is written, and `busy` set, under this same lock. A chat with no live
+    /// process has no turn. `decide` must not touch this chat's session.
+    pub(crate) fn while_idle<T>(
+        &self,
+        key: &str,
+        decide: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let session = {
+            let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+            sessions.get(key).cloned()
+        };
+        let Some(session) = session else {
+            return decide();
+        };
+        let guard = session.lock().map_err(|e| e.to_string())?;
+        if guard.busy {
+            return Err("That chat is in a turn. Wait for it to end.".into());
+        }
+        let decided = decide();
+        drop(guard);
+        decided
+    }
+
     pub(crate) fn require_checkout_idle(&self, checkout: &str) -> Result<(), String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let starts = self.starts.lock().map_err(|e| e.to_string())?;
@@ -2668,6 +2693,13 @@ pub(crate) fn start_session(
                             }
                             let said = observed.final_text.unwrap_or(&carried).to_string();
                             carried.clear();
+                            // A read-only worker cannot call the host; what it
+                            // said last is held for its coordinator to confirm.
+                            if let Err(error) =
+                                reading.orchestrations.propose_worker_report(&key, &said)
+                            {
+                                eprintln!("orchestration: cannot hold proposed report: {error}");
+                            }
                             crate::push::notify_chat(Some(&key), "done", &said);
                         }
                         let mut event = event;
@@ -6039,6 +6071,67 @@ mod tests {
             false,
         );
         assert!(!c.contains("-i "));
+    }
+
+    #[test]
+    fn a_decision_made_while_a_chat_is_idle_holds_off_its_next_turn() {
+        // Feedback e15fabde: a coordinator confirming a worker's proposed
+        // report must not race a message that starts the worker's next turn,
+        // which withdraws the words being confirmed.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("idle-{}", uuid::Uuid::new_v4().simple());
+        let session = |busy: bool| {
+            Arc::new(Mutex::new(ChatSession {
+                launch_id: "test-launch".into(),
+                user_turn_id: None,
+                answering: None,
+                child: Command::new("sleep")
+                    .arg("30")
+                    .stdin(Stdio::null())
+                    .spawn()
+                    .expect("a stand-in agent"),
+                stdin: None,
+                codex: None,
+                agent: ChatAgent::Codex,
+                busy,
+                last_active: Instant::now(),
+            }))
+        };
+        // No live process: nothing can be in a turn.
+        assert_eq!(manager.while_idle(&key, || Ok(1)), Ok(1));
+
+        let live = session(false);
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(key.clone(), live.clone());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let decided = manager.while_idle(&key, || {
+            // A turn starting now: a send takes the session lock to write
+            // the message and set busy.
+            let (live, sender) = (live.clone(), order.clone());
+            let turn = std::thread::spawn(move || {
+                let mut s = live.lock().unwrap();
+                s.busy = true;
+                sender.lock().unwrap().push("turn started");
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            order.lock().unwrap().push("decided");
+            Ok(turn)
+        });
+        decided.unwrap().join().unwrap();
+        assert_eq!(*order.lock().unwrap(), ["decided", "turn started"]);
+
+        // Now it is in a turn: the decision is refused without being made.
+        let mut ran = false;
+        let refused = manager.while_idle(&key, || {
+            ran = true;
+            Ok(())
+        });
+        assert!(refused.unwrap_err().contains("in a turn"));
+        assert!(!ran);
+        end_process(&manager, &key).expect("end the stand-in");
     }
 
     #[test]
