@@ -75,6 +75,9 @@ pub async fn run_headless() {
     // Once per profile, off the startup path: old records lose the snapshot
     // reads they were recorded with (see record_trim.rs).
     std::thread::spawn(record_trim::prune_old_records);
+    // Memory update lines whose intent a crash left unconfirmed are written
+    // (or found already written) now, not only when that write is retried.
+    std::thread::spawn(memory_activity::recover);
 
     // Before anything can start a chat: the orchestration scheduler starts
     // workers from a plain thread, and their permission questions are waited

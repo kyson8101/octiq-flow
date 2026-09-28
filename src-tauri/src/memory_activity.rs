@@ -20,10 +20,15 @@
 //!   receipt's own evidence (uncertain → saved). A saved line never changes.
 //!   A refusal is keyed by what was refused, so an identical failure reported
 //!   twice is one line, and it never turns into anyone's success.
-//! * **Delivered once, durably.** The ledger records, per destination chat,
-//!   an intent before the transcript line and a confirmation after it. A crash
-//!   between the two is settled by looking in that chat's transcript, so a
-//!   retried call, a repeated delivery or a restart never writes a second line.
+//! * **Delivered once, durably.** The chat's transcript is the proof of what
+//!   the chat was shown, so before a line is written that transcript is
+//!   asked whether it already holds it — whatever the ledger remembers, since
+//!   the ledger forgets old writes (`KEEP`) and a transcript can be restored
+//!   behind its back. The ledger records, per destination chat, an intent
+//!   (synced) before the line, and the confirmation only after the line is
+//!   synced to disk too. An intent a crash left unconfirmed is finished at
+//!   the next start (`recover`) or the next report of the write — written if
+//!   the transcript lacks it, confirmed if it has it, never written twice.
 //! * **A worker's coordinator hears THAT it happened, not what.** When the chat
 //!   is a worker in a run, the run's coordinator chat — still existing, checked
 //!   at every delivery — gets a line naming the agent, the task and the worker
@@ -32,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,12 +46,15 @@ use crate::orchestration::OrchestrationStore;
 use crate::team::{MemoryAppend, MemoryWrite, TeamAgent};
 
 static LOCK: Mutex<()> = Mutex::new(());
-/// How many activities the ledger remembers. Older ones only lose their
-/// duplicate guard; their lines stay in the transcripts.
+/// How many activities the ledger remembers. Forgetting one costs only its
+/// snapshot: its lines stay in the transcripts, which are what a repeat is
+/// checked against. An intent not yet confirmed, or a write still uncertain,
+/// is never forgotten.
 const KEEP: usize = 5000;
 pub const EVENT: &str = "octiq_memory_activity";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Ordered by strength: a saved line covers every weaker one for its write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Failed,
@@ -97,7 +105,8 @@ pub struct Activity {
 #[derive(Default, Serialize, Deserialize)]
 struct Entry {
     activity: Option<Activity>,
-    /// Chat key → the status that chat's transcript holds a line for.
+    /// Chat key → the status a line was confirmed on disk for. A record, not
+    /// the proof: the transcript is still asked before anything is written.
     #[serde(default)]
     delivered: BTreeMap<String, Status>,
     /// Chat key → a line about to be written. Still here after a restart
@@ -261,8 +270,9 @@ fn ledger_path() -> Option<PathBuf> {
 fn load(path: &Path) -> Ledger {
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            // A torn ledger costs the duplicate guard, not the chats' lines,
-            // which are in their transcripts. Keep it for a person to read.
+            // A torn ledger costs the snapshots and unconfirmed intents, not
+            // the chats' lines or their duplicate guard, which are in the
+            // transcripts. Keep it for a person to read.
             eprintln!("memory_activity: unreadable ledger, starting over: {error}");
             let _ = fs::rename(path, path.with_extension("json.corrupt"));
             Ledger::default()
@@ -282,12 +292,29 @@ fn save(path: &Path, ledger: &Ledger) -> Result<(), String> {
     fs::rename(&temp, path).map_err(|e| e.to_string())
 }
 
-/// Whether `chat`'s transcript already holds this activity's line at `status`.
+/// Whether `chat`'s transcript already shows this write at `status` — or as
+/// saved, which no later report can take back.
+///
+/// Read straight off the file, and a line is only parsed when the id is in
+/// it, so asking costs one pass over the bytes even for a very long chat.
 fn in_transcript(chat: &str, id: &str, status: Status) -> bool {
-    let status = json!(status);
-    crate::transcript::since(chat, 0)
-        .iter()
-        .any(|r| r.event["type"] == EVENT && r.event["id"] == id && r.event["status"] == status)
+    let Some(file) = crate::transcript::path_for(chat).and_then(|p| fs::File::open(p).ok()) else {
+        return false;
+    };
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter(|line| line.contains(id))
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter(|event| event["type"] == EVENT && event["id"] == id)
+        .filter_map(|event| serde_json::from_value::<Status>(event["status"].clone()).ok())
+        .any(|shown| shown == status || shown == Status::Saved)
+}
+
+/// A line reaches a chat's transcript and is synced to disk before this
+/// answers, then goes to every attached browser.
+fn deliver(chat: &str, event: Value) -> Option<u64> {
+    crate::agent_chat::record_chat_event_synced(chat, event)
 }
 
 /// What the ledger's record becomes when `fresh` is reported for it.
@@ -323,16 +350,14 @@ fn settle(old: Option<Activity>, fresh: &Activity) -> Activity {
 /// Record an activity and show it to every chat not yet shown this status.
 /// `fresh.owner` is the coordinator as it stands NOW; a line goes there only
 /// if that still agrees with the one recorded. Returns the chats given a line.
-pub fn record(fresh: Activity) -> Vec<String> {
-    record_with(fresh, crate::agent_chat::record_chat_event)
-}
-
-fn record_with(fresh: Activity, emit: impl Fn(&str, Value) -> Option<u64>) -> Vec<String> {
-    let Some(path) = ledger_path() else {
-        return Vec::new();
-    };
+/// `emit` must answer `Some` only once the line is synced to the transcript.
+fn record_at(
+    path: &Path,
+    fresh: Activity,
+    emit: impl Fn(&str, Value) -> Option<u64>,
+) -> Vec<String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut ledger = load(&path);
+    let mut ledger = load(path);
     let old = ledger
         .entries
         .get_mut(&fresh.id)
@@ -353,60 +378,142 @@ fn record_with(fresh: Activity, emit: impl Fn(&str, Value) -> Option<u64>) -> Ve
     }
     let mut shown = Vec::new();
     for (chat, event) in lines {
-        let entry = ledger.entries.entry(current.id.clone()).or_default();
-        if entry.delivered.get(&chat) == Some(&current.status) {
-            continue;
+        entry_of(&mut ledger, &current.id).activity = Some(current.clone());
+        if show(path, &mut ledger, &current, &chat, event, &emit) {
+            shown.push(chat);
         }
-        if entry.pending.get(&chat) == Some(&current.status)
-            && in_transcript(&chat, &current.id, current.status)
-        {
-            // Written before a crash, never confirmed: confirm it, don't repeat it.
-            entry.pending.remove(&chat);
-            entry.delivered.insert(chat, current.status);
-            continue;
-        }
-        entry.pending.insert(chat.clone(), current.status);
-        entry.activity = Some(current.clone());
-        if let Err(error) = save(&path, &ledger) {
-            // Without the intent a crash could cost the duplicate guard; the
-            // line itself is still worth more than its absence.
-            eprintln!("memory_activity: could not record the intent: {error}");
-        }
-        let written = emit(&chat, event).is_some();
-        let entry = ledger.entries.entry(current.id.clone()).or_default();
-        if written {
-            entry.pending.remove(&chat);
-            entry.delivered.insert(chat.clone(), current.status);
-        }
-        // Not written to the transcript: the intent stays, and the next
-        // report of this write looks for the line and writes it if missing.
-        shown.push(chat);
     }
     let id = current.id.clone();
-    ledger.entries.entry(id).or_default().activity = Some(current);
-    if ledger.entries.len() > KEEP {
-        let mut by_age: Vec<(u64, String)> = ledger
-            .entries
-            .iter()
-            .map(|(id, e)| (e.activity.as_ref().map_or(0, |a| a.at), id.clone()))
-            .collect();
-        by_age.sort();
-        for (_, id) in by_age.into_iter().take(ledger.entries.len() - KEEP) {
-            ledger.entries.remove(&id);
-        }
-    }
-    if let Err(error) = save(&path, &ledger) {
+    entry_of(&mut ledger, &id).activity = Some(current);
+    forget_oldest(&mut ledger);
+    if let Err(error) = save(path, &ledger) {
         eprintln!("memory_activity: could not save the ledger: {error}");
     }
     shown
 }
 
-/// The date an earlier write under this receipt was made with, so a retry
-/// that leaves `date` out repeats it rather than guessing today's.
-fn recorded_date(receipt_id: &str) -> Option<String> {
-    let path = ledger_path()?;
+fn entry_of<'a>(ledger: &'a mut Ledger, id: &str) -> &'a mut Entry {
+    ledger.entries.entry(id.to_owned()).or_default()
+}
+
+/// Give `chat` its line for `current` unless its transcript already has it.
+/// The intent is on disk before the line, and the confirmation is made only
+/// after the line is, so a crash anywhere in between leaves an intent that
+/// `recover` or the next report finishes. Returns whether a line was written
+/// (or, refused by the disk, at least sent live).
+fn show(
+    path: &Path,
+    ledger: &mut Ledger,
+    current: &Activity,
+    chat: &str,
+    event: Value,
+    emit: &impl Fn(&str, Value) -> Option<u64>,
+) -> bool {
+    if in_transcript(chat, &current.id, current.status) {
+        // Already there — written before a crash, or remembered by a
+        // transcript the ledger has forgotten about: confirm, never repeat.
+        let entry = entry_of(ledger, &current.id);
+        entry.pending.remove(chat);
+        entry.delivered.insert(chat.to_owned(), current.status);
+        return false;
+    }
+    let entry = entry_of(ledger, &current.id);
+    entry.pending.insert(chat.to_owned(), current.status);
+    entry.delivered.remove(chat);
+    if let Err(error) = save(path, ledger) {
+        // Without the intent a crash could leave the line unwritten until
+        // this write is reported again; the line is still worth writing.
+        eprintln!("memory_activity: could not record the intent: {error}");
+    }
+    if emit(chat, event).is_some() {
+        let entry = entry_of(ledger, &current.id);
+        entry.pending.remove(chat);
+        entry.delivered.insert(chat.to_owned(), current.status);
+    }
+    // Not on disk: the intent stays, and a restart or the next report of
+    // this write looks for the line and writes it if it is still missing.
+    true
+}
+
+/// Past `KEEP`, drop the oldest snapshots that nothing still depends on: an
+/// unconfirmed intent must survive for `recover`, and an uncertain write for
+/// the receipt check that may yet settle it.
+fn forget_oldest(ledger: &mut Ledger) {
+    if ledger.entries.len() <= KEEP {
+        return;
+    }
+    let mut by_age: Vec<(u64, String)> = ledger
+        .entries
+        .iter()
+        .filter(|(_, e)| {
+            e.pending.is_empty()
+                && e.activity
+                    .as_ref()
+                    .is_none_or(|a| a.status != Status::Uncertain)
+        })
+        .map(|(id, e)| (e.activity.as_ref().map_or(0, |a| a.at), id.clone()))
+        .collect();
+    by_age.sort();
+    let excess = ledger.entries.len() - KEEP;
+    for (_, id) in by_age.into_iter().take(excess) {
+        ledger.entries.remove(&id);
+    }
+}
+
+/// After a restart, before anyone asks: finish every line whose intent was
+/// recorded but never confirmed — the process stopped between the two.
+pub fn recover() -> Vec<String> {
+    match ledger_path() {
+        Some(path) => recover_at(&path, deliver),
+        None => Vec::new(),
+    }
+}
+
+fn recover_at(path: &Path, emit: impl Fn(&str, Value) -> Option<u64>) -> Vec<String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    load(&path).entries.remove(receipt_id)?.activity?.date
+    let mut ledger = load(path);
+    let unfinished: Vec<(Activity, String)> = ledger
+        .entries
+        .values()
+        .filter_map(|e| {
+            Some((
+                e.activity.clone()?,
+                e.pending.keys().cloned().collect::<Vec<_>>(),
+            ))
+        })
+        .flat_map(|(activity, chats)| chats.into_iter().map(move |c| (activity.clone(), c)))
+        .collect();
+    if unfinished.is_empty() {
+        return Vec::new();
+    }
+    let mut shown = Vec::new();
+    for (activity, chat) in unfinished {
+        // The line is redrawn from the snapshot recorded with its intent,
+        // for a chat that is still there to show it.
+        let event = if !chat_exists(&chat) {
+            None
+        } else if chat == activity.chat_key {
+            Some(origin_event(&activity))
+        } else {
+            activity
+                .owner
+                .as_ref()
+                .filter(|o| o.coordinator_chat_key == chat && activity.status == Status::Saved)
+                .map(|owner| owner_event(&activity, owner))
+        };
+        let Some(event) = event else {
+            // Gone, or nothing this snapshot could say to that chat.
+            entry_of(&mut ledger, &activity.id).pending.remove(&chat);
+            continue;
+        };
+        if show(path, &mut ledger, &activity, &chat, event, &emit) {
+            shown.push(chat);
+        }
+    }
+    if let Err(error) = save(path, &ledger) {
+        eprintln!("memory_activity: could not save the ledger: {error}");
+    }
+    shown
 }
 
 /// An agent's own-memory tool call, from the chat `actor` its capability
@@ -420,6 +527,28 @@ pub fn agent_memory(
     op: &str,
     tool: &Value,
 ) -> Result<Value, String> {
+    let ledger = ledger_path();
+    agent_memory_in(
+        ledger.as_deref(),
+        vault,
+        team_path,
+        orchestrations,
+        actor,
+        op,
+        tool,
+    )
+}
+
+fn agent_memory_in(
+    ledger: Option<&Path>,
+    vault: &crate::memory_vault::Vault,
+    team_path: &Path,
+    orchestrations: &OrchestrationStore,
+    actor: &str,
+    op: &str,
+    tool: &Value,
+) -> Result<Value, String> {
+    let record = |fresh| ledger.map(|path| record_at(path, fresh, deliver));
     let text = |name: &str| tool.get(name).and_then(Value::as_str);
     let worker = orchestrations.worker_owner(actor);
     let identity = worker.clone().and_then(|worker| {
@@ -451,19 +580,15 @@ pub fn agent_memory(
                     return Err(error);
                 }
             };
-            let remembered = match text("date").map(str::trim).filter(|d| !d.is_empty()) {
-                Some(_) => None,
-                None => vault
-                    .receipt_id(actor, request_id)
-                    .ok()
-                    .and_then(|id| recorded_date(&id)),
-            };
+            // A retry that leaves the date out has it recovered from its own
+            // receipt by the vault's request hash (team::memory_append), not
+            // from anything this ledger may or may not have kept.
             let append = crate::team::memory_append(
                 vault,
                 actor,
                 &me,
                 text("text").unwrap_or_default(),
-                remembered.as_deref().or(text("date")),
+                text("date"),
                 request_id,
             );
             let owner = worker
@@ -487,26 +612,40 @@ pub fn agent_memory(
 /// The coordinator a worker's line also goes to, while that chat still exists
 /// and is not the worker itself.
 fn owner_if_present(worker: crate::orchestration::WorkerOwner, actor: &str) -> Option<Owner> {
-    let id = worker
-        .coordinator_chat_key
-        .strip_prefix("chat:")
-        .unwrap_or(&worker.coordinator_chat_key);
-    (worker.coordinator_chat_key != actor
-        && crate::chat_index::list()
-            .iter()
-            .any(|chat| chat.id == id && chat.deleted_at.is_none()))
-    .then_some(Owner {
-        coordinator_chat_key: worker.coordinator_chat_key,
-        task_id: worker.task_id,
-        task_title: worker.task_title,
-        run_id: worker.run_id,
-    })
+    (worker.coordinator_chat_key != actor && chat_exists(&worker.coordinator_chat_key)).then_some(
+        Owner {
+            coordinator_chat_key: worker.coordinator_chat_key,
+            task_id: worker.task_id,
+            task_title: worker.task_title,
+            run_id: worker.run_id,
+        },
+    )
+}
+
+/// Whether `key` is a chat in the active index.
+fn chat_exists(key: &str) -> bool {
+    let id = key.strip_prefix("chat:").unwrap_or(key);
+    crate::chat_index::list()
+        .iter()
+        .any(|chat| chat.id == id && chat.deleted_at.is_none())
 }
 
 /// `vault_receipt` answered for one of this chat's receipts. A saved answer
 /// settles the chat's uncertain line for that same receipt; anything else,
 /// or another chat's receipt, changes nothing.
 pub fn receipt_checked(
+    orchestrations: &OrchestrationStore,
+    chat_key: &str,
+    receipt: &Value,
+) -> Vec<String> {
+    match ledger_path() {
+        Some(path) => receipt_checked_at(&path, orchestrations, chat_key, receipt),
+        None => Vec::new(),
+    }
+}
+
+fn receipt_checked_at(
+    path: &Path,
     orchestrations: &OrchestrationStore,
     chat_key: &str,
     receipt: &Value,
@@ -518,11 +657,8 @@ pub fn receipt_checked(
         return Vec::new();
     };
     let found = {
-        let Some(path) = ledger_path() else {
-            return Vec::new();
-        };
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        load(&path)
+        load(path)
             .entries
             .remove(id)
             .and_then(|entry| entry.activity)
@@ -534,14 +670,18 @@ pub fn receipt_checked(
                 .ok()
                 .flatten()
                 .and_then(|w| owner_if_present(w, chat_key));
-            record(Activity {
-                status: Status::Saved,
-                at: now_ms(),
-                receipt_status: Some("saved".into()),
-                error: None,
-                owner,
-                ..activity
-            })
+            record_at(
+                path,
+                Activity {
+                    status: Status::Saved,
+                    at: now_ms(),
+                    receipt_status: Some("saved".into()),
+                    error: None,
+                    owner,
+                    ..activity
+                },
+                deliver,
+            )
         }
         _ => Vec::new(),
     }
@@ -583,6 +723,10 @@ mod tests {
         format!("chat:{prefix}-{}", uuid::Uuid::new_v4())
     }
 
+    fn scratch_ledger() -> PathBuf {
+        std::env::temp_dir().join(format!("octiq-memact-ledger-{}.json", uuid::Uuid::new_v4()))
+    }
+
     fn fresh_id() -> String {
         digest(&json!(uuid::Uuid::new_v4().to_string()))
     }
@@ -609,16 +753,17 @@ mod tests {
 
     #[test]
     fn one_line_per_write_however_often_it_is_reported() {
+        let ledger = scratch_ledger();
         let chat = unique("dup");
         let id = fresh_id();
         let (seen, emit) = capture();
         assert_eq!(
-            record_with(activity(&chat, &id, Status::Saved), &emit),
+            record_at(&ledger, activity(&chat, &id, Status::Saved), &emit),
             vec![chat.clone()]
         );
         // A retried call, a repeated MCP delivery, a restarted server: the
         // ledger is on disk, so each is a no-op.
-        assert!(record_with(activity(&chat, &id, Status::Saved), &emit).is_empty());
+        assert!(record_at(&ledger, activity(&chat, &id, Status::Saved), &emit).is_empty());
         assert_eq!(seen.lock().unwrap().len(), 1);
         assert_eq!(lines(&chat).len(), 1);
         assert_eq!(lines(&chat)[0]["text"], "A decision and why.");
@@ -626,21 +771,26 @@ mod tests {
 
     #[test]
     fn a_saved_line_is_never_undone_and_uncertain_moves_only_on_its_own_receipt() {
+        let ledger = scratch_ledger();
         let chat = unique("fwd");
         let (seen, emit) = capture();
         let saved = fresh_id();
-        record_with(activity(&chat, &saved, Status::Saved), &emit);
+        record_at(&ledger, activity(&chat, &saved, Status::Saved), &emit);
         // A later failure or doubt under the same id changes nothing.
-        record_with(activity(&chat, &saved, Status::Failed), &emit);
-        record_with(activity(&chat, &saved, Status::Uncertain), &emit);
+        record_at(&ledger, activity(&chat, &saved, Status::Failed), &emit);
+        record_at(&ledger, activity(&chat, &saved, Status::Uncertain), &emit);
 
         let doubtful = fresh_id();
-        record_with(activity(&chat, &doubtful, Status::Uncertain), &emit);
+        record_at(
+            &ledger,
+            activity(&chat, &doubtful, Status::Uncertain),
+            &emit,
+        );
         // "Saved" for a DIFFERENT receipt is not evidence about this one.
         let mut other = activity(&chat, &doubtful, Status::Saved);
         other.receipt_id = Some(fresh_id());
-        record_with(other, &emit);
-        record_with(activity(&chat, &doubtful, Status::Saved), &emit);
+        record_at(&ledger, other, &emit);
+        record_at(&ledger, activity(&chat, &doubtful, Status::Saved), &emit);
 
         let statuses: Vec<_> = seen
             .lock()
@@ -665,6 +815,7 @@ mod tests {
 
     #[test]
     fn a_coordinator_hears_that_a_worker_saved_but_not_what() {
+        let ledger = scratch_ledger();
         let worker = unique("orch-worker");
         let coordinator = unique("coord");
         let owner = Owner {
@@ -677,15 +828,15 @@ mod tests {
         // A failure stays in the worker chat.
         let mut failed = activity(&worker, &fresh_id(), Status::Failed);
         failed.owner = Some(owner.clone());
-        assert_eq!(record_with(failed, &emit), vec![worker.clone()]);
+        assert_eq!(record_at(&ledger, failed, &emit), vec![worker.clone()]);
         let mut saved = activity(&worker, &fresh_id(), Status::Saved);
         saved.owner = Some(owner.clone());
         assert_eq!(
-            record_with(saved.clone(), &emit),
+            record_at(&ledger, saved.clone(), &emit),
             vec![worker.clone(), coordinator.clone()]
         );
         // Deduplicated per destination.
-        assert!(record_with(saved.clone(), &emit).is_empty());
+        assert!(record_at(&ledger, saved.clone(), &emit).is_empty());
         let noted = lines(&coordinator);
         assert_eq!(noted.len(), 1);
         assert_eq!(noted[0]["source"]["chatKey"], worker.as_str());
@@ -699,58 +850,62 @@ mod tests {
         let id = fresh_id();
         let mut doubtful = activity(&worker, &id, Status::Uncertain);
         doubtful.owner = Some(owner.clone());
-        assert_eq!(record_with(doubtful, &emit), vec![worker.clone()]);
+        assert_eq!(record_at(&ledger, doubtful, &emit), vec![worker.clone()]);
         let settled = activity(&worker, &id, Status::Saved);
-        assert_eq!(record_with(settled, &emit), vec![worker.clone()]);
+        assert_eq!(record_at(&ledger, settled, &emit), vec![worker.clone()]);
         assert_eq!(lines(&coordinator).len(), 1);
     }
 
     #[test]
     fn a_line_written_before_a_crash_is_confirmed_not_repeated() {
+        let ledger = scratch_ledger();
         let chat = unique("crash");
         let id = fresh_id();
         let line = activity(&chat, &id, Status::Saved);
         // The process wrote the intent and the transcript line, then died
         // before confirming it.
         {
-            let path = ledger_path().unwrap();
-            let _guard = LOCK.lock().unwrap();
-            let mut ledger = load(&path);
-            let entry = ledger.entries.entry(id.clone()).or_default();
+            let mut book = load(&ledger);
+            let entry = book.entries.entry(id.clone()).or_default();
             entry.activity = Some(line.clone());
             entry.pending.insert(chat.clone(), Status::Saved);
-            save(&path, &ledger).unwrap();
+            save(&ledger, &book).unwrap();
         }
         crate::transcript::append(&chat, &origin_event(&line));
         let (seen, emit) = capture();
-        assert!(record_with(line.clone(), &emit).is_empty());
+        assert!(record_at(&ledger, line.clone(), &emit).is_empty());
         assert!(seen.lock().unwrap().is_empty());
         assert_eq!(lines(&chat).len(), 1);
         // And it stays confirmed.
-        assert!(record_with(line, &emit).is_empty());
+        assert!(record_at(&ledger, line, &emit).is_empty());
     }
 
     #[test]
     fn a_line_the_transcript_refused_is_written_by_the_next_report_once() {
+        let ledger = scratch_ledger();
         let chat = unique("refused-disk");
         let line = activity(&chat, &fresh_id(), Status::Saved);
         // The disk refused the line: it reached only the live stream.
         let dropped = |_: &str, _: Value| None;
-        assert_eq!(record_with(line.clone(), dropped), vec![chat.clone()]);
+        assert_eq!(
+            record_at(&ledger, line.clone(), dropped),
+            vec![chat.clone()]
+        );
         assert!(lines(&chat).is_empty());
         let (_, emit) = capture();
-        assert_eq!(record_with(line.clone(), &emit), vec![chat.clone()]);
-        assert!(record_with(line, &emit).is_empty());
+        assert_eq!(record_at(&ledger, line.clone(), &emit), vec![chat.clone()]);
+        assert!(record_at(&ledger, line, &emit).is_empty());
         assert_eq!(lines(&chat).len(), 1);
     }
 
     #[test]
     fn different_chats_with_the_same_request_id_are_different_lines() {
+        let ledger = scratch_ledger();
         let a = unique("a");
         let b = unique("b");
         let (seen, emit) = capture();
-        record_with(activity(&a, &fresh_id(), Status::Saved), &emit);
-        record_with(activity(&b, &fresh_id(), Status::Saved), &emit);
+        record_at(&ledger, activity(&a, &fresh_id(), Status::Saved), &emit);
+        record_at(&ledger, activity(&b, &fresh_id(), Status::Saved), &emit);
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].0, a);
@@ -763,18 +918,19 @@ mod tests {
         let store = OrchestrationStore::load(
             std::env::temp_dir().join(format!("octiq-memact-{}.json", uuid::Uuid::new_v4())),
         );
+        let ledger = scratch_ledger();
+        let checked =
+            |chat: &str, receipt: &Value| receipt_checked_at(&ledger, &store, chat, receipt);
         let chat = unique("unc");
         let other = unique("other");
         let id = fresh_id();
-        record(activity(&chat, &id, Status::Uncertain));
+        record_at(&ledger, activity(&chat, &id, Status::Uncertain), deliver);
         let receipt = json!({"id": id, "status": "saved"});
         // Another chat cannot settle it, and a still-uncertain answer does not.
-        assert!(receipt_checked(&store, &other, &receipt).is_empty());
-        assert!(
-            receipt_checked(&store, &chat, &json!({"id": id, "status": "needs_review"})).is_empty()
-        );
-        assert_eq!(receipt_checked(&store, &chat, &receipt), vec![chat.clone()]);
-        assert!(receipt_checked(&store, &chat, &receipt).is_empty());
+        assert!(checked(&other, &receipt).is_empty());
+        assert!(checked(&chat, &json!({"id": id, "status": "needs_review"})).is_empty());
+        assert_eq!(checked(&chat, &receipt), vec![chat.clone()]);
+        assert!(checked(&chat, &receipt).is_empty());
         let shown = lines(&chat);
         assert_eq!(shown.len(), 2);
         assert_eq!(shown[1]["status"], "saved");
@@ -791,6 +947,9 @@ mod tests {
         vault: crate::memory_vault::Vault,
         team: PathBuf,
         store: OrchestrationStore,
+        /// This world's own activity ledger, so nothing another test does
+        /// to its ledger (filling it past KEEP, say) can reach this one.
+        ledger: PathBuf,
     }
 
     impl World {
@@ -809,6 +968,7 @@ mod tests {
             let store = OrchestrationStore::load(base.join("orchestrations.json"));
             Self {
                 team: base.join("team.json"),
+                ledger: base.join("memory-activity.json"),
                 base,
                 root,
                 vault,
@@ -839,11 +999,45 @@ mod tests {
         fn lead(&self, agent: &TeamAgent) -> String {
             let chat = unique("lead");
             crate::team::brief(&self.team, &chat, "p1", &agent.id, "Do it", false, &[]).unwrap();
+            index(&chat);
             chat
         }
 
         fn call(&self, chat: &str, op: &str, tool: Value) -> Result<Value, String> {
-            agent_memory(&self.vault, &self.team, &self.store, chat, op, &tool)
+            self.call_as(&self.store, chat, op, tool)
+        }
+
+        fn call_as(
+            &self,
+            store: &OrchestrationStore,
+            chat: &str,
+            op: &str,
+            tool: Value,
+        ) -> Result<Value, String> {
+            agent_memory_in(
+                Some(&self.ledger),
+                &self.vault,
+                &self.team,
+                store,
+                chat,
+                op,
+                &tool,
+            )
+        }
+
+        /// The receipt file the vault keeps for `receipt`.
+        fn receipt_file(&self, receipt: &Value) -> PathBuf {
+            self.base
+                .join("profile/memory-vault-receipts")
+                .join(format!("{}.json", receipt["id"].as_str().unwrap()))
+        }
+
+        /// Rewrite a stored receipt, as time or a crash would have left it.
+        fn edit_receipt(&self, receipt: &Value, edit: impl FnOnce(&mut Value)) {
+            let file = self.receipt_file(receipt);
+            let mut stored: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+            edit(&mut stored);
+            fs::write(&file, serde_json::to_vec(&stored).unwrap()).unwrap();
         }
 
         fn note(&self, agent: &TeamAgent) -> String {
@@ -1200,6 +1394,325 @@ mod tests {
         assert_eq!(lines(&coordinator).len(), 1);
     }
 
+    const DAY: i64 = 86_400_000;
+
+    fn now_i64() -> i64 {
+        now_ms() as i64
+    }
+
+    fn undated(text: &str, request: &str) -> Value {
+        json!({"text": text, "requestId": request})
+    }
+
+    /// Saved by a server that died before it recorded any activity: the note
+    /// and the receipt are on disk, the ledger and the transcript know nothing.
+    fn saved_then_crashed(w: &World, chat: &str, me: &TeamAgent, text: &str, date: &str) -> Value {
+        let first = crate::team::memory_append(&w.vault, chat, me, text, Some(date), "r1");
+        first.result(me).unwrap()["receipt"].clone()
+    }
+
+    // F1 — at 12016c9 the retry below failed with "different operation … this
+    // one used <today>" and drew a "not updated" line over a saved write.
+    #[test]
+    fn a_next_day_retry_without_a_date_recovers_a_save_whose_activity_a_crash_lost() {
+        let w = World::new(true);
+        let mango = w.agent("Mango Juice");
+        let chat = w.lead(&mango);
+        // Made just before midnight with the date left out, so dated that day…
+        let made = now_i64() - DAY;
+        let yesterday = crate::team::utc_date(made);
+        let receipt = saved_then_crashed(&w, &chat, &mango, "Crossed midnight.", &yesterday);
+        w.edit_receipt(&receipt, |r| r["createdAt"] = json!(made));
+        assert!(!w.ledger.exists(), "no activity was ever recorded");
+
+        // …and retried after it, still without one.
+        let again = w
+            .call(&chat, "append", undated("Crossed midnight.", "r1"))
+            .unwrap();
+        assert_eq!(again["alreadySaved"], true);
+        assert_eq!(again["receipt"]["id"], receipt["id"]);
+        let shown = lines(&chat);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0]["status"], "saved");
+        assert_eq!(shown[0]["date"], yesterday.as_str(), "the entry's own date");
+        assert_eq!(w.note(&mango).matches("Crossed midnight.").count(), 1);
+        assert_eq!(
+            w.note(&mango).matches(&format!("## {yesterday}")).count(),
+            1
+        );
+
+        // Restart after restart, with or without the ledger: still one line.
+        for forget in [false, true, true] {
+            if forget {
+                fs::remove_file(&w.ledger).unwrap();
+            }
+            w.call(&chat, "append", undated("Crossed midnight.", "r1"))
+                .unwrap();
+        }
+        assert_eq!(lines(&chat).len(), 1);
+
+        // Other words under the same id are still refused, as their own line,
+        // and never touch the saved one.
+        let error = w
+            .call(&chat, "append", undated("Something else.", "r1"))
+            .unwrap_err();
+        assert!(error.contains("different operation"), "{error}");
+        assert!(!w.note(&mango).contains("Something else."));
+        let shown = lines(&chat);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[0]["status"], "saved");
+        assert_eq!(shown[1]["status"], "failed");
+        assert_ne!(shown[1]["id"], shown[0]["id"]);
+        assert!(shown[1]["date"].is_null(), "no date is guessed for it");
+    }
+
+    // F1 — a receipt left by an earlier build is read the same way: only what
+    // the receipt itself proves is taken, and nothing is guessed into success.
+    #[test]
+    fn a_date_the_receipt_cannot_prove_is_refused_and_never_guessed() {
+        let w = World::new(true);
+        let mango = w.agent("Mango Juice");
+        let chat = w.lead(&mango);
+        // An explicit date far from the day the receipt was made: the stored
+        // request hash matches neither of the days a missing date could be.
+        let receipt = saved_then_crashed(&w, &chat, &mango, "Dated long ago.", "2026-01-02");
+        let error = w
+            .call(&chat, "append", undated("Dated long ago.", "r1"))
+            .unwrap_err();
+        assert!(error.contains("no date its receipt allows"), "{error}");
+        assert!(!error.contains(&crate::team::today()), "{error}");
+        let shown = lines(&chat);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0]["status"], "failed");
+        assert_ne!(shown[0]["id"], receipt["id"]);
+        assert_eq!(w.note(&mango).matches("Dated long ago.").count(), 1);
+
+        // Asked with its real date, the same write is recognised and shown.
+        let again = w
+            .call(
+                &chat,
+                "append",
+                json!({"text": "Dated long ago.", "date": "2026-01-02", "requestId": "r1"}),
+            )
+            .unwrap();
+        assert_eq!(again["alreadySaved"], true);
+        let shown = lines(&chat);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[1]["status"], "saved");
+        assert_eq!(shown[1]["id"], receipt["id"]);
+        assert_eq!(shown[0]["status"], "failed", "the refusal stays a refusal");
+    }
+
+    /// Fill the ledger past `KEEP` with writes newer than everything a test
+    /// made, so the next record forgets the test's own.
+    fn crowd(ledger: &Path) {
+        let mut book = load(ledger);
+        let base = now_ms() + DAY as u64;
+        for i in 0..KEEP {
+            let mut other = activity("chat:crowd", &fresh_id(), Status::Saved);
+            other.at = base + i as u64;
+            book.entries.insert(
+                other.id.clone(),
+                Entry {
+                    activity: Some(other),
+                    ..Default::default()
+                },
+            );
+        }
+        save(ledger, &book).unwrap();
+    }
+
+    // F2 — at 12016c9 a write the ledger had forgotten drew a second line.
+    #[test]
+    fn a_write_the_ledger_forgot_past_keep_is_still_one_line() {
+        let w = std::sync::Arc::new(World::new(true));
+        let mango = w.agent("Mango Juice");
+        let chat = w.lead(&mango);
+        let first = w.call(&chat, "append", entry("Old write.", "r1")).unwrap();
+        let old = first["receipt"]["id"].as_str().unwrap().to_owned();
+        // An old uncertain write and an unconfirmed intent must survive the trim.
+        let mut doubtful = activity("chat:crowd", &fresh_id(), Status::Uncertain);
+        doubtful.at = 0;
+        let mut unfinished = activity("chat:crowd", &fresh_id(), Status::Saved);
+        unfinished.at = 0;
+        {
+            let mut book = load(&w.ledger);
+            for (a, pending) in [(&doubtful, false), (&unfinished, true)] {
+                let entry = book.entries.entry(a.id.clone()).or_default();
+                entry.activity = Some(a.clone());
+                if pending {
+                    entry.pending.insert("chat:crowd".into(), Status::Saved);
+                }
+            }
+            save(&w.ledger, &book).unwrap();
+        }
+        crowd(&w.ledger);
+        // The next write trims the ledger back to KEEP, oldest first.
+        w.call(&chat, "append", entry("Newer write.", "r2"))
+            .unwrap();
+        let book = load(&w.ledger);
+        assert_eq!(book.entries.len(), KEEP);
+        assert!(
+            !book.entries.contains_key(&old),
+            "the first write was forgotten"
+        );
+        assert!(book.entries.contains_key(&doubtful.id));
+        assert!(book.entries.contains_key(&unfinished.id));
+        assert_eq!(lines(&chat).len(), 2);
+
+        // Retried, alone and all at once: still one line per write.
+        w.call(&chat, "append", entry("Old write.", "r1")).unwrap();
+        let handles: Vec<_> = (0..6)
+            .map(|i| {
+                let (w, chat) = (w.clone(), chat.clone());
+                std::thread::spawn(move || {
+                    let (text, id) = [("Old write.", "r1"), ("Newer write.", "r2")][i % 2];
+                    w.call(&chat, "append", entry(text, id))
+                })
+            })
+            .collect();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().unwrap()["alreadySaved"], true);
+        }
+        let shown = lines(&chat);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[0]["id"], old.as_str());
+        assert_eq!(w.note(&mango).matches("Old write.").count(), 1);
+    }
+
+    // F3 — at 12016c9 a line the ledger called delivered was never written
+    // back once the transcript had lost it.
+    #[test]
+    fn a_line_confirmed_but_lost_from_the_transcript_is_written_back_once() {
+        let w = World::new(true);
+        let mango = w.agent("Mango Juice");
+        let chat = w.lead(&mango);
+        let saved = w.call(&chat, "append", entry("Lost line.", "r1")).unwrap();
+        let id = saved["receipt"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            load(&w.ledger).entries[&id].delivered.get(&chat),
+            Some(&Status::Saved)
+        );
+        // Written but never synced when the power went: the platter lost the
+        // line the ledger had already confirmed. (A restore from backup looks
+        // the same.)
+        fs::write(crate::transcript::path_for(&chat).unwrap(), "").unwrap();
+        for _ in 0..3 {
+            w.call(&chat, "append", entry("Lost line.", "r1")).unwrap();
+        }
+        let shown = lines(&chat);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0]["id"], id.as_str());
+        assert_eq!(shown[0]["status"], "saved");
+    }
+
+    // F3 — the order on disk: the intent before the line, the confirmation
+    // only after the line is synced; a line the disk refused stays an intent.
+    #[test]
+    fn the_intent_precedes_the_line_and_the_confirmation_follows_it() {
+        let ledger = scratch_ledger();
+        let chat = unique("order");
+        let line = activity(&chat, &fresh_id(), Status::Saved);
+        let during = Mutex::new(None);
+        let written = record_at(&ledger, line.clone(), |c: &str, event: Value| {
+            let entry = &load(&ledger).entries[&line.id];
+            *during.lock().unwrap() = Some((
+                entry.pending.get(c).copied(),
+                entry.delivered.get(c).copied(),
+            ));
+            deliver(c, event)
+        });
+        assert_eq!(written, vec![chat.clone()]);
+        assert_eq!(
+            during.into_inner().unwrap(),
+            Some((Some(Status::Saved), None)),
+            "the intent was on disk, the confirmation not yet"
+        );
+        let entry = &load(&ledger).entries[&line.id];
+        assert!(entry.pending.is_empty());
+        assert_eq!(entry.delivered.get(&chat), Some(&Status::Saved));
+
+        let refused = activity(&chat, &fresh_id(), Status::Saved);
+        record_at(&ledger, refused.clone(), |_: &str, _: Value| None);
+        let entry = &load(&ledger).entries[&refused.id];
+        assert_eq!(entry.pending.get(&chat), Some(&Status::Saved));
+        assert!(entry.delivered.is_empty());
+    }
+
+    // F3 — the real save succeeded and its line did not: a restart finishes
+    // it without waiting for a retry, and never writes it twice.
+    #[test]
+    fn a_restart_finishes_every_line_a_crash_left_unconfirmed() {
+        let w = World::new(true);
+        let mango = w.agent("Mango Juice");
+        let (coordinator, worker) = w.worker(&mango, "Recover lines");
+        let blocked = crate::transcript::path_for(&worker).unwrap();
+        // The worker's transcript cannot be written (a directory stands where
+        // the file goes): the save is real, its line is not.
+        fs::create_dir_all(blocked.join("in-the-way")).unwrap();
+        let saved = w
+            .call(&worker, "append", entry("Saved, line lost.", "r1"))
+            .unwrap();
+        assert_eq!(saved["receipt"]["status"], "saved");
+        let id = saved["receipt"]["id"].as_str().unwrap().to_owned();
+        let recorded = &load(&w.ledger).entries[&id];
+        assert_eq!(recorded.pending.get(&worker), Some(&Status::Saved));
+        assert_eq!(recorded.delivered.get(&coordinator), Some(&Status::Saved));
+        fs::remove_dir_all(&blocked).unwrap();
+
+        // A chat deleted meanwhile is not written to.
+        let gone = unique("gone");
+        let mut orphan = activity(&gone, &fresh_id(), Status::Saved);
+        orphan.at = 1;
+        {
+            let mut book = load(&w.ledger);
+            let entry = book.entries.entry(orphan.id.clone()).or_default();
+            entry.activity = Some(orphan.clone());
+            entry.pending.insert(gone.clone(), Status::Saved);
+            save(&w.ledger, &book).unwrap();
+        }
+
+        assert_eq!(recover_at(&w.ledger, deliver), vec![worker.clone()]);
+        assert!(recover_at(&w.ledger, deliver).is_empty(), "twice is once");
+        let own = lines(&worker);
+        assert_eq!(own.len(), 1);
+        assert_eq!(own[0]["text"], "Saved, line lost.");
+        assert_eq!(lines(&coordinator).len(), 1);
+        assert!(lines(&gone).is_empty());
+        let book = load(&w.ledger);
+        assert!(book.entries[&id].pending.is_empty());
+        assert!(book.entries[&orphan.id].pending.is_empty());
+        // And the agent's own retry afterwards changes nothing.
+        w.call(&worker, "append", entry("Saved, line lost.", "r1"))
+            .unwrap();
+        assert_eq!(lines(&worker).len(), 1);
+    }
+
+    // F3 — a restart that finds the line already written only confirms it.
+    #[test]
+    fn a_restart_confirms_a_line_written_just_before_the_crash() {
+        let ledger = scratch_ledger();
+        let chat = unique("written");
+        index(&chat);
+        let line = activity(&chat, &fresh_id(), Status::Saved);
+        {
+            let mut book = load(&ledger);
+            let entry = book.entries.entry(line.id.clone()).or_default();
+            entry.activity = Some(line.clone());
+            entry.pending.insert(chat.clone(), Status::Saved);
+            save(&ledger, &book).unwrap();
+        }
+        crate::transcript::append(&chat, &origin_event(&line));
+        let (seen, emit) = capture();
+        assert!(recover_at(&ledger, &emit).is_empty());
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(lines(&chat).len(), 1);
+        assert_eq!(
+            load(&ledger).entries[&line.id].delivered.get(&chat),
+            Some(&Status::Saved)
+        );
+    }
+
     #[test]
     fn a_reassigned_tasks_old_chat_keeps_speaking_for_its_own_agent() {
         let w = World::new(true);
@@ -1218,15 +1731,8 @@ mod tests {
         let store = OrchestrationStore::load(file);
         let tasks = store.snapshot(None).unwrap().tasks;
         assert_eq!(tasks[0].assignee.as_ref().unwrap().id, potato.id);
-        agent_memory(
-            &w.vault,
-            &w.team,
-            &store,
-            &worker,
-            "append",
-            &entry("Still Mango.", "r1"),
-        )
-        .unwrap();
+        w.call_as(&store, &worker, "append", entry("Still Mango.", "r1"))
+            .unwrap();
         assert_eq!(lines(&worker)[0]["agent"]["name"], "Mango Juice");
         assert!(w.note(&mango).contains("Still Mango."));
         assert!(!w.note(&potato).contains("Still Mango."));

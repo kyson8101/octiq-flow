@@ -1,7 +1,10 @@
 // Live check: an agent's memory write is shown in its chat by the host, from
 // the vault's receipt — saved, failed or unconfirmed — once per write, across
 // reloads and a server restart; a worker's coordinator sees that it happened
-// and a link to the worker chat, not the words.
+// and a link to the worker chat, not the words. A save whose activity a crash
+// lost is recovered by a next-day retry without a date; a line lost from a
+// transcript, or never confirmed, is written back once (the latter by the
+// restart itself); and past the ledger's KEEP the transcripts still dedupe.
 //
 // Evidence class: STUB PROVIDER, REAL SERVER, REAL BROWSER, DISPOSABLE VAULT.
 // This checkout's octiq-server runs under a throwaway HOME with a stand-in
@@ -331,6 +334,145 @@ try {
     statuses: await notes().evaluateAll((els) => els.map((e) => e.getAttribute("data-memory-status"))),
   };
   assert.deepEqual(results.afterRestart.statuses, ["saved", "failed", "uncertain"]);
+
+  // A restarted server has no agent running for the chat, so its old
+  // capability is refused: resume the chat, as the next message would.
+  const revive = async (key) => {
+    fs.rmSync(path.join(CAPS, encodeURIComponent(key)), { force: true });
+    await connect();
+    await invoke("chat_start", { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false,
+      prompt: "Carry on.", turnId: `user-revive-${Date.now()}` });
+    await wait(`${key}'s capability`, () => capOf(key));
+  };
+  await revive(D);
+
+  // ---- Saved, then the server died before any activity was recorded, and
+  // the retry comes after midnight without a date. A raw write of the exact
+  // append leaves exactly that: the note and its receipt, no activity.
+  const MEMORY_NOTE = "agent-zone/agents/mango-juice/memory.md";
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const crossText = "Written before midnight, retried after it.";
+  const before = await memory(D, "read", { path: MEMORY_NOTE, lineCount: 1 });
+  assert.equal(before.status, 200, JSON.stringify(before));
+  const raw = await memory(D, "write", { path: MEMORY_NOTE, mode: "append",
+    content: `\n## ${yesterday}\n\n${crossText}\n`, expectedRevision: before.result.revision, requestId: "live-x1" });
+  const retried = await memory(D, "agent_memory_append", { text: crossText, requestId: "live-x1" });
+  const noteNow = fs.readFileSync(path.join(VAULT, MEMORY_NOTE), "utf8");
+  results.crossDayCrashGap = {
+    rawReceipt: raw.result?.status,
+    retryStatus: retried.status,
+    alreadySaved: retried.result?.alreadySaved,
+    retryError: retried.error,
+    entriesInNote: noteNow.split(crossText).length - 1,
+  };
+  assert.equal(raw.result?.status, "saved", JSON.stringify(raw));
+  assert.equal(retried.status, 200, JSON.stringify(retried));
+  assert.equal(retried.result.alreadySaved, true);
+  assert.equal(results.crossDayCrashGap.entriesInNote, 1);
+  const crossLine = page.locator(".memory-note", { hasText: "Mango Juice updated memory" }).last();
+  await open("Mango direct chat");
+  await wait("the recovered saved line", async () => (await notes().count()) === 4);
+  results.crossDayCrashGap.statuses = await notes().evaluateAll((els) => els.map((e) => e.getAttribute("data-memory-status")));
+  assert.deepEqual(results.crossDayCrashGap.statuses, ["saved", "failed", "uncertain", "saved"]);
+  await crossLine.getByRole("button", { name: /Details/ }).click();
+  results.crossDayCrashGap.details = await crossLine.locator(".memory-note-details").innerText();
+  assert.match(results.crossDayCrashGap.details, new RegExp(`Dated\\s+${yesterday}`));
+  // A different payload under the same id is still refused, as its own line.
+  const other = await memory(D, "agent_memory_append", { text: "Different words.", requestId: "live-x1" });
+  results.crossDayCrashGap.differentPayload = { status: other.status, error: other.error };
+  assert.equal(other.status, 400);
+  assert.match(other.error, /different operation/);
+
+  // ---- Durable delivery, checked on disk.
+  const find = (dir, name) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const found = find(full, name);
+        if (found) return found;
+      } else if (entry.name === name) return full;
+    }
+    return null;
+  };
+  const transcriptOf = (key) => find(HOME, `${key.replace(":", "_")}.jsonl`);
+  const memoryLines = (key) => fs.readFileSync(transcriptOf(key), "utf8").split("\n")
+    .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+    .filter((event) => event?.type === "octiq_memory_activity");
+  const linesFor = (key, id) => memoryLines(key).filter((event) => event.id === id).map((event) => event.status);
+  const dropLines = (key, id) => {
+    const file = transcriptOf(key);
+    const kept = fs.readFileSync(file, "utf8").split("\n").filter((line) => !line.includes(`"id":"${id}"`));
+    fs.writeFileSync(file, kept.join("\n"));
+  };
+  const ledgerFile = find(HOME, "memory-activity.json");
+  const readLedger = () => JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+  const crossId = retried.result.receipt.id;
+  const workerId = results.workerSaved.result.receipt.id;
+  const r1Id = results.saved.result.receipt.id;
+
+  // A line the ledger confirmed, gone from the transcript (the platter lost
+  // an unsynced write, or a backup was restored); and a line whose intent a
+  // crash left unconfirmed, never written.
+  await stopServer();
+  assert.equal(readLedger().entries[crossId].delivered[D], "saved");
+  dropLines(D, crossId);
+  dropLines(W, workerId);
+  const pendingLedger = readLedger();
+  delete pendingLedger.entries[workerId].delivered[W];
+  pendingLedger.entries[workerId].pending = { [W]: "saved" };
+  fs.writeFileSync(ledgerFile, JSON.stringify(pendingLedger));
+  await startServer();
+  // The restart itself finishes the unconfirmed one — nobody retried it.
+  await wait("the recovered worker line", async () => linesFor(W, workerId).length === 1);
+  results.durable = { workerLineAfterRestart: linesFor(W, workerId), workerPendingAfterRestart: readLedger().entries[workerId].pending };
+  assert.deepEqual(results.durable.workerPendingAfterRestart, {});
+  await revive(D);
+  // The confirmed-but-lost one is written back by its retry, once.
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await memory(D, "agent_memory_append", { text: crossText, requestId: "live-x1" })).status, 200);
+  }
+  results.durable.crossLinesAfterRetries = linesFor(D, crossId);
+  assert.deepEqual(results.durable.crossLinesAfterRetries, ["saved"]);
+
+  // ---- Past KEEP: the ledger forgets the oldest writes, the transcripts
+  // still guard them, alone and under concurrent retries.
+  await stopServer();
+  const crowded = readLedger();
+  const newer = Date.now() + 86_400_000;
+  for (let i = 0; i < 5000; i++) {
+    const id = `crowd-${String(i).padStart(5, "0")}`;
+    crowded.entries[id] = { activity: { id, chatKey: "chat:crowd", requestId: id, status: "saved", agent: null,
+      at: newer + i, note: null, date: null, text: null, receiptId: null, receiptStatus: null, error: null, owner: null },
+      delivered: {}, pending: {} };
+  }
+  fs.writeFileSync(ledgerFile, JSON.stringify(crowded));
+  await startServer();
+  await revive(D);
+  const r4 = await memory(D, "agent_memory_append", { text: "One more, to trim the ledger.", date: "2026-09-28", requestId: "live-r4" });
+  assert.equal(r4.status, 200, JSON.stringify(r4));
+  const trimmed = readLedger();
+  results.keep = { entries: Object.keys(trimmed.entries).length, r1Remembered: r1Id in trimmed.entries };
+  assert.equal(results.keep.entries, 5000);
+  assert.equal(results.keep.r1Remembered, false);
+  const concurrent = await Promise.all(Array.from({ length: 6 }, () => memory(D, "agent_memory_append", entry)));
+  results.keep.concurrentStatuses = concurrent.map((r) => r.status);
+  assert.ok(concurrent.every((r) => r.status === 200 && r.result.alreadySaved === true));
+  results.keep.r1Lines = linesFor(D, r1Id);
+  assert.deepEqual(results.keep.r1Lines, ["saved"]);
+  results.keep.entriesInNote = fs.readFileSync(path.join(VAULT, MEMORY_NOTE), "utf8").split("Receipts decide saved, not prose.").length - 1;
+  assert.equal(results.keep.entriesInNote, 1);
+  await open("Mango direct chat");
+  await wait("the final lines", async () => (await notes().count()) === 6);
+  results.keep.statuses = await notes().evaluateAll((els) => els.map((e) => e.getAttribute("data-memory-status")));
+  // r1, r2, r3, x1, x1's refused different payload, r4 — one line each. (The
+  // tab's cache keeps x1 where it first saw it; the order on disk is above.)
+  assert.deepEqual([...results.keep.statuses].sort(), ["failed", "failed", "saved", "saved", "saved", "uncertain"]);
+  results.keep.linesOnDisk = Object.entries(Object.groupBy(memoryLines(D), (e) => e.id))
+    .map(([, events]) => events.map((e) => e.status).join("+"));
+  assert.equal(results.keep.linesOnDisk.length, 6);
+  assert.ok(results.keep.linesOnDisk.every((s) => ["saved", "failed", "uncertain"].includes(s)), results.keep.linesOnDisk.join());
+  await settle();
+  await page.screenshot({ path: path.join(OUT, "8-recovered-lines-1440-dark.png") });
 
   // ---- Themes and widths.
   for (const [theme, width, height] of [["light", 1440, 1000], ["dark", 390, 844], ["light", 390, 844], ["fun", 390, 844], ["fun", 1440, 1000]]) {

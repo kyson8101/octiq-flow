@@ -977,37 +977,43 @@ fn append_entry(
     if text.chars().count() > 4000 {
         return Err("Keep a memory entry under 4000 characters; record the essence.".into());
     }
-    let guessed_date = date.map(str::trim).filter(|d| !d.is_empty()).is_none();
-    let date = match date.map(str::trim).filter(|d| !d.is_empty()) {
-        Some(d)
-            if d.len() == 10
-                && d.chars().enumerate().all(|(i, c)| {
-                    if i == 4 || i == 7 {
-                        c == '-'
-                    } else {
-                        c.is_ascii_digit()
-                    }
-                }) =>
-        {
-            d.to_owned()
-        }
-        Some(_) => return Err("Pass the date as YYYY-MM-DD.".into()),
-        None => today(),
-    };
+    let given = date.map(str::trim).filter(|d| !d.is_empty());
+    if given.is_some_and(|d| {
+        d.len() != 10
+            || !d.chars().enumerate().all(|(i, c)| {
+                if i == 4 || i == 7 {
+                    c == '-'
+                } else {
+                    c.is_ascii_digit()
+                }
+            })
+    }) {
+        return Err("Pass the date as YYYY-MM-DD.".into());
+    }
     let path = note_of(me)?;
     append.note = Some(path.to_owned());
-    append.date = Some(date.clone());
-    let content = format!("\n## {date}\n\n{text}\n");
     // One builder for both the write and the retry check, so the two can never
     // disagree about what "the same operation" was.
-    let args = |revision: Option<&str>| {
+    let args = |date: &str, revision: Option<&str>| {
         serde_json::json!({
             "path": path,
             "mode": "append",
-            "content": content,
+            "content": format!("\n## {date}\n\n{text}\n"),
             "expectedRevision": revision,
             "requestId": request_id,
         })
+    };
+    // The dates a retry may be repeating. A date left out is never guessed
+    // for a retry: the first call dated its entry today() just before its
+    // receipt was made, so it is the receipt's own day — or the day before,
+    // when midnight fell in between. Only the receipt's request hash can say
+    // which, so nothing here depends on anything recorded after the write.
+    let dates = |created_at: u64| match given {
+        Some(date) => vec![date.to_owned()],
+        None => {
+            let made = i64::try_from(created_at).unwrap_or(i64::MAX);
+            vec![utc_date(made), utc_date(made.saturating_sub(86_400_000))]
+        }
     };
     let classify = |receipt: serde_json::Value, already: bool| match receipt
         .get("status")
@@ -1026,17 +1032,28 @@ fn append_entry(
         }
     };
     let earlier = vault
-        .earlier_change(actor, request_id, "write", args)
-        .map_err(|error| match guessed_date {
-            // Never re-guess a date for a retry: say which one this used.
-            true if error.contains("different operation") => format!(
-                "{error} A retry must pass the same text and date as the first call; this one used {date}."
+        .earlier_change(actor, request_id, "write", |revision, created_at| {
+            dates(created_at)
+                .into_iter()
+                .map(|date| {
+                    let args = args(&date, revision);
+                    (date, args)
+                })
+                .collect()
+        })
+        .map_err(|error| match given {
+            None if error.contains("different operation") => format!(
+                "{error} These words match it on no date its receipt allows: a retry must pass the same text and date as the first call."
             ),
             _ => error,
         })?;
-    if let Some(receipt) = earlier {
+    if let Some((date, receipt)) = earlier {
+        append.date = Some(date);
         return Ok(classify(receipt, true));
     }
+    // A first call: an entry without a date is dated today.
+    let date = given.map_or_else(today, str::to_owned);
+    append.date = Some(date.clone());
     ensure_memory(vault, actor, me)?;
     let current = vault.call(
         actor,
@@ -1048,13 +1065,15 @@ fn append_entry(
         .and_then(|r| r.as_str())
         .ok_or("Could not read the memory note's revision.")?
         .to_owned();
-    match vault.call(actor, "write", &args(Some(&revision))) {
+    match vault.call(actor, "write", &args(&date, Some(&revision))) {
         Ok(receipt) => Ok(classify(receipt, false)),
         // A write that failed after its receipt was recorded may still have
         // reached the note: that one is uncertain, not failed. One that left
         // no receipt never touched it.
-        Err(error) => match vault.earlier_change(actor, request_id, "write", args) {
-            Ok(Some(receipt)) => Ok(match classify(receipt, false) {
+        Err(error) => match vault.earlier_change(actor, request_id, "write", |revision, _| {
+            vec![((), args(&date, revision))]
+        }) {
+            Ok(Some((_, receipt))) => Ok(match classify(receipt, false) {
                 MemoryWrite::Uncertain { receipt, .. } => MemoryWrite::Uncertain { receipt, error },
                 saved => saved,
             }),

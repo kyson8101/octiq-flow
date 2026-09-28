@@ -96,6 +96,17 @@ static NEXT_SEQ: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 /// attached. Losing the ability to catch up later is bad; losing the live
 /// stream because the disk is full would be worse.
 pub fn append(key: &str, event: &Value) -> Option<u64> {
+    write(key, event, false)
+}
+
+/// `append` for a line another record will call delivered: it answers only
+/// once the line is synced to the disk itself, not merely handed to the OS,
+/// so a crash cannot take back a line that was confirmed.
+pub fn append_synced(key: &str, event: &Value) -> Option<u64> {
+    write(key, event, true)
+}
+
+fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     let path = path_for(key)?;
     let line = serde_json::to_string(event).ok()?;
 
@@ -107,16 +118,45 @@ pub fn append(key: &str, event: &Value) -> Option<u64> {
         None => count(&path) + 1,
     };
 
+    let existed = path.exists();
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
+        .read(synced)
         .open(&path)
         .ok()?;
+    if synced && !ends_in_newline(&mut file) {
+        // A crash mid-line left half a line (counted above as a line). This
+        // one must not be glued onto it and lost with it.
+        file.write_all(b"\n").ok()?;
+    }
     // Only claim the number once the line is actually on disk, so a failed
     // write cannot leave a gap that `since` would read straight past.
     writeln!(file, "{line}").ok()?;
     counts.insert(key.to_string(), seq + 1);
+    if synced {
+        file.sync_data().ok()?;
+        if !existed {
+            // A new file is only durable once its folder entry is.
+            if let Some(dir) = path.parent().and_then(|d| File::open(d).ok()) {
+                let _ = dir.sync_all();
+            }
+        }
+    }
     Some(seq)
+}
+
+/// Whether the file is empty or its last byte ends a line.
+fn ends_in_newline(file: &mut File) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut last = [0u8; 1];
+    match file.seek(SeekFrom::End(-1)) {
+        Ok(_) => file
+            .read_exact(&mut last)
+            .map_or(true, |_| last[0] == b'\n'),
+        // Nothing to seek back over: an empty file.
+        Err(_) => true,
+    }
 }
 
 /// How many events are already recorded. Read once per chat per run.
@@ -474,6 +514,26 @@ mod tests {
         assert_eq!(all.len(), 2, "the two whole events must survive");
         assert_eq!(all[1].event["n"], 2);
 
+        forget(&key);
+    }
+
+    #[test]
+    fn a_synced_line_after_a_torn_one_is_whole_and_numbered_where_it_sits() {
+        let key = unique_key("torn-synced");
+        append(&key, &json!({ "n": 1 }));
+        let path = path_for(&key).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "{{\"n\": 2, \"hal").unwrap();
+        drop(file);
+        // The process died there; the next one counts the file afresh.
+        NEXT_SEQ.lock().unwrap().as_mut().unwrap().remove(&key);
+
+        let seq = append_synced(&key, &json!({ "n": 3 })).unwrap();
+        let all = since(&key, 0);
+        assert_eq!(all.len(), 2, "the torn line is skipped, the new one is not");
+        assert_eq!(all[1].event["n"], 3);
+        assert_eq!(all[1].seq, seq);
+        assert_eq!(append_synced(&key, &json!({ "n": 4 })), Some(seq + 1));
         forget(&key);
     }
 
