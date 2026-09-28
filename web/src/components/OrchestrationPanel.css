@@ -743,6 +743,7 @@
 .orch-task-lifecycle { margin-bottom: 12px; overflow-wrap: anywhere; }
 .orch-task-lifecycle p { margin: 0 0 6px; color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
 .orch-task-lifecycle code { font-family: var(--mono); font-size: 10.5px; }
+.orch-task-lifecycle-commands { margin: 0 0 6px; padding-left: 16px; color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
 .orch-task-blocker { color: var(--warn); }
 /* A check's kind, its environment and a native decision: each a state of
    its own, beside the task's status and never folded into it. */

@@ -302,6 +302,11 @@ export type NativeDecision = {
   id: string; runId: string; taskId: string; attemptId: string; chatKey: string;
   reason: string; blockedAction: string | null; status: string;
   continuation: string; recovery: string; observedAt: number;
+  /** "outage": Claude's classifier gave no verdict. Absent from older
+   * servers and older records, which are safety refusals. */
+  kind?: "safety" | "outage";
+  /** The outage card this refusal was grouped on. */
+  groupId?: string | null;
 };
 
 export type RuntimeService = {

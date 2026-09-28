@@ -38,6 +38,37 @@ pub struct BlockedAction {
     /// what it named. None when the provider did not say, as Codex's router
     /// diagnostics never do.
     action: Option<String>,
+    /// An outage card only: how many refused calls it holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<usize>,
+    /// An outage card only: what was refused, identical lines collapsed,
+    /// in the order they were first refused.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    commands: Vec<GroupedCommand>,
+    /// An outage card only: the one recovery text the snapshot and the
+    /// worker prompt also carry (`outage_guidance`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guidance: Option<&'static str>,
+    /// An outage card only: every refused call in it, for the ledger.
+    #[serde(skip_serializing)]
+    refusals: Vec<Refusal>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupedCommand {
+    action: String,
+    count: usize,
+}
+
+/// One refused call inside an outage card.
+#[derive(Debug, Clone)]
+struct Refusal {
+    /// The ledger's id for this refusal; the card's id is its group id.
+    id: String,
+    tool_use_id: Option<String>,
+    action: String,
+    at: i64,
 }
 
 #[cfg(test)]
@@ -49,6 +80,114 @@ impl BlockedAction {
     pub fn action(&self) -> Option<&str> {
         self.action.as_deref()
     }
+}
+
+/// Why Claude refused a call: its classifier judged the call, or the
+/// classifier itself could not be reached and gave no verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusalKind {
+    Safety,
+    Outage,
+}
+
+impl RefusalKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            RefusalKind::Safety => "safety",
+            RefusalKind::Outage => "outage",
+        }
+    }
+}
+
+/// The one place a provider's refusal reason is read as an outage.
+///
+/// Claude 2.1.x sends `decision_reason: "Classifier unavailable"` when the
+/// server-side classifier gave no verdict; its message calls that "a transient
+/// failure of the check, not a judgment about the action". Only that exact
+/// reason, trimmed and case-folded, counts. Anything else — a missing reason,
+/// an empty one, or one that merely mentions the words — is a safety refusal:
+/// mistaking a real refusal for an outage would be the costly error.
+pub(crate) fn refusal_kind(reason: Option<&str>) -> RefusalKind {
+    let reason = reason
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    if reason.eq_ignore_ascii_case("Classifier unavailable") {
+        RefusalKind::Outage
+    } else {
+        RefusalKind::Safety
+    }
+}
+
+/// An outage group stays open this long after its latest refusal.
+pub(crate) const OUTAGE_WINDOW_MS: i64 = 2 * 60 * 1000;
+/// ... but never longer than this after its first, so a worker refused again
+/// and again still reaches its coordinator.
+pub(crate) const OUTAGE_MAX_OPEN_MS: i64 = 5 * 60 * 1000;
+/// ... and never past this many refusals.
+pub(crate) const OUTAGE_MAX_REFUSALS: usize = 5;
+
+/// When an outage group closes: its coordinator notice falls due then, and a
+/// later refusal starts a new group. Shared by the card and the ledger so the
+/// two always agree on where one group ends.
+pub(crate) fn outage_group_due(first_at: i64, last_at: i64, count: usize) -> i64 {
+    if count >= OUTAGE_MAX_REFUSALS {
+        last_at
+    } else {
+        (last_at + OUTAGE_WINDOW_MS).min(first_at + OUTAGE_MAX_OPEN_MS)
+    }
+}
+
+/// What an outage-refused command's worker may do about it again: one as-is
+/// retry for classifier outages, decided by the person on 2026-09-28. It
+/// matches what Claude's own message offers. The try is the worker's own call
+/// and Claude checks it again; OctiqFlow never re-runs a refused call. A
+/// second refusal of the same command ends it. Safety refusals never get this
+/// sentence (`lifecycle`'s Claude recovery text stays strict).
+pub(crate) const OUTAGE_RETRY: &str = "You may try the same command once more, as-is: Claude checks that try again. If it is refused again, do not try it a third time. Never reword a command to get past the check.";
+
+/// The recovery text for an outage refusal, word for word the same on the
+/// card, in the snapshot's `recovery` and in the worker prompt (feedback
+/// 57fbac34: those three disagreed).
+pub(crate) fn outage_guidance() -> &'static str {
+    static TEXT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TEXT.get_or_init(|| {
+        format!(
+            "Claude's safety check was unavailable, so the command did not run. It was not judged unsafe, and it was not approved. Continue with your other steps. OctiqFlow never re-runs it. {OUTAGE_RETRY} Report every refused command in your worker report, and do not describe any of them as approved or as having run."
+        )
+    })
+}
+
+/// Calls Claude refused, by tool_use id, so the result it sends back for one
+/// is not mistaken for work done. Bounded like `DECIDED`.
+static REFUSED_CALLS: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+fn remember_refused_call(id: &str) {
+    let mut guard = REFUSED_CALLS.lock().unwrap_or_else(|e| e.into_inner());
+    let calls = guard.get_or_insert_with(Default::default);
+    if calls.len() >= 1024 {
+        calls.clear();
+    }
+    calls.insert(id.to_string());
+}
+
+/// Whether Claude refused this tool call: its result is the refusal, not a
+/// call that ran.
+pub(crate) fn was_refused(tool_use_id: &str) -> bool {
+    REFUSED_CALLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|calls| calls.contains(tool_use_id))
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 static PENDING: Mutex<Option<HashMap<String, BlockedAction>>> = Mutex::new(None);
@@ -260,30 +399,58 @@ pub(crate) fn awaits_decision(chat_key: &str) -> bool {
 }
 
 /// Coordinator evidence deliberately excludes the raw router diagnostic.
+///
+/// An outage card lists each refused call separately, under the card's id as
+/// its group, so the ledger keeps every refusal.
 pub(crate) fn decision_summaries() -> Vec<PendingCard> {
     with_pending(|pending| {
-        pending
-            .values()
-            .map(|block| PendingCard {
-                id: block.id.clone(),
-                chat_key: block.chat_key.clone(),
-                reason: match &block.action {
-                    Some(_) => format!("{}: {}", block.title, block.summary),
-                    None => block.summary.clone(),
-                },
-                action: block.action.clone(),
-            })
-            .collect()
+        let mut cards = Vec::new();
+        for block in pending.values() {
+            let reason = match &block.action {
+                Some(_) => format!("{}: {}", block.title, block.summary),
+                None => block.summary.clone(),
+            };
+            if block.refusals.is_empty() {
+                cards.push(PendingCard {
+                    id: block.id.clone(),
+                    chat_key: block.chat_key.clone(),
+                    reason,
+                    action: block.action.clone(),
+                    kind: RefusalKind::Safety,
+                    group_id: None,
+                    at: None,
+                });
+                continue;
+            }
+            for refusal in &block.refusals {
+                cards.push(PendingCard {
+                    id: refusal.id.clone(),
+                    chat_key: block.chat_key.clone(),
+                    reason: reason.clone(),
+                    action: Some(refusal.action.clone()),
+                    kind: RefusalKind::Outage,
+                    group_id: Some(block.id.clone()),
+                    at: Some(refusal.at),
+                });
+            }
+        }
+        cards
     })
 }
 
-/// What the orchestration record keeps of a pending card.
+/// What the orchestration record keeps of a pending card, or of one refused
+/// call in an outage card.
 pub(crate) struct PendingCard {
     pub id: String,
     pub chat_key: String,
     pub reason: String,
     /// The exact call, when the provider named it.
     pub action: Option<String>,
+    pub kind: RefusalKind,
+    /// The outage card this refusal belongs to.
+    pub group_id: Option<String>,
+    /// When the refusal was seen, for an outage refusal.
+    pub at: Option<i64>,
 }
 
 /// Remove one card after the person chooses a path or dismisses it.
@@ -337,6 +504,17 @@ pub fn observe_claude_denial(
     event: &serde_json::Value,
     called: Option<(&str, &serde_json::Value)>,
 ) -> bool {
+    observe_claude_denial_at(chat_key, event, called, now_ms())
+}
+
+/// `observe_claude_denial` at a given time, so a test can walk an outage
+/// through its window without waiting for it.
+pub(crate) fn observe_claude_denial_at(
+    chat_key: &str,
+    event: &serde_json::Value,
+    called: Option<(&str, &serde_json::Value)>,
+    now: i64,
+) -> bool {
     let text = |name: &str| event.get(name).and_then(serde_json::Value::as_str);
     if text("type") != Some("system")
         || text("subtype") != Some("permission_denied")
@@ -358,8 +536,25 @@ pub fn observe_claude_denial(
         .filter(|r| !r.is_empty())
         .unwrap_or("Blocked by auto mode");
     let action = describe_call(tool, input);
+    let tool_use_id = text("tool_use_id");
+    if let Some(id) = tool_use_id {
+        remember_refused_call(id);
+    }
     let mut detail = text("message").unwrap_or_default().trim().to_string();
-    if let Some(id) = text("tool_use_id") {
+    if refusal_kind(text("decision_reason")) == RefusalKind::Outage {
+        return publish_outage(
+            chat_key,
+            reason,
+            detail,
+            Refusal {
+                id: uuid::Uuid::new_v4().to_string(),
+                tool_use_id: tool_use_id.map(str::to_string),
+                action,
+                at: now,
+            },
+        );
+    }
+    if let Some(id) = tool_use_id {
         // Two refusals of the same line are two decisions, not one card.
         detail.push_str(&format!("\n\nTool call: {id}"));
     }
@@ -373,7 +568,110 @@ pub fn observe_claude_denial(
         project_scope: None,
         provider: "claude",
         action: Some(action),
+        count: None,
+        commands: Vec::new(),
+        guidance: None,
+        refusals: Vec::new(),
     })
+}
+
+/// The title of a card for calls refused only because Claude's classifier
+/// was unavailable. It says nothing about the command being unsafe.
+pub(crate) const OUTAGE_TITLE: &str = "Claude's safety check was unavailable";
+
+/// Put an outage refusal on this chat's open outage card, or start one.
+///
+/// A card is open while it is still pending and `outage_group_due` has not
+/// passed. Joining re-announces the same card id, so the page redraws one
+/// card with a higher count rather than adding another, and the person is
+/// notified once per card, not per refusal.
+fn publish_outage(chat_key: &str, reason: &str, message: String, refusal: Refusal) -> bool {
+    let (card, created) = with_pending(|pending| {
+        let open = pending.values_mut().find(|block| {
+            block.chat_key == chat_key
+                && !block.refusals.is_empty()
+                && refusal.at
+                    < outage_group_due(
+                        block.refusals[0].at,
+                        block.refusals.iter().map(|r| r.at).max().unwrap_or(0),
+                        block.refusals.len(),
+                    )
+        });
+        if let Some(block) = open {
+            let seen = refusal.tool_use_id.is_some()
+                && block
+                    .refusals
+                    .iter()
+                    .any(|r| r.tool_use_id == refusal.tool_use_id);
+            if seen {
+                return (None, false);
+            }
+            block.refusals.push(refusal);
+            regroup(block);
+            return (Some(block.clone()), false);
+        }
+        let mut block = BlockedAction {
+            id: uuid::Uuid::new_v4().to_string(),
+            chat_key: chat_key.to_string(),
+            kind: "outage",
+            title: OUTAGE_TITLE,
+            summary: reason.to_string(),
+            detail: message,
+            project_scope: None,
+            provider: "claude",
+            action: None,
+            count: None,
+            commands: Vec::new(),
+            guidance: Some(outage_guidance()),
+            refusals: vec![refusal],
+        };
+        regroup(&mut block);
+        pending.insert(block.id.clone(), block.clone());
+        (Some(block), true)
+    });
+    let Some(card) = card else {
+        return false;
+    };
+    let chat_key = card.chat_key.clone();
+    crate::bus::emit("safety-blocked", card);
+    if created {
+        crate::push::notify_chat(Some(&chat_key), "permission", OUTAGE_TITLE);
+    }
+    true
+}
+
+/// Recount an outage card after a refusal joined it.
+fn regroup(block: &mut BlockedAction) {
+    let mut commands: Vec<GroupedCommand> = Vec::new();
+    for refusal in &block.refusals {
+        match commands.iter_mut().find(|c| c.action == refusal.action) {
+            Some(command) => command.count += 1,
+            None => commands.push(GroupedCommand {
+                action: refusal.action.clone(),
+                count: 1,
+            }),
+        }
+    }
+    block.count = Some(block.refusals.len());
+    // The latest line, for a page from before grouping that shows one.
+    block.action = block.refusals.last().map(|r| r.action.clone());
+    block.commands = commands;
+    let base = block
+        .detail
+        .split("\n\nTool calls:")
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let calls = block
+        .refusals
+        .iter()
+        .filter_map(|r| r.tool_use_id.as_deref())
+        .collect::<Vec<_>>();
+    block.detail = if calls.is_empty() {
+        base
+    } else {
+        format!("{base}\n\nTool calls: {}", calls.join(", "))
+    };
 }
 
 /// Why OctiqFlow no longer offers "Allow this exact command once" on a Claude
@@ -474,6 +772,10 @@ fn publish(chat_key: &str, summary: String, detail: String) -> bool {
         project_scope: with_project_scopes(|scopes| scopes.get(chat_key).cloned()),
         provider: "codex",
         action: None,
+        count: None,
+        commands: Vec::new(),
+        guidance: None,
+        refusals: Vec::new(),
     })
 }
 
@@ -631,6 +933,10 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
             project_scope: Some(scope),
             provider: "codex",
             action: None,
+            count: None,
+            commands: Vec::new(),
+            guidance: None,
+            refusals: Vec::new(),
         };
 
         save_authorization(&path, &block).unwrap();
@@ -688,6 +994,274 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         assert!(authorize_for_project(&card.id).is_err());
         assert!(dismiss(&card.id));
         assert_eq!(decision(&card.id), Some("dismissed"));
+    }
+
+    /// Claude 2.1.x's own words for an outage, verbatim from a worker
+    /// transcript of run 8eb35d0a.
+    const OUTAGE_MESSAGE: &str = "The server-side auto mode classifier gave no verdict (error), so auto mode cannot determine the safety of Bash. This is a transient failure of the check, not a judgment about the action: a later response may get a verdict. You may try the action again once, as-is.";
+
+    fn outage_denial(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "Classifier unavailable", "decision_reason_type": "classifier",
+            "message": OUTAGE_MESSAGE, "tool_name": "Bash", "tool_use_id": id,
+        })
+    }
+
+    fn bash(line: &str) -> serde_json::Value {
+        serde_json::json!({ "command": line })
+    }
+
+    fn cards_in(chat: &str) -> Vec<BlockedAction> {
+        pending()
+            .into_iter()
+            .filter(|b| b.chat_key == chat)
+            .collect()
+    }
+
+    #[test]
+    fn only_the_exact_classifier_unavailable_reason_is_an_outage() {
+        // The string seen on 2026-09-28, and harmless variations of it.
+        assert_eq!(
+            refusal_kind(Some("Classifier unavailable")),
+            RefusalKind::Outage
+        );
+        assert_eq!(
+            refusal_kind(Some("  classifier UNAVAILABLE ")),
+            RefusalKind::Outage
+        );
+        assert_eq!(
+            refusal_kind(Some("[Classifier unavailable]")),
+            RefusalKind::Outage
+        );
+        // Anything else is a safety refusal: when unsure, it is one.
+        assert_eq!(refusal_kind(None), RefusalKind::Safety);
+        assert_eq!(refusal_kind(Some("")), RefusalKind::Safety);
+        assert_eq!(refusal_kind(Some("   ")), RefusalKind::Safety);
+        assert_eq!(refusal_kind(Some("Production Deploy")), RefusalKind::Safety);
+        assert_eq!(
+            refusal_kind(Some("Production Deploy (Classifier unavailable earlier)")),
+            RefusalKind::Safety
+        );
+        assert_eq!(
+            refusal_kind(Some("Classifier unavailable: Production Deploy")),
+            RefusalKind::Safety
+        );
+        assert_eq!(refusal_kind(Some("Classifier")), RefusalKind::Safety);
+        assert_eq!(refusal_kind(Some("unavailable")), RefusalKind::Safety);
+    }
+
+    #[test]
+    fn a_classifier_denial_without_the_outage_reason_is_still_a_safety_card() {
+        // decision_reason_type "classifier" alone proves nothing: real
+        // refusals carry it too.
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let mut missing = outage_denial("toolu_m");
+        missing.as_object_mut().unwrap().remove("decision_reason");
+        assert!(observe_claude_denial(
+            &chat,
+            &missing,
+            Some(("Bash", &bash("ls")))
+        ));
+        let mut empty = outage_denial("toolu_e");
+        empty["decision_reason"] = "".into();
+        assert!(observe_claude_denial(
+            &chat,
+            &empty,
+            Some(("Bash", &bash("ls")))
+        ));
+        let cards = cards_in(&chat);
+        assert_eq!(cards.len(), 2, "one card per safety refusal, never grouped");
+        for card in &cards {
+            assert_eq!(card.title, "Claude's auto mode blocked an action");
+            assert_eq!(card.kind, "high-risk-action");
+            assert!(card.guidance.is_none());
+            assert!(card.refusals.is_empty());
+        }
+        forget_chat(&chat);
+    }
+
+    #[test]
+    fn outage_refusals_in_one_window_are_one_card_with_a_count() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let t = 1_000_000;
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_a"),
+            Some(("Bash", &bash("git fetch"))),
+            t
+        ));
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_b"),
+            Some(("Bash", &bash("ls docs"))),
+            t + 20_000
+        ));
+        // The same line re-sent after a refusal collapses to one row.
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_c"),
+            Some(("Bash", &bash("git fetch"))),
+            t + 40_000
+        ));
+        // The same refusal seen twice is not a second refusal.
+        assert!(!observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_c"),
+            Some(("Bash", &bash("git fetch"))),
+            t + 41_000
+        ));
+
+        let cards = cards_in(&chat);
+        assert_eq!(cards.len(), 1);
+        let card = &cards[0];
+        assert_eq!(card.title, OUTAGE_TITLE);
+        assert_eq!(card.kind, "outage");
+        assert_eq!(card.count, Some(3));
+        let shown = serde_json::to_value(card).unwrap();
+        assert_eq!(shown["count"], 3);
+        assert_eq!(shown["commands"][0]["action"], "git fetch");
+        assert_eq!(shown["commands"][0]["count"], 2);
+        assert_eq!(shown["commands"][1]["action"], "ls docs");
+        assert_eq!(shown["commands"][1]["count"], 1);
+        assert_eq!(shown["guidance"], outage_guidance());
+        assert!(!shown.to_string().contains("blocked an action"));
+        assert!(card.detail.contains("not a judgment about the action"));
+        assert!(card.detail.contains("toolu_a, toolu_b, toolu_c"));
+
+        // Every refusal stays its own ledger entry, under the card's id.
+        let summaries: Vec<_> = decision_summaries()
+            .into_iter()
+            .filter(|s| s.chat_key == chat)
+            .collect();
+        assert_eq!(summaries.len(), 3);
+        assert!(summaries
+            .iter()
+            .all(|s| s.kind == RefusalKind::Outage
+                && s.group_id.as_deref() == Some(card.id.as_str())));
+
+        // One dismiss closes the whole group.
+        assert!(dismiss(&card.id));
+        assert!(cards_in(&chat).is_empty());
+        assert!(decision_summaries().iter().all(|s| s.chat_key != chat));
+        // A later outage starts a new card rather than reviving that one.
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_d"),
+            Some(("Bash", &bash("ls"))),
+            t + 50_000
+        ));
+        let again = cards_in(&chat);
+        assert_eq!(again.len(), 1);
+        assert_ne!(again[0].id, card.id);
+        forget_chat(&chat);
+    }
+
+    #[test]
+    fn an_outage_group_closes_after_its_window_its_age_cap_or_its_count_cap() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let t = 5_000_000;
+        let refuse = |id: &str, at: i64| {
+            assert!(observe_claude_denial_at(
+                &chat,
+                &outage_denial(id),
+                Some(("Bash", &bash(id))),
+                at
+            ));
+        };
+        // Quiet for longer than the window: a new group.
+        refuse("w1", t);
+        refuse("w2", t + OUTAGE_WINDOW_MS);
+        assert_eq!(cards_in(&chat).len(), 2);
+        forget_chat(&chat);
+
+        // Refused every 90 seconds: the window never lapses, but the group
+        // closes five minutes after it opened.
+        let t = t + 60 * 60_000;
+        for (n, at) in [0, 90_000, 180_000, 270_000].iter().enumerate() {
+            refuse(&format!("a{n}"), t + at);
+        }
+        assert_eq!(cards_in(&chat).len(), 1);
+        refuse("a4", t + OUTAGE_MAX_OPEN_MS);
+        assert_eq!(cards_in(&chat).len(), 2);
+        forget_chat(&chat);
+
+        // Five refusals in quick succession fill a group.
+        let t = t + 60 * 60_000;
+        for n in 0..OUTAGE_MAX_REFUSALS as i64 {
+            refuse(&format!("c{n}"), t + n * 1_000);
+        }
+        assert_eq!(cards_in(&chat).len(), 1);
+        refuse("c5", t + 6_000);
+        let cards = cards_in(&chat);
+        assert_eq!(cards.len(), 2);
+        assert!(cards.iter().any(|c| c.count == Some(OUTAGE_MAX_REFUSALS)));
+        assert!(cards.iter().any(|c| c.count == Some(1)));
+        forget_chat(&chat);
+    }
+
+    /// The one as-is retry a worker may make, refused again, is a repeat in
+    /// the same group: collapsed as ×2, and counted towards the cap.
+    #[test]
+    fn a_refused_retry_is_a_repeat_that_counts_towards_the_cap() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let t = 9_000_000;
+        let refuse = |id: &str, line: &str, at: i64| {
+            assert!(observe_claude_denial_at(
+                &chat,
+                &outage_denial(id),
+                Some(("Bash", &bash(line))),
+                at
+            ));
+        };
+        refuse("r1", "git fetch", t);
+        refuse("r2", "git fetch", t + 5_000); // the retry, refused again
+        refuse("r3", "ls", t + 6_000);
+        refuse("r4", "cat a", t + 7_000);
+        refuse("r5", "cat b", t + 8_000);
+        let cards = cards_in(&chat);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].count, Some(OUTAGE_MAX_REFUSALS));
+        assert_eq!(cards[0].commands[0].action, "git fetch");
+        assert_eq!(cards[0].commands[0].count, 2);
+        assert_eq!(cards[0].commands.len(), 4);
+        // Full: the next refusal opens a new group.
+        refuse("r6", "git status", t + 9_000);
+        assert_eq!(cards_in(&chat).len(), 2);
+        forget_chat(&chat);
+    }
+
+    #[test]
+    fn outage_group_due_is_the_earliest_of_window_age_and_count() {
+        assert_eq!(outage_group_due(0, 0, 1), OUTAGE_WINDOW_MS);
+        assert_eq!(outage_group_due(0, 250_000, 3), OUTAGE_MAX_OPEN_MS);
+        assert_eq!(outage_group_due(0, 10_000, OUTAGE_MAX_REFUSALS), 10_000);
+    }
+
+    /// Pinned word for word, so a change to what workers are told is a
+    /// visible diff. One as-is retry for classifier outages was decided by
+    /// the person on 2026-09-28; a second refusal ends it.
+    #[test]
+    fn the_outage_guidance_is_pinned_and_allows_exactly_one_as_is_retry() {
+        assert_eq!(
+            outage_guidance(),
+            "Claude's safety check was unavailable, so the command did not run. It was not judged unsafe, and it was not approved. Continue with your other steps. OctiqFlow never re-runs it. You may try the same command once more, as-is: Claude checks that try again. If it is refused again, do not try it a third time. Never reword a command to get past the check. Report every refused command in your worker report, and do not describe any of them as approved or as having run."
+        );
+        assert!(outage_guidance().contains(OUTAGE_RETRY));
+    }
+
+    #[test]
+    fn a_refused_call_is_remembered_so_its_result_is_not_work_done() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let id = format!("toolu_{}", uuid::Uuid::new_v4().simple());
+        assert!(!was_refused(&id));
+        assert!(observe_claude_denial(
+            &chat,
+            &outage_denial(&id),
+            Some(("Bash", &bash("ls")))
+        ));
+        assert!(was_refused(&id));
+        forget_chat(&chat);
     }
 
     #[test]

@@ -20,6 +20,137 @@ pub struct NativeDecision {
     pub continuation: String,
     pub recovery: String,
     pub observed_at: i64,
+    /// "safety" when the provider's review judged the call, "outage" when
+    /// Claude's classifier gave no verdict at all
+    /// (`safety_block::refusal_kind`). A record from before this field is a
+    /// safety refusal.
+    #[serde(default = "safety_kind")]
+    pub kind: String,
+    /// The outage card this refusal was grouped on. Every refusal keeps its
+    /// own record; the group is what the card and the coordinator notice
+    /// count. None for a safety refusal.
+    #[serde(default)]
+    pub group_id: Option<String>,
+}
+
+/// The recovery text for a Claude safety refusal: strict, with no retry.
+/// Only an outage refusal may be tried again (`safety_block::OUTAGE_RETRY`).
+const CLAUDE_REFUSAL_RECOVERY: &str = "Claude's auto mode refused this call without asking anyone, and OctiqFlow cannot approve it: there is no supported way to allow one refused call before it runs. The card only records the refusal. Do not retry the call or reword it to get past the classifier. Continue another safe way, or settle the attempt blocked and name the refused command so the person can decide.";
+
+fn safety_kind() -> String {
+    "safety".into()
+}
+
+/// The coordinator notice for an outage group, keyed so it is one per group.
+const OUTAGE_NOTICE: &str = "native-outage:";
+
+/// Whether an outage group's coordinator notice would still tell the
+/// coordinator something. It would not once the attempt has settled or been
+/// superseded, or once a tool call the worker was allowed to run has come
+/// back since the group's latest refusal: the worker has moved past it.
+fn outage_notice_useful(data: &Stored, group_id: &str) -> bool {
+    let refusals: Vec<_> = data
+        .native_decisions
+        .values()
+        .filter(|d| d.group_id.as_deref() == Some(group_id))
+        .collect();
+    let Some(last_at) = refusals.iter().map(|d| d.observed_at).max() else {
+        return false;
+    };
+    let Some(attempt) = data.attempts.get(&refusals[0].attempt_id) else {
+        return false;
+    };
+    let live = matches!(
+        attempt.status,
+        AttemptStatus::Preparing | AttemptStatus::Running
+    ) && data
+        .tasks
+        .get(&attempt.task_id)
+        .is_some_and(|t| t.active_attempt_id.as_deref() == Some(&attempt.id));
+    live && attempt
+        .execution
+        .last_allowed_tool_at
+        .is_none_or(|at| at <= last_at)
+}
+
+/// The notice for an outage group is cancelled at delivery, never sent,
+/// when it would not tell the coordinator anything (`outage_notice_useful`).
+pub(super) fn outage_notice_valid(data: &Stored, n: &inbox::Notification) -> bool {
+    match n.source.strip_prefix(OUTAGE_NOTICE) {
+        Some(group) => outage_notice_useful(data, group),
+        None => true,
+    }
+}
+
+/// Queue, or bring up to date, the one coordinator notice for an outage
+/// group. It falls due when the group closes (`outage_group_due`), so the
+/// coordinator hears of the whole group at once, or not at all.
+fn outage_notice(data: &mut Stored, attempt: &Attempt, group_id: &str) {
+    let refusals: Vec<_> = data
+        .native_decisions
+        .values()
+        .filter(|d| d.group_id.as_deref() == Some(group_id))
+        .cloned()
+        .collect();
+    let (Some(first_at), Some(last_at)) = (
+        refusals.iter().map(|d| d.observed_at).min(),
+        refusals.iter().map(|d| d.observed_at).max(),
+    ) else {
+        return;
+    };
+    let due = crate::safety_block::outage_group_due(first_at, last_at, refusals.len());
+    let mut commands: Vec<(String, usize)> = Vec::new();
+    let mut ordered = refusals.clone();
+    ordered.sort_by_key(|d| d.observed_at);
+    for d in &ordered {
+        let action = d
+            .blocked_action
+            .clone()
+            .unwrap_or_else(|| "a tool call".into());
+        match commands.iter_mut().find(|(a, _)| *a == action) {
+            Some((_, n)) => *n += 1,
+            None => commands.push((action, 1)),
+        }
+    }
+    let listed = commands
+        .iter()
+        .map(|(a, n)| {
+            if *n > 1 {
+                format!("`{a}` ×{n}")
+            } else {
+                format!("`{a}`")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = format!(
+        "Claude's safety check was unavailable for task {} (attempt {}): {} refused call(s) in outage group {group_id}: {listed}. The worker has not run an allowed tool since the last refusal. Nothing ran and nothing was approved. Read nativeDecisions (groupId {group_id}) in orchestration_snapshot. Guidance the worker was given: {}",
+        attempt.task_id,
+        attempt.id,
+        refusals.len(),
+        crate::safety_block::outage_guidance()
+    );
+    let source = format!("{OUTAGE_NOTICE}{group_id}");
+    let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
+    inbox::enqueue(
+        data,
+        &attempt.run_id,
+        &attempt.worker_chat_key,
+        &target,
+        source.clone(),
+        "native_decision",
+        body.clone(),
+    );
+    if let Some(n) = data
+        .notifications
+        .values_mut()
+        .find(|n| n.source == source && n.state == inbox::DeliveryState::Pending && n.attempts == 0)
+    {
+        n.body = body;
+        n.next_attempt_at = due;
+        n.coalesced = refusals.len().saturating_sub(1) as u32;
+        n.updated_at = now_ms();
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -118,15 +249,24 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
         });
         if decision.status == "pending" && !pending.contains(&decision.id) {
             // What the person chose, when this server saw it; "closed" says
-            // only that the card went away, never that it was approved.
-            decision.status = crate::safety_block::decision(&decision.id)
+            // only that the card went away, never that it was approved. An
+            // outage refusal was decided with the card it was grouped on.
+            let card = decision.group_id.as_deref().unwrap_or(&decision.id);
+            decision.status = crate::safety_block::decision(card)
                 .unwrap_or("closed")
                 .into();
         }
         // Only a Claude auto-mode refusal names the call it refused; Codex's
         // router diagnostics never do (`safety_block::BlockedAction::action`).
         let claude_refusal = decision.blocked_action.is_some();
-        if decision.status == "pending" && live && !claude_refusal {
+        if decision.kind == "outage" {
+            decision.continuation = "unavailable".into();
+            decision.recovery = if live {
+                crate::safety_block::outage_guidance().into()
+            } else {
+                "This attempt has settled or was superseded. Claude's safety check was unavailable for this command, so it did not run and was not approved. Inspect the task and explicitly retry if needed; a retry grants no permission.".into()
+            };
+        } else if decision.status == "pending" && live && !claude_refusal {
             decision.continuation = "new_turn_same_attempt".into();
             decision.recovery = "Use the existing safety card in the main chat. The rejected call already ended; a decision can authorize a new turn in this attempt, not resume that call.".into();
         } else {
@@ -138,7 +278,7 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
                 // rule. It stays as history and authorizes nothing now.
                 decision.recovery = "History only: an earlier OctiqFlow build recorded a one-time allowance for this exact command. That allowance was withdrawn because it could not be enforced as one use, and it authorizes nothing now. Do not run the command on the strength of it. Claude's auto mode refusal stands: continue another safe way, or settle the attempt blocked and name the refused command.".into();
             } else if claude_refusal {
-                decision.recovery = "Claude's auto mode refused this call without asking anyone, and OctiqFlow cannot approve it: there is no supported way to allow one refused call before it runs. The card only records the refusal. Do not retry the call or reword it to get past the classifier. Continue another safe way, or settle the attempt blocked and name the refused command so the person can decide.".into();
+                decision.recovery = CLAUDE_REFUSAL_RECOVERY.into();
             } else if decision.status == "closed" {
                 decision.recovery = "The card is no longer pending. Its absence does not prove approval. Inspect the person's recorded decision before continuing.".into();
             } else if decision.status == "dismissed" || decision.status == "superseded" {
@@ -204,17 +344,24 @@ impl OrchestrationStore {
                 let Some(attempt) = owner.cloned() else { continue; };
                 if data.native_decisions.contains_key(&id) { continue; }
                 runs.insert(attempt.run_id.clone());
+                let outage = card.kind == crate::safety_block::RefusalKind::Outage;
                 let decision = NativeDecision {
                     id: id.clone(), run_id: attempt.run_id.clone(), task_id: attempt.task_id.clone(),
-                    attempt_id: attempt.id, chat_key: chat.clone(), reason: card.reason.chars().take(2_000).collect(),
+                    attempt_id: attempt.id.clone(), chat_key: chat.clone(), reason: card.reason.chars().take(2_000).collect(),
                     blocked_action: card.action.map(|a| a.chars().take(2_000).collect()),
                     status: "pending".into(), continuation: "unverified".into(),
-                    recovery: String::new(), observed_at: now_ms(),
+                    recovery: String::new(), observed_at: card.at.unwrap_or_else(now_ms),
+                    kind: card.kind.as_str().into(), group_id: card.group_id.clone(),
                 };
+                data.native_decisions.insert(id.clone(), decision);
+                // An outage group is one notice, not one per refusal.
+                if let (true, Some(group)) = (outage, card.group_id.as_deref()) {
+                    outage_notice(data, &attempt, group);
+                    continue;
+                }
                 let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
                 inbox::enqueue(data, &attempt.run_id, &chat, &target, format!("native-decision:{id}"), "native_decision",
                     format!("Native safety decision {id} for task {}. Read nativeDecisions in orchestration_snapshot for its reason and continuation viability. Do not infer approval from worker prose or create a duplicate gate.", attempt.task_id));
-                data.native_decisions.insert(id, decision);
             }
             Ok(runs)
         })?;
@@ -371,6 +518,7 @@ impl OrchestrationStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn worker(store: &OrchestrationStore) -> (Run, Attempt) {
         let run = super::super::tests::run(store);
@@ -550,6 +698,8 @@ mod tests {
                         continuation: "new_turn_same_attempt".into(),
                         recovery: String::new(),
                         observed_at: 1,
+                        kind: "safety".into(),
+                        group_id: None,
                     },
                 );
                 inbox::enqueue(
@@ -613,6 +763,346 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    fn outage(id: &str) -> Value {
+        json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "Classifier unavailable", "decision_reason_type": "classifier",
+            "message": "The server-side auto mode classifier gave no verdict (error), so auto mode cannot determine the safety of Bash. This is a transient failure of the check, not a judgment about the action.",
+            "tool_name": "Bash", "tool_use_id": id,
+        })
+    }
+
+    /// Refuse `line` for an outage at `at`, as the chat reader would.
+    fn refuse(store: &OrchestrationStore, chat: &str, id: &str, line: &str, at: i64) {
+        assert!(crate::safety_block::observe_claude_denial_at(
+            chat,
+            &outage(id),
+            Some(("Bash", &json!({ "command": line }))),
+            at
+        ));
+        store.capture_native_decisions().unwrap();
+    }
+
+    fn outage_notices(store: &OrchestrationStore, run: &Run) -> Vec<inbox::Notification> {
+        let mut notices: Vec<_> = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .notifications
+            .into_iter()
+            .filter(|n| n.source.starts_with(OUTAGE_NOTICE))
+            .collect();
+        notices.sort_by_key(|n| n.next_attempt_at);
+        notices
+    }
+
+    /// Feedback 664f03c0: nine refusals in one short outage were nine cards
+    /// and nine coordinator turns. They are one group, one notice, and every
+    /// refusal is still in the ledger.
+    #[test]
+    fn an_outage_is_one_group_one_notice_and_every_refusal_is_kept() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        let t = now_ms() - 60_000;
+        refuse(&store, &chat, "toolu_o1", "git fetch", t);
+        refuse(&store, &chat, "toolu_o2", "git fetch", t + 10_000);
+        refuse(&store, &chat, "toolu_o3", "cat POLICY.md", t + 20_000);
+
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let decisions: Vec<_> = snapshot
+            .native_decisions
+            .iter()
+            .filter(|d| d.chat_key == chat)
+            .collect();
+        assert_eq!(decisions.len(), 3, "nothing is deleted");
+        let group = decisions[0].group_id.clone().expect("grouped");
+        for d in &decisions {
+            assert_eq!(d.kind, "outage");
+            assert_eq!(d.group_id.as_deref(), Some(group.as_str()));
+            assert_eq!(d.attempt_id, attempt.id);
+            assert_eq!(d.continuation, "unavailable");
+            // The same words as the card and the worker prompt.
+            assert_eq!(d.recovery, crate::safety_block::outage_guidance());
+            assert!(
+                d.reason.contains("safety check was unavailable"),
+                "{}",
+                d.reason
+            );
+            assert!(!d.reason.contains("blocked an action"));
+        }
+        let mut actions: Vec<_> = decisions
+            .iter()
+            .filter_map(|d| d.blocked_action.as_deref())
+            .collect();
+        actions.sort();
+        assert_eq!(actions, ["cat POLICY.md", "git fetch", "git fetch"]);
+        assert!(snapshot
+            .notifications
+            .iter()
+            .all(|n| !n.source.starts_with("native-decision:")));
+
+        let notices = outage_notices(&store, &run);
+        assert_eq!(notices.len(), 1, "one notice for the group");
+        let notice = &notices[0];
+        assert_eq!(notice.target_chat_key, run.coordinator_chat_key);
+        assert_eq!(notice.source, format!("{OUTAGE_NOTICE}{group}"));
+        assert!(notice.body.contains("3 refused call(s)"), "{}", notice.body);
+        assert!(notice.body.contains("`git fetch` ×2"), "{}", notice.body);
+        let due = crate::safety_block::outage_group_due(t, t + 20_000, 3);
+        assert_eq!(notice.next_attempt_at, due);
+        // Not before the group closes...
+        assert!(store
+            .claim_notification(&notice.id, due - 1)
+            .unwrap()
+            .is_none());
+        // ...and then it goes: the worker has run nothing since.
+        assert!(store.claim_notification(&notice.id, due).unwrap().is_some());
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// A worker that moved on after the outage does not start a coordinator
+    /// turn for it. Its refused call's own result, and its status reports,
+    /// do not count as moving on.
+    #[test]
+    fn an_outage_the_worker_moved_past_is_recorded_but_not_delivered() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        let t = now_ms() - 5_000;
+        let call = |id: &str, name: &str| {
+            json!({"type":"assistant","message":{"content":[
+                {"type":"tool_use","id":id,"name":name,"input":{}}]}})
+        };
+        let result = |id: &str| {
+            json!({"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":id,"content":"x","is_error":true}]}})
+        };
+        store
+            .observe_worker_event(&chat, &call("toolu_r1", "Bash"))
+            .unwrap();
+        refuse(&store, &chat, "toolu_r1", "git fetch", t);
+        // The refusal's own error result comes right after it.
+        store
+            .observe_worker_event(&chat, &result("toolu_r1"))
+            .unwrap();
+        // A status report alone is not moving on.
+        store
+            .observe_worker_event(&chat, &call("toolu_s1", "mcp__octiq__task_status"))
+            .unwrap();
+        store
+            .observe_worker_event(&chat, &result("toolu_s1"))
+            .unwrap();
+        let notice = outage_notices(&store, &run).remove(0);
+        let due = notice.next_attempt_at;
+        store
+            .mutate(|data| {
+                assert!(
+                    outage_notice_valid(data, &notice),
+                    "nothing allowed ran yet"
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        // An allowed call that came back is.
+        store
+            .observe_worker_event(&chat, &call("toolu_ok", "Read"))
+            .unwrap();
+        store
+            .observe_worker_event(&chat, &result("toolu_ok"))
+            .unwrap();
+        assert!(store.claim_notification(&notice.id, due).unwrap().is_none());
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let n = snapshot
+            .notifications
+            .iter()
+            .find(|n| n.id == notice.id)
+            .unwrap();
+        assert_eq!(n.state, inbox::DeliveryState::Cancelled);
+        // The group is still on the record.
+        assert!(snapshot
+            .native_decisions
+            .iter()
+            .any(|d| d.chat_key == chat && d.kind == "outage"));
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    #[test]
+    fn an_outage_notice_for_a_settled_attempt_is_not_delivered() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        let t = now_ms();
+        refuse(&store, &chat, "toolu_x1", "git fetch", t);
+        store
+            .report_worker(
+                &chat,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "Done without `git fetch`, which the outage refused.".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        let notice = outage_notices(&store, &run).remove(0);
+        assert!(store
+            .claim_notification(&notice.id, notice.next_attempt_at)
+            .unwrap()
+            .is_none());
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let decision = snapshot
+            .native_decisions
+            .iter()
+            .find(|d| d.chat_key == chat)
+            .unwrap();
+        assert!(
+            decision.recovery.contains("settled"),
+            "{}",
+            decision.recovery
+        );
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// Coordinator review (B): a worker refused every minute for ten minutes
+    /// never lets a sliding window close, but its coordinator still hears.
+    #[test]
+    fn a_worker_refused_every_minute_still_reaches_its_coordinator() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        let t = now_ms();
+        for minute in 0..=10 {
+            refuse(
+                &store,
+                &chat,
+                &format!("toolu_m{minute}"),
+                "git fetch",
+                t + minute * 60_000,
+            );
+        }
+        let notices = outage_notices(&store, &run);
+        assert_eq!(notices.len(), 3, "{notices:#?}");
+        assert_eq!(notices[0].next_attempt_at, t + 4 * 60_000, "five refusals");
+        assert_eq!(notices[1].next_attempt_at, t + 9 * 60_000);
+        assert_eq!(notices[2].next_attempt_at, t + 12 * 60_000);
+        for notice in &notices {
+            assert!(store
+                .claim_notification(&notice.id, notice.next_attempt_at)
+                .unwrap()
+                .is_some());
+        }
+        let decisions = store.snapshot(Some(&run.id)).unwrap().native_decisions;
+        assert_eq!(decisions.iter().filter(|d| d.chat_key == chat).count(), 11);
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// Real safety refusals keep one notice each, due at once.
+    #[test]
+    fn a_safety_refusal_still_notifies_once_per_refusal() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        for id in ["toolu_p1", "toolu_p2"] {
+            let denial = json!({
+                "type": "system", "subtype": "permission_denied",
+                "decision_reason": "[Production Deploy]", "decision_reason_type": "classifier",
+                "message": "denied", "tool_name": "Bash", "tool_use_id": id,
+            });
+            assert!(crate::safety_block::observe_claude_denial(
+                &chat,
+                &denial,
+                Some(("Bash", &json!({ "command": "eas update" })))
+            ));
+            store.capture_native_decisions().unwrap();
+        }
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let decisions: Vec<_> = snapshot
+            .native_decisions
+            .iter()
+            .filter(|d| d.chat_key == chat)
+            .collect();
+        assert_eq!(decisions.len(), 2);
+        assert!(decisions
+            .iter()
+            .all(|d| d.kind == "safety" && d.group_id.is_none()));
+        // Pinned, and strict: the outage retry never reaches a safety refusal.
+        for d in &decisions {
+            assert_eq!(d.recovery, CLAUDE_REFUSAL_RECOVERY);
+            assert!(!d.recovery.contains(crate::safety_block::OUTAGE_RETRY));
+            assert!(!d.recovery.contains("once more"));
+        }
+        assert_eq!(
+            CLAUDE_REFUSAL_RECOVERY,
+            "Claude's auto mode refused this call without asking anyone, and OctiqFlow cannot approve it: there is no supported way to allow one refused call before it runs. The card only records the refusal. Do not retry the call or reword it to get past the classifier. Continue another safe way, or settle the attempt blocked and name the refused command so the person can decide."
+        );
+        let notices: Vec<_> = snapshot
+            .notifications
+            .iter()
+            .filter(|n| n.source.starts_with("native-decision:"))
+            .filter(|n| decisions.iter().any(|d| n.source.ends_with(&d.id)))
+            .collect();
+        assert_eq!(notices.len(), 2);
+        assert!(notices.iter().all(|n| n.next_attempt_at <= now_ms()));
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// A decision stored before `kind` and `groupId` existed loads as a
+    /// safety refusal and renders as before.
+    #[test]
+    fn a_decision_stored_before_outage_kinds_still_loads() {
+        let old: NativeDecision = serde_json::from_value(json!({
+            "id": "old-1", "runId": "run", "taskId": "task", "attemptId": "attempt",
+            "chatKey": "chat:old", "reason": "Claude's auto mode blocked an action: Classifier unavailable",
+            "blockedAction": "git fetch", "status": "dismissed", "continuation": "unavailable",
+            "recovery": "", "observedAt": 1,
+        }))
+        .unwrap();
+        assert_eq!(old.kind, "safety");
+        assert!(old.group_id.is_none());
+
+        let root = std::env::temp_dir().join(format!("octiq-lifecycle-old-{}", compact_id()));
+        let path = root.join("state.json");
+        let store = OrchestrationStore::load(path.clone());
+        let (run, attempt) = worker(&store);
+        store
+            .mutate(|data| {
+                let mut old = old.clone();
+                old.run_id = run.id.clone();
+                old.task_id = attempt.task_id.clone();
+                old.attempt_id = attempt.id.clone();
+                data.native_decisions.insert(old.id.clone(), old);
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+        // Strip the new fields from disk, as an older build wrote it.
+        let mut raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let stored = &mut raw["native_decisions"]["old-1"];
+        assert!(stored.is_object(), "{raw}");
+        stored.as_object_mut().unwrap().remove("kind");
+        stored.as_object_mut().unwrap().remove("groupId");
+        fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+        let restored = OrchestrationStore::load(path);
+        let snapshot = restored.snapshot(Some(&run.id)).unwrap();
+        let decision = &snapshot.native_decisions[0];
+        assert_eq!(decision.id, "old-1");
+        assert_eq!(decision.kind, "safety");
+        assert_eq!(decision.status, "dismissed");
+        assert_eq!(decision.continuation, "unavailable");
+        // A reload settles the attempt it belonged to; the old record gets
+        // the ordinary safety wording for that, not the outage guidance.
+        assert!(
+            decision.recovery.contains("settled"),
+            "{}",
+            decision.recovery
+        );
+        assert_ne!(decision.recovery, crate::safety_block::outage_guidance());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

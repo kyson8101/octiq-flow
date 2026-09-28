@@ -39,6 +39,26 @@ superseded attempts require an explicit retry, which does not grant permission.
 Host restart expires earlier cards. Historical rejections that produced no host
 card cannot be reconstructed from worker prose.
 
+A Claude refusal whose `decision_reason` is exactly `Classifier unavailable`
+(`safety_block::refusal_kind`, the only place that reads it) is an outage of the
+check, not a judgment of the command, and is recorded with `kind: "outage"`.
+Every other refusal, including one with a missing or empty reason, is
+`kind: "safety"`, as is every decision stored before the field existed.
+Outage refusals in one chat share one card, and their decisions share its id
+as `groupId`; each refused call keeps its own decision. A group closes 2
+minutes after its latest refusal, 5 minutes after its first, or at its 5th
+refusal, whichever comes first (`outage_group_due`), and a later refusal starts
+a new group. The coordinator gets one `native-outage:<groupId>` notice per
+group, due when the group closes. It is cancelled at delivery, never sent, when
+the attempt has settled or a tool call it was allowed to run has come back since
+the group's latest refusal (`Execution.lastAllowedToolAt`: a refused call's own
+result and OctiqFlow's `mcp__octiq__*` tools do not count). The outage recovery
+text is one string (`outage_guidance`) shown on the card, stored as the
+decision's `recovery`, and appended to the worker prompt. It allows the worker
+one as-is retry of an outage-refused command, which Claude checks again, and no
+third try; the person decided that on 2026-09-28. OctiqFlow itself never re-runs
+a refused call, and safety refusals keep the strict no-retry text.
+
 Claude's native `task_started`, `task_updated`, and `task_notification` events
 are tracked separately from its parent turn. A parent with outstanding native
 background work is excluded from idle reaping. Explicit process termination,

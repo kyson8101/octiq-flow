@@ -126,6 +126,21 @@ describe("SafetyBlock", () => {
       expect(CLAUDE_REFUSAL_NOTE).toContain("will not retry it");
     });
 
+    it("is unchanged by the outage kind: same title, buttons and Manual route", () => {
+      const html = drawClaude(claude);
+      expect(html).toContain("Claude&#x27;s auto mode blocked an action");
+      expect(html).toContain("Why it was blocked");
+      expect(html).toContain("What it tried");
+      expect(html).toContain("Use safer approach");
+      expect(html).toContain("Technical details");
+      expect(html).toContain("Dismiss");
+      expect(html).toContain("choose Manual command approval");
+      expect(html).not.toContain("safety check was unavailable");
+      expect(html).not.toContain("is-outage");
+      // The outage retry is for outages only.
+      expect(html).not.toContain("once more");
+    });
+
     it("points to the supported route: a new task with Manual approval, never a rerun (d59f830a)", () => {
       const html = drawClaude(claude);
       expect(html).toContain("choose Manual command approval");
@@ -133,6 +148,76 @@ describe("SafetyBlock", () => {
       expect(html).toContain("does not run again unless you approve it there");
       // Still no button that could let the refused line through.
       expect(html).not.toMatch(/Allow|Retry/);
+    });
+  });
+
+  describe("Claude classifier outage card (feedback 664f03c0)", () => {
+    const guidance =
+      "Claude's safety check was unavailable, so the command did not run. It was not judged unsafe, and it was not approved. " +
+      "Continue with your other steps. OctiqFlow never re-runs it. You may try the same command once more, as-is: Claude checks that try again. " +
+      "If it is refused again, do not try it a third time. Never reword a command to get past the check. " +
+      "Report every refused command in your worker report, and do not describe any of them as approved or as having run.";
+    const outage: SafetyBlockNotice = {
+      id: "outage-1",
+      chatKey: "chat:w1",
+      kind: "outage",
+      title: "Claude's safety check was unavailable",
+      summary: "Classifier unavailable",
+      detail: "The server-side auto mode classifier gave no verdict (error).\n\nTool calls: toolu_1, toolu_2, toolu_3",
+      provider: "claude",
+      action: "git fetch",
+      count: 3,
+      commands: [{ action: "git fetch", count: 2 }, { action: "cat POLICY.md", count: 1 }],
+      guidance,
+    };
+    const drawOutage = (notice: SafetyBlockNotice, startOpen = false) =>
+      renderToStaticMarkup(<SafetyBlock block={notice} onContinue={() => {}} onAnswered={() => {}} startOpen={startOpen} />);
+
+    it("says the check was unavailable and the commands did not run, never that they were unsafe", () => {
+      const html = drawOutage(outage);
+      expect(html).toContain("Claude&#x27;s safety check was unavailable");
+      expect(html).toContain("did not run these commands");
+      expect(html).toContain("Nothing was judged unsafe");
+      expect(html).toContain("None of these commands ran. Nothing was approved.");
+      expect(html).not.toContain("blocked an action");
+      expect(html).not.toContain("Why it was blocked");
+      expect(html).toContain('role="status"');
+    });
+
+    it("lists each refused line once with its count, and the group's total", () => {
+      const html = drawOutage(outage);
+      expect(html).toContain("What it tried");
+      expect(html).toContain("3 refused");
+      expect(html.match(/git fetch/g)?.length).toBe(1);
+      expect(html).toContain("×2");
+      expect(html).toContain("cat POLICY.md");
+    });
+
+    it("offers technical details and dismiss only: no safer approach, no Manual route, no allow", () => {
+      const html = drawOutage(outage);
+      expect(html).toContain("Technical details");
+      expect(html).toContain("Dismiss");
+      expect(html).not.toContain("Use safer approach");
+      expect(html).not.toContain("Manual command approval");
+      expect(html).not.toMatch(/Allow|Retry/);
+      expect(drawOutage(outage, true)).toContain("Tool calls: toolu_1, toolu_2, toolu_3");
+    });
+
+    it("shows the host's guidance word for word, as the worker and snapshot get it", () => {
+      const html = renderToStaticMarkup(<SafetyBlock block={{ ...outage, guidance: "Exactly this text." }} onContinue={() => {}} onAnswered={() => {}} />);
+      expect(html).toContain("What the agent was told");
+      expect(html).toContain("Exactly this text.");
+      expect(drawOutage(outage)).toContain("do not try it a third time");
+    });
+
+    it("reads a single refusal in the singular and survives a server without the group fields", () => {
+      const single = { ...outage, count: undefined, commands: undefined, guidance: undefined };
+      const html = drawOutage(single);
+      expect(html).toContain("did not run this command");
+      expect(html).toContain("The command did not run.");
+      expect(html).toContain("git fetch");
+      expect(html).not.toContain("refused</span>");
+      expect(html).toContain("OctiqFlow will not re-run it");
     });
   });
 });

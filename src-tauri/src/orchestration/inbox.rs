@@ -117,6 +117,9 @@ fn valid(data: &Stored, n: &Notification) -> bool {
             return false;
         }
     }
+    if !lifecycle::outage_notice_valid(data, n) {
+        return false;
+    }
     if let Some(id) = n.source.strip_prefix("gate:") {
         if !data
             .gates

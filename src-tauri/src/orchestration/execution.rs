@@ -46,6 +46,13 @@ pub struct Execution {
     pub provider_retry_started_at: Option<i64>,
     /// Track concurrent tools so one result cannot hide another pending tool.
     pub pending_tools: BTreeMap<String, String>,
+    /// When a tool call the worker was allowed to run last came back. A call
+    /// Claude refused, whose result is only the refusal, does not count, and
+    /// neither do OctiqFlow's own tools (status, messages, snapshots): a
+    /// worker can use those while unable to run anything. An outage notice
+    /// is dropped once this passes the group's last refusal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_allowed_tool_at: Option<i64>,
 }
 
 impl Execution {
@@ -475,7 +482,16 @@ impl OrchestrationStore {
                         continue;
                     }
                     Observation::ToolStart(id, name) => { e.last_progress_at = Some(now); e.last_progress = Some(format!("Started {name}")); e.pending_tools.insert(id, name); }
-                    Observation::ToolEnd(id, summary) => { e.pending_tools.remove(&id); e.last_progress_at = Some(now); e.last_progress = Some(summary); }
+                    Observation::ToolEnd(id, summary) => {
+                        let name = e.pending_tools.remove(&id);
+                        if !crate::safety_block::was_refused(&id)
+                            && !name.as_deref().is_some_and(|n| n.starts_with("mcp__octiq__"))
+                        {
+                            e.last_allowed_tool_at = Some(now);
+                        }
+                        e.last_progress_at = Some(now);
+                        e.last_progress = Some(summary);
+                    }
                     Observation::Progress(summary) => { e.last_progress_at = Some(now); e.last_progress = Some(summary); }
                     Observation::Waiting(operation) => { e.provider_retry_started_at = None; e.state = ExecutionState::WaitingTool; e.current_operation = Some(operation); continue; }
                     Observation::TurnEnded => {

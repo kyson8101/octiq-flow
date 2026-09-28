@@ -11,7 +11,8 @@ import { bridge } from "../lib/bridge";
 export type SafetyBlockNotice = {
   id: string;
   chatKey?: string;
-  kind: "external-data" | "high-risk-action";
+  /** "outage": Claude's classifier gave no verdict, so nothing was judged. */
+  kind: "external-data" | "high-risk-action" | "outage";
   title: string;
   summary: string;
   detail: string;
@@ -19,7 +20,112 @@ export type SafetyBlockNotice = {
   provider?: "codex" | "claude";
   /** The exact call that was refused, when the provider named it. */
   action?: string | null;
+  /** An outage card: how many refused calls it groups. */
+  count?: number;
+  /** An outage card: each refused line once, with how often it was refused. */
+  commands?: { action: string; count: number }[];
+  /** An outage card: the host's recovery text, the same words the worker
+   * and the coordinator's snapshot are given. */
+  guidance?: string | null;
 };
+
+/** Said only when a server sends an outage card without its guidance. */
+export const OUTAGE_FALLBACK_NOTE =
+  "The command did not run and was not approved. OctiqFlow will not re-run it.";
+
+/**
+ * Claude's classifier could not be reached, so a call was refused without
+ * being judged. Nothing here says the command was unsafe, and nothing offers
+ * to run it: the card says what did not run and lets the person put it away.
+ */
+function OutageBlock({
+  block,
+  onAnswered,
+  startOpen,
+}: {
+  block: SafetyBlockNotice;
+  onAnswered: (id: string) => void;
+  startOpen: boolean;
+}) {
+  const [open, setOpen] = useState(startOpen);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const commands = block.commands?.length
+    ? block.commands
+    : block.action ? [{ action: block.action, count: 1 }] : [];
+  const count = block.count ?? Math.max(1, commands.reduce((sum, c) => sum + c.count, 0));
+
+  const dismiss = async () => {
+    setSending(true);
+    setError("");
+    try {
+      await bridge.invoke("safety_block_dismiss", { id: block.id });
+      onAnswered(block.id);
+    } catch (why) {
+      setError(String((why as Error)?.message ?? why));
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="ask-card safety-card is-outage" role="status" aria-label={block.title}>
+      <div className="safety-card-context">
+        <span>Claude safety check</span>
+        <span className="safety-card-ok">OctiqFlow is okay</span>
+      </div>
+      <div className="ask-card-head">
+        <span className="safety-card-icon" aria-hidden="true">i</span>
+        <span className="ask-card-title"><strong>{block.title}</strong></span>
+        {count > 1 && <span className="safety-card-count">{count} refused</span>}
+      </div>
+
+      <p className="safety-card-summary">
+        Claude could not reach its safety check, so it did not run {count === 1 ? "this command" : "these commands"}.
+        Nothing was judged unsafe.
+      </p>
+      {commands.length > 0 && <>
+        <div className="safety-card-label">What it tried</div>
+        <ul className="safety-card-commands">
+          {commands.map((command) => (
+            <li key={command.action}>
+              <pre className="safety-card-action">{command.action}</pre>
+              {command.count > 1 && <span className="safety-card-times" aria-label={`${command.count} times`}>×{command.count}</span>}
+            </li>
+          ))}
+        </ul>
+      </>}
+      <p className="safety-card-status">
+        {count === 1 ? "The command did not run." : "None of these commands ran."} Nothing was approved.
+      </p>
+
+      {open && (
+        <div className="ask-card-detail safety-card-detail">
+          <div className="ask-card-label">Technical details</div>
+          <pre className="ask-card-body">{block.summary}{"\n\n"}{block.detail}</pre>
+        </div>
+      )}
+
+      <div className="ask-card-buttons safety-card-buttons">
+        <button className="ask-btn" type="button" disabled={sending} aria-expanded={open}
+          onClick={() => setOpen((shown) => !shown)}>
+          {open ? "Hide technical details" : "Technical details"}
+        </button>
+        <button className="ask-btn" type="button" disabled={sending} onClick={() => void dismiss()}>
+          {sending ? "Dismissing…" : "Dismiss"}
+        </button>
+      </div>
+
+      {error && <p className="ask-card-note safety-card-error">Could not dismiss the card: {error}</p>}
+
+      {block.guidance
+        ? <>
+          <div className="safety-card-label">What the agent was told</div>
+          <p className="ask-card-note safety-card-guidance">{block.guidance}</p>
+        </>
+        : <p className="ask-card-note">{OUTAGE_FALLBACK_NOTE}</p>}
+    </div>
+  );
+}
 
 /**
  * Why a Claude refusal has no "allow" here. Claude refuses without asking
@@ -170,6 +276,9 @@ export function SafetyBlock({
   onAnswered: (id: string) => void;
   startOpen?: boolean;
 }) {
+  if (block.provider === "claude" && block.kind === "outage") {
+    return <OutageBlock block={block} onAnswered={onAnswered} startOpen={startOpen} />;
+  }
   if (block.provider === "claude") {
     return <ClaudeSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
   }

@@ -24,4 +24,22 @@ describe("TaskLifecycleEvidence", () => {
     expect(html).toContain("Safety decision: expired");
     expect(html).toContain("cannot resume this attempt");
   });
+  it("draws an outage group as one row listing every refused call, and safety refusals one each", () => {
+    const base = { runId: "run", taskId: "task", attemptId: "attempt-9", chatKey: "chat:worker", status: "pending", continuation: "unavailable" };
+    const outage = (id: string, action: string, observedAt: number) => ({
+      ...base, id, kind: "outage" as const, groupId: "group-7", reason: "Claude's safety check was unavailable: Classifier unavailable",
+      blockedAction: action, recovery: "Continue with your other steps.", observedAt,
+    });
+    const html = renderToStaticMarkup(<TaskLifecycleEvidence now={2000} taskId="task" snapshot={{ ...EMPTY_ORCHESTRATION, nativeDecisions: [
+      outage("o2", "git fetch", 20), outage("o1", "git fetch", 10), outage("o3", "ls docs", 30),
+      { ...base, id: "s1", reason: "Production Deploy", blockedAction: "eas update", recovery: "Claude's auto mode refused this call.", observedAt: 40 },
+      { ...base, id: "s2", reason: "Production Deploy", blockedAction: "eas update", recovery: "Claude's auto mode refused this call.", observedAt: 50 },
+    ] }} />);
+    expect(html.match(/Safety check unavailable/g)?.length).toBe(1);
+    expect(html).toContain("3 refused calls");
+    expect(html).toContain("<code>git fetch</code> ×2");
+    expect(html).toContain("<code>ls docs</code>");
+    expect(html).toContain("group-7");
+    expect(html.match(/Safety decision: pending/g)?.length).toBe(2);
+  });
 });

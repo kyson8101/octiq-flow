@@ -10492,6 +10492,66 @@ body.is-ultra .eff {
   max-height: 180px;
 }
 
+/* An outage of Claude's check, not a verdict on the command: no amber, no
+   alarm, the same quiet shape. */
+.safety-card.is-outage {
+  border-color: var(--border);
+  background: var(--bg-1);
+}
+
+.safety-card.is-outage .safety-card-icon {
+  border-color: var(--border);
+  color: var(--fg-2);
+}
+
+.safety-card-count {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.safety-card-commands {
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.safety-card-commands li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.safety-card-commands .safety-card-action {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.safety-card-times {
+  flex: 0 0 auto;
+  padding-top: 6px;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.safety-card-guidance {
+  margin-top: 3px;
+}
+
 .safety-card-buttons {
   flex-wrap: wrap;
 }
