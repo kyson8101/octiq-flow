@@ -461,6 +461,10 @@ pub fn chat_task_impl(chat_id: String, refresh: bool) -> Result<TaskStatus, Stri
         .cloned()
         .unwrap_or_default();
 
+    // Freshness is dated from when git was ASKED, not when it answered: a read
+    // that began before a change and finished after it must not be served as
+    // an answer to that change for another FRESH_FOR.
+    let asked_at = Instant::now();
     let (workspace, delivery) = verify(&stored, cwd.as_deref(), &release);
 
     let changed = stored.workspace != workspace || stored.delivery != delivery;
@@ -479,7 +483,7 @@ pub fn chat_task_impl(chat_id: String, refresh: bool) -> Result<TaskStatus, Stri
     verified_at()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(chat_id.clone(), Instant::now());
+        .insert(chat_id.clone(), asked_at);
 
     stored.workspace = workspace;
     stored.delivery = delivery;

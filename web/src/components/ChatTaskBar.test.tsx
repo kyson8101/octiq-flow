@@ -1,12 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 // The view is pure, but it shares a file with the half that talks to the
 // backend, and the socket opens itself the moment it is imported.
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn(), on: vi.fn(() => () => {}) } }));
 
-import { ChatTaskBarView } from "./ChatTaskBar";
+import { ChatTaskBarView, SETTLED_AFTER_MS } from "./ChatTaskBar";
 import type { TaskStatus } from "../lib/chatTask";
+import { singleFlight, withTrailingRun } from "../lib/singleFlight";
 
 const NOW = 1_800_000_000_000;
 
@@ -177,5 +178,61 @@ describe("the status line above the chat", () => {
     expect(html).toContain("Head abcdef12");
     expect(html).toContain("6 uncommitted");
     expect(html).toContain("https://github.test/pr/42");
+  });
+});
+
+describe("the bar after git moves under it", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("ends a burst on a git read made after the last change, for one extra ask", async () => {
+    vi.useFakeTimers();
+    // The backend as the bar sees it: `chat_task` with refresh=false answers
+    // from its cache while the last verification is under FRESH_FOR old.
+    const FRESH_FOR = 4_000;
+    let repo = "clean";
+    let verifiedAt = Number.NEGATIVE_INFINITY;
+    let cached = "";
+    let gitReads = 0;
+    let asks = 0;
+    let shown = "";
+    const ask = async () => {
+      asks += 1;
+      if (Date.now() - verifiedAt >= FRESH_FOR) {
+        gitReads += 1;
+        verifiedAt = Date.now();
+        cached = repo;
+      }
+      shown = cached;
+    };
+    // Wired exactly as ChatTaskBar wires its git-status-changed listener.
+    const git = withTrailingRun(singleFlight(ask), SETTLED_AFTER_MS);
+
+    await ask(); // the chat opens and is verified
+    await vi.advanceTimersByTimeAsync(1_000);
+    repo = "staged"; // git add
+    git.trigger();
+    await vi.advanceTimersByTimeAsync(2_000);
+    repo = "committed"; // git commit, two seconds later
+    git.trigger();
+    await vi.advanceTimersByTimeAsync(0);
+    // Both changes landed inside the cache's lifetime: the bar still shows
+    // the state from before either of them. This is where it used to stay.
+    expect(shown).toBe("clean");
+
+    await vi.advanceTimersByTimeAsync(SETTLED_AFTER_MS);
+    expect(shown).toBe("committed");
+    // One ask per event plus ONE trailing ask for the burst, and git itself
+    // ran once for the open and once for the whole burst.
+    expect(asks).toBe(1 + 2 + 1);
+    expect(gitReads).toBe(2);
+
+    // Nothing keeps asking once it has settled.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(asks).toBe(4);
+  });
+
+  it("waits out the backend's verification cache before its last ask", () => {
+    // FRESH_FOR in src-tauri/src/chat_task.rs.
+    expect(SETTLED_AFTER_MS).toBeGreaterThan(4_000);
   });
 });

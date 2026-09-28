@@ -203,16 +203,44 @@ fn debounce_loop(rx: mpsc::Receiver<String>) {
 /// Matched as a whole PATH COMPONENT, never as a substring — a source file at
 /// `src/target_resolver.rs` or a folder named `my-dist-tools` must still count.
 ///
-/// `bin` and `obj` are where .NET writes a build, beside every project file.
-const IGNORED_DIRS: [&str; 7] = [
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    ".venv",
-    "bin",
-    "obj",
-];
+/// `obj` is where .NET puts its intermediate build, beside every project file.
+/// Its other output folder, `bin`, is NOT here: `bin` is just as often tracked
+/// source (`src/bin/*.rs`, `npm/bin/cli.js`), so only its build-configuration
+/// subfolders are ignored — see `is_dotnet_bin_output`.
+const IGNORED_DIRS: [&str; 6] = ["node_modules", "target", "dist", "build", ".venv", "obj"];
+
+/// Platform folders .NET puts between `bin` and the configuration when a
+/// project builds for one platform (`bin/x64/Debug/…`).
+const DOTNET_PLATFORMS: [&str; 5] = ["x86", "x64", "arm", "arm64", "AnyCPU"];
+
+/// Is this what follows a `bin` component .NET build output? That is a
+/// `Debug` or `Release` FOLDER, optionally under a platform folder:
+/// `bin/Debug/net8.0/Api.dll`, `bin/x64/Release/app.exe`.
+///
+/// A path shape, not a look at the disk — this runs on every fs event. The
+/// configuration must be a folder (something follows it), so a script named
+/// `bin/release` still counts, and the names are .NET's own capitalised ones.
+fn is_dotnet_bin_output(after_bin: &[String]) -> bool {
+    let rest = match after_bin.first() {
+        Some(platform)
+            if DOTNET_PLATFORMS
+                .iter()
+                .any(|known| platform.eq_ignore_ascii_case(known)) =>
+        {
+            &after_bin[1..]
+        }
+        _ => after_bin,
+    };
+    rest.len() >= 2 && matches!(rest[0].as_str(), "Debug" | "Release")
+}
+
+/// Does this working-tree path sit under build output or installed
+/// dependencies? `comps` are the path's components, relative to the root.
+fn is_build_output(comps: &[String]) -> bool {
+    comps.iter().enumerate().any(|(i, c)| {
+        IGNORED_DIRS.contains(&c.as_str()) || (c == "bin" && is_dotnet_bin_output(&comps[i + 1..]))
+    })
+}
 
 /// `path` with the first watched root that contains it stripped off, or `path`
 /// itself when no root matches.
@@ -252,7 +280,7 @@ fn is_relevant(path: &Path) -> bool {
         .collect();
     let Some(pos) = comps.iter().position(|c| c == ".git") else {
         // A working-tree path: relevant unless it sits under a build dir.
-        return !comps.iter().any(|c| IGNORED_DIRS.contains(&c.as_str()));
+        return !is_build_output(&comps);
     };
     let inner = &comps[pos + 1..];
     let Some(file) = inner.last() else {
@@ -463,9 +491,16 @@ mod tests {
         assert!(!is_relevant(Path::new("dist/bundle.js")));
         assert!(!is_relevant(Path::new("build/output.o")));
         assert!(!is_relevant(Path::new(".venv/lib/python3.12/site.py")));
-        // .NET writes its build output to bin/ and obj/ beside every project.
+        // .NET writes its build output to bin/<config>/ and obj/ beside every
+        // project.
         assert!(!is_relevant(Path::new("Api/bin/Debug/net8.0/Api.dll")));
+        assert!(!is_relevant(Path::new(
+            "Api/bin/Release/net8.0/publish/Api.dll"
+        )));
+        assert!(!is_relevant(Path::new("Api/bin/x64/Debug/Api.exe")));
+        assert!(!is_relevant(Path::new("Api/bin/AnyCPU/Release/Api.dll")));
         assert!(!is_relevant(Path::new("Api/obj/project.assets.json")));
+        assert!(!is_relevant(Path::new("Api/obj/Debug/net8.0/Api.pdb")));
         // Nested deeper than the first component.
         assert!(!is_relevant(Path::new("packages/web/node_modules/x/a.js")));
         assert!(!is_relevant(Path::new(
@@ -482,6 +517,22 @@ mod tests {
         assert!(is_relevant(Path::new("my-dist-tools/main.js")));
         assert!(is_relevant(Path::new("distribution/notes.md")));
         assert!(is_relevant(Path::new("src/node_modules_shim.ts")));
+    }
+
+    #[test]
+    fn tracked_source_under_a_bin_folder_is_relevant() {
+        // `bin` is only build output in .NET's shape; everywhere else it is
+        // source people edit, this repository's own included.
+        assert!(is_relevant(Path::new("src-tauri/src/bin/octiq-server.rs")));
+        assert!(is_relevant(Path::new("src-tauri/src/bin/octiq-notify.rs")));
+        assert!(is_relevant(Path::new("npm/bin/octiqflow.cjs")));
+        assert!(is_relevant(Path::new("bin/setup")));
+        // A SCRIPT named like a configuration is not a configuration folder.
+        assert!(is_relevant(Path::new("bin/release")));
+        assert!(is_relevant(Path::new("bin/Release")));
+        assert!(is_relevant(Path::new("tools/bin/x64/install.sh")));
+        // Nor does a lower-case folder that merely shares the name.
+        assert!(is_relevant(Path::new("bin/debug/trace.sh")));
     }
 
     // ---- under_root: the ignore rules apply BELOW the watched folder --------

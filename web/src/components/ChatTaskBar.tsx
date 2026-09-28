@@ -11,7 +11,7 @@
 // the chat opening, a turn ending, git moving under it, and the panel opening.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
-import { singleFlight } from "../lib/singleFlight";
+import { singleFlight, withTrailingRun } from "../lib/singleFlight";
 import {
   DELIVERY_LABELS,
   NOT_REPORTED,
@@ -35,6 +35,12 @@ import { AgentAvatar } from "./AgentAvatar";
 import "./ChatTaskBar.css";
 
 type Live = { busy?: boolean; waiting?: boolean };
+
+/** How long after the last `git-status-changed` the bar asks once more. It
+ *  must outlast the backend's verification cache (`FRESH_FOR`, 4 s, in
+ *  chat_task.rs), so that last ask is answered by a git read made after the
+ *  change rather than one made before it. */
+export const SETTLED_AFTER_MS = 5_000;
 
 /** What the panel knows beyond `chat_task`: the plan the chat was started
  *  with, the orchestration task a worker runs, its sandbox, and who it is. */
@@ -100,12 +106,19 @@ export function ChatTaskBar({
     // can arrive every second — so no forced refresh, which would run git
     // every time, and never more than one ask out at once. The backend's
     // own few-second cache decides whether git runs at all.
-    const offGit = bridge.on("git-status-changed", singleFlight(() => load(false)));
+    //
+    // That cache is also why one ask is not enough: a change inside its
+    // lifetime (`git add`, then `git commit` two seconds later) is answered
+    // with the verification from before it, and nothing would ask again. So a
+    // burst of changes ends with ONE more ask, after the cache has lapsed.
+    const git = withTrailingRun(singleFlight(() => load(false)), SETTLED_AFTER_MS);
+    const offGit = bridge.on("git-status-changed", git.trigger);
     const onVisible = () => { if (!document.hidden) load(true); };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       offStatus();
       offGit();
+      git.cancel();
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [chatId, connected, load]);
