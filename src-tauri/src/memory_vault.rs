@@ -152,6 +152,55 @@ impl Vault {
         }
     }
 
+    /// The id a change by `actor` with `request_id` has (or will have) in the
+    /// connected vault: the same identity its receipt is stored under.
+    pub fn receipt_id(&self, actor: &str, request_id: &str) -> Result<String, String> {
+        let config = self.settings()?;
+        if config.path.is_empty() {
+            return Err("Connect a folder in Settings → Memory Vault first.".into());
+        }
+        let root = PathBuf::from(&config.path);
+        Ok(hash(
+            &serde_json::to_vec(&json!([actor, root, request_id])).unwrap(),
+        ))
+    }
+
+    /// The receipt an earlier change with this `request_id` left, reconciled,
+    /// when it was this same operation. `None` when nothing was recorded.
+    ///
+    /// A change's arguments name the revision it was made against, so an
+    /// identical retry of an append — made after the append moved the note on —
+    /// can no longer rebuild them from a fresh read. `args_at` rebuilds them at
+    /// the receipt's own before-revision instead, and the request hash then
+    /// says exactly whether it was this operation or a different one.
+    pub fn earlier_change(
+        &self,
+        actor: &str,
+        request_id: &str,
+        action: &str,
+        args_at: impl Fn(Option<&str>) -> Value,
+    ) -> Result<Option<Value>, String> {
+        let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+        let config = self.load_config()?;
+        if config.path.is_empty() {
+            return Err("Connect a folder in Settings → Memory Vault first.".into());
+        }
+        let root = PathBuf::from(&config.path);
+        let id = hash(&serde_json::to_vec(&json!([actor, root, request_id])).unwrap());
+        if !self.receipt_path(&id)?.exists() {
+            return Ok(None);
+        }
+        let mut receipt = self.load_receipt(&id)?;
+        let args = args_at(receipt.before_revision.as_deref());
+        if receipt.request_hash != hash(&serde_json::to_vec(&json!([action, args])).unwrap()) {
+            return Err("requestId was already used for a different operation.".into());
+        }
+        self.reconcile(&mut receipt)?;
+        serde_json::to_value(receipt)
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+
     fn receipt_path(&self, id: &str) -> Result<PathBuf, String> {
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("Invalid receipt ID.".into());

@@ -1267,6 +1267,10 @@ const CHAT_ONLY_COMMANDS: &[&str] = &[
     // confirmer, a relay's sender. Only that coordinator's capability says so.
     "orchestration_report_confirm",
     "orchestration_relay_send",
+    // Acts as the chat's registered agent on its own memory, and what it
+    // writes is shown in that chat as the agent's own update: only the
+    // agent's capability, on /hook/vault, may say so.
+    "memory_vault_agent",
 ];
 
 /// Why the person's socket will not run `cmd`, if it will not.
@@ -1804,6 +1808,38 @@ mod tests {
         }
     }
 
+    /// A memory update is drawn in a chat only by that chat's own capability:
+    /// naming another chat is refused before anything is written or drawn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_memory_line_cannot_be_drawn_in_another_chat() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let worker = format!("chat:mem-worker-{}", uuid::Uuid::new_v4().simple());
+        let victim = format!("chat:mem-victim-{}", uuid::Uuid::new_v4().simple());
+        let cap = chats.test_launch(&worker);
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let append = |chat: &str| {
+            json!({
+                "chatKey": chat, "sessionKey": worker, "action": "agent_memory_append",
+                "args": { "text": "Forged.", "requestId": "r1", "chatKey": chat },
+            })
+        };
+        let (status, answer) = post_hook(&base, "vault", None, Some(&cap), append(&victim)).await;
+        assert_eq!(status, 403, "{answer}");
+        let (status, answer) = post_hook(&base, "vault", None, None, append(&victim)).await;
+        assert_eq!(status, 401, "{answer}");
+        // Its own chat reaches the command (which refuses a chat the index
+        // does not hold, before any vault is opened).
+        let (status, answer) = post_hook(&base, "vault", None, Some(&cap), append(&worker)).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"].as_str().unwrap().contains("chat index"),
+            "{answer}"
+        );
+        assert!(crate::transcript::since(&victim, 0).is_empty());
+        chats.test_end(&worker);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_hook_takes_its_chat_from_the_capability_and_never_from_the_token() {
         let store = Arc::new(crate::orchestration::OrchestrationStore::default());
@@ -1944,6 +1980,7 @@ mod tests {
             "orchestration_plan_approve_in_chat",
             "orchestration_report_confirm",
             "orchestration_relay_send",
+            "memory_vault_agent",
         ] {
             assert!(socket_refusal(command).is_some(), "{command}");
         }
@@ -1953,6 +1990,7 @@ mod tests {
             "orchestration_bridge_open",
             "orchestration_bridge_close",
             "chat_send",
+            "memory_vault_call",
         ] {
             assert!(socket_refusal(command).is_none(), "{command}");
         }

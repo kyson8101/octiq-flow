@@ -1,0 +1,202 @@
+/* The host's line for an agent's memory write (components/MemoryNote).
+   A quiet bordered row in the turn: the status colour is on the icon only,
+   so a saved update reads at a glance without shouting over the reply. */
+.memory-note {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  font-size: var(--text-sm);
+  color: var(--fg-1);
+}
+
+.memory-note.is-failed {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+.memory-note.is-uncertain {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
+
+.memory-note-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control-sm);
+  padding: 4px 6px 4px 10px;
+}
+
+.memory-note-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--ok);
+}
+
+.memory-note.is-uncertain .memory-note-icon {
+  color: var(--warn);
+}
+
+.memory-note.is-failed .memory-note-icon {
+  color: var(--danger);
+}
+
+.memory-note-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.memory-note-task {
+  font-weight: 400;
+  color: var(--fg-2);
+}
+
+.memory-note-time {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.memory-note-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: none;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--fg-2);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+}
+
+.memory-note-action:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-color: var(--focus);
+}
+
+.memory-note.is-open .memory-note-action {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-1);
+}
+
+@media (hover: hover) {
+  .memory-note-action:hover {
+    border-color: var(--border);
+    background: var(--bg-2);
+    color: var(--fg-1);
+  }
+}
+
+.memory-note-chevron {
+  transition: transform 160ms ease-out;
+}
+
+.memory-note-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.memory-note-details {
+  padding: 2px 12px 12px 33px;
+  animation: memory-note-open 180ms ease-out;
+}
+
+.memory-note-details[hidden] {
+  display: none;
+}
+
+@keyframes memory-note-open {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+.memory-note-error {
+  margin: 0 0 8px;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+
+.memory-note-label {
+  margin-bottom: 4px;
+  font-size: var(--text-xs);
+  color: var(--fg-3);
+}
+
+.memory-note-text {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-strong);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--bg-sunken);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-1);
+}
+
+.memory-note-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--fg-3);
+}
+
+.memory-note-facts dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+
+.memory-note-facts code {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+@media (max-width: 520px) {
+  .memory-note-head {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .memory-note-title {
+    flex-basis: calc(100% - 30px);
+  }
+
+  /* Time and action share the second line, under the headline. */
+  .memory-note-time {
+    margin-left: 23px;
+  }
+
+  .memory-note-action {
+    margin-left: auto;
+    min-height: var(--control-touch);
+  }
+
+  .memory-note-details {
+    padding-left: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-note-details {
+    animation: none;
+  }
+
+  .memory-note-chevron,
+  .memory-note-action {
+    transition: none;
+  }
+}

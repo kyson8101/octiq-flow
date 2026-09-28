@@ -339,41 +339,31 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             // Agents mode: an agent's own memory. Identity comes from the chat,
             // never from the tool's arguments.
             if let Some(op) = action.strip_prefix("agent_memory_") {
-                let actor = format!("chat:{id}");
-                let team_path = crate::team::default_path();
-                let (me, team) = crate::team::identity(
-                    &team_path,
-                    &actor,
-                    svc.orchestrations.assignee_for_worker(&actor)?,
-                )?;
-                let tool: Value = arg(&args, "args")?;
-                let text = |name: &str| tool.get(name).and_then(Value::as_str);
-                let vault = crate::memory_vault::Vault::profile();
-                return match op {
-                    "read" => crate::team::memory_read(
-                        &vault,
-                        &actor,
-                        &me,
-                        &team,
-                        text("agent"),
-                        tool.get("startLine").and_then(Value::as_u64),
-                    ),
-                    "append" => crate::team::memory_append(
-                        &vault,
-                        &actor,
-                        &me,
-                        text("text").unwrap_or_default(),
-                        text("date"),
-                        text("requestId").ok_or("Pass a unique requestId.")?,
-                    ),
-                    _ => Err("Unknown agent memory operation.".into()),
-                };
+                // Identity comes from the chat, never from the tool's
+                // arguments; an append's outcome is shown in the chat by the
+                // host (see memory_activity).
+                return crate::memory_activity::agent_memory(
+                    &crate::memory_vault::Vault::profile(),
+                    &crate::team::default_path(),
+                    &svc.orchestrations,
+                    &format!("chat:{id}"),
+                    op,
+                    &arg::<Value>(&args, "args")?,
+                );
             }
-            crate::memory_vault::Vault::profile().call(
+            let result = crate::memory_vault::Vault::profile().call(
                 &format!("chat:{id}"),
-                &arg::<String>(&args, "action")?,
+                &action,
                 &arg::<Value>(&args, "args")?,
-            )
+            );
+            if let (Ok(receipt), "receipt") = (&result, action.as_str()) {
+                crate::memory_activity::receipt_checked(
+                    &svc.orchestrations,
+                    &format!("chat:{id}"),
+                    receipt,
+                );
+            }
+            result
         }
         "list_workspaces" => to_value(crate::workspaces::list_workspaces_impl(&svc.workspaces)),
         "add_workspace" => to_value(crate::workspaces::add_workspace_impl(

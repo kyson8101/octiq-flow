@@ -48,6 +48,7 @@ import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 import { parsePeerMessages, type PeerMessage } from "./peerMessage";
 import { readChatServiceResumed } from "./carryOn";
 import { readRelay } from "./relay";
+import { mergeMemoryActivity, readMemoryActivity, type MemoryActivity } from "./memoryActivity";
 import { taskLabel, type BackgroundTask } from "./background";
 
 /** The one line a turn the CLIENT sent is drawn as, or `undefined` for one a
@@ -102,6 +103,11 @@ export type Block =
    *  write it). It says WHO, and opens onto what they said. See
    *  lib/peerMessage for what is taken off it on the way in. */
   | { kind: "peer"; source: PeerMessage["source"]; from: string; text: string }
+  /** The host's own record of an agent's memory write — saved, failed or
+   *  unconfirmed, from the vault's receipt. Not a tool card: it must not fold
+   *  away with the calls, and it does not depend on anything the agent said.
+   *  See lib/memoryActivity. */
+  | { kind: "memory"; activity: MemoryActivity }
   | { kind: "thinking"; text: string }
   | {
       kind: "tool";
@@ -986,6 +992,31 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       messages: state.messages.map((m) => ownsTurnId(m, turnId) && !m.echo && !m.takenUp
         ? { ...m, delivery: delivery as Message["delivery"], queueLost: delivery === "failed" || undefined, queueAction: undefined, queueError: undefined }
         : m),
+    };
+  }
+
+  if (type === "octiq_memory_activity") {
+    const activity = readMemoryActivity(e);
+    if (!activity) return state;
+    const holds = (m: Message) => m.blocks.some((b) => b.kind === "memory" && b.activity.id === activity.id);
+    if (state.messages.some(holds)) {
+      return {
+        ...state,
+        messages: state.messages.map((m) => holds(m)
+          ? { ...m, blocks: m.blocks.map((b) => b.kind === "memory" && b.activity.id === activity.id
+            ? { ...b, activity: mergeMemoryActivity(b.activity, activity) }
+            : b) }
+          : m),
+      };
+    }
+    // Its own message, after whatever the agent was writing, so it joins
+    // that turn where it happened but never takes a streaming message over.
+    return {
+      ...state,
+      messages: [
+        ...state.messages,
+        { id: `memory-${activity.id}`, role: "assistant", blocks: [{ kind: "memory", activity }], streaming: false },
+      ],
     };
   }
 

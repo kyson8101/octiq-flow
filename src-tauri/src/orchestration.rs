@@ -285,6 +285,16 @@ pub struct TaskAssignee {
     pub name: String,
 }
 
+/// See `OrchestrationStore::worker_owner`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkerOwner {
+    pub assignee: Option<TaskAssignee>,
+    pub coordinator_chat_key: String,
+    pub task_id: String,
+    pub task_title: String,
+    pub run_id: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -1245,6 +1255,35 @@ impl OrchestrationStore {
             }))
     }
 
+    /// Who a worker chat is working for, from that chat's own most recent
+    /// attempt: the agent the attempt was reserved for (its snapshot, not the
+    /// task's current assignee, so a reassigned task's old chat never speaks
+    /// for the new agent), and the run and coordinator chat that attempt
+    /// belongs to. `None` for a chat that is no worker.
+    pub fn worker_owner(&self, chat_key: &str) -> Result<Option<WorkerOwner>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        Ok(inner
+            .data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.worker_chat_key == chat_key)
+            .max_by_key(|attempt| attempt.created_at)
+            .and_then(|attempt| {
+                let task = inner.data.tasks.get(&attempt.task_id)?;
+                let run = inner.data.runs.get(&attempt.run_id)?;
+                Some(WorkerOwner {
+                    assignee: attempt.assignee.clone().or_else(|| task.assignee.clone()),
+                    coordinator_chat_key: run.coordinator_chat_key.clone(),
+                    task_id: task.id.clone(),
+                    task_title: task.title.clone(),
+                    run_id: run.id.clone(),
+                })
+            }))
+    }
+
     /// Agents mode: hold this run's workers until the person approves.
     pub fn require_plan_approval(&self, run_id: &str) -> Result<Run, String> {
         self.mutate(|data| {
@@ -2018,7 +2057,7 @@ impl OrchestrationStore {
     }
 
     #[cfg(test)]
-    fn reserve_attempt(
+    pub(crate) fn reserve_attempt(
         &self,
         actor_chat_key: &str,
         launch: &WorkerLaunch,
@@ -4256,7 +4295,7 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    pub(super) fn launch_for(task_id: &str) -> WorkerLaunch {
+    pub(crate) fn launch_for(task_id: &str) -> WorkerLaunch {
         WorkerLaunch {
             task_id: task_id.into(),
             agent: ChatAgent::Codex,

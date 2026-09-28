@@ -194,8 +194,9 @@ fn record_durable_user_turn_with_append(
 
 /// Persist and fan out an OctiqFlow-owned lifecycle event. Auto-resume uses
 /// the same transcript-before-bus ordering as provider output, so a reconnect
-/// cannot miss a schedule, cancellation, or dispatch result.
-pub(crate) fn record_chat_event(key: &str, event: Value) {
+/// cannot miss a schedule, cancellation, or dispatch result. Returns where the
+/// event sits in the transcript; `None` when it reached only the live stream.
+pub(crate) fn record_chat_event(key: &str, event: Value) -> Option<u64> {
     let seq = crate::transcript::append(key, &event);
     crate::bus::emit(
         "chat-event",
@@ -205,6 +206,7 @@ pub(crate) fn record_chat_event(key: &str, event: Value) {
             event,
         },
     );
+    seq
 }
 
 pub(crate) fn fresh_turn_id(turn_id: Option<String>) -> String {
