@@ -92,7 +92,8 @@ pub fn git_watch_paths_impl(state: &GitWatchState, paths: Vec<String>) -> Result
             return;
         }
         for p in &event.paths {
-            if !is_relevant(under_root(p, &event_roots)) {
+            let inside = under_root(p, &event_roots);
+            if !is_relevant(inside) || only_touches_git_dir(&event.kind, inside) {
                 continue;
             }
             let root = event_roots
@@ -112,6 +113,19 @@ pub fn git_watch_paths_impl(state: &GitWatchState, paths: Vec<String>) -> Result
     std::thread::spawn(move || debounce_loop(rx));
     *guard = Some(watcher);
     Ok(())
+}
+
+/// A MODIFY event on the `.git` folder itself. Windows reports one whenever a
+/// file inside it is created or deleted — including the `index.lock` that
+/// `git status` and `git diff` take and drop again even with
+/// GIT_OPTIONAL_LOCKS=0. Counted as a change, each of the sidebar's own git
+/// reads raised the next `git-status-changed`: a loop that ran git every two
+/// seconds with nothing changing. The folder appearing or going away is still
+/// a change (see `is_relevant`), and a real commit or stage still arrives as
+/// its own HEAD / index / refs event.
+fn only_touches_git_dir(kind: &notify::EventKind, path: &Path) -> bool {
+    matches!(kind, notify::EventKind::Modify(_))
+        && path.file_name().is_some_and(|name| name == ".git")
 }
 
 /// Is `dir` inside a git repository? A `.git` folder, or the `.git` FILE a
@@ -414,6 +428,30 @@ mod tests {
     fn bare_git_dir_event_is_relevant() {
         // The .git dir itself appearing/disappearing changes repo-ness.
         assert!(is_relevant(Path::new("/repo/.git")));
+    }
+
+    #[test]
+    fn a_lock_coming_and_going_in_git_dir_is_not_a_change() {
+        use notify::event::{CreateKind, ModifyKind, RemoveKind};
+        use notify::EventKind;
+        let git = Path::new(".git");
+        assert!(only_touches_git_dir(
+            &EventKind::Modify(ModifyKind::Any),
+            git
+        ));
+        assert!(!only_touches_git_dir(
+            &EventKind::Create(CreateKind::Folder),
+            git
+        ));
+        assert!(!only_touches_git_dir(
+            &EventKind::Remove(RemoveKind::Folder),
+            git
+        ));
+        // Files INSIDE .git are judged by is_relevant, not by this.
+        assert!(!only_touches_git_dir(
+            &EventKind::Modify(ModifyKind::Any),
+            Path::new(".git/index")
+        ));
     }
 
     // ---- build / dependency directories are ignored (card 21) --------------
