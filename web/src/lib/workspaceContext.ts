@@ -1,3 +1,5 @@
+import { singleFlight } from "./singleFlight";
+
 export type WorkspacePeer = {
   id: string;
   title: string;
@@ -50,29 +52,33 @@ export function workspaceIdentity(path: string, statuses: WorkspaceGitStatus[]):
   return { kind: "repo", branch: status.branch, root: status.repo_root };
 }
 
-/** Invalidate both older refreshes and requests from an unmounted/path-switched view. */
+/** Read one path's Git identity, one read at a time: a refresh asked for
+ *  while a read is out is answered by ONE more read after it, never a parallel
+ *  one. Refreshes arrive on every `git-status-changed`, which can be every
+ *  second, and parallel reads queued on the backend faster than git answered.
+ *  Nothing is published once the view is unmounted or has switched path. */
 export function createWorkspaceLookup(
   read: () => Promise<WorkspaceGitStatus[]>,
   publish: (identity: WorkspaceIdentity) => void,
   path: string,
 ) {
-  let revision = 0;
   let disposed = false;
+  const run = singleFlight(async () => {
+    if (disposed) return;
+    publish({ kind: "loading" });
+    try {
+      const statuses = await read();
+      if (!disposed) publish(workspaceIdentity(path, statuses));
+    } catch {
+      if (!disposed) publish({ kind: "unknown" });
+    }
+  });
   return {
-    async refresh() {
-      if (disposed) return;
-      const request = ++revision;
-      publish({ kind: "loading" });
-      try {
-        const statuses = await read();
-        if (!disposed && request === revision) publish(workspaceIdentity(path, statuses));
-      } catch {
-        if (!disposed && request === revision) publish({ kind: "unknown" });
-      }
+    refresh(): Promise<void> {
+      return disposed ? Promise.resolve() : run();
     },
     dispose() {
       disposed = true;
-      revision++;
     },
   };
 }

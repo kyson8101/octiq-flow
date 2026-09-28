@@ -199,6 +199,7 @@ import {
   PROJECT_GIT_CHANGED_EVENT,
 } from "./lib/projectGit";
 import type { WorkspaceGitStatus } from "./lib/workspaceContext";
+import { singleFlight } from "./lib/singleFlight";
 import { FocusModeButton, useFocusMode } from "./components/FocusMode";
 import {
   PullRequestsDashboard,
@@ -1065,12 +1066,14 @@ export default function App() {
     const primaryPaths = projectPrimaryPaths(projects);
     let live = true;
 
-    const read = () => {
+    // One read at a time: `git-status-changed` can arrive every second, and a
+    // read of every project can take longer than that.
+    const read = singleFlight(async () => {
       if (primaryPaths.length === 0) {
         setProjectBranches({});
         return;
       }
-      bridge
+      await bridge
         .invoke<WorkspaceGitStatus[]>("git_status_summary", { paths: primaryPaths })
         .then((statuses) => {
           if (live) setProjectBranches(branchesByProject(projects, statuses ?? []));
@@ -1078,7 +1081,7 @@ export default function App() {
         .catch(() => {
           if (live) setProjectBranches({});
         });
-    };
+    });
     const refresh = () => { read(); };
 
     // Replaces the server's previous watcher with the complete project set.

@@ -257,9 +257,52 @@ impl WebState {
 /// calling it directly from a Tokio worker can starve the socket pump.
 async fn run_command(ctx: &Ctx, cmd: String, args: Value) -> Result<Value, String> {
     let services = ctx.services.clone();
-    tokio::task::spawn_blocking(move || crate::dispatch::dispatch(&services, &cmd, args))
-        .await
-        .map_err(|error| format!("the backend command did not finish: {error}"))?
+    gated(git_read_slots(), &cmd.clone(), async move {
+        tokio::task::spawn_blocking(move || crate::dispatch::dispatch(&services, &cmd, args))
+            .await
+            .map_err(|error| format!("the backend command did not finish: {error}"))?
+    })
+    .await
+}
+
+/// Commands that run `git` only to read, and that every open tab asks again on
+/// each `git-status-changed`.
+///
+/// Every command runs on tokio's blocking pool, which stops at 512 threads and
+/// queues the rest. A burst of these used to fill it: a project pointed at the
+/// home folder turned each browser-cache write into a round of git per tab,
+/// the rounds arrived faster than git could answer them, and `chat_send` then
+/// waited behind hundreds of them — the chat said "Sending…" for good.
+const GIT_READS: [&str; 5] = [
+    "git_status_summary",
+    "git_changed_files",
+    "git_file_diff",
+    "git_local_branches",
+    "chat_task",
+];
+
+/// How many of `GIT_READS` may hold a blocking thread at once. The rest wait
+/// here, on no thread at all, so a git backlog can only ever delay git.
+const GIT_READ_SLOTS: usize = 4;
+
+fn git_read_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(GIT_READ_SLOTS))
+}
+
+/// Run `work`, first taking one of `slots` when `cmd` is a git read.
+async fn gated<T>(
+    slots: &tokio::sync::Semaphore,
+    cmd: &str,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    // `acquire` fails only on a closed semaphore, and this one is never closed.
+    let _slot = if GIT_READS.contains(&cmd) {
+        slots.acquire().await.ok()
+    } else {
+        None
+    };
+    work.await
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,6 +1397,22 @@ async fn client(ctx: Ctx, socket: WebSocket) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With every git slot taken, a git read waits and anything else does not.
+    #[tokio::test]
+    async fn a_git_backlog_never_holds_up_other_commands() {
+        let slots = tokio::sync::Semaphore::new(GIT_READ_SLOTS);
+        let _all = slots.acquire_many(GIT_READ_SLOTS as u32).await.unwrap();
+        let wait = std::time::Duration::from_millis(50);
+
+        let send = tokio::time::timeout(wait, gated(&slots, "chat_send", async { 1 })).await;
+        assert_eq!(send, Ok(1), "chat_send waited on the git slots");
+
+        for cmd in GIT_READS {
+            let read = tokio::time::timeout(wait, gated(&slots, cmd, async { 1 })).await;
+            assert!(read.is_err(), "{cmd} ran without a git slot");
+        }
+    }
 
     /// Build a HeaderMap from `(name, value)` pairs, for the tests below.
     fn headers(pairs: &[(&str, &str)]) -> axum::http::HeaderMap {

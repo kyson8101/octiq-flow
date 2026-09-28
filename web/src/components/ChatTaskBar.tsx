@@ -11,6 +11,7 @@
 // the chat opening, a turn ending, git moving under it, and the panel opening.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
+import { singleFlight } from "../lib/singleFlight";
 import {
   DELIVERY_LABELS,
   NOT_REPORTED,
@@ -61,9 +62,9 @@ export function ChatTaskBar({
   const shown = status?.chatId === chatId ? status : undefined;
 
   const load = useCallback(
-    (refresh: boolean) => {
-      if (!chatId || !connected || document.hidden) return;
-      bridge
+    (refresh: boolean): Promise<void> => {
+      if (!chatId || !connected || document.hidden) return Promise.resolve();
+      return bridge
         .invoke<TaskStatus>("chat_task", { chatId, refresh })
         .then(setStatus)
         // A chat that has never been verified has nothing to show, and an
@@ -95,7 +96,11 @@ export function ChatTaskBar({
       const next = payload as TaskStatus | undefined;
       if (next?.chatId === chatId) setStatus(next);
     });
-    const offGit = bridge.on("git-status-changed", () => load(true));
+    // A change ANYWHERE watched says nothing certain about this chat, and it
+    // can arrive every second — so no forced refresh, which would run git
+    // every time, and never more than one ask out at once. The backend's
+    // own few-second cache decides whether git runs at all.
+    const offGit = bridge.on("git-status-changed", singleFlight(() => load(false)));
     const onVisible = () => { if (!document.hidden) load(true); };
     document.addEventListener("visibilitychange", onVisible);
     return () => {

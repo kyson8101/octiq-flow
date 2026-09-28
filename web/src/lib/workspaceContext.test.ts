@@ -27,20 +27,24 @@ describe("observed concurrent workspace", () => {
 });
 
 describe("workspace lookup race handling", () => {
-  it("does not allow a slower previous request to replace newer branch data", async () => {
+  it("answers refreshes made during a read with one read after it, not parallel ones", async () => {
     const old = deferred<WorkspaceGitStatus[]>();
     const newer = deferred<WorkspaceGitStatus[]>();
     const read = vi.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(newer.promise);
     const publish = vi.fn();
     const lookup = createWorkspaceLookup(read, publish, "/repo");
     const first = lookup.refresh();
-    const second = lookup.refresh();
-    newer.resolve([status("/repo", "new")]);
-    await second;
+    await Promise.resolve();
+    const burst = [lookup.refresh(), lookup.refresh(), lookup.refresh()];
+    expect(read).toHaveBeenCalledTimes(1);
     old.resolve([status("/repo", "old")]);
     await first;
+    await Promise.resolve();
+    expect(read).toHaveBeenCalledTimes(2);
+    newer.resolve([status("/repo", "new")]);
+    await Promise.all(burst);
+    expect(read).toHaveBeenCalledTimes(2);
     expect(publish).toHaveBeenLastCalledWith({ kind: "repo", branch: "new", root: "/repo" });
-    expect(publish).toHaveBeenCalledTimes(3);
   });
   it("ignores responses and errors after path switch or unmount", async () => {
     for (const error of [false, true]) {

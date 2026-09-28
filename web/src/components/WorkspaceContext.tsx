@@ -31,12 +31,12 @@ export function WorkspaceContext(props: WorkspaceContextProps) {
     );
     const refresh = () => { void lookup.refresh(); };
     refresh();
-    const off = bridge.on("git-status-changed", refresh);
+    // No `git-status-changed` listener of its own: App re-raises every one as
+    // PROJECT_GIT_CHANGED_EVENT, and hearing both asked git twice per change.
     window.addEventListener("focus", refresh);
     window.addEventListener(PROJECT_GIT_CHANGED_EVENT, refresh);
     return () => {
       lookup.dispose();
-      off();
       window.removeEventListener("focus", refresh);
       window.removeEventListener(PROJECT_GIT_CHANGED_EVENT, refresh);
     };

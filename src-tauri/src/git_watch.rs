@@ -72,7 +72,7 @@ pub fn git_watch_paths_impl(state: &GitWatchState, paths: Vec<String>) -> Result
         .into_iter()
         .filter(|p| seen.insert(p.clone())) // two projects sharing a folder: watch it once
         .map(PathBuf::from)
-        .filter(|p| p.is_dir())
+        .filter(|p| p.is_dir() && in_repository(p))
         .collect();
     if roots.is_empty() {
         return Ok(());
@@ -112,6 +112,18 @@ pub fn git_watch_paths_impl(state: &GitWatchState, paths: Vec<String>) -> Result
     std::thread::spawn(move || debounce_loop(rx));
     *guard = Some(watcher);
     Ok(())
+}
+
+/// Is `dir` inside a git repository? A `.git` folder, or the `.git` FILE a
+/// linked worktree or submodule has, in it or any folder above it.
+///
+/// A folder outside every repository has no `git status` for the sidebar to
+/// keep current, so it is not watched at all. Watching one anyway cost dearly:
+/// the fallback "General" project points at the home folder, where a browser
+/// or chat app writes its cache every second, and each write became a round of
+/// git in every open tab.
+fn in_repository(dir: &Path) -> bool {
+    dir.ancestors().any(|folder| folder.join(".git").exists())
 }
 
 /// Collapse bursts of raw fs events into sparse `git-status-changed` emits:
@@ -176,7 +188,17 @@ fn debounce_loop(rx: mpsc::Receiver<String>) {
 ///
 /// Matched as a whole PATH COMPONENT, never as a substring — a source file at
 /// `src/target_resolver.rs` or a folder named `my-dist-tools` must still count.
-const IGNORED_DIRS: [&str; 5] = ["node_modules", "target", "dist", "build", ".venv"];
+///
+/// `bin` and `obj` are where .NET writes a build, beside every project file.
+const IGNORED_DIRS: [&str; 7] = [
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".venv",
+    "bin",
+    "obj",
+];
 
 /// `path` with the first watched root that contains it stripped off, or `path`
 /// itself when no root matches.
@@ -322,6 +344,45 @@ mod tests {
         );
     }
 
+    fn scratch_dir(label: &str) -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "octiq-gitwatch-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A folder no repository contains has no `git status` to keep current.
+    /// Watching one anyway is how a project pointed at the home folder turned
+    /// every browser cache write into a round of git across every tab.
+    #[test]
+    fn a_folder_outside_any_repository_is_not_watched() {
+        let root = scratch_dir("plain");
+        let state = GitWatchState::default();
+        git_watch_paths_impl(&state, vec![root.to_string_lossy().into_owned()]).unwrap();
+        let watching = state.0.lock().unwrap().is_some();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!watching, "a folder outside any repository was watched");
+    }
+
+    /// A subfolder of a repository is inside it, however deep.
+    #[test]
+    fn a_folder_inside_a_repository_is_watched() {
+        let repo = scratch_dir("nested");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let inner = repo.join("packages").join("web");
+        std::fs::create_dir_all(&inner).unwrap();
+        let state = GitWatchState::default();
+        git_watch_paths_impl(&state, vec![inner.to_string_lossy().into_owned()]).unwrap();
+        let watching = state.0.lock().unwrap().is_some();
+        drop(state);
+        let _ = std::fs::remove_dir_all(&repo);
+        assert!(watching, "a folder inside a repository was not watched");
+    }
+
     #[test]
     fn working_tree_paths_are_relevant() {
         assert!(is_relevant(Path::new("/repo/src/main.rs")));
@@ -364,6 +425,9 @@ mod tests {
         assert!(!is_relevant(Path::new("dist/bundle.js")));
         assert!(!is_relevant(Path::new("build/output.o")));
         assert!(!is_relevant(Path::new(".venv/lib/python3.12/site.py")));
+        // .NET writes its build output to bin/ and obj/ beside every project.
+        assert!(!is_relevant(Path::new("Api/bin/Debug/net8.0/Api.dll")));
+        assert!(!is_relevant(Path::new("Api/obj/project.assets.json")));
         // Nested deeper than the first component.
         assert!(!is_relevant(Path::new("packages/web/node_modules/x/a.js")));
         assert!(!is_relevant(Path::new(
