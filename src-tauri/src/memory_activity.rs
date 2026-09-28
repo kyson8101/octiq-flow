@@ -1216,10 +1216,8 @@ mod tests {
         }
         fs::write(&file, serde_json::to_vec(&data).unwrap()).unwrap();
         let store = OrchestrationStore::load(file);
-        assert_eq!(
-            store.assignee_for_worker(&worker).unwrap(),
-            Some(potato.id.clone())
-        );
+        let tasks = store.snapshot(None).unwrap().tasks;
+        assert_eq!(tasks[0].assignee.as_ref().unwrap().id, potato.id);
         agent_memory(
             &w.vault,
             &w.team,

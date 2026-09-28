@@ -1219,21 +1219,6 @@ impl OrchestrationStore {
         Ok(active_task_for_actor(&inner.data, chat_key))
     }
 
-    /// Agents mode: the registered agent a worker chat is running as, from the
-    /// task of its most recent attempt.
-    pub fn assignee_for_worker(&self, chat_key: &str) -> Result<Option<String>, String> {
-        let inner = self.inner.lock().map_err(|error| error.to_string())?;
-        Ok(inner
-            .data
-            .attempts
-            .values()
-            .filter(|attempt| attempt.worker_chat_key == chat_key)
-            .max_by_key(|attempt| attempt.created_at)
-            .and_then(|attempt| inner.data.tasks.get(&attempt.task_id))
-            .and_then(|task| task.assignee.as_ref())
-            .map(|assignee| assignee.id.clone()))
-    }
-
     /// The registered agent a worker chat runs as, with the task and run its
     /// latest attempt belongs to. `None` for a chat that is no worker, or a
     /// worker of a task with no assignee.
