@@ -214,12 +214,20 @@ const IGNORED_DIRS: [&str; 6] = ["node_modules", "target", "dist", "build", ".ve
 const DOTNET_PLATFORMS: [&str; 5] = ["x86", "x64", "arm", "arm64", "AnyCPU"];
 
 /// Is this what follows a `bin` component .NET build output? That is a
-/// `Debug` or `Release` FOLDER, optionally under a platform folder:
-/// `bin/Debug/net8.0/Api.dll`, `bin/x64/Release/app.exe`.
+/// `Debug` or `Release` folder, optionally under a platform folder, and
+/// everything in it: `bin/Debug`, `bin/Debug/net8.0/Api.dll`,
+/// `bin/x64/Release/app.exe`.
 ///
-/// A path shape, not a look at the disk — this runs on every fs event. The
-/// configuration must be a folder (something follows it), so a script named
-/// `bin/release` still counts, and the names are .NET's own capitalised ones.
+/// The configuration folder ITSELF counts, not only what is inside it: Windows
+/// reports a Modify on a directory whenever its children change, so a build
+/// would otherwise still raise an event from `bin/Debug` for every file it
+/// writes there.
+///
+/// A path shape, not a look at the disk — this runs on every fs event — and a
+/// shape cannot tell a file from a folder. So a tracked FILE named exactly
+/// `bin/Debug` or `bin/Release` is ignored too; that is far rarer than a .NET
+/// build. The names are .NET's own capitalised ones, so a script named
+/// `bin/release` or a folder `bin/debug/` still counts.
 fn is_dotnet_bin_output(after_bin: &[String]) -> bool {
     let rest = match after_bin.first() {
         Some(platform)
@@ -231,7 +239,7 @@ fn is_dotnet_bin_output(after_bin: &[String]) -> bool {
         }
         _ => after_bin,
     };
-    rest.len() >= 2 && matches!(rest[0].as_str(), "Debug" | "Release")
+    matches!(rest.first().map(String::as_str), Some("Debug" | "Release"))
 }
 
 /// Does this working-tree path sit under build output or installed
@@ -499,6 +507,12 @@ mod tests {
         )));
         assert!(!is_relevant(Path::new("Api/bin/x64/Debug/Api.exe")));
         assert!(!is_relevant(Path::new("Api/bin/AnyCPU/Release/Api.dll")));
+        // The configuration folder itself: Windows reports a Modify on it
+        // whenever the build writes a child.
+        assert!(!is_relevant(Path::new("Api/bin/Debug")));
+        assert!(!is_relevant(Path::new("Api/bin/Release")));
+        assert!(!is_relevant(Path::new("Api/bin/x64/Debug")));
+        assert!(!is_relevant(Path::new("Api/bin/AnyCPU/Release")));
         assert!(!is_relevant(Path::new("Api/obj/project.assets.json")));
         assert!(!is_relevant(Path::new("Api/obj/Debug/net8.0/Api.pdb")));
         // Nested deeper than the first component.
@@ -527,12 +541,14 @@ mod tests {
         assert!(is_relevant(Path::new("src-tauri/src/bin/octiq-notify.rs")));
         assert!(is_relevant(Path::new("npm/bin/octiqflow.cjs")));
         assert!(is_relevant(Path::new("bin/setup")));
-        // A SCRIPT named like a configuration is not a configuration folder.
+        // A lower-case script named like a configuration is not .NET's.
         assert!(is_relevant(Path::new("bin/release")));
-        assert!(is_relevant(Path::new("bin/Release")));
         assert!(is_relevant(Path::new("tools/bin/x64/install.sh")));
         // Nor does a lower-case folder that merely shares the name.
         assert!(is_relevant(Path::new("bin/debug/trace.sh")));
+        // The capitalised names are .NET's, and a path cannot say file or
+        // folder, so even a FILE named exactly `bin/Release` is ignored.
+        assert!(!is_relevant(Path::new("bin/Release")));
     }
 
     // ---- under_root: the ignore rules apply BELOW the watched folder --------
