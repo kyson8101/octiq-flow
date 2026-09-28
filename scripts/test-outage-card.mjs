@@ -161,7 +161,9 @@ try {
   assert.match(text, /Claude's safety check was unavailable/);
   assert.match(text, /3 refused/);
   assert.match(text, /Nothing was judged unsafe/);
-  assert.match(text, /None of these commands ran\. Nothing was approved\./);
+  // The refused calls did not run; the same line may run on its one retry.
+  assert.match(text, /These refused calls did not run\. Nothing was approved\./);
+  assert.doesNotMatch(text, /None of these commands ran/);
   assert.match(text, /What it tried/i);
   assert.match(text, /×2/);
   assert.match(text, /What the agent was told/i);
@@ -169,6 +171,11 @@ try {
   assert.doesNotMatch(text, /blocked an action|Why it was blocked|Manual command approval|Use safer approach|Allow/i);
   assert.equal(await outage.locator("button").count(), 2);
   assert(await noSideScroll(page));
+  // The chat list: an outage has nothing to review, a safety refusal does.
+  const badge = (label, title) => page.locator(`.sidebar .pending-action-badge[aria-label^="${label} for ${title}:"]`);
+  await badge("Safety check was down", "Outage worker").waitFor();
+  await badge("Review needed", "Deploy worker").waitFor();
+  assert.equal(await badge("Review needed", "Outage worker").count(), 0, "an outage is not 'Review needed'");
   await shoot(page, outage, "desktop-outage-3");
 
   // 2. Another refusal joins the group: the same card, one more count, and

@@ -46,6 +46,9 @@ export function selectAttention(input: AttentionInput): AttentionEntry[] {
     const permissions = input.asks?.[id]?.length ?? 0;
     const questions = input.questions?.[id]?.length ?? 0;
     const blocked = input.safetyBlocks?.[id]?.length ?? 0;
+    // An outage card (Claude's check gave no verdict) has nothing to review.
+    const outagesOnly = blocked > 0 && (input.safetyBlocks?.[id] ?? [])
+      .every((block) => (block as { kind?: string } | null)?.kind === "outage");
     let kind: AttentionKind;
     let reason: string;
     // Pending-request events are authoritative and can precede the roster's
@@ -58,7 +61,7 @@ export function selectAttention(input: AttentionInput): AttentionEntry[] {
       reason = `${questions} ${questions === 1 ? "question needs" : "questions need"} an answer`;
     } else if (fresh && blocked) {
       kind = "safety";
-      reason = "Blocked action needs review";
+      reason = outagesOnly ? "Safety check was down" : "Blocked action needs review";
     } else if (chat?.failure) {
       kind = "failure";
       reason = chat.failure.title;

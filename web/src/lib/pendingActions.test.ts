@@ -71,6 +71,24 @@ describe("pending actions", () => {
     expect(pendingDescription(actions)).toBe("1 blocked action to review");
   });
 
+  it("labels an outage card calmly: nothing on it needs review", () => {
+    // Claude's check gave no verdict, so nothing was judged. The key is the
+    // card's own `safety:` key, so the badge still finds the card.
+    const outage = pendingActions(input(ledger(), { safetyBlocks: { w1: [{ id: "o1", kind: "outage" }] } }));
+    expect(outage).toEqual([expect.objectContaining({ key: "safety:o1", kind: "outage", rowId: "main", taskId: "t1" })]);
+    expect(pendingLabel(outage)).toBe("Safety check was down");
+    expect(pendingLabel(outage)).not.toContain("Review");
+    expect(pendingDescription(outage)).toBe("1 safety check outage");
+    expect(pendingSelector(outage[0].key)).toBe('[data-pending-keys~="safety:o1"]');
+    // A safety refusal beside it still asks for a review, and comes first.
+    const both = pendingActions(input(ledger(), {
+      safetyBlocks: { w1: [{ id: "o1", kind: "outage" }, { id: "s1", kind: "high-risk-action" }] },
+    }));
+    expect(both.map((a) => [a.key, a.kind])).toEqual([["safety:s1", "safety"], ["safety:o1", "outage"]]);
+    expect(pendingLabel(both.filter((a) => a.kind === "safety"))).toBe("Review needed");
+    expect(pendingDescription(both)).toBe("1 blocked action to review, 1 safety check outage");
+  });
+
   it("counts an action once even when it reaches the list twice", () => {
     const actions = pendingActions(input(ledger({ gates: [gate("g1", "r1"), gate("g1", "r1")] }), {
       asks: { w1: [{ id: "p1" }, { id: "p1" }] },

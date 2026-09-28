@@ -178,7 +178,10 @@ describe("SafetyBlock", () => {
       expect(html).toContain("Claude&#x27;s safety check was unavailable");
       expect(html).toContain("did not run these commands");
       expect(html).toContain("Nothing was judged unsafe");
-      expect(html).toContain("None of these commands ran. Nothing was approved.");
+      // The refused calls did not run; the same line may still run on the
+      // one as-is retry, so the card never says the command never ran.
+      expect(html).toContain("These refused calls did not run. Nothing was approved.");
+      expect(html).not.toContain("None of these commands ran");
       expect(html).not.toContain("blocked an action");
       expect(html).not.toContain("Why it was blocked");
       expect(html).toContain('role="status"');
@@ -214,7 +217,8 @@ describe("SafetyBlock", () => {
       const single = { ...outage, count: undefined, commands: undefined, guidance: undefined };
       const html = drawOutage(single);
       expect(html).toContain("did not run this command");
-      expect(html).toContain("The command did not run.");
+      expect(html).toContain("This refused call did not run. Nothing was approved.");
+      expect(html).not.toContain("The command did not run.");
       expect(html).toContain("git fetch");
       expect(html).not.toContain("refused</span>");
       expect(html).toContain("OctiqFlow will not re-run it");

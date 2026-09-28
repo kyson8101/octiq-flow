@@ -2553,7 +2553,17 @@ pub(crate) fn start_session(
                                 .and_then(Value::as_str)
                                 .and_then(|id| claude_calls.get(id))
                                 .map(|(name, input)| (name.as_str(), input));
-                            if crate::safety_block::observe_claude_denial(&key, &event, called) {
+                            let refused = event.get("subtype").and_then(Value::as_str)
+                                == Some("permission_denied");
+                            let owner = refused
+                                .then(|| reading.orchestrations.refusal_owner(&key))
+                                .flatten();
+                            if crate::safety_block::observe_claude_denial(
+                                &key,
+                                owner.as_deref(),
+                                &event,
+                                called,
+                            ) {
                                 if let Err(error) =
                                     reading.orchestrations.capture_native_decisions()
                                 {
@@ -4888,6 +4898,7 @@ mod tests {
         let (name, input) = calls.get("toolu_pub").unwrap();
         assert!(crate::safety_block::observe_claude_denial(
             &key,
+            None,
             &denial,
             Some((name, input))
         ));

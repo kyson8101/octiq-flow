@@ -46,13 +46,19 @@ pub struct Execution {
     pub provider_retry_started_at: Option<i64>,
     /// Track concurrent tools so one result cannot hide another pending tool.
     pub pending_tools: BTreeMap<String, String>,
-    /// When a tool call the worker was allowed to run last came back. A call
-    /// Claude refused, whose result is only the refusal, does not count, and
-    /// neither do OctiqFlow's own tools (status, messages, snapshots): a
-    /// worker can use those while unable to run anything. An outage notice
-    /// is dropped once this passes the group's last refusal.
+    /// When each pending tool started, by the same id as `pending_tools`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_tool_started_at: BTreeMap<String, i64>,
+    /// When the latest tool call the worker was allowed to run STARTED,
+    /// recorded once its result proves it ran. A call Claude refused, whose
+    /// result is only the refusal, does not count; nor do OctiqFlow's own
+    /// tools (status, messages, snapshots), which a worker can use while
+    /// unable to run anything; nor a result whose call was never seen
+    /// starting. It is the start that counts: a call already running when a
+    /// refusal came says nothing about what the worker did after it. An
+    /// outage notice is dropped once this passes the group's last refusal.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_allowed_tool_at: Option<i64>,
+    pub last_allowed_tool_started_at: Option<i64>,
 }
 
 impl Execution {
@@ -481,13 +487,22 @@ impl OrchestrationStore {
                         ledger = true;
                         continue;
                     }
-                    Observation::ToolStart(id, name) => { e.last_progress_at = Some(now); e.last_progress = Some(format!("Started {name}")); e.pending_tools.insert(id, name); }
+                    Observation::ToolStart(id, name) => {
+                        e.last_progress_at = Some(now);
+                        e.last_progress = Some(format!("Started {name}"));
+                        e.pending_tool_started_at.insert(id.clone(), now);
+                        e.pending_tools.insert(id, name);
+                    }
                     Observation::ToolEnd(id, summary) => {
                         let name = e.pending_tools.remove(&id);
-                        if !crate::safety_block::was_refused(&id)
-                            && !name.as_deref().is_some_and(|n| n.starts_with("mcp__octiq__"))
-                        {
-                            e.last_allowed_tool_at = Some(now);
+                        let started = e.pending_tool_started_at.remove(&id);
+                        // Other paths clear `pending_tools`; keep the two in step.
+                        let pending = &e.pending_tools;
+                        e.pending_tool_started_at.retain(|id, _| pending.contains_key(id));
+                        if let (Some(name), Some(started)) = (name, started) {
+                            if !crate::safety_block::was_refused(&id) && !name.starts_with("mcp__octiq__") {
+                                e.last_allowed_tool_started_at = Some(e.last_allowed_tool_started_at.map_or(started, |at| at.max(started)));
+                            }
                         }
                         e.last_progress_at = Some(now);
                         e.last_progress = Some(summary);

@@ -69,6 +69,10 @@ struct Refusal {
     tool_use_id: Option<String>,
     action: String,
     at: i64,
+    /// The orchestration attempt live in the chat when it was refused, if
+    /// any. A group belongs to one attempt: a retry can reuse a worker chat,
+    /// and its refusals must not join the settled attempt's group.
+    owner: Option<String>,
 }
 
 #[cfg(test)]
@@ -161,16 +165,45 @@ pub(crate) fn outage_guidance() -> &'static str {
 }
 
 /// Calls Claude refused, by tool_use id, so the result it sends back for one
-/// is not mistaken for work done. Bounded like `DECIDED`.
-static REFUSED_CALLS: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+/// is not mistaken for work done.
+///
+/// Bounded by evicting the OLDEST ids, never by clearing: a clear would forget
+/// a refusal whose result has not come back yet, and that result would then
+/// read as an allowed call. The result follows its refusal within the same
+/// turn, so only an id thousands of refusals old can be evicted.
+static REFUSED_CALLS: Mutex<Option<RefusedCalls>> = Mutex::new(None);
+const REFUSED_CALLS_KEPT: usize = 4096;
+
+#[derive(Default)]
+struct RefusedCalls {
+    order: std::collections::VecDeque<String>,
+    ids: std::collections::HashSet<String>,
+}
+
+impl RefusedCalls {
+    fn insert(&mut self, id: &str, cap: usize) {
+        if !self.ids.insert(id.to_string()) {
+            return;
+        }
+        self.order.push_back(id.to_string());
+        while self.order.len() > cap {
+            if let Some(oldest) = self.order.pop_front() {
+                self.ids.remove(&oldest);
+            }
+        }
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+}
 
 fn remember_refused_call(id: &str) {
-    let mut guard = REFUSED_CALLS.lock().unwrap_or_else(|e| e.into_inner());
-    let calls = guard.get_or_insert_with(Default::default);
-    if calls.len() >= 1024 {
-        calls.clear();
-    }
-    calls.insert(id.to_string());
+    REFUSED_CALLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(id, REFUSED_CALLS_KEPT);
 }
 
 /// Whether Claude refused this tool call: its result is the refusal, not a
@@ -419,6 +452,7 @@ pub(crate) fn decision_summaries() -> Vec<PendingCard> {
                     kind: RefusalKind::Safety,
                     group_id: None,
                     at: None,
+                    owner: None,
                 });
                 continue;
             }
@@ -431,6 +465,7 @@ pub(crate) fn decision_summaries() -> Vec<PendingCard> {
                     kind: RefusalKind::Outage,
                     group_id: Some(block.id.clone()),
                     at: Some(refusal.at),
+                    owner: refusal.owner.clone(),
                 });
             }
         }
@@ -451,6 +486,8 @@ pub(crate) struct PendingCard {
     pub group_id: Option<String>,
     /// When the refusal was seen, for an outage refusal.
     pub at: Option<i64>,
+    /// The attempt the outage refusal was grouped under, when one was live.
+    pub owner: Option<String>,
 }
 
 /// Remove one card after the person chooses a path or dismisses it.
@@ -499,18 +536,34 @@ fn describe_call(tool: &str, input: Option<&serde_json::Value>) -> String {
 /// "deny" short-circuit (Claude 2.1.281's own SDK schema says so). Nothing
 /// continues a refused call, and an allow rule on a later launch is not
 /// "once" — see `EXACT_GRANT_WITHDRAWN`.
+///
+/// `owner` is the orchestration attempt live in the chat, if any, so an
+/// outage group never spans two attempts of a reused worker chat.
 pub fn observe_claude_denial(
     chat_key: &str,
+    owner: Option<&str>,
     event: &serde_json::Value,
     called: Option<(&str, &serde_json::Value)>,
 ) -> bool {
-    observe_claude_denial_at(chat_key, event, called, now_ms())
+    observe_claude_refusal(chat_key, owner, event, called, now_ms())
 }
 
 /// `observe_claude_denial` at a given time, so a test can walk an outage
 /// through its window without waiting for it.
+#[cfg(test)]
 pub(crate) fn observe_claude_denial_at(
     chat_key: &str,
+    event: &serde_json::Value,
+    called: Option<(&str, &serde_json::Value)>,
+    now: i64,
+) -> bool {
+    observe_claude_refusal(chat_key, None, event, called, now)
+}
+
+/// `observe_claude_denial` at a given time.
+pub(crate) fn observe_claude_refusal(
+    chat_key: &str,
+    owner: Option<&str>,
     event: &serde_json::Value,
     called: Option<(&str, &serde_json::Value)>,
     now: i64,
@@ -551,6 +604,7 @@ pub(crate) fn observe_claude_denial_at(
                 tool_use_id: tool_use_id.map(str::to_string),
                 action,
                 at: now,
+                owner: owner.map(str::to_string),
             },
         );
     }
@@ -581,8 +635,8 @@ pub(crate) const OUTAGE_TITLE: &str = "Claude's safety check was unavailable";
 
 /// Put an outage refusal on this chat's open outage card, or start one.
 ///
-/// A card is open while it is still pending and `outage_group_due` has not
-/// passed. Joining re-announces the same card id, so the page redraws one
+/// A card is open while it is still pending, `outage_group_due` has not
+/// passed, and it holds refusals of the same attempt. Joining re-announces the same card id, so the page redraws one
 /// card with a higher count rather than adding another, and the person is
 /// notified once per card, not per refusal.
 fn publish_outage(chat_key: &str, reason: &str, message: String, refusal: Refusal) -> bool {
@@ -590,6 +644,9 @@ fn publish_outage(chat_key: &str, reason: &str, message: String, refusal: Refusa
         let open = pending.values_mut().find(|block| {
             block.chat_key == chat_key
                 && !block.refusals.is_empty()
+                // A group belongs to one attempt: a retry's refusal in a
+                // reused chat starts its own group.
+                && block.refusals.iter().all(|r| r.owner == refusal.owner)
                 && refusal.at
                     < outage_group_due(
                         block.refusals[0].at,
@@ -970,12 +1027,14 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         let input = serde_json::json!({ "command": "eas update --branch production" });
         assert!(observe_claude_denial(
             &chat,
+            None,
             &classifier_denial("Bash", "toolu_1"),
             Some(("Bash", &input))
         ));
         // The same refusal, seen twice, is still one decision.
         assert!(!observe_claude_denial(
             &chat,
+            None,
             &classifier_denial("Bash", "toolu_1"),
             Some(("Bash", &input))
         ));
@@ -1060,6 +1119,7 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         missing.as_object_mut().unwrap().remove("decision_reason");
         assert!(observe_claude_denial(
             &chat,
+            None,
             &missing,
             Some(("Bash", &bash("ls")))
         ));
@@ -1067,6 +1127,7 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         empty["decision_reason"] = "".into();
         assert!(observe_claude_denial(
             &chat,
+            None,
             &empty,
             Some(("Bash", &bash("ls")))
         ));
@@ -1257,10 +1318,79 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         assert!(!was_refused(&id));
         assert!(observe_claude_denial(
             &chat,
+            None,
             &outage_denial(&id),
             Some(("Bash", &bash("ls")))
         ));
         assert!(was_refused(&id));
+        forget_chat(&chat);
+    }
+
+    /// Review of 2cbc3e9: the record used to be cleared wholesale when full,
+    /// so a refusal whose result had not come back yet was forgotten and its
+    /// result read as an allowed call. Only the oldest ids go now.
+    #[test]
+    fn a_full_refused_call_record_evicts_only_its_oldest_ids() {
+        let mut calls = RefusedCalls::default();
+        for n in 0..4 {
+            calls.insert(&format!("old{n}"), 4);
+        }
+        // The fifth refusal, whose result is still to come, arrives full.
+        calls.insert("live", 4);
+        assert!(calls.contains("live"), "the newest refusal is kept");
+        assert!(!calls.contains("old0"), "only the oldest is evicted");
+        for n in 1..4 {
+            assert!(calls.contains(&format!("old{n}")));
+        }
+        // Seeing the same refusal again neither duplicates nor evicts.
+        calls.insert("live", 4);
+        assert!(calls.contains("old1"));
+        assert_eq!(calls.order.len(), 4);
+        assert_eq!(calls.ids.len(), 4);
+        for n in 0..10 {
+            calls.insert(&format!("new{n}"), 4);
+        }
+        assert_eq!(calls.order.len(), 4);
+        assert_eq!(calls.ids.len(), 4);
+        assert!(calls.contains("new9") && !calls.contains("live"));
+    }
+
+    /// A retry can reuse a worker chat. Its refusals start their own group
+    /// rather than joining the settled attempt's open one.
+    #[test]
+    fn an_outage_group_belongs_to_one_attempt() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let t = 12_000_000;
+        let refuse = |id: &str, owner: Option<&str>, at: i64| {
+            assert!(observe_claude_refusal(
+                &chat,
+                owner,
+                &outage_denial(id),
+                Some(("Bash", &bash("git fetch"))),
+                at
+            ));
+        };
+        refuse("g1", Some("attempt-1"), t);
+        refuse("g2", Some("attempt-1"), t + 1_000);
+        refuse("g3", Some("attempt-2"), t + 2_000);
+        refuse("g4", Some("attempt-2"), t + 3_000);
+        let cards = cards_in(&chat);
+        assert_eq!(cards.len(), 2, "one group per attempt");
+        for card in &cards {
+            assert_eq!(card.count, Some(2));
+            let owners: Vec<_> = card.refusals.iter().map(|r| r.owner.clone()).collect();
+            assert_eq!(owners[0], owners[1]);
+        }
+        let summaries: Vec<_> = decision_summaries()
+            .into_iter()
+            .filter(|s| s.chat_key == chat)
+            .collect();
+        assert_eq!(summaries.len(), 4);
+        for s in &summaries {
+            let card = cards.iter().find(|c| Some(&c.id) == s.group_id.as_ref());
+            let card = card.expect("every refusal names its card");
+            assert_eq!(s.owner, card.refusals[0].owner);
+        }
         forget_chat(&chat);
     }
 
@@ -1269,12 +1399,13 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
         let mut ruled = classifier_denial("Bash", "toolu_2");
         ruled["decision_reason_type"] = "rule".into();
-        assert!(!observe_claude_denial(&chat, &ruled, None));
+        assert!(!observe_claude_denial(&chat, None, &ruled, None));
         assert!(pending().iter().all(|b| b.chat_key != chat));
 
         let chain = serde_json::json!({ "command": "git push && npm publish" });
         assert!(observe_claude_denial(
             &chat,
+            None,
             &classifier_denial("Bash", "toolu_3"),
             Some(("Bash", &chain))
         ));

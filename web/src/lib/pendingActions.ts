@@ -8,7 +8,10 @@
 //   (`safety_block_pending`), keyed by its id — the ledger's `nativeDecisions`
 //   are the same cards seen from a run, so they are never counted twice. It
 //   waits for the person to choose how the agent goes on, but a Claude refusal
-//   can never be allowed, so the badge says "review", not "approve";
+//   can never be allowed, so the badge says "review", not "approve". An
+//   outage card (`kind: "outage"`: Claude's check gave no verdict at all) has
+//   nothing to review, so it is its own calmer kind, under the same key the
+//   card carries;
 // - an unanswered question (`question_pending`), one per card: a batch asked
 //   in one call is one card, and stays until its last question is answered.
 //   The host keeps an answered call listed until its answers reach the agent:
@@ -29,7 +32,7 @@ import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
 import { planTasks } from "./planReview";
 import type { Question } from "../components/UserQuestion";
 
-export type PendingActionKind = "permission" | "safety" | "question" | "delivery" | "gate" | "plan";
+export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "plan";
 
 export type PendingAction = {
   /** The host's own identity for it, prefixed by kind: stable across reloads
@@ -47,7 +50,7 @@ export type PendingAction = {
   taskId?: string;
 };
 
-type Request = { id?: string; batch?: string | null; status?: Question["status"] };
+type Request = { id?: string; batch?: string | null; status?: Question["status"]; kind?: string };
 type Requests = Readonly<Record<string, readonly Request[] | undefined>>;
 
 /** What one question card still needs, per `batch || id`: `question` while any
@@ -75,7 +78,7 @@ export type PendingActionInput = {
 };
 
 const LIVE_RUNS = new Set(["planning", "running", "waiting"]);
-const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, question: 2, delivery: 3, gate: 4, plan: 5 };
+const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, outage: 2, question: 3, delivery: 4, gate: 5, plan: 6 };
 
 const chatId = (chatKey: string | undefined) => chatKey?.startsWith("chat:") ? chatKey.slice(5) || null : null;
 
@@ -95,11 +98,12 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
     }
   }
 
-  const request = (kind: PendingActionKind, identity: string, conversationId: string) => {
+  // `prefix` is the card's own key kind: an outage card is a safety card.
+  const request = (kind: PendingActionKind, identity: string, conversationId: string, prefix: string = kind) => {
     const row = rowOf(conversationId);
     const task = taskOf.get(conversationId);
     add({
-      key: `${kind}:${identity}`, kind, rowId: row,
+      key: `${prefix}:${identity}`, kind, rowId: row,
       // Worker cards are drawn in the main chat, where they are answered.
       openChatId: task ? row : conversationId, surface: "chat",
       runId: task?.runId, taskId: task?.taskId,
@@ -107,7 +111,10 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
   };
   const requests = (kind: "permission" | "safety", lists: Requests | undefined) => {
     for (const [conversationId, list] of Object.entries(lists ?? {})) {
-      for (const item of list ?? []) if (item?.id) request(kind, item.id, conversationId);
+      for (const item of list ?? []) {
+        if (!item?.id) continue;
+        request(kind === "safety" && item.kind === "outage" ? "outage" : kind, item.id, conversationId, kind);
+      }
     }
   };
   requests("permission", input.asks);
@@ -169,6 +176,7 @@ export function pendingByTask(actions: readonly PendingAction[]): ReadonlyMap<st
 const LABEL: Record<PendingActionKind, string> = {
   permission: "Permission needed",
   safety: "Review needed",
+  outage: "Safety check was down",
   question: "Answer needed",
   delivery: "Delivery failed",
   gate: "Decision needed",
@@ -178,6 +186,7 @@ const LABEL: Record<PendingActionKind, string> = {
 const NOUN: Record<PendingActionKind, [string, string]> = {
   permission: ["permission request", "permission requests"],
   safety: ["blocked action to review", "blocked actions to review"],
+  outage: ["safety check outage", "safety check outages"],
   question: ["question to answer", "questions to answer"],
   delivery: ["failed answer delivery", "failed answer deliveries"],
   gate: ["decision", "decisions"],

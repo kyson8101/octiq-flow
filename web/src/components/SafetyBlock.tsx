@@ -95,7 +95,9 @@ function OutageBlock({
         </ul>
       </>}
       <p className="safety-card-status">
-        {count === 1 ? "The command did not run." : "None of these commands ran."} Nothing was approved.
+        {/* The refused calls, not the command text: one as-is retry is allowed,
+            so the same line may still run later. */}
+        {count === 1 ? "This refused call did not run." : "These refused calls did not run."} Nothing was approved.
       </p>
 
       {open && (

@@ -46,18 +46,28 @@ const OUTAGE_NOTICE: &str = "native-outage:";
 
 /// Whether an outage group's coordinator notice would still tell the
 /// coordinator something. It would not once the attempt has settled or been
-/// superseded, or once a tool call the worker was allowed to run has come
-/// back since the group's latest refusal: the worker has moved past it.
+/// superseded, or once a tool call the worker was allowed to run, started
+/// after the group's latest refusal, has come back: the worker has moved
+/// past it.
+///
+/// It judges the attempt of the group's LATEST refusal. A group belongs to
+/// one attempt, but the records are keyed by random id, so the first one
+/// found is no guide to which attempt is current.
 fn outage_notice_useful(data: &Stored, group_id: &str) -> bool {
-    let refusals: Vec<_> = data
+    let Some(latest) = data
         .native_decisions
         .values()
         .filter(|d| d.group_id.as_deref() == Some(group_id))
-        .collect();
-    let Some(last_at) = refusals.iter().map(|d| d.observed_at).max() else {
+        .max_by(|a, b| {
+            a.observed_at
+                .cmp(&b.observed_at)
+                .then_with(|| a.id.cmp(&b.id))
+        })
+    else {
         return false;
     };
-    let Some(attempt) = data.attempts.get(&refusals[0].attempt_id) else {
+    let last_at = latest.observed_at;
+    let Some(attempt) = data.attempts.get(&latest.attempt_id) else {
         return false;
     };
     let live = matches!(
@@ -67,10 +77,26 @@ fn outage_notice_useful(data: &Stored, group_id: &str) -> bool {
         .tasks
         .get(&attempt.task_id)
         .is_some_and(|t| t.active_attempt_id.as_deref() == Some(&attempt.id));
+    // Moved on only if an allowed call STARTED after the refusal: one that
+    // was already running when it came back proves nothing about after.
     live && attempt
         .execution
-        .last_allowed_tool_at
+        .last_allowed_tool_started_at
         .is_none_or(|at| at <= last_at)
+}
+
+/// A retry can reuse a worker chat: a refusal in it belongs to the attempt
+/// that is live there, not to an older settled one.
+fn chat_owner<'a>(data: &'a Stored, chat_key: &str) -> Option<&'a Attempt> {
+    data.attempts
+        .values()
+        .filter(|a| a.worker_chat_key == chat_key)
+        .max_by_key(|a| {
+            (
+                matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running),
+                a.number,
+            )
+        })
 }
 
 /// The notice for an outage group is cancelled at delivery, never sent,
@@ -314,6 +340,13 @@ impl OrchestrationStore {
         })))
     }
 
+    /// The attempt a refusal in this chat belongs to (`chat_owner`), for
+    /// grouping an outage refusal by attempt before it reaches the ledger.
+    pub(crate) fn refusal_owner(&self, chat_key: &str) -> Option<String> {
+        let inner = self.inner.lock().ok()?;
+        chat_owner(&inner.data, chat_key).map(|a| a.id.clone())
+    }
+
     pub(crate) fn capture_native_decisions(&self) -> Result<(), String> {
         let pending = crate::safety_block::decision_summaries();
         let fresh: Vec<_> = {
@@ -337,11 +370,12 @@ impl OrchestrationStore {
             let mut runs = BTreeSet::new();
             for card in fresh {
                 let (id, chat) = (card.id, card.chat_key);
-                // A retry can reuse a worker chat: the card belongs to the
-                // attempt that is live in it, not to an older settled one.
-                let owner = data.attempts.values().filter(|a| a.worker_chat_key == chat)
-                    .max_by_key(|a| (matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running), a.number));
-                let Some(attempt) = owner.cloned() else { continue; };
+                // An outage refusal was grouped under the attempt live when
+                // it was refused; keep it there so its group and its record
+                // agree, even if another attempt took the chat since.
+                let grouped = card.owner.as_deref().and_then(|o| data.attempts.get(o))
+                    .filter(|a| a.worker_chat_key == chat);
+                let Some(attempt) = grouped.or_else(|| chat_owner(data, &chat)).cloned() else { continue; };
                 if data.native_decisions.contains_key(&id) { continue; }
                 runs.insert(attempt.run_id.clone());
                 let outage = card.kind == crate::safety_block::RefusalKind::Outage;
@@ -627,6 +661,7 @@ mod tests {
         });
         assert!(crate::safety_block::observe_claude_denial(
             &chat,
+            None,
             &denial,
             Some(("Bash", &input))
         ));
@@ -774,10 +809,12 @@ mod tests {
         })
     }
 
-    /// Refuse `line` for an outage at `at`, as the chat reader would.
+    /// Refuse `line` for an outage at `at`, as the chat reader would: under
+    /// the attempt live in the chat.
     fn refuse(store: &OrchestrationStore, chat: &str, id: &str, line: &str, at: i64) {
-        assert!(crate::safety_block::observe_claude_denial_at(
+        assert!(crate::safety_block::observe_claude_refusal(
             chat,
+            store.refusal_owner(chat).as_deref(),
             &outage(id),
             Some(("Bash", &json!({ "command": line }))),
             at
@@ -929,6 +966,253 @@ mod tests {
         crate::safety_block::forget_chat(&chat);
     }
 
+    fn tool_call(id: &str, name: &str) -> Value {
+        json!({"type":"assistant","message":{"content":[
+            {"type":"tool_use","id":id,"name":name,"input":{}}]}})
+    }
+
+    fn tool_result(id: &str) -> Value {
+        json!({"type":"user","message":{"content":[
+            {"type":"tool_result","tool_use_id":id,"content":"x"}]}})
+    }
+
+    fn notice_useful(store: &OrchestrationStore, notice: &inbox::Notification) -> bool {
+        store
+            .mutate(|data| Ok(outage_notice_valid(data, notice)))
+            .unwrap()
+    }
+
+    /// Review of 2cbc3e9 (Tofu): Claude runs two calls at once, refuses one
+    /// for an outage, and the other, already running, comes back after the
+    /// refusal. That call started before the refusal, so it says nothing
+    /// about the worker having moved on, and the notice must still go.
+    #[test]
+    fn a_parallel_call_that_returns_after_the_refusal_does_not_cancel_the_notice() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        // Both calls in one assistant message, as Claude sends parallel ones.
+        store
+            .observe_worker_event(
+                &chat,
+                &json!({"type":"assistant","message":{"content":[
+                    {"type":"tool_use","id":"toolu_pa","name":"Bash","input":{}},
+                    {"type":"tool_use","id":"toolu_pb","name":"Read","input":{}}]}}),
+            )
+            .unwrap();
+        refuse(&store, &chat, "toolu_pa", "git fetch", now_ms() + 1);
+        store
+            .observe_worker_event(&chat, &tool_result("toolu_pa"))
+            .unwrap();
+        // It comes back clearly after the refusal.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        store
+            .observe_worker_event(&chat, &tool_result("toolu_pb"))
+            .unwrap();
+        let notice = outage_notices(&store, &run).remove(0);
+        assert!(
+            notice_useful(&store, &notice),
+            "the parallel call started before the refusal"
+        );
+        assert!(store
+            .claim_notification(&notice.id, notice.next_attempt_at)
+            .unwrap()
+            .is_some());
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// A long build started before the refusal and finishing after it is not
+    /// moving on either; a call started after the refusal is.
+    #[test]
+    fn a_long_call_started_before_the_refusal_does_not_cancel_the_notice() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        store
+            .observe_worker_event(&chat, &tool_call("toolu_build", "Bash"))
+            .unwrap();
+        // A background agent's call is refused while the build runs.
+        store
+            .observe_worker_event(&chat, &tool_call("toolu_ref", "Bash"))
+            .unwrap();
+        let refused_at = now_ms() + 1;
+        refuse(&store, &chat, "toolu_ref", "git fetch", refused_at);
+        store
+            .observe_worker_event(&chat, &tool_result("toolu_ref"))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        store
+            .observe_worker_event(&chat, &tool_result("toolu_build"))
+            .unwrap();
+        let notice = outage_notices(&store, &run).remove(0);
+        assert!(notice_useful(&store, &notice));
+        let started = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .attempts
+            .into_iter()
+            .find(|a| a.id == attempt.id)
+            .unwrap()
+            .execution
+            .last_allowed_tool_started_at
+            .expect("the build ran");
+        assert!(started < refused_at, "its START is what was recorded");
+
+        // Control: a call started after the refusal does cancel it.
+        store
+            .observe_worker_event(&chat, &tool_call("toolu_after", "Read"))
+            .unwrap();
+        store
+            .observe_worker_event(&chat, &tool_result("toolu_after"))
+            .unwrap();
+        assert!(!notice_useful(&store, &notice));
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// A result whose call was never seen starting (no name, no start) is not
+    /// proof that anything allowed ran.
+    #[test]
+    fn a_result_with_no_pending_call_does_not_count_as_allowed() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        refuse(&store, &chat, "toolu_u1", "git fetch", now_ms() - 5_000);
+        store
+            .observe_worker_event(&chat, &tool_result("toolu_never_started"))
+            .unwrap();
+        let notice = outage_notices(&store, &run).remove(0);
+        assert!(notice_useful(&store, &notice));
+        let execution = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .attempts
+            .into_iter()
+            .find(|a| a.id == attempt.id)
+            .unwrap()
+            .execution;
+        assert!(execution.last_allowed_tool_started_at.is_none());
+        assert!(execution.pending_tool_started_at.is_empty());
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// Review of 2cbc3e9: a retry that reuses the worker chat inside the
+    /// window used to join the settled attempt's group, and the notice could
+    /// then be judged by the settled attempt and cancelled.
+    #[test]
+    fn a_retry_in_the_same_chat_starts_its_own_outage_group() {
+        let store = OrchestrationStore::default();
+        let (run, first) = worker(&store);
+        let chat = first.worker_chat_key.clone();
+        let t = now_ms() - 30_000;
+        refuse(&store, &chat, "toolu_first", "git fetch", t);
+        store
+            .report_worker(
+                &chat,
+                WorkerReport {
+                    attempt_id: first.id.clone(),
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "`git fetch` was refused during the outage.".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        let (_, _, retry, _) = store
+            .reserve_attempt(
+                "chat:master",
+                &WorkerLaunch {
+                    task_id: first.task_id.clone(),
+                    agent: ChatAgent::Codex,
+                    model: None,
+                    effort: None,
+                    access: Access::Auto,
+                    new_worktree: Some(false),
+                    base_branch: String::new(),
+                },
+            )
+            .unwrap();
+        let retry = store
+            .activate_attempt(&retry.id, "/tmp".into(), "worker".into(), true)
+            .unwrap();
+        store
+            .mutate(|data| {
+                data.attempts.get_mut(&retry.id).unwrap().worker_chat_key = chat.clone();
+                Ok(())
+            })
+            .unwrap();
+        // Well inside the first group's window.
+        refuse(&store, &chat, "toolu_retry", "git fetch", t + 10_000);
+
+        let decisions: Vec<_> = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .native_decisions
+            .into_iter()
+            .filter(|d| d.chat_key == chat)
+            .collect();
+        assert_eq!(decisions.len(), 2);
+        let first_decision = decisions.iter().find(|d| d.attempt_id == first.id).unwrap();
+        let retry_decision = decisions.iter().find(|d| d.attempt_id == retry.id).unwrap();
+        assert_ne!(
+            first_decision.group_id, retry_decision.group_id,
+            "a group belongs to one attempt"
+        );
+        let notices = outage_notices(&store, &run);
+        assert_eq!(notices.len(), 2);
+        let notice_for = |d: &NativeDecision| {
+            let source = format!("{OUTAGE_NOTICE}{}", d.group_id.as_deref().unwrap());
+            notices.iter().find(|n| n.source == source).unwrap().clone()
+        };
+        // The settled attempt's group is not delivered; the retry's is.
+        assert!(!notice_useful(&store, &notice_for(first_decision)));
+        let retry_notice = notice_for(retry_decision);
+        assert!(notice_useful(&store, &retry_notice));
+        assert!(retry_notice.body.contains(&retry.id));
+        assert!(store
+            .claim_notification(&retry_notice.id, retry_notice.next_attempt_at)
+            .unwrap()
+            .is_some());
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// The usefulness check reads the attempt of the group's latest refusal,
+    /// whatever order the records sit in.
+    #[test]
+    fn the_usefulness_check_judges_the_latest_refusals_attempt() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        let t = now_ms() - 30_000;
+        refuse(&store, &chat, "toolu_l1", "git fetch", t);
+        refuse(&store, &chat, "toolu_l2", "ls", t + 1_000);
+        let notice = outage_notices(&store, &run).remove(0);
+        let group = notice
+            .source
+            .strip_prefix(OUTAGE_NOTICE)
+            .unwrap()
+            .to_string();
+        // An older record in the group that names a settled, unknown attempt
+        // (as a mis-grouped one did) must not decide it, even if it sorts
+        // first by id.
+        store
+            .mutate(|data| {
+                let mut stale = data
+                    .native_decisions
+                    .values()
+                    .find(|d| d.group_id.as_deref() == Some(group.as_str()))
+                    .unwrap()
+                    .clone();
+                stale.id = "0000-stale".into();
+                stale.attempt_id = "attempt-gone".into();
+                stale.observed_at = t - 1_000;
+                data.native_decisions.insert(stale.id.clone(), stale);
+                Ok(())
+            })
+            .unwrap();
+        assert!(notice_useful(&store, &notice));
+        crate::safety_block::forget_chat(&chat);
+    }
+
     #[test]
     fn an_outage_notice_for_a_settled_attempt_is_not_delivered() {
         let store = OrchestrationStore::default();
@@ -1014,6 +1298,7 @@ mod tests {
             });
             assert!(crate::safety_block::observe_claude_denial(
                 &chat,
+                None,
                 &denial,
                 Some(("Bash", &json!({ "command": "eas update" })))
             ));

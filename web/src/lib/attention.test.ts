@@ -59,6 +59,15 @@ describe("attention precedence", () => {
   it("retains a safety block for review and falls back for missing metadata", () => {
     expect(selectAttention(input({ projects: [], safetyBlocks: { c: [{}] } }))[0]).toMatchObject({ kind: "safety", projectName: "Unknown project" });
   });
+  it("says an outage was an outage, and keeps review for a real refusal", () => {
+    const outage = selectAttention(input({ safetyBlocks: { c: [{ kind: "outage" }] } }))[0];
+    expect(outage).toMatchObject({ kind: "safety", reason: "Safety check was down" });
+    const refusal = selectAttention(input({ safetyBlocks: { c: [{ kind: "high-risk-action" }] } }))[0];
+    expect(refusal.reason).toBe("Blocked action needs review");
+    // One real refusal among outages still needs a review.
+    const mixed = selectAttention(input({ safetyBlocks: { c: [{ kind: "outage" }, { kind: "high-risk-action" }] } }))[0];
+    expect(mixed.reason).toBe("Blocked action needs review");
+  });
   it("does not create attention for a successfully completed turn", () => {
     expect(selectAttention(input({ chats: { c: { ...emptyChat(), exited: { code: 0 } }, }, running: new Set() }))).toEqual([]);
   });

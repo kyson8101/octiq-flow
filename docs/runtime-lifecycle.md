@@ -44,15 +44,18 @@ A Claude refusal whose `decision_reason` is exactly `Classifier unavailable`
 check, not a judgment of the command, and is recorded with `kind: "outage"`.
 Every other refusal, including one with a missing or empty reason, is
 `kind: "safety"`, as is every decision stored before the field existed.
-Outage refusals in one chat share one card, and their decisions share its id
-as `groupId`; each refused call keeps its own decision. A group closes 2
+Outage refusals of one attempt in one chat share one card, and their decisions
+share its id as `groupId`; each refused call keeps its own decision. A retry
+that reuses the chat starts its own group. A group closes 2
 minutes after its latest refusal, 5 minutes after its first, or at its 5th
 refusal, whichever comes first (`outage_group_due`), and a later refusal starts
 a new group. The coordinator gets one `native-outage:<groupId>` notice per
 group, due when the group closes. It is cancelled at delivery, never sent, when
-the attempt has settled or a tool call it was allowed to run has come back since
-the group's latest refusal (`Execution.lastAllowedToolAt`: a refused call's own
-result and OctiqFlow's `mcp__octiq__*` tools do not count). The outage recovery
+the attempt of the group's latest refusal has settled, or a tool call it was
+allowed to run, STARTED after that refusal, has come back
+(`Execution.lastAllowedToolStartedAt`: a call already running when the refusal
+came, a refused call's own result, a result whose call was never seen starting,
+and OctiqFlow's `mcp__octiq__*` tools do not count). The outage recovery
 text is one string (`outage_guidance`) shown on the card, stored as the
 decision's `recovery`, and appended to the worker prompt. It allows the worker
 one as-is retry of an outage-refused command, which Claude checks again, and no
