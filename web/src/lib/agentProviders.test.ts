@@ -75,6 +75,24 @@ describe("AgentProvider UI contract", () => {
     expect(modelFromReported("claude", "claude-opus-5-1")?.flag).toBe("claude-opus-5-1");
   });
 
+  it("pins Opus 5.5 and Sonnet 5.5 to their own rows, never the moving alias", () => {
+    for (const [family, label] of [["opus", "Opus 5.5"], ["sonnet", "Sonnet 5.5"]] as const) {
+      const flag = `claude-${family}-5-5`;
+      const byId = modelFromId(`claude:${family}-5-5`);
+      expect(byId?.flag).toBe(flag);
+      expect(byId?.model).toBe(label);
+      expect(byId?.composerStyle).toBe(family);
+      const reported = modelFromReported("claude", flag);
+      expect(reported?.id).toBe(`claude:${family}-5-5`);
+      expect(reported?.flag).not.toBe(family);
+    }
+    const flags = providers.claude.models.map((model) => model.flag);
+    expect(flags.indexOf("claude-opus-5-5") + 1).toBe(flags.indexOf("claude-opus-5"));
+    expect(flags.indexOf("claude-sonnet-5-5") + 1).toBe(flags.indexOf("claude-sonnet-5"));
+    // An id the list has never heard of keeps its two-part version too.
+    expect(modelChoiceForFlag("claude", "claude-haiku-5-5")?.model).toBe("Haiku 5.5");
+  });
+
   it("round-trips a newly discovered exact model through persisted state", () => {
     const choice = modelChoiceForFlag("codex", "gpt-5.7-new", "GPT-5.7 New");
     expect(choice?.model).toBe("GPT-5.7 New");

@@ -220,11 +220,13 @@ fn parse_claude_models(body: ClaudeModelsResponse) -> Vec<AgentModel> {
 /// model, and therefore should never be mistaken for one of these rows.
 fn bundled_claude_models() -> Vec<AgentModel> {
     [
+        ("claude-opus-5-5", "Claude Opus 5.5"),
         ("claude-opus-5", "Claude Opus 5"),
         ("claude-opus-4-8", "Claude Opus 4.8"),
         ("claude-opus-4-7", "Claude Opus 4.7"),
         ("claude-opus-4-6", "Claude Opus 4.6"),
         ("claude-opus-4-5-20251101", "Claude Opus 4.5"),
+        ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
         ("claude-sonnet-5", "Claude Sonnet 5"),
         ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
         ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
@@ -861,6 +863,18 @@ mod tests {
         let models = bundled_claude_models();
         assert!(models.iter().any(|model| model.model == "claude-opus-4-6"));
         assert!(models.iter().all(|model| model.model != "opus"));
+    }
+
+    #[test]
+    fn bundled_claude_catalog_offers_the_5_5_models_first_in_their_family() {
+        let models = bundled_claude_models();
+        let index = |id: &str| models.iter().position(|model| model.model == id);
+        let opus = index("claude-opus-5-5").expect("Opus 5.5 is bundled");
+        let sonnet = index("claude-sonnet-5-5").expect("Sonnet 5.5 is bundled");
+        assert_eq!(models[opus].display_name, "Claude Opus 5.5");
+        assert_eq!(models[sonnet].display_name, "Claude Sonnet 5.5");
+        assert_eq!(opus + 1, index("claude-opus-5").unwrap());
+        assert_eq!(sonnet + 1, index("claude-sonnet-5").unwrap());
     }
 
     #[test]
