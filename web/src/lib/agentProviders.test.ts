@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   accessFor,
+  claudeModelName,
   effortFor,
   liveSettingCommand,
   modelChoiceForFlag,
@@ -117,5 +118,41 @@ describe("AgentProvider UI contract", () => {
     expect(providerCommands("codex", cache.current.codex ?? [])).toEqual([
       { id: "release", label: "/release", insert: "/release " },
     ]);
+  });
+});
+
+describe("claudeModelName", () => {
+  it("names a pinned Claude id by family and version", () => {
+    expect(claudeModelName("claude-sonnet-5-5")).toBe("Sonnet 5.5");
+    expect(claudeModelName("claude-opus-5-5")).toBe("Opus 5.5");
+    expect(claudeModelName("claude-sonnet-5")).toBe("Sonnet 5");
+    expect(claudeModelName("claude-opus-4-6")).toBe("Opus 4.6");
+  });
+
+  it("drops a date suffix instead of reading it as a version", () => {
+    expect(claudeModelName("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
+    expect(claudeModelName("claude-opus-4-5-20251101")).toBe("Opus 4.5");
+  });
+
+  it("never gives a moving alias a version", () => {
+    expect(claudeModelName("sonnet")).toBe("Sonnet");
+    expect(claudeModelName("opus")).toBe("Opus");
+    expect(claudeModelName("haiku")).toBe("Haiku");
+    expect(claudeModelName("fable")).toBe("Fable");
+  });
+
+  it("keeps the version of an id it has never seen", () => {
+    expect(claudeModelName("claude-opus-5-1")).toBe("Opus 5.1");
+    expect(claudeModelName("claude-fable-5-1")).toBe("Fable 5.1");
+  });
+
+  it("drops a context tag, which is not part of the version", () => {
+    expect(claudeModelName("claude-opus-4-6[1m]")).toBe("Opus 4.6");
+  });
+
+  it("leaves every other id to the caller", () => {
+    for (const id of ["gpt-5.6-terra", "gpt-6-astra", "codex", "inherit", "", "claude-3-5-sonnet-20241022"]) {
+      expect(claudeModelName(id)).toBeUndefined();
+    }
   });
 });

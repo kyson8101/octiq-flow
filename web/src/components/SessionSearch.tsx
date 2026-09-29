@@ -11,6 +11,7 @@
 // carrying on are the same decision, made at the same moment, so they belong in
 // the same place; a dialog would make one of them feel like a detour.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { claudeModelName } from "../lib/agentProviders";
 import {
   folderName,
   loadHistory,
@@ -214,13 +215,7 @@ export function SessionSearch({
               <span className="resume-title">
                 <Marked text={hit.session.title} ranges={hit.ranges} />
               </span>
-              <span className="resume-where">
-                <bdi>{folderName(hit.session.cwd) || hit.session.cwd}</bdi>
-                {hit.session.model && <span className="resume-dot">·</span>}
-                {hit.session.model && shortModel(hit.session.model)}
-                {hit.session.effort && <span className="resume-dot">·</span>}
-                {hit.session.effort}
-              </span>
+              <SessionWhere session={hit.session} />
             </span>
             <span className="resume-when">
               <RollingText>{whenLabel(hit.session.updatedAt)}</RollingText>
@@ -274,9 +269,26 @@ function Marked({ text, ranges }: { text: string; ranges: [number, number][] }) 
   return <>{parts}</>;
 }
 
-/** `claude-opus-5` → `opus`, `gpt-5.6-terra` → `gpt-5.6`. The full id is the
- *  agent's business; the row only has space for the part that tells them apart. */
+/** A row's second line: the folder, then the model and effort it ran with. */
+export function SessionWhere({ session }: { session: HistorySession }) {
+  return (
+    <span className="resume-where">
+      <bdi>{folderName(session.cwd) || session.cwd}</bdi>
+      {session.model && <span className="resume-dot">·</span>}
+      {session.model && shortModel(session.model)}
+      {session.effort && <span className="resume-dot">·</span>}
+      {session.effort}
+    </span>
+  );
+}
+
+/** `claude-sonnet-5-5` → `Sonnet 5.5`, `claude-haiku-4-5-20251001` →
+ *  `Haiku 4.5`, the moving alias `sonnet` → `Sonnet`, `gpt-5.6-terra` →
+ *  `gpt-5.6`. The full id is the agent's business; the row keeps the family
+ *  and the version, which is what tells two sessions apart. */
 function shortModel(id: string): string {
+  const named = claudeModelName(id);
+  if (named) return named;
   const claude = id.match(/(opus|sonnet|haiku|fable)/i);
   if (claude) return claude[1].toLowerCase();
   const gpt = id.match(/^(gpt-[\d.]+)/i);

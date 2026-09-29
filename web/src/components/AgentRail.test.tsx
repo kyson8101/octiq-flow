@@ -44,3 +44,45 @@ describe("AgentRail, put away and brought back", () => {
     expect(renderToStaticMarkup(<RailButton count={0} open onToggle={() => {}} />)).toBe("");
   });
 });
+
+describe("AgentRail, which model each agent ran on", () => {
+  const modelChips = (models: string[]) => {
+    const out = renderToStaticMarkup(
+      <AgentRail
+        agents={[
+          run({
+            kind: "local_workflow",
+            workers: models.map((model, index) => ({
+              id: `a${index}`,
+              index,
+              label: `agent ${index}`,
+              phaseIndex: 0,
+              model,
+              state: "done",
+            })),
+          }),
+        ]}
+      />,
+    );
+    return [...out.matchAll(/<span class="rail-kind rail-model">([^<]*)<\/span>/g)].map((m) => m[1]);
+  };
+
+  it("keeps a Claude version, drops a date and never versions an alias", () => {
+    expect(
+      modelChips([
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "claude-sonnet-5",
+        "claude-opus-4-6",
+        "claude-haiku-4-5-20251001",
+        "claude-opus-4-5-20251101",
+        "sonnet",
+        "claude-opus-5-1",
+      ]),
+    ).toEqual(["Sonnet 5.5", "Opus 5.5", "Sonnet 5", "Opus 4.6", "Haiku 4.5", "Opus 4.5", "Sonnet", "Opus 5.1"]);
+  });
+
+  it("says other models exactly as it did before", () => {
+    expect(modelChips(["gpt-5.6-terra", "codex-mini", "inherit"])).toEqual(["gpt", "codex", "inherit"]);
+  });
+});

@@ -12,6 +12,7 @@
 // A dynamic workflow is one run holding many agents, so it opens into its own
 // phases. A Task subagent is a single row: it has no tree to show.
 import { useEffect, useState } from "react";
+import { claudeModelName } from "../lib/agentProviders";
 import type { AgentRun, WorkflowAgent } from "../lib/chat";
 import { RollingNumber, RollingText } from "./RollingNumber";
 
@@ -31,10 +32,13 @@ function saidTokens(n: number): string {
   return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
 }
 
-/** A model id as the one word that distinguishes it. `claude-haiku-4-5-2025…`
- *  reads as `haiku`, which is the only part anyone scans a rail for. */
+/** A model id as the few words that tell it apart. A Claude id keeps its
+ *  version, since two agents on different Sonnets are not the same agent:
+ *  `claude-sonnet-5-5` reads `Sonnet 5.5`, a dated `claude-haiku-4-5-2025…`
+ *  reads `Haiku 4.5`, and a moving alias reads as its family, `Sonnet`.
+ *  Anything else is still cut to one word: `gpt-5.6-terra` reads `gpt`. */
 function saidModel(id: string): string {
-  return /opus|sonnet|haiku|fable|gpt|codex/i.exec(id)?.[0].toLowerCase() ?? id;
+  return claudeModelName(id) ?? /opus|sonnet|haiku|fable|gpt|codex/i.exec(id)?.[0].toLowerCase() ?? id;
 }
 
 /** A clock that ticks once a second, and ONLY while something is running.
@@ -86,7 +90,7 @@ function WorkerRow({ worker, now }: { worker: WorkflowAgent; now: number }) {
       <span className="rail-body">
         <span className="rail-label">{worker.label || `agent ${worker.index}`}</span>
         <span className="rail-meta">
-          {worker.model && <span className="rail-kind">{saidModel(worker.model)}</span>}
+          {worker.model && <span className="rail-kind rail-model">{saidModel(worker.model)}</span>}
           {/* Only ever shown above 1, where it is the reason a phase is slow. */}
           {worker.attempt !== undefined && worker.attempt > 1 && (
             <span className="rail-retry">

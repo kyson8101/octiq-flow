@@ -288,6 +288,20 @@ function modelLabel(provider: Provider, flag: string, displayName?: string): str
   return flag;
 }
 
+/** A Claude model id, or a moving alias, as a person reads it:
+ * `claude-sonnet-5-5` → `Sonnet 5.5`, `claude-haiku-4-5-20251001` →
+ * `Haiku 4.5`, `sonnet` → `Sonnet`. The words come from `modelLabel`, the
+ * parser the picker already uses, so a history row and the picker never name
+ * one model two ways. An alias stays a bare family: it moves, so no version
+ * can be claimed for it. A `[1m]` context tag is not part of the version and is
+ * dropped. Anything that is not a Claude family id is undefined, and the
+ * caller keeps its own wording for it. */
+export function claudeModelName(id: string): string | undefined {
+  const flag = id.trim().toLowerCase().replace(/\[[^\]]*\]$/, "");
+  if (!/^(claude-)?(opus|sonnet|haiku|fable)(-\d+)*$/.test(flag)) return undefined;
+  return modelLabel("claude", flag);
+}
+
 function styleForModel(provider: Provider, flag: string): ComposerStyle {
   const lower = flag.toLowerCase();
   if (provider === "claude") {

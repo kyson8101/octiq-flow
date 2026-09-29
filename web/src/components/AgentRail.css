@@ -151,6 +151,11 @@
   color: var(--fg-3);
 }
 
+/* `Sonnet 5.5` is one name. It moves to the next line whole, never split. */
+.rail-model {
+  white-space: nowrap;
+}
+
 .rail-stats,
 .rail-live {
   font-family: var(--mono);
