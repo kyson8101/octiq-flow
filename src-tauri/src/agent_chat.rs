@@ -4343,6 +4343,8 @@ pub(crate) mod stand_in {
     /// harness prints its own header first, and a reader skips past it.
     const READY: &str = "octiq-stand-in-ready";
 
+    /// Its stdout goes nowhere unless the caller pipes it: the harness's own
+    /// "test result" lines would otherwise land in the suite's log.
     fn playing(part: &str) -> Command {
         let mut command = Command::new(std::env::current_exe().expect("the test binary"));
         command
@@ -4353,7 +4355,8 @@ pub(crate) mod stand_in {
                 "--quiet",
                 "--test-threads=1",
             ])
-            .env(PART, part);
+            .env(PART, part)
+            .stdout(std::process::Stdio::null());
         command
     }
 
