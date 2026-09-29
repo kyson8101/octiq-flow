@@ -5660,15 +5660,24 @@ pub(crate) mod tests {
 
     #[test]
     fn a_run_root_must_be_the_chat_folder_or_registered() {
+        // An absolute path on this platform: "/repos" has no drive on Windows.
+        let abs = |path: &str| {
+            if cfg!(windows) {
+                format!("C:{}", path.replace('/', "\\"))
+            } else {
+                path.to_string()
+            }
+        };
         let project: Workspace = serde_json::from_value(json!({
-            "id": "p", "name": "P", "primary_path": "/repos/app", "paths": ["/repos/lib"],
+            "id": "p", "name": "P", "primary_path": abs("/repos/app"), "paths": [abs("/repos/lib")],
         }))
         .unwrap();
-        assert!(root_allowed(&project, None, "/repos/app"));
-        assert!(root_allowed(&project, None, "/repos/lib/sub"));
-        assert!(root_allowed(&project, Some("/wt/feature"), "/wt/feature"));
-        assert!(!root_allowed(&project, Some("/wt/feature"), "/etc"));
-        assert!(!root_allowed(&project, None, "/repos/app/../../etc"));
+        let worktree = abs("/wt/feature");
+        assert!(root_allowed(&project, None, &abs("/repos/app")));
+        assert!(root_allowed(&project, None, &abs("/repos/lib/sub")));
+        assert!(root_allowed(&project, Some(&worktree), &worktree));
+        assert!(!root_allowed(&project, Some(&worktree), &abs("/etc")));
+        assert!(!root_allowed(&project, None, &abs("/repos/app/../../etc")));
         assert!(!root_allowed(&project, None, "relative/app"));
     }
 

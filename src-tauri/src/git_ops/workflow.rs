@@ -557,6 +557,9 @@ pub(crate) mod tests {
             git(&root, &["config", "user.name", "Workflow test"]).unwrap();
             git(&root, &["config", "user.email", "test@localhost"]).unwrap();
             git(&root, &["config", "commit.gpgSign", "false"]).unwrap();
+            // Checkouts are compared byte for byte; Git for Windows installs
+            // with core.autocrlf=true, which would write "\r\n" into them.
+            git(&root, &["config", "core.autocrlf", "false"]).unwrap();
             std::fs::write(Path::new(&root).join("source.txt"), "original\n").unwrap();
             git(&root, &["add", "."]).unwrap();
             git(&root, &["commit", "-m", "base"]).unwrap();

@@ -28,6 +28,23 @@ stdin, and the shell/agent reads them as if typed. PTY output streams back as
 
 Run everything from the repo root. **Rust + Node + pnpm are required.**
 
+**Building on Windows also needs OpenSSL.** `src-tauri/Cargo.toml` asks for
+`openssl` with the `vendored` feature, which builds OpenSSL from source and
+needs **Perl** (Strawberry Perl, say). Without Perl, `cargo build` stops at
+`openssl-sys` with "Command 'perl' not found". To use an installed OpenSSL
+instead, set `OPENSSL_NO_VENDOR=1` plus `OPENSSL_DIR`, `OPENSSL_INCLUDE_DIR`
+and `OPENSSL_LIB_DIR` pointing at it, for example in `cmd` after `vcvars64.bat`:
+
+```bat
+set "OPENSSL_NO_VENDOR=1"
+set "OPENSSL_DIR=C:\Program Files\OpenSSL-Win64"
+set "OPENSSL_INCLUDE_DIR=C:\Program Files\OpenSSL-Win64\include"
+set "OPENSSL_LIB_DIR=C:\Program Files\OpenSSL-Win64\lib\VC\x64\MD"
+```
+
+Keep the quotes around each `set`, or `cmd` takes the space in `Program Files`
+apart. Leave the Cargo feature as it is; these variables are a local override.
+
 ## Versioning
 
 Every release increments the patch version by one (`0.1.0` → `0.1.1`). The

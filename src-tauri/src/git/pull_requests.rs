@@ -2135,7 +2135,14 @@ mod tests {
         let repo = test_repo("snapshot");
         std::fs::write(repo.root.join("main-only.txt"), "base moved\n").unwrap();
         commit_all(&repo.root, "advance base after branching");
-        let literal_name = ":(glob)*.txt";
+        // A name git would read as a pathspec that also matches ordinary.txt,
+        // unless it is taken literally. Windows forbids ':' and '*' in a file
+        // name, so there the pattern is a bracket glob, which it allows.
+        let literal_name = if cfg!(windows) {
+            "[o]rdinary.txt"
+        } else {
+            ":(glob)*.txt"
+        };
         std::fs::write(repo.linked.join(literal_name), "first snapshot\n").unwrap();
         std::fs::write(repo.linked.join("ordinary.txt"), "ordinary change\n").unwrap();
         commit_all(&repo.linked, "literal path commit");
