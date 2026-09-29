@@ -1,10 +1,16 @@
 // Live check: an agent's memory write is shown in its chat by the host, from
 // the vault's receipt — saved, failed or unconfirmed — once per write, across
 // reloads and a server restart; a worker's coordinator sees that it happened
-// and a link to the worker chat, not the words. A save whose activity a crash
-// lost is recovered by a next-day retry without a date; a line lost from a
-// transcript, or never confirmed, is written back once (the latter by the
-// restart itself); and past the ledger's KEEP the transcripts still dedupe.
+// and a link to the worker chat, not the words. An undated entry takes the
+// server's LOCAL date — the server runs in a zone whose date differs from the
+// UTC date at the time of the run (Kiritimati, UTC+14, or Pago Pago, UTC-11;
+// one of them always does) — and its receipt keeps that date. A
+// save whose activity a crash lost is recovered by a next-day retry without a
+// date, from a receipt that kept none; different words under its requestId are
+// a refused line beside the saved one, never "not updated". A line lost from
+// a transcript — worker's and coordinator's — or never confirmed is written
+// back once by the restart itself, with no retry; and past the ledger's KEEP
+// the transcripts still dedupe.
 //
 // Evidence class: STUB PROVIDER, REAL SERVER, REAL BROWSER, DISPOSABLE VAULT.
 // This checkout's octiq-server runs under a throwaway HOME with a stand-in
@@ -78,8 +84,10 @@ git("init", "-q", "-b", "develop");
 git("-c", "user.email=t@example.invalid", "-c", "user.name=t", "add", "README.md");
 git("-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "-m", "fixture");
 
+const dateIn = (zone, at = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: zone }).format(at);
+const ZONE = ["Pacific/Kiritimati", "Pacific/Pago_Pago"].find((zone) => dateIn(zone) !== dateIn("UTC"));
 const ENV = { ...process.env, HOME, SHELL: "/bin/zsh", OCTIQ_WEB_PORT: String(PORT), OCTIQ_WEB_TOKEN: TOKEN,
-  OCTIQ_CHAT_IDLE_MINS: "0", PATH: `${BIN}:${process.env.PATH}`, STUB_LOG: LOG, STUB_CAPS: CAPS };
+  OCTIQ_CHAT_IDLE_MINS: "0", PATH: `${BIN}:${process.env.PATH}`, STUB_LOG: LOG, STUB_CAPS: CAPS, TZ: ZONE };
 for (const name of ["OCTIQ_CHAT_KEY", "OCTIQ_SESSION_KEY", "OCTIQ_LAUNCH_ID", "OCTIQ_CHAT_CAPABILITY", "OCTIQ_HOOK_PORT", "OCTIQ_ROOT"]) {
   delete ENV[name];
 }
@@ -300,6 +308,18 @@ try {
   results.workerSaved = await memory(W, "agent_memory_append", { text: "Workers report memory through the host.", date: "2026-09-28", requestId: "live-w1" });
   assert.equal(results.workerSaved.status, 200, JSON.stringify(results.workerSaved));
   await memory(W, "agent_memory_append", { text: "Workers report memory through the host.", date: "2026-09-28", requestId: "live-w1" });
+  // No date: the server's local date, kept on the receipt.
+  const localBefore = dateIn(ZONE);
+  const utcBefore = dateIn("UTC");
+  results.localDate = await memory(W, "agent_memory_append", { text: "Dated by the host's local clock.", requestId: "live-w2" });
+  const localAfter = dateIn(ZONE);
+  const utcAfter = dateIn("UTC");
+  assert.equal(results.localDate.status, 200, JSON.stringify(results.localDate));
+  results.localDate = { zone: ZONE, utc: utcAfter, local: localAfter,
+    entryDate: results.localDate.result.receipt.entryDate, receipt: results.localDate.result.receipt.id };
+  assert.ok([localBefore, localAfter].includes(results.localDate.entryDate), JSON.stringify(results.localDate));
+  // The UTC date would have been wrong here: that is what makes this a check.
+  assert.ok(![utcBefore, utcAfter].includes(results.localDate.entryDate), JSON.stringify(results.localDate));
 
   await open("Coordinator main chat");
   const relayed = notes().first();
@@ -307,7 +327,7 @@ try {
   results.coordinatorLine = (await relayed.innerText()).replace(/\s+/g, " ");
   assert.match(results.coordinatorLine, /Mango Juice updated memory · Record what was learned/);
   assert.doesNotMatch(results.coordinatorLine, /Workers report memory through the host/);
-  assert.equal(await notes().count(), 1);
+  assert.equal(await notes().count(), 2);
   const link = relayed.getByRole("link", { name: "Open chat" });
   results.link = await link.getAttribute("href");
   assert.equal(results.link, `#/c/${W.slice(5)}`);
@@ -377,11 +397,22 @@ try {
   await crossLine.getByRole("button", { name: /Details/ }).click();
   results.crossDayCrashGap.details = await crossLine.locator(".memory-note-details").innerText();
   assert.match(results.crossDayCrashGap.details, new RegExp(`Dated\\s+${yesterday}`));
-  // A different payload under the same id is still refused, as its own line.
+  // A different payload under the same id is refused, as its own line — and
+  // that line says the earlier entry is saved, never "not updated".
   const other = await memory(D, "agent_memory_append", { text: "Different words.", requestId: "live-x1" });
   results.crossDayCrashGap.differentPayload = { status: other.status, error: other.error };
   assert.equal(other.status, 400);
-  assert.match(other.error, /different operation/);
+  assert.match(other.error, /refused and wrote nothing/);
+  assert.match(other.error, /earlier entry is saved/);
+  const refusedNote = page.locator('.memory-note[data-memory-status="refused"]');
+  await refusedNote.waitFor({ timeout: 10_000 });
+  results.crossDayCrashGap.refusedLine = (await refusedNote.innerText()).replace(/\s+/g, " ");
+  assert.match(results.crossDayCrashGap.refusedLine, /Mango Juice's repeated memory request was refused/);
+  assert.match(results.crossDayCrashGap.refusedLine, /Earlier entry under this request is saved/);
+  assert.doesNotMatch(results.crossDayCrashGap.refusedLine, /not updated/);
+  await refusedNote.scrollIntoViewIfNeeded();
+  await settle();
+  await page.screenshot({ path: path.join(OUT, "4b-refused-beside-saved-1440-dark.png") });
 
   // ---- Durable delivery, checked on disk.
   const find = (dir, name) => {
@@ -410,29 +441,44 @@ try {
   const workerId = results.workerSaved.result.receipt.id;
   const r1Id = results.saved.result.receipt.id;
 
-  // A line the ledger confirmed, gone from the transcript (the platter lost
-  // an unsynced write, or a backup was restored); and a line whose intent a
+  // The undated worker line, on disk, carries the local date.
+  const localId = results.localDate.receipt;
+  results.localDate.lineDate = memoryLines(W).find((e) => e.id === localId)?.date;
+  assert.equal(results.localDate.lineDate, results.localDate.entryDate);
+
+  // Lines the ledger confirmed, gone from their transcripts (the platter lost
+  // an unsynced write, or a backup was restored) — in the direct chat, and a
+  // worker's line in the coordinator chat — and a worker line whose intent a
   // crash left unconfirmed, never written.
   await stopServer();
   assert.equal(readLedger().entries[crossId].delivered[D], "saved");
+  assert.equal(readLedger().entries[workerId].delivered[C], "saved");
   dropLines(D, crossId);
   dropLines(W, workerId);
+  dropLines(C, workerId);
   const pendingLedger = readLedger();
   delete pendingLedger.entries[workerId].delivered[W];
   pendingLedger.entries[workerId].pending = { [W]: "saved" };
   fs.writeFileSync(ledgerFile, JSON.stringify(pendingLedger));
+  results.durable = { before: { direct: linesFor(D, crossId), worker: linesFor(W, workerId), coordinator: linesFor(C, workerId) } };
   await startServer();
-  // The restart itself finishes the unconfirmed one — nobody retried it.
-  await wait("the recovered worker line", async () => linesFor(W, workerId).length === 1);
-  results.durable = { workerLineAfterRestart: linesFor(W, workerId), workerPendingAfterRestart: readLedger().entries[workerId].pending };
-  assert.deepEqual(results.durable.workerPendingAfterRestart, {});
+  // The restart itself writes all three back — nobody retried anything.
+  await wait("the restored lines", async () =>
+    linesFor(W, workerId).length === 1 && linesFor(C, workerId).length === 1 && linesFor(D, crossId).length === 1);
+  const afterStart = readLedger();
+  results.durable.afterRestart = { direct: linesFor(D, crossId), worker: linesFor(W, workerId), coordinator: linesFor(C, workerId),
+    workerPending: afterStart.entries[workerId].pending, delivered: afterStart.entries[workerId].delivered };
+  assert.deepEqual(results.durable.afterRestart.workerPending, {});
+  assert.deepEqual(results.durable.afterRestart.delivered, { [W]: "saved", [C]: "saved" });
+  // Present now: another restart and three retries add nothing.
+  await stopServer();
+  await startServer();
   await revive(D);
-  // The confirmed-but-lost one is written back by its retry, once.
   for (let i = 0; i < 3; i++) {
     assert.equal((await memory(D, "agent_memory_append", { text: crossText, requestId: "live-x1" })).status, 200);
   }
-  results.durable.crossLinesAfterRetries = linesFor(D, crossId);
-  assert.deepEqual(results.durable.crossLinesAfterRetries, ["saved"]);
+  results.durable.afterSecondRestartAndRetries = { direct: linesFor(D, crossId), worker: linesFor(W, workerId), coordinator: linesFor(C, workerId) };
+  assert.deepEqual(results.durable.afterSecondRestartAndRetries, { direct: ["saved"], worker: ["saved"], coordinator: ["saved"] });
 
   // ---- Past KEEP: the ledger forgets the oldest writes, the transcripts
   // still guard them, alone and under concurrent retries.
@@ -466,11 +512,11 @@ try {
   results.keep.statuses = await notes().evaluateAll((els) => els.map((e) => e.getAttribute("data-memory-status")));
   // r1, r2, r3, x1, x1's refused different payload, r4 — one line each. (The
   // tab's cache keeps x1 where it first saw it; the order on disk is above.)
-  assert.deepEqual([...results.keep.statuses].sort(), ["failed", "failed", "saved", "saved", "saved", "uncertain"]);
+  assert.deepEqual([...results.keep.statuses].sort(), ["failed", "refused", "saved", "saved", "saved", "uncertain"]);
   results.keep.linesOnDisk = Object.entries(Object.groupBy(memoryLines(D), (e) => e.id))
     .map(([, events]) => events.map((e) => e.status).join("+"));
   assert.equal(results.keep.linesOnDisk.length, 6);
-  assert.ok(results.keep.linesOnDisk.every((s) => ["saved", "failed", "uncertain"].includes(s)), results.keep.linesOnDisk.join());
+  assert.ok(results.keep.linesOnDisk.every((s) => ["saved", "failed", "uncertain", "refused"].includes(s)), results.keep.linesOnDisk.join());
   await settle();
   await page.screenshot({ path: path.join(OUT, "8-recovered-lines-1440-dark.png") });
 

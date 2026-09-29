@@ -64,6 +64,28 @@ describe("MemoryNote", () => {
     expect(unsure).toContain("needs review");
   });
 
+  it("shows a refused call and the earlier save it met as two separate states", () => {
+    const html = renderToStaticMarkup(
+      <MemoryNote
+        activity={{
+          ...activity,
+          id: "q".repeat(64),
+          status: "refused",
+          date: undefined,
+          receipt: undefined,
+          error: "This call was refused and wrote nothing.",
+          earlier: { id: "a".repeat(64), status: "saved" },
+        }}
+      />,
+    );
+    expect(html).toContain('data-memory-status="refused"');
+    expect(html).toContain("Mango Juice&#x27;s repeated memory request was refused");
+    expect(html).not.toContain("not updated");
+    // The earlier save's own state, visible without opening anything.
+    expect(html).toMatch(/<div class="memory-note-earlier is-saved">[\s\S]*Earlier entry under this request is saved/);
+    expect(html.indexOf("memory-note-earlier")).toBeLessThan(html.indexOf("memory-note-details"));
+  });
+
   it("gives a coordinator a link to the worker chat instead of the words", () => {
     const html = renderToStaticMarkup(
       <MemoryNote

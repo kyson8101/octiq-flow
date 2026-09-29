@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { chatIdOf, memoryHeadline, type MemoryActivity } from "../lib/memoryActivity";
+import { chatIdOf, earlierState, memoryHeadline, type MemoryActivity } from "../lib/memoryActivity";
 import { chatRouteHash } from "../lib/chatRoute";
 import "./MemoryNote.css";
 
@@ -18,12 +18,23 @@ export function MemoryNote({ activity }: { activity: MemoryActivity }) {
   const { status, source } = activity;
   const when = activity.at ? new Date(activity.at) : undefined;
   const hasDetails = !source && !!(activity.text || activity.note || activity.receipt || activity.error);
+  // A refused call is two facts: this call wrote nothing, and the earlier
+  // change under its requestId stands as it is. Both show without opening.
+  const earlier = earlierState(activity);
 
   return (
     <div className={`memory-note is-${status} ${open ? "is-open" : ""}`} data-memory-status={status}>
       <div className="memory-note-head">
         <span className="memory-note-icon" aria-hidden="true">
-          {status === "saved" ? <BrainIcon /> : status === "uncertain" ? <QuestionIcon /> : <CrossIcon />}
+          {status === "saved" ? (
+            <BrainIcon />
+          ) : status === "uncertain" ? (
+            <QuestionIcon />
+          ) : status === "refused" ? (
+            <BanIcon />
+          ) : (
+            <CrossIcon />
+          )}
         </span>
         <span className="memory-note-title">
           {memoryHeadline(activity)}
@@ -51,6 +62,14 @@ export function MemoryNote({ activity }: { activity: MemoryActivity }) {
           </button>
         ) : null}
       </div>
+      {earlier && (
+        <div className={`memory-note-earlier is-${activity.earlier?.status === "saved" ? "saved" : "unsure"}`}>
+          <span className="memory-note-earlier-icon" aria-hidden="true">
+            {activity.earlier?.status === "saved" ? <BrainIcon /> : <QuestionIcon />}
+          </span>
+          <span>{earlier}</span>
+        </div>
+      )}
       {hasDetails && (
         <div id={detailsId} className="memory-note-details" hidden={!open}>
           {activity.error && <p className="memory-note-error">{activity.error}</p>}
@@ -112,6 +131,16 @@ function QuestionIcon() {
       <circle cx="12" cy="12" r="9" />
       <path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.2" />
       <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
+/** Lucide's "ban" (ISC): refused, as distinct from failed. */
+function BanIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="m5.7 5.7 12.6 12.6" />
     </svg>
   );
 }

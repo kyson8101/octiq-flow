@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import fileEdits from "./__fixtures__/file-edits.jsonl?raw";
 import { emptyChat, reduceChat, type ChatState } from "./chat";
-import { mergeMemoryActivity, memoryHeadline, readMemoryActivity } from "./memoryActivity";
+import { earlierState, mergeMemoryActivity, memoryHeadline, readMemoryActivity } from "./memoryActivity";
 
 const saved = {
   type: "octiq_memory_activity",
@@ -72,6 +72,35 @@ describe("a memory line", () => {
     expect(failed.agent).toBeUndefined();
     expect(failed.receipt).toBeUndefined();
     expect(memoryHeadline({ ...failed, agent: { id: "a", name: "Mango Juice" } })).toBe("Mango Juice's memory was not updated");
+  });
+
+  it("draws a call refused over an earlier save as two states, neither of them 'not updated'", () => {
+    // The shape memory_activity.rs writes for a requestId that already belongs
+    // to another, saved change: no receipt of its own, the earlier one's here.
+    const refused = {
+      ...saved,
+      id: "q".repeat(64),
+      status: "refused",
+      date: null,
+      text: "Something else.",
+      receipt: null,
+      error: "This call was refused and wrote nothing: requestId r1 already belongs to an earlier memory change.",
+      earlier: { id: "r".repeat(64), status: "saved" },
+    };
+    const state = fold([saved, refused]);
+    const [first, second] = memoryBlocks(state);
+    expect(first.status).toBe("saved");
+    expect(second).toMatchObject({ status: "refused", earlier: { id: "r".repeat(64), status: "saved" } });
+    expect(second.receipt).toBeUndefined();
+    expect(memoryHeadline(second)).toBe("Mango Juice's repeated memory request was refused");
+    expect(memoryHeadline(second)).not.toMatch(/not updated/);
+    expect(earlierState(second)).toBe("Earlier entry under this request is saved");
+    expect(earlierState({ ...second, earlier: { id: "e", status: "needs_review" } })).toBe(
+      "Earlier change under this request: needs review",
+    );
+    expect(earlierState(first)).toBeUndefined();
+    // A refusal never moves the saved line, whichever arrives first.
+    expect(mergeMemoryActivity(first, second)).toBe(first);
   });
 
   it("refuses an event with no id or an unknown status", () => {

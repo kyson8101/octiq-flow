@@ -137,13 +137,50 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     if synced {
         file.sync_data().ok()?;
         if !existed {
-            // A new file is only durable once its folder entry is.
-            if let Some(dir) = path.parent().and_then(|d| File::open(d).ok()) {
-                let _ = dir.sync_all();
-            }
+            // A new file is only durable once its folder entry is. A folder
+            // that cannot be synced leaves the line on disk but unproven:
+            // `None`, so no ledger confirms it (the next look finds it there).
+            sync_dir(path.parent()?).ok()?;
         }
     }
     Some(seq)
+}
+
+/// Make a folder's entries (a file just created or renamed into it) durable.
+pub(crate) fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_DIR_SYNC.with(|fail| fail.get()) {
+        return Err(std::io::Error::other("folder sync refused (test)"));
+    }
+    sync_dir_on(dir, cfg!(windows))
+}
+
+/// `sync_dir`, with the platform a parameter so both branches run in tests.
+///
+/// Windows has no folder sync the standard library can reach: opening a
+/// folder as a file is refused (it needs FILE_FLAG_BACKUP_SEMANTICS), so
+/// asking would fail every time and every line in a new file would stay
+/// unconfirmed. NTFS journals the entry itself, so there is nothing to ask.
+fn sync_dir_on(dir: &Path, is_windows: bool) -> std::io::Result<()> {
+    if is_windows {
+        return Ok(());
+    }
+    File::open(dir)?.sync_all()
+}
+
+/// Forget the count kept for `key`, as a restarted process has none.
+#[cfg(test)]
+pub(crate) fn forget_count(key: &str) {
+    let mut guard = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(counts) = guard.as_mut() {
+        counts.remove(key);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Refuse every folder sync on this thread, as a failing disk would.
+    pub(crate) static FAIL_DIR_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Whether the file is empty or its last byte ends a line.
@@ -535,6 +572,32 @@ mod tests {
         assert_eq!(all[1].seq, seq);
         assert_eq!(append_synced(&key, &json!({ "n": 4 })), Some(seq + 1));
         forget(&key);
+    }
+
+    #[test]
+    fn a_new_file_whose_folder_cannot_be_synced_is_written_but_not_confirmed() {
+        let key = unique_key("dir-sync");
+        FAIL_DIR_SYNC.with(|f| f.set(true));
+        let first = append_synced(&key, &json!({ "n": 1 }));
+        // An existing file needs no folder sync, so the next one is confirmed.
+        let second = append_synced(&key, &json!({ "n": 2 }));
+        FAIL_DIR_SYNC.with(|f| f.set(false));
+        assert_eq!(first, None, "unproven, so not confirmed");
+        assert_eq!(second, Some(2));
+        let all = since(&key, 0);
+        assert_eq!(all.len(), 2, "the first line is on disk all the same");
+        assert_eq!(all[0].seq, 1);
+        forget(&key);
+    }
+
+    #[test]
+    fn a_folder_sync_is_skipped_on_windows_and_asked_everywhere_else() {
+        let missing = std::env::temp_dir().join(format!("octiq-no-dir-{}", uuid::Uuid::new_v4()));
+        // Windows cannot open a folder to sync it; asking would fail forever.
+        assert!(sync_dir_on(&missing, true).is_ok());
+        // Elsewhere a folder that cannot be synced is an error, not a shrug.
+        assert!(sync_dir_on(&missing, false).is_err());
+        assert!(sync_dir_on(&std::env::temp_dir(), false).is_ok());
     }
 
     #[test]

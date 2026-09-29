@@ -2041,6 +2041,19 @@ impl OrchestrationStore {
         .inspect(|_| announce(run_id, "task_access_chosen"))
     }
 
+    /// Point a run at another coordinator chat — which nothing in the host
+    /// does — for tests of code that must not assume the link holds.
+    #[cfg(test)]
+    pub(crate) fn test_set_coordinator(&self, run_id: &str, chat: &str) -> Result<(), String> {
+        self.mutate(|data| {
+            data.runs
+                .get_mut(run_id)
+                .ok_or("The run does not exist.")?
+                .coordinator_chat_key = chat.into();
+            Ok(())
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn reserve_attempt(
         &self,

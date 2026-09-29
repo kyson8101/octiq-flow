@@ -351,17 +351,20 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     &arg::<Value>(&args, "args")?,
                 );
             }
-            let result = crate::memory_vault::Vault::profile().call(
+            let mut result = crate::memory_vault::Vault::profile().call(
                 &format!("chat:{id}"),
                 &action,
                 &arg::<Value>(&args, "args")?,
             );
-            if let (Ok(receipt), "receipt") = (&result, action.as_str()) {
-                crate::memory_activity::receipt_checked(
+            if let (Ok(receipt), "receipt") = (&mut result, action.as_str()) {
+                let recorded = crate::memory_activity::receipt_checked(
                     &svc.orchestrations,
                     &format!("chat:{id}"),
                     receipt,
                 );
+                if let Some(problem) = recorded.problem() {
+                    receipt["chatLine"] = problem.into();
+                }
             }
             result
         }

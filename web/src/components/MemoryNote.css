@@ -18,6 +18,38 @@
   border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
 }
 
+.memory-note.is-refused .memory-note-icon {
+  color: var(--fg-2);
+}
+
+/* A refused line's second state: the earlier change it collided with. */
+.memory-note-earlier {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 6px;
+  font-size: var(--text-xs);
+  color: var(--fg-2);
+}
+
+.memory-note-earlier-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.memory-note-earlier-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.memory-note-earlier.is-saved .memory-note-earlier-icon {
+  color: var(--ok);
+}
+
+.memory-note-earlier.is-unsure .memory-note-earlier-icon {
+  color: var(--warn);
+}
+
 .memory-note-head {
   display: flex;
   align-items: center;

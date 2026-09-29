@@ -75,9 +75,6 @@ pub async fn run_headless() {
     // Once per profile, off the startup path: old records lose the snapshot
     // reads they were recorded with (see record_trim.rs).
     std::thread::spawn(record_trim::prune_old_records);
-    // Memory update lines whose intent a crash left unconfirmed are written
-    // (or found already written) now, not only when that write is retried.
-    std::thread::spawn(memory_activity::recover);
 
     // Before anything can start a chat: the orchestration scheduler starts
     // workers from a plain thread, and their permission questions are waited
@@ -87,6 +84,12 @@ pub async fn run_headless() {
     // Before the scheduler can start a worker: every agent is told this port.
     web::remember_hook_port(cfg.port);
     let services = dispatch::Services::load();
+    // Memory update lines whose intent a crash left unconfirmed are written
+    // (or found already written) now, not only when that write is retried,
+    // and a confirmed line a transcript has lost is written back. A
+    // coordinator's line needs the orchestration ledger to say it still is.
+    let orchestrations = services.orchestrations.clone();
+    std::thread::spawn(move || memory_activity::recover(&orchestrations));
     println!("[server] OctiqFlow backend — no window, agents run here");
     web::start_headless(cfg, services).await;
 }

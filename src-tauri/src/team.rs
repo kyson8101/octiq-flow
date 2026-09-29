@@ -747,8 +747,39 @@ pub fn utc_date(ms: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-pub fn today() -> String {
-    utc_date(now_ms())
+/// An instant and the UTC offset this machine's clock shows there: what an
+/// undated memory entry is dated by. The agent contract says "today's local
+/// date", so that is what a date left out means — never the UTC day, which is
+/// yesterday or tomorrow for most of the world around midnight.
+///
+/// A value rather than a call to the clock, so a test can stand anywhere in
+/// any zone and cross midnight when it likes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalNow {
+    pub ms: i64,
+    pub offset_secs: i32,
+}
+
+impl LocalNow {
+    pub fn system() -> Self {
+        Self::at(now_ms())
+    }
+
+    /// `ms` as this machine's zone sees it (its offset at that instant, so
+    /// daylight saving is whatever was in force then).
+    pub fn at(ms: i64) -> Self {
+        use chrono::{Offset, TimeZone};
+        let offset_secs = chrono::Local
+            .timestamp_millis_opt(ms)
+            .single()
+            .map_or(0, |t| t.offset().fix().local_minus_utc());
+        Self { ms, offset_secs }
+    }
+
+    /// The civil date this instant falls on in its zone, as YYYY-MM-DD.
+    pub fn date(&self) -> String {
+        utc_date(self.ms + i64::from(self.offset_secs) * 1000)
+    }
 }
 
 /// The registered agent behind a chat: the lead a task was handed to, or the
@@ -890,7 +921,9 @@ pub fn memory_read(
 ///
 /// Only `Saved` says the entry is in the note. `Uncertain` is a receipt the
 /// vault could not vouch for either way (it needs review), and is never shown
-/// as a success or as a failure — see `memory_activity`.
+/// as a success or as a failure — see `memory_activity`. `Conflict` is this
+/// call refused because its requestId already belongs to another change: it
+/// says nothing against that earlier change, whose receipt it carries.
 #[derive(Debug)]
 pub enum MemoryWrite {
     /// `already`: an identical retry of an append that had been saved before;
@@ -901,6 +934,12 @@ pub enum MemoryWrite {
     },
     Uncertain {
         receipt: serde_json::Value,
+        error: String,
+    },
+    /// Nothing was written by this call. `earlier` is the receipt of the
+    /// change that already holds its requestId, reconciled — often saved.
+    Conflict {
+        earlier: serde_json::Value,
         error: String,
     },
     Failed(String),
@@ -929,17 +968,16 @@ impl MemoryAppend {
                 }
                 Ok(value)
             }
-            MemoryWrite::Uncertain { error, .. } => Err(error.clone()),
-            MemoryWrite::Failed(error) => Err(error.clone()),
+            MemoryWrite::Uncertain { error, .. }
+            | MemoryWrite::Conflict { error, .. }
+            | MemoryWrite::Failed(error) => Err(error.clone()),
         }
     }
 }
 
-/// Append one dated entry to your own memory.
-///
-/// A retry with the same `request_id` is answered from the earlier receipt
-/// (the entry is never written twice), so a lost answer can always be asked
-/// again. Nothing here retries a write under a new id.
+/// Append one dated entry to your own memory, dated by this machine's clock
+/// when the date is left out.
+#[cfg(test)]
 pub fn memory_append(
     vault: &crate::memory_vault::Vault,
     actor: &str,
@@ -948,6 +986,24 @@ pub fn memory_append(
     date: Option<&str>,
     request_id: &str,
 ) -> MemoryAppend {
+    memory_append_at(vault, actor, me, text, date, request_id, LocalNow::system())
+}
+
+/// `memory_append` as of `now`: an entry whose date is left out is dated
+/// `now`'s local date, and that date is kept on its receipt.
+///
+/// A retry with the same `request_id` is answered from the earlier receipt
+/// (the entry is never written twice), so a lost answer can always be asked
+/// again. Nothing here retries a write under a new id.
+pub fn memory_append_at(
+    vault: &crate::memory_vault::Vault,
+    actor: &str,
+    me: &TeamAgent,
+    text: &str,
+    date: Option<&str>,
+    request_id: &str,
+    now: LocalNow,
+) -> MemoryAppend {
     let text = text.trim().to_owned();
     let mut append = MemoryAppend {
         note: None,
@@ -955,13 +1011,56 @@ pub fn memory_append(
         text: text.clone(),
         outcome: MemoryWrite::Failed(String::new()),
     };
-    append.outcome = match append_entry(vault, actor, me, &text, date, request_id, &mut append) {
+    append.outcome = match append_entry(vault, actor, me, &text, date, request_id, now, &mut append)
+    {
         Ok(outcome) => outcome,
         Err(error) => MemoryWrite::Failed(error),
     };
     append
 }
 
+/// The dates an earlier change under a retried requestId may have been
+/// written with. A date the retry passes is the only candidate. A date left
+/// out is read off the receipt, which keeps it. A receipt from before it kept
+/// one says only when it was made: its entry was dated that day in some zone,
+/// which is that UTC day, the one before or the one after — and the stored
+/// request hash, not this list, decides which, if any, it was.
+fn retry_dates(given: Option<&str>, made: &crate::memory_vault::Made) -> Vec<String> {
+    if let Some(date) = given {
+        return vec![date.to_owned()];
+    }
+    if let Some(date) = made.entry_date {
+        return vec![date.to_owned()];
+    }
+    const DAY: i64 = 86_400_000;
+    let at = i64::try_from(made.created_at).unwrap_or(i64::MAX);
+    vec![
+        utc_date(at.saturating_sub(DAY)),
+        utc_date(at),
+        utc_date(at.saturating_add(DAY)),
+    ]
+}
+
+/// The refusal a call gets when its requestId is already another change's.
+fn conflict(request_id: &str, earlier: serde_json::Value) -> MemoryWrite {
+    let id = earlier.get("id").and_then(|s| s.as_str()).unwrap_or("");
+    let status = earlier.get("status").and_then(|s| s.as_str());
+    let standing = match status {
+        Some("saved") => "That earlier entry is saved and stays as it is.".to_owned(),
+        other => format!(
+            "That earlier change is {}; check it with vault_receipt.",
+            other.unwrap_or("unknown").replace('_', " ")
+        ),
+    };
+    MemoryWrite::Conflict {
+        error: format!(
+            "This call was refused and wrote nothing: requestId {request_id} already belongs to an earlier memory change (receipt {id}) whose text or date differs from this call's. {standing} To retry that change, send its exact text and date; to record a different entry, use a new requestId."
+        ),
+        earlier,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn append_entry(
     vault: &crate::memory_vault::Vault,
     actor: &str,
@@ -969,8 +1068,10 @@ fn append_entry(
     text: &str,
     date: Option<&str>,
     request_id: &str,
+    now: LocalNow,
     append: &mut MemoryAppend,
 ) -> Result<MemoryWrite, String> {
+    use crate::memory_vault::Earlier;
     if text.is_empty() {
         return Err("Write what is worth remembering.".into());
     }
@@ -1003,18 +1104,6 @@ fn append_entry(
             "requestId": request_id,
         })
     };
-    // The dates a retry may be repeating. A date left out is never guessed
-    // for a retry: the first call dated its entry today() just before its
-    // receipt was made, so it is the receipt's own day — or the day before,
-    // when midnight fell in between. Only the receipt's request hash can say
-    // which, so nothing here depends on anything recorded after the write.
-    let dates = |created_at: u64| match given {
-        Some(date) => vec![date.to_owned()],
-        None => {
-            let made = i64::try_from(created_at).unwrap_or(i64::MAX);
-            vec![utc_date(made), utc_date(made.saturating_sub(86_400_000))]
-        }
-    };
     let classify = |receipt: serde_json::Value, already: bool| match receipt
         .get("status")
         .and_then(|s| s.as_str())
@@ -1031,28 +1120,30 @@ fn append_entry(
                 }
         }
     };
-    let earlier = vault
-        .earlier_change(actor, request_id, "write", |revision, created_at| {
-            dates(created_at)
-                .into_iter()
-                .map(|date| {
-                    let args = args(&date, revision);
-                    (date, args)
-                })
-                .collect()
-        })
-        .map_err(|error| match given {
-            None if error.contains("different operation") => format!(
-                "{error} These words match it on no date its receipt allows: a retry must pass the same text and date as the first call."
-            ),
-            _ => error,
-        })?;
-    if let Some((date, receipt)) = earlier {
-        append.date = Some(date);
-        return Ok(classify(receipt, true));
+    let candidates = |made: &crate::memory_vault::Made| {
+        retry_dates(given, made)
+            .into_iter()
+            .map(|date| {
+                let args = args(&date, made.before_revision);
+                (date, args)
+            })
+            .collect()
+    };
+    match vault.earlier_change(actor, request_id, "write", candidates)? {
+        Earlier::Same(date, receipt) => {
+            append.date = Some(date);
+            return Ok(classify(receipt, true));
+        }
+        Earlier::Different(earlier) => {
+            // The date this call would have used is left out on purpose:
+            // nothing was written with it.
+            append.date = given.map(str::to_owned);
+            return Ok(conflict(request_id, earlier));
+        }
+        Earlier::None => {}
     }
-    // A first call: an entry without a date is dated today.
-    let date = given.map_or_else(today, str::to_owned);
+    // A first call: an entry without a date is dated with the local date.
+    let date = given.map_or_else(|| now.date(), str::to_owned);
     append.date = Some(date.clone());
     ensure_memory(vault, actor, me)?;
     let current = vault.call(
@@ -1065,18 +1156,20 @@ fn append_entry(
         .and_then(|r| r.as_str())
         .ok_or("Could not read the memory note's revision.")?
         .to_owned();
-    match vault.call(actor, "write", &args(&date, Some(&revision))) {
+    match vault.write_entry(actor, &args(&date, Some(&revision)), &date) {
         Ok(receipt) => Ok(classify(receipt, false)),
         // A write that failed after its receipt was recorded may still have
         // reached the note: that one is uncertain, not failed. One that left
-        // no receipt never touched it.
-        Err(error) => match vault.earlier_change(actor, request_id, "write", |revision, _| {
-            vec![((), args(&date, revision))]
+        // no receipt never touched it. A receipt another call made meanwhile
+        // (the same request raced this one) is judged like any retry.
+        Err(error) => match vault.earlier_change(actor, request_id, "write", |made| {
+            vec![((), args(&date, made.before_revision))]
         }) {
-            Ok(Some((_, receipt))) => Ok(match classify(receipt, false) {
+            Ok(Earlier::Same(_, receipt)) => Ok(match classify(receipt, false) {
                 MemoryWrite::Uncertain { receipt, .. } => MemoryWrite::Uncertain { receipt, error },
                 saved => saved,
             }),
+            Ok(Earlier::Different(earlier)) => Ok(conflict(request_id, earlier)),
             _ => Err(error),
         },
     }
@@ -1704,6 +1797,65 @@ mod tests {
         assert_eq!(utc_date(0), "1970-01-01");
         assert_eq!(utc_date(951_782_400_000), "2000-02-29");
         assert_eq!(utc_date(1_790_294_400_000), "2026-09-25");
+    }
+
+    /// The offset each checked zone has on 2026-09-28/29.
+    const PROBE_ZONES: [(&str, i32); 4] = [
+        ("UTC", 0),
+        ("Asia/Kuala_Lumpur", 8 * 3600),
+        ("Pacific/Kiritimati", 14 * 3600),
+        ("America/Los_Angeles", -7 * 3600),
+    ];
+
+    #[test]
+    fn a_local_date_turns_at_local_midnight_not_utc_midnight() {
+        // 2026-09-29T00:00:00Z.
+        let utc_midnight = 1_790_640_000_000_i64;
+        for (zone, offset_secs) in PROBE_ZONES {
+            let midnight = utc_midnight - i64::from(offset_secs) * 1000;
+            let at = |ms| LocalNow { ms, offset_secs };
+            assert_eq!(at(midnight - 1).date(), "2026-09-28", "{zone}");
+            assert_eq!(at(midnight).date(), "2026-09-29", "{zone}");
+        }
+    }
+
+    /// Runs this same test binary under each real zone name, so the OS's own
+    /// zone database — not a number typed here — gives the offset and the date.
+    #[cfg(unix)]
+    #[test]
+    fn this_machines_zone_decides_the_local_date() {
+        let utc_midnight = 1_790_640_000_000_i64;
+        if let Ok(zone) = std::env::var("OCTIQ_TZ_PROBE") {
+            let (_, offset) = PROBE_ZONES.iter().find(|(z, _)| *z == zone).unwrap();
+            let midnight = utc_midnight - i64::from(*offset) * 1000;
+            assert_eq!(LocalNow::at(midnight).offset_secs, *offset, "{zone}");
+            assert_eq!(
+                LocalNow::at(midnight - 30_000).date(),
+                "2026-09-28",
+                "{zone}"
+            );
+            assert_eq!(
+                LocalNow::at(midnight + 30_000).date(),
+                "2026-09-29",
+                "{zone}"
+            );
+            return;
+        }
+        for (zone, _) in PROBE_ZONES {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "team::tests::this_machines_zone_decides_the_local_date",
+                    "--test-threads=1",
+                ])
+                .env("TZ", zone)
+                .env("OCTIQ_TZ_PROBE", zone)
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{zone}: {said}");
+            assert!(said.contains("1 passed"), "{zone} ran nothing: {said}");
+        }
     }
 
     #[test]

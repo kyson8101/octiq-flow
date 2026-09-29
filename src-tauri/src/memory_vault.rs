@@ -39,6 +39,31 @@ struct Receipt {
     revision: String,
     status: String,
     created_at: u64,
+    /// The date an agent-memory entry was written under, as the host chose
+    /// it (`Vault::write_entry`). A retry that leaves its date out reads it
+    /// back from here. Absent on every other change, and on receipts written
+    /// before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entry_date: Option<String>,
+}
+
+/// What an earlier change under a request id was, as `earlier_change` finds it.
+#[derive(Debug)]
+pub enum Earlier<T> {
+    /// Nothing was ever recorded under this id.
+    None,
+    /// This same operation, with the candidate that proved it, and its receipt.
+    Same(T, Value),
+    /// Another operation was recorded under this id: its receipt, reconciled.
+    Different(Value),
+}
+
+/// What a receipt says about the change it records, for rebuilding the
+/// arguments an identical retry would have sent.
+pub struct Made<'a> {
+    pub before_revision: Option<&'a str>,
+    pub created_at: u64,
+    pub entry_date: Option<&'a str>,
 }
 
 pub struct Vault {
@@ -101,6 +126,24 @@ impl Vault {
 
     /// The caller supplies the actor from the chat transport, never from tool arguments.
     pub fn call(&self, actor: &str, action: &str, args: &Value) -> Result<Value, String> {
+        self.call_with(actor, action, args, None)
+    }
+
+    /// A `write` of one agent-memory entry: the same change as `call`, with
+    /// the date the host dated the entry kept on its receipt, so a retry that
+    /// leaves the date out is answered from the receipt and never from a
+    /// guess. Not reachable from a tool: only the host names the date.
+    pub fn write_entry(&self, actor: &str, args: &Value, date: &str) -> Result<Value, String> {
+        self.call_with(actor, "write", args, Some(date))
+    }
+
+    fn call_with(
+        &self,
+        actor: &str,
+        action: &str,
+        args: &Value,
+        entry_date: Option<&str>,
+    ) -> Result<Value, String> {
         let _guard = LOCK.lock().map_err(|e| e.to_string())?;
         if !args.is_object() {
             return Err("Vault arguments must be an object.".into());
@@ -146,29 +189,29 @@ impl Vault {
                         "Vault writes are off. Enable them in Settings → Memory Vault.".into(),
                     );
                 }
-                self.mutate(actor, &root, action, args)
+                self.mutate(actor, &root, action, args, entry_date)
             }
             _ => Err("Unknown vault operation.".into()),
         }
     }
 
-    /// The receipt an earlier change with this `request_id` left, reconciled,
-    /// when it was this same operation, with the candidate that proved it.
-    /// `None` when nothing was recorded.
+    /// What an earlier change with this `request_id` was, its receipt
+    /// reconciled.
     ///
     /// A change's arguments name the revision it was made against, so an
     /// identical retry of an append — made after the append moved the note on —
     /// can no longer rebuild them from a fresh read. `candidates` rebuilds them
-    /// from the receipt itself (its before-revision and when it was made), and
-    /// the stored request hash then says exactly which candidate, if any, was
-    /// this operation. None of them matching is a different operation.
+    /// from the receipt itself (`Made`: its before-revision, when it was made,
+    /// the entry date it kept), and the stored request hash then says exactly
+    /// which candidate, if any, was this operation. None of them matching is
+    /// `Different`: the earlier change stands, and this one is not it.
     pub fn earlier_change<T>(
         &self,
         actor: &str,
         request_id: &str,
         action: &str,
-        candidates: impl Fn(Option<&str>, u64) -> Vec<(T, Value)>,
-    ) -> Result<Option<(T, Value)>, String> {
+        candidates: impl Fn(&Made) -> Vec<(T, Value)>,
+    ) -> Result<Earlier<T>, String> {
         let _guard = LOCK.lock().map_err(|e| e.to_string())?;
         let config = self.load_config()?;
         if config.path.is_empty() {
@@ -177,21 +220,23 @@ impl Vault {
         let root = PathBuf::from(&config.path);
         let id = hash(&serde_json::to_vec(&json!([actor, root, request_id])).unwrap());
         if !self.receipt_path(&id)?.exists() {
-            return Ok(None);
+            return Ok(Earlier::None);
         }
         let mut receipt = self.load_receipt(&id)?;
-        let Some((found, _)) = candidates(receipt.before_revision.as_deref(), receipt.created_at)
-            .into_iter()
-            .find(|(_, args)| {
-                receipt.request_hash == hash(&serde_json::to_vec(&json!([action, args])).unwrap())
-            })
-        else {
-            return Err("requestId was already used for a different operation.".into());
+        let made = Made {
+            before_revision: receipt.before_revision.as_deref(),
+            created_at: receipt.created_at,
+            entry_date: receipt.entry_date.as_deref(),
         };
+        let found = candidates(&made).into_iter().find(|(_, args)| {
+            receipt.request_hash == hash(&serde_json::to_vec(&json!([action, args])).unwrap())
+        });
         self.reconcile(&mut receipt)?;
-        serde_json::to_value(receipt)
-            .map(|receipt| Some((found, receipt)))
-            .map_err(|e| e.to_string())
+        let receipt = serde_json::to_value(receipt).map_err(|e| e.to_string())?;
+        Ok(match found {
+            Some((found, _)) => Earlier::Same(found, receipt),
+            None => Earlier::Different(receipt),
+        })
     }
 
     fn receipt_path(&self, id: &str) -> Result<PathBuf, String> {
@@ -247,6 +292,7 @@ impl Vault {
         root: &Path,
         action: &str,
         args: &Value,
+        entry_date: Option<&str>,
     ) -> Result<Value, String> {
         let request_id = required(args, "requestId")?;
         if request_id.len() > 128 {
@@ -337,6 +383,7 @@ impl Vault {
             revision: revision(&after),
             status: "pending".into(),
             created_at: now(),
+            entry_date: entry_date.map(str::to_owned),
         };
         self.save_receipt(&receipt)?;
         let result = (|| -> Result<(), String> {

@@ -2,7 +2,10 @@
 //
 // The backend (`memory_activity.rs`) writes an `octiq_memory_activity` event
 // into the chat once the vault has answered: `saved` only on a saved receipt,
-// `failed` when nothing was written, `uncertain` when the receipt needs review.
+// `failed` when nothing was written, `uncertain` when the receipt needs review,
+// `refused` when this call's requestId already belongs to an earlier, different
+// change — this call wrote nothing, and `earlier` says what that change came
+// to, which is often saved. Two states, never "not updated".
 // Nothing here reads tool names or what the agent said about its memory — an
 // agent announcing "noted" draws no line, and a read of its memory never looks
 // like a write.
@@ -11,7 +14,9 @@
 // replayed transcript, a reconnect, a retried call) updates that line in place;
 // only the receipt's own evidence moves it, from uncertain to saved.
 
-export type MemoryStatus = "saved" | "failed" | "uncertain";
+export type MemoryStatus = "saved" | "failed" | "uncertain" | "refused";
+
+const STATUSES: readonly string[] = ["saved", "failed", "uncertain", "refused"];
 
 export type MemoryActivity = {
   id: string;
@@ -28,6 +33,9 @@ export type MemoryActivity = {
   text?: string;
   receipt?: { id: string; status?: string };
   error?: string;
+  /** On a refused line only: the earlier change that holds its requestId,
+   *  from that change's own receipt. */
+  earlier?: { id: string; status: string };
   /** Set on the copy a worker's coordinator is shown: where the write
    *  happened. That copy carries no text; the worker chat has it. */
   source?: { chatKey: string; taskId?: string; taskTitle?: string; runId?: string };
@@ -41,8 +49,9 @@ const opt = (v: unknown) => str(v) || undefined;
 export function readMemoryActivity(e: Record<string, unknown>): MemoryActivity | null {
   const id = str(e.id);
   const status = str(e.status);
-  if (!id || !["saved", "failed", "uncertain"].includes(status)) return null;
+  if (!id || !STATUSES.includes(status)) return null;
   const agent = obj(e.agent);
+  const earlier = obj(e.earlier);
   const receipt = obj(e.receipt);
   const source = obj(e.source);
   return {
@@ -56,6 +65,7 @@ export function readMemoryActivity(e: Record<string, unknown>): MemoryActivity |
     text: opt(e.text),
     receipt: str(receipt.id) ? { id: str(receipt.id), status: opt(receipt.status) } : undefined,
     error: opt(e.error),
+    earlier: str(earlier.id) ? { id: str(earlier.id), status: str(earlier.status) || "unknown" } : undefined,
     source: str(source.chatKey)
       ? {
           chatKey: str(source.chatKey),
@@ -81,7 +91,16 @@ export function memoryHeadline(a: MemoryActivity): string {
   const who = a.agent?.name;
   if (a.status === "saved") return `${who ?? "An agent"} updated memory`;
   if (a.status === "uncertain") return who ? `${who}'s memory update is unconfirmed` : "Memory update is unconfirmed";
+  if (a.status === "refused") return who ? `${who}'s repeated memory request was refused` : "Repeated memory request was refused";
   return who ? `${who}'s memory was not updated` : "Memory was not updated";
+}
+
+/** A refused line's second state: what the earlier change under the same
+ *  requestId came to. `undefined` on every other line. */
+export function earlierState(a: MemoryActivity): string | undefined {
+  if (a.status !== "refused" || !a.earlier) return undefined;
+  if (a.earlier.status === "saved") return "Earlier entry under this request is saved";
+  return `Earlier change under this request: ${a.earlier.status.replace("_", " ")}`;
 }
 
 /** The chat id in a host chat key (`chat:<id>`). */
