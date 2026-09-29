@@ -20,6 +20,7 @@
 //! Every git call is read-only and passes `--no-optional-locks`, so a probe
 //! never takes the index lock out from under a worker committing in the
 //! same worktree.
+use crate::paths::Canonical;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -109,9 +110,14 @@ pub fn source_dirs(cwd: &Path, compose: &Value) -> Vec<PathBuf> {
 pub fn sources(dirs: &[PathBuf]) -> Vec<Source> {
     let mut seen: BTreeMap<String, Source> = BTreeMap::new();
     for dir in dirs {
+        // Git answers "C:/x" on Windows. The canonical spelling ("C:\x") is
+        // what the environment's own folder is kept in and matched against.
         let top = git_text(dir, &["rev-parse", "--show-toplevel"])
             .filter(|t| !t.is_empty())
-            .map(PathBuf::from);
+            .map(|t| {
+                let top = PathBuf::from(t);
+                top.canonical().unwrap_or(top)
+            });
         let key = top.as_deref().unwrap_or(dir).to_string_lossy().into_owned();
         if seen.contains_key(&key) {
             continue;
@@ -367,6 +373,12 @@ mod tests {
         let paths: Vec<_> = found.iter().map(|s| s.path.clone()).collect();
         assert_eq!(found.len(), 2, "{paths:?}");
         assert!(paths.contains(&api.to_string_lossy().into_owned()));
+        // Spelled as a canonical folder is, which is how a check finds the
+        // environment's own source among them.
+        assert!(
+            paths.contains(&own.to_string_lossy().into_owned()),
+            "{paths:?}"
+        );
         let checked = Fingerprint {
             sources: found,
             recipe: None,

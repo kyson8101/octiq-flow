@@ -4291,8 +4291,7 @@ impl ChatManager {
     /// A stand-in agent under `key`, holding the capability a real launch
     /// is given. Returns that secret.
     pub(crate) fn test_launch(&self, key: &str) -> String {
-        let child = Command::new("sleep")
-            .arg("30")
+        let child = stand_in::still()
             .stdin(Stdio::null())
             .spawn()
             .expect("a stand-in agent");
@@ -4325,6 +4324,85 @@ impl ChatManager {
     /// End a stand-in from `test_launch`, as the chat ending would.
     pub(crate) fn test_end(&self, key: &str) {
         end_process(self, key).expect("end the stand-in");
+    }
+}
+
+/// Stand-in agent processes for tests, the same on every platform.
+///
+/// Not `sleep` or `cat`: Windows has neither. The stand-in is this test
+/// binary run again on the one test below, which does nothing in a normal run
+/// and plays the stand-in when `OCTIQ_TEST_STAND_IN` names a part.
+#[cfg(test)]
+pub(crate) mod stand_in {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{ChildStdout, Command};
+    use std::time::Duration;
+
+    const PART: &str = "OCTIQ_TEST_STAND_IN";
+    /// What an echoing stand-in writes before it echoes anything. The test
+    /// harness prints its own header first, and a reader skips past it.
+    const READY: &str = "octiq-stand-in-ready";
+
+    /// Its stdout goes nowhere unless the caller pipes it: the harness's own
+    /// "test result" lines would otherwise land in the suite's log.
+    fn playing(part: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("the test binary"));
+        command
+            .args([
+                "--exact",
+                "agent_chat::stand_in::agent",
+                "--nocapture",
+                "--quiet",
+                "--test-threads=1",
+            ])
+            .env(PART, part)
+            .stdout(std::process::Stdio::null());
+        command
+    }
+
+    /// A process that stays alive for 30 seconds unless it is killed.
+    pub(crate) fn still() -> Command {
+        playing("still")
+    }
+
+    /// A process that copies each line of its stdin to its stdout until stdin
+    /// closes. Read its stdout through `echoed`.
+    pub(crate) fn echo() -> Command {
+        playing("echo")
+    }
+
+    /// The stdout of an `echo()` child, from the first echoed line on.
+    pub(crate) fn echoed(stdout: ChildStdout) -> BufReader<ChildStdout> {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = reader.read_line(&mut line).expect("the stand-in's stdout");
+            assert!(read > 0, "the stand-in ended before it was ready");
+            if line.trim_end() == READY {
+                return reader;
+            }
+        }
+    }
+
+    #[test]
+    fn agent() {
+        match std::env::var(PART).as_deref() {
+            Ok("still") => std::thread::sleep(Duration::from_secs(30)),
+            Ok("echo") => {
+                let mut out = std::io::stdout().lock();
+                writeln!(out, "{READY}").and_then(|_| out.flush()).unwrap();
+                let mut input = std::io::stdin().lock();
+                let mut line = Vec::new();
+                while input.read_until(b'\n', &mut line).unwrap_or(0) > 0 {
+                    if out.write_all(&line).and_then(|_| out.flush()).is_err() {
+                        return;
+                    }
+                    line.clear();
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -6113,8 +6191,7 @@ mod tests {
                 launch_id: "test-launch".into(),
                 user_turn_id: None,
                 answering: None,
-                child: Command::new("sleep")
-                    .arg("30")
+                child: stand_in::still()
                     .stdin(Stdio::null())
                     .spawn()
                     .expect("a stand-in agent"),
@@ -6169,8 +6246,7 @@ mod tests {
         // started them rather than on the server.
         let manager = Arc::new(ChatManager::default());
         let key = format!("mem-{}", uuid::Uuid::new_v4().simple());
-        let child = Command::new("sleep")
-            .arg("30")
+        let child = stand_in::still()
             .stdin(Stdio::null())
             .spawn()
             .expect("a stand-in agent");
@@ -6203,8 +6279,7 @@ mod tests {
     fn a_queued_codex_user_turn_is_durable_before_its_next_process_starts() {
         let manager = Arc::new(ChatManager::default());
         let key = format!("codex-durable-{}", uuid::Uuid::new_v4().simple());
-        let child = Command::new("sleep")
-            .arg("30")
+        let child = stand_in::still()
             .stdin(Stdio::null())
             .spawn()
             .expect("a Codex stand-in");
@@ -6466,11 +6541,11 @@ mod tests {
     /// that should not have happened has somewhere to go rather than failing
     /// for the wrong reason and passing the test anyway.
     fn claude_session(busy: bool) -> Arc<Mutex<ChatSession>> {
-        let mut child = Command::new("cat")
+        let mut child = stand_in::echo()
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()
-            .expect("a cat to stand in for Claude");
+            .expect("an echo to stand in for Claude");
         let stdin = child.stdin.take();
         Arc::new(Mutex::new(ChatSession {
             launch_id: "test-launch".into(),
@@ -6485,14 +6560,17 @@ mod tests {
         }))
     }
 
-    fn capturing_claude_session() -> (Arc<Mutex<ChatSession>>, std::process::ChildStdout) {
-        let mut child = Command::new("cat")
+    fn capturing_claude_session() -> (
+        Arc<Mutex<ChatSession>>,
+        std::io::BufReader<std::process::ChildStdout>,
+    ) {
+        let mut child = stand_in::echo()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .expect("a cat to capture Claude input");
+            .expect("an echo to capture Claude input");
         let stdin = child.stdin.take();
-        let stdout = child.stdout.take().expect("the capture pipe");
+        let stdout = stand_in::echoed(child.stdout.take().expect("the capture pipe"));
         (
             Arc::new(Mutex::new(ChatSession {
                 launch_id: "test-launch".into(),
@@ -6562,7 +6640,7 @@ mod tests {
 
         let manager = Arc::new(ChatManager::default());
         let key = format!("claude-auto-drain-{}", uuid::Uuid::new_v4().simple());
-        let (session, stdout) = capturing_claude_session();
+        let (session, mut stdout) = capturing_claude_session();
         hold(&manager, &key, session.clone());
         for (text, id) in [("first detail", "user-1"), ("second detail", "user-2")] {
             chat_send_user_impl(
@@ -6590,9 +6668,7 @@ mod tests {
         assert!(!manager.has_queued_turns(&key));
 
         let mut line = String::new();
-        std::io::BufReader::new(stdout)
-            .read_line(&mut line)
-            .unwrap();
+        stdout.read_line(&mut line).unwrap();
         let payload: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(
             payload["message"]["content"]
@@ -6879,7 +6955,7 @@ mod tests {
     fn stopping_codex_keeps_its_queue_on_the_native_thread() {
         let manager = Arc::new(ChatManager::default());
         let key = "codex-stop-queue";
-        let mut child = Command::new("cat")
+        let mut child = stand_in::echo()
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()
@@ -6980,8 +7056,7 @@ mod tests {
         // undo, and the record is append-only: "out" is one more line saying so.
         let manager = Arc::new(ChatManager::default());
         let key = format!("codex-cancel-{}", uuid::Uuid::new_v4().simple());
-        let child = Command::new("sleep")
-            .arg("30")
+        let child = stand_in::still()
             .stdin(Stdio::null())
             .spawn()
             .expect("a Codex stand-in");
@@ -7086,7 +7161,7 @@ mod tests {
                 session_id: Some(thread.into()),
             },
         );
-        let mut child = Command::new("cat")
+        let mut child = stand_in::echo()
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()
@@ -7265,8 +7340,7 @@ mod idle_tests {
     /// is being tested: `end_process` kills a `Child`, and a stand-in with no
     /// process would let a sweeper that ends nothing pass.
     fn still_session(busy: bool, ago: Duration) -> Arc<Mutex<ChatSession>> {
-        let child = Command::new("sleep")
-            .arg("30")
+        let child = stand_in::still()
             .stdin(Stdio::piped())
             .spawn()
             .expect("a sleep to stand in for an agent");
@@ -7709,7 +7783,7 @@ mod question_delivery_tests {
         let key = format!("question-timeout-{}", uuid::Uuid::new_v4());
         let origin = test_origin(&key);
         manager.remember_start(&key, origin.start);
-        let child = Command::new("cat")
+        let child = stand_in::echo()
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()
@@ -7902,7 +7976,7 @@ mod question_delivery_tests {
         let mut origin = test_origin(&key);
         origin.start.agent = ChatAgent::Claude;
         manager.remember_start(&key, origin.start.clone());
-        let mut child = Command::new("cat")
+        let mut child = stand_in::echo()
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()

@@ -597,7 +597,16 @@ mod tests {
         assert!(sync_dir_on(&missing, true).is_ok());
         // Elsewhere a folder that cannot be synced is an error, not a shrug.
         assert!(sync_dir_on(&missing, false).is_err());
-        assert!(sync_dir_on(&std::env::temp_dir(), false).is_ok());
+        let folder = std::env::temp_dir();
+        if cfg!(windows) {
+            // The reason for the skip: Windows refuses to open a folder as a
+            // file, so asking would fail even for one that exists.
+            assert!(sync_dir_on(&folder, false).is_err());
+        } else {
+            assert!(sync_dir_on(&folder, false).is_ok());
+        }
+        // What this platform really does with an existing folder succeeds.
+        assert!(sync_dir(&folder).is_ok());
     }
 
     #[test]
