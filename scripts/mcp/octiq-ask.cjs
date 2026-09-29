@@ -12,7 +12,11 @@
  *
  * It loads MCP servers in full, though, so we can hand it tools of our own.
  * `ask_user` blocks, the questions appear wherever you are — a phone will do —
- * and your answers come back as the tool result. One call carries the WHOLE
+ * and once they are answered the tool says so and the turn ends. The answers
+ * themselves come back as the next USER message, never as the tool result:
+ * Claude Code's auto-mode classifier does not read tool results, so an approval
+ * returned in one did not count as the person's (see src-tauri/src/question.rs).
+ * One call carries the WHOLE
  * list, and that is the shape rather than a convenience: Claude Code runs MCP
  * calls one at a time, so a tool taking a single question turned five things to
  * settle into five cards, each waiting on the last and each costing another
@@ -931,8 +935,8 @@ const QUESTION_PROPS = {
 const TOOL = {
   name: "ask_user",
   description:
-    "Ask the person you are working with one or several questions and wait for " +
-    "the answers. Put EVERY question you have into the same call: each call " +
+    "Ask the person you are working with one or several questions. Put EVERY " +
+    "question you have into the same call: each call " +
     "blocks until it is answered and the person answers a call's questions " +
     "together on one card, so one question per call means one card per " +
     "question, each waiting on the last. Use it when a decision is theirs to " +
@@ -946,8 +950,10 @@ const TOOL = {
     "include, which checks to run, which of these to fix now. Reach for it " +
     "whenever the honest answer is \"any number of these\" — they then tick as " +
     "many as they like and you get all of them back. Leave it out only for a " +
-    "real either/or. The answers come back numbered against the questions they " +
-    "answer; a single question answers with the bare answer.",
+    "real either/or. The call waits until they answer, but its result never " +
+    "carries the answers: when it says the user has answered, end your turn. " +
+    "The answers arrive as the next user message, numbered against the " +
+    "questions they answer, so they count as the user's own words.",
   inputSchema: {
     type: "object",
     properties: {

@@ -8028,4 +8028,82 @@ mod question_delivery_tests {
         end_process(&manager, &key).unwrap();
         crate::transcript::forget(&key);
     }
+
+    #[tokio::test]
+    async fn a_live_answer_reaches_the_agent_as_a_user_turn_not_a_tool_result() {
+        // Claude Code's auto-mode classifier reads user messages and tool
+        // calls, never tool results. "Commit + push" picked on a card and
+        // handed back as the `ask_user` result was therefore no approval at
+        // all, and the commit was refused as unrequested. The tool now only
+        // learns the card is done; the answer follows as a user turn, queued
+        // behind the turn that asked.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("question-consent-{}", uuid::Uuid::new_v4());
+        let mut origin = test_origin(&key);
+        origin.start.agent = ChatAgent::Claude;
+        manager.remember_start(&key, origin.start);
+        let mut child = stand_in::echo()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        manager.sessions.lock().unwrap().insert(
+            key.clone(),
+            Arc::new(Mutex::new(ChatSession {
+                launch_id: "launch-1".into(),
+                user_turn_id: None,
+                answering: None,
+                child,
+                stdin,
+                codex: None,
+                agent: ChatAgent::Claude,
+                busy: true,
+                last_active: Instant::now(),
+            })),
+        );
+        let request = serde_json::from_value(json!({
+            "chatKey": key, "launchId": "launch-1",
+            "questions": [{"question": "Commit and push?", "options": ["Commit + push", "Leave it"]}],
+        }))
+        .unwrap();
+        let asking = tokio::spawn(crate::question::ask_request_with_timeout(
+            manager.clone(),
+            request,
+            Duration::from_secs(30),
+        ));
+        let question = loop {
+            if let Some(q) = manager.questions.pending().unwrap().pop() {
+                break q;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        manager
+            .questions
+            .answer(&[Answer {
+                id: question.id,
+                answer: "Commit + push".into(),
+            }])
+            .unwrap();
+
+        let result = asking.await.unwrap();
+        assert_eq!(result, crate::question::ANSWERS_FOLLOW);
+        assert!(!result.contains("Commit + push"), "{result}");
+
+        deliver_question_answers(manager.clone()).unwrap();
+        let queued: Vec<String> = manager
+            .queued_turns
+            .lock()
+            .unwrap()
+            .get(&key)
+            .map(|q| q.iter().map(|t| t.text.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        assert!(queued[0].contains("A1: Commit + push"), "{}", queued[0]);
+        // Delivered once: a second sweep finds it already queued.
+        deliver_question_answers(manager.clone()).unwrap();
+        assert_eq!(manager.queued_turns.lock().unwrap()[&key].len(), 1);
+        end_process(&manager, &key).unwrap();
+        crate::transcript::forget(&key);
+    }
 }

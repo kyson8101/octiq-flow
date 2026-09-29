@@ -11,10 +11,17 @@ approval and timeout behavior.
   active profile's `chats/questions.json`. Updates use a private temporary file,
   flush its contents, and atomically replace the saved file. An unreadable store
   is reported and never silently replaced with an empty one.
-- While the original tool is waiting, the complete answer batch returns through
-  that tool. A timeout or ended agent turn detaches the live waiter; the same
+- Answers always reach the agent as a user message, never as the tool result.
+  Claude Code's auto-mode classifier judges an action from user messages and
+  tool calls only; it strips tool results as its prompt-injection defence. An
+  approval returned through `ask_user` (for example "Commit + push") therefore
+  did not count as the person's, and the action was refused as unrequested.
+- While the original tool is waiting, a completed card releases it with a
+  fixed "the user has answered; end this turn" result that carries no answers,
+  and the same continuation described below queues the answers behind that
+  turn. A timeout or ended agent turn detaches the live waiter; the same
   questions remain available on every device.
-- A later answer creates one continuation containing the original questions and
+- Every answer, live or late, creates one continuation containing the original questions and
   answers. It uses the saved provider session, model, workspace, and access
   settings. A different provider session is reported instead of redirecting the
   answers to another process.

@@ -49,17 +49,6 @@ impl Record {
         !matches!(self.delivery, Delivery::Delivered | Delivery::Cancelled)
     }
 
-    pub fn report(&self) -> String {
-        crate::question::report(
-            &self.questions,
-            &self
-                .answers
-                .iter()
-                .map(|a| a.clone().ok_or("Not answered"))
-                .collect::<Vec<_>>(),
-        )
-    }
-
     pub fn continuation(&self) -> String {
         let pairs = self
             .questions
@@ -265,7 +254,7 @@ impl QuestionStore {
             publish(record);
             if complete {
                 // Keep an entry after notification: its presence owns the
-                // original tool path until take_tool or detach wins the lock.
+                // original tool path until release_tool or detach wins the lock.
                 if let Some(tx) = state.waiters.get_mut(&id).and_then(Option::take) {
                     let _ = tx.send(());
                 }
@@ -274,9 +263,14 @@ impl QuestionStore {
         Ok(())
     }
 
-    /// Commit ownership to the live tool before returning its answer. A late
-    /// submit and a timeout race under this same lock, never dispatching twice.
-    pub fn take_tool(&self, id: &str) -> Result<Option<String>, String> {
+    /// Let the live tool go once its card is complete, WITHOUT the answers.
+    ///
+    /// Dropping the waiter is the whole hand-over: the record stays `Ready`, so
+    /// the outbox picks it up and the ordinary continuation delivers it as the
+    /// next user message (see the `question` module header for why the tool
+    /// result may not carry them). A late submit, a timeout and this race
+    /// under the same lock, so a card is released once and dispatched once.
+    pub fn release_tool(&self, id: &str) -> Result<Option<String>, String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         Self::check(&state)?;
         let record = state.records.get(id).ok_or("Unknown question")?;
@@ -286,14 +280,8 @@ impl QuestionStore {
         if !state.waiters.contains_key(id) || record.delivery != Delivery::Ready {
             return Ok(None);
         }
-        let answer = record.report();
-        let mut next = state.records.clone();
-        next.get_mut(id).unwrap().delivery = Delivery::Delivered;
-        self.persist(&next)?;
-        state.records = next;
         state.waiters.remove(id);
-        publish(&state.records[id]);
-        Ok(Some(answer))
+        Ok(Some(crate::question::ANSWERS_FOLLOW.into()))
     }
 
     /// Commit a completed card to a live native provider request.
@@ -512,21 +500,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_answers_return_once_and_never_enter_the_resume_outbox() {
+    async fn live_answers_release_the_tool_empty_handed_and_resume_as_a_user_turn() {
+        // A tool result is invisible to Claude Code's auto-mode classifier, so
+        // an approval returned through it was refused as unrequested. The live
+        // tool only learns the card is done; the answers go through the outbox,
+        // whose continuation is a real user message.
         let store = QuestionStore::load(path());
         let (id, rx) = store.insert(test_origin("chat:live"), questions()).unwrap();
         let answers = answers(&store);
         store.answer(&answers).unwrap();
         rx.await.unwrap();
+        // Still owned by the waiting tool, so nothing races it to the outbox.
         assert!(store.outbox().unwrap().is_empty());
-        assert_eq!(
-            store.take_tool(&id).unwrap().unwrap(),
-            "Q1: Which database?\nA1: SQLite\n\nQ2: Which region?\nA2: Asia"
-        );
+        let released = store.release_tool(&id).unwrap().unwrap();
+        assert_eq!(released, crate::question::ANSWERS_FOLLOW);
+        assert!(!released.contains("SQLite"), "{released}");
+        let outbox = store.outbox().unwrap();
+        assert_eq!(outbox.len(), 1);
+        assert!(outbox[0]
+            .continuation()
+            .contains("Q1: Which database?\nA1: SQLite\n\nQ2: Which region?\nA2: Asia"));
         store.answer(&answers).unwrap(); // Lost submission acknowledgement / repeated tap.
-        assert!(store.take_tool(&id).unwrap().is_none());
-        assert!(store.outbox().unwrap().is_empty());
-        assert!(store.pending().unwrap().is_empty());
+        assert!(store.release_tool(&id).unwrap().is_none());
+        assert_eq!(store.outbox().unwrap().len(), 1);
         let mut conflicting = answers;
         conflicting[0].answer = "Postgres".into();
         assert!(store.answer(&conflicting).is_err());
@@ -599,7 +595,11 @@ mod tests {
         let answers = answers(&store);
         store.cancel_chat("chat:stopped").unwrap();
         assert!(rx.await.is_err());
-        assert!(store.take_tool(&id).unwrap().unwrap().contains("cancelled"));
+        assert!(store
+            .release_tool(&id)
+            .unwrap()
+            .unwrap()
+            .contains("cancelled"));
         let restored = QuestionStore::load(path);
         assert!(restored.answer(&answers).is_err());
         assert!(restored.pending().unwrap().is_empty());
@@ -631,7 +631,9 @@ mod tests {
     }
 
     #[test]
-    fn timeout_and_live_return_cannot_both_own_the_same_answer() {
+    fn timeout_and_live_release_deliver_the_same_answer_exactly_once() {
+        // Whichever wins, the answers take one road: the outbox. The loser only
+        // decides what the tool says, never whether the card is sent twice.
         for _ in 0..25 {
             let store = std::sync::Arc::new(QuestionStore::default());
             let (id, _rx) = store.insert(test_origin("chat:race"), questions()).unwrap();
@@ -639,9 +641,10 @@ mod tests {
             let race = store.clone();
             let timed_out = id.clone();
             let thread = std::thread::spawn(move || race.detach(&timed_out));
-            let live = store.take_tool(&id).unwrap().is_some();
+            let live = store.release_tool(&id).unwrap();
             thread.join().unwrap();
-            assert_eq!(usize::from(live) + store.outbox().unwrap().len(), 1);
+            assert!(live.is_none_or(|said| said == crate::question::ANSWERS_FOLLOW));
+            assert_eq!(store.outbox().unwrap().len(), 1);
         }
     }
 }

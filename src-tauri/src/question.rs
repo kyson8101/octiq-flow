@@ -1,6 +1,13 @@
-//! Ask through a live MCP result, or keep the question until a later answer
-//! resumes its original conversation. Browser connectivity does not decide
-//! whether the user is allowed to answer. Durable state lives in question_store.
+//! Ask, and hand the answers back as the person's own next message. The live
+//! MCP call only waits for the card; the answers never ride its result, because
+//! a tool result is exactly what Claude Code's auto-mode classifier strips
+//! before judging an action (its prompt-injection defence). An approval given
+//! on a card and returned that way reads to it as no approval at all, so a
+//! "Commit + push" answer was refused as an unrequested commit. The saved-answer
+//! continuation is a real user turn, which the classifier does read — the same
+//! path a question answered after the tool timed out has always taken.
+//! Browser connectivity does not decide whether the user is allowed to answer.
+//! Durable state lives in question_store.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +19,10 @@ pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 /// Legacy permission prompts still use this disconnect grace. Questions do not.
 pub const RELOAD_GRACE: Duration = Duration::from_secs(20);
 const NOT_IN_TIME: &str = "The questions are saved and still waiting for the user. End this turn without assuming an answer or repeating the questions. OctiqFlow will continue this conversation when the answers arrive.";
+/// What the live tool returns once the card is complete. No answers in it on
+/// purpose: an agent holding them would act inside this same turn, before the
+/// user turn that carries them exists, and be refused all over again.
+pub(crate) const ANSWERS_FOLLOW: &str = "The user has answered. Their answers arrive as your next user message, so they count as the user's own words. End this turn now, without acting on these questions, assuming an answer, or asking them again.";
 const NOTHING_ASKED: &str = "No question was given, so nothing was asked.";
 
 /// One thing you can pick.
@@ -184,7 +195,17 @@ impl Drop for WaitingTool {
 }
 
 pub async fn ask_request(manager: Arc<ChatManager>, request: Request) -> String {
-    ask_request_with_timeout(manager, request, ANSWER_TIMEOUT).await
+    let result = ask_request_with_timeout(manager.clone(), request, ANSWER_TIMEOUT).await;
+    if result == ANSWERS_FOLLOW {
+        // Send the continuation now rather than on the recovery sweep's next
+        // tick. The turn is still in flight, so it waits in the chat queue for
+        // this turn's full stop. A failure here is left to that sweep, which
+        // retries from the same saved record.
+        tokio::task::spawn_blocking(move || {
+            let _ = crate::agent_chat::deliver_question_answers(manager);
+        });
+    }
+    result
 }
 
 pub(crate) async fn ask_request_with_timeout(
@@ -238,10 +259,10 @@ pub(crate) async fn ask_request_with_timeout(
             "Questions are waiting for your answer",
         );
         let _ = tokio::time::timeout(timeout, rx).await;
-        // Check even at the deadline: a submitted answer that won the lock
-        // still goes down the live channel, never down both delivery paths.
-        if let Some(answer) = manager.questions.take_tool(&id)? {
-            return Ok(answer);
+        // Check even at the deadline: a card completed just before it still
+        // releases the tool with the right words, and is delivered once.
+        if let Some(released) = manager.questions.release_tool(&id)? {
+            return Ok(released);
         }
         Ok(NOT_IN_TIME.to_string())
     }
@@ -249,37 +270,6 @@ pub(crate) async fn ask_request_with_timeout(
     outcome.unwrap_or_else(|why: String| {
         format!("The question could not be delivered: {why}. Do not assume an answer.")
     })
-}
-
-/// What the agent ends up reading.
-///
-/// One question answers with the answer and nothing else — no numbering, no
-/// framing — because that is what `ask_user` has always returned and what every
-/// prompt written against it expects. The common case pays nothing for batching.
-///
-/// Several come back numbered, each answer under the words it answers. The
-/// agent asked them in one breath and hears them in one, and the pairing is
-/// what stops "Postgres / yes / tomorrow" being read against the wrong three
-/// questions — an ordering it has no way to check and every reason to trust.
-pub(crate) fn report(questions: &[Question], answers: &[Result<String, &str>]) -> String {
-    let said = |answer: &Result<String, &str>| match answer {
-        Ok(words) => words.to_string(),
-        Err(excuse) => (*excuse).to_string(),
-    };
-    match answers {
-        [] => NOTHING_ASKED.into(),
-        [only] => said(only),
-        _ => questions
-            .iter()
-            .zip(answers)
-            .enumerate()
-            .map(|(i, (question, answer))| {
-                let n = i + 1;
-                format!("Q{n}: {}\nA{n}: {}", question.question, said(answer))
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    }
 }
 
 #[cfg(test)]
@@ -301,17 +291,6 @@ mod tests {
                 },
             ],
             recommended: Some(0),
-            multiple: false,
-        }
-    }
-
-    /// A bare free-text question, for the cases where only the words matter.
-    fn asking(text: &str) -> Question {
-        Question {
-            chat_key: None,
-            question: text.into(),
-            options: vec![],
-            recommended: None,
             multiple: false,
         }
     }
@@ -468,40 +447,6 @@ mod tests {
             }
             Request::Many(_) => panic!("a body with no list is one question"),
         }
-    }
-
-    #[test]
-    fn one_question_comes_back_as_the_bare_answer() {
-        // What `ask_user` has always returned, and what every prompt written
-        // against it expects. Number a single question and every existing agent
-        // starts reading "A1: " as part of what the person said.
-        assert_eq!(report(&[question()], &[Ok("SQLite".into())]), "SQLite");
-        // An unanswered one is its excuse, equally unframed.
-        assert_eq!(report(&[question()], &[Err(NOT_IN_TIME)]), NOT_IN_TIME);
-    }
-
-    #[test]
-    fn several_answers_come_back_under_the_questions_they_answer() {
-        // The agent cannot check an ordering it is handed and has every reason
-        // to trust it, so three bare answers in a row are three chances to act
-        // on the wrong one. Each is quoted under its own question.
-        //
-        // And the one nobody got to carries its own excuse rather than a blank
-        // line, which an agent would read as an answer of "nothing".
-        let asked = [
-            asking("Which database?"),
-            asking("What should it be called?"),
-            asking("Ship it today?"),
-        ];
-        let answers = [Ok("SQLite".to_string()), Err(NOT_IN_TIME), Ok("Yes".into())];
-        assert_eq!(
-            report(&asked, &answers),
-            format!(
-                "Q1: Which database?\nA1: SQLite\n\n\
-                 Q2: What should it be called?\nA2: {NOT_IN_TIME}\n\n\
-                 Q3: Ship it today?\nA3: Yes"
-            )
-        );
     }
 
     #[test]
