@@ -947,7 +947,12 @@ const TOOL = {
     "whenever the honest answer is \"any number of these\" — they then tick as " +
     "many as they like and you get all of them back. Leave it out only for a " +
     "real either/or. The answers come back numbered against the questions they " +
-    "answer; a single question answers with the bare answer.",
+    "answer; a single question answers with the bare answer. Never use it to " +
+    "ask permission for an action with side effects (commit, push, merge, " +
+    "deploy, release, restart, delete, sending anything off this machine): " +
+    "ask that in the chat in plain prose, name the exact action, end the turn " +
+    "and wait. Only a typed reply counts as approval; an answer on this card " +
+    "does not.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1684,7 +1689,8 @@ const BASE_SERVER_INSTRUCTIONS =
 const SERVER_INSTRUCTIONS = ASK_USER_ENABLED
   ? BASE_SERVER_INSTRUCTIONS +
     " In an OctiqFlow chat, ask_user is the way to ask the person a decision " +
-    "question, and all questions belong in one call."
+    "question, and all questions belong in one call. Permission for an " +
+    "action with side effects is asked in the chat instead, never on a card."
   : BASE_SERVER_INSTRUCTIONS;
 
 function send(message) {

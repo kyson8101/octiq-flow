@@ -56,7 +56,9 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   const standalone = await mcp(root, "", "tools/list");
   assert.ok(!standalone.result.tools.some(tool => tool.name === "preview_image"));
   const bound = await mcp(root, "chat:one", "tools/list");
-  assert.ok(bound.result.tools.some(tool => tool.name === "ask_user"));
+  const ask = bound.result.tools.find(tool => tool.name === "ask_user");
+  assert.match(ask.description, /Never use it to ask permission for an action with side effects/);
+  assert.match(ask.description, /Only a typed reply counts as approval/);
   assert.ok(bound.result.tools.some(tool => tool.name === "preview_image"));
   assert.ok(bound.result.tools.some(tool => tool.name === "search_conversations"));
   const runTool = bound.result.tools.find(tool => tool.name === "orchestration_run_create");

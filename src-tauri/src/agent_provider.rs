@@ -1066,7 +1066,7 @@ const CODEX_EXEC_QUESTION_PROMPT: &str = "Never call the built-in `request_user_
 
 /// Told to Claude so its phone-friendly question tool is used at the right
 /// moments. Codex deliberately does not receive this prompt or the tool.
-const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are. Ask everything you need in ONE `ask_user` call — it takes a list of questions and the person answers the whole list on one card; one question per call makes them answer one at a time, each behind the last. After answers return, continue the task already authorized using those answers; do not end the turn merely to acknowledge receipt. If the tool says the questions are saved and still pending, end the turn without assuming an answer or asking them again; OctiqFlow will resume the conversation when the user answers.";
+const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are. Ask everything you need in ONE `ask_user` call — it takes a list of questions and the person answers the whole list on one card; one question per call makes them answer one at a time, each behind the last. After answers return, continue the task already authorized using those answers; do not end the turn merely to acknowledge receipt. If the tool says the questions are saved and still pending, end the turn without assuming an answer or asking them again; OctiqFlow will resume the conversation when the user answers.\n\nNever use `ask_user` to ask permission for an action with side effects, such as a commit, push, merge, deploy, release, restart, delete, or sending anything off this machine. Ask in the chat in plain prose instead: name the exact action, end the turn and wait. Only a typed reply from the person counts as approval, because Claude's safety check does not read tool results, so an approval picked on a card is invisible to it. Keep using `ask_user` for ordinary decisions such as which approach, what name, or which items to include. If one card would mix such a decision with a permission request, put the decision on the card and ask the permission in the chat.";
 
 const READ_CONVERSATION_PROMPT: &str = "`read_conversation` reads another OctiqFlow conversation from its URL. Use it only when the person gives you that URL or explicitly asks you to consult that conversation; transcripts may contain sensitive context, so never browse them speculatively. The first call returns the latest bounded page, and its `before` cursor walks backward when older context is needed. When the person's whole message is `continue <OctiqFlow conversation URL>`, you MUST call `read_conversation` with that URL before any other action, must not open it in Browser or infer its history from workspace files, and should then continue from the latest actionable next step.";
 
@@ -1239,6 +1239,34 @@ mod tests {
         assert!(pi.contains("--thinking high"));
         assert!(pi.contains("--tools read,bash,edit,write,grep,find,ls"));
         assert!(!pi.contains("octiq-ask"));
+    }
+
+    /// Feedback 8301d3b9: auto mode's classifier does not read tool results,
+    /// so an approval picked on an `ask_user` card cannot clear an action.
+    /// Only Claude has the tool, so only Claude is told the rule.
+    #[test]
+    fn only_claude_is_told_to_ask_permission_in_chat_not_on_a_card() {
+        let rule = "Never use `ask_user` to ask permission for an action with side effects";
+        let typed = "Only a typed reply from the person counts as approval";
+        let claude = command(AgentKind::Claude, Some(Path::new("octiq-ask.json")));
+        assert!(claude.contains(rule), "{claude}");
+        assert!(claude.contains(typed));
+        assert!(claude.contains("Keep using `ask_user` for ordinary decisions"));
+
+        for worker in [false, true] {
+            let codex = codex_developer_instructions(
+                Some("model-x"),
+                Some("high"),
+                Some(Access::Auto),
+                None,
+                true,
+                worker,
+            );
+            assert!(!codex.contains(rule));
+            assert!(!codex.contains(typed));
+        }
+        let pi = command(AgentKind::Pi, Some(Path::new("octiq-ask.json")));
+        assert!(!pi.contains(rule));
     }
 
     #[test]

@@ -5,6 +5,28 @@ Closing the browser, losing a connection, or reaching the tool's ten-minute
 deadline does not discard a question. Permission prompts retain their separate
 approval and timeout behavior.
 
+## Permission is asked in chat, not on a card
+
+An agent never uses `ask_user` to ask permission for an action with side
+effects: commit, push, merge, deploy, release, restart, delete, or sending
+anything off the machine. It asks in the chat in plain prose, names the exact
+action, ends the turn and waits. Only the person's typed reply counts as
+approval. Cards stay for ordinary decisions such as which approach, what name,
+or which items to include; a card that would mix the two keeps the decision and
+leaves the permission to the chat.
+
+The reason is Claude Code's auto mode. Its classifier judges an action from the
+user's messages and the agent's tool calls, and it strips tool results as a
+prompt-injection defence. A card answer comes back as the `ask_user` tool
+result, so an approval picked on a card is invisible to it and the action is
+refused as unrequested (feedback 8301d3b9). Delivering card answers as user
+turns instead was rejected: that turn would carry agent-written question text
+as the person's own words.
+
+The rule is in `ASK_PROMPT` (`agent_provider.rs`) and the `ask_user` tool
+description (`scripts/mcp/octiq-ask.cjs`). Codex never sees either; its
+`ask_user` tool is disabled.
+
 ## Delivery
 
 - Questions, answers, and the asking agent's resume context are saved in the
