@@ -2017,6 +2017,101 @@ mod tests {
         }
     }
 
+    /// Key `receipt` under the id the vault's legacy root spelling gave it,
+    /// as a Windows vault saved before paths were simplified left it.
+    fn move_to_legacy_id(w: &World, chat: &str, receipt: &Value, legacy_root: &Path) -> String {
+        let legacy_id = crate::memory_vault::receipt_id_under(chat, legacy_root, "r1");
+        assert_ne!(receipt["id"], legacy_id.as_str());
+        let file = w.receipt_file(receipt);
+        let mut stored: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        stored["id"] = json!(legacy_id);
+        fs::write(
+            file.with_file_name(format!("{legacy_id}.json")),
+            serde_json::to_vec(&stored).unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(file).unwrap();
+        legacy_id
+    }
+
+    const LEGACY_ROOT: &str = r"\\?\C:\Works\Obsidian\Pandaworks-docspace";
+
+    // After the upgrade that simplified Windows vault paths, a memory entry
+    // saved before it is found under its old receipt id by the retry check as
+    // well as by the write, so an undated retry is the same save — not a new
+    // entry and not a "different operation" refusal.
+    #[test]
+    fn an_undated_retry_finds_a_save_kept_under_the_legacy_root_id() {
+        let w = World::new(true);
+        let mango = w.agent("Mango Juice");
+        let chat = w.lead(&mango);
+        let receipt = saved_then_crashed(&w, &chat, &mango, "Before the upgrade.", "2026-09-28");
+        assert_eq!(receipt["entryDate"], "2026-09-28");
+        let legacy_id = move_to_legacy_id(&w, &chat, &receipt, Path::new(LEGACY_ROOT));
+
+        w.at(MIDNIGHT_UTC + 86_400_000, 0);
+        let again = crate::memory_vault::with_legacy_root(Path::new(LEGACY_ROOT), || {
+            w.call(&chat, "append", undated("Before the upgrade.", "r1"))
+        })
+        .unwrap();
+        assert_eq!(again["alreadySaved"], true);
+        assert_eq!(again["receipt"]["id"], legacy_id.as_str());
+        assert_eq!(again["receipt"]["entryDate"], "2026-09-28");
+        let note = w.note(&mango);
+        assert_eq!(note.matches("Before the upgrade.").count(), 1, "{note}");
+        assert_eq!(note.matches("## 2026-09-28").count(), 1, "{note}");
+        let shown = lines(&chat);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0]["status"], "saved");
+        assert_eq!(shown[0]["id"], legacy_id.as_str());
+        assert_eq!(shown[0]["date"], "2026-09-28", "the stored entry date");
+    }
+
+    // A receipt from before both changes — no entry date, and keyed under the
+    // legacy root id — is still recognised only by its request hash.
+    #[test]
+    fn a_legacy_receipt_that_kept_no_date_is_matched_only_by_its_request_hash() {
+        let made = MIDNIGHT_UTC - 30_000;
+        for (date, same) in [
+            (crate::team::utc_date(made), true),
+            ("2026-01-02".to_owned(), false),
+        ] {
+            let w = World::new(true);
+            let mango = w.agent("Mango Juice");
+            let chat = w.lead(&mango);
+            let receipt = saved_then_crashed(&w, &chat, &mango, "Old build.", &date);
+            w.edit_receipt(&receipt, |r| {
+                r.as_object_mut().unwrap().remove("entryDate").unwrap();
+                r["createdAt"] = json!(made);
+            });
+            let legacy_id = move_to_legacy_id(&w, &chat, &receipt, Path::new(LEGACY_ROOT));
+            w.at(MIDNIGHT_UTC + 30_000, 0);
+            let result = crate::memory_vault::with_legacy_root(Path::new(LEGACY_ROOT), || {
+                w.call(&chat, "append", undated("Old build.", "r1"))
+            });
+            let shown = lines(&chat);
+            assert_eq!(shown.len(), 1, "{date}");
+            assert_eq!(w.note(&mango).matches("Old build.").count(), 1, "{date}");
+            if same {
+                let again = result.unwrap();
+                assert_eq!(again["alreadySaved"], true, "{date}");
+                assert_eq!(again["receipt"]["id"], legacy_id.as_str());
+                assert_eq!(shown[0]["status"], "saved");
+                assert_eq!(shown[0]["id"], legacy_id.as_str());
+                assert_eq!(shown[0]["date"], date.as_str());
+            } else {
+                // Not guessed into success, and the saved entry is not called
+                // unsaved: this call is refused, the earlier entry stands.
+                let error = result.unwrap_err();
+                assert!(error.contains("refused and wrote nothing"), "{error}");
+                assert!(error.contains("earlier entry is saved"), "{error}");
+                assert_eq!(shown[0]["status"], "refused");
+                assert_eq!(shown[0]["earlier"]["id"], legacy_id.as_str());
+                assert_eq!(shown[0]["earlier"]["status"], "saved");
+            }
+        }
+    }
+
     // Startup restore — a line the ledger confirmed that its transcript has
     // since lost (truncated, deleted, restored from an older backup) is
     // written back at the next start, once, in the worker chat and in the

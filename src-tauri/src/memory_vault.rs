@@ -220,7 +220,9 @@ impl Vault {
             return Err("Connect a folder in Settings → Memory Vault first.".into());
         }
         let root = PathBuf::from(&config.path);
-        let id = hash(&serde_json::to_vec(&json!([actor, root, request_id])).unwrap());
+        // The same lookup `mutate` makes, so a retry is judged against the
+        // receipt the change itself would find.
+        let id = self.receipt_id(actor, &root, || legacy_root(&root), request_id)?;
         if !self.receipt_path(&id)?.exists() {
             return Ok(Earlier::None);
         }
@@ -296,14 +298,40 @@ impl Vault {
         args: &Value,
         entry_date: Option<&str>,
     ) -> Result<Value, String> {
-        let legacy_root = if cfg!(windows) {
-            let raw = crate::paths::canonicalize_raw(root)
-                .map_err(|e| format!("Vault folder is unavailable: {e}"))?;
-            (raw != root).then_some(raw)
-        } else {
-            None
-        };
-        self.mutate_with_legacy_root(actor, root, legacy_root.as_deref(), action, args)
+        let legacy_root = legacy_root(root)?;
+        self.mutate_with_legacy_root(
+            actor,
+            root,
+            legacy_root.as_deref(),
+            action,
+            args,
+            entry_date,
+        )
+    }
+
+    /// The id a change under `request_id` is recorded under: the current
+    /// root's, unless a receipt exists only under the id the root's legacy
+    /// spelling gave it (`legacy_root`). `mutate` and `earlier_change` both
+    /// ask this, so the two can never disagree about which receipt a request
+    /// already has. `legacy_root` is asked only when the current id has none.
+    fn receipt_id(
+        &self,
+        actor: &str,
+        root: &Path,
+        legacy_root: impl FnOnce() -> Result<Option<PathBuf>, String>,
+        request_id: &str,
+    ) -> Result<String, String> {
+        let current_id = mutation_id(actor, root, request_id);
+        if self.receipt_path(&current_id)?.exists() {
+            return Ok(current_id);
+        }
+        if let Some(legacy_root) = legacy_root()? {
+            let legacy_id = mutation_id(actor, &legacy_root, request_id);
+            if self.receipt_path(&legacy_id)?.exists() {
+                return Ok(legacy_id);
+            }
+        }
+        Ok(current_id)
     }
 
     fn mutate_with_legacy_root(
@@ -313,24 +341,18 @@ impl Vault {
         legacy_root: Option<&Path>,
         action: &str,
         args: &Value,
+        entry_date: Option<&str>,
     ) -> Result<Value, String> {
         let request_id = required(args, "requestId")?;
         if request_id.len() > 128 {
             return Err("requestId must be at most 128 characters.".into());
         }
-        let current_id = mutation_id(actor, root, request_id);
-        let id = if self.receipt_path(&current_id)?.exists() {
-            current_id
-        } else if let Some(legacy_root) = legacy_root {
-            let legacy_id = mutation_id(actor, legacy_root, request_id);
-            if self.receipt_path(&legacy_id)?.exists() {
-                legacy_id
-            } else {
-                current_id
-            }
-        } else {
-            current_id
-        };
+        let id = self.receipt_id(
+            actor,
+            root,
+            || Ok(legacy_root.map(Path::to_path_buf)),
+            request_id,
+        )?;
         let request_hash = hash(&serde_json::to_vec(&json!([action, args])).unwrap());
         if self.receipt_path(&id)?.exists() {
             let mut receipt = self.load_receipt(&id)?;
@@ -478,6 +500,52 @@ fn hash(bytes: &[u8]) -> String {
 }
 fn mutation_id(actor: &str, root: &Path, request_id: &str) -> String {
     hash(&serde_json::to_vec(&json!([actor, root, request_id])).unwrap())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A legacy root spelling for this thread's vault calls, so the lookup
+    /// of receipts keyed under it runs where no verbatim path exists.
+    static TEST_LEGACY_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The spelling of `root` that receipt ids were derived from before vault
+/// paths were simplified: on Windows the raw canonical (verbatim `\\?\`)
+/// path, when it differs; nothing elsewhere.
+fn legacy_root(root: &Path) -> Result<Option<PathBuf>, String> {
+    #[cfg(test)]
+    if let Some(legacy) = TEST_LEGACY_ROOT.with(|l| l.borrow().clone()) {
+        return Ok(Some(legacy));
+    }
+    if cfg!(windows) {
+        let raw = crate::paths::canonicalize_raw(root)
+            .map_err(|e| format!("Vault folder is unavailable: {e}"))?;
+        Ok((raw != root).then_some(raw))
+    } else {
+        Ok(None)
+    }
+}
+
+/// The receipt id a change under `request_id` gets with the vault at `root`.
+#[cfg(test)]
+pub(crate) fn receipt_id_under(actor: &str, root: &Path, request_id: &str) -> String {
+    mutation_id(actor, root, request_id)
+}
+
+/// Run `f` with receipts also looked up under `legacy` as the root's old
+/// spelling, as a Windows vault would after the upgrade.
+#[cfg(test)]
+pub(crate) fn with_legacy_root<R>(legacy: &Path, f: impl FnOnce() -> R) -> R {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_LEGACY_ROOT.with(|l| *l.borrow_mut() = None);
+        }
+    }
+    TEST_LEGACY_ROOT.with(|l| *l.borrow_mut() = Some(legacy.to_path_buf()));
+    let _reset = Reset;
+    f()
 }
 fn revision(content: &str) -> String {
     hash(content.as_bytes())
@@ -920,7 +988,7 @@ mod tests {
         let root = f.root.canonical().unwrap();
         let retried = f
             .vault
-            .mutate_with_legacy_root("chat:a", &root, Some(legacy_root), "write", &args)
+            .mutate_with_legacy_root("chat:a", &root, Some(legacy_root), "write", &args, None)
             .unwrap();
         assert_eq!(retried["id"], legacy_id);
         assert_eq!(
@@ -937,13 +1005,63 @@ mod tests {
         reused["content"] = json!("different");
         assert!(f
             .vault
-            .mutate_with_legacy_root("chat:a", &root, Some(legacy_root), "write", &reused,)
+            .mutate_with_legacy_root("chat:a", &root, Some(legacy_root), "write", &reused, None)
             .unwrap_err()
             .contains("different operation"));
         assert!(f
             .vault
             .call("chat:b", "receipt", &json!({"id":legacy_id}))
             .is_err());
+    }
+
+    #[test]
+    fn a_retry_check_finds_the_receipt_the_change_itself_would_find() {
+        let f = Fixture::new();
+        let root = f.root.canonical().unwrap();
+        let legacy_root = Path::new(r"\\?\C:\Works\Obsidian\Pandaworks-docspace");
+        let args = json!({"path":"dated.md","content":"once","requestId":"dated-request"});
+        // The entry date reaches the receipt through the legacy-root path.
+        let written = f
+            .vault
+            .mutate_with_legacy_root(
+                "chat:a",
+                &root,
+                Some(legacy_root),
+                "write",
+                &args,
+                Some("2026-09-28"),
+            )
+            .unwrap();
+        assert_eq!(written["entryDate"], "2026-09-28");
+        let current_id = written["id"].as_str().unwrap();
+        let mut receipt = f.vault.load_receipt(current_id).unwrap();
+        fs::remove_file(f.vault.receipt_path(current_id).unwrap()).unwrap();
+        let legacy_id = mutation_id("chat:a", legacy_root, "dated-request");
+        receipt.id = legacy_id.clone();
+        f.vault.save_receipt(&receipt).unwrap();
+
+        let check = || {
+            f.vault
+                .earlier_change("chat:a", "dated-request", "write", |made| {
+                    vec![(made.entry_date.map(str::to_owned), args.clone())]
+                })
+                .unwrap()
+        };
+        // Looking under the current root alone, as before this lookup was
+        // shared, the saved change is invisible and a retry would be new.
+        assert!(matches!(check(), Earlier::None));
+        with_legacy_root(legacy_root, || {
+            let Earlier::Same(date, receipt) = check() else {
+                panic!("the legacy receipt was not found");
+            };
+            assert_eq!(date.as_deref(), Some("2026-09-28"));
+            assert_eq!(receipt["id"], legacy_id);
+            assert_eq!(receipt["status"], "saved");
+            // …and the change itself lands on that same receipt.
+            assert_eq!(f.call("write", args.clone()).unwrap()["id"], legacy_id);
+        });
+        assert_eq!(fs::read_to_string(f.root.join("dated.md")).unwrap(), "once");
+        assert!(!f.vault.receipt_path(current_id).unwrap().exists());
     }
 
     #[cfg(windows)]
@@ -964,6 +1082,18 @@ mod tests {
         assert_ne!(legacy_id, current_id);
         receipt.id = legacy_id.clone();
         f.vault.save_receipt(&receipt).unwrap();
+
+        // The retry check finds the same receipt the write does.
+        let earlier = f
+            .vault
+            .earlier_change("chat:a", "windows-legacy", "write", |_| {
+                vec![((), args.clone())]
+            })
+            .unwrap();
+        let Earlier::Same((), found) = earlier else {
+            panic!("the legacy receipt was not found");
+        };
+        assert_eq!(found["id"], legacy_id);
 
         let retried = f.call("write", args).unwrap();
         assert_eq!(retried["id"], legacy_id);
