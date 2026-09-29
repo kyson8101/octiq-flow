@@ -383,6 +383,17 @@ An agent may:
   people know);
 - append only to its own memory, one dated entry at a time, never overwriting.
 
+An entry with no date is dated with the server machine's **local** date, and
+the vault receipt keeps the date used (`entryDate`), so a retry with the same
+requestId is recognised however much later it comes. The host, not the agent,
+then draws a line in the chat (`memory_activity.rs`): *saved* only on a saved
+receipt, *unconfirmed* while the receipt needs review, *not updated* when
+nothing was written, and *refused* when the requestId already belongs to an
+earlier, different entry — shown beside that entry's own state, which is
+usually saved. A worker's coordinator gets a line that it happened, while it is
+still that worker's coordinator. Lines a crash left unwritten, or a transcript
+lost, are written back at the next start.
+
 Every lead and worker brief tells the agent to load its memory first, and to
 record only what its future self needs: decisions and why, gotchas, how things
 work, and what to pick up next. Routine steps don't go there. The generic
