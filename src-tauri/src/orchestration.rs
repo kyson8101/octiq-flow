@@ -505,7 +505,7 @@ pub struct Attempt {
     pub status: AttemptStatus,
     #[serde(default)]
     pub execution: execution::Execution,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::paths::de_simplified")]
     pub cwd: String,
     #[serde(default)]
     pub branch: String,

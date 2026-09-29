@@ -11,6 +11,7 @@
 //! failed. The UI's choices send a fresh user turn telling Codex either to stay
 //! local or authorising one retry.
 
+use crate::paths::Canonical;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -299,7 +300,7 @@ fn normalized_scope(cwd: &str) -> Option<String> {
     }
     let path = PathBuf::from(cwd);
     Some(
-        path.canonicalize()
+        path.canonical()
             .unwrap_or(path)
             .to_string_lossy()
             .into_owned(),

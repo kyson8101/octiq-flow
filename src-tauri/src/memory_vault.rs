@@ -1,6 +1,7 @@
 //! Native Markdown vault operations shared by the browser and both agent providers.
 //! The vault stays on disk; the profile holds configuration and durable write receipts.
 //! A single host lock serialises agent changes. Revisions detect edits from other tools.
+use crate::paths::Canonical;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -19,7 +20,7 @@ const TRASH: &str = ".octiq-vault-trash";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::paths::de_simplified")]
     pub path: String,
     #[serde(default)]
     pub writable: bool,
@@ -31,6 +32,7 @@ struct Receipt {
     id: String,
     request_hash: String,
     actor: String,
+    #[serde(deserialize_with = "crate::paths::de_simplified_buf")]
     root: PathBuf,
     action: String,
     path: String,
@@ -85,7 +87,7 @@ impl Vault {
                 );
             }
             config.path = path
-                .canonicalize()
+                .canonical()
                 .map_err(|e| e.to_string())?
                 .to_string_lossy()
                 .into_owned();
@@ -121,7 +123,7 @@ impl Vault {
         }
         let root = PathBuf::from(&config.path);
         if root
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Vault folder is unavailable: {e}"))?
             != root
         {
@@ -691,6 +693,23 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_vault_saved_with_a_verbatim_path_still_opens() {
+        // Settings written before `paths::canonicalize` dropped the prefix
+        // held `\\?\C:\...`; the saved folder must not look "changed".
+        let f = Fixture::new();
+        let plain = f.root.canonical().unwrap().to_string_lossy().into_owned();
+        let legacy = format!(r"\\?\{plain}");
+        fs::write(
+            f.vault.profile.join("memory-vault.json"),
+            serde_json::to_vec(&json!({"path": legacy, "writable": true})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(f.vault.settings().unwrap().path, plain);
+        f.call("list", json!({})).unwrap();
+    }
+
     #[test]
     fn configuration_is_explicit_persistent_and_cannot_be_changed_by_a_tool() {
         let f = Fixture::new();
@@ -699,7 +718,7 @@ mod tests {
         };
         assert_eq!(
             other.settings().unwrap().path,
-            f.root.canonicalize().unwrap().to_string_lossy()
+            f.root.canonical().unwrap().to_string_lossy()
         );
         f.vault
             .configure(Config {

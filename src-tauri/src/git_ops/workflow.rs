@@ -3,6 +3,7 @@
 use super::{
     current_branch, ensure_local_branch, is_linked_worktree, primary_checkout_root, run_git_mut,
 };
+use crate::paths::Canonical;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -20,8 +21,11 @@ pub enum WorkspaceMode {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspacePlan {
     pub mode: WorkspaceMode,
+    #[serde(deserialize_with = "crate::paths::de_simplified")]
     pub cwd: String,
+    #[serde(deserialize_with = "crate::paths::de_simplified")]
     pub checkout_root: String,
+    #[serde(deserialize_with = "crate::paths::de_simplified")]
     pub repository_root: String,
     pub branch: String,
     pub base_branch: String,
@@ -70,12 +74,12 @@ fn git(root: &str, args: &[&str]) -> Result<String, String> {
 
 pub fn checkout_identity(path: &str) -> Result<String, String> {
     let path = Path::new(path)
-        .canonicalize()
+        .canonical()
         .map_err(|e| format!("Workspace does not exist: {e}"))?;
     let path = path.to_string_lossy().into_owned();
     let root = git(&path, &["rev-parse", "--show-toplevel"]).unwrap_or(path);
     Path::new(&root)
-        .canonicalize()
+        .canonical()
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|e| e.to_string())
 }
@@ -91,7 +95,7 @@ pub fn plan(
     mode: WorkspaceMode,
 ) -> Result<WorkspacePlan, String> {
     let cwd = Path::new(root)
-        .canonicalize()
+        .canonical()
         .map_err(|e| e.to_string())?
         .to_string_lossy()
         .into_owned();
@@ -124,7 +128,7 @@ pub fn plan(
         &["status", "--porcelain=v1", "--untracked-files=all"],
     )?;
     let primary = primary_checkout_root(&checkout)?
-        .canonicalize()
+        .canonical()
         .map_err(|e| e.to_string())?;
     if mode == WorkspaceMode::Direct {
         if !base.is_empty() && base != current {
@@ -160,7 +164,7 @@ pub fn plan(
         return Err("Invalid task ID for a workspace.".into());
     }
     let branch = format!("feature/octiq-{id}");
-    let target = primary
+    let mut target = primary
         .parent()
         .ok_or("Repository has no parent directory.")?
         .join(".worktrees")
@@ -168,8 +172,10 @@ pub fn plan(
             primary
                 .file_name()
                 .ok_or("Repository has no folder name.")?,
-        )
-        .join(&branch);
+        );
+    // One segment at a time: joined whole, `feature/octiq-x` keeps its `/` on
+    // Windows and the path never equals its own canonical form again.
+    target.extend(branch.split('/'));
     let relative = Path::new(&cwd)
         .strip_prefix(&checkout)
         .map_err(|e| e.to_string())?;
@@ -297,7 +303,7 @@ pub fn verify(plan: &WorkspacePlan) -> Result<(), String> {
             );
         }
         let primary = primary_checkout_root(&plan.cwd)?
-            .canonicalize()
+            .canonical()
             .map_err(|e| e.to_string())?;
         if primary != Path::new(&plan.repository_root) {
             return Err("The assigned workspace belongs to a different repository.".into());
@@ -518,7 +524,7 @@ pub fn remove_validation(plan: &WorkspacePlan, path: &str) -> Result<(), String>
         return Err("Validation checkout path changed.".into());
     }
     if primary_checkout_root(path)?
-        .canonicalize()
+        .canonical()
         .map_err(|e| e.to_string())?
         != Path::new(&plan.repository_root)
     {
@@ -545,7 +551,7 @@ pub(crate) mod tests {
             let dir =
                 std::env::temp_dir().join(format!("octiq-workflow-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(dir.join("repo")).unwrap();
-            let dir = dir.canonicalize().unwrap();
+            let dir = dir.canonical().unwrap();
             let root = dir.join("repo").to_string_lossy().into_owned();
             git(&root, &["init", "-b", "main"]).unwrap();
             git(&root, &["config", "user.name", "Workflow test"]).unwrap();

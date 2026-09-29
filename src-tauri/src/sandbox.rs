@@ -1,5 +1,6 @@
 //! Local project test services. This is not an agent permission sandbox.
 //! A persisted Compose project owns each chat's volumes across process restarts.
+use crate::paths::Canonical;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -96,6 +97,7 @@ pub struct Environment {
     pub chat_key: String,
     pub enabled: bool,
     pub locked: bool,
+    #[serde(deserialize_with = "crate::paths::de_simplified_buf")]
     pub cwd: PathBuf,
     pub state: String,
     pub checked_at: Option<u64>,
@@ -258,7 +260,7 @@ impl Store {
         valid_key(key)?;
         let _operation = self.operation(key)?;
         let cwd = Path::new(cwd)
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Chat folder is unavailable: {e}"))?;
         self.mutate(|data| {
             if let Some(existing) = data.environments.get_mut(key) {
@@ -329,7 +331,7 @@ impl Store {
             return Ok(None);
         };
         let operation = self.operation(key)?;
-        if Path::new(cwd).canonicalize().ok().as_ref() != Some(&env.cwd) {
+        if Path::new(cwd).canonical().ok().as_ref() != Some(&env.cwd) {
             return Err("Sandbox folder changed. Start a new chat for that folder.".into());
         }
         // An orchestrated worker's environment was built and checked just
@@ -493,7 +495,7 @@ impl Store {
                     .cwd
                     .join(".octiq")
                     .join(file)
-                    .canonicalize()
+                    .canonical()
                     .map_err(|_| "Sandbox envFile is unavailable.")?;
                 // An explicit private host file keeps credentials out of the
                 // repository and Docker build context. Recipes are trusted
@@ -850,7 +852,7 @@ impl Store {
     pub fn adopt(&self, from: &str, to: &str, cwd: &str) -> Result<bool, String> {
         valid_key(to)?;
         let cwd = Path::new(cwd)
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Chat folder is unavailable: {e}"))?;
         let _from = self.operation_wait(from, Duration::from_secs(900))?;
         let _to = self.operation_wait(to, Duration::from_secs(900))?;
@@ -1056,7 +1058,7 @@ fn current_recipe_digest(cwd: &Path) -> Result<String, String> {
 /// The folder whose `.octiq/sandbox.json` applies to `cwd`.
 fn recipe_root(cwd: &Path) -> Result<PathBuf, String> {
     let mut root = cwd
-        .canonicalize()
+        .canonical()
         .map_err(|e| format!("Sandbox folder is unavailable: {e}"))?;
     // Host-local setup need not be committed just to use a linked worktree.
     // Explicit worktree recipes win; otherwise inherit from its primary repo.
@@ -1071,7 +1073,7 @@ fn recipe_root(cwd: &Path) -> Result<PathBuf, String> {
                     .parent()
                     .filter(|p| p.join(".octiq/sandbox.json").is_file())
                 {
-                    root = primary.canonicalize().map_err(|e| e.to_string())?;
+                    root = primary.canonical().map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -1098,7 +1100,7 @@ fn read_recipe(cwd: &Path) -> Result<(Recipe, PathBuf), String> {
         .parent()
         .unwrap()
         .join(&recipe.compose_file)
-        .canonicalize()
+        .canonical()
         .map_err(|e| format!("Sandbox Compose file is unavailable: {e}"))?;
     if !source.starts_with(&root) {
         return Err("Sandbox Compose file must be inside the chat's project folder.".into());
@@ -1517,18 +1519,18 @@ pub(crate) mod tests {
         let (inherited, compose) = read_recipe(&linked).unwrap();
         assert_eq!(
             compose,
-            primary.join(".octiq/compose.json").canonicalize().unwrap()
+            primary.join(".octiq/compose.json").canonical().unwrap()
         );
         assert_eq!(
             PathBuf::from(inherited.env_file.unwrap()),
-            primary.canonicalize().unwrap().join(".octiq/private.env")
+            primary.canonical().unwrap().join(".octiq/private.env")
         );
         fs::create_dir_all(linked.join(".octiq")).unwrap();
         fs::write(linked.join(".octiq/sandbox.json"), recipe).unwrap();
         fs::write(linked.join(".octiq/compose.json"), "{}").unwrap();
         assert_eq!(
             read_recipe(&linked).unwrap().1,
-            linked.join(".octiq/compose.json").canonicalize().unwrap()
+            linked.join(".octiq/compose.json").canonical().unwrap()
         );
         assert!(git(
             &primary,
@@ -2303,7 +2305,7 @@ http.createServer(async (req, res) => {
         )
         .unwrap();
         fs::write(project.join(".octiq/compose.json"), "{}").unwrap();
-        let project = project.canonicalize().unwrap();
+        let project = project.canonical().unwrap();
         store
             .select("chat:a", project.to_str().unwrap(), Some(true), false)
             .unwrap();

@@ -361,7 +361,7 @@ fn is_recorded_worker(chat_id: &str) -> Result<bool, String> {
 /// unambiguous answer. The dispatch layer can enforce stronger context when a
 /// repository is shared by several projects.
 fn project_for_root(root: &str) -> Option<String> {
-    let wanted = fs::canonicalize(root).ok()?;
+    let wanted = crate::paths::canonicalize(root).ok()?;
     let state = crate::workspaces::WorkspaceState::load();
     let workspaces = crate::workspaces::list_workspaces_impl(&state).ok()?;
     let mut matching = BTreeSet::new();
@@ -369,11 +369,13 @@ fn project_for_root(root: &str) -> Option<String> {
         let paths = std::iter::once(workspace.primary_path.as_str())
             .chain(workspace.paths.iter().map(String::as_str));
         if paths.filter(|path| !path.trim().is_empty()).any(|path| {
-            fs::canonicalize(path).ok().is_some_and(|candidate| {
-                candidate == wanted
-                    || candidate.starts_with(&wanted)
-                    || wanted.starts_with(&candidate)
-            })
+            crate::paths::canonicalize(path)
+                .ok()
+                .is_some_and(|candidate| {
+                    candidate == wanted
+                        || candidate.starts_with(&wanted)
+                        || wanted.starts_with(&candidate)
+                })
         }) {
             matching.insert(workspace.id);
         }

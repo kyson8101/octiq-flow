@@ -1538,7 +1538,7 @@ fn validate_relative_git_path(path: &str) -> Result<(), String> {
 }
 
 fn canonical_path(path: &str) -> Result<String, String> {
-    std::fs::canonicalize(path)
+    crate::paths::canonicalize(path)
         .map_err(|error| format!("Cannot canonicalize repository path: {error}"))?
         .to_str()
         .map(str::to_string)
@@ -2090,7 +2090,9 @@ mod tests {
         assert_eq!(repositories.len(), 1);
         assert_eq!(
             repositories[0].root,
-            std::fs::canonicalize(&repo.root).unwrap().to_string_lossy()
+            crate::paths::canonicalize(&repo.root)
+                .unwrap()
+                .to_string_lossy()
         );
         assert!(repositories[0]
             .branches
