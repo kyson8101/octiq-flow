@@ -148,10 +148,14 @@ pub fn plain_windows_path(path: &str) -> Option<String> {
     }
     let plain_names = tail.split('\\').filter(|c| !c.is_empty()).all(|name| {
         let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+        let port = stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"));
         let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-                && stem.len() == 4
-                && stem.as_bytes()[3].is_ascii_digit());
+            || matches!(
+                port,
+                Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+            );
         name != "." && name != ".." && !name.ends_with(['.', ' ']) && !reserved
     });
     plain_names.then_some(plain)
@@ -541,6 +545,48 @@ mod tests {
         // Close to a device name is still an ordinary name.
         assert!(plain_windows_path(r"\\?\C:\dir\CONSOLE").is_some());
         assert!(plain_windows_path(r"\\?\C:\dir\COM").is_some());
+    }
+
+    #[test]
+    fn documented_superscript_port_names_keep_the_verbatim_prefix() {
+        for name in [
+            "COM¹",
+            "com².txt",
+            "CoM³.tar.gz",
+            "LPT¹",
+            "lpt².log",
+            "LpT³.more.txt",
+        ] {
+            let path = format!(r"\\?\C:\dir\{name}");
+            assert_eq!(plain_windows_path(&path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn names_outside_microsofts_reserved_file_list_are_simplified() {
+        for name in [
+            "COM0",
+            "com0.txt",
+            "LPT0",
+            "lpt0.log",
+            "COM10",
+            "com10.txt",
+            "COMX",
+            "comx.log",
+            "COM¹x",
+            "com¹x.txt",
+            "CONIN$",
+            "conin$.txt",
+            "CONOUT$",
+            "conout$.log",
+        ] {
+            let path = format!(r"\\?\C:\dir\{name}");
+            assert_eq!(
+                plain_windows_path(&path).as_deref(),
+                Some(path.trim_start_matches(r"\\?\")),
+                "{path}"
+            );
+        }
     }
 
     #[test]
