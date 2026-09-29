@@ -152,6 +152,48 @@ impl Vault {
         }
     }
 
+    /// The receipt an earlier change with this `request_id` left, reconciled,
+    /// when it was this same operation, with the candidate that proved it.
+    /// `None` when nothing was recorded.
+    ///
+    /// A change's arguments name the revision it was made against, so an
+    /// identical retry of an append — made after the append moved the note on —
+    /// can no longer rebuild them from a fresh read. `candidates` rebuilds them
+    /// from the receipt itself (its before-revision and when it was made), and
+    /// the stored request hash then says exactly which candidate, if any, was
+    /// this operation. None of them matching is a different operation.
+    pub fn earlier_change<T>(
+        &self,
+        actor: &str,
+        request_id: &str,
+        action: &str,
+        candidates: impl Fn(Option<&str>, u64) -> Vec<(T, Value)>,
+    ) -> Result<Option<(T, Value)>, String> {
+        let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+        let config = self.load_config()?;
+        if config.path.is_empty() {
+            return Err("Connect a folder in Settings → Memory Vault first.".into());
+        }
+        let root = PathBuf::from(&config.path);
+        let id = hash(&serde_json::to_vec(&json!([actor, root, request_id])).unwrap());
+        if !self.receipt_path(&id)?.exists() {
+            return Ok(None);
+        }
+        let mut receipt = self.load_receipt(&id)?;
+        let Some((found, _)) = candidates(receipt.before_revision.as_deref(), receipt.created_at)
+            .into_iter()
+            .find(|(_, args)| {
+                receipt.request_hash == hash(&serde_json::to_vec(&json!([action, args])).unwrap())
+            })
+        else {
+            return Err("requestId was already used for a different operation.".into());
+        };
+        self.reconcile(&mut receipt)?;
+        serde_json::to_value(receipt)
+            .map(|receipt| Some((found, receipt)))
+            .map_err(|e| e.to_string())
+    }
+
     fn receipt_path(&self, id: &str) -> Result<PathBuf, String> {
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("Invalid receipt ID.".into());

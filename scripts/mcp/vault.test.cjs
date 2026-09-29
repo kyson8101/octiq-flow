@@ -81,3 +81,41 @@ test("vault calls route to the native host with process identity and bounded sch
   assert.equal((await call(root, "chat:current", "tools/call", { name: "vault_configure", arguments: { path: "/" } })).isError, true);
   assert.equal(requests.length, count);
 });
+
+test("an agent's memory append names only its words, and the host alone says whether it was saved", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-memory-mcp-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const requests = [];
+  let status = 200;
+  let response = { result: { agent: "Mango Juice", path: "agent-zone/agents/maya/memory.md", receipt: { id: "receipt", status: "saved" } } };
+  const server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    requests.push({ url: req.url, body: JSON.parse(body) });
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(response));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  process.env.OCTIQ_HOOK_PORT = String(server.address().port);
+  t.after(() => { delete process.env.OCTIQ_HOOK_PORT; });
+
+  const listed = await call(root, "chat:current", "tools/list", {});
+  const tool = listed.tools.find(candidate => candidate.name === "vault_agent_memory_append");
+  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ["date", "requestId", "text"]);
+  assert.match(tool.description, /receipt status is saved/);
+  assert.match(tool.description, /same requestId/);
+
+  const append = args => call(root, "chat:current", "tools/call", { name: "vault_agent_memory_append", arguments: args });
+  const args = { text: "Use the receipt.", date: "2026-09-28", requestId: "r1" };
+  // Who the agent is, and which chat it is in, never cross the hook as arguments.
+  const saved = await append({ ...args, chatKey: "chat:other", agent: "Potato Juice", path: "../x.md" });
+  assert.equal(saved.isError, undefined);
+  assert.deepEqual(requests[0], { url: "/hook/vault", body: { chatKey: "chat:current", action: "agent_memory_append", args } });
+  // A refusal reaches the agent as an error, once: nothing retries it.
+  status = 400; response = { error: "Vault writes are off. Enable them in Settings → Memory Vault." };
+  const refused = await append(args);
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /writes are off/);
+  assert.equal(requests.length, 2);
+});

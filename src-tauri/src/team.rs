@@ -727,7 +727,7 @@ pub fn memory_brief(agent: &TeamAgent, team: &[TeamAgent]) -> String {
         )
     };
     format!(
-        "You have your own working memory in the shared Memory Vault. Before starting, call vault_agent_memory_read to load it. Record only what your future self would need, with one short entry through vault_agent_memory_append: a decision and why, a gotcha, how something works, or what to pick up next. Do not log routine steps, restate the diff, or copy the task. Pass today's local date as `date`.{managers}"
+        "You have your own working memory in the shared Memory Vault. Before starting, call vault_agent_memory_read to load it. Record only what your future self would need, with one short entry through vault_agent_memory_append: a decision and why, a gotcha, how something works, or what to pick up next. Do not log routine steps, restate the diff, or copy the task. Pass today's local date as `date`. Write your memory only through vault_agent_memory_append, never vault_write or vault_patch: OctiqFlow then shows the person that it was saved. Only a result whose receipt status is saved means the entry was written, so never say you updated your memory otherwise. If the call fails or times out, retry with the same requestId, never a new one.{managers}"
     )
 }
 
@@ -886,7 +886,60 @@ pub fn memory_read(
     }
 }
 
+/// What one append to an agent's own memory came to.
+///
+/// Only `Saved` says the entry is in the note. `Uncertain` is a receipt the
+/// vault could not vouch for either way (it needs review), and is never shown
+/// as a success or as a failure — see `memory_activity`.
+#[derive(Debug)]
+pub enum MemoryWrite {
+    /// `already`: an identical retry of an append that had been saved before;
+    /// nothing was written this time.
+    Saved {
+        receipt: serde_json::Value,
+        already: bool,
+    },
+    Uncertain {
+        receipt: serde_json::Value,
+        error: String,
+    },
+    Failed(String),
+}
+
+/// An append, with what it was for: the note it went to, the entry's date and
+/// its text, so the chat can show what was written without re-reading the note.
+#[derive(Debug)]
+pub struct MemoryAppend {
+    pub note: Option<String>,
+    pub date: Option<String>,
+    pub text: String,
+    pub outcome: MemoryWrite,
+}
+
+impl MemoryAppend {
+    /// The tool's answer. Anything but a saved receipt is an error to the agent.
+    pub fn result(&self, me: &TeamAgent) -> Result<serde_json::Value, String> {
+        match &self.outcome {
+            MemoryWrite::Saved { receipt, already } => {
+                let mut value = serde_json::json!({
+                    "agent": me.name, "path": self.note, "receipt": receipt,
+                });
+                if *already {
+                    value["alreadySaved"] = true.into();
+                }
+                Ok(value)
+            }
+            MemoryWrite::Uncertain { error, .. } => Err(error.clone()),
+            MemoryWrite::Failed(error) => Err(error.clone()),
+        }
+    }
+}
+
 /// Append one dated entry to your own memory.
+///
+/// A retry with the same `request_id` is answered from the earlier receipt
+/// (the entry is never written twice), so a lost answer can always be asked
+/// again. Nothing here retries a write under a new id.
 pub fn memory_append(
     vault: &crate::memory_vault::Vault,
     actor: &str,
@@ -894,32 +947,114 @@ pub fn memory_append(
     text: &str,
     date: Option<&str>,
     request_id: &str,
-) -> Result<serde_json::Value, String> {
-    let text = text.trim();
+) -> MemoryAppend {
+    let text = text.trim().to_owned();
+    let mut append = MemoryAppend {
+        note: None,
+        date: None,
+        text: text.clone(),
+        outcome: MemoryWrite::Failed(String::new()),
+    };
+    append.outcome = match append_entry(vault, actor, me, &text, date, request_id, &mut append) {
+        Ok(outcome) => outcome,
+        Err(error) => MemoryWrite::Failed(error),
+    };
+    append
+}
+
+fn append_entry(
+    vault: &crate::memory_vault::Vault,
+    actor: &str,
+    me: &TeamAgent,
+    text: &str,
+    date: Option<&str>,
+    request_id: &str,
+    append: &mut MemoryAppend,
+) -> Result<MemoryWrite, String> {
     if text.is_empty() {
         return Err("Write what is worth remembering.".into());
     }
     if text.chars().count() > 4000 {
         return Err("Keep a memory entry under 4000 characters; record the essence.".into());
     }
-    let date = match date.map(str::trim).filter(|d| !d.is_empty()) {
-        Some(d)
-            if d.len() == 10
-                && d.chars().enumerate().all(|(i, c)| {
-                    if i == 4 || i == 7 {
-                        c == '-'
-                    } else {
-                        c.is_ascii_digit()
-                    }
-                }) =>
-        {
-            d.to_owned()
-        }
-        Some(_) => return Err("Pass the date as YYYY-MM-DD.".into()),
-        None => today(),
-    };
-    ensure_memory(vault, actor, me)?;
+    let given = date.map(str::trim).filter(|d| !d.is_empty());
+    if given.is_some_and(|d| {
+        d.len() != 10
+            || !d.chars().enumerate().all(|(i, c)| {
+                if i == 4 || i == 7 {
+                    c == '-'
+                } else {
+                    c.is_ascii_digit()
+                }
+            })
+    }) {
+        return Err("Pass the date as YYYY-MM-DD.".into());
+    }
     let path = note_of(me)?;
+    append.note = Some(path.to_owned());
+    // One builder for both the write and the retry check, so the two can never
+    // disagree about what "the same operation" was.
+    let args = |date: &str, revision: Option<&str>| {
+        serde_json::json!({
+            "path": path,
+            "mode": "append",
+            "content": format!("\n## {date}\n\n{text}\n"),
+            "expectedRevision": revision,
+            "requestId": request_id,
+        })
+    };
+    // The dates a retry may be repeating. A date left out is never guessed
+    // for a retry: the first call dated its entry today() just before its
+    // receipt was made, so it is the receipt's own day — or the day before,
+    // when midnight fell in between. Only the receipt's request hash can say
+    // which, so nothing here depends on anything recorded after the write.
+    let dates = |created_at: u64| match given {
+        Some(date) => vec![date.to_owned()],
+        None => {
+            let made = i64::try_from(created_at).unwrap_or(i64::MAX);
+            vec![utc_date(made), utc_date(made.saturating_sub(86_400_000))]
+        }
+    };
+    let classify = |receipt: serde_json::Value, already: bool| match receipt
+        .get("status")
+        .and_then(|s| s.as_str())
+    {
+        Some("saved") => MemoryWrite::Saved { receipt, already },
+        other => {
+            let id = receipt.get("id").and_then(|s| s.as_str()).unwrap_or("");
+            MemoryWrite::Uncertain {
+                    error: format!(
+                        "The memory write was not confirmed ({}). Receipt {id} needs review; check it with vault_receipt and never retry under a new requestId.",
+                        other.unwrap_or("unknown")
+                    ),
+                    receipt,
+                }
+        }
+    };
+    let earlier = vault
+        .earlier_change(actor, request_id, "write", |revision, created_at| {
+            dates(created_at)
+                .into_iter()
+                .map(|date| {
+                    let args = args(&date, revision);
+                    (date, args)
+                })
+                .collect()
+        })
+        .map_err(|error| match given {
+            None if error.contains("different operation") => format!(
+                "{error} These words match it on no date its receipt allows: a retry must pass the same text and date as the first call."
+            ),
+            _ => error,
+        })?;
+    if let Some((date, receipt)) = earlier {
+        append.date = Some(date);
+        return Ok(classify(receipt, true));
+    }
+    // A first call: an entry without a date is dated today.
+    let date = given.map_or_else(today, str::to_owned);
+    append.date = Some(date.clone());
+    ensure_memory(vault, actor, me)?;
     let current = vault.call(
         actor,
         "read",
@@ -930,19 +1065,21 @@ pub fn memory_append(
         .and_then(|r| r.as_str())
         .ok_or("Could not read the memory note's revision.")?
         .to_owned();
-    let receipt = vault.call(
-        actor,
-        "write",
-        &serde_json::json!({
-            "path": path,
-            "mode": "append",
-            "content": format!("\n## {date}\n\n{text}\n"),
-            "expectedRevision": revision,
-            "requestId": request_id,
-        }),
-    )?;
-    saved(receipt.clone())?;
-    Ok(serde_json::json!({ "agent": me.name, "path": path, "receipt": receipt }))
+    match vault.call(actor, "write", &args(&date, Some(&revision))) {
+        Ok(receipt) => Ok(classify(receipt, false)),
+        // A write that failed after its receipt was recorded may still have
+        // reached the note: that one is uncertain, not failed. One that left
+        // no receipt never touched it.
+        Err(error) => match vault.earlier_change(actor, request_id, "write", |revision, _| {
+            vec![((), args(&date, revision))]
+        }) {
+            Ok(Some((_, receipt))) => Ok(match classify(receipt, false) {
+                MemoryWrite::Uncertain { receipt, .. } => MemoryWrite::Uncertain { receipt, error },
+                saved => saved,
+            }),
+            _ => Err(error),
+        },
+    }
 }
 
 pub fn direct_reports<'a>(team: &'a [TeamAgent], manager: &str) -> Vec<&'a TeamAgent> {
@@ -1621,6 +1758,7 @@ mod tests {
             Some("2026-09-25"),
             "r1",
         )
+        .result(&maya)
         .unwrap();
 
         let mut renamed = draft("Mango Juice", None);
