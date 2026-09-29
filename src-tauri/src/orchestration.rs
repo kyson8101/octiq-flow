@@ -285,6 +285,16 @@ pub struct TaskAssignee {
     pub name: String,
 }
 
+/// See `OrchestrationStore::worker_owner`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkerOwner {
+    pub assignee: Option<TaskAssignee>,
+    pub coordinator_chat_key: String,
+    pub task_id: String,
+    pub task_title: String,
+    pub run_id: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -1209,21 +1219,6 @@ impl OrchestrationStore {
         Ok(active_task_for_actor(&inner.data, chat_key))
     }
 
-    /// Agents mode: the registered agent a worker chat is running as, from the
-    /// task of its most recent attempt.
-    pub fn assignee_for_worker(&self, chat_key: &str) -> Result<Option<String>, String> {
-        let inner = self.inner.lock().map_err(|error| error.to_string())?;
-        Ok(inner
-            .data
-            .attempts
-            .values()
-            .filter(|attempt| attempt.worker_chat_key == chat_key)
-            .max_by_key(|attempt| attempt.created_at)
-            .and_then(|attempt| inner.data.tasks.get(&attempt.task_id))
-            .and_then(|task| task.assignee.as_ref())
-            .map(|assignee| assignee.id.clone()))
-    }
-
     /// The registered agent a worker chat runs as, with the task and run its
     /// latest attempt belongs to. `None` for a chat that is no worker, or a
     /// worker of a task with no assignee.
@@ -1242,6 +1237,35 @@ impl OrchestrationStore {
             .and_then(|task| {
                 let assignee = task.assignee.clone()?;
                 Some((assignee, task.id.clone(), task.run_id.clone()))
+            }))
+    }
+
+    /// Who a worker chat is working for, from that chat's own most recent
+    /// attempt: the agent the attempt was reserved for (its snapshot, not the
+    /// task's current assignee, so a reassigned task's old chat never speaks
+    /// for the new agent), and the run and coordinator chat that attempt
+    /// belongs to. `None` for a chat that is no worker.
+    pub fn worker_owner(&self, chat_key: &str) -> Result<Option<WorkerOwner>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        Ok(inner
+            .data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.worker_chat_key == chat_key)
+            .max_by_key(|attempt| attempt.created_at)
+            .and_then(|attempt| {
+                let task = inner.data.tasks.get(&attempt.task_id)?;
+                let run = inner.data.runs.get(&attempt.run_id)?;
+                Some(WorkerOwner {
+                    assignee: attempt.assignee.clone().or_else(|| task.assignee.clone()),
+                    coordinator_chat_key: run.coordinator_chat_key.clone(),
+                    task_id: task.id.clone(),
+                    task_title: task.title.clone(),
+                    run_id: run.id.clone(),
+                })
             }))
     }
 
@@ -2017,8 +2041,21 @@ impl OrchestrationStore {
         .inspect(|_| announce(run_id, "task_access_chosen"))
     }
 
+    /// Point a run at another coordinator chat — which nothing in the host
+    /// does — for tests of code that must not assume the link holds.
     #[cfg(test)]
-    fn reserve_attempt(
+    pub(crate) fn test_set_coordinator(&self, run_id: &str, chat: &str) -> Result<(), String> {
+        self.mutate(|data| {
+            data.runs
+                .get_mut(run_id)
+                .ok_or("The run does not exist.")?
+                .coordinator_chat_key = chat.into();
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserve_attempt(
         &self,
         actor_chat_key: &str,
         launch: &WorkerLaunch,
@@ -4256,7 +4293,7 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    pub(super) fn launch_for(task_id: &str) -> WorkerLaunch {
+    pub(crate) fn launch_for(task_id: &str) -> WorkerLaunch {
         WorkerLaunch {
             task_id: task_id.into(),
             agent: ChatAgent::Codex,
