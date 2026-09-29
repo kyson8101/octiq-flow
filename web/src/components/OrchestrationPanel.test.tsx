@@ -107,6 +107,102 @@ describe("host execution evidence", () => {
   });
 });
 
+describe("a task row's reported checklist", () => {
+  const report = (states: ("done" | "active" | "pending")[], titles?: string[]) => ({
+    objective: "Build it", nextStep: "", reportedBy: "codex", reportedAt: 10,
+    steps: states.map((state, index) => ({ state, title: titles?.[index] ?? `Step ${index + 1}` })),
+  });
+  const row = (current: OrchestrationSnapshot) => {
+    const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
+    // The collapsed line: everything before the disclosure.
+    return html.slice(html.indexOf('class="orch-task-summary"'), html.indexOf('class="orch-task-actions"'));
+  };
+  const running = () => {
+    const current = structuredClone(snapshot);
+    current.gates = [];
+    current.tasks[0].status = "running";
+    current.attempts[0].status = "running";
+    current.attempts[0].execution = { state: "waiting_tool", retryCount: 0, pendingTools: { t1: "Bash" } };
+    current.reports = { "chat:worker": report(["done", "done", "active", "pending", "pending"], ["Read", "Build", "Running tests", "Review", "Ship"]) };
+    return current;
+  };
+
+  it("shows the count and the step being worked on beside the host's own word", () => {
+    const line = row(running());
+    expect(line).toContain("Waiting for a tool");
+    expect(line).toContain('<span class="orch-task-count">2/5 steps</span> · <span class="orch-task-step">Running tests</span>');
+    expect(line).toContain('data-current="true"');
+    expect(line).toContain('style="width:40%"');
+  });
+
+  it("follows the report as it moves, with nothing kept from the one before", () => {
+    const next = running();
+    next.reports!["chat:worker"] = report(["done", "done", "done", "active", "pending"], ["Read", "Build", "Running tests", "Review", "Ship"]);
+    const line = row(next);
+    expect(line).toContain("3/5 steps");
+    expect(line).toContain('<span class="orch-task-step">Review</span>');
+    expect(line).not.toContain("Running tests");
+  });
+
+  it("gives a blocked task its real count and its last step, not a running one", () => {
+    const blocked = running();
+    blocked.tasks[0].status = "blocked";
+    blocked.attempts[0].status = "blocked";
+    blocked.attempts[0].execution = { state: "blocked", retryCount: 0 };
+    const line = row(blocked);
+    expect(line).toContain("2/5 steps");
+    expect(line).toContain("Last step: Running tests");
+    expect(line).not.toContain("data-current");
+  });
+
+  it("keeps a finished task's reported count and its bar with it", () => {
+    const done = running();
+    done.tasks[0].status = "completed";
+    done.tasks[0].verdict = "fail";
+    done.tasks[0].kind = "review";
+    done.attempts[0].status = "completed";
+    done.attempts[0].execution = { state: "completed", retryCount: 0 };
+    const line = row(done);
+    expect(line).toContain("Done · check failed");
+    expect(line).toContain("2/5 steps");
+    expect(line).not.toContain("5/5");
+    expect(line).toContain('style="width:40%"');
+    expect(line).toContain("Last step: Running tests");
+  });
+
+  it("says nothing it was not told: no checklist, no active step, or a retry that has not reported", () => {
+    const silent = running();
+    silent.reports = {};
+    expect(row(silent)).not.toContain("orch-task-progress");
+    expect(row(silent)).not.toContain("0/0");
+
+    const noActive = running();
+    noActive.reports = { "chat:worker": report(["done", "pending"], ["Read", "Write the migration"]) };
+    expect(row(noActive)).toContain('<span class="orch-task-count">1/2 steps</span></span>');
+    expect(row(noActive)).not.toContain("Write the migration");
+
+    // Attempt 2 has its own chat; attempt 1's checklist stays with attempt 1.
+    const retry = running();
+    retry.attempts[0].status = "failed";
+    retry.attempts.push({ ...retry.attempts[0], id: "attempt_2", number: 2, workerChatKey: "chat:worker-2", status: "running", createdAt: 20 });
+    retry.tasks[0].activeAttemptId = "attempt_2";
+    expect(row(retry)).not.toContain("orch-task-progress");
+    expect(row(retry)).not.toContain("Running tests");
+  });
+
+  it("keeps a queued task's word, with no attempt and no checklist", () => {
+    const queued = structuredClone(snapshot);
+    queued.gates = [];
+    queued.tasks[0].status = "pending";
+    queued.tasks[0].activeAttemptId = undefined;
+    queued.attempts = [];
+    const line = row(queued);
+    expect(line).toContain("Queued");
+    expect(line).not.toContain("orch-task-progress");
+  });
+});
+
 describe("OrchestrationPanel", () => {
   it("asks for plan approval in the run, and only while it is pending", () => {
     const pending = structuredClone(snapshot);

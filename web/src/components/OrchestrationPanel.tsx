@@ -4,7 +4,8 @@ import "./OrchestrationPanel.css";
 import { AGENT_NAME } from "../lib/agentProviders";
 import {
   attemptIsExecuting, boardCounts, executionNeedsAttention, pendingDecision, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
-  sortTasksByActivity, taskElapsed, taskProgress, taskStage, taskStateLabel, TASK_LABELS, useElapsedTick,
+  sortTasksByActivity, stepCountLabel, stepLabel, taskElapsed, taskProgress, taskStage, taskStateLabel, taskStepSummary, TASK_LABELS,
+  useElapsedTick,
 } from "../lib/agentTaskBoard";
 import { acceptanceLine, checkCoverage, KIND_LABEL, requiresVerdict, runStages, taskEnvironment } from "../lib/runAcceptance";
 import { useSandboxes, type SandboxSnapshot } from "../lib/sandbox";
@@ -1160,6 +1161,14 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
   // status word, which line one already carries. Saying "Blocked · Blocked"
   // is how a row starts looking busy while telling you less.
   const reportedStage = attempt?.execution || stage === TASK_LABELS[task.status] ? null : stage;
+  // The worker's own checklist, on the row: how many of its steps are done
+  // and which one it is on. The host's operation ("Waiting for a tool") is
+  // line one's word and never hides it; a stopped task's step is its last.
+  const steps = taskStepSummary(task, attempt, report);
+  const step = steps && stepLabel(steps);
+  // The bar agrees with the count beside it; a finished task's full bar is
+  // only for one that reported no checklist to count.
+  const trackPercent = steps ? Math.round(steps.done / steps.total * 100) : progress.percent;
   const elapsed = taskElapsed(snapshot, task, now);
   const branch = task.workspace?.plan.branch || attempt?.branch;
   const gate = gates.find((item) => item.taskId === task.id && item.status === "open");
@@ -1201,8 +1210,13 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
               decision.blockedAction ? `Action: ${decision.blockedAction}` : "The provider gave no exact action.",
               decision.continuation === "unavailable" ? "This attempt cannot continue from here; a new attempt is needed." : decision.continuation === "new_turn_same_attempt" ? "Answering resumes this same attempt." : "Whether it can resume is not known.",
             ].join("\n")}>{decision.continuation === "unavailable" ? "Decision recorded · cannot resume" : "Native decision"} {decision.id.slice(0, 10)}</span>}
-            {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
-            {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
+            {trackPercent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${trackPercent}%` }} /></span>}
+            {steps && <span className="orch-task-progress" data-current={steps.current || undefined}
+              title={[`${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}`, step].filter(Boolean).join("\n")}>
+              <span className="orch-task-count">{stepCountLabel(steps)}</span>
+              {step && <> · <span className="orch-task-step">{step}</span></>}
+            </span>}
+            {reportedStage && !step && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
             {attempt && <span className="orch-task-agent" title={`${task.assignee ? `${assigneeFace?.name ?? task.assignee.name} · ` : ""}${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}>{task.assignee
               ? <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={14} decorative />
               : <AgentLogo agent={attempt.agent} size={10} />}</span>}

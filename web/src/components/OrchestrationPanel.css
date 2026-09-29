@@ -731,6 +731,15 @@
 .orch-task-state { color: var(--task-color); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .orch-task-track { width: 52px; height: 3px; flex: 0 0 auto; overflow: hidden; border-radius: 2px; background: var(--bg-2); }
 .orch-task-track > span { display: block; height: 100%; border-radius: 2px; background: var(--task-color); transition: width 200ms ease-out; }
+/* "2/5 steps · Running tests". The step wraps, then stops at two lines; the
+   whole checklist is one tap away under the row's disclosure. */
+.orch-task-progress {
+  flex: 0 1 auto; min-width: 0; max-width: 100%;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.orch-task-count { color: var(--fg-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.orch-task-progress[data-current] .orch-task-step { color: var(--fg-1); }
 .orch-task-stage { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .orch-task-agent { display: inline-flex; flex: 0 0 auto; }
 .orch-task-branch { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

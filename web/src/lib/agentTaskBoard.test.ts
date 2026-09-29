@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { taskBoardFixture } from "./__fixtures__/agentTaskBoard";
-import { attemptIsLive, boardCounts, currentAttempt, pendingDecision, runElapsed, shortBranch, taskElapsed, taskProgress, taskStage, taskStateLabel } from "./agentTaskBoard";
+import {
+  attemptIsLive, boardCounts, currentAttempt, pendingDecision, runElapsed, shortBranch, stepCountLabel, stepLabel, taskElapsed, taskProgress,
+  taskStage, taskStateLabel, taskStepSummary,
+} from "./agentTaskBoard";
 import type { OrchestrationAttempt, OrchestrationTask } from "./orchestration";
 
 describe("a task row's state word (feedback ee0a43b0)", () => {
@@ -69,6 +72,67 @@ describe("agent task progress", () => {
     const snapshot = taskBoardFixture();
     snapshot.tasks[3].status = "cancelled";
     expect(boardCounts(snapshot.tasks)).toMatchObject({ done: 1, percent: 25, todo: 0, cancelled: 1 });
+  });
+});
+
+describe("a task row's reported steps", () => {
+  const board = () => {
+    const snapshot = taskBoardFixture();
+    const task = snapshot.tasks[1];
+    const attempt = snapshot.attempts[1];
+    const report = snapshot.reports!["chat:w-reader"];
+    return { snapshot, task, attempt, report };
+  };
+
+  it("counts the steps as reported and names the one the running worker is on", () => {
+    const { task, attempt, report } = board();
+    const summary = taskStepSummary(task, attempt, report)!;
+    expect(summary).toEqual({ done: 2, total: 4, step: "Run focused tests", current: true });
+    expect(stepCountLabel(summary)).toBe("2/4 steps");
+    expect(stepLabel(summary)).toBe("Run focused tests");
+    // Host execution never takes the step's place: it is the row's first word.
+    const waiting = { ...attempt, execution: { state: "waiting_tool", retryCount: 0, pendingTools: {} } } as OrchestrationAttempt;
+    expect(stepLabel(taskStepSummary(task, waiting, report)!)).toBe("Run focused tests");
+  });
+
+  it("keeps a stopped task's count and calls its step the last one, never the current one", () => {
+    const { task, attempt, report } = board();
+    for (const status of ["blocked", "failed", "cancelled"] as const) {
+      const summary = taskStepSummary({ ...task, status }, { ...attempt, status: status === "cancelled" ? "cancelled" : status }, report)!;
+      expect(summary).toMatchObject({ done: 2, total: 4, current: false });
+      expect(stepLabel(summary)).toBe("Last step: Run focused tests");
+    }
+    // A running task whose shown attempt is not its authoritative one.
+    expect(taskStepSummary({ ...task, activeAttemptId: "other" }, attempt, report)!.current).toBe(false);
+  });
+
+  it("never lets completion stand in for reported steps", () => {
+    const { task, attempt, report } = board();
+    const done = { ...task, status: "completed" } as OrchestrationTask;
+    expect(taskProgress(done, report).percent).toBe(100);
+    const summary = taskStepSummary(done, { ...attempt, status: "completed" }, report)!;
+    expect(stepCountLabel(summary)).toBe("2/4 steps");
+    expect(stepLabel(summary)).toBe("Last step: Run focused tests");
+    expect(taskStepSummary({ ...done, verdict: "fail" }, { ...attempt, status: "completed" }, report)!.done).toBe(2);
+  });
+
+  it("says nothing without a checklist, and nothing for a report older than the attempt", () => {
+    const { task, attempt, report } = board();
+    expect(taskStepSummary(task, attempt, undefined)).toBeNull();
+    expect(taskStepSummary(task, attempt, { ...report, steps: [] })).toBeNull();
+    expect(taskStepSummary(task, undefined, report)).toBeNull();
+    expect(taskStepSummary(task, { ...attempt, createdAt: report.reportedAt + 1 }, report)).toBeNull();
+  });
+
+  it("offers no pending step as the current one, takes the first active, and skips a blank title", () => {
+    const { task, attempt, report } = board();
+    const steps = (states: [string, "done" | "active" | "pending"][]) => ({ ...report, steps: states.map(([title, state]) => ({ title, state })) });
+    const noActive = taskStepSummary(task, attempt, steps([["One", "done"], ["Two", "pending"]]))!;
+    expect(noActive).toMatchObject({ done: 1, total: 2, step: null });
+    expect(stepLabel(noActive)).toBeNull();
+    expect(taskStepSummary(task, attempt, steps([["First", "active"], ["Second", "active"]]))!.step).toBe("First");
+    expect(stepLabel(taskStepSummary(task, attempt, steps([["  ", "active"], ["Next", "pending"]]))!)).toBeNull();
+    expect(stepCountLabel(taskStepSummary(task, attempt, steps([["Only", "active"]]))!)).toBe("0/1 step");
   });
 });
 

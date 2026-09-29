@@ -45,6 +45,39 @@ export function taskProgress(task: OrchestrationTask, report?: TaskReport) {
   return { total, done, remaining: total - done, percent };
 }
 
+/** A task row's own reading of its worker's checklist: the counts as
+ *  reported and the step it said it was on. Only the attempt the row shows
+ *  counts — every attempt has a chat of its own, and a report made before
+ *  this attempt existed belongs to another one. No steps, nothing to say:
+ *  never `0/0`, and never the completion fallback `taskProgress` gives a
+ *  finished task. The first active step names it, as the checklist lists
+ *  them; a blank title names nothing. */
+export type TaskStepSummary = { done: number; total: number; step: string | null; current: boolean };
+
+export function taskStepSummary(task: OrchestrationTask, attempt: OrchestrationAttempt | undefined, report?: TaskReport): TaskStepSummary | null {
+  if (!attempt || !report?.steps.length || report.reportedAt < attempt.createdAt) return null;
+  const step = report.steps.find((item) => item.state === "active")?.title.trim() || null;
+  return {
+    done: report.steps.filter((item) => item.state === "done").length,
+    total: report.steps.length,
+    step,
+    // Still underway only while the task is running on this very attempt.
+    // A blocked, failed or finished one keeps the step it stopped on, as
+    // the last one it reported — never as one it is still doing.
+    current: task.status === "running" && task.activeAttemptId === attempt.id
+      && (attempt.status === "running" || attempt.status === "preparing"),
+  };
+}
+
+export function stepCountLabel(summary: TaskStepSummary): string {
+  return `${summary.done}/${summary.total} ${summary.total === 1 ? "step" : "steps"}`;
+}
+
+export function stepLabel(summary: TaskStepSummary): string | null {
+  if (!summary.step) return null;
+  return summary.current ? summary.step : `Last step: ${summary.step}`;
+}
+
 export const TASK_LABELS: Record<OrchestrationTask["status"], string> = {
   pending: "Queued", ready: "Ready", running: "Working", blocked: "Blocked",
   completed: "Done", failed: "Failed", cancelled: "Cancelled",
