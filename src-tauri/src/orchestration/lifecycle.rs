@@ -193,6 +193,11 @@ pub struct Service {
     pub state: String,
     pub checked_at: Option<i64>,
     pub recovery: String,
+    /// What the coordinator was last told before this host restarted, so
+    /// the first probe after it reports a change and not the restart itself.
+    /// In memory only: it is set by `recover` as the ledger loads.
+    #[serde(skip)]
+    pub(super) before_restart: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -230,29 +235,28 @@ pub(super) fn recover(data: &mut Stored) -> bool {
             changed = true;
         }
     }
-    let mut lost = Vec::new();
+    // Old listener evidence is void, but a restart is not news to the
+    // coordinator: the next probe says whether anything actually changed.
     for service in data.services.values_mut() {
         if service.state != "unverified" || service.checked_at.is_some() {
-            service.state = "unverified".into();
+            let told = std::mem::replace(&mut service.state, "unverified".into());
+            service.before_restart = Some(told);
             service.checked_at = None;
-            lost.push(service.clone());
             changed = true;
         }
-    }
-    for service in lost {
-        service_notice(
-            data,
-            &service,
-            "Host restarted; previous listener evidence is invalid.",
-        );
     }
     changed
 }
 
+/// A settled run is never woken by a service: its snapshot stays truthful,
+/// and a coordinator that reopens it reads the state there.
 fn service_notice(data: &mut Stored, service: &Service, reason: &str) {
     let Some(run) = data.runs.get(&service.run_id) else {
         return;
     };
+    if super::run_has_ended(run) {
+        return;
+    }
     let target = run.coordinator_chat_key.clone();
     inbox::enqueue(data, &service.run_id, "host", &target,
         format!("service:{}:{}:{}", service.id, service.state, compact_id()), "service",
@@ -454,6 +458,7 @@ impl OrchestrationStore {
                 state: "unverified".into(),
                 checked_at: None,
                 recovery,
+                before_restart: None,
             };
             data.services
                 .retain(|_, s| s.task_id != service.task_id || s.name != service.name);
@@ -531,12 +536,16 @@ impl OrchestrationStore {
             let mut runs = BTreeSet::new();
             for (before, state) in observations {
                 let Some(service) = data.services.get_mut(&before.id) else { continue; };
-                let changed = service.state != state;
+                let shown = service.state != state;
+                let told = service.before_restart.take();
+                let news = told.as_deref().unwrap_or(&service.state) != state;
                 service.state = state.into();
                 service.checked_at = Some(now);
                 let service = service.clone();
-                if changed {
+                if shown {
                     runs.insert(service.run_id.clone());
+                }
+                if news {
                     service_notice(data, &service, if state == "stopped" { "The local listener is not reachable." } else { "The local listener is reachable; application health still needs verification." });
                 }
             }
@@ -1394,6 +1403,9 @@ mod tests {
     fn registered_service_lifetime_is_independent_of_completed_task() {
         let store = OrchestrationStore::default();
         let (run, attempt) = worker(&store);
+        // Work still waiting keeps the run active once this task completes;
+        // a settled run is never woken (see the settled-run test below).
+        super::super::tests::task(&store, &run, vec![attempt.task_id.clone()]);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         store
@@ -1422,7 +1434,9 @@ mod tests {
         drop(listener);
         store.check_services_with(110_001, |_| false).unwrap();
         let snapshot = store.snapshot(Some(&run.id)).unwrap();
-        assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
+        let task = snapshot.tasks.iter().find(|t| t.id == attempt.task_id);
+        assert_eq!(task.unwrap().status, TaskStatus::Completed);
+        assert_eq!(snapshot.runs[0].status, RunStatus::Running);
         assert_eq!(snapshot.services[0].state, "stopped");
         assert_eq!(snapshot.services[0].checked_at, Some(110_001));
         assert!(snapshot
@@ -1500,6 +1514,155 @@ mod tests {
         assert_eq!(snapshot.services[0].checked_at, None);
         assert_eq!(snapshot.native_decisions[0].status, "expired");
         assert_eq!(snapshot.native_decisions[0].continuation, "unavailable");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn service_notices(store: &OrchestrationStore, run: &Run) -> Vec<inbox::Notification> {
+        store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .notifications
+            .into_iter()
+            .filter(|n| n.kind == "service")
+            .collect()
+    }
+
+    fn settle(store: &OrchestrationStore, attempt: &Attempt, outcome: WorkerOutcome) {
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome,
+                    summary: "Settled".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_settled_run_keeps_truthful_services_but_is_never_woken_by_them() {
+        for (outcome, status) in [
+            (WorkerOutcome::Completed, RunStatus::Completed),
+            (WorkerOutcome::Failed, RunStatus::Failed),
+        ] {
+            let store = OrchestrationStore::default();
+            let (run, attempt) = worker(&store);
+            store
+                .register_service("chat:master", register(&attempt, 3001))
+                .unwrap();
+            // Control: while the run is active, the first state is news.
+            store.check_services_with(100_000, |_| true).unwrap();
+            assert_eq!(service_notices(&store, &run).len(), 1);
+
+            settle(&store, &attempt, outcome);
+            assert_eq!(
+                store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+                status
+            );
+
+            store.check_services_with(110_001, |_| false).unwrap();
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            assert_eq!(snapshot.services[0].state, "stopped");
+            assert_eq!(snapshot.services[0].checked_at, Some(110_001));
+
+            store.mutate(|data| Ok(recover(data))).unwrap();
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            assert_eq!(snapshot.services[0].state, "unverified");
+            assert_eq!(snapshot.services[0].checked_at, None);
+
+            store.check_services_with(120_002, |_| true).unwrap();
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            assert_eq!(snapshot.services[0].state, "listening");
+            assert_eq!(snapshot.services[0].checked_at, Some(120_002));
+            assert_eq!(service_notices(&store, &run).len(), 1, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn a_service_notice_queued_before_its_run_settled_is_not_delivered() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        store
+            .register_service("chat:master", register(&attempt, 3001))
+            .unwrap();
+        // Control: on an active run the notice is handed over.
+        store.check_services_with(100_000, |_| false).unwrap();
+        let first = service_notices(&store, &run).remove(0);
+        assert!(store
+            .claim_notification(&first.id, now_ms())
+            .unwrap()
+            .is_some());
+
+        store.check_services_with(110_001, |_| true).unwrap();
+        let queued = service_notices(&store, &run)
+            .into_iter()
+            .find(|n| n.id != first.id)
+            .unwrap();
+        assert_eq!(queued.state, inbox::DeliveryState::Pending);
+        settle(&store, &attempt, WorkerOutcome::Completed);
+        assert!(store
+            .claim_notification(&queued.id, now_ms())
+            .unwrap()
+            .is_none());
+        let after = service_notices(&store, &run)
+            .into_iter()
+            .find(|n| n.id == queued.id)
+            .unwrap();
+        assert_eq!(after.state, inbox::DeliveryState::Cancelled);
+    }
+
+    #[test]
+    fn a_restart_tells_an_active_run_only_what_changed_about_its_service() {
+        let root = std::env::temp_dir().join(format!("octiq-lifecycle-{}", compact_id()));
+        let path = root.join("state.json");
+        let store = OrchestrationStore::load(path.clone());
+        let (run, attempt) = worker(&store);
+        // A restart fails the interrupted worker; the waiting task keeps the
+        // run active.
+        super::super::tests::task(&store, &run, vec![attempt.task_id.clone()]);
+        store
+            .register_service("chat:master", register(&attempt, 3001))
+            .unwrap();
+        store.check_services_with(100_000, |_| true).unwrap();
+        assert_eq!(service_notices(&store, &run).len(), 1);
+
+        // Listening before the restart and after it: nothing to act on.
+        drop(store);
+        let store = OrchestrationStore::load(path.clone());
+        assert_eq!(
+            store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+            RunStatus::Running
+        );
+        assert_eq!(service_notices(&store, &run).len(), 1);
+        store.check_services_with(200_000, |_| true).unwrap();
+        assert_eq!(
+            store.snapshot(Some(&run.id)).unwrap().services[0].state,
+            "listening"
+        );
+        assert_eq!(service_notices(&store, &run).len(), 1);
+
+        // Gone after a restart: exactly one notice says so.
+        drop(store);
+        let store = OrchestrationStore::load(path.clone());
+        store.check_services_with(300_000, |_| false).unwrap();
+        let notices = service_notices(&store, &run);
+        assert_eq!(notices.len(), 2);
+        assert!(notices
+            .iter()
+            .any(|n| n.body.contains("is stopped") && n.body.contains("not reachable")));
+
+        // Still gone after another restart: the coordinator already knows.
+        drop(store);
+        let store = OrchestrationStore::load(path.clone());
+        store.check_services_with(400_000, |_| false).unwrap();
+        assert_eq!(service_notices(&store, &run).len(), 2);
+        // Back again: one notice.
+        store.check_services_with(410_001, |_| true).unwrap();
+        assert_eq!(service_notices(&store, &run).len(), 3);
+        drop(store);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -112,6 +112,10 @@ fn valid(data: &Stored, n: &Notification) -> bool {
     if run.status == RunStatus::Stopped {
         return false;
     }
+    // Queued before its run settled, or by a build that still sent them.
+    if n.kind == "service" && run_has_ended(run) {
+        return false;
+    }
     if let Some(id) = n.source.strip_prefix("relay:") {
         if !bridge::delivers(data, id, &n.target_chat_key) {
             return false;
