@@ -67,6 +67,15 @@ pub fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     std::fs::canonicalize(path).map(|p| simplified(&p))
 }
 
+/// The platform's unmodified canonical spelling.
+///
+/// Windows builds before `canonicalize` simplified verbatim paths used this
+/// spelling in durable receipt IDs. Keep it available only for compatibility
+/// lookups; filesystem comparisons and newly stored paths use `canonicalize`.
+pub(crate) fn canonicalize_raw(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
 /// `.canonical()` on a path: `canonicalize` in method form, so a chain like
 /// `Path::new(root).canonical()?` reads the way the std call did.
 pub trait Canonical {

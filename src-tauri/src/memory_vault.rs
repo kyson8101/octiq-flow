@@ -208,11 +208,41 @@ impl Vault {
         action: &str,
         args: &Value,
     ) -> Result<Value, String> {
+        let legacy_root = if cfg!(windows) {
+            let raw = crate::paths::canonicalize_raw(root)
+                .map_err(|e| format!("Vault folder is unavailable: {e}"))?;
+            (raw != root).then_some(raw)
+        } else {
+            None
+        };
+        self.mutate_with_legacy_root(actor, root, legacy_root.as_deref(), action, args)
+    }
+
+    fn mutate_with_legacy_root(
+        &self,
+        actor: &str,
+        root: &Path,
+        legacy_root: Option<&Path>,
+        action: &str,
+        args: &Value,
+    ) -> Result<Value, String> {
         let request_id = required(args, "requestId")?;
         if request_id.len() > 128 {
             return Err("requestId must be at most 128 characters.".into());
         }
-        let id = hash(&serde_json::to_vec(&json!([actor, root, request_id])).unwrap());
+        let current_id = mutation_id(actor, root, request_id);
+        let id = if self.receipt_path(&current_id)?.exists() {
+            current_id
+        } else if let Some(legacy_root) = legacy_root {
+            let legacy_id = mutation_id(actor, legacy_root, request_id);
+            if self.receipt_path(&legacy_id)?.exists() {
+                legacy_id
+            } else {
+                current_id
+            }
+        } else {
+            current_id
+        };
         let request_hash = hash(&serde_json::to_vec(&json!([action, args])).unwrap());
         if self.receipt_path(&id)?.exists() {
             let mut receipt = self.load_receipt(&id)?;
@@ -356,6 +386,9 @@ fn now() -> u64 {
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+fn mutation_id(actor: &str, root: &Path, request_id: &str) -> String {
+    hash(&serde_json::to_vec(&json!([actor, root, request_id])).unwrap())
 }
 fn revision(content: &str) -> String {
     hash(content.as_bytes())
@@ -775,6 +808,81 @@ mod tests {
         assert!(restarted
             .call("chat:b", "receipt", &json!({"id":written["id"]}))
             .is_err());
+    }
+
+    #[test]
+    fn a_retry_finds_the_receipt_id_derived_from_the_legacy_root_spelling() {
+        let f = Fixture::new();
+        let args = json!({"path":"legacy.md","content":"once","requestId":"legacy-request"});
+        let written = f.call("write", args.clone()).unwrap();
+        let current_id = written["id"].as_str().unwrap();
+        let mut receipt = f.vault.load_receipt(current_id).unwrap();
+        fs::remove_file(f.vault.receipt_path(current_id).unwrap()).unwrap();
+
+        // Construct the pre-upgrade ID directly. Keeping this string-level
+        // makes the migration lookup test run on macOS as well as Windows.
+        let legacy_root = Path::new(r"\\?\C:\Works\Obsidian\Pandaworks-docspace");
+        let legacy_id =
+            hash(&serde_json::to_vec(&json!(["chat:a", legacy_root, "legacy-request"])).unwrap());
+        assert_ne!(legacy_id, current_id);
+        receipt.id = legacy_id.clone();
+        f.vault.save_receipt(&receipt).unwrap();
+
+        let root = f.root.canonical().unwrap();
+        let retried = f
+            .vault
+            .mutate_with_legacy_root("chat:a", &root, Some(legacy_root), "write", &args)
+            .unwrap();
+        assert_eq!(retried["id"], legacy_id);
+        assert_eq!(
+            fs::read_to_string(f.root.join("legacy.md")).unwrap(),
+            "once"
+        );
+        assert!(!f.vault.receipt_path(current_id).unwrap().exists());
+        assert_eq!(
+            f.call("receipt", json!({"id":legacy_id})).unwrap()["status"],
+            "saved"
+        );
+
+        let mut reused = args;
+        reused["content"] = json!("different");
+        assert!(f
+            .vault
+            .mutate_with_legacy_root("chat:a", &root, Some(legacy_root), "write", &reused,)
+            .unwrap_err()
+            .contains("different operation"));
+        assert!(f
+            .vault
+            .call("chat:b", "receipt", &json!({"id":legacy_id}))
+            .is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_retry_uses_the_raw_canonical_root_for_the_legacy_id() {
+        let f = Fixture::new();
+        let args =
+            json!({"path":"windows-legacy.md","content":"once","requestId":"windows-legacy"});
+        let written = f.call("write", args.clone()).unwrap();
+        let current_id = written["id"].as_str().unwrap();
+        let mut receipt = f.vault.load_receipt(current_id).unwrap();
+        fs::remove_file(f.vault.receipt_path(current_id).unwrap()).unwrap();
+
+        let plain_root = f.root.canonical().unwrap();
+        let legacy_root = crate::paths::canonicalize_raw(&plain_root).unwrap();
+        assert!(legacy_root.to_string_lossy().starts_with(r"\\?\"));
+        let legacy_id = mutation_id("chat:a", &legacy_root, "windows-legacy");
+        assert_ne!(legacy_id, current_id);
+        receipt.id = legacy_id.clone();
+        f.vault.save_receipt(&receipt).unwrap();
+
+        let retried = f.call("write", args).unwrap();
+        assert_eq!(retried["id"], legacy_id);
+        assert_eq!(
+            fs::read_to_string(f.root.join("windows-legacy.md")).unwrap(),
+            "once"
+        );
+        assert!(!f.vault.receipt_path(current_id).unwrap().exists());
     }
 
     #[test]
