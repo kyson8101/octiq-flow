@@ -1,4 +1,5 @@
 //! Immutable image and HTML snapshots published by the bundled MCP, scoped to a chat.
+use crate::paths::Canonical;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -45,9 +46,9 @@ fn list_at(root: &Path, key: &str) -> Result<Vec<ImagePreview>, String> {
     if !dir.exists() {
         return Ok(vec![]);
     }
-    let canonical = dir.canonicalize().map_err(|e| e.to_string())?;
+    let canonical = dir.canonical().map_err(|e| e.to_string())?;
     let expected = root
-        .canonicalize()
+        .canonical()
         .map_err(|e| e.to_string())?
         .join("previews")
         .join(id);

@@ -411,10 +411,10 @@ fn available_worktree_target(
 /// Preserve a project's selected subfolder inside the linked worktree. Most
 /// projects point at the repo root; monorepo projects often point one level in.
 fn worktree_cwd(requested: &str, root: &str, target: &Path) -> String {
-    let relative = std::fs::canonicalize(requested)
+    let relative = crate::paths::canonicalize(requested)
         .ok()
         .and_then(|path| {
-            std::fs::canonicalize(root)
+            crate::paths::canonicalize(root)
                 .ok()
                 .and_then(|repo| path.strip_prefix(repo).ok().map(Path::to_path_buf))
         })

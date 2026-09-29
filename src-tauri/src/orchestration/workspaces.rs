@@ -2,6 +2,7 @@
 //! a lease identifies the only worker allowed to write there.
 use super::*;
 use crate::git_ops::workflow::{self, DeliveryEvidence, WorkspaceMode, WorkspacePlan};
+use crate::paths::Canonical;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,7 +25,7 @@ pub struct TaskWorkspace {
     pub abandoned: bool,
     #[serde(default)]
     pub cleanup_intent: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::paths::de_simplified_vec")]
     pub validation_paths: Vec<String>,
 }
 
@@ -521,7 +522,7 @@ impl OrchestrationStore {
             return Err("Choose at most 50 commits for one validation checkout.".into());
         }
         let target = std::env::temp_dir()
-            .canonicalize()
+            .canonical()
             .map_err(|e| e.to_string())?
             .join(format!("octiq-validation-{}", compact_id()));
         let path = target.to_string_lossy().into_owned();

@@ -56,6 +56,107 @@ pub fn is_within(candidate: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| is_under(candidate, root))
 }
 
+/// `std::fs::canonicalize`, minus the verbatim prefix Windows puts on it.
+///
+/// On Windows the std call answers `\\?\C:\Works\x` for `C:\Works\x`. Win32
+/// accepts that, but git, Node and most command-line tools do not, and it leaked
+/// into every path this backend stored, showed or handed to a child process —
+/// git refused to create task worktrees at all. Every canonical path in this
+/// crate goes through here, so two of them always compare in the same form.
+pub fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path).map(|p| simplified(&p))
+}
+
+/// `.canonical()` on a path: `canonicalize` in method form, so a chain like
+/// `Path::new(root).canonical()?` reads the way the std call did.
+pub trait Canonical {
+    fn canonical(&self) -> std::io::Result<PathBuf>;
+}
+
+impl Canonical for Path {
+    fn canonical(&self) -> std::io::Result<PathBuf> {
+        canonicalize(self)
+    }
+}
+
+/// `path` without a removable verbatim prefix; unchanged anywhere but Windows.
+///
+/// Also what normalizes a path this backend STORED before the prefix was
+/// dropped, so a record from an older build still compares equal.
+pub fn simplified(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        if let Some(plain) = path.to_str().and_then(plain_windows_path) {
+            return PathBuf::from(plain);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// `simplified` for a path kept as a string.
+pub fn simplified_str(path: &str) -> String {
+    simplified(Path::new(path)).to_string_lossy().into_owned()
+}
+
+/// Serde `deserialize_with` for a stored path: a record written while
+/// `canonicalize` still answered `\\?\C:\...` reads back in today's form, so it
+/// compares equal to a path resolved now instead of looking "moved".
+pub fn de_simplified<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    <String as serde::Deserialize>::deserialize(d).map(|p| simplified_str(&p))
+}
+
+/// `de_simplified` for a `PathBuf` field.
+pub fn de_simplified_buf<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PathBuf, D::Error> {
+    <PathBuf as serde::Deserialize>::deserialize(d).map(|p| simplified(&p))
+}
+
+/// `de_simplified` for a list of paths.
+pub fn de_simplified_vec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    <Vec<String> as serde::Deserialize>::deserialize(d)
+        .map(|v| v.iter().map(|p| simplified_str(p)).collect())
+}
+
+/// The ordinary spelling of a Windows verbatim path, when one means the same.
+///
+/// `\\?\C:\x` becomes `C:\x` and `\\?\UNC\server\share\x` becomes
+/// `\\server\share\x`. A verbatim path skips Win32's name parsing, so it can
+/// name things the plain form cannot: past `MAX_PATH`, a component ending in a
+/// dot or space, a device name like `NUL`. Those keep the prefix (`None`).
+///
+/// A `/` is turned into `\`. Inside a verbatim path it is a literal character,
+/// which no Windows file name may hold, so such a path never named anything:
+/// it is one this backend built by joining `feature/octiq-x` onto a canonical
+/// root, and the separator is what was meant.
+/// Pure string logic, so it is tested on every platform.
+pub fn plain_windows_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix(r"\\?\")?.replace('/', r"\");
+    let (plain, tail) = if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        (format!(r"\\{unc}"), unc)
+    } else {
+        let bytes = rest.as_bytes();
+        let is_drive = bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\';
+        if !is_drive {
+            return None;
+        }
+        (rest.clone(), &rest[3..])
+    };
+    const MAX_PATH: usize = 260;
+    if plain.len() >= MAX_PATH {
+        return None;
+    }
+    let plain_names = tail.split('\\').filter(|c| !c.is_empty()).all(|name| {
+        let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+        let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+                && stem.len() == 4
+                && stem.as_bytes()[3].is_ascii_digit());
+        name != "." && name != ".." && !name.ends_with(['.', ' ']) && !reserved
+    });
+    plain_names.then_some(plain)
+}
+
 /// Resolve `path` to a canonical location, following symlinks.
 ///
 /// A path that does not exist yet (saving a file the browser just named) has no
@@ -93,7 +194,7 @@ pub fn canonical_target(path: &Path) -> Option<PathBuf> {
     }
     let path = checked_path.as_deref().unwrap_or(path);
     // The common case: it exists, so the OS resolves every symlink for us.
-    if let Ok(resolved) = path.canonicalize() {
+    if let Ok(resolved) = path.canonical() {
         return Some(resolved);
     }
 
@@ -101,7 +202,7 @@ pub fn canonical_target(path: &Path) -> Option<PathBuf> {
     let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
     let mut cursor = path;
     loop {
-        match cursor.canonicalize() {
+        match cursor.canonical() {
             Ok(resolved) => {
                 let mut out = resolved;
                 // Re-attach in the order they appeared.
@@ -137,7 +238,7 @@ pub fn canonical_target(path: &Path) -> Option<PathBuf> {
 pub fn write_roots(workspace_paths: impl IntoIterator<Item = String>) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     let mut push = |p: PathBuf| {
-        if let Ok(canon) = p.canonicalize() {
+        if let Ok(canon) = p.canonical() {
             if !roots.contains(&canon) {
                 roots.push(canon);
             }
@@ -183,7 +284,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // The temp dir itself may be a symlink (/tmp -> /private/tmp on macOS),
         // so hand back the canonical form — the same thing write_roots stores.
-        dir.canonicalize().unwrap()
+        canonicalize(&dir).unwrap()
     }
 
     // ---- is_within ---------------------------------------------------------
@@ -247,7 +348,7 @@ mod tests {
         // `..` collapses, so the result is the parent of `dir`, NOT inside it.
         let resolved = canonical_target(&sneaky).unwrap();
         assert!(!is_within(&resolved, &[dir.clone()]));
-        assert_eq!(resolved, dir.parent().unwrap().canonicalize().unwrap());
+        assert_eq!(resolved, dir.parent().unwrap().canonical().unwrap());
     }
 
     #[test]
@@ -389,5 +490,92 @@ mod tests {
     fn home_dir_reads_the_environment() {
         // HOME is set in every environment these tests run in.
         assert!(home_dir().is_some());
+    }
+
+    // ---- plain_windows_path ------------------------------------------------
+
+    #[test]
+    fn a_verbatim_drive_path_loses_its_prefix() {
+        assert_eq!(
+            plain_windows_path(r"\\?\C:\Works\Obsidian\Pandaworks-docspace").as_deref(),
+            Some(r"C:\Works\Obsidian\Pandaworks-docspace")
+        );
+        assert_eq!(plain_windows_path(r"\\?\D:\").as_deref(), Some(r"D:\"));
+    }
+
+    #[test]
+    fn a_stored_worktree_path_with_a_slashed_branch_reads_back_whole() {
+        // What `plan` stored before the prefix was dropped: the branch
+        // `feature/octiq-x` joined onto a canonical root in one piece.
+        assert_eq!(
+            plain_windows_path(r"\\?\C:\Works\.worktrees\app\feature/octiq-x").as_deref(),
+            Some(r"C:\Works\.worktrees\app\feature\octiq-x")
+        );
+    }
+
+    #[test]
+    fn a_verbatim_unc_path_becomes_an_ordinary_share_path() {
+        assert_eq!(
+            plain_windows_path(r"\\?\UNC\server\share\repo").as_deref(),
+            Some(r"\\server\share\repo")
+        );
+    }
+
+    #[test]
+    fn a_path_without_the_prefix_is_left_to_the_caller() {
+        assert_eq!(plain_windows_path(r"C:\Works"), None);
+        assert_eq!(plain_windows_path("/home/user"), None);
+        // A volume GUID path has no ordinary spelling.
+        assert_eq!(plain_windows_path(r"\\?\Volume{1234}\x"), None);
+    }
+
+    #[test]
+    fn names_only_a_verbatim_path_can_hold_keep_the_prefix() {
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(plain_windows_path(&long), None);
+        assert_eq!(plain_windows_path(r"\\?\C:\dir\trailing."), None);
+        assert_eq!(plain_windows_path(r"\\?\C:\dir\trailing "), None);
+        assert_eq!(plain_windows_path(r"\\?\C:\dir\NUL"), None);
+        assert_eq!(plain_windows_path(r"\\?\C:\dir\com1.txt"), None);
+        assert_eq!(plain_windows_path(r"\\?\C:\dir\..\x"), None);
+        // Close to a device name is still an ordinary name.
+        assert!(plain_windows_path(r"\\?\C:\dir\CONSOLE").is_some());
+        assert!(plain_windows_path(r"\\?\C:\dir\COM").is_some());
+    }
+
+    #[test]
+    fn canonicalize_never_answers_a_verbatim_path() {
+        let dir = tmp("verbatim");
+        assert!(!dir.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(simplified(&dir), dir);
+    }
+
+    #[test]
+    fn no_module_calls_the_std_canonicalize_directly() {
+        // The std call answers `\\?\C:\...` on Windows; everything must go
+        // through `paths::canonicalize` / `.canonical()` instead.
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src];
+        let mut offenders = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("paths.rs")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    if text.contains(concat!(".canon", "icalize()"))
+                        || text.contains(concat!("fs::canon", "icalize("))
+                    {
+                        offenders.push(path.display().to_string());
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "use paths::canonicalize in {offenders:?}"
+        );
     }
 }

@@ -273,13 +273,14 @@ pub fn difference(recorded: &Fingerprint, live: &Fingerprint) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::Canonical;
 
     fn repo() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("octiq-fp-{}", uuid::Uuid::new_v4().simple()));
         fs::create_dir_all(&dir).unwrap();
         assert!(git(&dir, &["init", "-q"]).is_some());
         commit(&dir, "first");
-        dir.canonicalize().unwrap()
+        dir.canonical().unwrap()
     }
 
     fn commit(dir: &Path, message: &str) {

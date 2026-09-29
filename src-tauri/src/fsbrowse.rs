@@ -11,7 +11,7 @@ use serde::Serialize;
 
 /// Open an existing local path without passing it through a shell.
 pub fn open_file_native(path: String) -> Result<(), String> {
-    let path = fs::canonicalize(&path).map_err(|e| format!("Cannot open path: {e}"))?;
+    let path = crate::paths::canonicalize(&path).map_err(|e| format!("Cannot open path: {e}"))?;
     #[cfg(target_os = "macos")]
     let output = Command::new("/usr/bin/open").arg(&path).output();
     #[cfg(target_os = "linux")]
