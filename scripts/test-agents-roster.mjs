@@ -190,7 +190,7 @@ try {
   assert.match(await noah.innerText(), /1 queued/);
   assert.match(await noah.innerText(), /Build the roster page[\s\S]*Executing[\s\S]*OctiqFlow/);
   assert.match(await agentRow(page, "Priya").innerText(), /Payroll export API[\s\S]*Ready to start[\s\S]*Pandahrms/);
-  assert.match(await agentRow(page, "Priya").locator(".team-row-meta").innerText(), /Claude opus · Pandahrms/);
+  assert.match(await agentRow(page, "Priya").locator(".team-row-meta").innerText(), /Claude Opus latest · high · Pandahrms · Reports to Maya/);
   assert.equal(await agentRow(page, "Priya").locator(".agent-role-text").innerText(), "Backend engineer");
   assert.match(await agentRow(page, "Maya").innerText(), /Plan the release[\s\S]*In conversation[\s\S]*Across projects/);
   assert.match(await agentRow(page, "Ivan").innerText(), /Last:\s+Old review/);

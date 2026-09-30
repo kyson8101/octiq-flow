@@ -10,7 +10,7 @@ import {
 } from "../lib/agentProviders";
 import {
   deleteAgentTeam, deleteTeamAgent, joinableTeams, leadOnly, loadAgentTeams, loadHead, loadHome, loadTeam,
-  saveAgentTeam, saveHead, saveHome, saveTeamAgent, teamModels,
+  saveAgentTeam, saveHead, saveHome, saveTeamAgent, teamModelLabel, teamModels,
   type AgentTeam, type AgentTeamDraft, type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
 import { orgChart, teamBadge } from "../lib/agentsDashboard";
@@ -158,7 +158,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
             {badge && <span className="team-tag team-badge" title={`On the team ${badge.name}: may ask its teammates for help`}><bdi>{badge.name}</bdi></span>}
           </span>
           <span className="team-row-meta">
-            {AGENT_NAME[agent.agent]} {modelLabel(agent)}{agent.effort ? ` · ${agent.effort}` : ""}
+            {AGENT_NAME[agent.agent]} {teamModelLabel(agent)}{agent.effort ? ` · ${agent.effort}` : ""}
             {" · "}{agent.projectId ? projectName.get(agent.projectId) ?? "Removed project" : "Every project"}
           </span>
         </span>
@@ -342,7 +342,7 @@ export function RecipientPicker({ agents, selectedId, projectName, onPick, onMan
               role="radio"
               aria-checked={agent.id === selectedId}
               tabIndex={agent.id === focusable ? 0 : -1}
-              title={[agent.role, project ? `Works in ${project}` : "Works in any project", `${AGENT_NAME[agent.agent]} ${modelLabel(agent)}`]
+              title={[agent.role, project ? `Works in ${project}` : "Works in any project", `${AGENT_NAME[agent.agent]} ${teamModelLabel(agent)}`]
                 .filter(Boolean).join("\n")}
               onClick={() => onPick(agent)}
             >
@@ -368,10 +368,6 @@ function EditIcon() {
 
 function RemoveIcon() {
   return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 13h10l1-13" /><path d="M9 7V4h6v3" /></svg>;
-}
-
-function modelLabel(agent: Pick<TeamAgent, "agent" | "model">): string {
-  return teamModels(agent.agent).find((m) => m.flag === agent.model)?.model ?? agent.model;
 }
 
 /** The peer-help teams: add, rename, move between global and one project,

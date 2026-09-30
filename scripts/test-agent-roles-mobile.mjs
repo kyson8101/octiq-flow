@@ -74,6 +74,7 @@ function resultFor(request) {
     case "team_head": return team[0];
     case "team_leads": return [];
     case "team_home": return "general";
+    case "agent_team_list": return [];
     case "team_save": saved.push(request.args); return request.args?.agent ?? null;
     case "chat_task": return { chatId: request.args?.chatId, projectId: "general" };
     case "pr_repositories": return [];
@@ -199,8 +200,31 @@ try {
     await page.evaluate(() => document.fonts.ready);
     await page.screenshot({ path: join(artifacts, `agents-${label}.png`), fullPage: true });
     assert.equal(await noHorizontalScroll(page), true, `agents-${label}: no sideways scroll`);
-    // Model metadata stays on the row even when a role is set.
-    assert.match(await rowOf(dashboard, "Avocado Juice").locator(".team-row-meta").innerText(), /Claude opus · All projects/);
+    // Model metadata stays on the row even when a role is set, with the
+    // effort, the scope and the manager, all without opening anything.
+    assert.match(await rowOf(dashboard, "Avocado Juice").locator(".team-row-meta").innerText(),
+      /Claude Opus latest · high · All projects · Reports to Potato Juice/);
+    assert.match(await rowOf(dashboard, "Pineapple Lychee Juice").locator(".team-row-meta").innerText(),
+      /Claude Sonnet latest · high · Pandahrms Leave · Reports to Papaya Juice/);
+    assert.equal(await rowOf(dashboard, "Potato Juice").locator(".team-row-meta").innerText().then((t) => t.includes("Reports to")), false,
+      `agents-${label}: the head reports to nobody`);
+    // Manage agents: in the top bar on a desktop; on a phone, whose top bar
+    // has no room, at the end of the summary line rather than a row of its own.
+    const manage = page.getByRole("button", { name: "Manage agents", exact: true });
+    assert.equal(await manage.count(), 1, `agents-${label}: one Manage agents`);
+    assert.equal(await page.locator(".agents-dashboard .dash-top.has-manage .projects-page-secondary").count(), phone ? 1 : 0,
+      `agents-${label}: Manage agents sits on the summary line only on a phone`);
+    if (phone) {
+      assert((await manage.boundingBox()).height >= 44, `agents-${label}: Manage agents is a 44px target`);
+      // The level chip stays a small pill, but a thumb 20px above or below its
+      // middle still presses it.
+      const hits = await rowOf(dashboard, "Avocado Juice").locator(".level-chip").evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        const x = box.left + box.width / 2, y = box.top + box.height / 2;
+        return [-21, 0, 21].map((dy) => el.contains(document.elementFromPoint(x, y + dy)));
+      });
+      assert.deepEqual(hits, [true, true, true], `agents-${label}: level chip hit area is 44px tall`);
+    }
     await checkList(page, dashboard, `agents-${label}`, phone);
 
     // ── Settings → Agents, through the page's own Manage agents.

@@ -227,6 +227,20 @@ describe("agents dashboard", () => {
     expect(rows.ada.detail).toBe("Claude gpt-5");
   });
 
+  it("names each agent's effort and the registered agent it reports to", () => {
+    const rows = byId(roster({
+      team: [
+        agent("ada", "Ada", { effort: "high" }),
+        agent("bo", "Bo", { reportsTo: "ada", effort: "medium" }),
+        // A manager that is no longer registered: it reports to nobody here.
+        agent("cy", "Cy", { reportsTo: "gone" }),
+      ],
+    }));
+    expect(rows.ada).toMatchObject({ effort: "high", reportsTo: null });
+    expect(rows.bo).toMatchObject({ effort: "medium", reportsTo: { id: "ada", name: "Ada" } });
+    expect(rows.cy).toMatchObject({ effort: null, reportsTo: null });
+  });
+
   it("maps work by id through a rename, and shows the real destination project", () => {
     const rows = byId(roster({
       team: [agent("ada", "Ada Lovelace", { agent: "codex", model: "gpt-5" })],

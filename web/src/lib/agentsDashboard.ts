@@ -109,6 +109,11 @@ export type AgentRow = {
   avatar?: string;
   /** What it runs on (provider and model), or why it has nothing. */
   detail: string;
+  /** How hard it thinks, as registered; null when none is set. */
+  effort: string | null;
+  /** The registered agent it reports to, or null when it reports to the
+   *  person (or its manager is no longer registered). */
+  reportsTo: { id: string; name: string } | null;
   /** Its whole registered role; empty when it has none. The list decides how
    *  much of it shows. */
   role: string;
@@ -315,11 +320,20 @@ export function agentRoster(input: RosterInput): AgentRow[] {
     return { ...base, state, stateLabel, activities, counts, recent: recentFor.get(base.id) ?? null };
   };
 
+  // Said in words as well as by the indent: on a phone the indent is a few
+  // pixels, and a report whose manager is on another screen has none at all.
+  const registeredById = new Map(team.map((agent) => [agent.id, agent]));
+  const managerOf = (agent: TeamAgent) => {
+    const manager = agent.reportsTo ? registeredById.get(agent.reportsTo) : undefined;
+    return manager ? { id: manager.id, name: manager.name } : null;
+  };
   const rows = orgChart(team).map(({ agent, depth }) => row({
     id: agent.id,
     name: agent.name,
     avatar: agent.avatar,
     detail: input.providerLabel(agent),
+    effort: agent.effort ?? null,
+    reportsTo: managerOf(agent),
     role: agent.role,
     scope: agent.projectId ? projectById.get(agent.projectId) ?? { id: agent.projectId, name: "Unknown project" } : null,
     team: teamBadge(agent, input.teams ?? []),
@@ -339,7 +353,10 @@ export function agentRoster(input: RosterInput): AgentRow[] {
   }
   for (const [id, name] of removedNames) {
     if (!activitiesFor.get(id)?.length) continue;
-    rows.push(row({ id, name, detail: "No longer registered", role: "", scope: null, team: null, depth: 0, removed: true }));
+    rows.push(row({
+      id, name, detail: "No longer registered", effort: null, reportsTo: null,
+      role: "", scope: null, team: null, depth: 0, removed: true,
+    }));
   }
   return rows;
 }

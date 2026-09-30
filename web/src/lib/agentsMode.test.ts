@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { readTaskBrief } from "./taskBrief";
 import {
-  conversationRecipient, conversationRecipients, headConversation, leadOnly, leadSettings, teamModels,
+  conversationRecipient, conversationRecipients, headConversation, leadOnly, leadSettings, teamModelLabel, teamModels,
   type TeamAgent,
 } from "./agentsMode";
 import { titleFrom } from "./store";
@@ -61,6 +61,15 @@ describe("agents mode", () => {
     expect(leadOnly({ model: "gpt-6-astra" })).toBe(true);
     expect(leadOnly({ model: "sonnet" })).toBe(false);
     expect(teamModels("codex").every((m) => m.flag)).toBe(true);
+  });
+
+  it("names a registered agent's model the way a person reads it", () => {
+    expect(teamModelLabel({ agent: "claude", model: "claude-sonnet-5-5" })).toBe("Sonnet 5.5");
+    // An id the picker does not list yet is still spelled out, not printed raw.
+    expect(teamModelLabel({ agent: "claude", model: "claude-opus-9-1" })).toBe("Opus 9.1");
+    // Anything else keeps the stored id rather than guessing.
+    expect(teamModelLabel({ agent: "codex", model: "gpt-9-unknown" })).toBe("gpt-9-unknown");
+    expect(teamModelLabel({ agent: "claude", model: "my-proxy-model" })).toBe("my-proxy-model");
   });
 
   it("offers only agents reporting to the person, head first, whatever their scope", () => {

@@ -8,7 +8,7 @@ import { bridge } from "./bridge";
 import type { LeadRecord } from "./agentsDashboard";
 import { recall, remember } from "./remember";
 import {
-  MODELS, effortFor, accessFor,
+  MODELS, claudeModelName, effortFor, accessFor,
   type AccessLevel, type Effort, type ModelChoice, type Provider,
 } from "./agentProviders";
 
@@ -258,6 +258,15 @@ export function leadOnly(agent: Pick<TeamAgent, "model">): boolean {
 /** Models a registered agent can use: explicit ones only, never "Default". */
 export function teamModels(provider: Provider): ModelChoice[] {
   return MODELS.filter((m) => m.agent === provider && m.flag);
+}
+
+/** A registered agent's model as a person reads it: the picker's own name
+ *  for it, else a Claude id spelled out ("claude-sonnet-5-5" → "Sonnet 5.5"),
+ *  else the id as stored. */
+export function teamModelLabel(agent: Pick<TeamAgent, "agent" | "model">): string {
+  return teamModels(agent.agent).find((m) => m.flag === agent.model)?.model
+    ?? (agent.agent === "claude" ? claudeModelName(agent.model) : undefined)
+    ?? agent.model;
 }
 
 /** The chat settings a lead starts with. */

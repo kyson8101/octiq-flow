@@ -3,13 +3,13 @@
 // Registering and editing agents stays in Settings (Manage agents). A lead's
 // plan waiting for approval is reviewed in its Run panel (`PlanReview`); this
 // page only says it is waiting and opens it.
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import "./AgentsSettings.css";
 import "./AgentsDashboard.css";
 import "./ProjectsPage.css";
-import { WorkspaceHeader } from "./WorkspaceHeader";
+import { WorkspaceHeader, useWorkspaceSlot } from "./WorkspaceHeader";
 import { AGENT_NAME } from "../lib/agentProviders";
-import { loadAgentTeams, loadLeads, loadTeam, type AgentTeam, type TeamAgent } from "../lib/agentsMode";
+import { loadAgentTeams, loadLeads, loadTeam, teamModelLabel, type AgentTeam, type TeamAgent } from "../lib/agentsMode";
 import {
   AGENT_STATE_LABELS, agentRoster, rosterSummary,
   type AgentActivity, type AgentRow, type ChatActivity, type LeadRecord,
@@ -61,6 +61,12 @@ export function AgentsDashboard({
   const [levels, setLevels] = useState<ReadonlyMap<string, LevelSummary>>(new Map());
   const [levelsRead, setLevelsRead] = useState(0);
   const [profileId, setProfileId] = useState<string | null>(null);
+  // A phone's top bar has a title but no room for buttons, and a row of its
+  // own for one settings link pushed the roster down a line; there, Manage
+  // agents sits at the end of the summary line instead.
+  const headingSlot = useWorkspaceSlot("heading");
+  const actionsSlot = useWorkspaceSlot("actions");
+  const manageInSummary = !!headingSlot && !actionsSlot;
 
   // Levels move only when a task is accepted, so they are read again when an
   // acceptance appears in the ledger (or this page makes one), never on a
@@ -124,7 +130,7 @@ export function AgentsDashboard({
   const projectList = useMemo(() => projects.map(({ id, name }) => ({ id, name })), [projects]);
   const rows = agentRoster({
     team, leads, snapshot, projects: projectList, teams,
-    providerLabel: (agent) => `${AGENT_NAME[agent.agent]} ${agent.model}`,
+    providerLabel: (agent) => `${AGENT_NAME[agent.agent]} ${teamModelLabel(agent)}`,
     chatTitle, chatExists, leadActivity, waitingOn,
   });
   const summary = rosterSummary(rows);
@@ -168,17 +174,21 @@ export function AgentsDashboard({
     return next;
   });
 
+  const manage = <button type="button" className="projects-page-secondary" onClick={onManage}>Manage agents</button>;
   return (
     <section className="projects-page agents-dashboard" aria-label="Agents">
       <WorkspaceHeader root back={{ label: "Chat", ariaLabel: "Back to chat", onClick: onClose }}
         title={<h1>Agents</h1>}
-        actions={<button type="button" className="projects-page-secondary" onClick={onManage}>Manage agents</button>} />
+        actions={manageInSummary ? undefined : manage} />
       <div className="projects-page-body">
-        <p className="projects-page-meta dash-summary" aria-live="polite">
-          {team === null && !error ? "Loading agents…"
-            : summary.length === 0 ? "Who is doing what"
-            : summary.map(({ state, count }) => `${count} ${AGENT_STATE_LABELS[state].toLowerCase()}`).join(" · ")}
-        </p>
+        <div className={`dash-top${manageInSummary ? " has-manage" : ""}`}>
+          <p className="projects-page-meta dash-summary" aria-live="polite">
+            {team === null && !error ? "Loading agents…"
+              : summary.length === 0 ? "Who is doing what"
+              : summary.map(({ state, count }) => `${count} ${AGENT_STATE_LABELS[state].toLowerCase()}`).join(" · ")}
+          </p>
+          {manageInSummary && manage}
+        </div>
 
         {stale && team !== null && (
           <p className="dash-stale" role="status">
@@ -212,6 +222,27 @@ export function AgentsDashboard({
   );
 }
 
+/** Under an agent's name: what it runs on and how hard it thinks, where it
+ *  works, and who it reports to. The chart's indent says the last one too,
+ *  but only to someone who can see the row above, and on a phone the indent
+ *  is a few pixels. */
+export function AgentMeta({ row }: { row: Pick<AgentRow, "detail" | "effort" | "scope" | "reportsTo" | "removed"> }) {
+  const parts: React.ReactNode[] = [<bdi key="runs">{row.detail}</bdi>];
+  if (!row.removed) {
+    if (row.effort) parts.push(row.effort);
+    parts.push(row.scope ? <bdi key="scope">{row.scope.name}</bdi> : "All projects");
+    if (row.reportsTo) parts.push(<span key="reports">Reports to <bdi>{row.reportsTo.name}</bdi></span>);
+  }
+  // Each part wraps as a whole where it can, so "Reports to" is never left at
+  // the end of one line with its name on the next.
+  return <span className="team-row-meta dash-agent-meta">
+    {parts.map((part, index) => <Fragment key={index}>
+      {index > 0 && <span aria-hidden="true"> · </span>}
+      <span className="dash-meta-part">{part}</span>
+    </Fragment>)}
+  </span>;
+}
+
 function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onOpen, onOpenRecent, level, onProfile }: {
   row: AgentRow;
   level?: LevelSummary;
@@ -241,11 +272,7 @@ function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onO
             {!row.removed && <LevelChip name={row.name} progress={level} onOpen={onProfile} />}
             {row.team && <span className="team-tag team-badge" title={`On the team ${row.team.name}`}><bdi>{row.team.name}</bdi></span>}
           </span>
-          <span className="team-row-meta">
-            <bdi>{row.detail}</bdi>
-            <span aria-hidden="true"> · </span>
-            {row.removed ? "Removed" : row.scope ? <bdi>{row.scope.name}</bdi> : "All projects"}
-          </span>
+          <AgentMeta row={row} />
         </span>
         <span className="dash-agent-status">
           <span className={`dash-state is-${row.state}${stale ? " is-stale" : ""}`}

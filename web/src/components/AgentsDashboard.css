@@ -88,9 +88,45 @@
 .dash-more:hover, .dash-recent:hover { background: var(--bg-2); color: var(--fg-1); }
 .dash-recent .dash-item-title { color: inherit; }
 
+.dash-meta-part { display: inline-block; max-width: 100%; }
+
+/* The summary line, and on a phone Manage agents at its end (the top bar has
+   no room for it there). */
+.dash-top.has-manage {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 12px;
+  margin-bottom: 6px;
+}
+.dash-top.has-manage .dash-summary { flex: 1 1 auto; min-width: 0; margin: 0; white-space: normal; }
+.dash-top.has-manage .projects-page-secondary { flex: 0 0 auto; }
+
 @media (max-width: 640px) {
-  .dash-agent-status { max-width: 42%; }
+  /* The name, the level and the state share the first line; everything that
+     describes the agent runs the full width under them, instead of a column
+     squeezed beside the state chips. */
+  .dash-agent-head {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "face name state" "face meta meta";
+    column-gap: 10px; row-gap: 2px;
+  }
+  .dash-agent-head > .dash-avatar { grid-area: face; }
+  .dash-agent-head > .team-row-copy { display: contents; }
+  .dash-agent-head .team-row-name { grid-area: name; min-width: 0; }
+  .dash-agent-head .dash-agent-meta { grid-area: meta; }
+  .dash-agent-status { grid-area: state; max-width: 40vw; margin-top: 1px; }
   .dash-agent-work { padding-inline-start: 30px; }
-  .dash-item { min-height: 44px; }
+  .dash-item { min-height: 44px; align-items: flex-start; }
+  .dash-dot { margin-top: 6px; }
   .dash-item-open { display: none; }
+  /* A task's title is what the row is for: two lines rather than one cut. */
+  .dash-item-title {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    white-space: normal; overflow-wrap: anywhere;
+  }
+  .dash-more, .dash-recent { min-height: 44px; align-items: center; }
+  .agents-dashboard .projects-page-secondary { min-height: 44px; }
+  /* The team is a label, read whole or not at all. */
+  .dash-agent .team-badge { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  /* The level chip stays a small pill, pressed through a thumb-sized area. */
+  .dash-agent .level-chip { position: relative; }
+  .dash-agent .level-chip::after { content: ""; position: absolute; inset: -12px -4px; }
 }
