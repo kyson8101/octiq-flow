@@ -291,7 +291,13 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
         let claude_refusal = decision.blocked_action.is_some();
         if decision.kind == "outage" {
             decision.continuation = "unavailable".into();
-            decision.recovery = if live {
+            decision.recovery = if live && decision.status.starts_with("allowed_") {
+                // The person's click wrote a Claude permission rule for this
+                // call; the retry turn is sent separately, as a message.
+                "The person added a Claude permission allow rule covering this command and asked for it to be retried once, as-is. Claude checks the retry against that rule; OctiqFlow did not run it. Report whether the retry ran.".into()
+            } else if live && decision.status == "retried" {
+                "The person asked for this command to be retried once, as-is. Claude checks that try again; OctiqFlow did not run it. If it is refused again, do not try it a third time.".into()
+            } else if live {
                 crate::safety_block::outage_guidance().into()
             } else {
                 "This attempt has settled or was superseded. Claude's safety check was unavailable for this command, so it did not run and was not approved. Inspect the task and explicitly retry if needed; a retry grants no permission.".into()
@@ -905,6 +911,64 @@ mod tests {
             .is_none());
         // ...and then it goes: the worker has run nothing since.
         assert!(store.claim_notification(&notice.id, due).unwrap().is_some());
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// What the person chose on an outage card is what the ledger says:
+    /// "retried" or "allowed_*", each with recovery text that says OctiqFlow
+    /// ran nothing itself.
+    #[test]
+    fn an_outage_card_retried_or_allowed_is_recorded_as_such() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        let t = now_ms() - 60_000;
+        refuse(&store, &chat, "toolu_ra", "git push", t);
+        let group = store.snapshot(Some(&run.id)).unwrap().native_decisions[0]
+            .group_id
+            .clone()
+            .unwrap();
+        assert_eq!(crate::safety_block::retry_outage(&group), Ok(true));
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let d = snapshot
+            .native_decisions
+            .iter()
+            .find(|d| d.chat_key == chat)
+            .unwrap();
+        assert_eq!(d.status, "retried");
+        assert!(d.recovery.contains("retried once, as-is"), "{}", d.recovery);
+        assert!(d.recovery.contains("OctiqFlow did not run it"));
+
+        // An allow: the card's project is a temp folder.
+        let project =
+            std::env::temp_dir().join(format!("octiq-lifecycle-allow-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&project).unwrap();
+        crate::safety_block::remember_claude_launch(
+            &chat,
+            true,
+            project.to_str().unwrap(),
+            false,
+            None,
+        );
+        refuse(&store, &chat, "toolu_rb", "git push origin main", t + 1_000);
+        let group = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .native_decisions
+            .iter()
+            .find(|d| d.status == "pending")
+            .and_then(|d| d.group_id.clone())
+            .unwrap();
+        crate::safety_block::allow_outage(&group, crate::claude_allow::Scope::Project).unwrap();
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let d = snapshot
+            .native_decisions
+            .iter()
+            .find(|d| d.group_id.as_deref() == Some(group.as_str()))
+            .unwrap();
+        assert_eq!(d.status, "allowed_project");
+        assert!(d.recovery.contains("allow rule"), "{}", d.recovery);
+        std::fs::remove_dir_all(project).unwrap();
         crate::safety_block::forget_chat(&chat);
     }
 

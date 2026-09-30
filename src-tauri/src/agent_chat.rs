@@ -2130,6 +2130,23 @@ pub(crate) fn start_session(
     let durable_prompt = visible_prompt.as_deref().unwrap_or(&prompt);
     let images = images.unwrap_or_default();
     crate::safety_block::remember_project(&key, &cwd);
+    // What an outage card's "Always allow" writes to: this chat's folder, and
+    // the config dir Claude will read — the project's own CLAUDE_CONFIG_DIR
+    // when it sets one, else the one this server passes on.
+    crate::safety_block::remember_claude_launch(
+        &key,
+        agent == ChatAgent::Claude,
+        &cwd,
+        lite.unwrap_or(false),
+        env.as_ref()
+            .and_then(|env| {
+                crate::workspaces::resolved_env(env)
+                    .into_iter()
+                    .find(|(name, _)| name == "CLAUDE_CONFIG_DIR")
+                    .map(|(_, dir)| dir)
+            })
+            .or_else(|| std::env::var("CLAUDE_CONFIG_DIR").ok()),
+    );
     let mcp = provider
         .capabilities()
         .uses_octiq_mcp

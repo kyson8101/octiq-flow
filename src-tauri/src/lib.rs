@@ -22,6 +22,7 @@ mod canvas;
 mod chat_index;
 mod chat_search;
 mod chat_task;
+mod claude_allow;
 mod codex_app_server;
 mod diagnostics;
 mod dispatch;

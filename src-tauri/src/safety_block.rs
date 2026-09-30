@@ -53,6 +53,11 @@ pub struct BlockedAction {
     /// An outage card only: every refused call in it, for the ledger.
     #[serde(skip_serializing)]
     refusals: Vec<Refusal>,
+    /// An outage card only: the settings files an "Always allow" would write,
+    /// when this chat reads them. None for a chat that ignores Claude's
+    /// settings files (a lite chat) or whose launch this server never saw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allow: Option<AllowTargets>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,6 +65,27 @@ pub struct BlockedAction {
 struct GroupedCommand {
     action: String,
     count: usize,
+    /// The tool Claude was asked to run.
+    tool: String,
+    /// For Bash, the leading command words the rule covers (`git push`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    words: Option<String>,
+    /// The narrowest allow rule covering this call (`claude_allow`), or none
+    /// when no rule is narrow enough: then only a retry is offered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rule: Option<String>,
+}
+
+/// Where an "Always allow" on an outage card would write.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct AllowTargets {
+    /// `<project>/.claude/settings.local.json`; none for a chat with no folder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    /// `<Claude config dir>/settings.json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
 }
 
 /// One refused call inside an outage card.
@@ -69,6 +95,10 @@ struct Refusal {
     id: String,
     tool_use_id: Option<String>,
     action: String,
+    /// The tool as Claude named it, and for Bash the command line as called:
+    /// a rule is derived from these, never re-read from the display `action`.
+    tool: String,
+    command: Option<String>,
     at: i64,
     /// The orchestration attempt live in the chat when it was refused, if
     /// any. A group belongs to one attempt: a retry can reuse a worker chat,
@@ -247,7 +277,8 @@ fn record_decision(id: &str, decision: &'static str) {
 }
 
 /// How a card that is no longer pending was decided, when this server saw it:
-/// "authorized_project", "dismissed" or "superseded". Nothing records
+/// "authorized_project", "dismissed" or "superseded"; for an outage card also
+/// "retried", "allowed_project" or "allowed_user". Nothing records
 /// "allowed_exact" any more; see `EXACT_GRANT_WITHDRAWN`.
 pub(crate) fn decision(id: &str) -> Option<&'static str> {
     with_decided(|decided| decided.get(id).copied())
@@ -316,6 +347,147 @@ pub fn remember_project(chat_key: &str, cwd: &str) {
             scopes.insert(chat_key.to_string(), scope);
         });
     }
+}
+
+/// What an outage card's "Always allow" needs to know about the Claude
+/// process that was refused: where it runs, whether it reads settings files
+/// at all, and which config folder is its own.
+#[derive(Debug, Clone)]
+struct ClaudeLaunch {
+    cwd: String,
+    lite: bool,
+    config_dir: Option<String>,
+}
+
+static CLAUDE_LAUNCHES: Mutex<Option<HashMap<String, ClaudeLaunch>>> = Mutex::new(None);
+
+fn with_claude_launches<T>(f: impl FnOnce(&mut HashMap<String, ClaudeLaunch>) -> T) -> T {
+    let mut guard = CLAUDE_LAUNCHES.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Record a Claude chat's launch, or forget one that is no longer Claude's.
+///
+/// `cwd` is the folder the chat was asked for (empty for none), `lite` says
+/// it was launched with `--setting-sources ''`, which reads no settings file
+/// and so would ignore any rule, and `config_dir` is the `CLAUDE_CONFIG_DIR`
+/// it runs with, if any.
+pub fn remember_claude_launch(
+    chat_key: &str,
+    claude: bool,
+    cwd: &str,
+    lite: bool,
+    config_dir: Option<String>,
+) {
+    with_claude_launches(|launches| {
+        if claude {
+            launches.insert(
+                chat_key.to_string(),
+                ClaudeLaunch {
+                    cwd: cwd.trim().to_string(),
+                    lite,
+                    config_dir: config_dir.filter(|dir| !dir.trim().is_empty()),
+                },
+            );
+        } else {
+            launches.remove(chat_key);
+        }
+    });
+}
+
+/// The two files an outage card may write, for this chat.
+fn allow_targets(chat_key: &str) -> Option<AllowTargets> {
+    let launch = with_claude_launches(|launches| launches.get(chat_key).cloned())?;
+    if launch.lite {
+        return None;
+    }
+    let shown = |path: PathBuf| path.to_string_lossy().into_owned();
+    let targets = AllowTargets {
+        project: crate::claude_allow::project_settings_path(Path::new(&launch.cwd)).map(shown),
+        user: crate::claude_allow::user_settings_path(
+            launch.config_dir.as_deref().map(Path::new),
+            crate::paths::home_dir().as_deref(),
+        )
+        .map(shown),
+    };
+    (targets.project.is_some() || targets.user.is_some()).then_some(targets)
+}
+
+/// What an "Always allow" wrote.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedOutage {
+    /// Every rule the card's calls derive, in the order they were refused.
+    rules: Vec<String>,
+    /// The settings file written.
+    path: String,
+    #[serde(flatten)]
+    added: crate::claude_allow::Added,
+    /// Refused calls no rule covers: the retry asks for them too, but they
+    /// meet Claude's check again.
+    uncovered: Vec<String>,
+}
+
+/// Only an outage card from Claude can be retried or allowed from here: a
+/// judged refusal stands (`EXACT_GRANT_WITHDRAWN`), and Codex's cards have
+/// their own choices.
+fn pending_outage(id: &str) -> Result<BlockedAction, String> {
+    let block = with_pending(|pending| pending.get(id).cloned())
+        .ok_or("This card is no longer pending.")?;
+    if block.provider != "claude" || block.kind != "outage" {
+        return Err(
+            "Only a call refused because Claude's safety check was unavailable can be retried or allowed from its card."
+                .into(),
+        );
+    }
+    Ok(block)
+}
+
+/// "Always allow": write the narrowest rule for each of the card's refused
+/// calls into the chosen settings file, then take the card down as decided.
+/// The caller then asks the agent to retry; nothing here runs anything.
+pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<AllowedOutage, String> {
+    use crate::claude_allow::Scope;
+    let block = pending_outage(id)?;
+    let targets = block.allow.as_ref().ok_or(
+        "This chat does not read Claude's settings files, so an allow rule would change nothing.",
+    )?;
+    let path = match scope {
+        Scope::Project => targets.project.clone().ok_or(
+            "This chat has no project folder, so there is no project settings file to write.",
+        )?,
+        Scope::User => targets
+            .user
+            .clone()
+            .ok_or("Claude's own settings folder could not be found.")?,
+    };
+    let mut rules: Vec<String> = Vec::new();
+    let mut uncovered = Vec::new();
+    for command in &block.commands {
+        match &command.rule {
+            Some(rule) if !rules.contains(rule) => rules.push(rule.clone()),
+            Some(_) => {}
+            None => uncovered.push(command.action.clone()),
+        }
+    }
+    if rules.is_empty() {
+        return Err("No allow rule is narrow enough for these calls. Retry once instead.".into());
+    }
+    let added = crate::claude_allow::add_allow_rules(Path::new(&path), scope, &rules)?;
+    dismiss_as(id, scope.decision());
+    Ok(AllowedOutage {
+        rules,
+        path,
+        added,
+        uncovered,
+    })
+}
+
+/// "Retry once": take the card down as retried. The caller sends the turn
+/// that asks for the one as-is retry Claude's own message allows.
+pub fn retry_outage(id: &str) -> Result<bool, String> {
+    pending_outage(id)?;
+    Ok(dismiss_as(id, "retried"))
 }
 
 fn authorization_path() -> PathBuf {
@@ -604,6 +776,15 @@ pub(crate) fn observe_claude_refusal(
                 id: uuid::Uuid::new_v4().to_string(),
                 tool_use_id: tool_use_id.map(str::to_string),
                 action,
+                tool: tool.to_string(),
+                command: (tool == "Bash")
+                    .then(|| {
+                        input
+                            .and_then(|i| i.get("command"))
+                            .and_then(|c| c.as_str())
+                    })
+                    .flatten()
+                    .map(str::to_string),
                 at: now,
                 owner: owner.map(str::to_string),
             },
@@ -627,6 +808,7 @@ pub(crate) fn observe_claude_refusal(
         commands: Vec::new(),
         guidance: None,
         refusals: Vec::new(),
+        allow: None,
     })
 }
 
@@ -682,6 +864,7 @@ fn publish_outage(chat_key: &str, reason: &str, message: String, refusal: Refusa
             commands: Vec::new(),
             guidance: Some(outage_guidance()),
             refusals: vec![refusal],
+            allow: allow_targets(chat_key),
         };
         regroup(&mut block);
         pending.insert(block.id.clone(), block.clone());
@@ -704,10 +887,17 @@ fn regroup(block: &mut BlockedAction) {
     for refusal in &block.refusals {
         match commands.iter_mut().find(|c| c.action == refusal.action) {
             Some(command) => command.count += 1,
-            None => commands.push(GroupedCommand {
-                action: refusal.action.clone(),
-                count: 1,
-            }),
+            None => {
+                let derived =
+                    crate::claude_allow::derive_rule(&refusal.tool, refusal.command.as_deref());
+                commands.push(GroupedCommand {
+                    action: refusal.action.clone(),
+                    count: 1,
+                    tool: refusal.tool.clone(),
+                    words: derived.as_ref().and_then(|d| d.words.clone()),
+                    rule: derived.map(|d| d.rule),
+                })
+            }
         }
     }
     block.count = Some(block.refusals.len());
@@ -834,6 +1024,7 @@ fn publish(chat_key: &str, summary: String, detail: String) -> bool {
         commands: Vec::new(),
         guidance: None,
         refusals: Vec::new(),
+        allow: None,
     })
 }
 
@@ -995,6 +1186,7 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
             commands: Vec::new(),
             guidance: None,
             refusals: Vec::new(),
+            allow: None,
         };
 
         save_authorization(&path, &block).unwrap();
@@ -1217,6 +1409,253 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         assert_eq!(again.len(), 1);
         assert_ne!(again[0].id, card.id);
         forget_chat(&chat);
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("octiq-{label}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn mcp_outage(id: &str, tool: &str) -> serde_json::Value {
+        let mut event = outage_denial(id);
+        event["tool_name"] = tool.into();
+        event
+    }
+
+    #[test]
+    fn an_outage_card_names_each_calls_narrowest_rule() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("allow-project");
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        let t = 2_000_000;
+        for (id, tool, input) in [
+            ("toolu_1", "Bash", bash("git push origin main")),
+            ("toolu_2", "Bash", bash("ls | wc -l")),
+            (
+                "toolu_3",
+                "mcp__claude_ai_Higgfield__media_upload",
+                serde_json::json!({"path": "a.png"}),
+            ),
+        ] {
+            assert!(observe_claude_denial_at(
+                &chat,
+                &mcp_outage(id, tool),
+                Some((tool, &input)),
+                t
+            ));
+        }
+        let card = cards_in(&chat).pop().unwrap();
+        let shown = serde_json::to_value(&card).unwrap();
+        assert_eq!(shown["commands"][0]["tool"], "Bash");
+        assert_eq!(shown["commands"][0]["words"], "git push");
+        assert_eq!(shown["commands"][0]["rule"], "Bash(git push:*)");
+        // A piped line gets no rule: only a retry is offered for it.
+        assert!(shown["commands"][1].get("rule").is_none());
+        assert_eq!(
+            shown["commands"][2]["rule"],
+            "mcp__claude_ai_Higgfield__media_upload"
+        );
+        assert!(shown["commands"][2].get("words").is_none());
+        assert_eq!(
+            shown["allow"]["project"],
+            project
+                .join(".claude")
+                .join("settings.local.json")
+                .to_str()
+                .unwrap()
+        );
+        assert!(shown["allow"]["user"]
+            .as_str()
+            .unwrap()
+            .ends_with("settings.json"));
+        // Never a blanket rule, anywhere on the card.
+        for command in shown["commands"].as_array().unwrap() {
+            let rule = command
+                .get("rule")
+                .and_then(|r| r.as_str())
+                .unwrap_or_default();
+            assert!(
+                rule != "Bash" && rule != "Bash(*)" && rule != "*",
+                "{command}"
+            );
+        }
+        forget_chat(&chat);
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn always_allow_in_this_project_writes_the_rule_and_closes_the_card() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("allow-project");
+        let settings = project.join(".claude").join("settings.local.json");
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, "{\n  \"env\": {\"A\": \"1\"}\n}\n").unwrap();
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_p1"),
+            Some(("Bash", &bash("cd sub && git push origin HEAD"))),
+            3_000_000
+        ));
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_p2"),
+            Some(("Bash", &bash("python x.py"))),
+            3_000_100
+        ));
+        let card = cards_in(&chat).pop().unwrap();
+        let done = allow_outage(&card.id, crate::claude_allow::Scope::Project).unwrap();
+        let done = serde_json::to_value(done).unwrap();
+        assert_eq!(done["rules"], serde_json::json!(["Bash(git push:*)"]));
+        assert_eq!(done["added"], serde_json::json!(["Bash(git push:*)"]));
+        assert_eq!(done["uncovered"], serde_json::json!(["python x.py"]));
+        assert_eq!(done["path"], settings.to_str().unwrap());
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(written["env"]["A"], "1");
+        assert_eq!(
+            written["permissions"]["allow"],
+            serde_json::json!(["Bash(git push:*)"])
+        );
+        // Never the shared file.
+        assert!(!project.join(".claude").join("settings.json").exists());
+        assert!(cards_in(&chat).is_empty());
+        assert_eq!(decision(&card.id), Some("allowed_project"));
+        // The card is gone: a second click writes nothing.
+        assert!(allow_outage(&card.id, crate::claude_allow::Scope::Project).is_err());
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn always_allow_everywhere_writes_claude_config_dir_settings() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("allow-project");
+        let config = temp_dir("allow-config");
+        remember_claude_launch(
+            &chat,
+            true,
+            project.to_str().unwrap(),
+            false,
+            Some(config.to_string_lossy().into_owned()),
+        );
+        let tool = "mcp__claude_ai_Higgfield__media_upload";
+        assert!(observe_claude_denial_at(
+            &chat,
+            &mcp_outage("toolu_u1", tool),
+            Some((tool, &serde_json::json!({}))),
+            4_000_000
+        ));
+        let card = cards_in(&chat).pop().unwrap();
+        let done = allow_outage(&card.id, crate::claude_allow::Scope::User).unwrap();
+        let done = serde_json::to_value(done).unwrap();
+        assert_eq!(done["path"], config.join("settings.json").to_str().unwrap());
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(config.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(written["permissions"]["allow"], serde_json::json!([tool]));
+        assert!(
+            !project.join(".claude").exists(),
+            "the project was not touched"
+        );
+        assert_eq!(decision(&card.id), Some("allowed_user"));
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(config).unwrap();
+    }
+
+    #[test]
+    fn allow_is_refused_where_a_rule_would_change_nothing_or_is_not_the_persons() {
+        let project = temp_dir("allow-project");
+        let settings = project.join(".claude").join("settings.local.json");
+
+        // A lite chat reads no settings file: no targets, and a refusal.
+        let lite = format!("chat:test-{}", uuid::Uuid::new_v4());
+        remember_claude_launch(&lite, true, project.to_str().unwrap(), true, None);
+        assert!(observe_claude_denial_at(
+            &lite,
+            &outage_denial("toolu_l"),
+            Some(("Bash", &bash("git push"))),
+            5_000_000
+        ));
+        let card = cards_in(&lite).pop().unwrap();
+        assert!(serde_json::to_value(&card).unwrap().get("allow").is_none());
+        assert!(allow_outage(&card.id, crate::claude_allow::Scope::Project).is_err());
+        assert!(
+            !cards_in(&lite).is_empty(),
+            "a refused allow leaves the card up"
+        );
+        forget_chat(&lite);
+
+        // A chat whose Claude launch was never seen (or is Codex's now).
+        let codex = format!("chat:test-{}", uuid::Uuid::new_v4());
+        remember_claude_launch(&codex, true, project.to_str().unwrap(), false, None);
+        remember_claude_launch(&codex, false, project.to_str().unwrap(), false, None);
+        assert!(observe_claude_denial_at(
+            &codex,
+            &outage_denial("toolu_c"),
+            Some(("Bash", &bash("git push"))),
+            5_000_000
+        ));
+        let card = cards_in(&codex).pop().unwrap();
+        assert!(allow_outage(&card.id, crate::claude_allow::Scope::User).is_err());
+        forget_chat(&codex);
+
+        // Only calls no rule covers: retry only.
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_n"),
+            Some(("Bash", &bash("a && b"))),
+            5_000_000
+        ));
+        let card = cards_in(&chat).pop().unwrap();
+        let err = allow_outage(&card.id, crate::claude_allow::Scope::Project).unwrap_err();
+        assert!(err.contains("Retry once"), "{err}");
+        forget_chat(&chat);
+
+        // A judged refusal: the refusal stands, nothing is written or retried.
+        let judged = format!("chat:test-{}", uuid::Uuid::new_v4());
+        remember_claude_launch(&judged, true, project.to_str().unwrap(), false, None);
+        assert!(observe_claude_denial(
+            &judged,
+            None,
+            &classifier_denial("Bash", "toolu_j"),
+            Some(("Bash", &bash("git push")))
+        ));
+        let card = cards_in(&judged).pop().unwrap();
+        assert_eq!(card.kind, "high-risk-action");
+        let shown = serde_json::to_value(&card).unwrap();
+        assert!(
+            shown.get("allow").is_none() && !shown.to_string().contains("Bash("),
+            "{shown}"
+        );
+        assert!(allow_outage(&card.id, crate::claude_allow::Scope::Project).is_err());
+        assert!(retry_outage(&card.id).is_err());
+        assert!(!cards_in(&judged).is_empty());
+        forget_chat(&judged);
+
+        assert!(!settings.exists(), "no refusal wrote anything");
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn retry_once_closes_an_outage_card_and_writes_nothing() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("allow-project");
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_r"),
+            Some(("Bash", &bash("git push"))),
+            6_000_000
+        ));
+        let card = cards_in(&chat).pop().unwrap();
+        assert_eq!(retry_outage(&card.id), Ok(true));
+        assert_eq!(decision(&card.id), Some("retried"));
+        assert!(cards_in(&chat).is_empty());
+        assert!(!project.join(".claude").exists());
+        fs::remove_dir_all(project).unwrap();
     }
 
     #[test]

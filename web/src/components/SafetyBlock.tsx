@@ -2,9 +2,11 @@
 // tool router, or Claude's auto-mode classifier. Unlike a live Claude
 // permission ask, there is no suspended tool call for OctiqFlow to resume.
 // These buttons therefore send the user's decision as a fresh, explicit turn.
-// Claude's card offers no "allow": Claude refuses without asking anyone and
-// has no way to approve one refused call before it runs, so the card records
-// the refusal and says so.
+// Claude's card for a JUDGED refusal offers no "allow": Claude refuses without
+// asking anyone and has no way to approve one refused call before it runs, so
+// the card records the refusal and says so. Its outage card (the classifier
+// gave no verdict) is different: it offers the one as-is retry Claude itself
+// allows, and an allow rule the person adds to their own settings.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
 
@@ -22,48 +24,151 @@ export type SafetyBlockNotice = {
   action?: string | null;
   /** An outage card: how many refused calls it groups. */
   count?: number;
-  /** An outage card: each refused line once, with how often it was refused. */
-  commands?: { action: string; count: number }[];
+  /** An outage card: each refused line once, with how often it was refused,
+   * the tool, and the narrowest allow rule the host derived for it (none when
+   * no rule is narrow enough: then only a retry is offered). */
+  commands?: OutageCommand[];
   /** An outage card: the host's recovery text, the same words the worker
    * and the coordinator's snapshot are given. */
   guidance?: string | null;
+  /** An outage card: the settings files "Always allow" writes. Absent when
+   * the chat reads no settings file, or on an older server. */
+  allow?: { project?: string; user?: string } | null;
 };
+
+export type OutageCommand = {
+  action: string;
+  count: number;
+  tool?: string;
+  /** For Bash, the leading command words the rule covers ("git push"). */
+  words?: string;
+  /** e.g. "Bash(git push:*)" or an exact "mcp__server__tool". */
+  rule?: string;
+};
+
+/** What the host wrote for "Always allow" (`safety_block_allow_rule`). */
+export type AllowedOutage = {
+  rules: string[];
+  path: string;
+  added: string[];
+  present: string[];
+  uncovered: string[];
+};
+
+export type AllowScope = "project" | "user";
 
 /** Said only when a server sends an outage card without its guidance. */
 export const OUTAGE_FALLBACK_NOTE =
   "The command did not run and was not approved. OctiqFlow will not re-run it.";
 
+const quoted = (actions: string[]) => actions.map((action) => `\`${action}\``).join("\n");
+
+/**
+ * The turn "Retry once" sends: the one as-is retry Claude's own outage
+ * message allows. The agent makes the call again; Claude checks it again.
+ */
+export function outageRetryReply(actions: string[]): string {
+  const one = actions.length === 1;
+  return (
+    `Claude's safety check was unavailable, so ${one ? "this call was" : "these calls were"} refused without being judged. ` +
+    `Retry ${one ? "it" : "each of them"} once, exactly as before:\n${quoted(actions)}\n` +
+    "Do not reword or work around it. If it is refused again, do not try a third time: say so and carry on with your other steps."
+  );
+}
+
+/** The turn after "Always allow": what was written, then the same retry. */
+export function outageAllowedReply(allowed: AllowedOutage, actions: string[]): string {
+  const rules = allowed.rules.map((rule) => `\`${rule}\``).join(", ");
+  const uncovered = allowed.uncovered.length
+    ? ` No rule covers ${quoted(allowed.uncovered).replace(/\n/g, ", ")}; Claude's safety check decides that one again.`
+    : "";
+  return (
+    `I added the Claude permission allow ${allowed.rules.length === 1 ? "rule" : "rules"} ${rules} to ${allowed.path}.` +
+    uncovered + "\n\n" + outageRetryReply(actions)
+  );
+}
+
+/** The distinct rules a card's calls derive, in the order they were refused. */
+export function outageRules(commands: OutageCommand[]): string[] {
+  return [...new Set(commands.flatMap((command) => (command.rule ? [command.rule] : [])))];
+}
+
+export type OutageChoice = "retry" | AllowScope | "dismiss";
+
+/**
+ * One click on an outage card. Dismiss only takes the card down. Retry takes
+ * it down as retried, then sends the retry turn. An allow asks the host to
+ * write the rule it derives — the page names only the card and the scope,
+ * never a rule or a path — and sends the retry turn only once that write has
+ * succeeded; a refused write leaves the card up and sends nothing.
+ */
+export async function answerOutage(
+  choice: OutageChoice,
+  block: SafetyBlockNotice,
+  io: {
+    invoke: <T>(cmd: string, args: Record<string, unknown>) => Promise<T>;
+    onAnswered: (id: string) => void;
+    onContinue: (message: string) => Promise<void> | void;
+  },
+): Promise<void> {
+  const actions = (block.commands?.length ? block.commands : block.action ? [{ action: block.action }] : [])
+    .map((command) => command.action);
+  if (choice === "dismiss") {
+    await io.invoke("safety_block_dismiss", { id: block.id });
+    io.onAnswered(block.id);
+    return;
+  }
+  if (choice === "retry") {
+    await io.invoke("safety_block_retry", { id: block.id });
+    io.onAnswered(block.id);
+    await io.onContinue(outageRetryReply(actions));
+    return;
+  }
+  const allowed = await io.invoke<AllowedOutage>("safety_block_allow_rule", { id: block.id, scope: choice });
+  io.onAnswered(block.id);
+  await io.onContinue(outageAllowedReply(allowed, actions));
+}
+
 /**
  * Claude's classifier could not be reached, so a call was refused without
- * being judged. Nothing here says the command was unsafe, and nothing offers
- * to run it: the card says what did not run and lets the person put it away.
+ * being judged. Nothing here says the command was unsafe. The person can ask
+ * for the one as-is retry Claude allows, or add the narrowest allow rule —
+ * which Claude's auto mode honours without asking its classifier — to this
+ * project's own settings or their own, and then ask for that retry. Nothing
+ * is written without a click, and OctiqFlow never runs the call itself.
  */
 function OutageBlock({
   block,
+  onContinue,
   onAnswered,
   startOpen,
 }: {
   block: SafetyBlockNotice;
+  onContinue: (message: string) => Promise<void> | void;
   onAnswered: (id: string) => void;
   startOpen: boolean;
 }) {
   const [open, setOpen] = useState(startOpen);
-  const [sending, setSending] = useState(false);
+  const [sending, setSending] = useState<"retry" | AllowScope | "dismiss" | null>(null);
   const [error, setError] = useState("");
-  const commands = block.commands?.length
+  const commands: OutageCommand[] = block.commands?.length
     ? block.commands
     : block.action ? [{ action: block.action, count: 1 }] : [];
   const count = block.count ?? Math.max(1, commands.reduce((sum, c) => sum + c.count, 0));
+  const actions = commands.map((command) => command.action);
+  const rules = outageRules(commands);
+  const ruleText = rules.join(", ");
+  const projectPath = rules.length ? block.allow?.project : undefined;
+  const userPath = rules.length ? block.allow?.user : undefined;
 
-  const dismiss = async () => {
-    setSending(true);
+  const answer = async (choice: OutageChoice) => {
+    setSending(choice);
     setError("");
     try {
-      await bridge.invoke("safety_block_dismiss", { id: block.id });
-      onAnswered(block.id);
+      await answerOutage(choice, block, { invoke: bridge.invoke.bind(bridge), onAnswered, onContinue });
     } catch (why) {
       setError(String((why as Error)?.message ?? why));
-      setSending(false);
+      setSending(null);
     }
   };
 
@@ -104,20 +209,53 @@ function OutageBlock({
         <div className="ask-card-detail safety-card-detail">
           <div className="ask-card-label">Technical details</div>
           <pre className="ask-card-body">{block.summary}{"\n\n"}{block.detail}</pre>
+          {(projectPath || userPath) && <>
+            <div className="ask-card-label">Where Always allow writes</div>
+            <pre className="ask-card-body">
+              {projectPath && `This project: ${projectPath}`}
+              {projectPath && userPath && "\n"}
+              {userPath && `Everywhere: ${userPath}`}
+            </pre>
+          </>}
         </div>
       )}
 
       <div className="ask-card-buttons safety-card-buttons">
-        <button className="ask-btn" type="button" disabled={sending} aria-expanded={open}
+        <button className="ask-btn is-primary" type="button" disabled={!!sending || !actions.length}
+          title="Ask the agent to make the same call once more. Claude checks it again."
+          onClick={() => void answer("retry")}>
+          {sending === "retry" ? "Retrying…" : "Retry once"}
+        </button>
+        {projectPath && (
+          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+            title={`Adds ${ruleText} to ${projectPath}, then retries. In a task worktree the rule goes when the worktree does.`}
+            onClick={() => void answer("project")}>
+            {sending === "project" ? "Saving…" : "Always allow in this project"}
+          </button>
+        )}
+        {userPath && (
+          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+            title={`Adds ${ruleText} to ${userPath}, then retries`}
+            onClick={() => void answer("user")}>
+            {sending === "user" ? "Saving…" : "Always allow everywhere"}
+          </button>
+        )}
+        <button className="ask-btn" type="button" disabled={!!sending} aria-expanded={open}
           onClick={() => setOpen((shown) => !shown)}>
           {open ? "Hide technical details" : "Technical details"}
         </button>
-        <button className="ask-btn" type="button" disabled={sending} onClick={() => void dismiss()}>
-          {sending ? "Dismissing…" : "Dismiss"}
+        <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("dismiss")}>
+          {sending === "dismiss" ? "Dismissing…" : "Dismiss"}
         </button>
       </div>
 
-      {error && <p className="ask-card-note safety-card-error">Could not dismiss the card: {error}</p>}
+      {(projectPath || userPath) && (
+        <p className="ask-card-note safety-card-rule">
+          Always allow adds <code>{ruleText}</code> to Claude's settings, so Claude runs matching calls without its safety check.
+        </p>
+      )}
+
+      {error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
 
       {block.guidance
         ? <>
@@ -279,7 +417,7 @@ export function SafetyBlock({
   startOpen?: boolean;
 }) {
   if (block.provider === "claude" && block.kind === "outage") {
-    return <OutageBlock block={block} onAnswered={onAnswered} startOpen={startOpen} />;
+    return <OutageBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
   }
   if (block.provider === "claude") {
     return <ClaudeSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;

@@ -8,6 +8,11 @@ vi.mock("../lib/bridge", () => ({
 import {
   allowForProjectReply,
   allowOnceReply,
+  type AllowedOutage,
+  answerOutage,
+  outageAllowedReply,
+  outageRetryReply,
+  outageRules,
   CLAUDE_REFUSAL_NOTE,
   LOCAL_ONLY_REPLY,
   SAFER_APPROACH_REPLY,
@@ -196,14 +201,143 @@ describe("SafetyBlock", () => {
       expect(html).toContain("cat POLICY.md");
     });
 
-    it("offers technical details and dismiss only: no safer approach, no Manual route, no allow", () => {
+    it("offers Retry once, technical details and dismiss; no allow without a rule and a settings file", () => {
       const html = drawOutage(outage);
+      expect(html).toContain("Retry once");
       expect(html).toContain("Technical details");
       expect(html).toContain("Dismiss");
       expect(html).not.toContain("Use safer approach");
       expect(html).not.toContain("Manual command approval");
-      expect(html).not.toMatch(/Allow|Retry/);
+      // This card's server named no rule and no file: nothing to allow.
+      expect(html).not.toContain("Always allow");
+      expect(html).not.toContain("Bash(");
       expect(drawOutage(outage, true)).toContain("Tool calls: toolu_1, toolu_2, toolu_3");
+    });
+
+    describe("recovery prompt: Retry once / Always allow (this project / everywhere)", () => {
+      const notice =
+        "The server-side auto mode classifier gave no verdict (error), so auto mode cannot determine the safety of Bash. " +
+        "This is a transient failure of the check, not a judgment about the action: a later response may get a verdict. You may try the action again once, as-is.";
+      const allowable: SafetyBlockNotice = {
+        ...outage,
+        id: "outage-2",
+        count: 2,
+        detail: `${notice}\n\nTool calls: toolu_a, toolu_b`,
+        action: "ls | wc -l",
+        commands: [
+          { action: "git push origin main", count: 1, tool: "Bash", words: "git push", rule: "Bash(git push:*)" },
+          { action: "ls | wc -l", count: 1, tool: "Bash" },
+        ],
+        allow: {
+          project: "/work/repo/.claude/settings.local.json",
+          user: "/Users/me/.claude/settings.json",
+        },
+      };
+
+      it("shows all three choices, each naming the exact rule and file it writes", () => {
+        const html = drawOutage(allowable);
+        expect(html).toContain("Retry once");
+        expect(html).toContain("Always allow in this project");
+        expect(html).toContain("Always allow everywhere");
+        expect(html).toContain("Adds Bash(git push:*) to /work/repo/.claude/settings.local.json, then retries");
+        expect(html).toContain("Adds Bash(git push:*) to /Users/me/.claude/settings.json, then retries");
+        expect(html).toContain("<code>Bash(git push:*)</code>");
+        // Never a blanket Bash rule, and nothing for the piped line.
+        expect(html).not.toContain("Bash(*)");
+        expect(html).not.toContain("Bash(ls");
+      });
+
+      it("keeps the full harness notice collapsed until asked for", () => {
+        const closed = drawOutage(allowable);
+        expect(closed).not.toContain("gave no verdict (error)");
+        expect(closed).toContain('aria-expanded="false"');
+        const open = drawOutage(allowable, true);
+        expect(open).toContain("gave no verdict (error), so auto mode cannot determine the safety of Bash");
+        expect(open).toContain("You may try the action again once, as-is.");
+        expect(open).toContain("This project: /work/repo/.claude/settings.local.json");
+        expect(open).toContain("Everywhere: /Users/me/.claude/settings.json");
+      });
+
+      it("offers only the scopes the server named, and only Retry when no call has a rule", () => {
+        const userOnly = drawOutage({ ...allowable, allow: { user: "/Users/me/.claude/settings.json" } });
+        expect(userOnly).not.toContain("Always allow in this project");
+        expect(userOnly).toContain("Always allow everywhere");
+        const noRule = drawOutage({ ...allowable, commands: [{ action: "ls | wc -l", count: 1, tool: "Bash" }] });
+        expect(noRule).toContain("Retry once");
+        expect(noRule).not.toContain("Always allow");
+        const lite = drawOutage({ ...allowable, allow: undefined });
+        expect(lite).toContain("Retry once");
+        expect(lite).not.toContain("Always allow");
+      });
+
+      const io = (reply: unknown) => {
+        const calls: [string, Record<string, unknown>][] = [];
+        const answered: string[] = [];
+        const sent: string[] = [];
+        return {
+          calls, answered, sent,
+          io: {
+            invoke: async <T,>(cmd: string, args: Record<string, unknown>) => { calls.push([cmd, args]); return reply as T; },
+            onAnswered: (id: string) => { answered.push(id); },
+            onContinue: (message: string) => { sent.push(message); },
+          },
+        };
+      };
+
+      it("Retry once takes the card down as retried and asks for the same calls, as-is", async () => {
+        const t = io(true);
+        await answerOutage("retry", allowable, t.io);
+        expect(t.calls).toEqual([["safety_block_retry", { id: "outage-2" }]]);
+        expect(t.answered).toEqual(["outage-2"]);
+        expect(t.sent).toHaveLength(1);
+        expect(t.sent[0]).toBe(outageRetryReply(["git push origin main", "ls | wc -l"]));
+        expect(t.sent[0]).toContain("`git push origin main`");
+        expect(t.sent[0]).toContain("Do not reword");
+        expect(t.sent[0]).toContain("do not try a third time");
+      });
+
+      it.each(["project", "user"] as const)("Always allow (%s) sends only the card and scope, then the retry naming the rule", async (scope) => {
+        const path = scope === "project" ? "/work/repo/.claude/settings.local.json" : "/Users/me/.claude/settings.json";
+        const t = io({ rules: ["Bash(git push:*)"], path, added: ["Bash(git push:*)"], present: [], uncovered: ["ls | wc -l"] });
+        await answerOutage(scope, allowable, t.io);
+        expect(t.calls).toEqual([["safety_block_allow_rule", { id: "outage-2", scope }]]);
+        expect(t.answered).toEqual(["outage-2"]);
+        expect(t.sent[0]).toContain(`I added the Claude permission allow rule \`Bash(git push:*)\` to ${path}.`);
+        expect(t.sent[0]).toContain("No rule covers `ls | wc -l`");
+        expect(t.sent[0]).toContain("Retry each of them once, exactly as before");
+      });
+
+      it("a refused allow write sends nothing and leaves the card up", async () => {
+        const answered: string[] = [];
+        const sent: string[] = [];
+        await expect(answerOutage("project", allowable, {
+          invoke: async () => { throw new Error("The settings file is not valid JSON. Nothing was written."); },
+          onAnswered: (id) => { answered.push(id); },
+          onContinue: (message) => { sent.push(message); },
+        })).rejects.toThrow("Nothing was written");
+        expect(answered).toEqual([]);
+        expect(sent).toEqual([]);
+      });
+
+      it("Dismiss sends no turn", async () => {
+        const t = io(true);
+        await answerOutage("dismiss", allowable, t.io);
+        expect(t.calls).toEqual([["safety_block_dismiss", { id: "outage-2" }]]);
+        expect(t.sent).toEqual([]);
+      });
+
+      it("derives each distinct rule once, in refusal order", () => {
+        expect(outageRules([
+          { action: "a", count: 1, rule: "mcp__s__t" },
+          { action: "b", count: 1 },
+          { action: "c", count: 1, rule: "Bash(git push:*)" },
+          { action: "d", count: 1, rule: "mcp__s__t" },
+        ])).toEqual(["mcp__s__t", "Bash(git push:*)"]);
+        const one: AllowedOutage = { rules: ["mcp__s__t"], path: "/p", added: [], present: ["mcp__s__t"], uncovered: [] };
+        const reply = outageAllowedReply(one, ["mcp__s__t"]);
+        expect(reply).toContain("allow rule `mcp__s__t` to /p.");
+        expect(reply).toContain("Retry it once, exactly as before:\n`mcp__s__t`");
+      });
     });
 
     it("shows the host's guidance word for word, as the worker and snapshot get it", () => {

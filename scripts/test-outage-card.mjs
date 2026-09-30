@@ -168,8 +168,12 @@ try {
   assert.match(text, /×2/);
   assert.match(text, /What the agent was told/i);
   assert(text.includes(GUIDANCE), "the server's guidance, word for word");
-  assert.doesNotMatch(text, /blocked an action|Why it was blocked|Manual command approval|Use safer approach|Allow/i);
-  assert.equal(await outage.locator("button").count(), 2);
+  assert.doesNotMatch(text, /blocked an action|Why it was blocked|Manual command approval|Use safer approach/i);
+  // Retry once, details, dismiss. This card names no rule and no settings
+  // file, so it offers no "Always allow" (test-outage-recovery.mjs has one).
+  assert.doesNotMatch(text, /Always allow/i);
+  assert.equal(await outage.locator("button").count(), 3);
+  assert.match(text, /Retry once/);
   assert(await noSideScroll(page));
   // The chat list: an outage has nothing to review, a safety refusal does.
   const badge = (label, title) => page.locator(`.sidebar .pending-action-badge[aria-label^="${label} for ${title}:"]`);
