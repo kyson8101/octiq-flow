@@ -569,7 +569,14 @@ impl OrchestrationStore {
         Ok(())
     }
 
-    pub(crate) fn worker_disconnected(&self, key: &str) -> Result<(), String> {
+    /// `last_words` is what the process left behind as it ended (see
+    /// `agent_chat::last_words`), so the coordinator can tell a launch that
+    /// can never work from a drop worth another attempt.
+    pub(crate) fn worker_disconnected(
+        &self,
+        key: &str,
+        last_words: Option<&str>,
+    ) -> Result<(), String> {
         let Some(before) = self.observed_attempt(key) else {
             return Ok(());
         };
@@ -582,13 +589,18 @@ impl OrchestrationStore {
         {
             return Ok(());
         }
+        let mut message = "Worker output disconnected before the attempt was reported.".to_string();
+        if let Some(last_words) = last_words {
+            message.push(' ');
+            message.push_str(last_words);
+        }
         let changed = self.mutate(|data| {
             Ok(fail(
                 data,
                 &before.id,
                 ExecutionError {
                     kind: "disconnected".into(),
-                    message: "Worker output disconnected before the attempt was reported.".into(),
+                    message: message.clone(),
                     at: now_ms(),
                     retryable: false,
                 },
@@ -704,7 +716,7 @@ impl OrchestrationStore {
                         .unwrap_or(attempt.created_at)
                     > 30_000
             {
-                self.worker_disconnected(&attempt.worker_chat_key)?;
+                self.worker_disconnected(&attempt.worker_chat_key, None)?;
             }
         }
         for attempt in snapshot
@@ -935,7 +947,7 @@ mod tests {
             let attempt = running_worker(&store, &run);
             store.observe_worker_event(&attempt.worker_chat_key, &event).unwrap();
             capacity(&store, &attempt);
-            store.worker_disconnected(&attempt.worker_chat_key).unwrap();
+            store.worker_disconnected(&attempt.worker_chat_key, None).unwrap();
             assert_eq!(latest(&store, &attempt.id).execution.state, ExecutionState::CapacityBlocked);
             assert_eq!(store.snapshot(None).unwrap().notifications.len(), 1);
             assert!(store.report_worker(&attempt.worker_chat_key, WorkerReport { attempt_id: attempt.id, outcome: WorkerOutcome::Completed, summary:"Late completion".into(), files_modified:vec![], verdict: None }).is_err());
@@ -1163,7 +1175,9 @@ mod tests {
         let store = OrchestrationStore::default();
         let run = run(&store);
         let attempt = running_worker(&store, &run);
-        store.worker_disconnected(&attempt.worker_chat_key).unwrap();
+        store
+            .worker_disconnected(&attempt.worker_chat_key, None)
+            .unwrap();
         assert_eq!(
             latest(&store, &attempt.id).execution.state,
             ExecutionState::Disconnected
@@ -1188,6 +1202,42 @@ mod tests {
             .notifications
             .iter()
             .all(|n| n.state == inbox::DeliveryState::Cancelled));
+    }
+
+    /// Feedback 2adec4d5: a worker whose shell refused the launch line was
+    /// reported as a plain disconnect, three attempts running, while the
+    /// reason sat unread in the diagnostics journal.
+    #[test]
+    fn a_disconnect_says_what_the_process_left_behind() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        let last_words =
+            "The process exited with code 2. Its last error output: bash: unexpected EOF";
+        store
+            .worker_disconnected(&attempt.worker_chat_key, Some(last_words))
+            .unwrap();
+        let error = latest(&store, &attempt.id).execution.latest_error.unwrap();
+        assert_eq!(error.kind, "disconnected");
+        assert_eq!(
+            error.message,
+            format!("Worker output disconnected before the attempt was reported. {last_words}")
+        );
+        let notice = &store.snapshot(None).unwrap().notifications[0];
+        assert!(notice.body.contains(last_words), "{}", notice.body);
+
+        let silent = running_worker(&store, &run);
+        store
+            .worker_disconnected(&silent.worker_chat_key, None)
+            .unwrap();
+        assert_eq!(
+            latest(&store, &silent.id)
+                .execution
+                .latest_error
+                .unwrap()
+                .message,
+            "Worker output disconnected before the attempt was reported."
+        );
     }
 
     #[test]

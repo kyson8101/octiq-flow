@@ -361,6 +361,32 @@ fn emit_unstructured_output(
     }
 }
 
+/// What a process left behind as it ended: its exit code and the last line it
+/// wrote to stderr. `None` for a clean, silent exit, which explains nothing.
+///
+/// A worker that dies this way is otherwise reported as a bare disconnect, and
+/// a launch the shell refuses looks exactly like a dropped connection.
+fn last_words(code: Option<i32>, stderr: &str) -> Option<String> {
+    // It goes into the coordinator's inbox; one line of evidence is enough.
+    const KEPT: usize = 300;
+    let stderr = stderr.trim();
+    if code == Some(0) && stderr.is_empty() {
+        return None;
+    }
+    let mut words = match code {
+        Some(code) => format!("The process exited with code {code}."),
+        None => "The process ended without an exit code.".to_string(),
+    };
+    if !stderr.is_empty() {
+        words.push_str(" Its last error output: ");
+        words.extend(stderr.chars().take(KEPT));
+        if stderr.chars().count() > KEPT {
+            words.push('…');
+        }
+    }
+    Some(words)
+}
+
 struct ChatSession {
     launch_id: String,
     /// A dispatched prompt still awaiting its provider acknowledgement.
@@ -2805,10 +2831,15 @@ pub(crate) fn start_session(
     // stderr is normally worth showing. A provider can classify known internal
     // recovery details as diagnostics-only without losing them from the local
     // error journal.
+    //
+    // The last visible line is kept for the reaper: when the process dies
+    // without a report, that line is usually why (see `last_words`).
+    let last_stderr = Arc::new(Mutex::new(String::new()));
     {
         let key = key.clone();
         let stderr_provider = provider;
         let observing = manager.clone();
+        let last_stderr = last_stderr.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             let mut output_state = OutputState::default();
@@ -2821,6 +2852,9 @@ pub(crate) fn start_session(
                     if let Err(error) = observing.orchestrations.observe_worker_output(&key, &line)
                     {
                         eprintln!("orchestration: cannot record provider stderr: {error}");
+                    }
+                    if let Ok(mut last) = last_stderr.lock() {
+                        last.clone_from(&line);
                     }
                 }
                 if emit_unstructured_output(stderr_provider.kind(), &key, line, disposition) {
@@ -2944,7 +2978,12 @@ pub(crate) fn start_session(
                 }
             }
             if drained {
-                if let Err(error) = manager_for_exit.orchestrations.worker_disconnected(&key) {
+                // Both readers are done, so this is the last line there was.
+                let said = last_stderr.lock().map(|l| l.clone()).unwrap_or_default();
+                if let Err(error) = manager_for_exit
+                    .orchestrations
+                    .worker_disconnected(&key, last_words(code, &said).as_deref())
+                {
                     eprintln!("orchestration: cannot record worker disconnect: {error}");
                 }
             }
@@ -5980,6 +6019,34 @@ mod tests {
             codex.output_disposition("You've hit your usage limit."),
             OutputDisposition::Visible,
         );
+    }
+
+    #[test]
+    fn a_dead_process_leaves_its_exit_code_and_last_error_line() {
+        // Feedback 2adec4d5: bash refused the launch line and said why, and
+        // the attempt said only "disconnected".
+        assert_eq!(
+            last_words(Some(2), "bash: -c: line 26: unexpected EOF").as_deref(),
+            Some(
+                "The process exited with code 2. Its last error output: \
+                 bash: -c: line 26: unexpected EOF"
+            )
+        );
+        // An idle worker reaped after a clean turn has nothing to add.
+        assert_eq!(last_words(Some(0), ""), None);
+        // Killed, or gone without a code: still worth the line it left.
+        assert_eq!(
+            last_words(None, " lost the pipe \n").as_deref(),
+            Some("The process ended without an exit code. Its last error output: lost the pipe")
+        );
+        assert_eq!(
+            last_words(Some(1), "").as_deref(),
+            Some("The process exited with code 1.")
+        );
+        // The line reaches the coordinator's inbox, so it is kept short.
+        let long = last_words(Some(1), &"é".repeat(2_000)).unwrap();
+        assert!(long.chars().count() < 400, "{}", long.chars().count());
+        assert!(long.ends_with('…'));
     }
 
     #[test]
