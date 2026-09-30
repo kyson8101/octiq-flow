@@ -13,6 +13,7 @@ import {
   outageAllowedReply,
   outageRetryReply,
   outageRules,
+  RETRY_NOT_SENT,
   CLAUDE_REFUSAL_NOTE,
   LOCAL_ONLY_REPLY,
   SAFER_APPROACH_REPLY,
@@ -270,24 +271,30 @@ describe("SafetyBlock", () => {
         expect(lite).not.toContain("Always allow");
       });
 
-      const io = (reply: unknown) => {
+      // `taken` is what the page's send answers: false when the chat did not
+      // take the turn (App.send, which shows the failure on the bubble).
+      const io = (reply: unknown, taken: boolean | void = true) => {
         const calls: [string, Record<string, unknown>][] = [];
         const answered: string[] = [];
         const sent: string[] = [];
+        const order: string[] = [];
         return {
-          calls, answered, sent,
+          calls, answered, sent, order,
           io: {
-            invoke: async <T,>(cmd: string, args: Record<string, unknown>) => { calls.push([cmd, args]); return reply as T; },
-            onAnswered: (id: string) => { answered.push(id); },
-            onContinue: (message: string) => { sent.push(message); },
+            invoke: async <T,>(cmd: string, args: Record<string, unknown>) => {
+              calls.push([cmd, args]); order.push(cmd); return reply as T;
+            },
+            onAnswered: (id: string) => { answered.push(id); order.push("answered"); },
+            onContinue: async (message: string) => { sent.push(message); order.push("send"); return taken; },
           },
         };
       };
 
-      it("Retry once takes the card down as retried and asks for the same calls, as-is", async () => {
+      it("Retry once asks for the same calls, as-is, and closes the card only once that turn is taken", async () => {
         const t = io(true);
         await answerOutage("retry", allowable, t.io);
         expect(t.calls).toEqual([["safety_block_retry", { id: "outage-2" }]]);
+        expect(t.order).toEqual(["send", "safety_block_retry", "answered"]);
         expect(t.answered).toEqual(["outage-2"]);
         expect(t.sent).toHaveLength(1);
         expect(t.sent[0]).toBe(outageRetryReply(["git push origin main", "ls | wc -l"]));
@@ -300,7 +307,11 @@ describe("SafetyBlock", () => {
         const path = scope === "project" ? "/work/repo/.claude/settings.local.json" : "/Users/me/.claude/settings.json";
         const t = io({ rules: ["Bash(git push:*)"], path, added: ["Bash(git push:*)"], present: [], uncovered: ["ls | wc -l"] });
         await answerOutage(scope, allowable, t.io);
-        expect(t.calls).toEqual([["safety_block_allow_rule", { id: "outage-2", scope }]]);
+        expect(t.calls).toEqual([
+          ["safety_block_allow_rule", { id: "outage-2", scope }],
+          ["safety_block_retry", { id: "outage-2" }],
+        ]);
+        expect(t.order).toEqual(["safety_block_allow_rule", "send", "safety_block_retry", "answered"]);
         expect(t.answered).toEqual(["outage-2"]);
         expect(t.sent[0]).toContain(`I added the Claude permission allow rule \`Bash(git push:*)\` to ${path}.`);
         expect(t.sent[0]).toContain("No rule covers `ls | wc -l`");
@@ -317,6 +328,48 @@ describe("SafetyBlock", () => {
         })).rejects.toThrow("Nothing was written");
         expect(answered).toEqual([]);
         expect(sent).toEqual([]);
+      });
+
+      // Review finding (5bf9f85): the card came down, and the host recorded
+      // the decision, BEFORE the retry turn was sent, so a send that failed in
+      // between left the agent never asked to retry. Now a rejected send
+      // leaves the card up and undecided, to be answered again.
+      it.each(["retry", "project", "user"] as const)("a send the chat did not take leaves the %s card recoverable", async (choice) => {
+        const allowed = { rules: ["Bash(git push:*)"], path: "/p", added: ["Bash(git push:*)"], present: [], uncovered: [] };
+        const refused = io(allowed, false);
+        await expect(answerOutage(choice, allowable, refused.io)).rejects.toThrow(RETRY_NOT_SENT);
+        expect(refused.answered).toEqual([]);
+        expect(refused.calls.map(([cmd]) => cmd)).not.toContain("safety_block_retry");
+        expect(refused.sent).toHaveLength(1);
+
+        const thrown = io(allowed);
+        thrown.io.onContinue = async () => { throw new Error("socket closed"); };
+        await expect(answerOutage(choice, allowable, thrown.io)).rejects.toThrow("socket closed");
+        expect(thrown.answered).toEqual([]);
+        expect(thrown.calls.map(([cmd]) => cmd)).not.toContain("safety_block_retry");
+
+        // Answered again, the send goes through: now, and only now, it closes.
+        const again = io(allowed);
+        await answerOutage(choice, allowable, again.io);
+        expect(again.order.slice(-3)).toEqual(["send", "safety_block_retry", "answered"]);
+      });
+
+      it("a card that could not be closed on the host still goes once its retry is queued", async () => {
+        const t = io(true);
+        t.io.invoke = async <T,>(cmd: string) => {
+          t.order.push(cmd);
+          if (cmd === "safety_block_retry") throw new Error("This card is no longer pending.");
+          return true as T;
+        };
+        await answerOutage("retry", allowable, t.io);
+        expect(t.order).toEqual(["send", "safety_block_retry", "answered"]);
+      });
+
+      it("says when an allow rule is written but its retry was not sent", () => {
+        expect(drawOutage({ ...allowable, written: "project" }))
+          .toContain("The allow rule is already in this project&#x27;s settings");
+        expect(drawOutage({ ...allowable, written: "user" })).toContain("already in your own settings");
+        expect(drawOutage(allowable)).not.toContain("already in");
       });
 
       it("Dismiss sends no turn", async () => {

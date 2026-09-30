@@ -814,14 +814,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let id: String = arg(&args, "id")?;
             Ok(json!(crate::safety_block::authorize_for_project(&id)?))
         }
-        // An outage card only (Claude's classifier gave no verdict). Retry
-        // takes the card down; the page then sends the retry as a turn.
+        // An outage card only (Claude's classifier gave no verdict). The page
+        // calls this once the retry turn is queued, and only then does the
+        // card come down, recorded as retried or as the allow it wrote.
         "safety_block_retry" => Ok(json!(crate::safety_block::retry_outage(&arg::<String>(
             &args, "id"
         )?)?)),
         // "Always allow": the host derives the rule from the refused call and
         // writes it to the scope's own settings file. The page sends only the
-        // card and the scope, never a rule or a path.
+        // card and the scope, never a rule or a path. The card stays up until
+        // `safety_block_retry` says the retry turn is queued.
         "safety_block_allow_rule" => {
             let id: String = arg(&args, "id")?;
             let scope: crate::claude_allow::Scope = arg(&args, "scope")?;

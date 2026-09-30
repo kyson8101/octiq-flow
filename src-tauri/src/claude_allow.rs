@@ -267,17 +267,97 @@ pub(crate) fn project_settings_path(cwd: &Path) -> Option<PathBuf> {
     (!cwd.as_os_str().is_empty()).then(|| cwd.join(".claude").join("settings.local.json"))
 }
 
-/// The person's own settings file: `$CLAUDE_CONFIG_DIR/settings.json` when
-/// the chat was launched with one, otherwise `~/.claude/settings.json`.
-pub(crate) fn user_settings_path(
-    config_dir: Option<&Path>,
+/// The person's own settings file, resolved and confined, or why "Always
+/// allow everywhere" may not write it.
+///
+/// `config_dir` is the `CLAUDE_CONFIG_DIR` Claude was launched with, exactly
+/// as it got it; none means `~/.claude`. A relative one is read the way
+/// Claude reads it, from `launch_cwd` (the folder the process started in),
+/// never from this server's own folder. The folder is then canonicalized, so
+/// a symlink or `..` cannot dress one folder up as another, and refused when
+/// it is not plainly the person's own:
+///
+/// - inside any `.claude` folder other than `~/.claude` itself: that is a
+///   project's settings folder, and its `settings.json` is the SHARED file,
+///   committed for everyone who clones the project;
+/// - inside `project` (the chat's own folder) or inside any git work tree:
+///   whatever is written there can be committed;
+/// - inside a managed-settings folder: an organisation's policy.
+pub(crate) fn user_settings_target(
+    config_dir: Option<&str>,
+    launch_cwd: &Path,
     home: Option<&Path>,
-) -> Option<PathBuf> {
-    let dir = match config_dir.filter(|dir| !dir.as_os_str().is_empty()) {
-        Some(dir) => dir.to_path_buf(),
-        None => home?.join(".claude"),
+    project: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let home_claude = home.map(|home| home.join(".claude"));
+    let dir = match config_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
+        Some(dir) if Path::new(dir).is_absolute() => PathBuf::from(dir),
+        Some(dir) if launch_cwd.is_absolute() => launch_cwd.join(dir),
+        Some(_) => {
+            return Err(
+                "Claude's config folder is relative and its launch folder is unknown.".into(),
+            )
+        }
+        None => home_claude
+            .clone()
+            .ok_or("Claude's own settings folder could not be found.")?,
     };
-    Some(dir.join("settings.json"))
+    let real = resolve_existing(&dir)?;
+    if under_any(&real, &managed_roots()) {
+        return Err("That is a managed settings folder, which OctiqFlow never writes.".into());
+    }
+    let personal = home_claude
+        .as_deref()
+        .and_then(|dir| resolve_existing(dir).ok());
+    if personal.as_deref() != Some(real.as_path()) {
+        let shared = || {
+            Err(format!(
+                "{} is not your own Claude settings folder: a file there is shared with the project. Nothing was written.",
+                real.display()
+            ))
+        };
+        if real
+            .components()
+            .any(|part| part.as_os_str() == std::ffi::OsStr::new(".claude"))
+        {
+            return shared();
+        }
+        if let Some(project) = project.filter(|p| !p.as_os_str().is_empty()) {
+            if resolve_existing(project).is_ok_and(|project| real.starts_with(project)) {
+                return shared();
+            }
+        }
+        if real.ancestors().any(|dir| dir.join(".git").exists()) {
+            return shared();
+        }
+    }
+    Ok(real.join("settings.json"))
+}
+
+/// `path` with its longest existing ancestor canonicalized and the rest
+/// appended, so a folder not created yet still resolves. A `..` in the part
+/// that does not exist cannot be resolved honestly and is refused.
+fn resolve_existing(path: &Path) -> Result<PathBuf, String> {
+    let mut missing = Vec::new();
+    let mut at = path;
+    loop {
+        match at.canonical() {
+            Ok(real) => {
+                let mut real = real;
+                for part in missing.iter().rev() {
+                    real.push(part);
+                }
+                return Ok(real);
+            }
+            Err(_) => {
+                let (Some(parent), Some(name)) = (at.parent(), at.file_name()) else {
+                    return Err(format!("Cannot resolve {}.", path.display()));
+                };
+                missing.push(name.to_os_string());
+                at = parent;
+            }
+        }
+    }
 }
 
 /// Folders Claude reads MANAGED settings from. An organisation's policy is
@@ -878,25 +958,31 @@ mod tests {
 
     #[test]
     fn the_user_file_follows_claude_config_dir() {
-        let home = PathBuf::from("/home/me");
+        let root = temp();
+        let real = |p: &Path| p.canonical().unwrap();
+        let home = root.join("home");
+        let project = root.join("project");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let target =
+            |dir: Option<&str>| user_settings_target(dir, &project, Some(&home), Some(&project));
+        // No CLAUDE_CONFIG_DIR, or an empty one: `~/.claude`, even before it
+        // exists.
+        let personal = real(&home).join(".claude").join("settings.json");
+        assert_eq!(target(None).unwrap(), personal);
+        assert_eq!(target(Some("  ")).unwrap(), personal);
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        assert_eq!(target(None).unwrap(), personal);
         assert_eq!(
-            user_settings_path(None, Some(&home)),
-            Some(home.join(".claude").join("settings.json"))
+            target(Some(home.join(".claude").to_str().unwrap())).unwrap(),
+            personal
         );
-        let custom = PathBuf::from("/work/claude-config");
-        assert_eq!(
-            user_settings_path(Some(&custom), Some(&home)),
-            Some(custom.join("settings.json"))
-        );
-        assert_eq!(
-            user_settings_path(Some(Path::new("")), Some(&home)),
-            Some(home.join(".claude").join("settings.json"))
-        );
-        assert_eq!(user_settings_path(None, None), None);
+        assert!(user_settings_target(None, &project, None, Some(&project)).is_err());
         assert_eq!(project_settings_path(Path::new("")), None);
 
         let config = temp();
-        let path = user_settings_path(Some(&config), None).unwrap();
+        let path = target(Some(config.to_str().unwrap())).unwrap();
+        assert_eq!(path, real(&config).join("settings.json"));
         fs::write(&path, "{\n\t\"model\": \"opus\"\n}\n").unwrap();
         add_allow_rules(&path, Scope::User, &rules(&["mcp__a__b"])).unwrap();
         assert_eq!(
@@ -904,5 +990,113 @@ mod tests {
             "{\n\t\"model\": \"opus\",\n\t\"permissions\": {\n\t\t\"allow\": [\n\t\t\t\"mcp__a__b\"\n\t\t]\n\t}\n}\n"
         );
         fs::remove_dir_all(config).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Review finding (5bf9f85): `CLAUDE_CONFIG_DIR=<repo>/.claude` made
+    /// "Always allow everywhere" write the project's SHARED settings.json.
+    #[test]
+    fn a_config_dir_at_the_projects_own_claude_folder_is_refused() {
+        let root = temp();
+        let home = root.join("home");
+        let project = root.join("project");
+        let shared = project.join(".claude");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("settings.json"), "{}").unwrap();
+        let target =
+            |dir: &Path| user_settings_target(dir.to_str(), &project, Some(&home), Some(&project));
+
+        let err = target(&shared).unwrap_err();
+        assert!(err.contains("not your own"), "{err}");
+        // Spelled another way, or not created yet: still that folder.
+        assert!(target(&project.join("sub").join("..").join(".claude")).is_err());
+        assert!(target(&shared.join("nested")).is_err());
+        // Another project's .claude, reached through a symlink.
+        let other = root.join("other").join(".claude");
+        fs::create_dir_all(&other).unwrap();
+        #[cfg(unix)]
+        {
+            let link = root.join("looks-personal");
+            std::os::unix::fs::symlink(&other, &link).unwrap();
+            assert!(target(&link).is_err(), "a symlink resolves to .claude");
+        }
+        assert!(target(&other).is_err());
+        // Anywhere inside the chat's own folder, or inside a git work tree.
+        assert!(target(&project.join("claude-config")).is_err());
+        let repo = root.join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        assert!(target(&repo.join("config")).is_err());
+        assert_eq!(
+            fs::read_to_string(shared.join("settings.json")).unwrap(),
+            "{}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A relative CLAUDE_CONFIG_DIR is Claude's launch folder's, not this
+    /// server's.
+    #[test]
+    fn a_relative_config_dir_resolves_from_the_launch_folder() {
+        let root = temp();
+        let home = root.join("home");
+        let project = root.join("project");
+        fs::create_dir_all(home.join("cfg")).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        // A chat with no folder runs in the home folder.
+        let path = user_settings_target(Some("cfg"), &home, Some(&home), None).unwrap();
+        assert_eq!(
+            path,
+            home.canonical().unwrap().join("cfg").join("settings.json")
+        );
+        let server_cwd = std::env::current_dir().unwrap();
+        assert!(!path.starts_with(server_cwd.canonical().unwrap()));
+        let path = user_settings_target(Some("../home/cfg"), &project, Some(&home), None).unwrap();
+        assert_eq!(
+            path,
+            home.canonical().unwrap().join("cfg").join("settings.json")
+        );
+        // Relative to a project, it lands in the project: refused.
+        assert!(
+            user_settings_target(Some(".claude"), &project, Some(&home), Some(&project)).is_err()
+        );
+        assert!(user_settings_target(Some("cfg"), &project, Some(&home), Some(&project)).is_err());
+        // No launch folder to read it from.
+        assert!(user_settings_target(Some("cfg"), Path::new(""), Some(&home), None).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The happy path answers the canonical file, the one Claude reads.
+    #[test]
+    fn a_personal_config_dir_resolves_to_its_canonical_file() {
+        let root = temp();
+        let home = root.join("home");
+        let personal = root.join("personal");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&personal).unwrap();
+        let spelled = root.join("home").join("..").join("personal");
+        let path = user_settings_target(spelled.to_str(), &home, Some(&home), None).unwrap();
+        assert_eq!(path, personal.canonical().unwrap().join("settings.json"));
+        #[cfg(unix)]
+        {
+            let link = root.join("link");
+            std::os::unix::fs::symlink(&personal, &link).unwrap();
+            let path = user_settings_target(link.to_str(), &home, Some(&home), None).unwrap();
+            assert_eq!(path, personal.canonical().unwrap().join("settings.json"));
+        }
+        // Not created yet: the folder it will be, under a real parent.
+        let fresh = root.join("fresh-config");
+        let path = user_settings_target(fresh.to_str(), &home, Some(&home), None).unwrap();
+        assert_eq!(
+            path,
+            root.canonical()
+                .unwrap()
+                .join("fresh-config")
+                .join("settings.json")
+        );
+        assert!(!fresh.exists(), "resolving creates nothing");
+        add_allow_rules(&path, Scope::User, &rules(&["Read"])).unwrap();
+        assert!(fresh.join("settings.json").is_file());
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -58,6 +58,12 @@ pub struct BlockedAction {
     /// settings files (a lite chat) or whose launch this server never saw.
     #[serde(skip_serializing_if = "Option::is_none")]
     allow: Option<AllowTargets>,
+    /// An outage card only: the scope an "Always allow" has already written
+    /// while the retry turn is not yet queued. The card stays up until the
+    /// page reports the turn queued (`retry_outage`), so a send that fails in
+    /// between leaves it to be sent again rather than lost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    written: Option<crate::claude_allow::Scope>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -395,7 +401,9 @@ pub fn remember_claude_launch(
     });
 }
 
-/// The two files an outage card may write, for this chat.
+/// The two files an outage card may write, for this chat. A user file the
+/// host would refuse (`claude_allow::user_settings_target`) is left out, so
+/// the card never offers a button that can only fail.
 fn allow_targets(chat_key: &str) -> Option<AllowTargets> {
     let launch = with_claude_launches(|launches| launches.get(chat_key).cloned())?;
     if launch.lite {
@@ -404,13 +412,29 @@ fn allow_targets(chat_key: &str) -> Option<AllowTargets> {
     let shown = |path: PathBuf| path.to_string_lossy().into_owned();
     let targets = AllowTargets {
         project: crate::claude_allow::project_settings_path(Path::new(&launch.cwd)).map(shown),
-        user: crate::claude_allow::user_settings_path(
-            launch.config_dir.as_deref().map(Path::new),
-            crate::paths::home_dir().as_deref(),
-        )
-        .map(shown),
+        user: user_target(&launch).ok().map(shown),
     };
     (targets.project.is_some() || targets.user.is_some()).then_some(targets)
+}
+
+/// The person's own settings file for this launch, resolved as Claude
+/// resolves it. A chat with no folder runs in the home folder
+/// (`agent_chat::start_session`'s `process_cwd`), so a relative
+/// `CLAUDE_CONFIG_DIR` is read from there.
+fn user_target(launch: &ClaudeLaunch) -> Result<PathBuf, String> {
+    let home = crate::paths::home_dir();
+    let project = Path::new(&launch.cwd);
+    let launch_cwd = if launch.cwd.is_empty() {
+        home.clone().unwrap_or_default()
+    } else {
+        project.to_path_buf()
+    };
+    crate::claude_allow::user_settings_target(
+        launch.config_dir.as_deref(),
+        &launch_cwd,
+        home.as_deref(),
+        Some(project),
+    )
 }
 
 /// What an "Always allow" wrote.
@@ -456,10 +480,25 @@ pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<Allow
         Scope::Project => targets.project.clone().ok_or(
             "This chat has no project folder, so there is no project settings file to write.",
         )?,
-        Scope::User => targets
-            .user
-            .clone()
-            .ok_or("Claude's own settings folder could not be found.")?,
+        Scope::User => {
+            let shown = targets
+                .user
+                .clone()
+                .ok_or("This chat's Claude settings folder is not your own, so OctiqFlow will not write an allow rule everywhere.")?;
+            // Resolved again at the click: the folder may have changed (a
+            // symlink swapped, a relaunch with another CLAUDE_CONFIG_DIR)
+            // since the card was drawn, and it is the file written NOW that
+            // must be the person's own.
+            let launch = with_claude_launches(|launches| launches.get(&block.chat_key).cloned())
+                .ok_or("This chat's launch is no longer known. Nothing was written.")?;
+            let now = user_target(&launch)?;
+            if now.to_string_lossy() != shown {
+                return Err(format!(
+                    "Claude's settings folder changed since this card was shown ({shown}). Nothing was written."
+                ));
+            }
+            shown
+        }
     };
     let mut rules: Vec<String> = Vec::new();
     let mut uncovered = Vec::new();
@@ -474,7 +513,14 @@ pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<Allow
         return Err("No allow rule is narrow enough for these calls. Retry once instead.".into());
     }
     let added = crate::claude_allow::add_allow_rules(Path::new(&path), scope, &rules)?;
-    dismiss_as(id, scope.decision());
+    // The card stays up: it is decided only once the retry turn is queued
+    // (`retry_outage`). Writing the rule again is harmless — it is then
+    // `present`, not added twice.
+    with_pending(|pending| {
+        if let Some(block) = pending.get_mut(id) {
+            block.written = Some(scope);
+        }
+    });
     Ok(AllowedOutage {
         rules,
         path,
@@ -483,11 +529,16 @@ pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<Allow
     })
 }
 
-/// "Retry once": take the card down as retried. The caller sends the turn
-/// that asks for the one as-is retry Claude's own message allows.
+/// The retry turn is queued: take the card down as decided. The page calls
+/// this only AFTER the chat took the turn that asks for the one as-is retry
+/// Claude's own message allows — "Retry once" straight away, an "Always
+/// allow" once its rule is written — so a send that fails first leaves the
+/// card pending and the decision unrecorded. A card whose rule was written
+/// is recorded as that allow, any other as retried.
 pub fn retry_outage(id: &str) -> Result<bool, String> {
-    pending_outage(id)?;
-    Ok(dismiss_as(id, "retried"))
+    let block = pending_outage(id)?;
+    let decision = block.written.map_or("retried", |scope| scope.decision());
+    Ok(dismiss_as(id, decision))
 }
 
 fn authorization_path() -> PathBuf {
@@ -809,6 +860,7 @@ pub(crate) fn observe_claude_refusal(
         guidance: None,
         refusals: Vec::new(),
         allow: None,
+        written: None,
     })
 }
 
@@ -865,6 +917,7 @@ fn publish_outage(chat_key: &str, reason: &str, message: String, refusal: Refusa
             guidance: Some(outage_guidance()),
             refusals: vec![refusal],
             allow: allow_targets(chat_key),
+            written: None,
         };
         regroup(&mut block);
         pending.insert(block.id.clone(), block.clone());
@@ -1025,6 +1078,7 @@ fn publish(chat_key: &str, summary: String, detail: String) -> bool {
         guidance: None,
         refusals: Vec::new(),
         allow: None,
+        written: None,
     })
 }
 
@@ -1187,6 +1241,7 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
             guidance: None,
             refusals: Vec::new(),
             allow: None,
+            written: None,
         };
 
         save_authorization(&path, &block).unwrap();
@@ -1520,10 +1575,32 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         );
         // Never the shared file.
         assert!(!project.join(".claude").join("settings.json").exists());
+
+        // Review finding (5bf9f85): the card came down, and the decision was
+        // recorded, before the retry turn was queued, so a send that failed
+        // in between lost the retry. The card now stays up, undecided, until
+        // the page says the turn is queued.
+        let still = cards_in(&chat);
+        assert_eq!(still.len(), 1, "a written rule leaves the card up");
+        assert_eq!(
+            serde_json::to_value(&still[0]).unwrap()["written"],
+            "project"
+        );
+        assert_eq!(decision(&card.id), None);
+        // The send failed; the person clicks again. Nothing is added twice.
+        let again = serde_json::to_value(
+            allow_outage(&card.id, crate::claude_allow::Scope::Project).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(again["added"], serde_json::json!([]));
+        assert_eq!(again["present"], serde_json::json!(["Bash(git push:*)"]));
+        // The retry turn is queued: now it is decided, as the allow it wrote.
+        assert_eq!(retry_outage(&card.id), Ok(true));
         assert!(cards_in(&chat).is_empty());
         assert_eq!(decision(&card.id), Some("allowed_project"));
-        // The card is gone: a second click writes nothing.
+        // The card is gone: a further click writes nothing.
         assert!(allow_outage(&card.id, crate::claude_allow::Scope::Project).is_err());
+        assert!(retry_outage(&card.id).is_err());
         fs::remove_dir_all(project).unwrap();
     }
 
@@ -1549,7 +1626,12 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         let card = cards_in(&chat).pop().unwrap();
         let done = allow_outage(&card.id, crate::claude_allow::Scope::User).unwrap();
         let done = serde_json::to_value(done).unwrap();
-        assert_eq!(done["path"], config.join("settings.json").to_str().unwrap());
+        let canonical = config.canonical().unwrap().join("settings.json");
+        assert_eq!(done["path"], canonical.to_str().unwrap());
+        assert_eq!(
+            serde_json::to_value(&card).unwrap()["allow"]["user"],
+            canonical.to_str().unwrap()
+        );
         let written: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(config.join("settings.json")).unwrap())
                 .unwrap();
@@ -1558,9 +1640,101 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
             !project.join(".claude").exists(),
             "the project was not touched"
         );
+        assert_eq!(
+            decision(&card.id),
+            None,
+            "undecided until the retry is queued"
+        );
+        assert_eq!(retry_outage(&card.id), Ok(true));
         assert_eq!(decision(&card.id), Some("allowed_user"));
         fs::remove_dir_all(project).unwrap();
         fs::remove_dir_all(config).unwrap();
+    }
+
+    /// Review finding (5bf9f85): a project that sets
+    /// `CLAUDE_CONFIG_DIR=<repo>/.claude` must not turn "Always allow
+    /// everywhere" into a write to the project's shared settings.json. The
+    /// card leaves that button out, and a page that asks anyway is refused.
+    #[test]
+    fn everywhere_is_not_offered_for_a_config_dir_inside_the_project() {
+        let project = temp_dir("allow-project");
+        let shared = project.join(".claude").join("settings.json");
+        fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        fs::write(&shared, "{}\n").unwrap();
+        for config_dir in [
+            project.join(".claude").to_string_lossy().into_owned(),
+            ".claude".to_string(),
+            "./sub/../.claude".to_string(),
+        ] {
+            let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+            remember_claude_launch(
+                &chat,
+                true,
+                project.to_str().unwrap(),
+                false,
+                Some(config_dir.clone()),
+            );
+            assert!(observe_claude_denial_at(
+                &chat,
+                &outage_denial("toolu_s"),
+                Some(("Bash", &bash("git push origin main"))),
+                7_000_000
+            ));
+            let card = cards_in(&chat).pop().unwrap();
+            let shown = serde_json::to_value(&card).unwrap();
+            assert!(
+                shown["allow"].get("user").is_none(),
+                "{config_dir}: {shown}"
+            );
+            assert!(shown["allow"]["project"].is_string(), "project scope stays");
+            let err = allow_outage(&card.id, crate::claude_allow::Scope::User).unwrap_err();
+            assert!(err.contains("not your own"), "{err}");
+            assert_eq!(cards_in(&chat).len(), 1);
+            forget_chat(&chat);
+        }
+        assert_eq!(fs::read_to_string(&shared).unwrap(), "{}\n");
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    /// A relative CLAUDE_CONFIG_DIR is read from the folder Claude was
+    /// launched in, never from this server's own.
+    #[test]
+    fn a_relative_config_dir_is_the_launch_folders() {
+        let root = temp_dir("allow-relative");
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(root.join("personal")).unwrap();
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        remember_claude_launch(
+            &chat,
+            true,
+            project.to_str().unwrap(),
+            false,
+            Some("../personal".into()),
+        );
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_rel"),
+            Some(("Bash", &bash("git push origin main"))),
+            8_000_000
+        ));
+        let card = cards_in(&chat).pop().unwrap();
+        let expected = root
+            .join("personal")
+            .canonical()
+            .unwrap()
+            .join("settings.json");
+        assert_eq!(
+            serde_json::to_value(&card).unwrap()["allow"]["user"],
+            expected.to_str().unwrap()
+        );
+        let done =
+            serde_json::to_value(allow_outage(&card.id, crate::claude_allow::Scope::User).unwrap())
+                .unwrap();
+        assert_eq!(done["path"], expected.to_str().unwrap());
+        assert!(expected.is_file());
+        forget_chat(&chat);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -135,7 +135,9 @@ execFileSync("git", ["init", "-q", "-b", "develop"], { cwd: repo });
 // Existing project settings the write must keep, in their order.
 const PROJECT_SETTINGS = path.join(repo, ".claude", "settings.local.json");
 const SHARED_SETTINGS = path.join(repo, ".claude", "settings.json");
-const USER_SETTINGS = path.join(HOME, ".claude", "settings.json");
+// The host names the person's own file by its canonical path (on macOS the
+// temp folder is /var → /private/var).
+const USER_SETTINGS = path.join(fs.realpathSync(HOME), ".claude", "settings.json");
 fs.writeFileSync(PROJECT_SETTINGS, '{\n  "env": { "ALPHA": "1" },\n  "permissions": { "deny": ["Bash(rm:*)"] }\n}\n');
 fs.writeFileSync(SHARED_SETTINGS, '{ "model": "sonnet" }\n');
 
@@ -205,6 +207,26 @@ try {
     localStorage.setItem("octiq.v2.gitColumn", "0");
   });
   const page = await context.newPage();
+  // Fault injection for the review finding on 5bf9f85: while `failNextSend` is
+  // set, the page's next `chat_send` is answered with an error instead of
+  // reaching the server — the connection dropping between the allow write
+  // and the retry turn. Every other frame passes through untouched.
+  let failNextSend = false;
+  const injected = [];
+  await page.routeWebSocket(/\/ws/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      let frame;
+      try { frame = JSON.parse(message); } catch { server.send(message); return; }
+      if (failNextSend && frame.t === "invoke" && frame.cmd === "chat_send") {
+        failNextSend = false;
+        injected.push(frame.args?.text?.slice(0, 80));
+        socket.send(JSON.stringify({ t: "reply", id: frame.id, ok: false, error: "injected: the connection dropped" }));
+        return;
+      }
+      server.send(message);
+    });
+  });
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(String(error.stack ?? error)));
   page.setDefaultTimeout(30_000);
@@ -250,7 +272,36 @@ try {
 
   // 2. "Always allow in this project": the rule lands in settings.local.json,
   //    the shared file is untouched, and the retry turn runs the push.
+  //
+  //    First, the send of the retry turn fails after the rule is written.
+  //    The card must stay up and undecided — before the fix it came down,
+  //    and the host recorded "allowed_project", with the agent never asked to
+  //    retry. A reload brings it back saying the rule is already written.
   const sharedBefore = fs.readFileSync(SHARED_SETTINGS, "utf8");
+  failNextSend = true;
+  await card.getByRole("button", { name: "Always allow in this project" }).click();
+  await card.locator(".safety-card-error").waitFor();
+  results.sendFailure = {
+    injected: injected.length,
+    error: await card.locator(".safety-card-error").innerText(),
+    ruleWritten: JSON.parse(fs.readFileSync(PROJECT_SETTINGS, "utf8")).permissions.allow,
+    pushRan: ran().includes("Bash git push origin main"),
+    decided: events.some((e) => e.event === "safety-block-expired" && e.payload.id === pushCard.payload.id),
+    stillPending: (await invoke("safety_block_pending")).some((b) => b.id === pushCard.payload.id),
+  };
+  assert.equal(results.sendFailure.injected, 1, "the retry turn's send was the one that failed");
+  assert.match(results.sendFailure.error, /retry could not be sent/);
+  assert.deepEqual(results.sendFailure.ruleWritten, ["Bash(git push:*)"]);
+  assert.equal(results.sendFailure.pushRan, false, "no retry reached the agent");
+  assert.equal(results.sendFailure.decided, false, "the card was not decided");
+  assert.equal(results.sendFailure.stillPending, true, "the host keeps the card");
+  await card.screenshot({ path: path.join(SHOTS, "2c-send-failed-card-stays.png") });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await card.waitFor();
+  results.sendFailure.afterReload = await card.innerText();
+  assert.match(results.sendFailure.afterReload, /allow rule is already in this project's settings/);
+  await card.screenshot({ path: path.join(SHOTS, "2d-after-reload-rule-written.png") });
+  // Answered again: the rule is only "present", and now the retry goes.
   await card.getByRole("button", { name: "Always allow in this project" }).click();
   await wait("push ran on retry", async () => ran().some((line) => line === "Bash git push origin main"));
   const written = fs.readFileSync(PROJECT_SETTINGS, "utf8");
@@ -312,6 +363,36 @@ try {
   // 5. Only clicks wrote anything: three allow/retry calls, one rule each.
   results.stubLaunches = stub().filter((e) => e.argv).length;
   assert.equal(results.stubLaunches, 1, "one live process throughout: the rule was picked up without a restart");
+
+  // 6. Review finding (5bf9f85): a project whose CLAUDE_CONFIG_DIR is its own
+  //    .claude folder (absolute, or relative to the launch folder) must never
+  //    get "Always allow everywhere": that settings.json is the SHARED file.
+  results.sharedConfigDir = {};
+  for (const [label, dir] of [["absolute", path.join(repo, ".claude")], ["relative", ".claude"]]) {
+    const id = `shared-config-${label}`;
+    const sharedKey = `chat:${id}`;
+    await invoke("chat_index_save", { meta: { id, projectId: project.id, title: `Shared config ${label}`, customTitle: true, cwd: repo,
+      modelId: "claude:sonnet", access: "auto", createdAt: Date.now(), updatedAt: Date.now(), generation: 0 } });
+    await invoke("chat_start", { key: sharedKey, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false,
+      // The upload: the push is allowed in this project by now (step 2), and
+      // with the config dir moved, no settings file this chat reads allows it.
+      env: { CLAUDE_CONFIG_DIR: dir }, prompt: "UPLOAD", turnId: `user-${label}` });
+    const shared = await wait(`${label} card`, async () =>
+      events.filter((e) => e.event === "safety-blocked" && e.payload.chatKey === sharedKey).at(-1));
+    results.sharedConfigDir[label] = { allow: shared.payload.allow };
+    assert.equal(shared.payload.allow.project, PROJECT_SETTINGS, "this project stays offered");
+    assert.equal(shared.payload.allow.user, undefined, "everywhere is not offered");
+    await assert.rejects(invoke("safety_block_allow_rule", { id: shared.payload.id, scope: "user" }), /not your own/);
+    if (label === "absolute") {
+      await page.goto("about:blank");
+      await page.goto(`http://127.0.0.1:${PORT}/?token=${TOKEN}#/c/${id}`, { waitUntil: "domcontentloaded" });
+      await card.waitFor();
+      results.sharedConfigDir[label].buttons = await card.locator("button").allInnerTexts();
+      assert.deepEqual(results.sharedConfigDir[label].buttons, ["Retry once", "Always allow in this project", "Technical details", "Dismiss"]);
+      await card.screenshot({ path: path.join(SHOTS, "5-shared-config-dir-card.png") });
+    }
+  }
+  assert.equal(fs.readFileSync(SHARED_SETTINGS, "utf8"), sharedBefore, "the shared settings.json was never written");
   assert.deepEqual(pageErrors, []);
   results.passed = true;
   results.evidence = "stub claude (no model, no real classifier); real debug octiq-server; real client in headless Chromium";

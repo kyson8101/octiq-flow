@@ -3214,12 +3214,16 @@ export default function App() {
     [],
   );
 
+  // Resolves true only once the chat has taken the turn (`chat_send` or
+  // `chat_start` answered). A failure is still shown on the bubble; the
+  // answer is for a caller that must not move on without the turn, such as
+  // an outage card's retry.
   const send = useCallback(
     async (
       text: string,
       attachments: Attachment[] = [],
-    ) => {
-      if (workerChat) return;
+    ): Promise<boolean> => {
+      if (workerChat) return false;
       // Agents mode: the first message of a new conversation goes to the agent
       // it is with, with the brief behind it. What the person typed still
       // names the chat.
@@ -3232,7 +3236,7 @@ export default function App() {
           : null;
         if (why) {
           setNewChatError(why);
-          return;
+          return false;
         }
       }
       // Agents mode: the automatic plan decides where a new task runs. It is
@@ -3254,9 +3258,9 @@ export default function App() {
           setNewChatError(
             `Could not open General: ${String((error as Error).message ?? error)}`,
           );
-          return;
+          return false;
         }
-        if (!targetProject) return;
+        if (!targetProject) return false;
         setProjectId(targetProject.id);
         setNewChatError(null);
       }
@@ -3267,7 +3271,7 @@ export default function App() {
       if (taskLead?.projectId && taskLead.projectId !== targetProject.id) {
         const home = workspaces.find((w) => w.id === taskLead.projectId)?.name ?? "its own project";
         setNewChatError(`${taskLead.name} works only in ${home}. Pick them again, or pick someone else.`);
-        return;
+        return false;
       }
       // Images go to the agent as pictures; anything else is named in the text
       // so the agent opens it with its own Read tool, which is better than
@@ -3286,7 +3290,7 @@ export default function App() {
           setNewChatError(
             `Could not hand the task to ${taskLead.name}: ${String((error as Error).message ?? error)}`,
           );
-          return;
+          return false;
         }
         // Known at once, so the composer never flashes the model pickers
         // between the send and the next read of the record.
@@ -3337,7 +3341,7 @@ export default function App() {
           saveConversations(list);
           return list;
         });
-        return;
+        return true;
       }
       // A model choice is immediate in the UI, but a provider process may
       // still be finishing its shutdown. Do not let a fast Send fall through
@@ -3347,7 +3351,7 @@ export default function App() {
         try {
           await switchTask;
         } catch {
-          return;
+          return false;
         }
       }
       const switchingModel = pendingModelHandoffs.current.has(id);
@@ -3502,18 +3506,18 @@ export default function App() {
 
         if (preparationError) {
           fail(preparationError);
-          return;
+          return false;
         }
 
         // Already running: this is the next turn of a conversation in flight.
         if (!switchingModel && runningRef.current.has(id)) {
           try {
             await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen });
-            return;
+            return true;
           } catch (err) {
             if (!String((err as Error).message ?? err).includes("no such chat")) {
               fail(err);
-              return;
+              return false;
             }
             // The preceding process exited during send. Resume below; if its
             // reaper already replaced it, the collision path sends to that one.
@@ -3568,6 +3572,7 @@ export default function App() {
             resume,
           });
           if (switchingModel) pendingModelHandoffs.current.delete(id);
+          return true;
         } catch (err) {
           // The process is already up — this browser simply did not know about
           // it (another tab, or a session that outlived a crash). Talk to it
@@ -3575,7 +3580,7 @@ export default function App() {
           if (!switchingModel && String((err as Error).message ?? err).includes("already running")) {
             try {
               await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen });
-              return;
+              return true;
             } catch (second) {
               fail(second);
             }
@@ -3587,6 +3592,7 @@ export default function App() {
             next.delete(id);
             return next;
           });
+          return false;
         }
       } finally {
         sendingTurns.current.delete(turnId);

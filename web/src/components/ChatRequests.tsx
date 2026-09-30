@@ -1,5 +1,5 @@
 import { PermissionAsk, type Ask } from "./PermissionAsk";
-import { SafetyBlock, type SafetyBlockNotice } from "./SafetyBlock";
+import { SafetyBlock, type Continue, type SafetyBlockNotice } from "./SafetyBlock";
 import { UserQuestion, type Question } from "./UserQuestion";
 import { questionActions } from "../lib/pendingActions";
 import "./PendingActionBadge.css";
@@ -17,7 +17,7 @@ export function ChatRequests({
   onPermissionAnswered: (id: string) => void;
   onSafetyAnswered: (id: string) => void;
   onQuestionsAnswered: (ids: string[]) => void;
-  onContinue: (message: string) => Promise<void>;
+  onContinue: Continue;
 }) {
   // One card answers every batch of this chat's questions, and is the target
   // only of what they still need: a saved batch waiting for delivery, still

@@ -32,8 +32,12 @@ export type SafetyBlockNotice = {
    * and the coordinator's snapshot are given. */
   guidance?: string | null;
   /** An outage card: the settings files "Always allow" writes. Absent when
-   * the chat reads no settings file, or on an older server. */
+   * the chat reads no settings file, or on an older server. A file the host
+   * would refuse to write is absent too, and so is its button. */
   allow?: { project?: string; user?: string } | null;
+  /** An outage card: the scope an "Always allow" already wrote while its
+   * retry turn is not yet queued. The card stays up until it is. */
+  written?: AllowScope | null;
 };
 
 export type OutageCommand = {
@@ -95,12 +99,25 @@ export function outageRules(commands: OutageCommand[]): string[] {
 
 export type OutageChoice = "retry" | AllowScope | "dismiss";
 
+/** What a page's send answers: `false` when the chat did not take the turn.
+ * Anything else (a send that answers nothing) counts as taken. */
+export type Continue = (message: string) => Promise<boolean | void> | boolean | void;
+
+/** Said when the retry turn could not be queued; the card stays up. */
+export const RETRY_NOT_SENT = "The retry could not be sent to the agent, so this card stays open. Try again.";
+
 /**
- * One click on an outage card. Dismiss only takes the card down. Retry takes
- * it down as retried, then sends the retry turn. An allow asks the host to
- * write the rule it derives — the page names only the card and the scope,
- * never a rule or a path — and sends the retry turn only once that write has
- * succeeded; a refused write leaves the card up and sends nothing.
+ * One click on an outage card. Dismiss only takes the card down. Retry
+ * sends the retry turn. An allow first asks the host to write the rule it
+ * derives — the page names only the card and the scope, never a rule or a
+ * path — and sends the retry turn only once that write has succeeded; a
+ * refused write leaves the card up and sends nothing.
+ *
+ * The card comes down (`safety_block_retry`, then `onAnswered`) only AFTER
+ * the chat has taken the retry turn. A send that fails leaves the card up,
+ * undecided, to be answered again: an allow already written is then only
+ * `present`, never added twice, and the host records the card as that allow
+ * once the retry does go.
  */
 export async function answerOutage(
   choice: OutageChoice,
@@ -108,7 +125,7 @@ export async function answerOutage(
   io: {
     invoke: <T>(cmd: string, args: Record<string, unknown>) => Promise<T>;
     onAnswered: (id: string) => void;
-    onContinue: (message: string) => Promise<void> | void;
+    onContinue: Continue;
   },
 ): Promise<void> {
   const actions = (block.commands?.length ? block.commands : block.action ? [{ action: block.action }] : [])
@@ -118,15 +135,20 @@ export async function answerOutage(
     io.onAnswered(block.id);
     return;
   }
-  if (choice === "retry") {
-    await io.invoke("safety_block_retry", { id: block.id });
-    io.onAnswered(block.id);
-    await io.onContinue(outageRetryReply(actions));
-    return;
-  }
-  const allowed = await io.invoke<AllowedOutage>("safety_block_allow_rule", { id: block.id, scope: choice });
+  const message = choice === "retry"
+    ? outageRetryReply(actions)
+    : outageAllowedReply(
+      await io.invoke<AllowedOutage>("safety_block_allow_rule", { id: block.id, scope: choice }),
+      actions,
+    );
+  const taken = await io.onContinue(message);
+  if (taken === false) throw new Error(RETRY_NOT_SENT);
+  // The turn is queued. Closing the card is bookkeeping from here: if the
+  // host cannot be told (another tab already closed it, or the socket
+  // dropped), the card still goes from this page rather than offer a second
+  // retry of a call that is already being retried.
+  await io.invoke("safety_block_retry", { id: block.id }).catch(() => undefined);
   io.onAnswered(block.id);
-  await io.onContinue(outageAllowedReply(allowed, actions));
 }
 
 /**
@@ -144,7 +166,7 @@ function OutageBlock({
   startOpen,
 }: {
   block: SafetyBlockNotice;
-  onContinue: (message: string) => Promise<void> | void;
+  onContinue: Continue;
   onAnswered: (id: string) => void;
   startOpen: boolean;
 }) {
@@ -204,6 +226,12 @@ function OutageBlock({
             so the same line may still run later. */}
         {count === 1 ? "This refused call did not run." : "These refused calls did not run."} Nothing was approved.
       </p>
+      {block.written && (
+        <p className="ask-card-note safety-card-written">
+          The allow rule is already in {block.written === "project" ? "this project's" : "your own"} settings,
+          but the retry was not sent yet.
+        </p>
+      )}
 
       {open && (
         <div className="ask-card-detail safety-card-detail">
@@ -335,7 +363,7 @@ function ClaudeSafetyBlock({
   startOpen,
 }: {
   block: SafetyBlockNotice;
-  onContinue: (message: string) => Promise<void> | void;
+  onContinue: Continue;
   onAnswered: (id: string) => void;
   startOpen: boolean;
 }) {
@@ -412,7 +440,7 @@ export function SafetyBlock({
   startOpen = false,
 }: {
   block: SafetyBlockNotice;
-  onContinue: (message: string) => Promise<void> | void;
+  onContinue: Continue;
   onAnswered: (id: string) => void;
   startOpen?: boolean;
 }) {
@@ -432,7 +460,7 @@ function CodexSafetyBlock({
   startOpen,
 }: {
   block: SafetyBlockNotice;
-  onContinue: (message: string) => Promise<void> | void;
+  onContinue: Continue;
   onAnswered: (id: string) => void;
   startOpen: boolean;
 }) {

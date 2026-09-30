@@ -2132,7 +2132,9 @@ pub(crate) fn start_session(
     crate::safety_block::remember_project(&key, &cwd);
     // What an outage card's "Always allow" writes to: this chat's folder, and
     // the config dir Claude will read — the project's own CLAUDE_CONFIG_DIR
-    // when it sets one, else the one this server passes on.
+    // when it sets one, else the one this server passes on. It is kept as
+    // Claude gets it; `safety_block::user_target` resolves a relative one
+    // from the launch folder and refuses one that is not the person's own.
     crate::safety_block::remember_claude_launch(
         &key,
         agent == ChatAgent::Claude,

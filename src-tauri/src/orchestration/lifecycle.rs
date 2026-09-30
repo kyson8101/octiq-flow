@@ -960,6 +960,8 @@ mod tests {
             .and_then(|d| d.group_id.clone())
             .unwrap();
         crate::safety_block::allow_outage(&group, crate::claude_allow::Scope::Project).unwrap();
+        // Decided only once the page says the retry turn is queued.
+        assert_eq!(crate::safety_block::retry_outage(&group), Ok(true));
         let snapshot = store.snapshot(Some(&run.id)).unwrap();
         let d = snapshot
             .native_decisions
