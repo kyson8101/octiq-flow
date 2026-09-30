@@ -1,12 +1,12 @@
 // When a notification is owed, and what it says.
 //
-// The two halves of the feature that can be tested without a browser: the rule
-// that decides whether you were watching, and the words the notification is
-// built from. `show()` is not here — it is the one line that touches the
-// Notification constructor, and there is no DOM in this runner.
-import { describe, expect, it } from "vitest";
+// The deterministic halves of the feature: whether you were watching, the
+// words the notification carries, and the route target its click hands back.
+// The Notification constructor is stubbed for that last boundary; this runner
+// does not need a DOM.
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { bannerTitle, isWatching, lastSaid, noticeFor, owed, preview } from "./notify";
+import { bannerTitle, isWatching, lastSaid, noticeFor, owed, preview, show } from "./notify";
 
 const HERE = { hidden: false, focused: true, reading: "chat-1" };
 
@@ -91,50 +91,81 @@ describe("bannerTitle", () => {
 
 describe("noticeFor, in agents mode", () => {
   it("says which agent the banner is about, worded as the push banner is", () => {
-    const n = noticeFor({ kind: "permission", conversationId: "c1", projectName: "General", chatTitle: "Plan", detail: "Bash", agentName: "Maya" });
+    const n = noticeFor({ kind: "permission", conversationId: "c1", projectId: "general", projectName: "General", chatTitle: "Plan", detail: "Bash", agentName: "Maya" });
     expect(n.body).toBe("Maya: Needs permission: Bash");
-    expect(noticeFor({ kind: "done", conversationId: "c1", projectName: "", chatTitle: "", detail: "", agentName: " " }).body).toBe("Finished.");
+    expect(noticeFor({ kind: "done", conversationId: "c1", projectId: null, projectName: "", chatTitle: "", detail: "", agentName: " " }).body).toBe("Finished.");
   });
 });
 
 describe("noticeFor", () => {
   it("titles every notice after the project and the chat, so the banner names the work", () => {
-    const n = noticeFor({ kind: "done", conversationId: "c1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "All three tests pass." });
+    const n = noticeFor({ kind: "done", conversationId: "c1", projectId: "p1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "All three tests pass." });
     expect(n.title).toBe("OctiqFlow · Fix the top bar");
     expect(n.body).toBe("All three tests pass.");
+    expect(n.projectId).toBe("p1");
   });
 
   it("says the turn ended even when the agent left no words", () => {
-    const n = noticeFor({ kind: "done", conversationId: "c1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "" });
+    const n = noticeFor({ kind: "done", conversationId: "c1", projectId: "p1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "" });
     expect(n.body).toBe("Finished.");
   });
 
   it("marks a permission ask as needing you", () => {
-    const n = noticeFor({ kind: "permission", conversationId: "c1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "Edit — web/src/App.tsx" });
+    const n = noticeFor({ kind: "permission", conversationId: "c1", projectId: "p1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "Edit — web/src/App.tsx" });
     expect(n.body).toBe("Needs permission: Edit — web/src/App.tsx");
   });
 
   it("quotes the question the agent is blocked on", () => {
-    const n = noticeFor({ kind: "question", conversationId: "c1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "Which theme?" });
+    const n = noticeFor({ kind: "question", conversationId: "c1", projectId: "p1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "Which theme?" });
     expect(n.body).toBe("Asked: Which theme?");
   });
 
   it("tags one notice per chat per kind, so a second replaces the first", () => {
-    const a = noticeFor({ kind: "done", conversationId: "c1", projectName: "P", chatTitle: "One", detail: "a" });
-    const b = noticeFor({ kind: "done", conversationId: "c1", projectName: "P", chatTitle: "One", detail: "b" });
-    const other = noticeFor({ kind: "permission", conversationId: "c1", projectName: "P", chatTitle: "One", detail: "a" });
+    const a = noticeFor({ kind: "done", conversationId: "c1", projectId: "p1", projectName: "P", chatTitle: "One", detail: "a" });
+    const b = noticeFor({ kind: "done", conversationId: "c1", projectId: "p1", projectName: "P", chatTitle: "One", detail: "b" });
+    const other = noticeFor({ kind: "permission", conversationId: "c1", projectId: "p1", projectName: "P", chatTitle: "One", detail: "a" });
     expect(a.tag).toBe(b.tag);
     expect(a.tag).not.toBe(other.tag);
   });
 
   it("names an untitled chat after its project rather than showing an empty banner", () => {
-    const n = noticeFor({ kind: "done", conversationId: "c1", projectName: "OctiqFlow", chatTitle: "", detail: "hi" });
+    const n = noticeFor({ kind: "done", conversationId: "c1", projectId: "p1", projectName: "OctiqFlow", chatTitle: "", detail: "hi" });
     expect(n.title).toBe("OctiqFlow");
   });
 
   it("falls back to the app's own name when it knows neither", () => {
-    const n = noticeFor({ kind: "done", conversationId: "c1", projectName: "", chatTitle: "", detail: "hi" });
+    const n = noticeFor({ kind: "done", conversationId: "c1", projectId: null, projectName: "", chatTitle: "", detail: "hi" });
     expect(n.title).toBe("OctiqFlow");
+  });
+});
+
+describe("show", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("hands both route ids to the in-page banner click", () => {
+    let banner: { onclick: (() => void) | null; close: ReturnType<typeof vi.fn> } | null = null;
+    class NotificationStub {
+      static permission = "granted";
+      onclick: (() => void) | null = null;
+      close = vi.fn();
+      constructor() { banner = this; }
+    }
+    const focus = vi.fn();
+    vi.stubGlobal("Notification", NotificationStub);
+    vi.stubGlobal("window", { Notification: NotificationStub, focus });
+    const open = vi.fn();
+
+    show(
+      noticeFor({ kind: "done", conversationId: "c1", projectId: "p1", projectName: "P", chatTitle: "C", detail: "Done" }),
+      open,
+    );
+    const shown = banner as { onclick: (() => void) | null; close: ReturnType<typeof vi.fn> } | null;
+    expect(shown).not.toBeNull();
+    shown?.onclick?.();
+
+    expect(focus).toHaveBeenCalledOnce();
+    expect(shown?.close).toHaveBeenCalledOnce();
+    expect(open).toHaveBeenCalledWith({ conversationId: "c1", projectId: "p1" });
   });
 });
 

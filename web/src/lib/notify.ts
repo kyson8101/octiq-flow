@@ -22,6 +22,7 @@
 // permission: `Notification.requestPermission()` needs a real gesture, and a
 // prompt on first load is the thing people click "Block" on.
 import type { Message } from "./chat";
+import type { NotificationTarget } from "./notificationOpen";
 
 /** What is being announced. */
 export type NoticeKind = "done" | "permission" | "question";
@@ -46,6 +47,8 @@ export type Notice = {
   kind: NoticeKind;
   /** The chat it belongs to. Clicking the banner opens this one. */
   conversationId: string;
+  /** The chat's home. Needed when the banner launches a page from cold. */
+  projectId: string | null;
   title: string;
   body: string;
   /** One banner per chat per kind — a later one takes the earlier one's place
@@ -97,6 +100,7 @@ export function bannerTitle(projectName: string, chatTitle: string): string {
 export function noticeFor(input: {
   kind: NoticeKind;
   conversationId: string;
+  projectId: string | null;
   projectName: string;
   chatTitle: string;
   detail: string;
@@ -117,6 +121,7 @@ export function noticeFor(input: {
   return {
     kind: input.kind,
     conversationId: input.conversationId,
+    projectId: input.projectId,
     title: bannerTitle(input.projectName, input.chatTitle),
     body,
     tag: `octiq:${input.conversationId}:${input.kind}`,
@@ -189,7 +194,7 @@ export async function askPermission(): Promise<NotificationPermission> {
 
 /** Put it on the desktop. Clicking it brings the window forward and opens the
  *  chat it came from. */
-export function show(notice: Notice, onOpen: (conversationId: string) => void): void {
+export function show(notice: Notice, onOpen: (target: NotificationTarget) => void): void {
   if (!supported() || Notification.permission !== "granted") return;
   try {
     const banner = new Notification(notice.title, {
@@ -204,7 +209,7 @@ export function show(notice: Notice, onOpen: (conversationId: string) => void): 
     banner.onclick = () => {
       window.focus();
       banner.close();
-      onOpen(notice.conversationId);
+      onOpen({ conversationId: notice.conversationId, projectId: notice.projectId });
     };
   } catch {
     // Android needs a service worker registration to raise one of these, and

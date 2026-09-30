@@ -158,10 +158,16 @@ self.addEventListener("notificationclick", (event) => {
       });
       for (const client of windows) {
         // A page that is already running owns the conversation list and the
-        // routing, so it only needs the chat id. Sent whether or not the window
-        // can be brought forward: one that lands on a window the OS raised by
-        // itself is worth more than a tap that said nothing at all.
-        if (id) client.postMessage({ type: "open-chat", conversationId: id });
+        // routing. Give it the same complete target as the mailbox and cold
+        // URL: it can use the project immediately, while the chat id still
+        // resolves authoritatively if the local list is behind. Sent whether
+        // or not the window can be brought forward: one that lands on a window
+        // the OS raised by itself is worth more than a tap that said nothing.
+        if (id) client.postMessage({
+          type: "open-chat",
+          conversationId: id,
+          projectId: project || null,
+        });
         let raised = null;
         try {
           raised = await client.focus();
