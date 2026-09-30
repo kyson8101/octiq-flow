@@ -418,6 +418,7 @@ mod tests {
             reports_to: reports_to.map(Into::into),
             memory_note: None,
             avatar: None,
+            team_id: None,
             created_at: 0,
             updated_at: 0,
         }

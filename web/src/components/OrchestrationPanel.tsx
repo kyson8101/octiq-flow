@@ -33,10 +33,11 @@ import { BranchIcon, ClockIcon, TaskStatusIcon } from "./TaskMeter";
 import { OpenBesideButton } from "./OpenBesideButton";
 import { ProposedReportNote } from "./ProposedReportNote";
 import { RunBridges } from "./RunBridges";
+import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 
 import {
-  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel,
+  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -1251,6 +1252,7 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
           {progress.total ? `${progress.done} of ${progress.total} steps done` : "No checklist reported"} · reported {agoLabel(report.reportedAt, now)}
         </p>}
         {!report && <p className="orch-task-reported">No checklist reported</p>}
+        <PeerHelpLog asks={taskPeerAsks(snapshot, task.id)} ago={(at) => agoLabel(at, now)} />
         <details className="orch-task-more">
           <summary>Task details</summary>
           <TaskLifecycleEvidence snapshot={snapshot} taskId={task.id} now={now} />

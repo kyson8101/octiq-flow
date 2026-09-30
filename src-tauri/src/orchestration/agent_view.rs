@@ -117,6 +117,9 @@ pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, Str
         native_decisions,
         services,
         bridges,
+        // An asker gets its answer as the tool result; the log is the
+        // person's, in the task view.
+        peer_asks: _,
     } = snapshot;
     let limit = read.message_limit.clamp(1, MAX_MESSAGES);
 
@@ -755,6 +758,7 @@ mod tests {
             native_decisions: vec![],
             services: vec![],
             bridges: vec![],
+            peer_asks: vec![],
         }
     }
 

@@ -42,9 +42,24 @@ export type TeamAgent = {
   memoryError?: string;
   /** Its picture: a checked PNG/JPEG/WebP data URL. Absent draws initials. */
   avatar?: string;
+  /** The peer-help team it is on (`AgentTeam`); absent when on none. */
+  teamId?: string;
   createdAt: number;
   updatedAt: number;
 };
+
+/** A peer-help team (team.rs `AgentTeam`): agents on one may ask each other
+ *  questions while they work. Beside the org chart, never part of it. */
+export type AgentTeam = {
+  id: string;
+  name: string;
+  /** Absent for a global team. */
+  projectId?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type AgentTeamDraft = { id?: string; name: string; projectId?: string | null };
 
 export type TeamDraft = {
   id?: string;
@@ -58,6 +73,8 @@ export type TeamDraft = {
   reportsTo?: string | null;
   /** Absent keeps the avatar, "" removes it, a data URL sets it. */
   avatar?: string;
+  /** Absent keeps the team, "" or null takes it off, an id puts it on one. */
+  teamId?: string | null;
 };
 
 /** Global agents plus the project's own; every agent with `all`. */
@@ -66,7 +83,32 @@ export async function loadTeam(projectId: string | null, all = false): Promise<T
 }
 
 export async function saveTeamAgent(agent: TeamDraft): Promise<TeamAgent> {
-  return await bridge.invoke<TeamAgent>("team_save", { agent });
+  // The host reads a missing team as "keep"; the form always says which.
+  const teamId = agent.teamId === undefined ? undefined : agent.teamId ?? "";
+  return await bridge.invoke<TeamAgent>("team_save", { agent: { ...agent, teamId } });
+}
+
+export async function loadAgentTeams(): Promise<AgentTeam[]> {
+  return await bridge.invoke<AgentTeam[]>("agent_team_list");
+}
+
+export async function saveAgentTeam(team: AgentTeamDraft): Promise<AgentTeam> {
+  return await bridge.invoke<AgentTeam>("agent_team_save", { team: { ...team, projectId: team.projectId || null } });
+}
+
+export async function deleteAgentTeam(id: string): Promise<void> {
+  await bridge.invoke("agent_team_delete", { id });
+}
+
+/** The teams an agent may be put on: every global team, and its own
+ *  project's. A global agent may join any team. The host checks it too. */
+export function joinableTeams(teams: readonly AgentTeam[], projectId: string | null | undefined): AgentTeam[] {
+  return teams.filter((team) => !projectId || !team.projectId || team.projectId === projectId);
+}
+
+/** The team an agent is on, when that team still exists. */
+export function teamOf(agent: Pick<TeamAgent, "teamId">, teams: readonly AgentTeam[]): AgentTeam | null {
+  return agent.teamId ? teams.find((team) => team.id === agent.teamId) ?? null : null;
 }
 
 export async function deleteTeamAgent(id: string): Promise<void> {

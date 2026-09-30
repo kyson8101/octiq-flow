@@ -1346,6 +1346,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &crate::team::default_path(),
             &arg::<String>(&args, "id")?,
         )),
+        // Peer-help teams: a lateral grouping beside the org chart.
+        "agent_team_list" => to_value(crate::team::teams(&crate::team::default_path())),
+        "agent_team_save" => to_value(crate::team::save_team(
+            &crate::team::default_path(),
+            arg(&args, "team")?,
+        )),
+        "agent_team_delete" => unit(crate::team::delete_team(
+            &crate::team::default_path(),
+            &arg::<String>(&args, "id")?,
+        )),
 
         "orchestration_worker_start" => {
             let actor: String = arg(&args, "actorChatKey")?;
@@ -1464,6 +1474,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 None => confirm()?,
             };
             to_value(Ok::<_, String>(settled))
+        }
+        // A worker's question to a teammate, answered by the host as that
+        // teammate in a read-only one-shot turn (`orchestration/peer.rs`).
+        "orchestration_peer_ask" => {
+            let path = crate::team::default_path();
+            let agents = crate::team::list(&path, None, true)?;
+            let teams = crate::team::teams(&path)?;
+            to_value(svc.orchestrations.peer_ask(
+                &arg::<String>(&args, "actorChatKey")?,
+                crate::orchestration::peer::PeerQuestion {
+                    teammate_id: arg(&args, "teammateId")?,
+                    question: arg(&args, "question")?,
+                    context_paths:
+                        arg::<Option<Vec<String>>>(&args, "contextPaths")?.unwrap_or_default(),
+                },
+                &agents,
+                &teams,
+                crate::orchestration::peer::run_helper,
+            ))
         }
         "orchestration_relay_send" => to_value(svc.orchestrations.relay_between_runs(
             &arg::<String>(&args, "actorChatKey")?,

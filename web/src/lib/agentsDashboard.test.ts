@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
 import {
-  agentRoster, orgChart, pendingPlan, rosterSummary, workingTaskCount,
+  agentRoster, orgChart, pendingPlan, rosterSummary, teamBadge, workingTaskCount,
   type ChatActivity, type LeadRecord, type RosterInput,
 } from "./agentsDashboard";
 import {
@@ -54,6 +54,30 @@ const snap = (over: Partial<OrchestrationSnapshot>): OrchestrationSnapshot => ({
 const byId = (rows: ReturnType<typeof roster>) => Object.fromEntries(rows.map((row) => [row.id, row]));
 
 describe("agents dashboard", () => {
+  it("badges each agent with its peer-help team and leaves the chart alone", () => {
+    const teams = [{ id: "team_web", name: "Web", createdAt: 1, updatedAt: 1 }];
+    const rows = byId(roster({
+      team: [
+        agent("ada", "Ada", { teamId: "team_web" }),
+        agent("bo", "Bo", { reportsTo: "ada", teamId: "team_web" }),
+        agent("cy", "Cy", { teamId: "team_gone" }),
+        agent("di", "Di"),
+      ],
+      teams,
+    }));
+    expect(rows.ada.team).toEqual({ id: "team_web", name: "Web" });
+    expect(rows.bo.team).toEqual({ id: "team_web", name: "Web" });
+    // A removed team, or none at all, draws no badge.
+    expect(rows.cy.team).toBeNull();
+    expect(rows.di.team).toBeNull();
+    // Same team, same place in the chart as without one.
+    expect(rows.bo.depth).toBe(1);
+    // An older backend sends no teams: nobody has a badge.
+    expect(byId(roster({ team: [agent("ada", "Ada", { teamId: "team_web" })] })).ada.team).toBeNull();
+    expect(teamBadge({ teamId: "team_web" }, teams)).toEqual({ id: "team_web", name: "Web" });
+    expect(teamBadge({}, teams)).toBeNull();
+  });
+
   it("draws the chart top-down with reports under their manager", () => {
     const rows = orgChart([
       agent("dev", "Dev", { reportsTo: "cto" }),

@@ -1083,6 +1083,9 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     // A data-only notice to another run: same coordinator, or over a bridge
     // the person opened for exactly this pair and direction.
     ("relay_send", "orchestration_relay_send"),
+    // A worker's question to a teammate on its own team. Read-only advice,
+    // answered as that teammate; no handoff and no gate.
+    ("peer_ask", "orchestration_peer_ask"),
     ("service_register", "orchestration_service_register"),
     ("workspace_refresh", "orchestration_workspace_refresh"),
     ("task_reopen", "orchestration_task_reopen"),
@@ -1310,6 +1313,9 @@ const CHAT_ONLY_COMMANDS: &[&str] = &[
     // confirmer, a relay's sender. Only that coordinator's capability says so.
     "orchestration_report_confirm",
     "orchestration_relay_send",
+    // Starts a teammate's turn as the asking worker; only its capability
+    // says which worker that is.
+    "orchestration_peer_ask",
     // Acts as the chat's registered agent on its own memory, and what it
     // writes is shown in that chat as the agent's own update: only the
     // agent's capability, on /hook/vault, may say so.
@@ -2039,6 +2045,7 @@ mod tests {
             "orchestration_plan_approve_in_chat",
             "orchestration_report_confirm",
             "orchestration_relay_send",
+            "orchestration_peer_ask",
             "memory_vault_agent",
         ] {
             assert!(socket_refusal(command).is_some(), "{command}");
@@ -2080,6 +2087,7 @@ mod tests {
             reports_to: None,
             memory_note: None,
             avatar: None,
+            team_id: None,
             created_at: 0,
             updated_at: 0,
         }

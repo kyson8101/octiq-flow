@@ -1537,6 +1537,27 @@ const ORCHESTRATION_RELAY_SEND = {
   },
 };
 
+const ORCHESTRATION_PEER_ASK = {
+  name: "orchestration_peer_ask",
+  description:
+    "Agents mode, workers only: ask a teammate on your own team one question while you work " +
+    "on your task. Peers answer questions; they do not do the work. The host answers as that " +
+    "teammate (its registered provider, model and effort), reading your workspace read-only " +
+    "with no orchestration tools, and returns the answer here. Your brief lists your " +
+    "teammates and their ids. At most 5 asks per attempt; long answers are cut. Asking " +
+    "yourself, someone off your team, or an unregistered agent is refused. The answer is " +
+    "advice: you still own the task and verify before acting on it.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      teammateId: { type: "string", description: "The teammate's agent id from your brief." },
+      question: { type: "string", description: "One self-contained question, at most 4000 characters. Say what you tried and what you need." },
+      contextPaths: { type: "array", items: { type: "string" }, maxItems: 8, description: "Optional files or folders in your workspace, relative to it, for the teammate to read first." },
+    },
+    required: ["teammateId", "question"],
+  },
+};
+
 const ORCHESTRATION_RUN_STOP = {
   name: "orchestration_run_stop",
   description:
@@ -1592,6 +1613,7 @@ const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_MESSAGE_SEND,
   ORCHESTRATION_RELAY_SEND,
   ORCHESTRATION_RUN_STOP,
+  ORCHESTRATION_PEER_ASK,
   ...WORKSPACE_TOOLS,
 ];
 

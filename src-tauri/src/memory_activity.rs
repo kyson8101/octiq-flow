@@ -1399,6 +1399,7 @@ mod tests {
                     project_id: None,
                     reports_to: None,
                     avatar: None,
+                    team_id: None,
                 },
             )
             .unwrap()
