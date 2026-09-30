@@ -8430,9 +8430,12 @@ body.is-ultra .eff {
   cursor: pointer;
 }
 
-.settings-nav-item:hover {
-  background: var(--bg-1);
-  color: var(--fg-0);
+/* Pointer hover only: a touch leaves :hover stuck on the tab it tapped. */
+@media (hover: hover) {
+  .settings-nav-item:hover {
+    background: var(--bg-1);
+    color: var(--fg-0);
+  }
 }
 
 .settings-nav-item.is-on {
@@ -8633,35 +8636,69 @@ body.is-ultra .eff {
   height: 76px;
 }
 
+/* WebKit lays a select's chosen option out as text inside it and counts that
+   text toward the scroll width of whatever scrolls around the select, however
+   narrow the select itself is drawn. A lead's role or a long project name in
+   one let the whole of Settings pan sideways on an iPhone. Clipped, the text
+   stays in the select's own box. */
+.settings-page select {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 16px on a phone or tablet: anything smaller and iOS Safari zooms the page
+   when a field takes focus, then leaves it zoomed and panning. One rule for
+   every Settings form; a desktop keeps its compact fields. */
+@media (max-width: 700px), (pointer: coarse) {
+  .settings-page :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea) {
+    font-size: 16px;
+  }
+}
+
 @media (max-width: 700px) {
   .settings-layout {
     flex-direction: column;
   }
 
-  /* Every section on screen at once, in as many rows as it takes. A strip
-     scrolling sideways with its scrollbar hidden left the later sections
-     past the edge of a 375px phone, a clipped icon the only hint they
-     existed (feedback f3fab989). */
+  /* Every section on screen at once, in one row of icons. A strip scrolling
+     sideways with its scrollbar hidden left the later sections past the edge
+     of a 375px phone, a clipped icon the only hint they existed (feedback
+     f3fab989); seven names wrapped into three rows. Each keeps its name for
+     assistive tech, and the picked one is the heading under the row. */
   .settings-nav {
     width: auto;
     flex: 0 0 auto;
     display: block;
-    padding: 8px 12px;
+    padding: 4px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
 
   .settings-nav-list {
     flex-direction: row;
-    flex-wrap: wrap;
-    gap: 4px;
+    gap: 2px;
   }
 
   .settings-nav-item {
+    position: relative;
+    /* Equal shares of the row: 48px each for seven on a 375px phone, and
+       still inside a 320px one. */
+    flex: 1 1 0;
     width: auto;
-    min-height: 40px;
-    gap: 8px;
-    padding: 6px 10px;
+    min-width: 0;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .settings-nav-copy {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .settings-nav-copy small,

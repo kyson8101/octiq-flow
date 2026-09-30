@@ -204,7 +204,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
         </button>
       </div>
 
-      <div className="settings-control-row">
+      <div className="settings-control-row team-choice-row">
         <div className="settings-control-copy">
           <h3>Talk to</h3>
           <p>The lead you talk to from any project. It picks the project, repository and teammate for each part of the work, and you approve the plan first.</p>
@@ -223,7 +223,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
         </select>
       </div>
 
-      <div className="settings-control-row">
+      <div className="settings-control-row team-choice-row">
         <div className="settings-control-copy">
           <h3>Home workspace</h3>
           <p>Where conversations with your lead live. It needs no code project or Git setup; the lead routes each task to a registered project.</p>

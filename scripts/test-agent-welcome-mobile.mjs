@@ -78,6 +78,8 @@ function resultFor(request) {
     case "team_head": return potato;
     case "team_leads": return [];
     case "team_home": return "general";
+    // Settings › Agents lists the peer-help teams; null here throws in TeamsBlock.
+    case "agent_team_list": return [];
     case "team_brief": return `${args.task}\n\n=== OctiqFlow agents mode ===\nLead: mocked`;
     case "chat_task": return { chatId: args.chatId, projectId: "general" };
     case "codex_skills": return [];

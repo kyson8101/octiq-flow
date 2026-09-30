@@ -1,5 +1,8 @@
 /* Settings → Agents, and the lead picker on a new task. Token colours only. */
-.team-settings { display: grid; gap: 16px; }
+/* One column no wider than the page: an implicit `auto` column grows to the
+   widest thing in it, and a select's min-content is its longest option — a
+   long project name in the new-team form widened the whole section. */
+.team-settings { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .team-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .team-head h3 { margin: 0; color: var(--fg-0); font-size: 14px; font-weight: 600; }
 .team-settings button:disabled { opacity: .5; cursor: default; }
@@ -58,7 +61,7 @@
   max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.team-groups { display: grid; gap: 8px; }
+.team-groups { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .team-groups > .settings-note { margin: 0; }
 .team-group-list { list-style: none; margin: 0; padding: 0; display: grid; }
 .team-group-row {
@@ -120,6 +123,12 @@
   background: var(--bg-0); color: var(--fg-1); font: inherit; font-size: 13px;
 }
 .team-head-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Beside a paragraph on a phone, a choice was a 70px sliver that showed five
+   letters of a name; there it takes a line of its own under the words. */
+@media (max-width: 640px) {
+  .team-choice-row { flex-wrap: wrap; gap: 10px; }
+  .team-choice-row .team-head-select { flex: 1 1 100%; max-width: none; min-height: 44px; }
+}
 .team-form :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .team-form-wide { grid-column: 1 / -1; }
 .team-form .settings-note { margin: 0; }
