@@ -20,6 +20,7 @@
 // sealed with them, so the push service relays a body it cannot read.
 import { fromBase64Url, toBase64Url } from "./base64url";
 import { bridge } from "./bridge";
+import type { NotificationTarget } from "./notificationOpen";
 
 /** What the browser gives us to hand to the server. The shape
  *  `PushSubscription.toJSON()` produces, flattened — the server stores exactly
@@ -182,7 +183,7 @@ export function stillWanted(at: number, now: number = Date.now()): boolean {
   return Number.isFinite(at) && now - at < TAP_GOOD_FOR;
 }
 
-/** The chat a tapped banner asked for, if one is waiting.
+/** The chat and project a tapped banner asked for, if one is waiting.
  *
  *  Taken, not read: the record is deleted as it is handed over, so one tap
  *  opens one chat once however many times the app is resumed afterwards. A tap
@@ -192,25 +193,32 @@ export function stillWanted(at: number, now: number = Date.now()): boolean {
  *  Found by walking the cache rather than by matching a URL: the two halves
  *  resolve a relative name against their own base, and the mailbox holds
  *  exactly one letter by construction. */
-export async function takeTapped(now: number = Date.now()): Promise<string | null> {
+export async function takeTapped(now: number = Date.now()): Promise<NotificationTarget | null> {
   if (typeof caches === "undefined") return null;
   try {
     const cache = await caches.open(TAPS);
     const [key] = await cache.keys();
     if (!key) return null;
-    let record: { conversationId?: string; at?: number } | null = null;
+    let record: { conversationId?: string; projectId?: string | null; at?: number } | null = null;
     try {
       // Read BEFORE the entry goes: a body is only guaranteed to be there while
       // the thing it came out of still is.
       const hit = await cache.match(key);
-      record = hit ? ((await hit.json()) as { conversationId?: string; at?: number }) : null;
+      record = hit
+        ? ((await hit.json()) as { conversationId?: string; projectId?: string | null; at?: number })
+        : null;
     } finally {
       // ...and gone whatever it turned out to say. A letter that cannot be read
       // is one this would otherwise trip over on every resume forever.
       await cache.delete(key);
     }
     if (typeof record?.conversationId !== "string" || !record.conversationId) return null;
-    return stillWanted(record.at ?? 0, now) ? record.conversationId : null;
+    return stillWanted(record.at ?? 0, now)
+      ? {
+          conversationId: record.conversationId,
+          projectId: typeof record.projectId === "string" && record.projectId ? record.projectId : null,
+        }
+      : null;
   } catch {
     /* no store, or a half-written record: the tap is simply lost */
     return null;

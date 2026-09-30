@@ -187,6 +187,10 @@ import {
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
+import {
+  resolveNotificationConversation,
+  type NotificationTarget,
+} from "./lib/notificationOpen";
 import { projectSlug } from "./lib/projectSlug";
 import { ensureGeneralProject } from "./lib/generalProject";
 import type { WorkLocationBranches } from "./components/WorkLocation";
@@ -977,20 +981,18 @@ export default function App() {
       agentsMode ? personaFor(chatKey, leads, roster)?.name : undefined,
   };
   // Set long before `openConversation` exists, like `onAccessRefused` below.
-  const onOpenChat = useRef<(id: string) => void>(() => {});
-  /** A chat a tapped banner asked for that the list did not have yet.
-   *
-   *  A phone wakes with the socket dropped and the conversation list still on
-   *  its way. The tap must not be spent on a chat this page has not heard of,
-   *  so it is remembered here and opened the moment the list lands. */
-  const awaited = useRef<string | null>(null);
+  const onOpenChat = useRef<(target: NotificationTarget) => void>(() => {});
+  /** A notification target stays pending until the loaded list or an explicit
+   *  server-index lookup can resolve it. Consuming the service-worker mailbox
+   *  must not also consume the person's intent while the app is still waking. */
+  const [pendingNotification, setPendingNotification] = useState<NotificationTarget | null>(null);
   // Answered ids, so one ask does not announce twice. It reaches this page down
   // two routes — the live broadcast and the refill on connect — and the second
   // arrival is the same question, not a new one.
   const announced = useRef<Set<string>>(new Set());
 
   /** Put one moment on the desktop, unless it is already in front of you. */
-  const announce = useCallback((kind: NoticeKind, id: string, detail: string) => {
+  const announce = useCallback(async (kind: NoticeKind, id: string, detail: string) => {
     const { on, push: viaPush, reading, list, projects, shelved: away, agentFor } = notifying.current;
     // The server has this covered, and its banner arrives whether or not this
     // page is still here. Raising one too would only double it.
@@ -998,16 +1000,25 @@ export default function App() {
     // A task chat open beside the main one is being read as much as it is.
     const focus = focusNow(id === besideRef.current ? id : reading);
     if (!owed({ enabled: on, permission: permissionNow() }, focus, id)) return;
-    const chat = list.find((c) => c.id === id);
+    // A host-created worker can speak before the ordinary index refresh has
+    // folded its row into this page. Ask the same authoritative source the
+    // opener uses so the in-page banner also carries a real project id.
+    const chat = await resolveNotificationConversation(
+      { conversationId: id, projectId: meta.current[id]?.projectId ?? null },
+      list,
+      () => bridge.invoke<IndexEntry[]>("chat_index_list"),
+    ).catch(() => null);
+    const noticeProjectId = chat?.projectId ?? meta.current[id]?.projectId ?? null;
     const notice = noticeFor({
       kind,
       conversationId: id,
-      projectName: [...projects, ...away].find((w) => w.id === chat?.projectId)?.name ?? "",
+      projectId: noticeProjectId,
+      projectName: [...projects, ...away].find((w) => w.id === noticeProjectId)?.name ?? "",
       chatTitle: chat?.title ?? "",
       detail,
       agentName: agentFor(keyFor(id)),
     });
-    showNotice(notice, (open) => onOpenChat.current(open));
+    showNotice(notice, (target) => onOpenChat.current(target));
   }, []);
 
   /** The same, for something with an id that must only ever be announced once. */
@@ -1015,7 +1026,7 @@ export default function App() {
     (key: string, kind: NoticeKind, id: string, detail: string) => {
       if (announced.current.has(key)) return;
       announced.current.add(key);
-      announce(kind, id, detail);
+      void announce(kind, id, detail);
     },
     [announce],
   );
@@ -1791,7 +1802,7 @@ export default function App() {
     // where the link goes. The raw id fills in only while the workspace list
     // has not arrived, so a reload does not blank the address.
     const ws = workspaces.find((w) => w.id === projectId);
-    if (restored.current && !awaited.current) {
+    if (restored.current && !pendingNotification) {
       // A task open beside this chat is part of where you are, so a reload
       // or a copied link comes back to both.
       writeLocation(ws ? projectSlug(ws.name) : projectId, unavailableChat ?? conversationId,
@@ -1809,7 +1820,7 @@ export default function App() {
     // A store that will not take it is survivable here: the URL is still the
     // way back.
     if (conversationId) remember(LAST_KEY, conversationId);
-  }, [projectId, conversationId, workspaces, unavailableChat, beside]);
+  }, [projectId, conversationId, workspaces, unavailableChat, beside, pendingNotification]);
 
   const project = useMemo(
     () => workspaces.find((w) => w.id === projectId) ?? null,
@@ -2362,7 +2373,7 @@ export default function App() {
     setUnavailableChat(null);
     setNewChatError(null);
     setRecipientId(null);
-    awaited.current = null;
+    setPendingNotification(null);
     setProjectId(null);
     setConversationId(null);
     setBranch("");
@@ -2546,7 +2557,6 @@ export default function App() {
   const openConversation = useCallback((c: Conversation) => {
     setUnavailableChat(null);
     setNewChatError(null);
-    awaited.current = null;
     const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
     const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
     meta.current[c.id] = {
@@ -2598,7 +2608,10 @@ export default function App() {
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
       if (data?.type === "open-chat" && typeof data.conversationId === "string") {
-        onOpenChat.current(data.conversationId);
+        onOpenChat.current({
+          conversationId: data.conversationId,
+          projectId: typeof data.projectId === "string" && data.projectId ? data.projectId : null,
+        });
         // The worker writes the same tap down as well, for a page that is not
         // running to find later. This one WAS running, so take the copy out of
         // the way — otherwise coming back to the app in a few minutes' time
@@ -2619,8 +2632,8 @@ export default function App() {
   useEffect(() => {
     const pickUp = () => {
       if (document.hidden) return;
-      void push.takeTapped().then((id) => {
-        if (id) onOpenChat.current(id);
+      void push.takeTapped().then((target) => {
+        if (target) onOpenChat.current(target);
       });
     };
     pickUp();
@@ -2695,6 +2708,20 @@ export default function App() {
       opened.current = {};
       return;
     }
+    // A link has already supplied an exact chat id. Do not wait for the cached
+    // list to happen to contain it: the notification/link opener below checks
+    // the live server index when necessary. This is also the cold-launch route
+    // a notification builds.
+    if (linked) {
+      const target = {
+        conversationId: linked,
+        projectId: opened.current.project ?? null,
+      };
+      restored.current = true;
+      opened.current = {};
+      onOpenChat.current(target);
+      return;
+    }
     // Not here YET is not the same as gone: the server's list folds in a moment
     // after the cached one, so this waits rather than giving up.
     const found = conversations.find((c) => c.id === wanted);
@@ -2712,8 +2739,7 @@ export default function App() {
     // the worker built — so it gets the same treatment as a tap on a page that
     // was already running: the chat in front, not underneath the files view it
     // was left in. A reload restores what you left, view and all.
-    if (linked) onOpenChat.current(wanted);
-    else openConversation(found);
+    openConversation(found);
   }, [conversations, conversationId, openConversation, indexReady]);
 
   /** Remember whether a side column is open. Split out because two of them do
@@ -2850,25 +2876,52 @@ export default function App() {
   // Tapping a notification brings the window forward — this is what then puts
   // the chat it came from on screen, so the banner lands you on the thing it
   // was about rather than wherever you left off.
-  onOpenChat.current = (id) => {
-    const found = notifying.current.list.find((c) => c.id === id);
-    if (found) showConversation(found);
-    else if (indexReady) { awaited.current = null; setUnavailableChat(id); }
-    else awaited.current = id;
+  onOpenChat.current = (target) => {
+    setPendingNotification(target);
   };
 
-  // ...and this is that tap arriving before the list it needs. See `awaited`.
+  // Resolve notification taps from the rendered cache first, then the
+  // server-owned index. The sidebar deliberately filters worker chats, and a
+  // cold page can consume its mailbox before the ordinary list refresh lands;
+  // neither makes the target unavailable.
   useEffect(() => {
-    const id = awaited.current;
-    if (!id) return;
-    const found = conversations.find((c) => c.id === id);
-    if (!found) {
-      if (indexReady) { awaited.current = null; setUnavailableChat(id); }
+    const target = pendingNotification;
+    if (!target) return;
+    const loaded = conversations.find((conversation) => conversation.id === target.conversationId);
+    if (loaded) {
+      setPendingNotification(null);
+      showConversation(loaded);
       return;
     }
-    awaited.current = null;
-    showConversation(found);
-  }, [conversations, showConversation, indexReady]);
+    if (conn !== "open") return;
+
+    let current = true;
+    void resolveNotificationConversation(
+      target,
+      conversations,
+      () => bridge.invoke<IndexEntry[]>("chat_index_list"),
+    ).then((found) => {
+      if (!current) return;
+      setPendingNotification((pending) =>
+        pending?.conversationId === target.conversationId ? null : pending,
+      );
+      if (!found) {
+        setUnavailableChat(target.conversationId);
+        return;
+      }
+      if (!conversationsRef.current.some((conversation) => conversation.id === found.id)) {
+        const next = [found, ...conversationsRef.current];
+        conversationsRef.current = next;
+        setConversations(next);
+        saveConversations(next);
+      }
+      showConversation(found);
+    }).catch(() => {
+      // Keep the target pending. A reconnect or the normal index refresh can
+      // still resolve it; a transport failure is not proof the chat is gone.
+    });
+    return () => { current = false; };
+  }, [pendingNotification, conversations, conn, showConversation]);
 
   // Browser history and pasted hashes navigate the single workspace directly.
   useEffect(() => {
@@ -2880,7 +2933,7 @@ export default function App() {
         setBeside({ main: route.chat, task: route.beside });
         setBesideShows("task");
       }
-      if (route.chat) onOpenChat.current(route.chat);
+      if (route.chat) onOpenChat.current({ conversationId: route.chat, projectId: route.project ?? null });
       else if (route.project) {
         const project = notifying.current.projects.find(p => p.id === route.project || projectSlug(p.name) === projectSlug(route.project!));
         if (project) {

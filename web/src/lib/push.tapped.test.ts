@@ -48,15 +48,15 @@ afterEach(() => vi.unstubAllGlobals());
 describe("takeTapped", () => {
   beforeEach(() => vi.stubGlobal("caches", mailbox(tap(now))));
 
-  it("hands over the chat the banner was about", async () => {
-    expect(await takeTapped(now)).toBe("c1");
+  it("hands over the chat and project the banner was about", async () => {
+    expect(await takeTapped(now)).toEqual({ conversationId: "c1", projectId: "p1" });
   });
 
   it("hands it over once, however often the app comes back", async () => {
     // The message route and this one both fire for the same tap, and the app is
     // resumed over and over after that. A letter left in the box is a chat that
     // opens itself again every time you look at your phone.
-    expect(await takeTapped(now)).toBe("c1");
+    expect(await takeTapped(now)).toEqual({ conversationId: "c1", projectId: "p1" });
     expect(await takeTapped(now)).toBe(null);
   });
 
