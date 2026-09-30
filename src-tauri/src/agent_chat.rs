@@ -30,7 +30,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -2184,9 +2184,8 @@ pub(crate) fn start_session(
     .map_err(|e| format!("could not start {}: {e}", provider.bin()))?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     let capability = manager.grant_capability(&sessions, &session_key, &key, &launch_id);
-    let mut child = Command::new(&shell.program)
-        .args(&shell.args)
-        .arg(format!("exec {line}"))
+    let mut child = shell
+        .command(&format!("exec {line}"))
         .current_dir(&process_cwd)
         // The project's own environment, so a chat agent picks up the same
         // variables a terminal in this project would (e.g. `starfall`'s

@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -190,10 +190,8 @@ fn codex_shell() -> Result<crate::proc::AgentShell, String> {
 /// deadline. stdout and stderr together: `login status` prints to stderr.
 fn run_codex(line: &str) -> Option<String> {
     let shell = codex_shell().ok()?;
-    let mut cmd = Command::new(&shell.program);
-    cmd.args(&shell.args)
-        .arg(format!("{line} 2>&1"))
-        .stdin(Stdio::null())
+    let mut cmd = shell.command(&format!("{line} 2>&1"));
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     crate::proc::no_console(&mut cmd);
@@ -408,10 +406,8 @@ pub fn start(request: &AvatarRequest) -> Result<AvatarJob, String> {
             crate::agent_provider::sh_quote(&dir_text),
             crate::agent_provider::sh_quote(&prompt),
         );
-        let mut cmd = Command::new(&shell.program);
-        cmd.args(&shell.args)
-            .arg(line)
-            .current_dir(dir)
+        let mut cmd = shell.command(&line);
+        cmd.current_dir(dir)
             // Codex appends a piped stdin to its prompt and waits for EOF.
             .stdin(Stdio::null())
             .stdout(Stdio::null())

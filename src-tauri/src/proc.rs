@@ -30,6 +30,56 @@ pub struct AgentShell {
     pub args: Vec<String>,
 }
 
+/// The variable a command line travels in on Windows; see `AgentShell::delivery`.
+const LINE_ENV: &str = "OCTIQ_LAUNCH_LINE";
+
+/// Runs the line `LINE_ENV` carries. The variable is taken back out first, so
+/// the agent and everything it starts never inherit a copy of the line.
+const RUN_LINE_FROM_ENV: &str =
+    r#"octiq_line=$OCTIQ_LAUNCH_LINE; unset OCTIQ_LAUNCH_LINE; eval "$octiq_line""#;
+
+impl AgentShell {
+    /// How `line` is handed to this shell: the arguments, and the environment
+    /// variable that carries the line when the arguments cannot.
+    ///
+    /// Unix takes the line as the `-c` argument. Windows cannot: Git Bash is an
+    /// MSYS program, and when a native process starts one the MSYS runtime
+    /// parses the command line again. That cuts an argument that needed quoting
+    /// off at 8186 characters and halves every `\\` in it. A worker's system
+    /// prompt alone is longer than that, so every worker launch arrived without
+    /// its closing quote and died in bash before the agent started. The
+    /// environment is not parsed again, so there the line rides in a variable
+    /// and the argument is a fixed one-liner that runs it.
+    ///
+    /// What is left is Windows' own ceiling: the agent's command line, once
+    /// the shell has unquoted it, may not pass 32,767 characters.
+    fn delivery(
+        &self,
+        line: &str,
+        is_windows: bool,
+    ) -> (Vec<String>, Option<(&'static str, String)>) {
+        let mut args = self.args.clone();
+        if is_windows {
+            args.push(RUN_LINE_FROM_ENV.to_string());
+            (args, Some((LINE_ENV, line.to_string())))
+        } else {
+            args.push(line.to_string());
+            (args, None)
+        }
+    }
+
+    /// A command that runs `line`, a POSIX-quoted command line, in this shell.
+    pub fn command(&self, line: &str) -> Command {
+        let (args, env) = self.delivery(line, cfg!(windows));
+        let mut command = Command::new(&self.program);
+        command.args(args);
+        if let Some((name, value)) = env {
+            command.env(name, value);
+        }
+        command
+    }
+}
+
 /// Decide which POSIX shell launches an agent.
 ///
 /// Agents go through a shell because `agent_provider::build_command` returns a
@@ -181,6 +231,85 @@ mod tests {
     /// Nothing resolves — the "clean Windows machine" case.
     fn nothing(_: &str) -> Option<String> {
         None
+    }
+
+    fn bash() -> AgentShell {
+        AgentShell {
+            program: "bash".to_string(),
+            args: vec!["-lc".to_string()],
+        }
+    }
+
+    /// Text shaped like a worker's system prompt: past the 8186 characters Git
+    /// Bash keeps of one argument, with the quotes, backslashes and non-ASCII
+    /// text a prompt carries.
+    fn long_text() -> String {
+        "It's a \"prompt\" with $HOME, `ticks`, a back\\slash, a \\\\ pair, 中文.\n".repeat(200)
+    }
+
+    #[test]
+    fn unix_hands_the_line_over_as_the_command_argument() {
+        // What macOS has always done; nothing about Windows may alter it.
+        let (args, env) = bash().delivery("exec claude -p", false);
+        assert_eq!(args, vec!["-lc".to_string(), "exec claude -p".to_string()]);
+        assert_eq!(env, None);
+    }
+
+    #[test]
+    fn windows_keeps_the_line_out_of_the_arguments() {
+        let line = format!("exec claude --append-system-prompt '{}'", "x".repeat(9000));
+        let (args, env) = bash().delivery(&line, true);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "-lc");
+        assert!(
+            args[1].len() < 200 && !args[1].contains("claude"),
+            "the argument must not grow with the line: {} characters",
+            args[1].len()
+        );
+        let (name, value) = env.expect("the line travels in the environment");
+        assert!(args[1].contains(name), "the argument reads {name}");
+        assert!(value == line, "the variable carries the line untouched");
+    }
+
+    #[test]
+    fn a_line_longer_than_git_bash_keeps_of_an_argument_arrives_whole() {
+        // The real shell on this machine, because the fault is in how it is
+        // started: every worker launch on Windows died on a closing quote that
+        // had been cut off, while the same line ran fine on a Mac.
+        let shell = resolve_agent_shell(
+            std::env::var("SHELL").ok(),
+            std::env::var("LOCALAPPDATA").ok(),
+            cfg!(windows),
+            &find_executable,
+        )
+        .expect("a shell to launch agents through");
+        let text = long_text();
+        let line = format!("printf %s {}", crate::agent_provider::sh_quote(&text));
+        let output = shell.command(&line).output().expect("the shell starts");
+        let printed = String::from_utf8_lossy(&output.stdout);
+        // `ends_with`, not equality: a login shell may greet before it runs.
+        assert!(
+            printed.ends_with(&text),
+            "sent {} bytes, got {} back; stderr: {}",
+            text.len(),
+            printed.len(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn the_line_is_not_left_in_the_environment_of_what_it_starts() {
+        let shell = resolve_agent_shell(
+            std::env::var("SHELL").ok(),
+            std::env::var("LOCALAPPDATA").ok(),
+            cfg!(windows),
+            &find_executable,
+        )
+        .expect("a shell to launch agents through");
+        let output = shell.command("env").output().expect("the shell starts");
+        let printed = String::from_utf8_lossy(&output.stdout);
+        assert!(printed.contains("PATH="), "env printed nothing: {printed}");
+        assert!(!printed.contains(LINE_ENV), "leaked: {printed}");
     }
 
     #[test]
