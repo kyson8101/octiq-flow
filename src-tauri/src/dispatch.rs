@@ -502,7 +502,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let prompt = prompt
                 .map(|text| refresh_lead_turn(svc, &key, text))
                 .transpose()?;
-            unit(crate::agent_chat::chat_start_user_impl(
+            unit(crate::agent_chat::chat_start_answering_impl(
                 svc.chats.clone(),
                 key,
                 arg(&args, "cwd")?,
@@ -518,6 +518,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "images")?,
                 arg(&args, "lite")?,
                 Some(turn_id),
+                // An outage card's retry: its card stays up until this start
+                // has taken the turn (`safety_block::person_turn`).
+                arg(&args, "safetyBlock")?,
             ))
         }
         "chat_send" => {
@@ -539,7 +542,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 );
             }
             let text = refresh_lead_turn(svc, &key, words)?;
-            unit(crate::agent_chat::chat_send_user_impl(
+            unit(crate::agent_chat::chat_send_answering_impl(
                 svc.chats.clone(),
                 key,
                 text,
@@ -547,6 +550,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "to")?,
                 turn_id,
                 record_user,
+                arg(&args, "safetyBlock")?,
             ))
         }
         "chat_cancel_auto_resume" => to_value(crate::agent_chat::chat_cancel_auto_resume_impl(
@@ -814,16 +818,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let id: String = arg(&args, "id")?;
             Ok(json!(crate::safety_block::authorize_for_project(&id)?))
         }
-        // An outage card only (Claude's classifier gave no verdict). The page
-        // calls this once the retry turn is queued, and only then does the
-        // card come down, recorded as retried or as the allow it wrote.
+        // An outage card only (Claude's classifier gave no verdict): close it
+        // as retried or as the allow it wrote. The retry turn now names its
+        // card (`safetyBlock` on chat_send / chat_start) and the host closes
+        // it once that turn is taken; this stays for a page that predates it.
         "safety_block_retry" => Ok(json!(crate::safety_block::retry_outage(&arg::<String>(
             &args, "id"
         )?)?)),
         // "Always allow": the host derives the rule from the refused call and
         // writes it to the scope's own settings file. The page sends only the
         // card and the scope, never a rule or a path. The card stays up until
-        // `safety_block_retry` says the retry turn is queued.
+        // the retry turn that names it has been taken.
         "safety_block_allow_rule" => {
             let id: String = arg(&args, "id")?;
             let scope: crate::claude_allow::Scope = arg(&args, "scope")?;

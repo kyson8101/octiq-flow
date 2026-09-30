@@ -3217,11 +3217,13 @@ export default function App() {
   // Resolves true only once the chat has taken the turn (`chat_send` or
   // `chat_start` answered). A failure is still shown on the bubble; the
   // answer is for a caller that must not move on without the turn, such as
-  // an outage card's retry.
+  // an outage card's retry. That retry names its card (`safetyBlock`), and
+  // the host closes the card in the same call that takes the turn.
   const send = useCallback(
     async (
       text: string,
       attachments: Attachment[] = [],
+      { safetyBlock }: { safetyBlock?: string } = {},
     ): Promise<boolean> => {
       if (workerChat) return false;
       // Agents mode: the first message of a new conversation goes to the agent
@@ -3512,7 +3514,7 @@ export default function App() {
         // Already running: this is the next turn of a conversation in flight.
         if (!switchingModel && runningRef.current.has(id)) {
           try {
-            await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen });
+            await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen, safetyBlock });
             return true;
           } catch (err) {
             if (!String((err as Error).message ?? err).includes("no such chat")) {
@@ -3567,6 +3569,7 @@ export default function App() {
             handoff: handoff ?? null,
             turnId,
             seenPlans: seen,
+            safetyBlock,
             // Continuing an earlier conversation: the agent picks its own
             // context back up instead of being handed a transcript to read.
             resume,
@@ -3579,7 +3582,7 @@ export default function App() {
           // rather than reporting a collision as a failure.
           if (!switchingModel && String((err as Error).message ?? err).includes("already running")) {
             try {
-              await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen });
+              await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen, safetyBlock });
               return true;
             } catch (second) {
               fail(second);
@@ -4891,7 +4894,7 @@ export default function App() {
               onQuestionsAnswered={(ids) => setQuestions((prev) => ({
                 ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => !ids.includes(item.id)),
               }))}
-              onContinue={send}
+              onContinue={(message, options) => send(message, [], options)}
             />
           )}
 
@@ -4921,7 +4924,7 @@ export default function App() {
                 onPermissionAnswered={(requestId) => setAsks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
                 onSafetyAnswered={(requestId) => setSafetyBlocks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
                 onQuestionsAnswered={() => {}}
-                onContinue={(message) => send(`For your worker chat ${id}:\n\n${message}\n\nCoordinate any follow-up through the orchestration tools.`)} />
+                onContinue={(message, options) => send(`For your worker chat ${id}:\n\n${message}\n\nCoordinate any follow-up through the orchestration tools.`, [], options)} />
             </section>
           ))}
 

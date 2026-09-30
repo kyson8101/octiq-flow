@@ -207,21 +207,26 @@ try {
     localStorage.setItem("octiq.v2.gitColumn", "0");
   });
   const page = await context.newPage();
-  // Fault injection for the review finding on 5bf9f85: while `failNextSend` is
-  // set, the page's next `chat_send` is answered with an error instead of
-  // reaching the server — the connection dropping between the allow write
-  // and the retry turn. Every other frame passes through untouched.
+  // Fault injection for the review findings on 5bf9f85 and 2f71bc6: while
+  // `failNextSend` is set, the page's next `chat_send` still REACHES the
+  // server, but with an argument the host refuses after the call has arrived
+  // (`to`, which chat_send_with_user_turn rejects) — a send the host did not
+  // take. Before 2f71bc6's follow-up the host had already superseded the card
+  // by then. Every other frame passes through untouched; the page's own
+  // commands are counted.
   let failNextSend = false;
   const injected = [];
+  const pageCmds = [];
   await page.routeWebSocket(/\/ws/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       let frame;
       try { frame = JSON.parse(message); } catch { server.send(message); return; }
+      if (frame.t === "invoke") pageCmds.push({ cmd: frame.cmd, safetyBlock: frame.args?.safetyBlock });
       if (failNextSend && frame.t === "invoke" && frame.cmd === "chat_send") {
         failNextSend = false;
-        injected.push(frame.args?.text?.slice(0, 80));
-        socket.send(JSON.stringify({ t: "reply", id: frame.id, ok: false, error: "injected: the connection dropped" }));
+        injected.push({ text: frame.args?.text?.slice(0, 80), safetyBlock: frame.args?.safetyBlock });
+        server.send(JSON.stringify({ ...frame, args: { ...frame.args, to: "injected-refusal" } }));
         return;
       }
       server.send(message);
@@ -290,6 +295,7 @@ try {
     stillPending: (await invoke("safety_block_pending")).some((b) => b.id === pushCard.payload.id),
   };
   assert.equal(results.sendFailure.injected, 1, "the retry turn's send was the one that failed");
+  assert.equal(injected[0].safetyBlock, pushCard.payload.id, "the retry turn names its card");
   assert.match(results.sendFailure.error, /retry could not be sent/);
   assert.deepEqual(results.sendFailure.ruleWritten, ["Bash(git push:*)"]);
   assert.equal(results.sendFailure.pushRan, false, "no retry reached the agent");
@@ -322,6 +328,8 @@ try {
   await wait("card gone", async () => (await card.count()) === 0);
   const decided = events.filter((e) => e.event === "safety-block-expired" && e.payload.id === pushCard.payload.id);
   assert.equal(decided.length, 1);
+  results.project.decision = decided[0].payload.decision;
+  assert.equal(results.project.decision, "allowed_project", "recorded as the allow, not superseded");
   // A later push in the same live process runs by the rule, with no card.
   const cardsBefore = cards().length;
   await invoke("chat_send", { key, text: "PUSH", turnId: "user-3" });
@@ -341,6 +349,10 @@ try {
   results.user = { written: JSON.parse(fs.readFileSync(USER_SETTINGS, "utf8")), ran: ran() };
   assert.deepEqual(results.user.written, { permissions: { allow: ["mcp__claude_ai_Higgfield__media_upload"] } });
   assert.deepEqual(JSON.parse(fs.readFileSync(PROJECT_SETTINGS, "utf8")).permissions.allow, ["Bash(git push:*)"], "project file unchanged by user scope");
+  const expiredAs = (id) => wait(`decision for ${id}`, async () =>
+    events.find((e) => e.event === "safety-block-expired" && e.payload.id === id)?.payload.decision);
+  results.user.decision = await expiredAs(uploadCard.payload.id);
+  assert.equal(results.user.decision, "allowed_user");
 
   // 4. A piped line has no narrow rule: Retry once only, and the retry runs
   //    it once the (transient) outage has passed. Nothing is written.
@@ -359,6 +371,13 @@ try {
   results.retry.filesUnchanged = [PROJECT_SETTINGS, USER_SETTINGS].every((f, i) => fs.readFileSync(f, "utf8") === beforeFiles[i]);
   assert(results.retry.turn, "the retry turn reached the agent");
   assert.equal(results.retry.filesUnchanged, true, "Retry once writes nothing");
+  results.retry.decision = await expiredAs(countCard.payload.id);
+  assert.equal(results.retry.decision, "retried");
+  // The page closes no card itself: each retry turn named its card, and the
+  // host closed it in the call that took the turn.
+  results.retryTurnsNamed = pageCmds.filter((c) => c.safetyBlock).map((c) => c.cmd);
+  assert.equal(pageCmds.filter((c) => c.cmd === "safety_block_retry").length, 0);
+  assert.equal(results.retryTurnsNamed.length, 4, "failed push retry, push retry, upload retry, count retry");
 
   // 5. Only clicks wrote anything: three allow/retry calls, one rule each.
   results.stubLaunches = stub().filter((e) => e.argv).length;

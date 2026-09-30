@@ -1573,25 +1573,55 @@ pub fn chat_start_user_impl(
     lite: Option<bool>,
     turn_id: Option<String>,
 ) -> Result<(), String> {
-    cancel_auto_resume(&manager, &key, "superseded by a user message")?;
-    crate::safety_block::forget_chat(&key);
-    chat_start_with_user_turn(
-        manager,
-        key,
-        cwd,
-        agent,
-        model,
-        access,
-        prompt,
-        handoff,
-        resume,
-        extra_dirs,
-        env,
-        effort,
-        images,
-        lite,
-        Some(fresh_turn_id(turn_id)),
+    chat_start_answering_impl(
+        manager, key, cwd, agent, model, access, prompt, handoff, resume, extra_dirs, env, effort,
+        images, lite, turn_id, None,
     )
+}
+
+/// `chat_start_user_impl` for a turn that may be an outage card's retry
+/// (`answering`): the card stays up until the chat has started with the
+/// turn — see `safety_block::person_turn`.
+#[allow(clippy::too_many_arguments)]
+pub fn chat_start_answering_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    cwd: String,
+    agent: ChatAgent,
+    model: Option<String>,
+    access: Option<Access>,
+    prompt: Option<String>,
+    handoff: Option<String>,
+    resume: Option<String>,
+    extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+    lite: Option<bool>,
+    turn_id: Option<String>,
+    answering: Option<String>,
+) -> Result<(), String> {
+    cancel_auto_resume(&manager, &key, "superseded by a user message")?;
+    let chat = key.clone();
+    crate::safety_block::person_turn(&chat, answering.as_deref(), || {
+        chat_start_with_user_turn(
+            manager,
+            key,
+            cwd,
+            agent,
+            model,
+            access,
+            prompt,
+            handoff,
+            resume,
+            extra_dirs,
+            env,
+            effort,
+            images,
+            lite,
+            Some(fresh_turn_id(turn_id)),
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3164,13 +3194,33 @@ pub fn chat_send_user_impl(
     turn_id: Option<String>,
     record_user: Option<bool>,
 ) -> Result<(), String> {
+    chat_send_answering_impl(manager, key, text, images, to, turn_id, record_user, None)
+}
+
+/// `chat_send_user_impl` for a turn that may be an outage card's retry
+/// (`answering`).
+#[allow(clippy::too_many_arguments)]
+pub fn chat_send_answering_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    text: String,
+    images: Option<Vec<String>>,
+    to: Option<String>,
+    turn_id: Option<String>,
+    record_user: Option<bool>,
+    answering: Option<String>,
+) -> Result<(), String> {
     cancel_auto_resume(&manager, &key, "superseded by a user message")?;
     // A safety block is a choice about the NEXT user turn, not a tool call
-    // OctiqFlow can resume. Any words the person sends supersede that card —
-    // including the two explicit continuations the card itself offers.
-    crate::safety_block::forget_chat(&key);
+    // OctiqFlow can resume. Any words the person sends supersede that card.
+    // The one exception is the turn an outage card itself sends as its retry
+    // (`answering`): that card is decided by the turn, and only once the
+    // chat has taken it (`safety_block::person_turn`).
     let user_turn_id = (record_user != Some(false)).then(|| fresh_turn_id(turn_id));
-    chat_send_with_user_turn(manager, key, text, images, to, user_turn_id)
+    let chat = key.clone();
+    crate::safety_block::person_turn(&chat, answering.as_deref(), || {
+        chat_send_with_user_turn(manager, key, text, images, to, user_turn_id)
+    })
 }
 
 /// Deliver a host-owned continuation without pretending that the person typed
@@ -6717,6 +6767,237 @@ mod tests {
 
         end_process(&manager, &key).expect("end the stand-in");
         crate::transcript::forget(&key);
+    }
+
+    /// An outage card in `key`'s chat, launched from a scratch project, with
+    /// its "Always allow in this project" rule already written.
+    fn allowed_outage_card(key: &str) -> (String, std::path::PathBuf) {
+        let project =
+            std::env::temp_dir().join(format!("octiq-outage-send-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&project).unwrap();
+        crate::safety_block::remember_claude_launch(
+            key,
+            true,
+            project.to_str().unwrap(),
+            false,
+            None,
+        );
+        let denial = serde_json::json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "Classifier unavailable", "decision_reason_type": "classifier",
+            "message": "The server-side auto mode classifier gave no verdict (error), so auto mode cannot determine the safety of Bash. You may try the action again once, as-is.",
+            "tool_name": "Bash", "tool_use_id": format!("toolu-{}", uuid::Uuid::new_v4().simple()),
+        });
+        assert!(crate::safety_block::observe_claude_denial(
+            key,
+            None,
+            &denial,
+            Some((
+                "Bash",
+                &serde_json::json!({ "command": "git push origin main" })
+            ))
+        ));
+        let card = cards_in(key).pop().expect("the outage card");
+        crate::safety_block::allow_outage(card.id(), crate::claude_allow::Scope::Project)
+            .expect("the allow rule is written");
+        (card.id().to_string(), project)
+    }
+
+    fn cards_in(key: &str) -> Vec<crate::safety_block::BlockedAction> {
+        crate::safety_block::pending()
+            .into_iter()
+            .filter(|card| card.chat_key() == key)
+            .collect()
+    }
+
+    fn is_pending(id: &str) -> bool {
+        crate::safety_block::pending()
+            .iter()
+            .any(|card| card.id() == id)
+    }
+
+    /// A card that is not an outage card, beside the outage card in `key`.
+    fn judged_card(key: &str) -> String {
+        let before: Vec<String> = cards_in(key).iter().map(|c| c.id().to_string()).collect();
+        let denial = serde_json::json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "Production Deploy", "decision_reason_type": "classifier",
+            "message": "Blocked.", "tool_name": "Bash",
+            "tool_use_id": format!("toolu-{}", uuid::Uuid::new_v4().simple()),
+        });
+        assert!(crate::safety_block::observe_claude_denial(
+            key,
+            None,
+            &denial,
+            Some(("Bash", &serde_json::json!({ "command": "./deploy.sh" })))
+        ));
+        cards_in(key)
+            .into_iter()
+            .map(|c| c.id().to_string())
+            .find(|id| !before.contains(id))
+            .expect("the judged card")
+    }
+
+    /// Review finding (2f71bc6): both person-send entry points superseded the
+    /// chat's cards BEFORE the turn was accepted, so a start, write or queue
+    /// that failed after the RPC reached the host still took the outage card
+    /// down, recorded "superseded", and left the agent never asked to retry.
+    /// The retry turn names its card now, and nothing moves until the turn
+    /// is taken.
+    #[test]
+    fn an_outage_retry_the_chat_does_not_take_leaves_its_card_pending() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("chat:outage-fail-{}", uuid::Uuid::new_v4().simple());
+        let (card, project) = allowed_outage_card(&key);
+        let beside = judged_card(&key);
+
+        // chat_send to a chat with no process.
+        let sent = chat_send_answering_impl(
+            manager.clone(),
+            key.clone(),
+            "Retry `git push origin main` once, as-is.".into(),
+            None,
+            None,
+            Some("user-retry-1".into()),
+            None,
+            Some(card.clone()),
+        );
+        assert_eq!(sent, Err("no such chat".into()));
+        assert!(is_pending(&card), "the card stays up");
+        assert_eq!(crate::safety_block::decision(&card), None);
+        assert!(is_pending(&beside), "nothing else is superseded either");
+        let written = cards_in(&key)
+            .into_iter()
+            .find(|c| c.id() == card)
+            .map(|c| serde_json::to_value(c).unwrap()["written"].clone());
+        assert_eq!(written, Some(serde_json::json!("project")));
+
+        // chat_start that cannot start: the key already has a process.
+        hold(&manager, &key, claude_session(false));
+        let started = chat_start_answering_impl(
+            manager.clone(),
+            key.clone(),
+            project.to_string_lossy().into_owned(),
+            ChatAgent::Claude,
+            None,
+            None,
+            Some("Retry `git push origin main` once, as-is.".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("user-retry-2".into()),
+            Some(card.clone()),
+        );
+        assert!(started.unwrap_err().contains("already running"));
+        assert!(is_pending(&card), "the card stays up");
+        assert_eq!(crate::safety_block::decision(&card), None);
+        assert!(is_pending(&beside));
+
+        // chat_send that the host refuses after the RPC arrived.
+        let refused = chat_send_answering_impl(
+            manager.clone(),
+            key.clone(),
+            "Retry `git push origin main` once, as-is.".into(),
+            None,
+            Some("someone-else".into()),
+            Some("user-retry-3".into()),
+            None,
+            Some(card.clone()),
+        );
+        assert!(refused.is_err());
+        assert!(is_pending(&card));
+        assert_eq!(crate::safety_block::decision(&card), None);
+
+        // Ordinary words are unchanged: they supersede every card at once,
+        // taken or not — an outage card included.
+        let ordinary = chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "never mind, do something else".into(),
+            None,
+            Some("someone-else".into()),
+            Some("user-4".into()),
+            None,
+        );
+        assert!(ordinary.is_err());
+        assert!(!is_pending(&card) && !is_pending(&beside));
+        assert_eq!(crate::safety_block::decision(&card), Some("superseded"));
+        assert_eq!(crate::safety_block::decision(&beside), Some("superseded"));
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+        std::fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn an_outage_retry_the_chat_takes_is_recorded_as_its_own_decision() {
+        // An "Always allow in this project" whose retry is written straight to
+        // an idle Claude: recorded as that allow, not "superseded". The judged
+        // card beside it was up before the turn, so the turn supersedes it.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("chat:outage-ok-{}", uuid::Uuid::new_v4().simple());
+        let (card, project) = allowed_outage_card(&key);
+        let beside = judged_card(&key);
+        hold(&manager, &key, claude_session(false));
+        chat_send_answering_impl(
+            manager.clone(),
+            key.clone(),
+            "Retry `git push origin main` once, as-is.".into(),
+            None,
+            None,
+            Some("user-retry-1".into()),
+            None,
+            Some(card.clone()),
+        )
+        .expect("the retry turn is taken");
+        assert!(!is_pending(&card));
+        assert_eq!(
+            crate::safety_block::decision(&card),
+            Some("allowed_project")
+        );
+        assert_eq!(crate::safety_block::decision(&beside), Some("superseded"));
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+        std::fs::remove_dir_all(project).unwrap();
+
+        // "Retry once" into a working Claude: queued is taken, and it is
+        // recorded as retried. A worker's card is answered through the main
+        // chat, so the card may belong to another chat than the send.
+        let main = format!("chat:outage-main-{}", uuid::Uuid::new_v4().simple());
+        let worker = format!("chat:outage-worker-{}", uuid::Uuid::new_v4().simple());
+        crate::safety_block::remember_claude_launch(&worker, true, "/tmp", false, None);
+        let denial = serde_json::json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "Classifier unavailable", "decision_reason_type": "classifier",
+            "message": "gave no verdict", "tool_name": "Bash", "tool_use_id": "toolu-w",
+        });
+        assert!(crate::safety_block::observe_claude_denial(
+            &worker,
+            None,
+            &denial,
+            Some(("Bash", &serde_json::json!({ "command": "ls | wc -l" })))
+        ));
+        let retried = cards_in(&worker).pop().unwrap().id().to_string();
+        hold(&manager, &main, claude_session(true));
+        chat_send_answering_impl(
+            manager.clone(),
+            main.clone(),
+            "For your worker chat: retry `ls | wc -l` once.".into(),
+            None,
+            None,
+            Some("user-retry-2".into()),
+            None,
+            Some(retried.clone()),
+        )
+        .expect("queued behind the running turn");
+        assert!(!is_pending(&retried));
+        assert_eq!(crate::safety_block::decision(&retried), Some("retried"));
+        end_process(&manager, &main).expect("end the stand-in");
+        crate::transcript::forget(&main);
     }
 
     #[test]

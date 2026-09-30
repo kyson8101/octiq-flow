@@ -59,9 +59,9 @@ pub struct BlockedAction {
     #[serde(skip_serializing_if = "Option::is_none")]
     allow: Option<AllowTargets>,
     /// An outage card only: the scope an "Always allow" has already written
-    /// while the retry turn is not yet queued. The card stays up until the
-    /// page reports the turn queued (`retry_outage`), so a send that fails in
-    /// between leaves it to be sent again rather than lost.
+    /// while the retry turn is not yet queued. The card stays up until a chat
+    /// has taken the retry turn that names it (`person_turn`), so a send that
+    /// fails in between leaves it to be sent again rather than lost.
     #[serde(skip_serializing_if = "Option::is_none")]
     written: Option<crate::claude_allow::Scope>,
 }
@@ -114,6 +114,10 @@ struct Refusal {
 
 #[cfg(test)]
 impl BlockedAction {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
     pub fn chat_key(&self) -> &str {
         &self.chat_key
     }
@@ -529,12 +533,13 @@ pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<Allow
     })
 }
 
-/// The retry turn is queued: take the card down as decided. The page calls
-/// this only AFTER the chat took the turn that asks for the one as-is retry
-/// Claude's own message allows — "Retry once" straight away, an "Always
-/// allow" once its rule is written — so a send that fails first leaves the
-/// card pending and the decision unrecorded. A card whose rule was written
-/// is recorded as that allow, any other as retried.
+/// The retry turn is queued: take the card down as decided. `person_turn`
+/// calls this only AFTER the chat took the turn that asks for the one as-is
+/// retry Claude's own message allows — "Retry once" straight away, an
+/// "Always allow" once its rule is written — so a send that fails first
+/// leaves the card pending and the decision unrecorded. A card whose rule was
+/// written is recorded as that allow, any other as retried. The page from
+/// 2f71bc6 called it itself after the send; it stays a command for that page.
 pub fn retry_outage(id: &str) -> Result<bool, String> {
     let block = pending_outage(id)?;
     let decision = block.written.map_or("retried", |scope| scope.decision());
@@ -723,7 +728,10 @@ fn dismiss_as(id: &str, decision: &'static str) -> bool {
     let removed = with_pending(|pending| pending.remove(id).is_some());
     if removed {
         record_decision(id, decision);
-        crate::bus::emit("safety-block-expired", serde_json::json!({ "id": id }));
+        crate::bus::emit(
+            "safety-block-expired",
+            serde_json::json!({ "id": id, "decision": decision }),
+        );
     }
     removed
 }
@@ -1002,11 +1010,54 @@ pub fn forget_chat(chat_key: &str) {
     });
     for id in removed {
         record_decision(&id, "superseded");
-        crate::bus::emit("safety-block-expired", serde_json::json!({ "id": id }));
+        crate::bus::emit(
+            "safety-block-expired",
+            serde_json::json!({ "id": id, "decision": "superseded" }),
+        );
     }
     with_drafts(|drafts| {
         drafts.remove(chat_key);
     });
+}
+
+/// Offer a turn the person sent to a chat (`send`), superseding that chat's
+/// unanswered cards as `forget_chat` does.
+///
+/// `answering` names the outage card this turn is the retry for. Then
+/// nothing is superseded until the chat has TAKEN the turn: a send that
+/// fails — no process, a refused workspace, a start that never happens —
+/// leaves every card up and undecided, to be answered again. Once it is
+/// taken, the card is closed as its own decision (`retry_outage`: retried,
+/// or the allow it wrote), and only the cards that were already up beside
+/// it are superseded; one the new turn raised in the meantime stays. Any
+/// other turn, or one naming a card that is no longer a pending outage card,
+/// supersedes first, exactly as before.
+pub fn person_turn<T>(
+    chat_key: &str,
+    answering: Option<&str>,
+    send: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let Some(card) = answering.filter(|id| pending_outage(id).is_ok()) else {
+        forget_chat(chat_key);
+        return send();
+    };
+    let beside: Vec<String> = with_pending(|pending| {
+        pending
+            .values()
+            .filter(|block| block.chat_key == chat_key && block.id != card)
+            .map(|block| block.id.clone())
+            .collect()
+    });
+    let taken = send()?;
+    // Another tab may have closed it since; the turn is taken either way.
+    let _ = retry_outage(card);
+    for id in beside {
+        dismiss_as(&id, "superseded");
+    }
+    with_drafts(|drafts| {
+        drafts.remove(chat_key);
+    });
+    Ok(taken)
 }
 
 /// Inspect one diagnostics-only line and announce the narrow class that needs

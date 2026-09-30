@@ -277,24 +277,32 @@ describe("SafetyBlock", () => {
         const calls: [string, Record<string, unknown>][] = [];
         const answered: string[] = [];
         const sent: string[] = [];
+        const naming: (string | undefined)[] = [];
         const order: string[] = [];
         return {
-          calls, answered, sent, order,
+          calls, answered, sent, naming, order,
           io: {
             invoke: async <T,>(cmd: string, args: Record<string, unknown>) => {
               calls.push([cmd, args]); order.push(cmd); return reply as T;
             },
             onAnswered: (id: string) => { answered.push(id); order.push("answered"); },
-            onContinue: async (message: string) => { sent.push(message); order.push("send"); return taken; },
+            onContinue: async (message: string, options?: { safetyBlock?: string }) => {
+              sent.push(message); naming.push(options?.safetyBlock); order.push("send"); return taken;
+            },
           },
         };
       };
 
-      it("Retry once asks for the same calls, as-is, and closes the card only once that turn is taken", async () => {
+      // Review finding (2f71bc6): the host superseded the card on ANY send,
+      // before the turn was taken. The retry turn now names its card, and the
+      // host closes it in the call that takes the turn; the page makes no
+      // second call that could race it or record it as superseded.
+      it("Retry once asks for the same calls, as-is, in a turn that names the card", async () => {
         const t = io(true);
         await answerOutage("retry", allowable, t.io);
-        expect(t.calls).toEqual([["safety_block_retry", { id: "outage-2" }]]);
-        expect(t.order).toEqual(["send", "safety_block_retry", "answered"]);
+        expect(t.calls).toEqual([]);
+        expect(t.naming).toEqual(["outage-2"]);
+        expect(t.order).toEqual(["send", "answered"]);
         expect(t.answered).toEqual(["outage-2"]);
         expect(t.sent).toHaveLength(1);
         expect(t.sent[0]).toBe(outageRetryReply(["git push origin main", "ls | wc -l"]));
@@ -307,11 +315,9 @@ describe("SafetyBlock", () => {
         const path = scope === "project" ? "/work/repo/.claude/settings.local.json" : "/Users/me/.claude/settings.json";
         const t = io({ rules: ["Bash(git push:*)"], path, added: ["Bash(git push:*)"], present: [], uncovered: ["ls | wc -l"] });
         await answerOutage(scope, allowable, t.io);
-        expect(t.calls).toEqual([
-          ["safety_block_allow_rule", { id: "outage-2", scope }],
-          ["safety_block_retry", { id: "outage-2" }],
-        ]);
-        expect(t.order).toEqual(["safety_block_allow_rule", "send", "safety_block_retry", "answered"]);
+        expect(t.calls).toEqual([["safety_block_allow_rule", { id: "outage-2", scope }]]);
+        expect(t.order).toEqual(["safety_block_allow_rule", "send", "answered"]);
+        expect(t.naming).toEqual(["outage-2"]);
         expect(t.answered).toEqual(["outage-2"]);
         expect(t.sent[0]).toContain(`I added the Claude permission allow rule \`Bash(git push:*)\` to ${path}.`);
         expect(t.sent[0]).toContain("No rule covers `ls | wc -l`");
@@ -339,30 +345,18 @@ describe("SafetyBlock", () => {
         const refused = io(allowed, false);
         await expect(answerOutage(choice, allowable, refused.io)).rejects.toThrow(RETRY_NOT_SENT);
         expect(refused.answered).toEqual([]);
-        expect(refused.calls.map(([cmd]) => cmd)).not.toContain("safety_block_retry");
         expect(refused.sent).toHaveLength(1);
 
         const thrown = io(allowed);
         thrown.io.onContinue = async () => { throw new Error("socket closed"); };
         await expect(answerOutage(choice, allowable, thrown.io)).rejects.toThrow("socket closed");
         expect(thrown.answered).toEqual([]);
-        expect(thrown.calls.map(([cmd]) => cmd)).not.toContain("safety_block_retry");
 
         // Answered again, the send goes through: now, and only now, it closes.
         const again = io(allowed);
         await answerOutage(choice, allowable, again.io);
-        expect(again.order.slice(-3)).toEqual(["send", "safety_block_retry", "answered"]);
-      });
-
-      it("a card that could not be closed on the host still goes once its retry is queued", async () => {
-        const t = io(true);
-        t.io.invoke = async <T,>(cmd: string) => {
-          t.order.push(cmd);
-          if (cmd === "safety_block_retry") throw new Error("This card is no longer pending.");
-          return true as T;
-        };
-        await answerOutage("retry", allowable, t.io);
-        expect(t.order).toEqual(["send", "safety_block_retry", "answered"]);
+        expect(again.order.slice(-2)).toEqual(["send", "answered"]);
+        expect(again.naming).toEqual(["outage-2"]);
       });
 
       it("says when an allow rule is written but its retry was not sent", () => {

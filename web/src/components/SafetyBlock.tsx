@@ -100,8 +100,13 @@ export function outageRules(commands: OutageCommand[]): string[] {
 export type OutageChoice = "retry" | AllowScope | "dismiss";
 
 /** What a page's send answers: `false` when the chat did not take the turn.
- * Anything else (a send that answers nothing) counts as taken. */
-export type Continue = (message: string) => Promise<boolean | void> | boolean | void;
+ * Anything else (a send that answers nothing) counts as taken.
+ * `safetyBlock` names the outage card the turn is the retry for; the send
+ * carries it, and the host closes that card only once the turn is taken. */
+export type Continue = (
+  message: string,
+  options?: { safetyBlock?: string },
+) => Promise<boolean | void> | boolean | void;
 
 /** Said when the retry turn could not be queued; the card stays up. */
 export const RETRY_NOT_SENT = "The retry could not be sent to the agent, so this card stays open. Try again.";
@@ -113,11 +118,11 @@ export const RETRY_NOT_SENT = "The retry could not be sent to the agent, so this
  * path — and sends the retry turn only once that write has succeeded; a
  * refused write leaves the card up and sends nothing.
  *
- * The card comes down (`safety_block_retry`, then `onAnswered`) only AFTER
- * the chat has taken the retry turn. A send that fails leaves the card up,
- * undecided, to be answered again: an allow already written is then only
- * `present`, never added twice, and the host records the card as that allow
- * once the retry does go.
+ * The retry turn names its card (`safetyBlock`), and the host closes the
+ * card — recorded as retried or as the allow it wrote — in the same call
+ * that takes the turn, never before. A send that fails, here or on the
+ * host, leaves the card up and undecided, to be answered again: an allow
+ * already written is then only `present`, never added twice.
  */
 export async function answerOutage(
   choice: OutageChoice,
@@ -141,13 +146,9 @@ export async function answerOutage(
       await io.invoke<AllowedOutage>("safety_block_allow_rule", { id: block.id, scope: choice }),
       actions,
     );
-  const taken = await io.onContinue(message);
+  const taken = await io.onContinue(message, { safetyBlock: block.id });
   if (taken === false) throw new Error(RETRY_NOT_SENT);
-  // The turn is queued. Closing the card is bookkeeping from here: if the
-  // host cannot be told (another tab already closed it, or the socket
-  // dropped), the card still goes from this page rather than offer a second
-  // retry of a call that is already being retried.
-  await io.invoke("safety_block_retry", { id: block.id }).catch(() => undefined);
+  // Taken, and the host has closed the card with it.
   io.onAnswered(block.id);
 }
 
