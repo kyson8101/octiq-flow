@@ -109,7 +109,9 @@ fn a_read_only_workers_closing_words_are_held_only_after_its_turn_ends_unreporte
     );
 
     // An idle worker holding a proposal is neither stalled nor lost.
-    store.worker_disconnected(&attempt.worker_chat_key).unwrap();
+    store
+        .worker_disconnected(&attempt.worker_chat_key, None)
+        .unwrap();
     store.monitor_workers(now_ms() + 86_400_000).unwrap();
     let after = current(&store, &run, &attempt);
     assert_eq!(after.status, AttemptStatus::Running);

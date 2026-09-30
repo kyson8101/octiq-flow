@@ -1368,6 +1368,49 @@ mod tests {
         assert!(claude.contains(tail.trim()), "{claude}");
     }
 
+    /// Feedback 2adec4d5: on Windows no Claude worker ever started. The
+    /// worker's line is longer than Git Bash keeps of one argument, so it was
+    /// cut off inside the system prompt. This is the real line through the
+    /// real shell, with `printf` standing in for `claude`.
+    #[test]
+    fn a_worker_launch_line_reaches_the_agent_whole() {
+        let line = provider_for(AgentKind::Claude).build_command(&AgentCommand {
+            model: None,
+            access: Some(Access::Auto),
+            prompt: "work",
+            resume: None,
+            extra_dirs: &[],
+            effort: None,
+            images: &[],
+            lite: false,
+            mcp_config: Some(Path::new("octiq-ask.json")),
+            persistent_authorizations: None,
+            orchestration_worker: true,
+        });
+        let shell = crate::proc::resolve_agent_shell(
+            std::env::var("SHELL").ok(),
+            std::env::var("LOCALAPPDATA").ok(),
+            cfg!(windows),
+            &crate::proc::find_executable,
+        )
+        .expect("a shell to launch agents through");
+        let output = shell
+            .command(&line.replacen("claude", "printf '%s\\n'", 1))
+            .output()
+            .expect("the shell starts");
+        let printed = String::from_utf8_lossy(&output.stdout);
+        // The system prompt is the last argument, and the outage guidance its
+        // last words: the first thing lost when the line is cut short.
+        assert!(
+            printed
+                .trim_end()
+                .ends_with(crate::safety_block::outage_guidance().trim_end()),
+            "a {} character line did not arrive whole; stderr: {}",
+            line.len(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// A Claude launch allows OctiqFlow's own tools and nothing else, at
     /// every access level, worker or not. An allow rule for a shell line
     /// would outlive any "once": it covers every matching call the process

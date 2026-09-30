@@ -389,6 +389,15 @@ worker owns the write lease; it must not also edit that checkout.
   `is_windows` as a PARAMETER over `#[cfg(windows)]` wherever the logic can be
   pure — this is developed on macOS, so a `#[cfg]` branch is a branch nobody
   here can run a test against.
+- **Hand a command line to the agent shell with `AgentShell::command`, never
+  as a raw `-lc` argument.** Git Bash is an MSYS program: started by a native
+  Windows process, it gets its arguments parsed a second time, which cuts one
+  that needed quoting off at 8186 characters and halves every `\\` in it. A
+  worker's system prompt is longer than that, so every worker launch on Windows
+  died in bash on a missing closing quote while the same line ran on a Mac.
+  `command` carries the line in an environment variable on Windows instead.
+  The ceiling that remains is Windows' own 32,767 characters for the agent's
+  command line, so a prompt that keeps growing belongs in a file.
 - **The `src-tauri/` folder name is historical.** There is no Tauri in it. It
   was left alone so paths, the service plist and muscle memory keep working;
   renaming it is a separate job.
