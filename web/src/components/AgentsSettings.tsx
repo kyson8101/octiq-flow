@@ -1,6 +1,7 @@
 // Settings → Agents: the switch for agents mode, and the person's registered
 // agents — each a name, a role, and the provider/model/effort/access it runs
-// on, either global or belonging to one project.
+// on, either global or belonging to one project — and the peer-help teams they
+// sit on, which group agents sideways and never change the org chart.
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import "./AgentsSettings.css";
 import {
@@ -8,10 +9,11 @@ import {
   type AccessLevel, type Effort, type Provider,
 } from "../lib/agentProviders";
 import {
-  deleteTeamAgent, leadOnly, loadHead, loadHome, loadTeam, saveHead, saveHome, saveTeamAgent, teamModels,
-  type TeamAgent, type TeamDraft,
+  deleteAgentTeam, deleteTeamAgent, joinableTeams, leadOnly, loadAgentTeams, loadHead, loadHome, loadTeam,
+  saveAgentTeam, saveHead, saveHome, saveTeamAgent, teamModels,
+  type AgentTeam, type AgentTeamDraft, type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
-import { orgChart } from "../lib/agentsDashboard";
+import { orgChart, teamBadge } from "../lib/agentsDashboard";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentAvatarEditor } from "./AgentAvatarEditor";
 import { AgentRole, rolePreview } from "./AgentRole";
@@ -21,7 +23,7 @@ type ProjectRef = { id: string; name: string };
 const PROVIDERS: Provider[] = ["claude", "codex"];
 
 function blank(projectId: string | null): TeamDraft {
-  return { name: "", role: "", agent: "claude", model: "sonnet", effort: "medium", access: "auto", projectId, reportsTo: null };
+  return { name: "", role: "", agent: "claude", model: "sonnet", effort: "medium", access: "auto", projectId, reportsTo: null, teamId: null };
 }
 
 export function AgentsSettings({ on, onToggle, projects }: {
@@ -36,15 +38,19 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const [saving, setSaving] = useState(false);
   const [headId, setHeadId] = useState<string | null>(null);
   const [homeId, setHomeId] = useState<string | null>(null);
+  const [teams, setTeams] = useState<AgentTeam[]>([]);
+  const [teamDraft, setTeamDraft] = useState<AgentTeamDraft | null>(null);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([loadTeam(null, true), loadHead(), loadHome().catch(() => null)])
-      .then(([agents, head, home]) => {
+    // An older backend has no teams: the section just shows none.
+    Promise.all([loadTeam(null, true), loadHead(), loadHome().catch(() => null), loadAgentTeams().catch(() => [])])
+      .then(([agents, head, home, groups]) => {
         if (!alive) return;
         setTeam(agents);
         setHeadId(head?.id ?? null);
         setHomeId(home);
+        setTeams(groups);
       })
       .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); })
       .finally(() => { if (alive) setLoading(false); });
@@ -98,6 +104,32 @@ export function AgentsSettings({ on, onToggle, projects }: {
     }
   };
 
+  const saveTeam = async () => {
+    if (!teamDraft) return;
+    setError("");
+    try {
+      await saveAgentTeam(teamDraft);
+      setTeams(await loadAgentTeams());
+      setTeamDraft(null);
+    } catch (reason) {
+      setError(String((reason as Error).message ?? reason));
+    }
+  };
+
+  const removeTeam = async (group: AgentTeam) => {
+    setError("");
+    try {
+      await deleteAgentTeam(group.id);
+      // Its members stay registered, on no team.
+      setTeams(await loadAgentTeams());
+      setTeam(await loadTeam(null, true));
+      if (teamDraft?.id === group.id) setTeamDraft(null);
+      if (draft?.teamId === group.id) setDraft({ ...draft, teamId: null });
+    } catch (reason) {
+      setError(String((reason as Error).message ?? reason));
+    }
+  };
+
   const remove = async (agent: TeamAgent) => {
     setError("");
     try {
@@ -112,7 +144,9 @@ export function AgentsSettings({ on, onToggle, projects }: {
     }
   };
 
-  const row = ({ agent, depth }: { agent: TeamAgent; depth: number }) => (
+  const row = ({ agent, depth }: { agent: TeamAgent; depth: number }) => {
+    const badge = teamBadge(agent, teams);
+    return (
     <li className="team-row" key={agent.id} style={{ "--team-depth": depth } as React.CSSProperties}>
       <div className="team-row-head">
         {depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
@@ -121,6 +155,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
           <span className="team-row-name">
             <bdi>{agent.name}</bdi>
             {leadOnly(agent) && <span className="team-tag" title="Fable and Astra can lead a task but cannot take one">lead only</span>}
+            {badge && <span className="team-tag team-badge" title={`On the team ${badge.name}: may ask its teammates for help`}><bdi>{badge.name}</bdi></span>}
           </span>
           <span className="team-row-meta">
             {AGENT_NAME[agent.agent]} {modelLabel(agent)}{agent.effort ? ` · ${agent.effort}` : ""}
@@ -129,7 +164,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
         </span>
         <span className="team-row-actions">
           <button className="vault-button team-row-action" type="button" aria-label={`Edit ${agent.name}`} title="Edit"
-            onClick={() => setDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null })}>
+            onClick={() => setDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null, teamId: agent.teamId ?? null })}>
             <EditIcon /><span className="team-row-action-text">Edit</span>
           </button>
           <button className="vault-button team-row-action" type="button" aria-label={`Remove ${agent.name}`} title="Remove"
@@ -140,7 +175,8 @@ export function AgentsSettings({ on, onToggle, projects }: {
       </div>
       {agent.role && <AgentRole className="team-row-role" text={agent.role} name={agent.name} />}
     </li>
-  );
+    );
+  };
 
   return (
     <section className="settings-section team-settings" aria-labelledby="settings-agents-title">
@@ -219,6 +255,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
         <TeamForm
           draft={draft}
           team={team}
+          teams={teams}
           projects={projects}
           saving={saving}
           onChange={setDraft}
@@ -240,6 +277,17 @@ export function AgentsSettings({ on, onToggle, projects }: {
           <ul className="team-list">{chart.map(row)}</ul>
         </div>
       )}
+
+      <TeamsBlock
+        teams={teams}
+        agents={team}
+        draft={teamDraft}
+        projects={projects}
+        projectName={(id) => projectName.get(id)}
+        onDraft={setTeamDraft}
+        onSave={() => void saveTeam()}
+        onRemove={(group) => void removeTeam(group)}
+      />
     </section>
   );
 }
@@ -326,9 +374,78 @@ function modelLabel(agent: Pick<TeamAgent, "agent" | "model">): string {
   return teamModels(agent.agent).find((m) => m.flag === agent.model)?.model ?? agent.model;
 }
 
-function TeamForm({ draft, team, projects, saving, onChange, onSave, onCancel }: {
+/** The peer-help teams: add, rename, move between global and one project,
+ *  remove. One line each, with how many agents are on it; the members are
+ *  picked on each agent's own form. */
+export function TeamsBlock({ teams, agents, draft, projects, projectName, onDraft, onSave, onRemove }: {
+  teams: AgentTeam[];
+  agents: TeamAgent[];
+  draft: AgentTeamDraft | null;
+  projects: ProjectRef[];
+  projectName: (id: string) => string | undefined;
+  onDraft: (draft: AgentTeamDraft | null) => void;
+  onSave: () => void;
+  onRemove: (team: AgentTeam) => void;
+}) {
+  const editor = (
+    <form className="team-group-form" aria-label={draft?.id ? "Rename team" : "New team"}
+      onSubmit={(event) => { event.preventDefault(); onSave(); }}>
+      <input value={draft?.name ?? ""} maxLength={60} placeholder="Team name" aria-label="Team name" autoFocus
+        onChange={(event) => draft && onDraft({ ...draft, name: event.target.value })} />
+      <select aria-label="Team available in" value={draft?.projectId ?? ""}
+        onChange={(event) => draft && onDraft({ ...draft, projectId: event.target.value || null })}>
+        <option value="">Every project</option>
+        {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+      <button className="vault-button" type="button" onClick={() => onDraft(null)}>Cancel</button>
+      <button className="settings-primary" type="submit" disabled={!draft?.name.trim()}>{draft?.id ? "Save" : "Add"}</button>
+    </form>
+  );
+  return (
+    <div className="team-groups">
+      <div className="team-head">
+        <h3>Teams</h3>
+        <button className="vault-button" type="button" disabled={!!draft && !draft.id}
+          onClick={() => onDraft({ name: "", projectId: null })}>Add team</button>
+      </div>
+      <p className="settings-note">Agents on one team may ask each other questions while they work. Teammates answer; they never take the work, and a team changes no one's manager.</p>
+      {draft && !draft.id && editor}
+      {teams.length > 0 && (
+        <ul className="team-group-list" aria-label="Teams">
+          {teams.map((group) => {
+            const members = agents.filter((agent) => agent.teamId === group.id).length;
+            if (draft?.id === group.id) return <li key={group.id}>{editor}</li>;
+            return (
+              <li key={group.id} className="team-group-row">
+                <span className="team-group-copy">
+                  <span className="team-row-name"><bdi>{group.name}</bdi></span>
+                  <span className="team-row-meta">
+                    {members} {members === 1 ? "agent" : "agents"} · {group.projectId ? projectName(group.projectId) ?? "Removed project" : "Every project"}
+                  </span>
+                </span>
+                <span className="team-row-actions">
+                  <button className="vault-button team-row-action" type="button" aria-label={`Rename ${group.name}`} title="Rename"
+                    onClick={() => onDraft({ id: group.id, name: group.name, projectId: group.projectId ?? null })}>
+                    <EditIcon /><span className="team-row-action-text">Rename</span>
+                  </button>
+                  <button className="vault-button team-row-action" type="button" aria-label={`Remove team ${group.name}`} title="Remove team"
+                    onClick={() => onRemove(group)}>
+                    <RemoveIcon /><span className="team-row-action-text">Remove</span>
+                  </button>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function TeamForm({ draft, team, teams, projects, saving, onChange, onSave, onCancel }: {
   draft: TeamDraft;
   team: TeamAgent[];
+  teams: AgentTeam[];
   projects: ProjectRef[];
   saving: boolean;
   onChange: (draft: TeamDraft) => void;
@@ -364,6 +481,13 @@ function TeamForm({ draft, team, projects, saving, onChange, onSave, onCancel }:
   }
   const managers = team.filter((agent) =>
     !below.has(agent.id) && (!agent.projectId || agent.projectId === (draft.projectId || undefined)));
+  // A project agent joins a global team or its own project's; the host
+  // refuses anything else.
+  const joinable = joinableTeams(teams, draft.projectId);
+  const pickProject = (projectId: string | null) => {
+    const keeps = !draft.teamId || joinableTeams(teams, projectId).some((group) => group.id === draft.teamId);
+    set({ projectId, ...(keeps ? {} : { teamId: null }) });
+  };
 
   return (
     <form className="team-form" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
@@ -419,9 +543,16 @@ function TeamForm({ draft, team, projects, saving, onChange, onSave, onCancel }:
       </label>
       <label>
         <span>Available in</span>
-        <select value={draft.projectId ?? ""} onChange={(event) => set({ projectId: event.target.value || null })}>
+        <select value={draft.projectId ?? ""} onChange={(event) => pickProject(event.target.value || null)}>
           <option value="">Every project</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      </label>
+      <label>
+        <span>Team</span>
+        <select value={draft.teamId ?? ""} onChange={(event) => set({ teamId: event.target.value || null })}>
+          <option value="">None</option>
+          {joinable.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
         </select>
       </label>
       {lead && (

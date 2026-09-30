@@ -231,6 +231,51 @@ which chats were handed a task and to whom (`leads`), and the configured head
 (`crossProject` for the head's conversation), `team_leads`, `team_head`,
 `team_head_set`.
 
+## Teams and peer help
+
+A **team** is a named group of agents who may ask each other questions while
+they work. It sits beside the org chart, not in it: joining or leaving a team
+never changes who reports to whom, where an agent may work, its access, or
+plan approval. Teams are managed in Settings → Agents (add, rename, remove),
+and an agent is put on one from its own form (**Team**, with None). One team
+per agent. A team is global or belongs to one project; a global agent may join
+any team, a project agent only a global team or its own project's. Removing a
+team leaves its members registered on no team; removing an agent takes it off
+its team. The team shows as a badge on the org chart and on the Agents page.
+
+Stored with the agents in `team.json` (`teams`, and `teamId` on each agent).
+Commands: `agent_team_list`, `agent_team_save`, `agent_team_delete`. A
+`team_save` with no `teamId` keeps the agent's team; `""` takes it off.
+
+**Peer help is a question and an answer, not a handoff.** A worker whose task
+was handed to a registered agent is told in its brief who its teammates are
+(name, role, id, and those who may look at the task's project only) and that
+peers answer questions and do not do the work. It asks with the MCP tool
+`orchestration_peer_ask` (`teammateId`, `question`, optional `contextPaths`
+inside its workspace). The host (`orchestration/peer.rs`):
+
+- accepts the call only from the chat of a running attempt, and only for a
+  registered member of the asker's own team who may work in the task's
+  project; asking itself, someone off the team or an unknown agent is refused
+  with a message naming who it can ask;
+- allows 5 asks per attempt (answered or not) and questions of up to 4000
+  characters, and cuts answers at 8000;
+- runs the answer as the teammate's registered provider, model and effort
+  (a Fable or Astra teammate may answer: answering is not working a task) in a
+  one-shot process in the asker's workspace with read tools only (Claude:
+  `--tools Read,Grep,Glob`, no MCP; Codex: `-s read-only`,
+  `--ignore-user-config`), none of the chat's `OCTIQ_*` variables and a
+  10-minute deadline, so it cannot write, reach the orchestration hook, or ask
+  a peer of its own;
+- records every ask in the run's ledger (`peerAsks` in the snapshot: question,
+  answer or error, asker, helper, times, tokens) before the teammate starts,
+  and settles it after; an ask cut off by a restart is marked failed on load.
+
+The answer comes back as the tool result. The task view shows the exchange
+under the task's row (Peer help). No gate is involved: the ask sits inside a
+task the person already approved. Read-only means no writes: a Codex
+teammate's sandbox can still read outside the workspace.
+
 ## Chain of command
 
 Delegation follows the chart, at most **three levels**: lead → manager → worker.

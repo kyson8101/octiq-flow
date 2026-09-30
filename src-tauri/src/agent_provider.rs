@@ -420,7 +420,7 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__orchestration_snapshot mcp__octiq__orchestration_worker_start \\
                      mcp__octiq__orchestration_worker_report mcp__octiq__orchestration_gate_create \\
                      mcp__octiq__orchestration_gate_resolve mcp__octiq__orchestration_message_send \\
-                     mcp__octiq__orchestration_run_stop \\
+                     mcp__octiq__orchestration_run_stop mcp__octiq__orchestration_peer_ask \\
                      mcp__octiq__vault_info mcp__octiq__vault_list mcp__octiq__vault_search \\
                      mcp__octiq__vault_read mcp__octiq__vault_write mcp__octiq__vault_patch \\
                      mcp__octiq__vault_move mcp__octiq__vault_archive mcp__octiq__vault_receipt \\

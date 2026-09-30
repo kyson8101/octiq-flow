@@ -18,7 +18,9 @@
 import type {
   OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask,
 } from "./orchestration";
-import type { TeamAgent } from "./agentsMode";
+// Types only: agentsMode opens the socket bridge on import, and this module
+// is pure.
+import type { AgentTeam, TeamAgent } from "./agentsMode";
 
 /** A chat a task was handed to (team.rs `LeadRecord`). */
 export type LeadRecord = {
@@ -32,6 +34,13 @@ export type LeadRecord = {
 };
 
 export type ChartRow = { agent: TeamAgent; depth: number };
+
+/** The team badge an agent's card and chart row carry: its team's name, or
+ *  nothing when it is on none (or its team was removed). */
+export function teamBadge(agent: Pick<TeamAgent, "teamId">, teams: readonly AgentTeam[]): { id: string; name: string } | null {
+  const team = agent.teamId ? teams.find((candidate) => candidate.id === agent.teamId) : undefined;
+  return team ? { id: team.id, name: team.name } : null;
+}
 
 /** The chart top-down: agents reporting to the person first, each followed by
  *  its reports. A manager missing from the list (another project's, say)
@@ -105,6 +114,8 @@ export type AgentRow = {
   role: string;
   /** Its registration's project, or null for a global agent. */
   scope: ActivityProject | null;
+  /** The peer-help team it is on, or null. Beside the chart, not in it. */
+  team: { id: string; name: string } | null;
   depth: number;
   /** No longer registered, but still holds current work. */
   removed: boolean;
@@ -125,6 +136,8 @@ export type RosterInput = {
   /** Null until the ledger's first read lands. */
   snapshot: OrchestrationSnapshot | null;
   projects: readonly ActivityProject[];
+  /** Peer-help teams; absent from an older backend, which has none. */
+  teams?: readonly AgentTeam[];
   providerLabel: (agent: TeamAgent) => string;
   chatTitle: (chatKey: string) => string | undefined;
   /** The conversation still exists in this profile. */
@@ -309,6 +322,7 @@ export function agentRoster(input: RosterInput): AgentRow[] {
     detail: input.providerLabel(agent),
     role: agent.role,
     scope: agent.projectId ? projectById.get(agent.projectId) ?? { id: agent.projectId, name: "Unknown project" } : null,
+    team: teamBadge(agent, input.teams ?? []),
     depth,
     removed: false,
   }));
@@ -325,7 +339,7 @@ export function agentRoster(input: RosterInput): AgentRow[] {
   }
   for (const [id, name] of removedNames) {
     if (!activitiesFor.get(id)?.length) continue;
-    rows.push(row({ id, name, detail: "No longer registered", role: "", scope: null, depth: 0, removed: true }));
+    rows.push(row({ id, name, detail: "No longer registered", role: "", scope: null, team: null, depth: 0, removed: true }));
   }
   return rows;
 }

@@ -296,7 +296,40 @@ export type OrchestrationSnapshot = {
   notifications?: OrchestrationNotification[];
   /** Absent from servers older than bridges. */
   bridges?: RunBridge[];
+  /** Questions workers asked teammates, oldest first. Absent from servers
+   *  older than peer help. */
+  peerAsks?: PeerAsk[];
 };
+
+/** One worker's question to a teammate and the answer (orchestration/peer.rs).
+ *  Advice inside an approved task: it hands nothing over and needs no gate. */
+export type PeerAsk = {
+  id: string;
+  runId: string;
+  taskId: string;
+  attemptId: string;
+  asker: { id: string; name: string };
+  helper: { id: string; name: string };
+  helperAgent: "claude" | "codex" | "pi";
+  helperModel: string;
+  helperEffort?: string;
+  question: string;
+  contextPaths?: string[];
+  status: "asking" | "answered" | "failed";
+  answer?: string;
+  truncated?: boolean;
+  error?: string;
+  usage?: { inputTokens: number; outputTokens: number };
+  askedAt: number;
+  answeredAt?: number;
+};
+
+/** A task's peer asks, oldest first. */
+export function taskPeerAsks(snapshot: Pick<OrchestrationSnapshot, "peerAsks">, taskId: string): PeerAsk[] {
+  return (snapshot.peerAsks ?? [])
+    .filter((ask) => ask.taskId === taskId)
+    .sort((a, b) => a.askedAt - b.askedAt || a.id.localeCompare(b.id));
+}
 
 export type NativeDecision = {
   id: string; runId: string; taskId: string; attemptId: string; chatKey: string;

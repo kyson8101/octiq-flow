@@ -9,7 +9,7 @@ import "./AgentsDashboard.css";
 import "./ProjectsPage.css";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { AGENT_NAME } from "../lib/agentProviders";
-import { loadLeads, loadTeam, type TeamAgent } from "../lib/agentsMode";
+import { loadAgentTeams, loadLeads, loadTeam, type AgentTeam, type TeamAgent } from "../lib/agentsMode";
 import {
   AGENT_STATE_LABELS, agentRoster, rosterSummary,
   type AgentActivity, type AgentRow, type ChatActivity, type LeadRecord,
@@ -52,6 +52,7 @@ export function AgentsDashboard({
   onClose: () => void;
 }) {
   const [team, setTeam] = useState<TeamAgent[] | null>(null);
+  const [teams, setTeams] = useState<AgentTeam[]>([]);
   const [leads, setLeads] = useState<LeadRecord[]>([]);
   const [error, setError] = useState("");
   const [serverActivity, setServerActivity] = useState<ReadonlyMap<string, boolean> | null>(null);
@@ -84,10 +85,12 @@ export function AgentsDashboard({
   useEffect(() => {
     if (!connected) return;
     let alive = true;
-    Promise.all([loadTeam(null, true), loadLeads()])
-      .then(([agents, records]) => {
+    // An older backend has no teams; its rows simply carry no badge.
+    Promise.all([loadTeam(null, true), loadLeads(), loadAgentTeams().catch(() => [])])
+      .then(([agents, records, groups]) => {
         if (!alive) return;
         setTeam(agents);
+        setTeams(groups);
         setLeads(records);
         setError("");
       })
@@ -120,7 +123,7 @@ export function AgentsDashboard({
 
   const projectList = useMemo(() => projects.map(({ id, name }) => ({ id, name })), [projects]);
   const rows = agentRoster({
-    team, leads, snapshot, projects: projectList,
+    team, leads, snapshot, projects: projectList, teams,
     providerLabel: (agent) => `${AGENT_NAME[agent.agent]} ${agent.model}`,
     chatTitle, chatExists, leadActivity, waitingOn,
   });
@@ -236,6 +239,7 @@ function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onO
         <span className="team-row-copy">
           <span className="team-row-name"><bdi>{row.name}</bdi>
             {!row.removed && <LevelChip name={row.name} progress={level} onOpen={onProfile} />}
+            {row.team && <span className="team-tag team-badge" title={`On the team ${row.team.name}`}><bdi>{row.team.name}</bdi></span>}
           </span>
           <span className="team-row-meta">
             <bdi>{row.detail}</bdi>

@@ -51,6 +51,35 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--fg-1); font-size: 10.5px; font-weight: 500;
 }
+/* A peer-help team is a sideways grouping, so its badge is outlined rather
+   than tinted: it reads as a label, never as a state. */
+.team-badge {
+  background: transparent; border: 1px solid var(--border-strong);
+  max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.team-groups { display: grid; gap: 8px; }
+.team-groups > .settings-note { margin: 0; }
+.team-group-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.team-group-row {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.team-group-copy { flex: 1 1 auto; min-width: 0; display: grid; gap: 1px; }
+.team-group-form {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1);
+}
+.team-group-form :is(input, select) {
+  min-width: 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-0); color: var(--fg-1); font: inherit; font-size: 13px;
+}
+.team-group-form input { flex: 1 1 160px; }
+.team-group-form select { flex: 0 1 180px; }
+.team-group-form :is(input, select, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) {
+  .team-group-form :is(input, select) { flex: 1 1 100%; }
+}
 
 .team-form {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;

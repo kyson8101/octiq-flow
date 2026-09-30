@@ -99,6 +99,7 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     "orchestration_message_send",
     "orchestration_relay_send",
     "orchestration_run_stop",
+    "orchestration_peer_ask",
     "orchestration_automation_configure",
     "orchestration_dispatch_ready",
     "orchestration_workspace_refresh",

@@ -51,8 +51,39 @@ pub struct TeamAgent {
     /// Kept on the agent, so it survives a change of provider or model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
+    /// The team it belongs to (`AgentTeam`), if any. A lateral grouping for
+    /// peer help only: it never changes who reports to whom, where the agent
+    /// may work, or what it may touch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// A named group of agents who may ask each other questions while they work
+/// (`orchestration::peer`). One team per agent. A team in a project holds
+/// only that project's agents and global ones; a global team may hold anyone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeam {
+    pub id: String,
+    pub name: String,
+    /// `None` is a global team; otherwise the project it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// What the browser sends to add or rename one team.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeamDraft {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 impl TeamAgent {
@@ -89,6 +120,10 @@ pub struct TeamDraft {
     /// Absent keeps the current avatar, `""` removes it, a data URL sets it.
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Absent keeps the current team, `""` takes the agent off its team, a
+    /// team id puts it on that team.
+    #[serde(default)]
+    pub team_id: Option<String>,
 }
 
 /// A chat a task was handed to: the host needs it to know that a run the chat
@@ -113,6 +148,9 @@ pub struct LeadRecord {
 struct Stored {
     #[serde(default)]
     agents: Vec<TeamAgent>,
+    /// Peer-help teams. Membership is `TeamAgent::team_id`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    teams: Vec<AgentTeam>,
     #[serde(default)]
     leads: Vec<LeadRecord>,
     /// The global agent the person talks to across projects (their CTO).
@@ -251,10 +289,37 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
         Some("") => Some(None),
         Some(url) => Some(Some(crate::agent_avatar::checked_data_url(url)?)),
     };
+    let team_choice = match draft.team_id.as_deref().map(str::trim) {
+        None => None,
+        Some("") => Some(None),
+        Some(team) => Some(Some(team.to_owned())),
+    };
 
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut stored = read(path)?;
     let id = draft.id.filter(|id| !id.is_empty());
+    let team_id = match team_choice {
+        Some(choice) => choice,
+        // Unchanged: whatever team it is on now, if that team still exists.
+        None => id
+            .as_ref()
+            .and_then(|me| stored.agents.iter().find(|a| &a.id == me))
+            .and_then(|a| a.team_id.clone())
+            .filter(|team| stored.teams.iter().any(|t| &t.id == team)),
+    };
+    if let Some(team_id) = &team_id {
+        let team = stored
+            .teams
+            .iter()
+            .find(|t| &t.id == team_id)
+            .ok_or("The chosen team no longer exists.")?;
+        if !can_join(project_id.as_deref(), team.project_id.as_deref()) {
+            return Err(format!(
+                "{name} cannot be on {}: that team belongs to another project.",
+                team.name
+            ));
+        }
+    }
     // A global name is seen everywhere; a project name alongside every global
     // one. Either way two agents a lead can see must not share a name.
     let clash = stored.agents.iter().any(|other| {
@@ -345,6 +410,7 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
                 reports_to,
                 memory_note: existing.memory_note.clone(),
                 avatar: avatar.unwrap_or_else(|| existing.avatar.clone()),
+                team_id,
                 created_at: existing.created_at,
                 updated_at: now,
             };
@@ -363,6 +429,7 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
                 reports_to,
                 memory_note: None,
                 avatar: avatar.flatten(),
+                team_id,
                 created_at: now,
                 updated_at: now,
             };
@@ -406,6 +473,150 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
         }
     }
     write(path, &stored)
+}
+
+/// A global agent may join any team; a project agent only a global team or
+/// one in its own project, so a team never gathers agents who could not all
+/// look at the same work.
+fn can_join(agent_project: Option<&str>, team_project: Option<&str>) -> bool {
+    agent_project.is_none() || team_project.is_none() || agent_project == team_project
+}
+
+/// Every peer-help team.
+pub fn teams(path: &Path) -> Result<Vec<AgentTeam>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    Ok(read(path)?.teams)
+}
+
+/// Add or rename a team, or move it between global and one project.
+pub fn save_team(path: &Path, draft: AgentTeamDraft) -> Result<AgentTeam, String> {
+    let name = draft.name.trim().to_owned();
+    if name.is_empty() {
+        return Err("Give the team a name.".into());
+    }
+    if name.chars().count() > 60 {
+        return Err("The team's name is longer than 60 characters.".into());
+    }
+    let project_id = draft.project_id.filter(|p| !p.trim().is_empty());
+    let id = draft.id.filter(|id| !id.trim().is_empty());
+
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    let clash = stored.teams.iter().any(|other| {
+        Some(&other.id) != id.as_ref()
+            && other.name.eq_ignore_ascii_case(&name)
+            && (other.project_id.is_none()
+                || project_id.is_none()
+                || other.project_id == project_id)
+    });
+    if clash {
+        return Err(format!("Another team is already called {name}."));
+    }
+    if let Some(me) = &id {
+        // Narrowing a team to one project must not keep an agent of another.
+        if let Some(member) = stored.agents.iter().find(|a| {
+            a.team_id.as_deref() == Some(me.as_str())
+                && !can_join(a.project_id.as_deref(), project_id.as_deref())
+        }) {
+            return Err(format!(
+                "{} is on this team and works only in another project. Take {} off the team first.",
+                member.name, member.name
+            ));
+        }
+    }
+    let now = now_ms();
+    let saved = match id {
+        Some(id) => {
+            let existing = stored
+                .teams
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("That team no longer exists.")?;
+            existing.name = name;
+            existing.project_id = project_id;
+            existing.updated_at = now;
+            existing.clone()
+        }
+        None => {
+            let team = AgentTeam {
+                id: format!("team_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+                name,
+                project_id,
+                created_at: now,
+                updated_at: now,
+            };
+            stored.teams.push(team.clone());
+            team
+        }
+    };
+    write(path, &stored)?;
+    Ok(saved)
+}
+
+/// Remove a team. Its members stay registered, on no team.
+pub fn delete_team(path: &Path, id: &str) -> Result<(), String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    if !stored.teams.iter().any(|t| t.id == id) {
+        return Err("That team no longer exists.".into());
+    }
+    stored.teams.retain(|t| t.id != id);
+    for agent in &mut stored.agents {
+        if agent.team_id.as_deref() == Some(id) {
+            agent.team_id = None;
+        }
+    }
+    write(path, &stored)
+}
+
+/// The other members of `me`'s team, in registration order. Empty when it
+/// is on no team, or its team no longer exists.
+pub fn teammates<'a>(
+    agents: &'a [TeamAgent],
+    teams: &[AgentTeam],
+    me: &TeamAgent,
+) -> Vec<&'a TeamAgent> {
+    let Some(team) = me
+        .team_id
+        .as_deref()
+        .filter(|id| teams.iter().any(|t| t.id == *id))
+    else {
+        return Vec::new();
+    };
+    agents
+        .iter()
+        .filter(|a| a.id != me.id && a.team_id.as_deref() == Some(team))
+        .collect()
+}
+
+/// What a worker is told about its team: who it may ask and how. `None`
+/// when it has no teammate who may look at work in `project_id`.
+pub fn peer_brief(
+    agents: &[TeamAgent],
+    teams: &[AgentTeam],
+    me: &TeamAgent,
+    project_id: &str,
+) -> Option<String> {
+    let team = teams
+        .iter()
+        .find(|t| Some(t.id.as_str()) == me.team_id.as_deref())?;
+    let peers: Vec<_> = teammates(agents, teams, me)
+        .into_iter()
+        .filter(|a| may_work_in(a, project_id))
+        .collect();
+    if peers.is_empty() {
+        return None;
+    }
+    let rows = peers
+        .iter()
+        .map(|a| describe(a, agents, false, None))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "You are on the team {}. Your teammates:\n{rows}\n\nPeers answer questions; they do not do the work. When a teammate's role fits a question you are stuck on, call orchestration_peer_ask with their id as teammateId, one self-contained question, and optionally contextPaths (files in your workspace, relative to it) they should read first. The host runs their answer as that teammate, read-only in your workspace, and returns it as the tool result. At most {} asks per attempt. The answer is advice: you still own the task, and you verify before acting on it.",
+        team.name,
+        crate::orchestration::peer::MAX_ASKS_PER_ATTEMPT
+    ))
 }
 
 /// Remember that `chat_key` was handed a task with `lead_id` as its lead.
@@ -1494,6 +1705,7 @@ mod tests {
             project_id: project.map(Into::into),
             reports_to: None,
             avatar: None,
+            team_id: None,
         }
     }
 
@@ -1502,6 +1714,222 @@ mod tests {
             reports_to: Some(manager.id.clone()),
             ..draft(name, project)
         }
+    }
+
+    fn team_draft(name: &str, project: Option<&str>) -> AgentTeamDraft {
+        AgentTeamDraft {
+            id: None,
+            name: name.into(),
+            project_id: project.map(Into::into),
+        }
+    }
+
+    fn on(team: &AgentTeam, name: &str, project: Option<&str>) -> TeamDraft {
+        TeamDraft {
+            team_id: Some(team.id.clone()),
+            ..draft(name, project)
+        }
+    }
+
+    fn agent_named(path: &Path, name: &str) -> TeamAgent {
+        list(path, None, true)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.name == name)
+            .unwrap()
+    }
+
+    #[test]
+    fn teams_are_created_renamed_and_named_uniquely_where_they_overlap() {
+        let path = temp();
+        let web = save_team(&path, team_draft(" Web ", None)).unwrap();
+        assert_eq!(web.name, "Web");
+        assert!(web.id.starts_with("team_"));
+        assert!(save_team(&path, team_draft("", None)).is_err());
+        assert!(save_team(&path, team_draft(&"x".repeat(61), None)).is_err());
+        // A global name is seen everywhere, so a project team cannot reuse it.
+        assert_eq!(
+            save_team(&path, team_draft("web", Some("p1"))).unwrap_err(),
+            "Another team is already called web."
+        );
+        let p1 = save_team(&path, team_draft("Data", Some("p1"))).unwrap();
+        // Two projects' teams never meet, so they may share a name.
+        save_team(&path, team_draft("Data", Some("p2"))).unwrap();
+        let renamed = save_team(
+            &path,
+            AgentTeamDraft {
+                id: Some(web.id.clone()),
+                ..team_draft("Frontend", None)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (renamed.id.as_str(), renamed.name.as_str()),
+            (web.id.as_str(), "Frontend")
+        );
+        assert_eq!(renamed.created_at, web.created_at);
+        assert_eq!(teams(&path).unwrap().len(), 3);
+        assert!(save_team(
+            &path,
+            AgentTeamDraft {
+                id: Some("team_gone".into()),
+                ..team_draft("Ghost", None)
+            }
+        )
+        .is_err());
+        // The team store survives the agents' own writes.
+        save(&path, on(&p1, "Ada", Some("p1"))).unwrap();
+        assert_eq!(teams(&path).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn membership_follows_project_scope() {
+        let path = temp();
+        let global = save_team(&path, team_draft("Global", None)).unwrap();
+        let p1 = save_team(&path, team_draft("P1", Some("p1"))).unwrap();
+        // Global agents join any team; project agents only global teams and
+        // their own project's.
+        assert_eq!(
+            save(&path, on(&p1, "Ada", None)).unwrap().team_id,
+            Some(p1.id.clone())
+        );
+        assert!(save(&path, on(&p1, "Bo", Some("p1"))).is_ok());
+        assert!(save(&path, on(&global, "Cy", Some("p2"))).is_ok());
+        assert_eq!(
+            save(&path, on(&p1, "Di", Some("p2"))).unwrap_err(),
+            "Di cannot be on P1: that team belongs to another project."
+        );
+        assert_eq!(
+            save(
+                &path,
+                on(
+                    &AgentTeam {
+                        id: "team_gone".into(),
+                        ..p1.clone()
+                    },
+                    "Ed",
+                    None
+                )
+            )
+            .unwrap_err(),
+            "The chosen team no longer exists."
+        );
+        // Moving a member into another project while on a project team is
+        // refused; so is narrowing a team past one of its members.
+        let bo = agent_named(&path, "Bo");
+        assert!(save(
+            &path,
+            TeamDraft {
+                id: Some(bo.id.clone()),
+                ..draft("Bo", Some("p2"))
+            }
+        )
+        .is_err());
+        assert!(save_team(
+            &path,
+            AgentTeamDraft {
+                id: Some(global.id.clone()),
+                ..team_draft("Global", Some("p1"))
+            }
+        )
+        .unwrap_err()
+        .starts_with("Cy is on this team"));
+    }
+
+    #[test]
+    fn an_edit_that_says_nothing_about_the_team_keeps_it_and_empty_clears_it() {
+        let path = temp();
+        let web = save_team(&path, team_draft("Web", None)).unwrap();
+        let ada = save(&path, on(&web, "Ada", None)).unwrap();
+        let kept = save(
+            &path,
+            TeamDraft {
+                id: Some(ada.id.clone()),
+                model: "opus".into(),
+                ..draft("Ada", None)
+            },
+        )
+        .unwrap();
+        assert_eq!(kept.team_id.as_deref(), Some(web.id.as_str()));
+        let cleared = save(
+            &path,
+            TeamDraft {
+                id: Some(ada.id.clone()),
+                team_id: Some(String::new()),
+                ..draft("Ada", None)
+            },
+        )
+        .unwrap();
+        assert_eq!(cleared.team_id, None);
+    }
+
+    #[test]
+    fn removing_a_team_or_an_agent_ends_the_membership_and_nothing_else() {
+        let path = temp();
+        let web = save_team(&path, team_draft("Web", None)).unwrap();
+        let ada = save(&path, on(&web, "Ada", None)).unwrap();
+        let bo = save(
+            &path,
+            TeamDraft {
+                reports_to: Some(ada.id.clone()),
+                ..on(&web, "Bo", None)
+            },
+        )
+        .unwrap();
+        let cy = save(&path, on(&web, "Cy", None)).unwrap();
+        let everyone = list(&path, None, true).unwrap();
+        let teams_now = teams(&path).unwrap();
+        let names = |me: &TeamAgent, all: &[TeamAgent], t: &[AgentTeam]| {
+            teammates(all, t, me)
+                .into_iter()
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&ada, &everyone, &teams_now), ["Bo", "Cy"]);
+        delete(&path, &cy.id).unwrap();
+        let everyone = list(&path, None, true).unwrap();
+        assert_eq!(names(&ada, &everyone, &teams_now), ["Bo"]);
+        delete_team(&path, &web.id).unwrap();
+        assert!(teams(&path).unwrap().is_empty());
+        let everyone = list(&path, None, true).unwrap();
+        assert!(everyone.iter().all(|a| a.team_id.is_none()));
+        // The org chart is untouched by either.
+        assert_eq!(
+            agent_named(&path, "Bo").reports_to.as_deref(),
+            Some(ada.id.as_str())
+        );
+        assert_eq!(bo.reports_to.as_deref(), Some(ada.id.as_str()));
+        assert!(delete_team(&path, &web.id).is_err());
+    }
+
+    #[test]
+    fn a_workers_peer_brief_lists_teammates_who_may_look_at_its_project() {
+        let path = temp();
+        let web = save_team(&path, team_draft("Web", None)).unwrap();
+        let ada = save(&path, on(&web, "Ada", None)).unwrap();
+        save(&path, on(&web, "Bo", Some("p1"))).unwrap();
+        save(&path, on(&web, "Cy", Some("p2"))).unwrap();
+        save(&path, draft("Di", None)).unwrap();
+        let everyone = list(&path, None, true).unwrap();
+        let all_teams = teams(&path).unwrap();
+        let brief = peer_brief(&everyone, &all_teams, &ada, "p1").unwrap();
+        assert!(brief.contains("You are on the team Web."));
+        assert!(brief.contains("Bo — builds things"));
+        assert!(brief.contains(&format!("id `{}`", agent_named(&path, "Bo").id)));
+        assert!(brief.contains("Peers answer questions; they do not do the work."));
+        assert!(brief.contains("orchestration_peer_ask"));
+        // Not itself, not someone off the team, not a teammate who cannot
+        // look at this project.
+        assert!(!brief.contains("Ada —"));
+        assert!(!brief.contains("Di —"));
+        assert!(!brief.contains("Cy —"));
+        // No brief at all without anyone to ask.
+        let di = agent_named(&path, "Di");
+        assert!(peer_brief(&everyone, &all_teams, &di, "p1").is_none());
+        let cy = agent_named(&path, "Cy");
+        assert!(peer_brief(&everyone, &all_teams, &cy, "p2")
+            .unwrap()
+            .contains("Ada —"));
     }
 
     fn temp() -> PathBuf {

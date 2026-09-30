@@ -778,6 +778,22 @@
 .orch-stage-value[data-tone="warn"], .orch-progress-acceptance[data-tone="warn"] { color: var(--warn); }
 @media (max-width: 480px) { .orch-stage { grid-template-columns: 1fr; } }
 .orch-task-reported, .orch-task-after { color: var(--fg-3); font-size: 10.5px; }
+/* Peer help: a worker's questions to teammates and their answers. Advice, not
+   a handoff, so it reads as a quiet log under the checklist. */
+.orch-peer-help { margin: 0 0 10px; font-size: 11.5px; }
+.orch-peer-help > summary { padding: 2px 0; color: var(--fg-2); cursor: pointer; }
+.orch-peer-count { margin-inline-start: 2px; color: var(--fg-3); font-size: 10.5px; }
+.orch-peer-help > ol { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.orch-peer-help li { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-1); }
+.orch-peer-help li > p { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+.orch-peer-who { color: var(--fg-3); font-size: 10.5px; }
+.orch-peer-who strong { color: var(--fg-1); font-weight: 600; }
+.orch-peer-question { margin-top: 4px !important; color: var(--fg-1); white-space: pre-wrap; }
+.orch-peer-paths { margin-top: 4px !important; color: var(--fg-3); font-size: 10.5px; }
+.orch-peer-answer { margin-top: 6px !important; padding-left: 8px; border-left: 2px solid var(--border-strong); color: var(--fg-0); white-space: pre-wrap; }
+.orch-peer-answer em { color: var(--fg-3); }
+.orch-peer-error { margin-top: 6px !important; color: var(--danger); }
+.orch-peer-help li[data-status="asking"] .orch-peer-who span { color: var(--link); }
 .orch-task-steps { margin: 0 0 10px; padding: 0; list-style: none; font-size: 11.5px; }
 .orch-task-steps li { display: flex; gap: 8px; padding: 3px 0; color: var(--fg-2); line-height: 1.45; }
 .orch-task-steps li > span { flex-shrink: 0; }

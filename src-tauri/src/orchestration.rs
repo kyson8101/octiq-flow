@@ -34,6 +34,7 @@ pub mod execution;
 pub mod inbox;
 pub mod levels;
 pub mod lifecycle;
+pub mod peer;
 #[cfg(test)]
 mod reporting_tests;
 mod retention;
@@ -646,6 +647,8 @@ pub struct Snapshot {
     pub services: Vec<lifecycle::Service>,
     /// Bridges with either end in view, open or closed (`bridge.rs`).
     pub bridges: Vec<bridge::RunBridge>,
+    /// Questions workers asked their teammates, and the answers (`peer.rs`).
+    pub peer_asks: Vec<peer::PeerAsk>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -684,6 +687,9 @@ struct Stored {
     /// Person-opened bridges between runs of different coordinators, by id.
     #[serde(default)]
     bridges: BTreeMap<String, bridge::RunBridge>,
+    /// Every peer ask, by id (`peer.rs`).
+    #[serde(default)]
+    peer_asks: BTreeMap<String, peer::PeerAsk>,
 }
 
 fn store_version() -> u32 {
@@ -707,6 +713,7 @@ impl Default for Stored {
             acceptances: Vec::new(),
             scoring_since: None,
             bridges: BTreeMap::new(),
+            peer_asks: BTreeMap::new(),
         }
     }
 }
@@ -779,6 +786,7 @@ impl OrchestrationStore {
                     recovered |= recover_interrupted_workers(&mut data);
                     recovered |= workspaces::recover_workspaces(&mut data);
                     recovered |= lifecycle::recover(&mut data);
+                    recovered |= peer::recover(&mut data);
                     // Before pruning, which drops old tasks and the
                     // acceptance they carry.
                     recovered |= levels::backfill_acceptances(&mut data);
@@ -952,6 +960,17 @@ impl OrchestrationStore {
                 })
                 .cloned()
                 .collect(),
+            peer_asks: {
+                let mut asks: Vec<_> = inner
+                    .data
+                    .peer_asks
+                    .values()
+                    .filter(|ask| visible.contains(ask.run_id.as_str()))
+                    .cloned()
+                    .collect();
+                asks.sort_by_key(|ask| (ask.asked_at, ask.id.clone()));
+                asks
+            },
         };
         drop(inner);
         lifecycle::refresh_decision_views(&mut snapshot);
@@ -2440,6 +2459,12 @@ impl OrchestrationStore {
                     );
                     prompt.push_str("\n\n");
                     prompt.push_str(&crate::team::memory_brief(me, &team));
+                    // Who it may ask for help, and that they only answer.
+                    let teams = crate::team::teams(&path).unwrap_or_default();
+                    if let Some(peers) = crate::team::peer_brief(&team, &teams, me, &workspace.id) {
+                        prompt.push_str("\n\n");
+                        prompt.push_str(&peers);
+                    }
                 }
             }
         }
