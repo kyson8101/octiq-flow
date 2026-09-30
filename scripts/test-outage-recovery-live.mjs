@@ -43,7 +43,8 @@ const BIN = path.join(DIR, "bin");
 const LOG = path.join(DIR, "stub.log");
 const COUNTER = path.join(DIR, "ran.txt");
 const PORT = 15000 + Math.floor(Math.random() * 1000);
-const TOKEN = "outage-recovery-token";
+// Stub value, handed only to this script's own throwaway debug server.
+const TOKEN = "stub-outage";
 fs.mkdirSync(SHOTS, { recursive: true });
 
 function stubClaude() {
