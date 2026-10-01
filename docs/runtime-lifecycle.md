@@ -32,7 +32,15 @@ A Claude auto-mode refusal is recorded too, with the exact call in
 OctiqFlow (its `can_use_tool` callback carries only "ask" outcomes), and an
 allow rule on a later launch would cover every call of the line, not one. Its
 continuation is `unavailable`; the worker carries on another way or settles
-blocked, naming the command. An `allowed_exact` status from an earlier build is
+blocked, naming the command. What the person can do is the lasting kind: when
+the refused call is a shell line the host can name exactly, the card offers
+"Always allow", which writes exact `Bash(<command>)` rules (never a prefix)
+to the project's `.claude/settings.local.json` or the person's own
+`settings.json` on a click. From then on Claude runs matching commands without
+its safety check. The host runs nothing; a message tells the agent the rule
+exists, and the decision reads `allowed_project` or `allowed_user` with
+recovery text saying the agent may run the command again, unchanged. An
+`allowed_exact` status from an earlier build is
 history and authorizes nothing, and that build's queued "exact-grant" notices
 are cancelled rather than delivered. Settled or
 superseded attempts require an explicit retry, which does not grant permission.

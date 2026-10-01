@@ -2,11 +2,14 @@
 // tool router, or Claude's auto-mode classifier. Unlike a live Claude
 // permission ask, there is no suspended tool call for OctiqFlow to resume.
 // These buttons therefore send the user's decision as a fresh, explicit turn.
-// Claude's card for a JUDGED refusal offers no "allow": Claude refuses without
-// asking anyone and has no way to approve one refused call before it runs, so
-// the card records the refusal and says so. Its outage card (the classifier
-// gave no verdict) is different: it offers the one as-is retry Claude itself
-// allows, and an allow rule the person adds to their own settings.
+// Claude's card for a JUDGED refusal cannot approve the refused call: Claude
+// refuses without asking anyone and has no way to approve one call before it
+// runs. What it can offer, for a shell line, is the lasting kind — exact
+// allow rules the person writes to Claude's settings, which skip Claude's
+// safety check for matching commands from then on — and then it tells the
+// agent the rule exists, so the agent retries itself. Its outage card (the
+// classifier gave no verdict) offers the one as-is retry Claude itself allows,
+// and an allow rule the person adds to their own settings.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
 
@@ -31,13 +34,18 @@ export type SafetyBlockNotice = {
   /** An outage card: the host's recovery text, the same words the worker
    * and the coordinator's snapshot are given. */
   guidance?: string | null;
-  /** An outage card: the settings files "Always allow" writes. Absent when
+  /** A Claude card: the settings files "Always allow" writes. Absent when
    * the chat reads no settings file, or on an older server. A file the host
    * would refuse to write is absent too, and so is its button. */
   allow?: { project?: string; user?: string } | null;
-  /** An outage card: the scope an "Always allow" already wrote while its
-   * retry turn is not yet queued. The card stays up until it is. */
+  /** A Claude card: the scope an "Always allow" already wrote while the turn
+   * that answers it is not yet queued. The card stays up until it is. */
   written?: AllowScope | null;
+  /** A judged Claude refusal: the exact rules "Always allow" writes, one per
+   * part of the refused line the host found safe to name. Absent: no allow. */
+  rules?: string[];
+  /** A judged Claude refusal: the parts of the line no rule names. */
+  uncovered?: string[];
 };
 
 export type OutageCommand = {
@@ -297,13 +305,69 @@ function OutageBlock({
 }
 
 /**
- * Why a Claude refusal has no "allow" here. Claude refuses without asking
+ * Why a Claude refusal is not approved here. Claude refuses without asking
  * anyone and offers no way to approve one call before it runs; a permission
- * rule would allow every later call of the line, so OctiqFlow adds none.
+ * rule allows every later call of the line too, so it is offered only as
+ * what it is — a lasting rule — and only where the host can name it exactly.
  */
 export const CLAUDE_REFUSAL_NOTE =
-  "OctiqFlow cannot allow a command Claude's auto mode refused, and will not retry it. " +
-  "If it should run, run it yourself, or change Claude's permissions outside OctiqFlow if you mean to allow it for good.";
+  "OctiqFlow cannot approve a call Claude's auto mode refused, and will not rerun it. " +
+  "If it should run, run it yourself, or allow it for good with a Claude permission rule.";
+
+/** What "Always allow" on a judged card says it does, before the click. */
+export const JUDGED_ALLOW_NOTE =
+  "Always allow is permanent. It adds these exact rules to Claude's settings, and from now on Claude runs " +
+  "exactly these commands without its safety check, in every chat that reads that file, until you remove the rules. " +
+  "OctiqFlow does not run the command: the agent is told the rule exists and retries it itself.";
+
+/** Said when the rule is written but the agent could not be told; the card stays up. */
+export const ALLOW_NOT_SENT =
+  "The rule is written, but the agent could not be told, so this card stays open. Try again: nothing is written twice.";
+
+/**
+ * The turn after "Always allow" on a judged card: which rules are now in
+ * which file, that OctiqFlow ran nothing, and that the agent may run the
+ * command again itself. No rule covers a reworded line, so it says not to.
+ */
+export function judgedAllowedReply(allowed: AllowedOutage, action: string | null | undefined): string {
+  const one = allowed.rules.length === 1;
+  const rules = allowed.rules.map((rule) => `\`${rule}\``).join(", ");
+  const uncovered = allowed.uncovered.length
+    ? ` No rule covers ${allowed.uncovered.map((part) => `\`${part}\``).join(", ")}: ` +
+      "Claude's safety check still judges a line that contains it, so it may be refused again."
+    : "";
+  return (
+    `I added the Claude permission allow ${one ? "rule" : "rules"} ${rules} to ${allowed.path}. ` +
+    "From now on Claude runs matching commands without its safety check. OctiqFlow did not run the refused command." +
+    uncovered + "\n\n" +
+    (action ? `If you still need it, run it again exactly as before:\n\`${action}\`\n` : "If you still need it, run it again exactly as before. ") +
+    "Do not reword it to fit the rule. If it is refused again, carry on another safe way and say so."
+  );
+}
+
+/**
+ * "Always allow" on a judged card. The host writes the rules it derived when
+ * the refusal was seen — the page names only the card and the scope — and
+ * only once that write succeeded is the agent told, in a turn that names the
+ * card. The host closes the card as this allow when that turn is taken; a
+ * send that fails leaves it up, and a second click finds the rule present.
+ */
+export async function answerJudged(
+  scope: AllowScope,
+  block: SafetyBlockNotice,
+  io: {
+    invoke: <T>(cmd: string, args: Record<string, unknown>) => Promise<T>;
+    onAnswered: (id: string) => void;
+    onContinue: Continue;
+    onWritten?: (allowed: AllowedOutage) => void;
+  },
+): Promise<void> {
+  const allowed = await io.invoke<AllowedOutage>("safety_block_allow_rule", { id: block.id, scope });
+  io.onWritten?.(allowed);
+  const taken = await io.onContinue(judgedAllowedReply(allowed, block.action), { safetyBlock: block.id });
+  if (taken === false) throw new Error(ALLOW_NOT_SENT);
+  io.onAnswered(block.id);
+}
 
 /**
  * The one supported way to approve an exact command yourself (feedback
@@ -356,7 +420,11 @@ export function allowForProjectReply(block: SafetyBlockNotice): string {
   );
 }
 
-/** Claude's auto-mode card: what was refused, and that nothing here can allow it. */
+/**
+ * Claude's auto-mode card: what was refused, that nothing here approves that
+ * call, and — when the host could name the line exactly — a lasting "Always
+ * allow" whose rules and file are shown before anything is written.
+ */
 function ClaudeSafetyBlock({
   block,
   onContinue,
@@ -369,8 +437,14 @@ function ClaudeSafetyBlock({
   startOpen: boolean;
 }) {
   const [open, setOpen] = useState(startOpen);
-  const [sending, setSending] = useState<"safer" | "dismiss" | null>(null);
+  const [sending, setSending] = useState<"safer" | "dismiss" | AllowScope | null>(null);
   const [error, setError] = useState("");
+  const [wrote, setWrote] = useState<AllowedOutage | null>(null);
+  const rules = block.rules ?? [];
+  const uncovered = block.uncovered ?? [];
+  const projectPath = rules.length ? block.allow?.project : undefined;
+  const userPath = rules.length ? block.allow?.user : undefined;
+  const offersAllow = !!(projectPath || userPath);
 
   // "Dismiss" only takes the card down: for when the person has dealt with
   // the command themselves and the agent needs no new instruction.
@@ -386,6 +460,26 @@ function ClaudeSafetyBlock({
       setSending(null);
     }
   };
+
+  const allow = async (scope: AllowScope) => {
+    setSending(scope);
+    setError("");
+    try {
+      await answerJudged(scope, block, {
+        invoke: bridge.invoke.bind(bridge), onAnswered, onContinue, onWritten: setWrote,
+      });
+    } catch (why) {
+      setError(String((why as Error)?.message ?? why));
+      setSending(null);
+    }
+  };
+
+  const written = wrote
+    ? `${wrote.added.length ? `Added ${wrote.added.join(", ")}` : "Nothing new to add"}` +
+      `${wrote.present.length ? `${wrote.added.length ? "; " : ""}already there: ${wrote.present.join(", ")}` : ""} in ${wrote.path}.`
+    : block.written
+      ? `The rule is already in ${block.written === "project" ? "this project's" : "your own"} settings.`
+      : "";
 
   return (
     <div className="ask-card safety-card" role="alert" aria-label={block.title}>
@@ -413,10 +507,43 @@ function ClaudeSafetyBlock({
         </div>
       )}
 
+      {offersAllow && <>
+        <div className="safety-card-label">{rules.length === 1 ? "Rule Always allow adds" : "Rules Always allow adds"}</div>
+        <ul className="safety-card-commands safety-card-rules">
+          {rules.map((rule) => <li key={rule}><pre className="safety-card-action">{rule}</pre></li>)}
+        </ul>
+        {uncovered.length > 0 && <>
+          <div className="safety-card-label">Not covered: Claude still checks these</div>
+          <ul className="safety-card-commands safety-card-uncovered">
+            {uncovered.map((part) => <li key={part}><pre className="safety-card-action">{part}</pre></li>)}
+          </ul>
+        </>}
+        <div className="safety-card-label">Where it goes</div>
+        <pre className="ask-card-body safety-card-targets">
+          {projectPath && `This project: ${projectPath}`}
+          {projectPath && userPath && "\n"}
+          {userPath && `Everywhere: ${userPath}`}
+        </pre>
+      </>}
+
       <div className="ask-card-buttons safety-card-buttons">
         <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void answer("safer")}>
           {sending === "safer" ? "Continuing…" : "Use safer approach"}
         </button>
+        {projectPath && (
+          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+            title={`Adds ${rules.join(", ")} to ${projectPath}, then tells the agent`}
+            onClick={() => void allow("project")}>
+            {sending === "project" ? "Saving…" : "Always allow in this project"}
+          </button>
+        )}
+        {userPath && (
+          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+            title={`Adds ${rules.join(", ")} to ${userPath}, then tells the agent`}
+            onClick={() => void allow("user")}>
+            {sending === "user" ? "Saving…" : "Always allow everywhere"}
+          </button>
+        )}
         <button className="ask-btn" type="button" disabled={!!sending} aria-expanded={open}
           onClick={() => setOpen((shown) => !shown)}>
           {open ? "Hide technical details" : "Technical details"}
@@ -426,6 +553,8 @@ function ClaudeSafetyBlock({
         </button>
       </div>
 
+      {offersAllow && <p className="ask-card-note safety-card-rule">{JUDGED_ALLOW_NOTE}</p>}
+      {written && <p className="ask-card-note safety-card-written" role="status">{written}</p>}
       {error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
 
       <p className="ask-card-note">{CLAUDE_REFUSAL_NOTE}</p>

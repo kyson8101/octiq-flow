@@ -825,14 +825,15 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "safety_block_retry" => Ok(json!(crate::safety_block::retry_outage(&arg::<String>(
             &args, "id"
         )?)?)),
-        // "Always allow": the host derives the rule from the refused call and
+        // "Always allow" on a Claude card (an outage, or a judged refusal of
+        // a shell line): the host derives the rule from the refused call and
         // writes it to the scope's own settings file. The page sends only the
         // card and the scope, never a rule or a path. The card stays up until
-        // the retry turn that names it has been taken.
+        // the turn that names it has been taken.
         "safety_block_allow_rule" => {
             let id: String = arg(&args, "id")?;
             let scope: crate::claude_allow::Scope = arg(&args, "scope")?;
-            to_value(crate::safety_block::allow_outage(&id, scope))
+            to_value(crate::safety_block::allow_rule(&id, scope))
         }
 
         // ---- questions ----------------------------------------------------

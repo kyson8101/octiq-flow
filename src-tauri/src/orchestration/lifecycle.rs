@@ -37,6 +37,11 @@ pub struct NativeDecision {
 /// Only an outage refusal may be tried again (`safety_block::OUTAGE_RETRY`).
 const CLAUDE_REFUSAL_RECOVERY: &str = "Claude's auto mode refused this call without asking anyone, and OctiqFlow cannot approve it: there is no supported way to allow one refused call before it runs. The card only records the refusal. Do not retry the call or reword it to get past the classifier. Continue another safe way, or settle the attempt blocked and name the refused command so the person can decide.";
 
+/// The recovery text once the person wrote "Always allow" rules for a
+/// judged refusal. Only the person's click lets the call through, and only
+/// the parts a rule names: a reworded line is judged again.
+const CLAUDE_ALLOWED_RECOVERY: &str = "The person added Claude permission allow rules for this exact command (shown on the card), so Claude's auto mode runs matching calls without its safety check from now on. OctiqFlow did not run it. If the command is still needed, run it again exactly as before; do not reword it. Any part of the line no rule names is judged again, and if it is refused, carry on another safe way or settle blocked naming it.";
+
 fn safety_kind() -> String {
     "safety".into()
 }
@@ -313,6 +318,11 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
                 // Recorded by an earlier build that offered a one-time
                 // rule. It stays as history and authorizes nothing now.
                 decision.recovery = "History only: an earlier OctiqFlow build recorded a one-time allowance for this exact command. That allowance was withdrawn because it could not be enforced as one use, and it authorizes nothing now. Do not run the command on the strength of it. Claude's auto mode refusal stands: continue another safe way, or settle the attempt blocked and name the refused command.".into();
+            } else if claude_refusal && decision.status.starts_with("allowed_") {
+                // The person clicked "Always allow" on the card: exact rules
+                // for the line are now in a Claude settings file. Nothing was
+                // run for them; the agent retries itself.
+                decision.recovery = CLAUDE_ALLOWED_RECOVERY.into();
             } else if claude_refusal {
                 decision.recovery = CLAUDE_REFUSAL_RECOVERY.into();
             } else if decision.status == "closed" {
@@ -970,6 +980,60 @@ mod tests {
             .unwrap();
         assert_eq!(d.status, "allowed_project");
         assert!(d.recovery.contains("allow rule"), "{}", d.recovery);
+        std::fs::remove_dir_all(project).unwrap();
+        crate::safety_block::forget_chat(&chat);
+    }
+
+    /// A judged refusal the person answered with "Always allow": the ledger
+    /// says the rule exists and the agent may retry itself, and still that
+    /// OctiqFlow ran nothing.
+    #[test]
+    fn a_judged_refusal_allowed_by_rule_is_recorded_as_such() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        let project =
+            std::env::temp_dir().join(format!("octiq-lifecycle-judged-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&project).unwrap();
+        crate::safety_block::remember_claude_launch(
+            &chat,
+            true,
+            project.to_str().unwrap(),
+            false,
+            None,
+        );
+        let denial = json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "[Irreversible Local Destruction]",
+            "decision_reason_type": "classifier",
+            "message": "denied", "tool_name": "Bash", "tool_use_id": "toolu_jl",
+        });
+        assert!(crate::safety_block::observe_claude_denial(
+            &chat,
+            None,
+            &denial,
+            Some((
+                "Bash",
+                &json!({ "command": "rm -f web/pnpm-workspace.yaml" })
+            ))
+        ));
+        store.capture_native_decisions().unwrap();
+        let d = store.snapshot(Some(&run.id)).unwrap().native_decisions[0].clone();
+        assert_eq!(d.status, "pending");
+        assert_eq!(d.recovery, CLAUDE_REFUSAL_RECOVERY, "pending: strict");
+        crate::safety_block::allow_judged(&d.id, crate::claude_allow::Scope::Project).unwrap();
+        crate::safety_block::person_turn(&chat, Some(&d.id), || Ok::<_, String>(())).unwrap();
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let d = snapshot
+            .native_decisions
+            .iter()
+            .find(|x| x.id == d.id)
+            .unwrap();
+        assert_eq!(d.status, "allowed_project");
+        assert_eq!(d.continuation, "unavailable");
+        assert_eq!(d.recovery, CLAUDE_ALLOWED_RECOVERY);
+        assert!(d.recovery.contains("OctiqFlow did not run it"));
+        assert!(d.recovery.contains("from now on"));
         std::fs::remove_dir_all(project).unwrap();
         crate::safety_block::forget_chat(&chat);
     }

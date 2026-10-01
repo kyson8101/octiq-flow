@@ -1,17 +1,26 @@
-//! "Always allow" for a call Claude refused only because its classifier was
-//! unavailable.
+//! "Always allow" for a call Claude's auto mode refused: because its
+//! classifier was unavailable (an outage card), or because the classifier
+//! judged it (a safety card).
 //!
 //! Claude's auto mode skips its server-side classifier for any call a
-//! `permissions.allow` rule covers. When the classifier is down, the one way
-//! a person can let such a call through for good is such a rule, so the
-//! outage card offers to write one — on an explicit click, never by itself.
+//! `permissions.allow` rule covers — for a judged call too: a live probe on
+//! 2026-10-01 (claude 2.1.284) saw `git push --force origin main` refused as
+//! [Git Destructive], then run with no refusal once
+//! `Bash(git push --force origin main)` was in the project's settings. Such a
+//! rule is the one way a person can let a refused call through, and it lasts:
+//! it is never "once" (see `safety_block::EXACT_GRANT_WITHDRAWN`). So a card
+//! offers to write one on an explicit click, never by itself, and says that
+//! matching calls skip the check from then on.
 //!
-//! Two halves, both pure enough to test against temp folders:
+//! Three parts, all pure enough to test against temp folders:
 //!
-//! - `derive_rule` picks the NARROWEST rule that covers the refused call, or
-//!   none: `git push origin main` → `Bash(git push:*)`, an MCP tool → its exact
-//!   name. It never answers a blanket `Bash`, and it refuses anything a prefix
-//!   rule would widen into "run anything" (compound lines, interpreters).
+//! - `derive_rule` picks the NARROWEST rule that covers a call an OUTAGE
+//!   refused, or none: `git push origin main` → `Bash(git push:*)`, an MCP
+//!   tool → its exact name. It never answers a blanket `Bash`, and it refuses
+//!   anything a prefix rule would widen into "run anything" (compound lines,
+//!   interpreters).
+//! - `derive_judged_rules` is stricter, for a call the classifier JUDGED:
+//!   exact commands only, one per segment it is safe to name.
 //! - `add_allow_rules` merges rules into ONE of two non-shared settings files
 //!   — the project's `.claude/settings.local.json` or the person's own
 //!   `settings.json` — keeping every other key in its place.
@@ -259,6 +268,238 @@ fn is_simple(line: &str) -> bool {
         }
     }
     quote.is_none()
+}
+
+/// What "Always allow" may write for a call Claude's classifier JUDGED and
+/// refused, as opposed to one an outage refused unjudged.
+///
+/// A judgement is not an outage: the classifier looked at this call and said
+/// no. So the rule is the narrowest Claude has — the exact command, never a
+/// prefix — and it is offered only for a shell command. `rm -f x` is allowed
+/// as `Bash(rm -f x)` and nothing else; no `Bash(rm:*)` is ever derived here.
+/// A tool other than Bash gets nothing: its rule would be the whole tool
+/// (every URL, every file), which is far wider than the call.
+///
+/// A compound line is cut into its segments the way Claude checks them —
+/// Claude matches each segment of `a; b && c | d` against the rules on its
+/// own — and each segment that is safe to name gets its exact rule. The rest
+/// are `uncovered`: Claude still judges a line with any uncovered segment, so
+/// the retry may well be refused again (a live probe on 2026-10-01, claude
+/// 2.1.284, auto mode: `git push --force origin main; git status --short`
+/// with only `Bash(git status --short)` allowed was refused again; with both
+/// exact rules it ran).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct JudgedRules {
+    /// One exact `Bash(<segment>)` rule per nameable segment, in line order.
+    pub rules: Vec<String>,
+    /// Segments no rule names.
+    pub uncovered: Vec<String>,
+}
+
+/// Longer than this, an exact rule is a script in disguise.
+const EXACT_RULE_MAX: usize = 300;
+
+/// The exact rules for a judged refusal, or None when not one segment of the
+/// call is safe to name — then the card offers no allow at all.
+pub(crate) fn derive_judged_rules(tool: &str, command: Option<&str>) -> Option<JudgedRules> {
+    if tool.trim() != "Bash" {
+        return None;
+    }
+    let mut judged = JudgedRules::default();
+    for segment in segments(command?.trim())? {
+        let rule = format!("Bash({})", segment.text);
+        if !segment.redirected && exact_nameable(&segment.text) {
+            if !judged.rules.contains(&rule) {
+                judged.rules.push(rule);
+            }
+        } else if !judged.uncovered.contains(&segment.text) {
+            judged.uncovered.push(segment.text);
+        }
+    }
+    (!judged.rules.is_empty()).then_some(judged)
+}
+
+/// One command of a compound line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Segment {
+    text: String,
+    /// It reads or writes a file through `<` or `>`.
+    redirected: bool,
+}
+
+/// A line cut at its top-level `;`, `&&`, `||`, `|` and newlines. None for
+/// anything whose parts cannot be told apart this simply — a substitution,
+/// a subshell or group, a background job, a heredoc, a comment — because a
+/// cut that differs from Claude's would name a rule nothing ever matches, or
+/// worse, one that matches more than the person was shown.
+fn segments(line: &str) -> Option<Vec<Segment>> {
+    let mut out = Vec::new();
+    let mut text = String::new();
+    let mut redirected = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    let mut cut = |text: &mut String, redirected: &mut bool| {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            out.push(Segment {
+                text: trimmed.to_string(),
+                redirected: *redirected,
+            });
+        }
+        text.clear();
+        *redirected = false;
+    };
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') => {
+                text.push(c);
+                if c == '\'' {
+                    quote = None;
+                }
+            }
+            Some(_) => {
+                text.push(c);
+                match c {
+                    '"' => quote = None,
+                    '\\' => text.extend(chars.next()),
+                    '`' => return None,
+                    '$' if chars.peek() == Some(&'(') => return None,
+                    _ => {}
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    text.push(c);
+                }
+                '\\' => {
+                    text.push(c);
+                    text.extend(chars.next());
+                }
+                ';' | '\n' => cut(&mut text, &mut redirected),
+                '&' if chars.peek() == Some(&'&') => {
+                    chars.next();
+                    cut(&mut text, &mut redirected);
+                }
+                '|' => {
+                    // `||`, `|` and `|&` all end the command before them.
+                    if matches!(chars.peek(), Some('|') | Some('&')) {
+                        chars.next();
+                    }
+                    cut(&mut text, &mut redirected);
+                }
+                '<' if chars.peek() == Some(&'<') => return None,
+                '<' | '>' => {
+                    redirected = true;
+                    text.push(c);
+                    // `2>&1`, `>&2`: the `&` belongs to the redirect, and so
+                    // does the `|` of `>|` — it is not a pipe.
+                    if chars.peek() == Some(&'&') || (c == '>' && chars.peek() == Some(&'|')) {
+                        text.extend(chars.next());
+                    }
+                }
+                // `&>` is a redirect; a lone `&` runs a job in the background.
+                '&' if chars.peek() == Some(&'>') => {
+                    redirected = true;
+                    text.push(c);
+                }
+                '&' | '`' | '(' | ')' | '{' | '}' | '\r' => return None,
+                '$' if chars.peek() == Some(&'(') => return None,
+                '#' if text.is_empty() || text.ends_with(char::is_whitespace) => return None,
+                _ => text.push(c),
+            },
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    cut(&mut text, &mut redirected);
+    (!out.is_empty()).then_some(out)
+}
+
+/// Whether one segment can be named by an exact rule that allows exactly
+/// what the card shows and nothing more.
+fn exact_nameable(segment: &str) -> bool {
+    if segment.is_empty() || segment.len() > EXACT_RULE_MAX || !is_simple(segment) {
+        return false;
+    }
+    // `*` is a wildcard inside a rule, and a parenthesis would end it.
+    if segment.contains(['*', '(', ')']) {
+        return false;
+    }
+    // A variable or an unquoted glob makes the rule's text mean different
+    // commands on different days.
+    let mut quote: Option<char> = None;
+    let mut chars = segment.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') => quote = None,
+            (Some('\''), _) => {}
+            (Some(_), '"') => quote = None,
+            (_, '\\') => {
+                chars.next();
+            }
+            (_, '$') => return false,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '?' | '[') => return false,
+            _ => {}
+        }
+    }
+    let mut words = segment.split_whitespace();
+    let Some(program) = words.next() else {
+        return false;
+    };
+    if program.contains(['=', '"', '\'', '\\', '~']) {
+        return false;
+    }
+    let base = program.rsplit('/').next().unwrap_or(program);
+    let family = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    if RUNS_ANYTHING.contains(&base) || RUNS_ANYTHING.contains(&family) {
+        return false;
+    }
+    // `tee` writes whatever is piped into it over the files it names, so
+    // `Bash(tee x)` would let any content overwrite x: the same reason a
+    // redirected segment is never named.
+    if base == "tee" {
+        return false;
+    }
+    if matches!(base, "rm" | "rmdir" | "unlink") {
+        return removes_only_plain_relative_paths(words);
+    }
+    true
+}
+
+/// The one shape of `rm` (and `rmdir`, `unlink`) an exact rule may name:
+/// every target a plain path relative to the folder Claude runs in — not
+/// absolute, not under `~`, not `.` itself, and with no `..` component — so
+/// a recursive flag can only ever reach inside that folder. The person's own
+/// `rm -f web/pnpm-workspace.yaml` is such a line; `rm -rf /`, `rm -rf ~`,
+/// `rm -r ../x`, `rm /etc/hosts` and `rm -rf .` are not. Absolute paths are
+/// refused even inside the project: the rule is not tied to one folder.
+fn removes_only_plain_relative_paths<'a>(words: impl Iterator<Item = &'a str>) -> bool {
+    let mut options_done = false;
+    for word in words {
+        if !options_done && word == "--" {
+            options_done = true;
+            continue;
+        }
+        if !options_done && word.starts_with('-') {
+            continue;
+        }
+        let path = word.trim_matches(['"', '\'']);
+        let plain = !path.is_empty()
+            && !path.starts_with('/')
+            && !path.starts_with('~')
+            && !path.contains('\\')
+            // `C:/x`: absolute on Windows.
+            && path.as_bytes().get(1) != Some(&b':')
+            && !path.split('/').any(|part| part == "..")
+            && !path.split('/').all(|part| part.is_empty() || part == ".");
+        if !plain {
+            return false;
+        }
+    }
+    true
 }
 
 /// The project's own, uncommitted settings file. None for a chat with no
@@ -1097,6 +1338,291 @@ mod tests {
         assert!(!fresh.exists(), "resolving creates nothing");
         add_allow_rules(&path, Scope::User, &rules(&["Read"])).unwrap();
         assert!(fresh.join("settings.json").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn judged(line: &str) -> Option<(Vec<String>, Vec<String>)> {
+        derive_judged_rules("Bash", Some(line)).map(|j| (j.rules, j.uncovered))
+    }
+
+    /// The two lines the person saw refused as "Irreversible Local
+    /// Destruction" (2026-10-01), shaped as the worker called them.
+    #[test]
+    fn the_refused_worker_lines_get_one_exact_rule_per_segment() {
+        assert_eq!(
+            judged("rm -f web/pnpm-workspace.yaml; git status --short; sed -n '1,80p' web/package.json"),
+            Some((
+                rules(&[
+                    "Bash(rm -f web/pnpm-workspace.yaml)",
+                    "Bash(git status --short)",
+                    "Bash(sed -n '1,80p' web/package.json)",
+                ]),
+                vec![]
+            ))
+        );
+        assert_eq!(
+            judged("git status --short; sed -n '1,40p' src-tauri/src/claude_allow.rs"),
+            Some((
+                rules(&[
+                    "Bash(git status --short)",
+                    "Bash(sed -n '1,40p' src-tauri/src/claude_allow.rs)",
+                ]),
+                vec![]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_judged_rule_is_the_exact_command_never_a_prefix() {
+        assert_eq!(
+            judged("git push origin main"),
+            Some((rules(&["Bash(git push origin main)"]), vec![]))
+        );
+        assert_eq!(
+            judged("  git push   origin main  "),
+            Some((rules(&["Bash(git push   origin main)"]), vec![]))
+        );
+        // Destructive verbs get their exact line, and never `:*`.
+        for line in [
+            "rm -rf build",
+            "git reset --hard HEAD~1",
+            "git clean -fdx",
+            "chmod 600 key.pem",
+            "mv a b",
+            "dd if=a of=b",
+        ] {
+            let (found, _) = judged(line).unwrap();
+            assert_eq!(found, vec![format!("Bash({line})")], "{line}");
+            assert!(!found[0].contains(":*"));
+        }
+        // Each separator cuts; a repeated segment is one rule.
+        assert_eq!(
+            judged("git fetch && git status || git log | head -5; git status")
+                .unwrap()
+                .0,
+            rules(&[
+                "Bash(git fetch)",
+                "Bash(git status)",
+                "Bash(git log)",
+                "Bash(head -5)",
+            ])
+        );
+        assert_eq!(
+            judged("git fetch\ngit status").unwrap().0,
+            rules(&["Bash(git fetch)", "Bash(git status)"])
+        );
+    }
+
+    #[test]
+    fn segments_unsafe_to_name_are_listed_as_uncovered() {
+        assert_eq!(
+            judged("python3 -c 'print(1)'; git status"),
+            Some((
+                rules(&["Bash(git status)"]),
+                vec!["python3 -c 'print(1)'".into()]
+            ))
+        );
+        assert_eq!(
+            judged("cargo build 2>&1 | tail -3"),
+            Some((rules(&["Bash(tail -3)"]), vec!["cargo build 2>&1".into()]))
+        );
+        assert_eq!(
+            judged("echo hi > out.txt; ls").unwrap().1,
+            vec!["echo hi > out.txt".to_string()]
+        );
+        for (line, left) in [
+            ("ls *.log; pwd", "ls *.log"),
+            ("rm -rf $DIR; pwd", "rm -rf $DIR"),
+            ("echo \"$HOME\"; pwd", "echo \"$HOME\""),
+            ("ls file?.txt; pwd", "ls file?.txt"),
+            ("FOO=1 git push; pwd", "FOO=1 git push"),
+            ("rm -rf /; pwd", "rm -rf /"),
+            ("rm -rf ~; pwd", "rm -rf ~"),
+            ("rm -rf ~/; pwd", "rm -rf ~/"),
+            ("rm -rf ..; pwd", "rm -rf .."),
+            ("rm -rf ../..; pwd", "rm -rf ../.."),
+            ("rmdir .; pwd", "rmdir ."),
+            (
+                "git commit -m \"fix (x)\"; pwd",
+                "git commit -m \"fix (x)\"",
+            ),
+            ("sudo rm x; pwd", "sudo rm x"),
+            ("env FOO=1 ls; pwd", "env FOO=1 ls"),
+            ("xargs rm; pwd", "xargs rm"),
+        ] {
+            assert_eq!(
+                judged(line),
+                Some((rules(&["Bash(pwd)"]), vec![left.to_string()])),
+                "{line:?}"
+            );
+        }
+        // Coordinator review: any redirection, and `tee`, can overwrite a
+        // file while the named program looks harmless.
+        for (line, left) in [
+            ("echo hi >> log.txt; pwd", "echo hi >> log.txt"),
+            ("sort < in.txt; pwd", "sort < in.txt"),
+            ("ls 2> err.txt; pwd", "ls 2> err.txt"),
+            ("ls &> all.txt; pwd", "ls &> all.txt"),
+            ("ls >| forced.txt; pwd", "ls >| forced.txt"),
+            ("git log 2>&1; pwd", "git log 2>&1"),
+            ("git log | tee out.txt; pwd", "tee out.txt"),
+            ("tee -a ~/.zshrc; pwd", "tee -a ~/.zshrc"),
+        ] {
+            let (found, uncovered) = judged(line).unwrap();
+            assert!(found.contains(&"Bash(pwd)".to_string()), "{line:?}");
+            assert_eq!(uncovered, vec![left.to_string()], "{line:?}");
+            assert!(found
+                .iter()
+                .all(|r| !r.contains('>') && !r.contains('<') && !r.contains("tee")));
+        }
+        // A quoted `>` is text, not a redirect.
+        assert_eq!(
+            judged("git commit -m 'a > b'").unwrap().0,
+            rules(&["Bash(git commit -m 'a > b')"])
+        );
+        // Single quotes keep `$`, `*` aside — but `*` still ends a rule early
+        // as a wildcard, so it is never named.
+        assert_eq!(
+            judged("echo '$HOME'").unwrap().0,
+            rules(&["Bash(echo '$HOME')"])
+        );
+        assert_eq!(judged("grep 'a*b' f"), None);
+        let long = format!("echo {}", "x".repeat(EXACT_RULE_MAX));
+        assert_eq!(judged(&long), None);
+    }
+
+    /// Coordinator review: which `rm` lines an exact rule may name.
+    #[test]
+    fn only_rm_of_plain_relative_paths_is_named() {
+        for line in [
+            "rm -f web/pnpm-workspace.yaml",
+            "rm -rf build",
+            "rm -rf target/debug/incremental",
+            "rm -r -f ./dist",
+            "rm --recursive node_modules/.cache",
+            "rm -- -weird-name",
+            "rm a.txt 'b c.txt'",
+            "rmdir empty-dir",
+            "unlink stale.lock",
+        ] {
+            assert_eq!(
+                judged(line).unwrap().0,
+                vec![format!("Bash({line})")],
+                "{line:?}"
+            );
+        }
+        for line in [
+            "rm -rf /",
+            "rm -f /etc/hosts",
+            "rm -rf /Users/me/repo/build",
+            "rm -rf ~",
+            "rm -rf ~/",
+            "rm -f ~/.zshrc",
+            "rm -rf .",
+            "rm -rf ./",
+            "rm -rf ..",
+            "rm -rf ../sibling",
+            "rm -rf build/../..",
+            "rm -rf a/../../b",
+            "rm -f ok.txt /tmp/x",
+            "rmdir ..",
+            "unlink /tmp/x",
+            "rm -rf C:/Users",
+            "rm -rf 'C:\\Users'",
+        ] {
+            assert_eq!(judged(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn an_interpreter_line_gets_no_judged_rule() {
+        for line in [
+            "python3 -c 'print(1)'",
+            "node script.js",
+            "bash -c 'rm -rf build'",
+            "sh run.sh",
+            "npx some-tool",
+            "awk '{print $1}' f",
+            "/usr/bin/python3 x.py",
+            "eval ls",
+        ] {
+            assert_eq!(judged(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_cannot_be_cut_plainly_gets_no_judged_rule() {
+        for line in [
+            "",
+            "   ",
+            "echo $(whoami); ls",
+            "echo `whoami`; ls",
+            "ls; echo \"$(whoami)\"",
+            "(cd x; ls)",
+            "{ ls; }",
+            "sleep 1 & ls",
+            "cat <<EOF\nrm -rf /\nEOF",
+            "ls # rm -rf /",
+            "echo 'unterminated; ls",
+            "diff <(ls a) <(ls b)",
+            "ls\r\nrm x",
+        ] {
+            assert_eq!(judged(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn never_a_blanket_or_tool_wide_judged_rule() {
+        for line in ["*", "Bash", ":*", "Bash(*)", "git push:*"] {
+            if let Some((found, _)) = judged(line) {
+                for rule in &found {
+                    assert!(
+                        rule != "Bash" && rule != "Bash(*)" && !rule.contains('*'),
+                        "{rule}"
+                    );
+                }
+            }
+        }
+        assert_eq!(derive_judged_rules("Bash", None), None);
+        // Any other tool's rule would be the whole tool: none is offered.
+        for tool in [
+            "WebFetch",
+            "Write",
+            "Edit",
+            "Read",
+            "mcp__octiq__ask_user",
+            "mcp__github__delete_repo",
+            "*",
+            "",
+        ] {
+            assert_eq!(derive_judged_rules(tool, Some("ls")), None, "{tool}");
+        }
+    }
+
+    /// Both scopes take judged rules through the same writer.
+    #[test]
+    fn judged_rules_are_written_to_either_scope() {
+        let root = temp();
+        let home = root.join("home");
+        let project = root.join("project");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let found = derive_judged_rules("Bash", Some("git status --short; git push origin main"))
+            .unwrap()
+            .rules;
+        let path = project_settings_path(&project).unwrap();
+        let added = add_allow_rules(&path, Scope::Project, &found).unwrap();
+        assert_eq!(added.added, found);
+        let user = user_settings_target(None, &home, Some(&home), Some(&project)).unwrap();
+        add_allow_rules(&user, Scope::User, &found).unwrap();
+        for file in [&path, &user] {
+            let written: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+            assert_eq!(
+                written["permissions"]["allow"],
+                serde_json::json!(["Bash(git status --short)", "Bash(git push origin main)"])
+            );
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

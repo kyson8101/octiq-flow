@@ -53,17 +53,27 @@ pub struct BlockedAction {
     /// An outage card only: every refused call in it, for the ledger.
     #[serde(skip_serializing)]
     refusals: Vec<Refusal>,
-    /// An outage card only: the settings files an "Always allow" would write,
-    /// when this chat reads them. None for a chat that ignores Claude's
-    /// settings files (a lite chat) or whose launch this server never saw.
+    /// A Claude card with a rule to offer: the settings files an "Always
+    /// allow" would write, when this chat reads them. None for a chat that
+    /// ignores Claude's settings files (a lite chat), whose launch this server
+    /// never saw, or (a judged card) whose call no exact rule can name.
     #[serde(skip_serializing_if = "Option::is_none")]
     allow: Option<AllowTargets>,
-    /// An outage card only: the scope an "Always allow" has already written
-    /// while the retry turn is not yet queued. The card stays up until a chat
-    /// has taken the retry turn that names it (`person_turn`), so a send that
-    /// fails in between leaves it to be sent again rather than lost.
+    /// A Claude card only: the scope an "Always allow" has already written
+    /// while the turn that answers it is not yet queued. The card stays up
+    /// until a chat has taken the turn that names it (`person_turn`), so a
+    /// send that fails in between leaves it to be sent again rather than lost.
     #[serde(skip_serializing_if = "Option::is_none")]
     written: Option<crate::claude_allow::Scope>,
+    /// A judged Claude refusal only: the exact rules "Always allow" writes,
+    /// one per segment of the refused line it is safe to name
+    /// (`claude_allow::derive_judged_rules`). Empty: no allow is offered.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    rules: Vec<String>,
+    /// A judged Claude refusal only: the segments of the line no rule names.
+    /// Claude judges a line holding any of them again.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    uncovered: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -288,8 +298,9 @@ fn record_decision(id: &str, decision: &'static str) {
 
 /// How a card that is no longer pending was decided, when this server saw it:
 /// "authorized_project", "dismissed" or "superseded"; for an outage card also
-/// "retried", "allowed_project" or "allowed_user". Nothing records
-/// "allowed_exact" any more; see `EXACT_GRANT_WITHDRAWN`.
+/// "retried"; for a Claude card "allowed_project" or "allowed_user" (a
+/// lasting allow rule the person wrote). Nothing records "allowed_exact" any
+/// more; see `EXACT_GRANT_WITHDRAWN`.
 pub(crate) fn decision(id: &str) -> Option<&'static str> {
     with_decided(|decided| decided.get(id).copied())
 }
@@ -451,14 +462,13 @@ pub struct AllowedOutage {
     path: String,
     #[serde(flatten)]
     added: crate::claude_allow::Added,
-    /// Refused calls no rule covers: the retry asks for them too, but they
-    /// meet Claude's check again.
+    /// Refused calls (or, on a judged card, segments of the refused line)
+    /// no rule covers: they meet Claude's check again.
     uncovered: Vec<String>,
 }
 
-/// Only an outage card from Claude can be retried or allowed from here: a
-/// judged refusal stands (`EXACT_GRANT_WITHDRAWN`), and Codex's cards have
-/// their own choices.
+/// Only an outage card from Claude can be retried from here, and Codex's
+/// cards have their own choices.
 fn pending_outage(id: &str) -> Result<BlockedAction, String> {
     let block = with_pending(|pending| pending.get(id).cloned())
         .ok_or("This card is no longer pending.")?;
@@ -471,16 +481,65 @@ fn pending_outage(id: &str) -> Result<BlockedAction, String> {
     Ok(block)
 }
 
-/// "Always allow": write the narrowest rule for each of the card's refused
-/// calls into the chosen settings file, then take the card down as decided.
-/// The caller then asks the agent to retry; nothing here runs anything.
-pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<AllowedOutage, String> {
+/// A judged Claude refusal whose line has at least one segment an exact rule
+/// can name. Nothing about the refusal itself is approved here: the only
+/// thing such a card can do is write that lasting rule.
+fn pending_judged(id: &str) -> Result<BlockedAction, String> {
+    let block = with_pending(|pending| pending.get(id).cloned())
+        .ok_or("This card is no longer pending.")?;
+    if block.provider != "claude" || block.kind != "high-risk-action" || block.rules.is_empty() {
+        return Err(
+            "No exact allow rule can be written for this card: only a judged Claude refusal of a shell command that can be named exactly offers one."
+                .into(),
+        );
+    }
+    Ok(block)
+}
+
+/// "Always allow" on any Claude card: an outage card's narrowest rules, or a
+/// judged card's exact ones. The page sends only the card and the scope.
+pub fn allow_rule(id: &str, scope: crate::claude_allow::Scope) -> Result<AllowedOutage, String> {
+    if pending_judged(id).is_ok() {
+        allow_judged(id, scope)
+    } else {
+        allow_outage(id, scope)
+    }
+}
+
+/// "Always allow" on a judged refusal: write the card's exact rules — the
+/// ones it showed, derived when the refusal was seen — into the chosen
+/// settings file. Nothing is run and nothing is retried here: the page then
+/// tells the agent the rule exists, in a turn that names this card, and the
+/// card closes as this allow once that turn is taken (`person_turn`). From
+/// then on Claude runs matching commands without its safety check; that is
+/// the lasting rule `EXACT_GRANT_WITHDRAWN` says a one-time grant could never
+/// avoid being, offered here as exactly that.
+pub fn allow_judged(id: &str, scope: crate::claude_allow::Scope) -> Result<AllowedOutage, String> {
+    let block = pending_judged(id)?;
+    let path = allow_path(&block, scope)?;
+    let rules = block.rules.clone();
+    let added = crate::claude_allow::add_allow_rules(Path::new(&path), scope, &rules)?;
+    with_pending(|pending| {
+        if let Some(block) = pending.get_mut(id) {
+            block.written = Some(scope);
+        }
+    });
+    Ok(AllowedOutage {
+        rules,
+        path,
+        added,
+        uncovered: block.uncovered.clone(),
+    })
+}
+
+/// The settings file an "Always allow" on this card writes for `scope`, or
+/// why it may not.
+fn allow_path(block: &BlockedAction, scope: crate::claude_allow::Scope) -> Result<String, String> {
     use crate::claude_allow::Scope;
-    let block = pending_outage(id)?;
     let targets = block.allow.as_ref().ok_or(
         "This chat does not read Claude's settings files, so an allow rule would change nothing.",
     )?;
-    let path = match scope {
+    Ok(match scope {
         Scope::Project => targets.project.clone().ok_or(
             "This chat has no project folder, so there is no project settings file to write.",
         )?,
@@ -503,7 +562,15 @@ pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<Allow
             }
             shown
         }
-    };
+    })
+}
+
+/// "Always allow" on an outage card: write the narrowest rule for each of
+/// the card's refused calls into the chosen settings file. The caller then
+/// asks the agent to retry; nothing here runs anything.
+pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<AllowedOutage, String> {
+    let block = pending_outage(id)?;
+    let path = allow_path(&block, scope)?;
     let mut rules: Vec<String> = Vec::new();
     let mut uncovered = Vec::new();
     for command in &block.commands {
@@ -544,6 +611,26 @@ pub fn retry_outage(id: &str) -> Result<bool, String> {
     let block = pending_outage(id)?;
     let decision = block.written.map_or("retried", |scope| scope.decision());
     Ok(dismiss_as(id, decision))
+}
+
+/// How a pending card closes when a turn that names it is taken, or None
+/// when no turn answers it: an outage card closes as retried or as the allow
+/// it wrote; a judged card only as the allow it wrote — a turn naming a
+/// judged card before its rule exists answers nothing, and supersedes it.
+fn answered_as(id: &str) -> Option<&'static str> {
+    with_pending(|pending| {
+        let block = pending.get(id)?;
+        if block.provider != "claude" {
+            return None;
+        }
+        match block.kind {
+            "outage" => Some(block.written.map_or("retried", |scope| scope.decision())),
+            "high-risk-action" if !block.rules.is_empty() => {
+                block.written.map(|scope| scope.decision())
+            }
+            _ => None,
+        }
+    })
 }
 
 fn authorization_path() -> PathBuf {
@@ -769,6 +856,11 @@ fn describe_call(tool: &str, input: Option<&serde_json::Value>) -> String {
 /// continues a refused call, and an allow rule on a later launch is not
 /// "once" — see `EXACT_GRANT_WITHDRAWN`.
 ///
+/// What the card CAN offer, for a shell line, is the lasting kind: exact
+/// rules the person writes to their settings (`allow_judged`), which Claude
+/// then honours without asking its classifier, for this call and every later
+/// one that matches. The agent is told the rule exists and retries itself.
+///
 /// `owner` is the orchestration attempt live in the chat, if any, so an
 /// outage group never spans two attempts of a reused worker chat.
 pub fn observe_claude_denial(
@@ -826,6 +918,14 @@ pub(crate) fn observe_claude_refusal(
         remember_refused_call(id);
     }
     let mut detail = text("message").unwrap_or_default().trim().to_string();
+    let command = (tool == "Bash")
+        .then(|| {
+            input
+                .and_then(|i| i.get("command"))
+                .and_then(|c| c.as_str())
+        })
+        .flatten()
+        .map(str::to_string);
     if refusal_kind(text("decision_reason")) == RefusalKind::Outage {
         return publish_outage(
             chat_key,
@@ -836,14 +936,7 @@ pub(crate) fn observe_claude_refusal(
                 tool_use_id: tool_use_id.map(str::to_string),
                 action,
                 tool: tool.to_string(),
-                command: (tool == "Bash")
-                    .then(|| {
-                        input
-                            .and_then(|i| i.get("command"))
-                            .and_then(|c| c.as_str())
-                    })
-                    .flatten()
-                    .map(str::to_string),
+                command,
                 at: now,
                 owner: owner.map(str::to_string),
             },
@@ -853,6 +946,15 @@ pub(crate) fn observe_claude_refusal(
         // Two refusals of the same line are two decisions, not one card.
         detail.push_str(&format!("\n\nTool call: {id}"));
     }
+    // The exact rules are derived from the line as Claude was asked to run
+    // it, never re-read from the display `action`, and fixed now: the card
+    // writes what it showed.
+    let judged = crate::claude_allow::derive_judged_rules(tool, command.as_deref());
+    let allow = judged.as_ref().and_then(|_| allow_targets(chat_key));
+    let (rules, uncovered) = match (judged, &allow) {
+        (Some(judged), Some(_)) => (judged.rules, judged.uncovered),
+        _ => (Vec::new(), Vec::new()),
+    };
     publish_block(BlockedAction {
         id: uuid::Uuid::new_v4().to_string(),
         chat_key: chat_key.to_string(),
@@ -867,8 +969,10 @@ pub(crate) fn observe_claude_refusal(
         commands: Vec::new(),
         guidance: None,
         refusals: Vec::new(),
-        allow: None,
+        allow,
         written: None,
+        rules,
+        uncovered,
     })
 }
 
@@ -926,6 +1030,8 @@ fn publish_outage(chat_key: &str, reason: &str, message: String, refusal: Refusa
             refusals: vec![refusal],
             allow: allow_targets(chat_key),
             written: None,
+            rules: Vec::new(),
+            uncovered: Vec::new(),
         };
         regroup(&mut block);
         pending.insert(block.id.clone(), block.clone());
@@ -993,7 +1099,7 @@ fn regroup(block: &mut BlockedAction) {
 /// ran one rule's line twice in a single response. Ending the process after
 /// the fact is not authorization. Claude offers no approval that pauses one
 /// classifier-refused call before it runs, so the refusal stands.
-pub const EXACT_GRANT_WITHDRAWN: &str = "OctiqFlow cannot allow a command Claude's auto mode refused. Claude refuses it without asking anyone, and gives no way to approve one call before it runs; a permission rule would allow every later call of that line too. The refusal stands. Dismiss the card, run the command yourself, or change Claude's permissions outside OctiqFlow if you mean to allow it for good.";
+pub const EXACT_GRANT_WITHDRAWN: &str = "OctiqFlow cannot allow a command Claude's auto mode refused. Claude refuses it without asking anyone, and gives no way to approve one call before it runs; a permission rule would allow every later call of that line too. The refusal stands. Dismiss the card, run the command yourself, or, if you mean to allow it for good, add a lasting allow rule with the card's Always allow where it offers one.";
 
 /// A new user turn supersedes any unanswered post-hoc choice in that chat.
 pub fn forget_chat(chat_key: &str) {
@@ -1023,21 +1129,22 @@ pub fn forget_chat(chat_key: &str) {
 /// Offer a turn the person sent to a chat (`send`), superseding that chat's
 /// unanswered cards as `forget_chat` does.
 ///
-/// `answering` names the outage card this turn is the retry for. Then
-/// nothing is superseded until the chat has TAKEN the turn: a send that
+/// `answering` names the card this turn answers: an outage card's retry, or
+/// the message telling the agent a judged card's allow rule now exists.
+/// Then nothing is superseded until the chat has TAKEN the turn: a send that
 /// fails — no process, a refused workspace, a start that never happens —
 /// leaves every card up and undecided, to be answered again. Once it is
-/// taken, the card is closed as its own decision (`retry_outage`: retried,
+/// taken, the card is closed as its own decision (`answered_as`: retried,
 /// or the allow it wrote), and only the cards that were already up beside
 /// it are superseded; one the new turn raised in the meantime stays. Any
-/// other turn, or one naming a card that is no longer a pending outage card,
+/// other turn, or one naming a card no turn answers (`answered_as` is None),
 /// supersedes first, exactly as before.
 pub fn person_turn<T>(
     chat_key: &str,
     answering: Option<&str>,
     send: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    let Some(card) = answering.filter(|id| pending_outage(id).is_ok()) else {
+    let Some(card) = answering.filter(|id| answered_as(id).is_some()) else {
         forget_chat(chat_key);
         return send();
     };
@@ -1050,7 +1157,9 @@ pub fn person_turn<T>(
     });
     let taken = send()?;
     // Another tab may have closed it since; the turn is taken either way.
-    let _ = retry_outage(card);
+    if let Some(decision) = answered_as(card) {
+        dismiss_as(card, decision);
+    }
     for id in beside {
         dismiss_as(&id, "superseded");
     }
@@ -1130,6 +1239,8 @@ fn publish(chat_key: &str, summary: String, detail: String) -> bool {
         refusals: Vec::new(),
         allow: None,
         written: None,
+        rules: Vec::new(),
+        uncovered: Vec::new(),
     })
 }
 
@@ -1293,6 +1404,8 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
             refusals: Vec::new(),
             allow: None,
             written: None,
+            rules: Vec::new(),
+            uncovered: Vec::new(),
         };
 
         save_authorization(&path, &block).unwrap();
@@ -1839,7 +1952,9 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         assert!(err.contains("Retry once"), "{err}");
         forget_chat(&chat);
 
-        // A judged refusal: the refusal stands, nothing is written or retried.
+        // A judged refusal: the refusal stands. The card may OFFER the exact
+        // rule (`allow_judged`), but nothing is written or retried by seeing
+        // it, and the outage commands do not reach it.
         let judged = format!("chat:test-{}", uuid::Uuid::new_v4());
         remember_claude_launch(&judged, true, project.to_str().unwrap(), false, None);
         assert!(observe_claude_denial(
@@ -1851,10 +1966,12 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         let card = cards_in(&judged).pop().unwrap();
         assert_eq!(card.kind, "high-risk-action");
         let shown = serde_json::to_value(&card).unwrap();
-        assert!(
-            shown.get("allow").is_none() && !shown.to_string().contains("Bash("),
+        assert_eq!(
+            shown["rules"],
+            serde_json::json!(["Bash(git push)"]),
             "{shown}"
         );
+        assert!(!shown.to_string().contains(":*"), "{shown}");
         assert!(allow_outage(&card.id, crate::claude_allow::Scope::Project).is_err());
         assert!(retry_outage(&card.id).is_err());
         assert!(!cards_in(&judged).is_empty());
@@ -2128,5 +2245,262 @@ or if the user explicitly approves the action after being informed of the risk."
         assert!(ours[0].detail.contains("\nReason:"));
         assert!(ours[0].detail.contains("\nThe agent must"));
         assert!(dismiss(&ours[0].id));
+    }
+
+    /// A judged refusal, as the person saw it on 2026-10-01.
+    fn judged_denial(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "system", "subtype": "permission_denied",
+            "decision_reason": "[Irreversible Local Destruction]",
+            "decision_reason_type": "classifier",
+            "message": "Permission for this action was denied by the Claude Code auto mode classifier.",
+            "tool_name": "Bash", "tool_use_id": id,
+        })
+    }
+
+    const REFUSED_LINE: &str =
+        "rm -f web/pnpm-workspace.yaml; git status --short; sed -n '1,80p' web/package.json";
+
+    fn judged_card(chat: &str, id: &str, line: &str) -> BlockedAction {
+        assert!(observe_claude_denial(
+            chat,
+            None,
+            &judged_denial(id),
+            Some(("Bash", &bash(line)))
+        ));
+        cards_in(chat).pop().unwrap()
+    }
+
+    #[test]
+    fn a_judged_refusal_card_offers_its_exact_rules_and_where_they_go() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("judged-project");
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        let card = judged_card(&chat, "toolu_j1", REFUSED_LINE);
+        assert_eq!(card.kind, "high-risk-action");
+        assert_eq!(card.summary, "Irreversible Local Destruction");
+        let shown = serde_json::to_value(&card).unwrap();
+        assert_eq!(
+            shown["rules"],
+            serde_json::json!([
+                "Bash(rm -f web/pnpm-workspace.yaml)",
+                "Bash(git status --short)",
+                "Bash(sed -n '1,80p' web/package.json)",
+            ])
+        );
+        assert!(shown.get("uncovered").is_none());
+        assert_eq!(
+            shown["allow"]["project"],
+            project
+                .join(".claude")
+                .join("settings.local.json")
+                .to_str()
+                .unwrap()
+        );
+        assert!(shown["allow"]["user"]
+            .as_str()
+            .unwrap()
+            .ends_with("settings.json"));
+        // Nothing was written by seeing it, and it still holds no attempt.
+        assert!(!project.join(".claude").exists());
+        assert!(!awaits_decision(&chat));
+        forget_chat(&chat);
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn a_judged_card_with_nothing_nameable_offers_no_allow() {
+        let project = temp_dir("judged-none");
+        for (line, tool) in [
+            ("python3 -c 'import shutil; shutil.rmtree(\"x\")'", "Bash"),
+            ("rm -rf $(pwd)", "Bash"),
+            ("rm -rf /", "Bash"),
+            ("https://example.com", "WebFetch"),
+        ] {
+            let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+            remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+            let mut event = judged_denial("toolu_n");
+            event["tool_name"] = tool.into();
+            let input = if tool == "Bash" {
+                bash(line)
+            } else {
+                serde_json::json!({ "url": line })
+            };
+            assert!(observe_claude_denial(
+                &chat,
+                None,
+                &event,
+                Some((tool, &input))
+            ));
+            let card = cards_in(&chat).pop().unwrap();
+            let shown = serde_json::to_value(&card).unwrap();
+            assert!(shown.get("rules").is_none(), "{line}: {shown}");
+            assert!(shown.get("allow").is_none(), "{line}: {shown}");
+            let err = allow_rule(&card.id, crate::claude_allow::Scope::Project).unwrap_err();
+            assert!(!err.is_empty());
+            assert!(allow_judged(&card.id, crate::claude_allow::Scope::User).is_err());
+            assert_eq!(cards_in(&chat).len(), 1, "a refused allow leaves the card");
+            forget_chat(&chat);
+        }
+        assert!(!project.join(".claude").exists(), "nothing was written");
+        // A lite chat reads no settings file: no rule would change anything.
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), true, None);
+        let card = judged_card(&chat, "toolu_lite", "git push origin main");
+        assert!(serde_json::to_value(&card).unwrap().get("rules").is_none());
+        assert!(allow_rule(&card.id, crate::claude_allow::Scope::Project).is_err());
+        forget_chat(&chat);
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn always_allow_on_a_judged_card_writes_exact_rules_and_closes_with_the_turn() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("judged-allow");
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        let card = judged_card(&chat, "toolu_ja", "node build.js; git push origin main");
+        let shown = serde_json::to_value(&card).unwrap();
+        assert_eq!(
+            shown["rules"],
+            serde_json::json!(["Bash(git push origin main)"])
+        );
+        assert_eq!(shown["uncovered"], serde_json::json!(["node build.js"]));
+
+        // A turn naming the card before any rule exists answers nothing: it
+        // supersedes the card like any other turn.
+        observe_claude_denial(
+            &chat,
+            None,
+            &judged_denial("toolu_jb"),
+            Some(("Bash", &bash("git push origin main"))),
+        );
+        let other = cards_in(&chat)
+            .into_iter()
+            .find(|c| c.id != card.id)
+            .unwrap();
+        assert_eq!(answered_as(&other.id), None);
+
+        let done = serde_json::to_value(
+            allow_rule(&card.id, crate::claude_allow::Scope::Project).unwrap(),
+        )
+        .unwrap();
+        let settings = project.join(".claude").join("settings.local.json");
+        assert_eq!(
+            done["rules"],
+            serde_json::json!(["Bash(git push origin main)"])
+        );
+        assert_eq!(
+            done["added"],
+            serde_json::json!(["Bash(git push origin main)"])
+        );
+        assert_eq!(done["uncovered"], serde_json::json!(["node build.js"]));
+        assert_eq!(done["path"], settings.to_str().unwrap());
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            written["permissions"]["allow"],
+            serde_json::json!(["Bash(git push origin main)"])
+        );
+        // Written, but undecided until the turn telling the agent is taken.
+        assert_eq!(decision(&card.id), None);
+        assert_eq!(answered_as(&card.id), Some("allowed_project"));
+        // An outage-only command never closes a judged card.
+        assert!(retry_outage(&card.id).is_err());
+
+        // A send that fails leaves both cards up.
+        let failed: Result<(), String> =
+            person_turn(&chat, Some(&card.id), || Err("no process".into()));
+        assert!(failed.is_err());
+        assert_eq!(cards_in(&chat).len(), 2);
+        // Taken: the card closes as the allow; the card beside it is superseded.
+        person_turn(&chat, Some(&card.id), || Ok::<_, String>(())).unwrap();
+        assert!(cards_in(&chat).is_empty());
+        assert_eq!(decision(&card.id), Some("allowed_project"));
+        assert_eq!(decision(&other.id), Some("superseded"));
+        assert!(allow_rule(&card.id, crate::claude_allow::Scope::Project).is_err());
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn always_allow_everywhere_on_a_judged_card_writes_the_config_dir() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("judged-project");
+        let config = temp_dir("judged-config");
+        remember_claude_launch(
+            &chat,
+            true,
+            project.to_str().unwrap(),
+            false,
+            Some(config.to_string_lossy().into_owned()),
+        );
+        let card = judged_card(&chat, "toolu_ju", "git status --short; sed -n '1,40p' x.rs");
+        let path = config.canonical().unwrap().join("settings.json");
+        assert_eq!(
+            serde_json::to_value(&card).unwrap()["allow"]["user"],
+            path.to_str().unwrap()
+        );
+        let done = allow_judged(&card.id, crate::claude_allow::Scope::User).unwrap();
+        assert_eq!(
+            serde_json::to_value(done).unwrap()["path"],
+            path.to_str().unwrap()
+        );
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["permissions"]["allow"],
+            serde_json::json!(["Bash(git status --short)", "Bash(sed -n '1,40p' x.rs)"])
+        );
+        assert!(
+            !project.join(".claude").exists(),
+            "the project is untouched"
+        );
+        person_turn(&chat, Some(&card.id), || Ok::<_, String>(())).unwrap();
+        assert_eq!(decision(&card.id), Some("allowed_user"));
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(config).unwrap();
+    }
+
+    /// The outage and judged paths do not cross: each card answers only its
+    /// own commands, and Codex cards answer neither.
+    #[test]
+    fn allow_commands_check_the_cards_kind() {
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("judged-kinds");
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        let judged = judged_card(&chat, "toolu_k1", "git push origin main");
+        assert!(allow_outage(&judged.id, crate::claude_allow::Scope::Project).is_err());
+        assert!(retry_outage(&judged.id).is_err());
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_k2"),
+            Some(("Bash", &bash("git push origin main"))),
+            now_ms()
+        ));
+        let outage = cards_in(&chat)
+            .into_iter()
+            .find(|c| c.kind == "outage")
+            .unwrap();
+        assert!(allow_judged(&outage.id, crate::claude_allow::Scope::Project).is_err());
+        // `allow_rule` sends each to its own path: the outage's prefix rule.
+        let done = serde_json::to_value(
+            allow_rule(&outage.id, crate::claude_allow::Scope::Project).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(done["rules"], serde_json::json!(["Bash(git push:*)"]));
+        forget_chat(&chat);
+
+        let codex = format!("chat:test-{}", uuid::Uuid::new_v4());
+        for line in [
+            "2026-09-07T12:15:53.336267Z ERROR codex_core::tools::router: error=This action was rejected due to unacceptable risk.",
+            "Reason: it deletes a folder.",
+            "The agent must not attempt to achieve the same outcome via workaround, indirect execution, or policy circumvention.",
+        ] {
+            observe(AgentKind::Codex, &codex, line);
+        }
+        let card = cards_in(&codex).pop().unwrap();
+        assert!(allow_rule(&card.id, crate::claude_allow::Scope::Project).is_err());
+        assert!(allow_judged(&card.id, crate::claude_allow::Scope::Project).is_err());
+        forget_chat(&codex);
+        fs::remove_dir_all(project).unwrap();
     }
 }

@@ -6,10 +6,13 @@ vi.mock("../lib/bridge", () => ({
 }));
 
 import {
+  ALLOW_NOT_SENT,
   allowForProjectReply,
   allowOnceReply,
   type AllowedOutage,
+  answerJudged,
   answerOutage,
+  judgedAllowedReply,
   outageAllowedReply,
   outageRetryReply,
   outageRules,
@@ -128,8 +131,8 @@ describe("SafetyBlock", () => {
       const html = drawClaude(stale);
       expect(html).not.toContain("Allow this exact command once");
       expect(html).not.toContain("Bash(");
-      expect(html).toContain("cannot allow a command");
-      expect(CLAUDE_REFUSAL_NOTE).toContain("will not retry it");
+      expect(html).toContain("cannot approve a call");
+      expect(CLAUDE_REFUSAL_NOTE).toContain("will not rerun it");
     });
 
     it("is unchanged by the outage kind: same title, buttons and Manual route", () => {
@@ -154,6 +157,146 @@ describe("SafetyBlock", () => {
       expect(html).toContain("does not run again unless you approve it there");
       // Still no button that could let the refused line through.
       expect(html).not.toMatch(/Allow|Retry/);
+    });
+
+    describe("Always allow on a judged refusal (the lasting rule, never once)", () => {
+      const line = "rm -f web/pnpm-workspace.yaml; git status --short; sed -n '1,80p' web/package.json";
+      const judged: SafetyBlockNotice = {
+        ...claude,
+        id: "judged-1",
+        summary: "Irreversible Local Destruction",
+        action: line,
+        rules: [
+          "Bash(rm -f web/pnpm-workspace.yaml)",
+          "Bash(git status --short)",
+          "Bash(sed -n '1,80p' web/package.json)",
+        ],
+        allow: {
+          project: "/work/repo/.claude/settings.local.json",
+          user: "/Users/me/.claude/settings.json",
+        },
+      };
+
+      it("shows every exact rule and both files before anything is written", () => {
+        const html = drawClaude(judged);
+        expect(html).toContain("Rules Always allow adds");
+        expect(html).toContain("Bash(rm -f web/pnpm-workspace.yaml)");
+        expect(html).toContain("Bash(git status --short)");
+        expect(html).toContain("Bash(sed -n &#x27;1,80p&#x27; web/package.json)");
+        expect(html).toContain("This project: /work/repo/.claude/settings.local.json");
+        expect(html).toContain("Everywhere: /Users/me/.claude/settings.json");
+        expect(html).toContain("Always allow in this project");
+        expect(html).toContain("Always allow everywhere");
+        // The copy says what the rule does, for good.
+        expect(html).toContain("Always allow is permanent.");
+        expect(html).toContain("from now on Claude runs exactly these commands without its safety check");
+        expect(html).toContain("until you remove the rules");
+        expect(html).toContain("OctiqFlow does not run the command");
+        // Never a prefix, never a blanket rule, never "once".
+        expect(html).not.toContain(":*");
+        expect(html).not.toContain("Bash(*)");
+        expect(html).not.toMatch(/Allow once|exact command once/);
+        // The safer path and the record stay.
+        expect(html).toContain("Use safer approach");
+        expect(html).toContain("Dismiss");
+      });
+
+      it("lists the parts no rule names, and offers only the scopes the server named", () => {
+        const partial = drawClaude({
+          ...judged,
+          rules: ["Bash(git status)"],
+          uncovered: ["python3 -c 'print(1)'"],
+          allow: { project: "/work/repo/.claude/settings.local.json" },
+        });
+        expect(partial).toContain("Rule Always allow adds");
+        expect(partial).toContain("Not covered: Claude still checks these");
+        expect(partial).toContain("python3 -c &#x27;print(1)&#x27;");
+        expect(partial).toContain("Always allow in this project");
+        expect(partial).not.toContain("Always allow everywhere");
+        expect(partial).not.toContain("Everywhere:");
+      });
+
+      it("no rule, or no file to write, means no button", () => {
+        for (const notice of [
+          { ...judged, rules: undefined },
+          { ...judged, rules: [] },
+          { ...judged, allow: undefined },
+          { ...judged, allow: {} },
+        ]) {
+          const html = drawClaude(notice);
+          expect(html).not.toContain("Always allow");
+          expect(html).not.toContain("Bash(");
+          expect(html).toContain("Use safer approach");
+        }
+      });
+
+      it("says when the rule is written but the agent was not told yet", () => {
+        expect(drawClaude({ ...judged, written: "project" }))
+          .toContain("The rule is already in this project&#x27;s settings.");
+        expect(drawClaude({ ...judged, written: "user" })).toContain("already in your own settings");
+        expect(drawClaude(judged)).not.toContain("already in");
+      });
+
+      const io = (reply: unknown, taken: boolean | void = true) => {
+        const calls: [string, Record<string, unknown>][] = [];
+        const order: string[] = [];
+        const sent: string[] = [];
+        const naming: (string | undefined)[] = [];
+        const wrote: AllowedOutage[] = [];
+        return {
+          calls, order, sent, naming, wrote,
+          io: {
+            invoke: async <T,>(cmd: string, args: Record<string, unknown>) => {
+              calls.push([cmd, args]); order.push(cmd); return reply as T;
+            },
+            onAnswered: () => { order.push("answered"); },
+            onContinue: async (message: string, options?: { safetyBlock?: string }) => {
+              sent.push(message); naming.push(options?.safetyBlock); order.push("send"); return taken;
+            },
+            onWritten: (allowed: AllowedOutage) => { wrote.push(allowed); order.push("written"); },
+          },
+        };
+      };
+
+      it.each(["project", "user"] as const)("Always allow (%s) writes through the host, then tells the agent in a turn naming the card", async (scope) => {
+        const path = scope === "project" ? "/work/repo/.claude/settings.local.json" : "/Users/me/.claude/settings.json";
+        const allowed: AllowedOutage = { rules: judged.rules!, path, added: judged.rules!, present: [], uncovered: [] };
+        const t = io(allowed);
+        await answerJudged(scope, judged, t.io);
+        // The page names only the card and the scope: never a rule or a path.
+        expect(t.calls).toEqual([["safety_block_allow_rule", { id: "judged-1", scope }]]);
+        expect(t.order).toEqual(["safety_block_allow_rule", "written", "send", "answered"]);
+        expect(t.naming).toEqual(["judged-1"]);
+        expect(t.sent[0]).toBe(judgedAllowedReply(allowed, line));
+        expect(t.sent[0]).toContain(`allow rules \`Bash(rm -f web/pnpm-workspace.yaml)\`, \`Bash(git status --short)\``);
+        expect(t.sent[0]).toContain(`to ${path}.`);
+        expect(t.sent[0]).toContain("OctiqFlow did not run the refused command");
+        expect(t.sent[0]).toContain(`run it again exactly as before:\n\`${line}\``);
+        expect(t.sent[0]).toContain("Do not reword it");
+      });
+
+      it("tells the agent which parts no rule covers", () => {
+        const reply = judgedAllowedReply(
+          { rules: ["Bash(git status)"], path: "/p", added: [], present: ["Bash(git status)"], uncovered: ["node x.js"] },
+          "node x.js; git status",
+        );
+        expect(reply).toContain("allow rule `Bash(git status)` to /p.");
+        expect(reply).toContain("No rule covers `node x.js`");
+        expect(reply).toContain("may be refused again");
+      });
+
+      it("a refused write tells the agent nothing; a send not taken leaves the card up", async () => {
+        const refused = io(null);
+        refused.io.invoke = async () => { throw new Error("The settings file is not valid JSON. Nothing was written."); };
+        await expect(answerJudged("project", judged, refused.io)).rejects.toThrow("Nothing was written");
+        expect(refused.sent).toEqual([]);
+        expect(refused.order).not.toContain("answered");
+
+        const allowed: AllowedOutage = { rules: ["Bash(git status --short)"], path: "/p", added: [], present: [], uncovered: [] };
+        const dropped = io(allowed, false);
+        await expect(answerJudged("project", judged, dropped.io)).rejects.toThrow(ALLOW_NOT_SENT);
+        expect(dropped.order).toEqual(["safety_block_allow_rule", "written", "send"]);
+      });
     });
   });
 
