@@ -25,6 +25,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
@@ -158,8 +159,8 @@ import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type 
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
 import { ChatPlanCards } from "./components/ChatPlanCards";
-import { HandoverCards } from "./components/HandoverCards";
-import { chatIdOf, handoversFor } from "./lib/handover";
+import { HandoverCards, HandoverLines } from "./components/HandoverCards";
+import { chatIdOf, handoverAnchors, handoverPlaces, handoversFor, type Handover } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { pendingActions, pendingByRow, pendingByTask, type PendingAction } from "./lib/pendingActions";
@@ -4124,17 +4125,48 @@ export default function App() {
     (chatKey: string) => conversationsRef.current.find((c) => c.id === chatIdOf(chatKey))?.projectId ?? null,
     [],
   );
+  // Only a handover still waiting on the person holds the end of the chat. A
+  // settled one is history: a line under the turn that asked for it, or, when
+  // that turn is not loaded, at the head of the transcript, where the one this
+  // chat was started by always sits. Neither follows new messages.
+  const handoverPlace = useMemo(() => handoverPlaces(handoversHere), [handoversHere]);
+  // Walks the transcript, so only while there is something to place; the key
+  // keeps the lines' identity across the streaming deltas that move nothing.
+  const handoverAnchorKey = useMemo(
+    () => JSON.stringify([...handoverAnchors(chat.messages, handoverPlace.settled)]),
+    [chat.messages, handoverPlace.settled],
+  );
+  const { transcriptHead, transcriptMarks } = useMemo(() => {
+    const anchors = new Map<string, string>(JSON.parse(handoverAnchorKey));
+    const byMessage = new Map<string, Handover[]>();
+    const unplaced: Handover[] = [];
+    for (const handover of handoverPlace.settled) {
+      const at = anchors.get(handover.id);
+      if (!at) unplaced.push(handover);
+      else byMessage.set(at, [...(byMessage.get(at) ?? []), handover]);
+    }
+    const marks = new Map<string, ReactNode>();
+    for (const [at, list] of byMessage) {
+      marks.set(at, <HandoverLines key={`handover-${at}`} outgoing={list} onOpen={openHandoverChat} />);
+    }
+    return {
+      transcriptHead: handoverPlace.incoming || unplaced.length
+        ? <HandoverLines incoming={handoverPlace.incoming} outgoing={unplaced}
+          onOpen={openHandoverChat} projectOf={handoverProjectOf} />
+        : undefined,
+      transcriptMarks: marks.size ? marks : undefined,
+    };
+  }, [handoverPlace, handoverAnchorKey, openHandoverChat, handoverProjectOf]);
   const planTail = useMemo(
     () => {
       const plans = plansHere.some((plan) => plan.pending)
         ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : null;
-      const handed = handoversHere.outgoing.length || handoversHere.incoming
-        ? <HandoverCards outgoing={handoversHere.outgoing} incoming={handoversHere.incoming}
-          onDecide={decideHandover} onOpen={openHandoverChat} projectOf={handoverProjectOf} />
+      const handed = handoverPlace.tail.length
+        ? <HandoverCards outgoing={handoverPlace.tail} onDecide={decideHandover} />
         : null;
       return plans || handed ? <>{handed}{plans}</> : undefined;
     },
-    [plansHere, planDrafting, planProjectName, handoversHere, decideHandover, openHandoverChat, handoverProjectOf],
+    [plansHere, planDrafting, planProjectName, handoverPlace, decideHandover],
   );
 
   const changeAccess = useCallback(
@@ -4835,6 +4867,8 @@ export default function App() {
                     <MessageList
                       messages={chat.messages}
                       tail={planTail}
+                      head={transcriptHead}
+                      marks={transcriptMarks}
                       hasEarlier={!!conversationId && chatHistory.current.hasEarlier(conversationId)}
                       loadingEarlier={!!conversationId && !!earlierReads[conversationId]?.loading}
                       earlierError={conversationId ? earlierReads[conversationId]?.error : undefined}

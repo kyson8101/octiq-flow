@@ -1,11 +1,13 @@
 // Handovers in a chat: the card in the source chat that asks the person to
-// confirm, then says where the task went, and the card in the new chat that
-// says where it came from. The decision is the person's alone: these buttons
-// are the only thing that sends `handover_confirm`.
+// confirm, at the end of the transcript while it waits on them, and the line
+// each one leaves once it has settled: where the task went, in the chat that
+// asked, and where it came from, at the start of the new chat. The decision is
+// the person's alone: these buttons are the only thing that sends
+// `handover_confirm`.
 //
 // Labels and counts up front; the brief, paths and the HEAD commit sit behind
 // a disclosure, like every other piece of agent prose.
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   chatIdOf, handoverHeadline, noticeLine, placeLine, settingsLine,
   type Handover, type HandoverAction,
@@ -36,39 +38,46 @@ function List({ title, items, quoted }: { title: string; items?: string[]; quote
 
 /** The brief and the checkout details, folded. */
 function BriefDetails({ handover }: { handover: Handover }) {
-  const { brief, workspace } = handover;
-  const where = workspace.preparedCwd ?? workspace.path;
   return (
     <details className="handover-brief">
       <summary>
         <span>Brief</span>
         <span className="handover-chevron" aria-hidden="true" />
       </summary>
-      <div className="handover-brief-body">
-        <Section title="Objective" text={brief.objective} />
-        <Section title="Done so far" text={brief.doneSoFar} />
-        <Section title="Remaining" text={brief.remaining} />
-        <Section title="Decisions and gotchas" text={brief.decisions} />
-        <Section title="Open questions" text={brief.openQuestions} />
-        <List
-          title={`${handover.from.name} says these carry over`}
-          items={brief.authorized}
-          quoted
-        />
-        {!!brief.authorized?.length && (
-          <p className="handover-caveat">The agent's words, not a permission: approvals stay with each chat.</p>
-        )}
-        <List title="Not authorized" items={brief.notAuthorized} />
-        <div className="handover-section">
-          <h4>Checkout</h4>
-          <p className="handover-mono">{where}</p>
-          {workspace.head && <p className="handover-mono">HEAD {workspace.head}</p>}
-          {handover.destination.repository !== where && (
-            <p className="handover-mono">Repository {handover.destination.repository}</p>
-          )}
-        </div>
-      </div>
+      <BriefBody handover={handover} />
     </details>
+  );
+}
+
+/** What the agent wrote for the recipient, and where the work is. */
+function BriefBody({ handover }: { handover: Handover }) {
+  const { brief, workspace } = handover;
+  const where = workspace.preparedCwd ?? workspace.path;
+  return (
+    <div className="handover-brief-body">
+      <Section title="Objective" text={brief.objective} />
+      <Section title="Done so far" text={brief.doneSoFar} />
+      <Section title="Remaining" text={brief.remaining} />
+      <Section title="Decisions and gotchas" text={brief.decisions} />
+      <Section title="Open questions" text={brief.openQuestions} />
+      <List
+        title={`${handover.from.name} says these carry over`}
+        items={brief.authorized}
+        quoted
+      />
+      {!!brief.authorized?.length && (
+        <p className="handover-caveat">The agent's words, not a permission: approvals stay with each chat.</p>
+      )}
+      <List title="Not authorized" items={brief.notAuthorized} />
+      <div className="handover-section">
+        <h4>Checkout</h4>
+        <p className="handover-mono">{where}</p>
+        {workspace.head && <p className="handover-mono">HEAD {workspace.head}</p>}
+        {handover.destination.repository !== where && (
+          <p className="handover-mono">Repository {handover.destination.repository}</p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -86,10 +95,12 @@ function Facts({ handover }: { handover: Handover }) {
   );
 }
 
-function SourceCard({ handover, onDecide, onOpen }: {
+/** The card that waits on the person: undecided, or confirmed and its new
+ *  chat not running yet. Drawn at the end of the transcript until it settles,
+ *  then replaced by a `HandoverLine` where the handover was asked for. */
+function SourceCard({ handover, onDecide }: {
   handover: Handover;
   onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
-  onOpen: Open;
 }) {
   const [busy, setBusy] = useState<HandoverAction | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -108,9 +119,6 @@ function SourceCard({ handover, onDecide, onOpen }: {
     }
   };
   const failed = error ?? (pending || starting ? handover.error : undefined);
-  const notice = noticeLine(handover);
-  // Declined or given up: one quiet line.
-  const folded = handover.status === "declined" || handover.status === "abandoned";
   return (
     <section
       className={`handover-card is-${handover.status}`}
@@ -122,10 +130,9 @@ function SourceCard({ handover, onDecide, onOpen }: {
         <span className="handover-mark" aria-hidden="true" />
         <h3>{handoverHeadline(handover, "source")}</h3>
       </header>
-      {!folded && <Facts handover={handover} />}
-      {!folded && <BriefDetails handover={handover} />}
+      <Facts handover={handover} />
+      <BriefDetails handover={handover} />
       {failed && <p className="handover-error" role="alert">{failed}</p>}
-      {notice && <p className="handover-note">{notice}</p>}
       {pending && (
         <footer className="handover-actions">
           <span className="handover-hint">Nothing starts until you choose.</span>
@@ -158,72 +165,107 @@ function SourceCard({ handover, onDecide, onOpen }: {
           )}
         </footer>
       )}
-      {handover.status === "confirmed" && handover.targetChatKey && (
-        <footer className="handover-actions">
-          <button
-            type="button"
-            className="handover-link"
-            data-open-chat={chatIdOf(handover.targetChatKey)}
-            onClick={() => onOpen(handover.targetChatKey!, handover.destination.projectId)}
-          >
-            Open {handover.to.name}'s chat
-          </button>
-        </footer>
-      )}
     </section>
   );
 }
 
-function TargetCard({ handover, onOpen, sourceProjectId }: {
-  handover: Handover;
-  onOpen: Open;
-  sourceProjectId: string | null;
-}) {
-  return (
-    <section className="handover-card is-incoming" data-handover={handover.id} data-status="incoming">
-      <header className="handover-head">
-        <span className="handover-mark" aria-hidden="true" />
-        <h3>{handoverHeadline(handover, "target")}</h3>
-      </header>
-      <dl className="handover-facts">
-        <div><dt>From</dt><dd>{handover.sourceTitle || "Untitled chat"}</dd></div>
-        <div><dt>Where</dt><dd>{placeLine(handover)}</dd></div>
-      </dl>
-      <BriefDetails handover={handover} />
-      <footer className="handover-actions">
-        <button
-          type="button"
-          className="handover-link"
-          data-open-chat={chatIdOf(handover.sourceChatKey)}
-          onClick={() => onOpen(handover.sourceChatKey, sourceProjectId)}
-        >
-          Open the original chat
-        </button>
-      </footer>
-    </section>
-  );
-}
-
-export function HandoverCards({ outgoing, incoming, onDecide, onOpen, projectOf }: {
+/** The handovers at the end of a chat: only the ones the person still has to
+ *  act on (`handoverPlaces(…).tail`). */
+export function HandoverCards({ outgoing, onDecide }: {
   outgoing: readonly Handover[];
-  incoming: Handover | null;
   onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
-  onOpen: Open;
-  /** The project a chat belongs to, for opening it. */
-  projectOf?: (chatKey: string) => string | null;
 }) {
-  if (!outgoing.length && !incoming) return null;
+  if (!outgoing.length) return null;
   return (
     <div className="handover-cards">
-      {incoming && (
-        <TargetCard
-          handover={incoming}
-          onOpen={onOpen}
-          sourceProjectId={projectOf?.(incoming.sourceChatKey) ?? null}
-        />
-      )}
       {outgoing.map((handover) => (
-        <SourceCard key={handover.id} handover={handover} onDecide={onDecide} onOpen={onOpen} />
+        <SourceCard key={handover.id} handover={handover} onDecide={onDecide} />
+      ))}
+    </div>
+  );
+}
+
+/** A settled handover, as one line of the transcript: where the task went, or
+ *  where it came from. The facts and the brief open under it, and the other
+ *  chat is one click away. Declined and given-up ones are the headline only. */
+export function HandoverLine({ handover, side, onOpen, projectOf }: {
+  handover: Handover;
+  /** `source`: drawn in the chat that asked. `target`: in the chat it started. */
+  side: "source" | "target";
+  onOpen: Open;
+  projectOf?: (chatKey: string) => string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  const incoming = side === "target";
+  const quiet = !incoming && handover.status !== "confirmed";
+  const other = incoming ? handover.sourceChatKey : handover.targetChatKey;
+  const notice = incoming ? null : noticeLine(handover);
+  const status = incoming ? "incoming" : handover.status;
+  return (
+    <div className={`handover-line is-${status}`} data-handover={handover.id} data-status={status}>
+      <div className="handover-line-row">
+        <span className="handover-line-what">
+          <span className="handover-mark" aria-hidden="true" />
+          <span className="handover-line-text">{handoverHeadline(handover, side)}</span>
+        </span>
+        {/* On a narrow screen these drop under the headline rather than
+            cutting it short: the headline is what the line is for. */}
+        {!quiet && (
+          <span className="handover-line-tools">
+            <button
+              type="button"
+              className="handover-line-btn"
+              aria-expanded={open}
+              aria-controls={bodyId}
+              onClick={() => setOpen((was) => !was)}
+            >
+              Brief
+              <span className="handover-chevron" aria-hidden="true" />
+            </button>
+            {other && (
+              <button
+                type="button"
+                className="handover-line-btn"
+                data-open-chat={chatIdOf(other)}
+                onClick={() => onOpen(other, incoming ? projectOf?.(other) ?? null : handover.destination.projectId)}
+              >
+                {incoming ? "Open the original chat" : `Open ${handover.to.name}'s chat`}
+              </button>
+            )}
+          </span>
+        )}
+      </div>
+      {notice && <p className="handover-note">{notice}</p>}
+      {!quiet && (
+        <div id={bodyId} className="handover-line-body" hidden={!open}>
+          {incoming ? (
+            <dl className="handover-facts">
+              <div><dt>From</dt><dd>{handover.sourceTitle || "Untitled chat"}</dd></div>
+              <div><dt>Where</dt><dd>{placeLine(handover)}</dd></div>
+            </dl>
+          ) : <Facts handover={handover} />}
+          <BriefBody handover={handover} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Several settled handovers in one place: the head of a transcript, or the
+ *  turn that asked for them. */
+export function HandoverLines({ incoming, outgoing, onOpen, projectOf }: {
+  incoming?: Handover | null;
+  outgoing?: readonly Handover[];
+  onOpen: Open;
+  projectOf?: (chatKey: string) => string | null;
+}) {
+  if (!incoming && !outgoing?.length) return null;
+  return (
+    <div className="handover-lines">
+      {incoming && <HandoverLine handover={incoming} side="target" onOpen={onOpen} projectOf={projectOf} />}
+      {outgoing?.map((handover) => (
+        <HandoverLine key={handover.id} handover={handover} side="source" onOpen={onOpen} />
       ))}
     </div>
   );

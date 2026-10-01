@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
-  handoverHeadline, handoversFor, mergeHandover, noticeLine, placeLine, settingsLine,
+  handoverAnchors, handoverHeadline, handoverPlaces, handoversFor, mergeHandover, needsPerson, noticeLine,
+  placeLine, settingsLine,
 } from "./handover";
 import { handover } from "./handover.fixture";
+import type { Message } from "./chat";
+
+/** An assistant turn that called the handover tool and got `result` back. */
+const called = (id: string, result: string | undefined, name = "mcp__octiq__handover", parent?: string): Message => ({
+  id,
+  role: "assistant",
+  streaming: false,
+  parent,
+  blocks: [{ kind: "tool", id: `tool_${id}`, name, argsJson: "{}", args: {}, result, state: result ? "done" : "running" }],
+});
 
 describe("handover records", () => {
   it("finds what a chat shows: what it handed over, and where it came from", () => {
@@ -63,5 +74,56 @@ describe("handover records", () => {
     expect(noticeLine(handover({ status: "confirmed", notice: "delivered" }))).toBeNull();
     expect(noticeLine(handover({ status: "declined", notice: "failed", noticeError: "agent gone" })))
       .toBe("Potato could not be told: agent gone");
+  });
+
+  it("keeps at the end of the chat only what still waits on the person", () => {
+    expect(needsPerson(handover())).toBe(true);
+    expect(needsPerson(handover({ status: "starting", error: "CLI unavailable" }))).toBe(true);
+    expect(needsPerson(handover({ status: "confirmed" }))).toBe(false);
+    expect(needsPerson(handover({ status: "declined" }))).toBe(false);
+    expect(needsPerson(handover({ status: "abandoned" }))).toBe(false);
+    const list = [
+      handover({ id: "h_pending" }),
+      handover({ id: "h_starting", status: "starting", error: "CLI unavailable", targetChatKey: "chat:b" }),
+      handover({ id: "h_confirmed", status: "confirmed", targetChatKey: "chat:c" }),
+      handover({ id: "h_declined", status: "declined" }),
+      handover({ id: "h_abandoned", status: "abandoned" }),
+      handover({ id: "h_in", sourceChatKey: "chat:other", status: "confirmed", targetChatKey: "chat:source" }),
+    ];
+    const places = handoverPlaces(handoversFor(list, "chat:source"));
+    expect(places.tail.map((h) => h.id)).toEqual(["h_pending", "h_starting"]);
+    expect(places.settled.map((h) => h.id)).toEqual(["h_confirmed", "h_declined", "h_abandoned"]);
+    expect(places.incoming?.id).toBe("h_in");
+    // In the chat it started, a handover is history whatever its state.
+    const started = handoverPlaces(handoversFor(list, "chat:b"));
+    expect(started).toEqual({ tail: [], settled: [], incoming: list[1] });
+  });
+
+  it("finds the turn that asked for each handover by the id its answer names", () => {
+    const one = handover({ id: "handover_1", status: "confirmed" });
+    const twelve = handover({ id: "handover_12", status: "declined" });
+    const messages = [
+      called("a", "The person declined handover handover_12. Nothing was created."),
+      called("b", "The person confirmed handover handover_1. Mango now continues the task."),
+      called("c", "The person confirmed handover handover_1."),
+    ];
+    const anchors = handoverAnchors(messages, [one, twelve]);
+    // `handover_1` is not named by a text about `handover_12`, and the first
+    // call that names it wins over a later repeat.
+    expect(anchors.get("handover_1")).toBe("b");
+    expect(anchors.get("handover_12")).toBe("a");
+  });
+
+  it("has no place for a handover whose call is not in the transcript", () => {
+    const h = handover({ id: "handover_9", status: "confirmed" });
+    expect(handoverAnchors([], [h]).size).toBe(0);
+    // Not answered yet, another tool, or inside a subagent: none of them is
+    // where this chat asked.
+    expect(handoverAnchors([
+      called("a", undefined),
+      called("b", "handover_9", "mcp__octiq__task_status"),
+      called("c", "handover handover_9", "mcp__octiq__handover", "tool_parent"),
+    ], [h]).size).toBe(0);
+    expect(handoverAnchors([called("a", "handover handover_9")], []).size).toBe(0);
   });
 });

@@ -3,6 +3,7 @@
 // store that holds the list (`useHandovers`) is the only part that talks to
 // the server.
 import { AGENT_NAME, accessLabel, claudeModelName, MODELS, type AccessLevel, type Provider } from "./agentProviders";
+import type { Message } from "./chat";
 
 /** `starting`: confirmed, and its new chat is being started or waits for a
  *  retry. It may exist already, so it can no longer be declined.
@@ -85,6 +86,62 @@ export function handoversFor(list: readonly Handover[], chatKey: string | null |
     outgoing: list.filter((item) => item.sourceChatKey === chatKey),
     incoming: list.find((item) => item.targetChatKey === chatKey) ?? null,
   };
+}
+
+/** Whether a handover still waits on the person in the chat that asked:
+ *  undecided, or confirmed with its new chat not running yet (a failed start
+ *  offers Try again and maybe Give up). Only these hold the transcript's tail
+ *  as a card; everything else is history. */
+export function needsPerson(handover: Handover): boolean {
+  return handover.status === "pending" || handover.status === "starting";
+}
+
+/** Where each of a chat's handovers is drawn. `tail`: the full cards at the
+ *  end of the transcript, the ones the person still has to act on. `settled`:
+ *  the outgoing ones that are history, each a line at the turn where it was
+ *  asked for. The incoming one is always history in the chat it started. */
+export function handoverPlaces(here: ReturnType<typeof handoversFor>): {
+  tail: Handover[];
+  settled: Handover[];
+  incoming: Handover | null;
+} {
+  return {
+    tail: here.outgoing.filter(needsPerson),
+    settled: here.outgoing.filter((item) => !needsPerson(item)),
+    incoming: here.incoming,
+  };
+}
+
+/** The tool an agent asks for a handover with, under either provider (Codex
+ *  calls are renamed to the same `mcp__<server>__<tool>`). */
+function isHandoverCall(name: string): boolean {
+  return name === "mcp__octiq__handover";
+}
+
+/** For each handover, the message holding the call that asked for it: the
+ *  place in the transcript where it happened. Every answer the host gives the
+ *  call names the handover's id, so it is matched on that and never on order.
+ *  A handover whose call is not in `messages` (an older page not loaded, or a
+ *  transcript that lost it) has no entry. */
+export function handoverAnchors(
+  messages: readonly Message[],
+  handovers: readonly Handover[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!handovers.length) return out;
+  // Whole ids only: `handover_1` is not named by a text about `handover_12`.
+  const named = (text: string, id: string) =>
+    new RegExp(`(^|[^\\w])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\w])`).test(text);
+  for (const m of messages) {
+    if (m.role !== "assistant" || m.parent) continue;
+    for (const b of m.blocks) {
+      if (b.kind !== "tool" || !isHandoverCall(b.name) || !b.result) continue;
+      for (const h of handovers) {
+        if (!out.has(h.id) && named(b.result, h.id)) out.set(h.id, m.id);
+      }
+    }
+  }
+  return out;
 }
 
 /** The chat id behind a `chat:` key. */

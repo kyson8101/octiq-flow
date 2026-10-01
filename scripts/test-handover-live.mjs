@@ -201,6 +201,9 @@ try {
   await page.goto(`http://127.0.0.1:${PORT}/?token=${TOKEN}`);
   await page.locator(".chat-btn", { hasText: "Fix the login bug" }).first().click();
   const card = page.locator(`.handover-card[data-handover="${pending.id}"]`);
+  // The same handover once it has settled: a line, no longer the card at the
+  // end of the chat. The incoming line carries the same id, so it is left out.
+  const settled = (id) => page.locator(`.handover-line[data-handover="${id}"]:not([data-status="incoming"])`);
   await card.waitFor({ timeout: 20_000 });
   assert.equal(await card.getAttribute("data-status"), "pending");
   results.pendingText = (await card.innerText()).replace(/\s+/g, " ");
@@ -225,7 +228,10 @@ try {
 
   // ---- The person confirms.
   await card.getByRole("button", { name: "Hand over to Mango" }).click();
-  await wait("the confirmed card", async () => (await card.getAttribute("data-status")) === "confirmed", 30_000);
+  const line = settled(pending.id);
+  await line.waitFor({ timeout: 30_000 });
+  assert.equal(await line.getAttribute("data-status"), "confirmed");
+  assert.equal(await card.count(), 0, "a confirmed handover no longer holds the end of the chat");
   const confirmed = (await handovers()).find((h) => h.id === pending.id);
   results.confirmed = { target: confirmed.targetChatKey, notice: confirmed.notice };
   assert.ok(confirmed.targetChatKey);
@@ -257,16 +263,18 @@ try {
   assert.match(first.user, /check with the person before going on/);
   assert.doesNotMatch(first.user, /has been told/);
   assert.equal(stub().filter((e) => e.launch && e.key !== "chat:source-a").length, 1, "exactly one new chat");
-  await card.scrollIntoViewIfNeeded();
+  await line.scrollIntoViewIfNeeded();
   await shot(page, "4-source-confirmed-desktop.png");
 
   // ---- Follow the link to the new chat; it links back.
-  await card.getByRole("button", { name: "Open Mango's chat" }).click();
-  const incoming = page.locator(`.handover-card[data-status="incoming"]`);
+  await line.getByRole("button", { name: "Open Mango's chat" }).click();
+  const incoming = page.locator(`.handover-line[data-status="incoming"]`);
   await incoming.waitFor({ timeout: 20_000 });
   results.incomingText = (await incoming.innerText()).replace(/\s+/g, " ");
   assert.match(results.incomingText, /Handed over from Claude/);
-  assert.match(results.incomingText, /Fix the login bug/);
+  // The source chat's title is in the facts under the line.
+  await incoming.getByRole("button", { name: "Brief" }).click();
+  assert.match((await incoming.innerText()).replace(/\s+/g, " "), /Fix the login bug/);
   await incoming.scrollIntoViewIfNeeded();
   await shot(page, "5-target-incoming-desktop.png");
   await page.setViewportSize({ width: 375, height: 812 });
@@ -279,10 +287,9 @@ try {
   // ---- A reload restores both, and the back link works.
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.reload();
-  await page.locator(`.handover-card[data-status="incoming"]`).waitFor({ timeout: 20_000 });
-  await page.locator(`.handover-card[data-status="incoming"]`).getByRole("button", { name: "Open the original chat" }).click();
-  // The source's own card: the incoming one carries the same handover id.
-  const restored = page.locator(`.handover-card[data-handover="${pending.id}"]:not([data-status="incoming"])`);
+  await page.locator(`.handover-line[data-status="incoming"]`).waitFor({ timeout: 20_000 });
+  await page.locator(`.handover-line[data-status="incoming"]`).getByRole("button", { name: "Open the original chat" }).click();
+  const restored = settled(pending.id);
   await restored.waitFor({ timeout: 20_000 });
   results.restoredStatus = await restored.getAttribute("data-status");
   assert.equal(results.restoredStatus, "confirmed");
@@ -310,12 +317,15 @@ try {
   const cardC = page.locator(`.handover-card[data-handover="${pendingC.id}"]`);
   await cardC.waitFor({ timeout: 20_000 });
   await cardC.getByRole("button", { name: "Keep it here" }).click();
-  await wait("the declined card", async () => (await cardC.getAttribute("data-status")) === "declined", 20_000);
+  const lineC = settled(pendingC.id);
+  await lineC.waitFor({ timeout: 20_000 });
+  assert.equal(await lineC.getAttribute("data-status"), "declined");
+  assert.equal(await cardC.count(), 0, "a declined handover no longer holds the end of the chat");
   const declinedAnswer = await wait("C's agent to hear it", () => stub().find((e) => e.key === "chat:source-c" && e.hook)?.hook);
   results.declinedToolAnswer = declinedAnswer.result?.text;
   assert.match(results.declinedToolAnswer, /declined/);
   assert.equal(stub().filter((e) => e.launch).length, before + 1, "only C's own launch; no new chat");
-  await cardC.scrollIntoViewIfNeeded();
+  await lineC.scrollIntoViewIfNeeded();
   await shot(page, "8-source-declined-desktop.png");
 
   results.pageErrors = pageErrors;

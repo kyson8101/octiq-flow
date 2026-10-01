@@ -1251,6 +1251,8 @@ const MessageListBody = function MessageList({
   earlierError,
   onLoadEarlier,
   tail,
+  head,
+  marks,
 }: {
   messages: Message[];
   /** Drawn after the last turn, inside the transcript: a lead's plan card,
@@ -1258,6 +1260,14 @@ const MessageListBody = function MessageList({
    *  CURRENT plan, read from the ledger, never a copy frozen into history.
    *  Must be memoised by the caller like every other prop here. */
   tail?: React.ReactNode;
+  /** Drawn before the first turn, and scrolled away with it: history about
+   *  the whole conversation, such as the handover a chat was started by.
+   *  Memoised by the caller, like `tail`. */
+  head?: React.ReactNode;
+  /** Drawn under the turn holding the message with that id: something that
+   *  happened at that point of the conversation and stays there, such as a
+   *  settled handover. Memoised by the caller, like `tail`. */
+  marks?: ReadonlyMap<string, React.ReactNode>;
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
   earlierError?: string;
@@ -1776,6 +1786,7 @@ const MessageListBody = function MessageList({
             {earlierError && <span role="alert">Could not load earlier messages. Try again.</span>}
           </div>
         )}
+        {head}
         {visibleTurns.map((turn, i) => (
           <Fragment key={turn[0].id}>
             <TurnView
@@ -1799,6 +1810,7 @@ const MessageListBody = function MessageList({
                 ENDS, and the reader's own next message reads differently once
                 they can see the one above it never finished. */}
             {!!stoppedAt && turn.some((m) => m.id === stoppedAt) && <StopMark />}
+            {!!marks?.size && turn.map((m) => marks.get(m.id)).filter(Boolean)}
           </Fragment>
         ))}
         {compactingSince !== undefined && <Compacting since={compactingSince} />}

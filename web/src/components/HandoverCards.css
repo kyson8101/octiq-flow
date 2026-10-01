@@ -88,7 +88,51 @@
 
 @media (max-width: 640px), (pointer: coarse) {
   .handover-card { padding: 12px 12px 14px; }
+  .handover-line-btn { position: relative; }
+  .handover-line-btn::after { content: ""; position: absolute; inset: -9px 0; }
   .handover-quiet, .handover-go, .handover-link { min-height: 44px; }
   .handover-actions > button { flex: 1 1 auto; }
   .handover-hint { flex-basis: 100%; }
 }
+
+/* A settled handover: one line of the transcript, where it happened. Quiet
+   like the stop mark, with the facts and the brief a click away under it. */
+.handover-lines { display: grid; gap: 4px; min-width: 0; margin: -6px 0; }
+.handover-line { min-width: 0; }
+.handover-line-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; min-width: 0;
+  color: var(--fg-2); font-size: 12.5px;
+}
+/* Whole, and cut short only when it alone is wider than the column. */
+.handover-line-what {
+  display: flex; align-items: center; gap: 8px;
+  flex: 0 0 auto; max-width: 100%; min-width: 0; min-height: 26px;
+}
+.handover-line-tools { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; margin-left: -4px; }
+.handover-line .handover-mark { width: 6px; height: 6px; }
+.handover-line:is(.is-confirmed, .is-incoming) .handover-mark { background: var(--ok, var(--fg-2)); }
+.handover-line-text {
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg-1);
+}
+.handover-line:is(.is-declined, .is-abandoned) .handover-line-text { color: var(--fg-2); }
+.handover-line-btn {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  min-height: 26px; padding: 0 4px; margin: 0;
+  border: 0; border-radius: var(--r-sm); background: transparent;
+  color: var(--fg-2); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer;
+  transition: color 130ms ease-out;
+}
+@media (hover: hover) { .handover-line-btn:hover { color: var(--fg-0); } }
+.handover-line-btn:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 1px; }
+.handover-line-btn[aria-expanded="true"] .handover-chevron { transform: translateY(2px) rotate(-135deg); }
+.handover-line .handover-note { margin: 0 0 0 14px; }
+.handover-line-body {
+  display: grid; gap: 8px; min-width: 0;
+  margin: 4px 0 6px 2px; padding: 2px 0 2px 12px;
+  border-left: 1px solid var(--border);
+}
+.handover-line-body[hidden] { display: none; }
+.handover-line-body .handover-facts { margin: 0; }
+.handover-line-body .handover-brief-body { padding: 0; }
