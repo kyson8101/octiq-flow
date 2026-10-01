@@ -75,10 +75,14 @@ finishes or gets blocked.
   "Mango finished: …" or "Mango is blocked: …". A new outcome notifies the
   person on the ORIGINAL chat (`push::notify_chat`, kind `handover`), the same
   way a new handover request does. A retry of the same `requestId` does not
-  notify. The latest outcome is shown, and up to five are kept.
+  notify, however old the report it repeats (see Bounded, below). The
+  latest outcome is shown, and up to five are kept to be shown.
 
 In the browser, the outcome is one line under the handover line, with
-earlier reports in the folded Brief. The questions sit behind a count
+earlier reports in the folded Brief. When the summary does not fit, a tap
+anywhere on the line opens it in place to the whole summary (a chevron
+button with `aria-expanded`, shown only when the line is measured as cut);
+the chevron shuts it again. There is no tooltip: a phone cannot show one. The questions sit behind a count
 ("2 questions asked back"), like peer help. Both belong to the handover
 line, wherever 17496c7 placed it: never at the transcript tail, never a card.
 

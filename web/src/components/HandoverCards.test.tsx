@@ -160,6 +160,25 @@ describe("a settled handover", () => {
     expect(lines).not.toContain("Outcome reports");
   });
 
+  it("draws the outcome as one row whose whole summary opens in place, not in a tooltip", () => {
+    const summary = `Blocked on the staging database. ${"The migration needs a password nobody here has. ".repeat(20)}`.trim();
+    const { lines } = render([back({ outcomes: [{ requestId: "o1", status: "blocked", summary, at: 4 }] })], "chat:source");
+    const row = lines.match(/<div class="handover-outcome is-blocked" data-outcome="blocked">.*?<\/button><\/div>/)?.[0];
+    expect(row).toBeTruthy();
+    // The whole summary is in the row, never only in a title.
+    expect(row).toContain(`Mango is blocked: ${summary}`);
+    expect(row).not.toContain("title=");
+    // Shut by default. The toggle names the text it opens and stays hidden
+    // until a measurement says the line is cut short.
+    const textId = row!.match(/<span class="handover-outcome-text" id="([^"]+)">/)?.[1];
+    expect(textId).toBeTruthy();
+    expect(row).toContain(`aria-expanded="false" aria-controls="${textId}" aria-label="Show the whole outcome"`);
+    expect(row).toMatch(/<button type="button" class="handover-outcome-toggle" hidden=""/);
+    expect(row).not.toContain("is-open");
+    // The earlier reports keep their list in the Brief.
+    expect(lines).not.toContain("Outcome reports");
+  });
+
   it("draws no outcome or questions where nothing came back", () => {
     const { lines } = render([handover({ status: "confirmed", targetChatKey: "chat:new", notice: "tool" })], "chat:source");
     expect(lines).not.toContain("handover-outcome");

@@ -47,6 +47,16 @@ const called = (id, result, to = "Mango") => ({
   ],
 });
 
+const LONG_OUTCOME = [
+  "The expired-session path is fixed on fix/login, but the regression test cannot run here:",
+  "it needs the staging database, and its password is not in this checkout or in the environment.",
+  "What is done: the cookie is now set before the redirect, the refresh token is rotated on every",
+  "renewal, and the three unit tests for the session store pass. What is left: the end-to-end test in",
+  "tests/e2e/login.spec.ts, which signs in against staging, waits out a shortened session and checks",
+  "the redirect back to /login with the return path kept. Nothing was pushed. To carry on, put the",
+  "staging password in STAGING_DB_PASSWORD for this chat and ask Mango to run the e2e suite, or",
+  "decide that the unit tests are enough for this fix and say so.",
+].join(" ");
 const record = (id, extra) => ({
   id, sourceChatKey: "chat:source-done", sourceTitle: "Fix the login bug", sourceProject: "General",
   from: { agentId: "agent_potato", name: "Potato" }, to: { agentId: "agent_mango", name: "Mango" },
@@ -81,6 +91,18 @@ const handovers = [
         : { targetChatKey: `chat:after-${id}` }),
     }),
   ]),
+  // Outcomes back: a summary near the 1000-character cap, and a short one.
+  record("handover_long", {
+    sourceChatKey: "chat:source-long", targetChatKey: "chat:target-long",
+    outcomes: [
+      { requestId: "o1", status: "done", summary: "Cookie ordering fixed.", at: now - 9_000 },
+      { requestId: "o2", status: "blocked", summary: LONG_OUTCOME, at: now - 5_000 },
+    ],
+  }),
+  record("handover_short", {
+    sourceChatKey: "chat:source-short", targetChatKey: "chat:target-short",
+    outcomes: [{ requestId: "o1", status: "done", summary: "Login fixed, tests pass.", at: now - 5_000 }],
+  }),
 ];
 
 const chat = (id, title, messages, over = {}) => ({
@@ -133,6 +155,16 @@ const chats = [
     text("mid-wait-brief", "user", "You are taking over a task from Potato. Finish the login fix."),
     ...filler("mid-wait", 6),
     called("asking-mid-wait", undefined, "Tofu"),
+  ]),
+  chat("source-long", "Fix the login bug", [
+    ...filler("long-before", 1),
+    called("asked-long", "The person confirmed handover handover_long. Mango now continues the task in a new chat."),
+    ...filler("long-after", 1),
+  ]),
+  chat("source-short", "Fix the login bug", [
+    ...filler("short-before", 1),
+    called("asked-short", "The person confirmed handover handover_short. Mango now continues the task in a new chat."),
+    ...filler("short-after", 1),
   ]),
 ];
 const index = chats.map((item) => item.meta);
@@ -442,6 +474,68 @@ try {
       await page.locator(card).scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(artifacts, `combined-${label}-pending.png`) });
       assert.equal(await noSideways(page), true, `${label}: nothing scrolls sideways`);
+      await context.close();
+    }
+    // ── A long outcome: one row, then the whole of it in place on a tap.
+    {
+      const { context, page } = await open(viewport, "source-long");
+      const row = '.handover-line[data-handover="handover_long"] .handover-outcome';
+      const toggle = page.locator(`${row} .handover-outcome-toggle`);
+      const measure = () => page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        const text = el.querySelector(".handover-outcome-text");
+        return { height: el.getBoundingClientRect().height, cut: text.scrollWidth > text.clientWidth + 1, shown: text.innerText };
+      }, row);
+      await page.locator(row).scrollIntoViewIfNeeded();
+      const shut = await measure();
+      assert.ok(shut.height <= 30, `${label}: shut, the outcome is one row (${shut.height}px)`);
+      assert.equal(shut.cut, true, `${label}: and the long summary is cut short`);
+      assert.equal(await toggle.isVisible(), true, `${label}: so it can be opened`);
+      assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+      assert.equal(await page.locator(row).getAttribute("title"), null, `${label}: no tooltip stands in for it`);
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        const scroller = document.querySelector(".msgs");
+        scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 120;
+      }, row);
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: join(artifacts, `${label}-outcome-long-collapsed.png`) });
+      // A tap on the text itself opens it: the row is the target, not only the chevron.
+      // (Through the toggle's hit area that covers the row while it is shut.)
+      const text = await page.locator(`${row} .handover-outcome-text`).boundingBox();
+      await page.mouse.click(text.x + text.width / 3, text.y + text.height / 2);
+      await page.waitForTimeout(250);
+      const opened = await measure();
+      assert.equal(await toggle.getAttribute("aria-expanded"), "true", `${label}: opened`);
+      assert.equal(opened.cut, false, `${label}: open, nothing is cut`);
+      assert.ok(opened.shown.endsWith("say so."), `${label}: the whole summary shows`);
+      assert.ok(opened.height > shut.height * 3, `${label}: it wraps (${opened.height}px)`);
+      assert.equal(await noSideways(page), true, `${label}: nothing scrolls sideways`);
+      // At the end of a chat the transcript keeps its end pinned, so the row
+      // grew upward (as the Brief does); scroll back to its start to read it.
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        const scroller = document.querySelector(".msgs");
+        scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 120;
+      }, row);
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: join(artifacts, `${label}-outcome-long-expanded.png`) });
+      // The earlier report keeps its list in the Brief.
+      await page.locator('.handover-line[data-handover="handover_long"]').getByRole("button", { name: "Brief" }).click();
+      assert.match(await page.locator('.handover-line[data-handover="handover_long"] .handover-line-body').innerText(),
+        /Outcome reports[\s\S]*Mango finished: Cookie ordering fixed\./);
+      await toggle.click();
+      await page.waitForTimeout(250);
+      assert.equal(await toggle.getAttribute("aria-expanded"), "false", `${label}: shut again`);
+      assert.ok((await measure()).height <= 30, `${label}: back to one row`);
+      await context.close();
+    }
+    // ── A short outcome fits, so there is nothing to open.
+    {
+      const { context, page } = await open(viewport, "source-short");
+      const row = '.handover-line[data-handover="handover_short"] .handover-outcome';
+      assert.match(await page.locator(row).innerText(), /Mango finished: Login fixed, tests pass\./);
+      assert.equal(await page.locator(`${row} .handover-outcome-toggle`).isVisible(), false, `${label}: no toggle`);
       await context.close();
     }
   }

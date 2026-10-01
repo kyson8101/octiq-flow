@@ -7,7 +7,7 @@
 //
 // Labels and counts up front; the brief, paths and the HEAD commit sit behind
 // a disclosure, like every other piece of agent prose.
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   askBackSummary, chatIdOf, handoverHeadline, latestOutcome, noticeLine, outcomeText, placeLine,
   settingsLine, waitsOnPerson,
@@ -231,16 +231,46 @@ function AskBackLog({ handover }: { handover: Handover }) {
   );
 }
 
-/** What the new chat said came of the work: the latest report, on one line. */
+/** What the new chat said came of the work: the latest report, on one line.
+ *  A summary runs to a thousand characters, and a tooltip is no use on a
+ *  phone, so a line that is cut short opens in place on a tap and shows the
+ *  whole of it. Whether it is cut is measured, never guessed from the length. */
 function OutcomeLine({ handover }: { handover: Handover }) {
   const outcome = latestOutcome(handover);
+  const text = outcome ? outcomeText(handover, outcome) : "";
+  const ref = useRef<HTMLSpanElement>(null);
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  useEffect(() => setOpen(false), [text]);
+  // Only while shut: an open line is never cut, and would hide its own toggle.
+  useLayoutEffect(() => {
+    const line = ref.current;
+    if (!line || open) return;
+    const measure = () => setClipped(line.scrollWidth > line.clientWidth + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(line);
+    return () => observer.disconnect();
+  }, [text, open]);
   if (!outcome) return null;
-  const text = outcomeText(handover, outcome);
   return (
-    <p className={`handover-outcome is-${outcome.status}`} data-outcome={outcome.status} title={text}>
+    <div className={`handover-outcome is-${outcome.status}${open ? " is-open" : ""}`} data-outcome={outcome.status}>
       <span className="handover-outcome-mark" aria-hidden="true" />
-      <span className="handover-outcome-text">{text}</span>
-    </p>
+      <span className="handover-outcome-text" id={id} ref={ref}>{text}</span>
+      <button
+        type="button"
+        className="handover-outcome-toggle"
+        hidden={!clipped && !open}
+        aria-expanded={open}
+        aria-controls={id}
+        aria-label={open ? "Show less of the outcome" : "Show the whole outcome"}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <span className="handover-chevron" aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 
