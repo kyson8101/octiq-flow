@@ -7,10 +7,11 @@
 //
 // Labels and counts up front; the brief, paths and the HEAD commit sit behind
 // a disclosure, like every other piece of agent prose.
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
-  chatIdOf, handoverHeadline, noticeLine, placeLine, settingsLine, waitsOnPerson,
-  type Handover, type HandoverAction, type handoverLayout,
+  askBackSummary, chatIdOf, handoverHeadline, latestOutcome, noticeLine, outcomeText, placeLine,
+  settingsLine, waitsOnPerson,
+  type Handover, type HandoverAction, type HandoverAsk, type handoverLayout,
 } from "../lib/handover";
 import "./HandoverCards.css";
 
@@ -187,6 +188,106 @@ export function HandoverCards({ outgoing, onDecide }: {
   );
 }
 
+const ASK_STATUS: Record<HandoverAsk["status"], string> = {
+  asking: "Waiting for an answer",
+  answered: "Answered",
+  failed: "No answer",
+};
+
+/** The questions the new chat asked back, under a count. Their words are
+ *  agent prose, so they open only on request, like peer help. */
+function AskBackLog({ handover }: { handover: Handover }) {
+  const asks = handover.asks ?? [];
+  if (!asks.length) return null;
+  return (
+    <details className="handover-asks" data-asks={asks.length}>
+      <summary>
+        <span>{askBackSummary(asks)}</span>
+        <span className="handover-chevron" aria-hidden="true" />
+      </summary>
+      <ol aria-label={`Questions ${handover.to.name} asked ${handover.from.name}`}>
+        {asks.map((ask) => (
+          <li key={ask.id} data-ask={ask.id} data-status={ask.status}>
+            <p className="handover-ask-who">
+              <strong><bdi>{handover.to.name}</bdi></strong> asked <strong><bdi>{handover.from.name}</bdi></strong>
+              <span> · {ASK_STATUS[ask.status]}</span>
+            </p>
+            <p className="handover-ask-question">{ask.question}</p>
+            {ask.contextPaths?.length ? (
+              <p className="handover-ask-paths">Pointed at {ask.contextPaths.map((path, index) => (
+                <span key={path}>{index > 0 && ", "}<code>{path}</code></span>
+              ))}</p>
+            ) : null}
+            {ask.status === "answered" && (
+              <p className="handover-ask-answer">
+                {ask.answer}{ask.truncated && <em> (answer cut at the length limit)</em>}
+              </p>
+            )}
+            {ask.status === "failed" && <p className="handover-ask-error">{ask.error ?? "No answer came back."}</p>}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+/** What the new chat said came of the work: the latest report, on one line.
+ *  A summary runs to a thousand characters, and a tooltip is no use on a
+ *  phone, so a line that is cut short opens in place on a tap and shows the
+ *  whole of it. Whether it is cut is measured, never guessed from the length. */
+function OutcomeLine({ handover }: { handover: Handover }) {
+  const outcome = latestOutcome(handover);
+  const text = outcome ? outcomeText(handover, outcome) : "";
+  const ref = useRef<HTMLSpanElement>(null);
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  useEffect(() => setOpen(false), [text]);
+  // Only while shut: an open line is never cut, and would hide its own toggle.
+  useLayoutEffect(() => {
+    const line = ref.current;
+    if (!line || open) return;
+    const measure = () => setClipped(line.scrollWidth > line.clientWidth + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(line);
+    return () => observer.disconnect();
+  }, [text, open]);
+  if (!outcome) return null;
+  return (
+    <div className={`handover-outcome is-${outcome.status}${open ? " is-open" : ""}`} data-outcome={outcome.status}>
+      <span className="handover-outcome-mark" aria-hidden="true" />
+      <span className="handover-outcome-text" id={id} ref={ref}>{text}</span>
+      <button
+        type="button"
+        className="handover-outcome-toggle"
+        hidden={!clipped && !open}
+        aria-expanded={open}
+        aria-controls={id}
+        aria-label={open ? "Show less of the outcome" : "Show the whole outcome"}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <span className="handover-chevron" aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+/** Earlier outcome reports, when the latest replaced some. */
+function OutcomeHistory({ handover }: { handover: Handover }) {
+  const outcomes = handover.outcomes ?? [];
+  if (outcomes.length < 2) return null;
+  return (
+    <div className="handover-section">
+      <h4>Outcome reports</h4>
+      <ul>{outcomes.slice().reverse().map((outcome) => (
+        <li key={outcome.requestId}>{outcomeText(handover, outcome)}</li>
+      ))}</ul>
+    </div>
+  );
+}
+
 /** A settled handover, as one line of the transcript: where the task went, or
  *  where it came from. The facts and the brief open under it, and the other
  *  chat is one click away. Declined and given-up ones are the headline only. */
@@ -247,9 +348,13 @@ export function HandoverLine({ handover, side, onOpen, projectOf }: {
               <div><dt>Where</dt><dd>{placeLine(handover)}</dd></div>
             </dl>
           ) : <Facts handover={handover} />}
+          <OutcomeHistory handover={handover} />
           <BriefBody handover={handover} />
         </div>
       )}
+      {/* Under the Brief, so an open Brief stays with the line it opens from. */}
+      {!quiet && <OutcomeLine handover={handover} />}
+      {!quiet && <AskBackLog handover={handover} />}
     </div>
   );
 }

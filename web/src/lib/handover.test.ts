@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  handoverAnchorKey, handoverAnchors, handoverHeadline, handoverLayout, handoverPlaces, handoversFor, mergeHandover, needsPerson,
-  noticeLine, placeLine, settingsLine, waitsOnPerson,
+  askBackSummary, handoverAnchorKey, handoverAnchors, handoverHeadline, handoverLayout, handoverPlaces, handoversFor,
+  latestOutcome, mergeHandover, needsPerson, noticeLine, outcomeText, placeLine, settingsLine, waitsOnPerson,
+  type Handover, type HandoverAsk, type HandoverOutcome,
 } from "./handover";
 import { handover } from "./handover.fixture";
 import type { Message } from "./chat";
@@ -206,5 +207,54 @@ describe("a chat that was handed a task and handed it on", () => {
   it("is the incoming handover in the chat it went on to, and nothing else", () => {
     const places = handoverPlaces(handoversFor([incoming, onward()], "chat:last"));
     expect(places).toEqual({ tail: [], settled: [], incoming: onward() });
+  });
+});
+
+describe("what comes back along a handover", () => {
+  const ask = (id: string, status: HandoverAsk["status"], extra: Partial<HandoverAsk> = {}): HandoverAsk => ({
+    id, requestId: `r_${id}`, question: `Q ${id}?`, status, askedAt: 1, ...extra,
+  });
+  const outcome = (status: HandoverOutcome["status"], summary: string, at: number): HandoverOutcome => ({
+    requestId: `o${at}`, status, summary, at,
+  });
+  const confirmed = (extra: Partial<Handover> = {}) =>
+    handover({ status: "confirmed", targetChatKey: "chat:new", notice: "tool", ...extra });
+
+  it("says the latest outcome the same way in both chats", () => {
+    const h = confirmed({ outcomes: [outcome("blocked", "Needs a password.", 1), outcome("done", "Login fixed.", 2)] });
+    expect(latestOutcome(h)?.summary).toBe("Login fixed.");
+    expect(outcomeText(h, latestOutcome(h)!)).toBe("Mango finished: Login fixed.");
+    expect(outcomeText(h, h.outcomes![0])).toBe("Mango is blocked: Needs a password.");
+    expect(latestOutcome(confirmed())).toBeNull();
+    const unnamed = confirmed({ to: { name: "a new Claude chat" } });
+    expect(outcomeText(unnamed, outcome("done", "x", 1))).toBe("A new Claude chat finished: x");
+  });
+
+  it("counts the questions asked back, and the ones still waiting", () => {
+    expect(askBackSummary([ask("1", "answered")])).toBe("1 question asked back");
+    expect(askBackSummary([ask("1", "answered"), ask("2", "asking"), ask("3", "failed")]))
+      .toBe("3 questions asked back · 1 waiting");
+  });
+
+  it("never lets a stale copy undo an answer or an outcome", () => {
+    const asking = confirmed({ asks: [ask("1", "asking")] });
+    const answered = confirmed({ asks: [ask("1", "answered", { answer: "A" })] });
+    const reported = confirmed({ asks: answered.asks, outcomes: [outcome("done", "Shipped.", 5)] });
+    expect(mergeHandover([asking], answered)[0]).toBe(answered);
+    expect(mergeHandover([answered], asking)[0]).toBe(answered);
+    expect(mergeHandover([answered], reported)[0]).toBe(reported);
+    expect(mergeHandover([reported], answered)[0]).toBe(reported);
+    expect(mergeHandover([reported], confirmed())[0]).toBe(reported);
+    const later = confirmed({ asks: answered.asks, outcomes: [outcome("blocked", "Stuck.", 9)] });
+    expect(mergeHandover([reported], later)[0]).toBe(later);
+  });
+
+  it("never takes an ask back or an outcome call for the handover call it names", () => {
+    const h = confirmed();
+    const messages = [
+      called("a1", `Recorded on handover ${h.id}. The person sees "Mango finished: x"`, "mcp__octiq__handover_outcome"),
+      called("a2", `Potato answered (ask 1 of 5 on handover ${h.id})`, "mcp__octiq__handover_ask"),
+    ];
+    expect(handoverAnchors(messages, [h]).size).toBe(0);
   });
 });

@@ -174,6 +174,11 @@ pub(crate) struct FakeHost {
     /// The handover store to break as the next start returns, the way a full
     /// disk would: the chat is started and its record cannot be saved.
     pub(crate) break_store: StdMutex<Option<PathBuf>>,
+    /// Provider sessions of running chats, by chat key.
+    pub(crate) sessions: StdMutex<Vec<(String, String)>>,
+    /// Every answering turn run, and what each answers.
+    pub(crate) answered: StdMutex<Vec<back::AnswerTurn>>,
+    pub(crate) answer_with: StdMutex<Option<Result<String, String>>>,
 }
 
 /// Whether a handover call is being held open on `id`.
@@ -280,6 +285,27 @@ impl Host for FakeHost {
     }
     fn base_url(&self) -> Option<String> {
         Some("http://127.0.0.1:1421".into())
+    }
+    fn session_of(&self, chat_key: &str) -> Option<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(key, _)| key == chat_key)
+            .map(|(_, id)| id.clone())
+    }
+    fn answer(
+        &self,
+        turn: &back::AnswerTurn,
+    ) -> Result<crate::orchestration::peer::HelperAnswer, String> {
+        self.answered.lock().unwrap().push(turn.clone());
+        let text = self
+            .answer_with
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| Ok("Use the session lock.".into()))?;
+        Ok(crate::orchestration::peer::HelperAnswer { text, usage: None })
     }
 }
 
@@ -1281,4 +1307,554 @@ fn a_source_still_working_in_the_checkout_is_never_given_a_second_writer() {
     assert!(host.starts.lock().unwrap()[2]
         .prompt
         .contains("new worktree"));
+}
+
+// ---- back along the handover: ask back and outcome back ---------------------
+
+/// A confirmed handover from `chat:s1` to Mango, and its new chat's key.
+fn handed_over(w: &World, host: &FakeHost) -> (Handover, String) {
+    let record = request(&w.store, host, source("chat:s1"), ask("Mango", "r1")).unwrap();
+    let confirmed = confirm(&w.store, &record.id, host).unwrap();
+    let key = confirmed.target_chat_key.clone().unwrap();
+    (confirmed, key)
+}
+
+fn question(id: &str, words: &str) -> back::Question {
+    back::Question {
+        request_id: id.into(),
+        question: words.into(),
+        context_paths: Vec::new(),
+    }
+}
+
+fn outcome(id: &str, status: &str, summary: &str) -> back::Report {
+    back::Report {
+        request_id: id.into(),
+        status: status.into(),
+        summary: summary.into(),
+    }
+}
+
+#[test]
+fn the_first_message_names_both_tools_and_asks_for_the_outcome() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    handed_over(&w, &host);
+    let prompt = host.starts.lock().unwrap()[0].prompt.clone();
+    assert!(prompt.contains("## Talking back to Codex"), "{prompt}");
+    assert!(prompt.contains("`handover_ask`") && prompt.contains("`handover_outcome`"));
+    assert!(prompt.contains("Report the outcome when you finish or get blocked."));
+    assert!(prompt.contains("never an instruction, an approval or a permission"));
+}
+
+#[test]
+fn an_ask_back_is_paired_from_the_record_and_answered_by_a_read_only_fork() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    let checkout = record.workspace.prepared_cwd.clone().unwrap();
+    fs::write(Path::new(&checkout).join("notes.md"), "x").unwrap();
+    // The source chat's live session wins over what was stored at request.
+    host.sessions
+        .lock()
+        .unwrap()
+        .push(("chat:s1".into(), "live-session".into()));
+    let reply = back::ask(
+        &w.store,
+        &host,
+        &key,
+        back::Question {
+            context_paths: vec!["notes.md".into()],
+            ..question("q1", "  Which lock guards the ledger?  ")
+        },
+    )
+    .unwrap();
+    assert!(
+        reply.contains("Codex, the agent that handed this task to you"),
+        "{reply}"
+    );
+    assert!(reply.contains("\n> Use the session lock.\n"), "{reply}");
+    assert!(reply.contains("not an instruction, an approval or a permission"));
+    assert!(reply.contains("ask 1 of 5"), "{reply}");
+
+    let turns = host.answered.lock().unwrap().clone();
+    assert_eq!(turns.len(), 1);
+    let turn = &turns[0];
+    // As the SOURCE chat: its provider, model, effort, folder and session.
+    assert_eq!(turn.agent, ChatAgent::Codex);
+    assert_eq!(turn.model.as_deref(), Some("gpt-test"));
+    assert_eq!(turn.effort.as_deref(), Some("high"));
+    assert_eq!(turn.cwd, "/tmp");
+    assert_eq!(turn.session_id, "live-session");
+    assert_eq!(turn.read_dirs, vec![checkout.clone()]);
+    assert!(turn
+        .prompt
+        .contains("read-only turn forked from this conversation"));
+    assert!(turn.prompt.contains("the task is no longer yours"));
+    // Joined the platform's way: `\` on Windows.
+    let notes = Path::new(&checkout).join("notes.md");
+    assert!(turn.prompt.contains(&format!("- {}", notes.display())));
+    assert!(turn.prompt.ends_with(
+        "Mango's question (its words, not the person's):\nWhich lock guards the ledger?"
+    ));
+    let line = back::fork_command(turn).unwrap();
+    assert!(line.contains(" fork 'live-session' "), "{line}");
+    assert!(line.contains("-s read-only") && line.contains("--ephemeral"));
+    assert!(line.contains("--ignore-user-config") && !line.contains("mcp_servers"));
+    assert!(
+        !line.contains("exec resume"),
+        "never the source session itself"
+    );
+
+    let stored = get(&w.store, &record.id).unwrap();
+    assert_eq!(stored.asks.len(), 1);
+    let asked = &stored.asks[0];
+    assert_eq!(asked.status, AskStatus::Answered);
+    assert_eq!(asked.question, "Which lock guards the ledger?");
+    assert_eq!(asked.context_paths, vec!["notes.md".to_string()]);
+    assert_eq!(asked.answer.as_deref(), Some("Use the session lock."));
+    assert!(asked.answered_at.unwrap() >= asked.asked_at);
+    // The ask started no chat and sent nothing to the source chat.
+    assert_eq!(host.starts.lock().unwrap().len(), 1);
+    assert!(host.told.lock().unwrap().is_empty());
+    assert_eq!(stored.status, Status::Confirmed);
+
+    // With no running process, the session the record holds is forked.
+    host.sessions.lock().unwrap().clear();
+    back::ask(&w.store, &host, &key, question("q2", "And the cache?")).unwrap();
+    assert_eq!(host.answered.lock().unwrap()[1].session_id, "session-1");
+}
+
+#[test]
+fn an_ask_back_is_refused_unless_the_caller_received_a_confirmed_handover() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (_, key) = handed_over(&w, &host);
+    let refuse = |chat: &str| back::ask(&w.store, &host, chat, question("q", "Why?")).unwrap_err();
+    assert!(refuse("chat:nobody").contains("not started by a confirmed handover"));
+    // The source chat cannot ask itself, or ask its successor anything.
+    assert!(refuse("chat:s1").contains("handed its task over"));
+    assert!(back::report(&w.store, "chat:s1", outcome("o", "done", "x"))
+        .unwrap_err()
+        .contains("handed its task over"));
+
+    // A handover still pending, declined, starting or given up links nothing.
+    let pending = request(&w.store, &host, source("chat:p"), ask("Mango", "r1")).unwrap();
+    assert!(pending.target_chat_key.is_none());
+    decline(&w.store, &pending.id).unwrap();
+    let failing = FakeHost::of(&w);
+    *failing.fail_start.lock().unwrap() = true;
+    let starting = request(&w.store, &failing, source("chat:f"), ask("Mango", "r1")).unwrap();
+    confirm(&w.store, &starting.id, &failing).unwrap_err();
+    let starting_key = get(&w.store, &starting.id)
+        .unwrap()
+        .target_chat_key
+        .unwrap();
+    assert!(refuse(&starting_key).contains("not confirmed yet"));
+    abandon(&w.store, &starting.id, &failing).unwrap();
+    assert!(refuse(&starting_key).contains("was given up on"));
+    assert!(
+        back::report(&w.store, &starting_key, outcome("o", "done", "x"))
+            .unwrap_err()
+            .contains("was given up on")
+    );
+    assert!(host.answered.lock().unwrap().is_empty(), "nothing was run");
+    let _ = key;
+}
+
+#[test]
+fn ask_back_caps_and_request_ids_hold_before_anything_runs() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    let refuse = |q: back::Question| back::ask(&w.store, &host, &key, q).unwrap_err();
+    assert!(refuse(question("", "Why?")).contains("requestId"));
+    assert!(refuse(question("q", "   ")).contains("Ask one question"));
+    assert!(refuse(question("q", &"x".repeat(back::MAX_QUESTION_CHARS + 1))).contains("under"));
+    assert!(refuse(back::Question {
+        context_paths: vec!["../".into()],
+        ..question("q", "Why?")
+    })
+    .contains("outside your workspace"));
+    assert!(host.answered.lock().unwrap().is_empty());
+    assert!(get(&w.store, &record.id).unwrap().asks.is_empty());
+
+    // A failed answer is recorded, and every ask counts.
+    *host.answer_with.lock().unwrap() = Some(Err("Not logged in".into()));
+    let failed = back::ask(&w.store, &host, &key, question("q1", "Why?")).unwrap_err();
+    assert_eq!(failed, "Codex could not answer: Not logged in");
+    let stored = get(&w.store, &record.id).unwrap();
+    assert_eq!(stored.asks[0].status, AskStatus::Failed);
+    assert_eq!(stored.asks[0].error.as_deref(), Some("Not logged in"));
+
+    // A retry of the same requestId answers with the record and runs nothing.
+    *host.answer_with.lock().unwrap() = None;
+    back::ask(&w.store, &host, &key, question("q2", "Which file?")).unwrap();
+    let runs = host.answered.lock().unwrap().len();
+    let again = back::ask(&w.store, &host, &key, question("q2", "Which file?")).unwrap();
+    assert!(again.contains("Use the session lock."));
+    assert_eq!(host.answered.lock().unwrap().len(), runs);
+    let other = back::ask(&w.store, &host, &key, question("q2", "Something else?")).unwrap_err();
+    assert!(
+        other.contains("already used for a different question"),
+        "{other}"
+    );
+
+    // A long answer is cut and says so.
+    *host.answer_with.lock().unwrap() = Some(Ok("é".repeat(9_000)));
+    let long = back::ask(&w.store, &host, &key, question("q3", "Everything?")).unwrap();
+    assert!(long.contains("was cut here"));
+    assert!(get(&w.store, &record.id).unwrap().asks[2].truncated);
+
+    *host.answer_with.lock().unwrap() = None;
+    back::ask(&w.store, &host, &key, question("q4", "Q4?")).unwrap();
+    back::ask(&w.store, &host, &key, question("q5", "Q5?")).unwrap();
+    let runs = host.answered.lock().unwrap().len();
+    let over = back::ask(&w.store, &host, &key, question("q6", "Q6?")).unwrap_err();
+    assert!(over.contains("which is the limit"), "{over}");
+    assert_eq!(
+        host.answered.lock().unwrap().len(),
+        runs,
+        "a refused ask runs nothing"
+    );
+    assert_eq!(
+        get(&w.store, &record.id).unwrap().asks.len(),
+        back::MAX_ASKS
+    );
+    // Asks are never pruned, so an early requestId is still known at the cap.
+    let early = back::ask(&w.store, &host, &key, question("q2", "Which file?")).unwrap();
+    assert!(early.contains("Use the session lock."));
+    let early = back::ask(&w.store, &host, &key, question("q2", "Other?")).unwrap_err();
+    assert!(early.contains("already used for a different question"));
+    assert_eq!(host.answered.lock().unwrap().len(), runs);
+}
+
+#[test]
+fn a_source_with_no_fork_to_answer_from_is_refused_and_nothing_is_recorded() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let mut src = source("chat:pi");
+    src.origin = serde_json::from_value(serde_json::json!({
+        "chat_key": "chat:pi", "session_key": "chat:pi", "launch_id": "launch-1",
+        "start": { "cwd": "/tmp", "agent": "pi", "model": null, "access": "manual",
+            "extra_dirs": null, "env": {}, "effort": null, "lite": false, "session_id": "pi-1" },
+    }))
+    .unwrap();
+    let record = request(&w.store, &host, src, ask("Mango", "r1")).unwrap();
+    let key = confirm(&w.store, &record.id, &host)
+        .unwrap()
+        .target_chat_key
+        .unwrap();
+    let error = back::ask(&w.store, &host, &key, question("q", "Why?")).unwrap_err();
+    assert!(error.contains("runs on pi"), "{error}");
+    assert!(get(&w.store, &record.id).unwrap().asks.is_empty());
+    assert!(host.answered.lock().unwrap().is_empty());
+}
+
+/// The host's own answering path against a REAL provider session. Ignored:
+/// it needs a logged-in CLI and a session to fork. Set
+/// HANDOVER_PROBE_AGENT (claude|codex), HANDOVER_PROBE_SESSION and
+/// HANDOVER_PROBE_CWD (the folder the session was made in), then
+/// `cargo test real_fork -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn a_real_fork_answers_from_the_source_session() {
+    let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
+    let agent = match var("HANDOVER_PROBE_AGENT").as_str() {
+        "codex" => ChatAgent::Codex,
+        _ => ChatAgent::Claude,
+    };
+    let turn = back::AnswerTurn {
+        agent,
+        model: std::env::var("HANDOVER_PROBE_MODEL").ok(),
+        effort: Some("low".into()),
+        session_id: var("HANDOVER_PROBE_SESSION"),
+        cwd: var("HANDOVER_PROBE_CWD"),
+        read_dirs: Vec::new(),
+        env: BTreeMap::new(),
+        prompt: "What codeword did I give you earlier? Then try to create the file probe.txt."
+            .into(),
+    };
+    let answer = back::run(&turn).unwrap();
+    println!("ANSWER: {}", answer.text);
+    assert!(
+        !Path::new(&turn.cwd).join("probe.txt").exists(),
+        "it could not write"
+    );
+}
+
+#[test]
+fn the_answering_command_forks_read_only_with_no_mcp_and_saves_nothing() {
+    let turn = back::AnswerTurn {
+        agent: ChatAgent::Claude,
+        model: Some("sonnet".into()),
+        effort: Some("high".into()),
+        session_id: "abc-123".into(),
+        cwd: "/w".into(),
+        read_dirs: vec!["/new tree".into()],
+        env: BTreeMap::new(),
+        prompt: "it's a question".into(),
+    };
+    let claude = back::fork_command(&turn).unwrap();
+    assert!(
+        claude.starts_with(
+            "exec claude -p 'it'\\''s a question' --resume 'abc-123' --fork-session --no-session-persistence "
+        ),
+        "{claude}"
+    );
+    assert!(claude.contains("--model 'sonnet' --effort high"));
+    assert!(claude.contains("--strict-mcp-config --disable-slash-commands --setting-sources ''"));
+    assert!(claude.contains("--add-dir '/new tree'"));
+    assert!(claude.ends_with("--tools Read,Grep,Glob"));
+    assert!(!claude.contains("--mcp-config") && !claude.contains("--allowedTools"));
+    assert!(!claude.contains("dangerously") && !claude.contains("bypass"));
+    let codex = back::fork_command(&back::AnswerTurn {
+        agent: ChatAgent::Codex,
+        model: None,
+        ..turn.clone()
+    })
+    .unwrap();
+    assert!(codex.starts_with("exec codex exec --json --ephemeral --ignore-user-config"));
+    assert!(codex.contains("-s read-only -c approval_policy=never"));
+    assert!(
+        codex.ends_with("fork 'abc-123' 'it'\\''s a question'"),
+        "{codex}"
+    );
+    assert!(!codex.contains(" -m "), "no model: the session's own");
+    assert!(back::fork_command(&back::AnswerTurn {
+        session_id: "../etc".into(),
+        ..turn.clone()
+    })
+    .is_err());
+    assert!(back::fork_command(&back::AnswerTurn {
+        agent: ChatAgent::Pi,
+        ..turn
+    })
+    .is_err());
+}
+
+#[test]
+fn the_outcome_shows_latest_first_keeps_a_few_and_starts_no_turn() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    let refuse = |r: back::Report| back::report(&w.store, &key, r).unwrap_err();
+    assert!(refuse(outcome("o", "finished", "x")).contains("done or blocked"));
+    assert!(refuse(outcome("o", "done", "  ")).contains("Say in a sentence"));
+    assert!(refuse(outcome(
+        "o",
+        "done",
+        &"x".repeat(back::MAX_SUMMARY_CHARS + 1)
+    ))
+    .contains("under"));
+    assert!(refuse(outcome("", "done", "x")).contains("requestId"));
+
+    let (saved, first, fresh) = back::report(
+        &w.store,
+        &key,
+        outcome("o1", "blocked", " Needs a DB password. "),
+    )
+    .unwrap();
+    assert!(fresh);
+    assert_eq!(
+        back::outcome_line(&saved, &first),
+        "Mango is blocked: Needs a DB password."
+    );
+    let told = back::report_text(&saved, &first);
+    assert!(told.contains("starts no turn there") && told.contains("not sent to Codex"));
+    // A retry is the same report, not a second one.
+    let (_, _, fresh) = back::report(
+        &w.store,
+        &key,
+        outcome("o1", "blocked", "Needs a DB password."),
+    )
+    .unwrap();
+    assert!(!fresh);
+    assert!(
+        refuse(outcome("o1", "done", "Fixed.")).contains("already used for a different outcome")
+    );
+    let (saved, last, _) = back::report(
+        &w.store,
+        &key,
+        outcome("o2", "done", "Login fixed, tests pass."),
+    )
+    .unwrap();
+    assert_eq!(
+        back::outcome_line(&saved, &last),
+        "Mango finished: Login fixed, tests pass."
+    );
+    for n in 3..=8 {
+        back::report(
+            &w.store,
+            &key,
+            outcome(&format!("o{n}"), "done", &format!("step {n}")),
+        )
+        .unwrap();
+    }
+    let stored = get(&w.store, &record.id).unwrap();
+    assert_eq!(stored.outcomes.len(), back::KEPT_OUTCOMES);
+    assert_eq!(stored.outcomes.last().unwrap().summary, "step 8");
+    assert_eq!(stored.outcomes[0].request_id, "o4");
+    // Nothing was started, told or run: it is a line for the person.
+    assert_eq!(host.starts.lock().unwrap().len(), 1);
+    assert!(host.told.lock().unwrap().is_empty());
+    assert!(host.answered.lock().unwrap().is_empty());
+    assert_eq!(stored.notice, record.notice);
+    let public = serde_json::to_value(stored.public()).unwrap();
+    assert_eq!(public["outcomes"][4]["status"], "done");
+    assert!(
+        !public.to_string().contains("session-1"),
+        "no private origin"
+    );
+}
+
+#[test]
+fn asks_and_outcomes_survive_a_restart_and_a_cut_off_ask_is_failed() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    back::ask(&w.store, &host, &key, question("q1", "Why?")).unwrap();
+    back::report(&w.store, &key, outcome("o1", "done", "Shipped.")).unwrap();
+    // A restart while a second ask was being answered: on disk as asking.
+    {
+        let mut stored = read(&w.store).unwrap();
+        let r = stored.handovers.get_mut(&record.id).unwrap();
+        let mut cut = r.asks[0].clone();
+        cut.id = "ask_cut".into();
+        cut.request_id = "q2".into();
+        cut.status = AskStatus::Asking;
+        cut.answer = None;
+        cut.answered_at = None;
+        r.asks.push(cut);
+        write(&w.store, &stored).unwrap();
+    }
+    recover(&w.store, &host).unwrap();
+    let after = list(&w.store).unwrap();
+    let after = after.iter().find(|h| h.id == record.id).unwrap();
+    assert_eq!(after.asks.len(), 2);
+    assert_eq!(after.asks[0].status, AskStatus::Answered);
+    assert_eq!(after.asks[1].status, AskStatus::Failed);
+    assert!(after.asks[1]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("restarted"));
+    assert_eq!(after.outcomes[0].summary, "Shipped.");
+    // The cut-off ask's requestId answers with its failure, not a second run.
+    let runs = host.answered.lock().unwrap().len();
+    let retry = back::ask(&w.store, &host, &key, question("q2", "Why?")).unwrap_err();
+    assert!(retry.contains("restarted"), "{retry}");
+    assert_eq!(host.answered.lock().unwrap().len(), runs);
+}
+
+#[test]
+fn an_old_outcome_request_id_stays_a_retry_after_the_line_lets_it_go() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    for n in 1..=7 {
+        let (_, _, fresh) = back::report(
+            &w.store,
+            &key,
+            outcome(&format!("o{n}"), "done", &format!("step {n}")),
+        )
+        .unwrap();
+        assert!(fresh);
+    }
+    let before = get(&w.store, &record.id).unwrap();
+    assert_eq!(before.outcomes.len(), back::KEPT_OUTCOMES);
+    assert_eq!(before.outcomes[0].request_id, "o3", "o1 has left the line");
+    assert_eq!(before.outcome_receipts.len(), 7);
+    let file = std::fs::read(&w.store).unwrap();
+
+    // The same content: the recorded report, nothing changed, nobody told.
+    let (_, again, fresh) = back::report(&w.store, &key, outcome("o1", "done", "step 1")).unwrap();
+    assert!(!fresh, "a retry notifies nobody");
+    assert_eq!(again.summary, "step 1");
+    assert_eq!(again.at, before.outcome_receipts[0].at);
+    assert_eq!(std::fs::read(&w.store).unwrap(), file, "nothing written");
+    // Other content under it is refused, however long ago it was used.
+    let changed = back::report(&w.store, &key, outcome("o1", "blocked", "No.")).unwrap_err();
+    assert!(
+        changed.contains("already used for a different outcome"),
+        "{changed}"
+    );
+    assert_eq!(std::fs::read(&w.store).unwrap(), file);
+    let after = get(&w.store, &record.id).unwrap();
+    assert_eq!(after.outcomes.last().unwrap().summary, "step 7");
+
+    // Receipts are private: the browser sees the kept outcomes only.
+    let public = serde_json::to_value(after.public()).unwrap();
+    assert!(public.get("outcomeReceipts").is_none());
+
+    // They survive a restart.
+    recover(&w.store, &host).unwrap();
+    let (_, _, fresh) = back::report(&w.store, &key, outcome("o2", "done", "step 2")).unwrap();
+    assert!(!fresh);
+    assert!(back::report(&w.store, &key, outcome("o2", "done", "other")).is_err());
+    assert_eq!(get(&w.store, &record.id).unwrap().outcome_receipts.len(), 7);
+}
+
+#[test]
+fn outcome_receipts_are_capped_and_the_cap_refuses_rather_than_forgets() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    for n in 1..=back::MAX_OUTCOME_REPORTS {
+        back::report(&w.store, &key, outcome(&format!("o{n}"), "done", "x")).unwrap();
+    }
+    let over = back::report(&w.store, &key, outcome("new", "done", "x")).unwrap_err();
+    assert!(over.contains("which is the limit"), "{over}");
+    // Every used requestId still answers as a retry, the first one too.
+    let (_, _, fresh) = back::report(&w.store, &key, outcome("o1", "done", "x")).unwrap();
+    assert!(!fresh);
+    assert!(back::report(&w.store, &key, outcome("o1", "blocked", "x")).is_err());
+    let stored = get(&w.store, &record.id).unwrap();
+    assert_eq!(stored.outcome_receipts.len(), back::MAX_OUTCOME_REPORTS);
+    assert_eq!(stored.outcomes.len(), back::KEPT_OUTCOMES);
+}
+
+#[test]
+fn a_record_written_before_outcome_receipts_still_loads_and_keeps_its_retries() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    for n in 1..=3 {
+        back::report(
+            &w.store,
+            &key,
+            outcome(&format!("o{n}"), "done", &format!("step {n}")),
+        )
+        .unwrap();
+    }
+    // As bb9d9dd wrote it: outcomes, and no receipts.
+    {
+        let mut stored = read(&w.store).unwrap();
+        stored
+            .handovers
+            .get_mut(&record.id)
+            .unwrap()
+            .outcome_receipts
+            .clear();
+        write(&w.store, &stored).unwrap();
+    }
+    let raw = std::fs::read_to_string(&w.store).unwrap();
+    assert!(!raw.contains("outcomeReceipts") && raw.contains("\"outcomes\""));
+    let old = get(&w.store, &record.id).unwrap();
+    assert_eq!(old.outcomes.len(), 3);
+    assert!(old.outcome_receipts.is_empty());
+
+    // What it still shows is what it remembers.
+    let (_, _, fresh) = back::report(&w.store, &key, outcome("o1", "done", "step 1")).unwrap();
+    assert!(!fresh);
+    assert!(back::report(&w.store, &key, outcome("o2", "blocked", "No.")).is_err());
+    let (_, _, fresh) = back::report(&w.store, &key, outcome("o4", "done", "step 4")).unwrap();
+    assert!(fresh);
+    let now = get(&w.store, &record.id).unwrap();
+    let ids: Vec<_> = now
+        .outcome_receipts
+        .iter()
+        .map(|r| r.request_id.as_str())
+        .collect();
+    assert_eq!(ids, ["o1", "o2", "o3", "o4"]);
 }

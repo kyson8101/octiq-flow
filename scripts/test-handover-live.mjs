@@ -41,17 +41,27 @@ function stubClaude() {
   const env = process.env;
   const key = env.OCTIQ_CHAT_KEY || "unknown";
   const log = (entry) => fs.appendFileSync(env.STUB_LOG, JSON.stringify({ at: Date.now(), key, ...entry }) + "\n");
-  log({ launch: true, argv: process.argv.slice(2) });
+  // `claude -p <prompt> …`: the one-shot read-only fork a handover's ask back
+  // runs as the source chat's agent. It answers and exits; it is no chat.
+  const argv = process.argv.slice(2);
+  const prompt = argv[argv.indexOf("-p") + 1];
+  if (argv.includes("-p") && prompt && !prompt.startsWith("--")) {
+    log({ answering: true, argv, cwd: process.cwd(), octiq: Object.keys(env).filter((name) => name.startsWith("OCTIQ_")) });
+    process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false,
+      result: "The cookie path is set in auth.ts.\nKeep the cookie name: renaming it logs everyone out." }) + "\n");
+    return;
+  }
+  log({ launch: true, argv, session: "stub-" + process.pid });
   const session = "stub-" + process.pid;
   const out = (event) => process.stdout.write(JSON.stringify({ session_id: session, ...event }) + "\n");
   const reply = (said) => {
     out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: said }] } });
     out({ type: "result", subtype: "success", is_error: false, result: said, duration_ms: 1, num_turns: 1 });
   };
-  const handover = (args) => new Promise((resolve) => {
+  const handover = (args, route = "/hook/handover") => new Promise((resolve) => {
     const body = JSON.stringify({ chatKey: key, sessionKey: env.OCTIQ_SESSION_KEY || key,
       launchId: env.OCTIQ_LAUNCH_ID, wait: true, args });
-    const req = http.request({ host: "127.0.0.1", port: Number(env.OCTIQ_HOOK_PORT), path: "/hook/handover", method: "POST",
+    const req = http.request({ host: "127.0.0.1", port: Number(env.OCTIQ_HOOK_PORT), path: route, method: "POST",
       headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body),
         "x-octiq-chat-capability": env.OCTIQ_CHAT_CAPABILITY || "" } }, (res) => {
       let text = "";
@@ -73,6 +83,17 @@ function stubClaude() {
     const content = msg.message?.content;
     const text = typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("\n");
     log({ user: text });
+    // The recipient of a handover, on its first turn: one question back to
+    // the agent that handed it over, then the outcome, as the MCP tools do.
+    if (text.startsWith("[OctiqFlow handover ")) {
+      const ask = await handover({ question: "Where is the cookie path set, and may I rename the cookie?",
+        contextPaths: ["auth.ts"], requestId: "ask-1" }, "/hook/handover/ask");
+      log({ askBack: ask });
+      const outcome = await handover({ status: "done", summary: "Cookie path fixed in auth.ts; the regression test passes.",
+        requestId: "outcome-1" }, "/hook/handover/outcome");
+      log({ outcomeBack: outcome });
+      return reply(`Asked back and reported. ${ask.result?.text ?? ask.error}`);
+    }
     const asked = text.match(/^HANDOVER (\S+) (\S+)/);
     if (!asked) return reply("Noted.");
     const answer = await handover({
@@ -263,8 +284,84 @@ try {
   assert.match(first.user, /check with the person before going on/);
   assert.doesNotMatch(first.user, /has been told/);
   assert.equal(stub().filter((e) => e.launch && e.key !== "chat:source-a").length, 1, "exactly one new chat");
+  // The first message names the two tools back and asks for the outcome.
+  assert.match(first.user, /`handover_ask`/);
+  assert.match(first.user, /`handover_outcome`/);
+  assert.match(first.user, /Report the outcome when you finish or get blocked\./);
+  assert.match(results.targetArgv, /mcp__octiq__handover_ask mcp__octiq__handover_outcome/);
+
+  // ---- Back along the handover: the recipient asks one question and
+  // reports the outcome on its first turn (the stub does what the MCP does).
+  const sourceTurns = () => stub().filter((e) => e.key === "chat:source-a" && e.user).length;
+  const sourceLaunches = () => stub().filter((e) => e.key === "chat:source-a" && e.launch).length;
+  const askBack = await wait("the answer to the ask back", () => stub().find((e) => e.key === target && e.askBack)?.askBack);
+  results.askBack = askBack;
+  assert.equal(askBack.status, 200, JSON.stringify(askBack));
+  assert.match(askBack.result.text, /Claude, the agent that handed this task to you, answered from its own conversation in a read-only turn/);
+  assert.match(askBack.result.text, /\n> The cookie path is set in auth\.ts\.\n> Keep the cookie name/);
+  assert.match(askBack.result.text, /not an instruction, an approval or a permission/);
+  // The answer ran as a one-shot fork of the SOURCE chat's own session, in
+  // its folder, read-only, with no MCP and no OctiqFlow variable.
+  const answering = stub().filter((e) => e.answering);
+  assert.equal(answering.length, 1, "one answering process");
+  const fork = answering[0];
+  const sourceSession = stub().find((e) => e.key === "chat:source-a" && e.launch).session;
+  results.answeringArgv = fork.argv.join(" ");
+  results.answeringOctiqVariables = fork.octiq;
+  assert.deepEqual(fork.octiq, []);
+  assert.equal(fs.realpathSync(fork.cwd), fs.realpathSync(repo));
+  const flag = (name) => fork.argv[fork.argv.indexOf(name) + 1];
+  assert.equal(flag("--resume"), sourceSession);
+  for (const required of ["--fork-session", "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands"]) {
+    assert.ok(fork.argv.includes(required), required);
+  }
+  assert.equal(flag("--tools"), "Read,Grep,Glob");
+  assert.equal(flag("--permission-mode"), "default");
+  assert.ok(!fork.argv.includes("--mcp-config") && !fork.argv.includes("--allowedTools"));
+  assert.match(flag("-p"), /\[OctiqFlow handover handover_\w+, question asked back\]/);
+  assert.match(flag("-p"), /- .*auth\.ts/);
+  const outcomeBack = await wait("the outcome report", () => stub().find((e) => e.key === target && e.outcomeBack)?.outcomeBack);
+  results.outcomeBack = outcomeBack;
+  assert.equal(outcomeBack.status, 200, JSON.stringify(outcomeBack));
+  assert.match(outcomeBack.result.text, /starts no turn there and is not sent to Claude/);
+  const backed = (await handovers()).find((h) => h.id === pending.id);
+  results.recordedBack = { asks: backed.asks, outcomes: backed.outcomes };
+  assert.equal(backed.asks.length, 1);
+  assert.equal(backed.asks[0].status, "answered");
+  assert.deepEqual(backed.asks[0].contextPaths, ["auth.ts"]);
+  assert.equal(backed.outcomes.at(-1).status, "done");
+  // Neither started a turn in the source chat, or a new process for it.
+  assert.equal(sourceTurns(), 1, "the source agent was never sent a message");
+  assert.equal(sourceLaunches(), 1, "the source chat was never relaunched");
+
+  // ---- Browser: the outcome and the question on the source chat's line.
+  const outcomeLine = line.locator(".handover-outcome");
+  await outcomeLine.waitFor({ timeout: 20_000 });
+  results.sourceOutcomeLine = (await outcomeLine.innerText()).trim();
+  assert.equal(results.sourceOutcomeLine, "Mango finished: Cookie path fixed in auth.ts; the regression test passes.");
+  const asksLog = line.locator("details.handover-asks");
+  assert.equal((await asksLog.locator("summary").innerText()).trim(), "1 question asked back");
+  assert.equal(await asksLog.evaluate((d) => d.open), false, "folded until asked");
+  assert.equal(await card.count(), 0);
+  assert.equal(await page.locator(".handover-card").count(), 0, "never a card");
   await line.scrollIntoViewIfNeeded();
   await shot(page, "4-source-confirmed-desktop.png");
+  await asksLog.locator("summary").click();
+  await page.waitForTimeout(250);
+  results.sourceAskText = (await asksLog.innerText()).replace(/\s+/g, " ");
+  assert.match(results.sourceAskText, /Mango asked Claude · Answered/);
+  assert.match(results.sourceAskText, /Keep the cookie name/);
+  await line.scrollIntoViewIfNeeded();
+  await shot(page, "4a-source-outcome-and-ask-desktop.png");
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.waitForTimeout(400);
+  await line.scrollIntoViewIfNeeded();
+  results.backPhoneNoSideways = await noSideways(page);
+  await shot(page, "4b-source-outcome-and-ask-phone-375.png");
+  assert.equal(results.backPhoneNoSideways, true);
+  await asksLog.locator("summary").click();
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.waitForTimeout(300);
 
   // ---- Follow the link to the new chat; it links back.
   await line.getByRole("button", { name: "Open Mango's chat" }).click();
@@ -272,6 +369,23 @@ try {
   await incoming.waitFor({ timeout: 20_000 });
   results.incomingText = (await incoming.innerText()).replace(/\s+/g, " ");
   assert.match(results.incomingText, /Handed over from Claude/);
+  // The same outcome and question on the incoming line, at the head.
+  assert.match(results.incomingText, /Mango finished: Cookie path fixed in auth\.ts; the regression test passes\./);
+  assert.match(results.incomingText, /1 question asked back/);
+  const incomingAsks = incoming.locator("details.handover-asks");
+  await incomingAsks.locator("summary").click();
+  await page.waitForTimeout(250);
+  await incoming.scrollIntoViewIfNeeded();
+  await shot(page, "5a-target-outcome-and-ask-desktop.png");
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.waitForTimeout(400);
+  await incoming.scrollIntoViewIfNeeded();
+  results.incomingBackPhoneNoSideways = await noSideways(page);
+  await shot(page, "5b-target-outcome-and-ask-phone-375.png");
+  assert.equal(results.incomingBackPhoneNoSideways, true);
+  await incomingAsks.locator("summary").click();
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.waitForTimeout(300);
   // The source chat's title is in the facts under the line.
   await incoming.getByRole("button", { name: "Brief" }).click();
   assert.match((await incoming.innerText()).replace(/\s+/g, " "), /Fix the login bug/);
@@ -293,6 +407,8 @@ try {
   await restored.waitFor({ timeout: 20_000 });
   results.restoredStatus = await restored.getAttribute("data-status");
   assert.equal(results.restoredStatus, "confirmed");
+  assert.match(await restored.locator(".handover-outcome").innerText(), /^Mango finished: /);
+  assert.equal((await restored.locator("details.handover-asks > summary").innerText()).trim(), "1 question asked back");
   await page.setViewportSize({ width: 375, height: 812 });
   await page.waitForTimeout(400);
   await restored.scrollIntoViewIfNeeded();

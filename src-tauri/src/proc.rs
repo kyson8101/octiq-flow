@@ -31,7 +31,7 @@ pub struct AgentShell {
 }
 
 /// The variable a command line travels in on Windows; see `AgentShell::delivery`.
-const LINE_ENV: &str = "OCTIQ_LAUNCH_LINE";
+pub(crate) const LINE_ENV: &str = "OCTIQ_LAUNCH_LINE";
 
 /// Runs the line `LINE_ENV` carries. The variable is taken back out first, so
 /// the agent and everything it starts never inherit a copy of the line.
@@ -70,12 +70,21 @@ impl AgentShell {
 
     /// A command that runs `line`, a POSIX-quoted command line, in this shell.
     pub fn command(&self, line: &str) -> Command {
-        let (args, env) = self.delivery(line, cfg!(windows));
+        self.command_on(line, cfg!(windows))
+    }
+
+    /// `command`, with the platform as a parameter so the Windows delivery
+    /// can be checked on a Mac.
+    pub(crate) fn command_on(&self, line: &str, is_windows: bool) -> Command {
+        let (args, env) = self.delivery(line, is_windows);
         let mut command = Command::new(&self.program);
         command.args(args);
-        if let Some((name, value)) = env {
-            command.env(name, value);
-        }
+        match env {
+            // Overrides any copy this process inherited: the shell runs ours.
+            Some((name, value)) => command.env(name, value),
+            // The line is the argument, so an inherited carrier is no one's.
+            None => command.env_remove(LINE_ENV),
+        };
         command
     }
 }
@@ -253,6 +262,10 @@ mod tests {
         let (args, env) = bash().delivery("exec claude -p", false);
         assert_eq!(args, vec!["-lc".to_string(), "exec claude -p".to_string()]);
         assert_eq!(env, None);
+        // Nor does a carrier this process inherited go through.
+        let command = bash().command_on("exec claude -p", false);
+        let carried: Vec<_> = command.get_envs().collect();
+        assert_eq!(carried, [(std::ffi::OsStr::new(LINE_ENV), None)]);
     }
 
     #[test]
@@ -269,6 +282,65 @@ mod tests {
         let (name, value) = env.expect("the line travels in the environment");
         assert!(args[1].contains(name), "the argument reads {name}");
         assert!(value == line, "the variable carries the line untouched");
+        // The command sets ours, which wins over any inherited copy.
+        let command = bash().command_on(&line, true);
+        let carried: Vec<_> = command.get_envs().collect();
+        assert_eq!(
+            carried,
+            [(
+                std::ffi::OsStr::new(LINE_ENV),
+                Some(std::ffi::OsStr::new(&line))
+            )]
+        );
+    }
+
+    /// Set by `an_inherited_carrier_never_reaches_what_the_agent_shell_starts`
+    /// on the copy of this test binary it starts.
+    const INHERITING_RUN: &str = "PROC_TEST_INHERITED_CARRIER";
+
+    /// A launch line this process inherited, forged or stale, must neither
+    /// run nor reach what the shell starts, on either delivery. The suite's
+    /// own environment decides nothing: this test starts a copy of itself
+    /// with the carrier really inherited, and that copy runs the checks.
+    #[cfg(unix)]
+    #[test]
+    fn an_inherited_carrier_never_reaches_what_the_agent_shell_starts() {
+        if std::env::var_os(INHERITING_RUN).is_some() {
+            assert_eq!(std::env::var(LINE_ENV).as_deref(), Ok("inherited-forged"));
+            let shell = resolve_agent_shell(
+                std::env::var("SHELL").ok(),
+                std::env::var("LOCALAPPDATA").ok(),
+                false,
+                &find_executable,
+            )
+            .expect("a shell to launch agents through");
+            let line = "printf 'ran=%s\\n' ours; env";
+            for is_windows in [false, true] {
+                let output = shell.command_on(line, is_windows).output().unwrap();
+                let printed = String::from_utf8_lossy(&output.stdout);
+                assert!(printed.contains("ran=ours"), "{is_windows}: {printed}");
+                assert!(printed.contains("PATH="), "{is_windows}: {printed}");
+                assert!(!printed.contains(LINE_ENV), "{is_windows}: {printed}");
+                assert!(!printed.contains("inherited-forged"), "{is_windows}");
+            }
+            the_line_is_not_left_in_the_environment_of_what_it_starts();
+            return;
+        }
+        let name = "proc::tests::an_inherited_carrier_never_reaches_what_the_agent_shell_starts";
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--nocapture", "--test-threads=1"])
+            .env(INHERITING_RUN, "1")
+            .env(LINE_ENV, "inherited-forged")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{printed}");
+        assert!(printed.contains("1 passed"), "the copy ran it: {printed}");
     }
 
     #[test]

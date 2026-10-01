@@ -136,3 +136,73 @@
 .handover-line-body[hidden] { display: none; }
 .handover-line-body .handover-facts { margin: 0; }
 .handover-line-body .handover-brief-body { padding: 0; }
+
+/* What came back along the handover, indented under its line: the outcome on
+   one line that opens in place to the whole of it when it is cut short, and
+   the questions asked back as a count that opens. Never a card of its own. */
+.handover-outcome {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0; min-height: 22px; margin: 0 0 0 14px;
+  color: var(--fg-1); font-size: 12.5px;
+}
+.handover-outcome-mark {
+  flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--ok, var(--fg-2));
+}
+.handover-outcome.is-blocked .handover-outcome-mark { background: var(--warn, var(--fg-2)); }
+.handover-outcome-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.handover-outcome-toggle {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 24px; min-height: 22px; padding: 0; margin: 0 0 0 -4px;
+  border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer;
+}
+.handover-outcome-toggle[hidden] { display: none; }
+.handover-outcome-toggle:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 1px; }
+@media (hover: hover) { .handover-outcome-toggle:hover .handover-chevron { border-color: var(--fg-0); } }
+/* Shut, the whole row is the tap target; open, the text is left free to be
+   selected and only the chevron shuts it. */
+.handover-outcome:not(.is-open) .handover-outcome-toggle::after { content: ""; position: absolute; inset: -4px 0; }
+.handover-outcome.is-open { align-items: flex-start; }
+.handover-outcome.is-open .handover-outcome-mark { margin-top: 7px; }
+.handover-outcome.is-open .handover-outcome-text {
+  overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; padding: 2px 0;
+}
+.handover-outcome.is-open .handover-chevron { transform: translateY(2px) rotate(-135deg); }
+
+.handover-asks { min-width: 0; margin: 0 0 0 12px; }
+.handover-asks > summary {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-height: 24px; padding: 0 2px;
+  color: var(--fg-2); font-size: 12px; list-style: none; cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: color 130ms ease-out;
+}
+.handover-asks > summary::-webkit-details-marker { display: none; }
+@media (hover: hover) { .handover-asks > summary:hover { color: var(--fg-0); } }
+.handover-asks > summary:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 1px; }
+.handover-asks[open] > summary .handover-chevron { transform: translateY(2px) rotate(-135deg); }
+.handover-asks > ol {
+  display: grid; gap: 10px; min-width: 0;
+  margin: 4px 0 6px; padding: 2px 0 2px 12px; list-style: none;
+  border-left: 1px solid var(--border);
+}
+.handover-asks li { min-width: 0; }
+.handover-asks li > p { margin: 0; font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.handover-ask-who { color: var(--fg-3); font-size: 11.5px !important; }
+.handover-ask-who strong { color: var(--fg-1); font-weight: 600; }
+.handover-asks li[data-status="asking"] .handover-ask-who span { color: var(--link, var(--fg-2)); }
+.handover-ask-question { margin-top: 2px !important; color: var(--fg-1); white-space: pre-wrap; }
+.handover-ask-paths { margin-top: 2px !important; color: var(--fg-3); font-size: 11.5px !important; }
+.handover-ask-paths code { font-family: var(--mono); }
+.handover-ask-answer {
+  margin-top: 4px !important; padding-left: 8px;
+  border-left: 2px solid var(--border-strong, var(--border));
+  color: var(--fg-0); white-space: pre-wrap;
+}
+.handover-ask-answer em { color: var(--fg-3); }
+.handover-ask-error { margin-top: 4px !important; color: var(--danger); }
+@media (max-width: 640px), (pointer: coarse) {
+  .handover-asks > summary { position: relative; }
+  .handover-asks > summary::after { content: ""; position: absolute; inset: -10px 0; }
+}

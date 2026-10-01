@@ -319,7 +319,7 @@ pub fn parse_claude(stdout: &str) -> Result<HelperAnswer, String> {
         .rev()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
         .find(|v| v.get("type").and_then(Value::as_str) == Some("result"))
-        .ok_or("The teammate gave no answer.")?;
+        .ok_or("No answer came back.")?;
     let text = result
         .get("result")
         .and_then(Value::as_str)
@@ -328,13 +328,13 @@ pub fn parse_claude(stdout: &str) -> Result<HelperAnswer, String> {
         .to_owned();
     if result.get("is_error").and_then(Value::as_bool) == Some(true) {
         return Err(if text.is_empty() {
-            "The teammate's turn failed.".into()
+            "The answering turn failed.".into()
         } else {
             text
         });
     }
     if text.is_empty() {
-        return Err("The teammate gave no answer.".into());
+        return Err("No answer came back.".into());
     }
     let usage = result.get("usage").map(|u| PeerUsage {
         input_tokens: number(u.get("input_tokens"))
@@ -388,7 +388,7 @@ pub fn parse_codex(stdout: &str) -> Result<HelperAnswer, String> {
     }
     match text.filter(|t| !t.is_empty()) {
         Some(text) => Ok(HelperAnswer { text, usage }),
-        None => Err(failure.unwrap_or_else(|| "The teammate gave no answer.".into())),
+        None => Err(failure.unwrap_or_else(|| "No answer came back.".into())),
     }
 }
 
@@ -408,26 +408,85 @@ const CHAT_VARIABLES: [&str; 7] = [
 /// Run the teammate's answer for real: one process, a deadline, no stdin.
 pub fn run_helper(turn: &HelperTurn) -> Result<HelperAnswer, String> {
     let line = helper_command(turn)?;
+    run_one_shot(
+        turn.agent,
+        &line,
+        &turn.cwd,
+        &BTreeMap::new(),
+        HELPER_TIMEOUT,
+        "The teammate",
+    )
+}
+
+/// Whether `name` is one of OctiqFlow's own variables, which tie a process
+/// to a chat. A one-shot answering process gets none of them.
+pub fn is_octiq_variable(name: &str) -> bool {
+    name.starts_with("OCTIQ_") || CHAT_VARIABLES.contains(&name)
+}
+
+/// The answering process, not yet started: `line` handed to `shell` through
+/// `AgentShell::command_on`, never as a raw `-lc` argument (on Windows, Git
+/// Bash would parse that again, cutting it near 8186 characters and halving
+/// its backslashes), in `cwd` with no stdin, every `OCTIQ_*` variable removed
+/// (inherited or in `env`). The one exception is Windows' carrier, which
+/// `command_on` has just set to `line`, overriding any inherited copy, and
+/// which the shell takes back out before it runs anything. Elsewhere the line
+/// is an argument, so the carrier goes like every other `OCTIQ_*` variable.
+pub fn one_shot_command(
+    shell: &crate::proc::AgentShell,
+    line: &str,
+    cwd: &str,
+    env: &BTreeMap<String, String>,
+    is_windows: bool,
+) -> Command {
+    let mut cmd = shell.command_on(line, is_windows);
+    cmd.current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let carrier = |name: &str| is_windows && name == crate::proc::LINE_ENV;
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_str()
+            .is_some_and(|n| is_octiq_variable(n) && !carrier(n))
+        {
+            cmd.env_remove(name);
+        }
+    }
+    for name in CHAT_VARIABLES {
+        cmd.env_remove(name);
+    }
+    if !is_windows {
+        cmd.env_remove(crate::proc::LINE_ENV);
+    }
+    for (name, value) in env.iter().filter(|(name, _)| !is_octiq_variable(name)) {
+        cmd.env(name, value);
+    }
+    crate::proc::no_console(&mut cmd);
+    cmd
+}
+
+/// Run one read-only answering process to its end: `line` through the agent
+/// shell in `cwd`, no stdin, every `OCTIQ_*` variable removed (inherited or in
+/// `env`), and killed at `timeout`. `who` names it in the errors.
+pub fn run_one_shot(
+    agent: ChatAgent,
+    line: &str,
+    cwd: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+    who: &str,
+) -> Result<HelperAnswer, String> {
     let shell = crate::proc::resolve_agent_shell(
         std::env::var("SHELL").ok(),
         std::env::var("LOCALAPPDATA").ok(),
         cfg!(windows),
         &crate::proc::find_executable,
     )?;
-    let mut cmd = Command::new(&shell.program);
-    cmd.args(&shell.args)
-        .arg(line)
-        .current_dir(&turn.cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for name in CHAT_VARIABLES {
-        cmd.env_remove(name);
-    }
-    crate::proc::no_console(&mut cmd);
+    let mut cmd = one_shot_command(&shell, line, cwd, env, cfg!(windows));
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("The teammate could not be started: {e}"))?;
+        .map_err(|e| format!("{who} could not be started: {e}"))?;
     // Read both pipes as they fill, or a long answer blocks the process.
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
@@ -454,21 +513,23 @@ pub fn run_helper(turn: &HelperTurn) -> Result<HelperAnswer, String> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() > HELPER_TIMEOUT => {
+            Ok(None) if started.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "The teammate did not answer within {} minutes.",
-                    HELPER_TIMEOUT.as_secs() / 60
-                ));
+                let secs = timeout.as_secs_f64().ceil() as u64;
+                return Err(if secs >= 60 {
+                    format!("{who} did not answer within {} minutes.", secs / 60)
+                } else {
+                    format!("{who} did not answer within {secs}s.")
+                });
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(200)),
-            Err(e) => return Err(format!("The teammate's process was lost: {e}")),
+            Err(e) => return Err(format!("{who}'s process was lost: {e}")),
         }
     };
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
-    let parsed = match turn.agent {
+    let parsed = match agent {
         ChatAgent::Codex => parse_codex(&stdout),
         _ => parse_claude(&stdout),
     };
@@ -1084,6 +1145,289 @@ mod tests {
             },
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_one_shot_process_gets_no_octiq_variable_from_anywhere() {
+        // This suite usually runs inside an OctiqFlow chat, whose own
+        // OCTIQ_* variables the child would otherwise inherit.
+        let env = BTreeMap::from([
+            ("KEPT".to_string(), "yes".to_string()),
+            ("OCTIQ_CHAT_KEY".to_string(), "chat:leak".to_string()),
+            ("OCTIQ_HOOK_PORT".to_string(), "1".to_string()),
+        ]);
+        let line = r#"printf '{"type":"result","is_error":false,"result":"octiq=%s kept=%s"}\n' "$(env | grep -c '^OCTIQ_')" "$KEPT""#;
+        let answer = run_one_shot(
+            ChatAgent::Claude,
+            line,
+            "/",
+            &env,
+            Duration::from_secs(30),
+            "The stand-in",
+        )
+        .unwrap();
+        assert_eq!(answer.text, "octiq=0 kept=yes");
+        assert!(is_octiq_variable("OCTIQ_ANYTHING_NEW"));
+        assert!(!is_octiq_variable("PATH"));
+    }
+
+    /// A prompt past the 8186 characters Git Bash keeps of one argument,
+    /// with Windows paths and the quotes a question carries.
+    fn long_windows_prompt() -> String {
+        let prompt = "Why does C:\\Users\\me\\repo\\src\\main.rs fail? It's \\\\server\\share, \"quoted\", 中文.\n"
+            .repeat(120);
+        assert!(prompt.chars().count() > 8186);
+        prompt
+    }
+
+    /// Every line both callers send, Claude and Codex: peer help's and ask
+    /// back's, with the long prompt and a Windows checkout.
+    fn every_one_shot_line(prompt: &str) -> Vec<(&'static str, String)> {
+        let dir = r"C:\Users\me\repo with space";
+        let helper = |agent| {
+            helper_command(&HelperTurn {
+                agent,
+                model: "sonnet".into(),
+                effort: None,
+                cwd: dir.into(),
+                prompt: prompt.into(),
+            })
+            .unwrap()
+        };
+        let fork = |agent| {
+            crate::handover::back::fork_command(&crate::handover::back::AnswerTurn {
+                agent,
+                model: None,
+                effort: None,
+                session_id: "abc-123".into(),
+                cwd: r"C:\Users\me\source".into(),
+                read_dirs: vec![dir.into()],
+                env: BTreeMap::new(),
+                prompt: prompt.into(),
+            })
+            .unwrap()
+        };
+        vec![
+            ("help claude", helper(ChatAgent::Claude)),
+            ("help codex", helper(ChatAgent::Codex)),
+            ("ask claude", fork(ChatAgent::Claude)),
+            ("ask codex", fork(ChatAgent::Codex)),
+        ]
+    }
+
+    /// The lines that name a folder as an argument: Codex's `-C` for peer
+    /// help, Claude's `--add-dir` for ask back. The others run in their cwd.
+    fn names_the_checkout(name: &str) -> bool {
+        matches!(name, "help codex" | "ask claude")
+    }
+
+    #[test]
+    fn a_one_shot_line_reaches_git_bash_in_the_environment_never_as_an_argument() {
+        let prompt = long_windows_prompt();
+        let bash = crate::proc::AgentShell {
+            program: r"C:\Program Files\Git\bin\bash.exe".into(),
+            args: vec!["-lc".into()],
+        };
+        let env = BTreeMap::from([
+            ("KEPT".to_string(), "yes".to_string()),
+            (crate::proc::LINE_ENV.to_string(), "forged".to_string()),
+            ("OCTIQ_CHAT_KEY".to_string(), "chat:leak".to_string()),
+        ]);
+        for (name, line) in every_one_shot_line(&prompt) {
+            assert!(line.len() > 8186, "{name}");
+            assert_eq!(
+                line.contains(r"'C:\Users\me\repo with space'"),
+                names_the_checkout(name),
+                "{name}"
+            );
+            let cmd = one_shot_command(&bash, &line, r"C:\Users\me\source", &env, true);
+            assert_eq!(cmd.get_program(), r"C:\Program Files\Git\bin\bash.exe");
+            let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+            assert_eq!(args.len(), 2, "{name}");
+            assert_eq!(args[0], "-lc");
+            assert!(
+                args[1].len() < 200 && !args[1].contains("claude") && !args[1].contains("codex"),
+                "{name}: the argument must not carry the line: {}",
+                args[1]
+            );
+            let envs: BTreeMap<_, _> = cmd
+                .get_envs()
+                .map(|(k, v)| (k.to_str().unwrap(), v.map(|v| v.to_str().unwrap())))
+                .collect();
+            assert_eq!(
+                envs.get(crate::proc::LINE_ENV),
+                Some(&Some(line.as_str())),
+                "{name}: the line travels whole, backslashes and all"
+            );
+            assert_eq!(envs.get("KEPT"), Some(&Some("yes")));
+            assert_eq!(envs.get("OCTIQ_CHAT_KEY"), Some(&None), "{name}");
+            let set: Vec<_> = envs
+                .iter()
+                .filter(|(k, v)| k.starts_with("OCTIQ_") && v.is_some())
+                .map(|(k, _)| *k)
+                .collect();
+            assert_eq!(set, [crate::proc::LINE_ENV], "{name}: no other OCTIQ_ set");
+            assert_eq!(
+                cmd.get_current_dir().and_then(|d| d.to_str()),
+                Some(r"C:\Users\me\source")
+            );
+        }
+    }
+
+    #[test]
+    fn off_windows_a_one_shot_line_is_the_argument_and_no_octiq_variable_is_set() {
+        let prompt = long_windows_prompt();
+        let sh = crate::proc::AgentShell {
+            program: "/bin/zsh".into(),
+            args: vec!["-lc".into()],
+        };
+        let env = BTreeMap::from([
+            ("KEPT".to_string(), "yes".to_string()),
+            (crate::proc::LINE_ENV.to_string(), "forged".to_string()),
+            ("OCTIQ_CHAT_KEY".to_string(), "chat:leak".to_string()),
+        ]);
+        for (name, line) in every_one_shot_line(&prompt) {
+            let cmd = one_shot_command(&sh, &line, "/", &env, false);
+            let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+            assert_eq!(args, ["-lc", line.as_str()], "{name}");
+            let envs: BTreeMap<_, _> = cmd
+                .get_envs()
+                .map(|(k, v)| (k.to_str().unwrap(), v.map(|v| v.to_str().unwrap())))
+                .collect();
+            assert_eq!(envs.get("KEPT"), Some(&Some("yes")), "{name}");
+            let set: Vec<_> = envs
+                .iter()
+                .filter(|(k, v)| is_octiq_variable(k) && v.is_some())
+                .collect();
+            assert!(set.is_empty(), "{name}: {set:?}");
+            // Removed outright, whatever this process inherited: the carrier
+            // and every variable that ties a process to a chat.
+            for removed in CHAT_VARIABLES.iter().chain([&crate::proc::LINE_ENV]) {
+                assert_eq!(envs.get(removed), Some(&None), "{name}: {removed}");
+            }
+        }
+    }
+
+    /// Set by `an_inherited_octiq_variable_never_reaches_a_one_shot_process`
+    /// on the copy of this test binary it starts.
+    const INHERITING_RUN: &str = "PEER_TEST_INHERITED_OCTIQ";
+
+    /// The suite's own environment decides nothing here: this test starts
+    /// a copy of itself with a forged launch line and chat key really in its
+    /// environment, and that copy runs the one-shot checks. No other test's
+    /// environment is touched.
+    #[cfg(unix)]
+    #[test]
+    fn an_inherited_octiq_variable_never_reaches_a_one_shot_process() {
+        if std::env::var_os(INHERITING_RUN).is_some() {
+            assert_eq!(
+                std::env::var(crate::proc::LINE_ENV).as_deref(),
+                Ok("inherited-forged")
+            );
+            // Off Windows: the agent sees no OCTIQ_ variable at all.
+            a_one_shot_process_gets_no_octiq_variable_from_anywhere();
+            // On Windows' delivery: the shell runs OUR line, not the forged
+            // one, and the agent again sees no OCTIQ_ variable.
+            the_windows_delivery_hands_every_one_shot_line_over_whole();
+            return;
+        }
+        let name = "orchestration::peer::tests::an_inherited_octiq_variable_never_reaches_a_one_shot_process";
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--nocapture", "--test-threads=1"])
+            .env(INHERITING_RUN, "1")
+            .env(crate::proc::LINE_ENV, "inherited-forged")
+            .env("OCTIQ_CHAT_CAPABILITY", "inherited-forged")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{printed}");
+        assert!(printed.contains("1 passed"), "the copy ran it: {printed}");
+    }
+
+    /// The Windows delivery, run by this machine's own agent shell (Git Bash
+    /// on Windows, where it matters; the same one-liner runs in zsh): the
+    /// stand-in for the agent writes back every argument it got, and what
+    /// OCTIQ_ variables it saw.
+    #[test]
+    fn the_windows_delivery_hands_every_one_shot_line_over_whole() {
+        // Forward slashes, which Git Bash reads as readily as `\`.
+        let posix = |p: &Path| p.display().to_string().replace('\\', "/");
+        let dir = std::env::temp_dir().join(format!("octiq-oneshot-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("agent");
+        fs::write(
+            &stub,
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > \"$OUT\"\nenv | grep -c '^OCTIQ_' > \"$OUT.env\"\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let shell = crate::proc::resolve_agent_shell(
+            std::env::var("SHELL").ok(),
+            std::env::var("LOCALAPPDATA").ok(),
+            cfg!(windows),
+            &crate::proc::find_executable,
+        )
+        .unwrap();
+        let prompt = long_windows_prompt();
+        let stub = crate::agent_provider::sh_quote(&posix(&stub));
+        for (name, line) in every_one_shot_line(&prompt) {
+            let out = dir.join(name.replace(' ', "-"));
+            // The same quoting, with the stand-in in the agent's place.
+            let line = line
+                .replacen("exec claude ", &format!("exec {stub} "), 1)
+                .replacen("exec codex ", &format!("exec {stub} "), 1);
+            let env = BTreeMap::from([("OUT".to_string(), posix(&out))]);
+            let status = one_shot_command(&shell, &line, "/", &env, true)
+                .status()
+                .unwrap();
+            assert!(status.success(), "{name}");
+            let got = fs::read(&out).unwrap();
+            let args: Vec<String> = got
+                .split(|b| *b == 0)
+                .filter(|a| !a.is_empty())
+                .map(|a| String::from_utf8(a.to_vec()).unwrap())
+                .collect();
+            assert!(args.contains(&prompt), "{name}: the prompt arrived whole");
+            if names_the_checkout(name) {
+                assert!(
+                    args.iter().any(|a| a == r"C:\Users\me\repo with space"),
+                    "{name}: {:?}",
+                    &args.iter().filter(|a| a.len() < 200).collect::<Vec<_>>()
+                );
+            }
+            let leaked = fs::read_to_string(format!("{}.env", out.display())).unwrap();
+            assert_eq!(
+                leaked.trim(),
+                "0",
+                "{name}: no OCTIQ_ variable, the line's included"
+            );
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_one_shot_process_that_overruns_is_ended() {
+        let error = run_one_shot(
+            ChatAgent::Claude,
+            "exec sleep 30",
+            "/",
+            &BTreeMap::new(),
+            Duration::from_millis(300),
+            "The stand-in",
+        )
+        .unwrap_err();
+        assert_eq!(error, "The stand-in did not answer within 1s.");
     }
 
     #[test]

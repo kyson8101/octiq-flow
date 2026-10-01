@@ -119,6 +119,75 @@ describe("a settled handover", () => {
     expect(lines).toContain("Handed over from Potato");
   });
 
+  const back = (extra: Partial<Handover> = {}) => handover({
+    status: "confirmed", targetChatKey: "chat:new", notice: "tool",
+    asks: [
+      { id: "ask_1", requestId: "q1", question: "Which lock guards the ledger?", contextPaths: ["src/ledger.rs"], status: "answered", answer: "The store's inner mutex.", askedAt: 1, answeredAt: 2 },
+      { id: "ask_2", requestId: "q2", question: "And the cache?", status: "failed", error: "Not logged in", askedAt: 3 },
+    ],
+    outcomes: [
+      { requestId: "o1", status: "blocked", summary: "Needs a DB password.", at: 4 },
+      { requestId: "o2", status: "done", summary: "Login fixed, tests pass.", at: 5 },
+    ],
+    ...extra,
+  });
+
+  it("shows the outcome and the questions asked back on the line in the chat that handed over", () => {
+    const { tail, lines } = render([back()], "chat:source");
+    expect(tail).toBe("");
+    // One line for the outcome, the latest only, under the handover line.
+    expect(lines).toContain('class="handover-outcome is-done" data-outcome="done"');
+    expect(lines).toContain("Mango finished: Login fixed, tests pass.");
+    expect(lines.match(/class="handover-outcome /g)).toHaveLength(1);
+    // The questions sit behind a count, folded, never as a card.
+    expect(lines).toMatch(/<details class="handover-asks" data-asks="2"><summary><span>2 questions asked back<\/span>/);
+    expect(lines).not.toContain("<details class=\"handover-asks\" data-asks=\"2\" open");
+    expect(lines).toContain("Which lock guards the ledger?");
+    expect(lines).toContain("The store&#x27;s inner mutex.");
+    expect(lines).toContain("<code>src/ledger.rs</code>");
+    expect(lines).toContain("Not logged in");
+    expect(lines).not.toContain("handover-card");
+    // Earlier reports stay in the folded body, newest first.
+    expect(lines).toMatch(/Outcome reports<\/h4><ul><li>Mango finished: Login fixed, tests pass.<\/li><li>Mango is blocked: Needs a DB password.<\/li>/);
+  });
+
+  it("shows the same outcome and questions on the incoming line in the new chat", () => {
+    const { lines } = render([back({ outcomes: [{ requestId: "o1", status: "blocked", summary: "Needs a DB password.", at: 4 }] })], "chat:new");
+    expect(lines).toContain('data-status="incoming"');
+    expect(lines).toContain('class="handover-outcome is-blocked" data-outcome="blocked"');
+    expect(lines).toContain("Mango is blocked: Needs a DB password.");
+    expect(lines).toContain("2 questions asked back");
+    expect(lines).not.toContain("Outcome reports");
+  });
+
+  it("draws the outcome as one row whose whole summary opens in place, not in a tooltip", () => {
+    const summary = `Blocked on the staging database. ${"The migration needs a password nobody here has. ".repeat(20)}`.trim();
+    const { lines } = render([back({ outcomes: [{ requestId: "o1", status: "blocked", summary, at: 4 }] })], "chat:source");
+    const row = lines.match(/<div class="handover-outcome is-blocked" data-outcome="blocked">.*?<\/button><\/div>/)?.[0];
+    expect(row).toBeTruthy();
+    // The whole summary is in the row, never only in a title.
+    expect(row).toContain(`Mango is blocked: ${summary}`);
+    expect(row).not.toContain("title=");
+    // Shut by default. The toggle names the text it opens and stays hidden
+    // until a measurement says the line is cut short.
+    const textId = row!.match(/<span class="handover-outcome-text" id="([^"]+)">/)?.[1];
+    expect(textId).toBeTruthy();
+    expect(row).toContain(`aria-expanded="false" aria-controls="${textId}" aria-label="Show the whole outcome"`);
+    expect(row).toMatch(/<button type="button" class="handover-outcome-toggle" hidden=""/);
+    expect(row).not.toContain("is-open");
+    // The earlier reports keep their list in the Brief.
+    expect(lines).not.toContain("Outcome reports");
+  });
+
+  it("draws no outcome or questions where nothing came back", () => {
+    const { lines } = render([handover({ status: "confirmed", targetChatKey: "chat:new", notice: "tool" })], "chat:source");
+    expect(lines).not.toContain("handover-outcome");
+    expect(lines).not.toContain("handover-asks");
+    const waiting = render([back({ asks: [{ id: "a", requestId: "q", question: "Q?", status: "asking", askedAt: 1 }], outcomes: [] })], "chat:source");
+    expect(waiting.lines).toContain("1 question asked back · 1 waiting");
+    expect(waiting.lines).toContain("Waiting for an answer");
+  });
+
   // By design: a handover that went nowhere is a headline and nothing else.
   // No facts, no Brief and no Open, as on the base before these lines existed:
   // the task stayed in this chat, so there is nothing to look up or go to.

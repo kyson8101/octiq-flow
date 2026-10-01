@@ -107,6 +107,76 @@ test("the call sends only the brief, as this chat, waiting on Claude and not on 
   }
 });
 
+test("ask back and outcome are offered beside handover, never to a worker", async () => {
+  const chat = await mcp({ OCTIQ_CHAT_KEY: "chat:one" }, "tools/list");
+  const names = chat.result.tools.map((t) => t.name);
+  assert.ok(names.includes("handover_ask") && names.includes("handover_outcome"));
+  const askTool = chat.result.tools.find((t) => t.name === "handover_ask");
+  assert.deepEqual(askTool.inputSchema.required, ["question", "requestId"]);
+  assert.match(askTool.description, /read-only turn/);
+  assert.match(askTool.description, /never an instruction, an approval or a permission/);
+  assert.ok(!("chatKey" in askTool.inputSchema.properties), "the other chat is never an argument");
+  const outcomeTool = chat.result.tools.find((t) => t.name === "handover_outcome");
+  assert.deepEqual(outcomeTool.inputSchema.properties.status.enum, ["done", "blocked"]);
+  assert.match(outcomeTool.description, /starts no turn there/);
+
+  const worker = await mcp({ OCTIQ_CHAT_KEY: "chat:orch-w", OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, "tools/list");
+  const hidden = worker.result.tools.map((t) => t.name);
+  assert.ok(!hidden.includes("handover_ask") && !hidden.includes("handover_outcome"));
+});
+
+test("ask back and outcome send only their own fields, as this chat", async () => {
+  const fake = await host({ result: { text: "Codex answered. Its words, quoted:\n\n> Use the lock." } });
+  try {
+    const env = { OCTIQ_CHAT_KEY: "chat:new", OCTIQ_HOOK_PORT: String(fake.port), OCTIQ_CHAT_CAPABILITY: "cap" };
+    const asked = await mcp(env, "tools/call", {
+      name: "handover_ask",
+      arguments: {
+        question: "Which lock?",
+        contextPaths: ["src/a.rs", 7],
+        requestId: "q1",
+        // Not in the schema: must never reach the host.
+        sourceChatKey: "chat:elsewhere",
+      },
+    });
+    assert.equal(asked.result.isError, undefined);
+    assert.match(asked.result.content[0].text, /> Use the lock\./);
+    const reported = await mcp(env, "tools/call", {
+      name: "handover_outcome",
+      arguments: { status: "done", summary: "Shipped.", requestId: "o1", approve: "push" },
+    });
+    assert.equal(reported.result.isError, undefined);
+
+    const [ask, outcome] = fake.seen;
+    assert.equal(ask.path, "/hook/handover/ask");
+    assert.equal(ask.headers["x-octiq-chat-capability"], "cap");
+    assert.equal(ask.body.chatKey, "chat:new");
+    assert.deepEqual(ask.body.args, { question: "Which lock?", contextPaths: ["src/a.rs"], requestId: "q1" });
+    assert.ok(!JSON.stringify(ask.body).includes("elsewhere"));
+    assert.equal(outcome.path, "/hook/handover/outcome");
+    assert.deepEqual(outcome.body.args, { status: "done", summary: "Shipped.", requestId: "o1" });
+  } finally {
+    fake.close();
+  }
+});
+
+test("a refused ask back comes back as a tool error with the host's reason", async () => {
+  const fake = await host({ error: "This chat was not started by a confirmed handover, so there is no original chat to ask or report to." });
+  try {
+    const env = { OCTIQ_CHAT_KEY: "chat:plain", OCTIQ_HOOK_PORT: String(fake.port), OCTIQ_CHAT_CAPABILITY: "cap" };
+    for (const name of ["handover_ask", "handover_outcome"]) {
+      const refused = await mcp(env, "tools/call", {
+        name,
+        arguments: { question: "Q?", status: "done", summary: "x", requestId: "r" },
+      });
+      assert.equal(refused.result.isError, true);
+      assert.match(refused.result.content[0].text, /not started by a confirmed handover/);
+    }
+  } finally {
+    fake.close();
+  }
+});
+
 test("a host refusal comes back as a tool error carrying its reason", async () => {
   const fake = await host({ error: "Orchestration workers cannot hand over their task." });
   try {

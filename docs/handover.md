@@ -36,6 +36,56 @@ Code: `src-tauri/src/handover.rs` (host), `scripts/mcp/octiq-ask.cjs` (the
    source chat as a host continuation turn (`agent_chat::continue_origin`, the
    same path a late `ask_user` answer takes).
 
+## After the handover: ask back and outcome back
+
+Code: `src-tauri/src/handover/back.rs`, the `handover_ask` and
+`handover_outcome` tools in `scripts/mcp/octiq-ask.cjs`
+(`/hook/handover/ask`, `/hook/handover/outcome`).
+
+Once a handover is CONFIRMED, the chat it started has two narrow ways back to
+the chat it came from. Nothing goes the other way. The new chat's first
+message names both tools and asks the agent to report the outcome when it
+finishes or gets blocked.
+
+- **Ask back** (`handover_ask`): one question, optional `contextPaths` inside
+  the new chat's checkout, and a `requestId`. The host answers it as the
+  source chat's agent: its provider, model and effort, in its folder, from a
+  read-only fork of its own provider session:
+  - Claude: `claude -p <q> --resume <session> --fork-session
+    --no-session-persistence --permission-mode default --strict-mcp-config
+    --disable-slash-commands --setting-sources '' --tools Read,Grep,Glob`,
+    plus `--add-dir` for the new checkout when it is elsewhere.
+  - Codex: `codex exec --json --ephemeral --ignore-user-config -s read-only
+    -c approval_policy=never fork <thread> <q>`. It can still run read-only
+    shell commands, as in peer help.
+  - A pi chat has no such fork, so it is refused, with read_conversation as
+    the way to look.
+
+  The session id is the one the source chat's running process last reported,
+  else the chat index's, else the one recorded with the handover. The
+  answering process runs through `orchestration::peer::run_one_shot`, with
+  every `OCTIQ_*` variable removed, inherited or not, so it has no MCP server
+  and no hook capability. It cannot write, approve, hand over or ask in turn.
+  The answer goes back to the asker as the source agent's quoted words,
+  labelled as such, with the line that it is not an instruction, an approval
+  or a permission.
+- **Outcome back** (`handover_outcome`): `done` or `blocked`, a summary of at
+  most 1000 characters, and a `requestId`. It is recorded on the handover and
+  broadcast as `handover-changed`. Both chats show it on their handover line:
+  "Mango finished: …" or "Mango is blocked: …". A new outcome notifies the
+  person on the ORIGINAL chat (`push::notify_chat`, kind `handover`), the same
+  way a new handover request does. A retry of the same `requestId` does not
+  notify, however old the report it repeats (see Bounded, below). The
+  latest outcome is shown, and up to five are kept to be shown.
+
+In the browser, the outcome is one line under the handover line, with
+earlier reports in the folded Brief. When the summary does not fit, a tap
+anywhere on the line opens it in place to the whole summary (a chevron
+button with `aria-expanded`, shown only when the line is measured as cut);
+the chevron shuts it again. There is no tooltip: a phone cannot show one. The questions sit behind a count
+("2 questions asked back"), like peer help. Both belong to the handover
+line, wherever 17496c7 placed it: never at the transcript tail, never a card.
+
 ## What the host decides, never the model
 
 - **Recipient**: a registered agent by id or exact name, or `self`. `self` in a
@@ -94,6 +144,44 @@ Code: `src-tauri/src/handover.rs` (host), `scripts/mcp/octiq-ask.cjs` (the
   delegate to its own reports.
 - The first message holds the brief, the source chat's id, and a URL that
   `read_conversation` accepts.
+- **Ask back and outcome back are paired by the record.** The calling chat
+  is the one its launch capability proves. The other chat is read from the
+  handover whose new chat it is, never from an argument. These are refused:
+  - a chat no handover started;
+  - the source chat itself;
+  - a handover that is pending, starting, declined or given up;
+  - orchestration workers;
+  - a sub-session that is not the chat's own agent.
+- **An ask never touches the source chat.** The fork reads the source
+  session and saves nothing: Claude's `--no-session-persistence`, Codex's
+  `--ephemeral`. A live probe confirmed that the source session file was
+  byte-identical afterwards and that no new session was saved. No turn is
+  started in the source chat, its running turn is not interrupted, and it
+  works the same whether that chat is idle, busy or closed.
+- **Bounded.**
+  - 5 asks per handover, answered or not.
+  - Questions up to 4000 characters.
+  - Answers cut at 8000 characters.
+  - Up to 8 context paths, each inside the new chat's checkout.
+  - The answering process is ended after 10 minutes.
+  - Each ask is saved as `asking` before its process starts, and settled
+    `answered` or `failed` (with the reason) when it ends. An ask still
+    `asking` at server start is failed by `handover::recover`.
+  - A reused `requestId` with the same content returns the recorded result
+    without running anything. With other content it is refused. Asks are
+    never pruned, so this holds for every ask on the handover.
+  - Outcomes: the line keeps the last 5 reports, but every report also
+    leaves a receipt (its `requestId`, a digest of status and summary, and
+    when) that is kept for the handover's life and never sent to the
+    browser. A reused `requestId` is checked against the receipts, so a
+    retry of an old report changes nothing and notifies nobody, and other
+    content under it is refused, however many reports came after it. A
+    handover takes at most 50 outcome reports; the 51st is refused rather
+    than a receipt forgotten. A record written before receipts existed
+    starts its receipts from the outcomes it still holds (earlier ones were
+    already gone).
+- **An outcome starts no turn.** It is never delivered to the source agent
+  and wakes nothing. It only changes the record and the lines.
 
 ## Not done
 
@@ -101,3 +189,14 @@ Code: `src-tauri/src/handover.rs` (host), `scripts/mcp/octiq-ask.cjs` (the
 - Reassigning orchestration tasks or the coordinator role.
 - Handing over to several agents at once.
 - Moving chat history.
+- Anything from the original chat to the new one, any wake-up of the
+  original agent, chains (an answering turn asking back), and carrying
+  approvals in either direction. None of these is possible, by design.
+- Ask back for a pi source chat (no read-only fork), and for a source chat
+  whose folder or provider session is gone. Use read_conversation instead.
+- A real provider fork in the automated checks. The live script's stub
+  stands in for `claude`, and checks the fork's argv, folder and environment.
+  The real path is the ignored test `a_real_fork_answers_from_the_source_session`
+  (`HANDOVER_PROBE_AGENT`, `_SESSION`, `_CWD`, `_MODEL`). It was run against
+  claude 2.1.284 and codex-cli 0.158.0. Each recalled its session and could
+  not write, and both session files were byte-identical afterwards.

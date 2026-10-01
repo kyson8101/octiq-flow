@@ -39,6 +39,29 @@ export type HandoverWorkspace = {
   preparedBranch?: string;
 };
 
+/** A question the new chat's agent put to the source chat's agent, answered
+ *  in a read-only fork of the source conversation (`handover/back.rs`). */
+export type HandoverAsk = {
+  id: string;
+  requestId: string;
+  question: string;
+  contextPaths?: string[];
+  status: "asking" | "answered" | "failed";
+  answer?: string;
+  truncated?: boolean;
+  error?: string;
+  askedAt: number;
+  answeredAt?: number;
+};
+
+/** How the handed-over work ended, as the new chat's agent reported it. */
+export type HandoverOutcome = {
+  requestId: string;
+  status: "done" | "blocked";
+  summary: string;
+  at: number;
+};
+
 export type Handover = {
   id: string;
   sourceChatKey: string;
@@ -59,10 +82,25 @@ export type Handover = {
   abandonable?: boolean;
   notice: HandoverNotice;
   noticeError?: string;
+  /** Questions asked back, oldest first. */
+  asks?: HandoverAsk[];
+  /** Outcome reports, oldest first; the last one is current. */
+  outcomes?: HandoverOutcome[];
 };
 
 /** How far a handover has got; it only ever moves forward. */
 const STAGE: Record<HandoverStatus, number> = { pending: 0, starting: 1, confirmed: 2, declined: 2, abandoned: 2 };
+
+/** Whether `next` knows less of what came back than `current`: fewer asks,
+ *  fewer of them settled, or an older latest outcome. Asks and outcomes only
+ *  ever grow or settle, so such a record is a stale copy. */
+function behindBack(next: Handover, current: Handover): boolean {
+  const settled = (h: Handover) => (h.asks ?? []).filter((ask) => ask.status !== "asking").length;
+  const lastAt = (h: Handover) => h.outcomes?.at(-1)?.at ?? 0;
+  return (next.asks?.length ?? 0) < (current.asks?.length ?? 0)
+    || settled(next) < settled(current)
+    || lastAt(next) < lastAt(current);
+}
 
 /** Upsert one record into a list, keeping creation order. A late event for an
  *  earlier state of the same record never wins over a later one. */
@@ -71,6 +109,7 @@ export function mergeHandover(list: readonly Handover[], next: Handover): Handov
   if (at < 0) return [...list, next].sort((a, b) => a.createdAt - b.createdAt);
   const current = list[at];
   if ((STAGE[next.status] ?? 0) < (STAGE[current.status] ?? 0)) return list as Handover[];
+  if (next.status === current.status && behindBack(next, current)) return list as Handover[];
   const copy = list.slice();
   copy[at] = next;
   return copy;
@@ -236,6 +275,26 @@ export function handoverHeadline(handover: Handover, side: "source" | "target"):
     case "abandoned": return `Kept here: ${handover.to.name}'s chat could not start`;
     default: return `Kept here: handover to ${handover.to.name} declined`;
   }
+}
+
+/** The outcome the new chat reported last, if any. */
+export function latestOutcome(handover: Handover): HandoverOutcome | null {
+  return handover.outcomes?.at(-1) ?? null;
+}
+
+/** "Mango finished: …" / "Mango is blocked: …", the same in both chats. */
+export function outcomeText(handover: Handover, outcome: HandoverOutcome): string {
+  const who = handover.to.name.charAt(0).toUpperCase() + handover.to.name.slice(1);
+  return outcome.status === "done"
+    ? `${who} finished: ${outcome.summary}`
+    : `${who} is blocked: ${outcome.summary}`;
+}
+
+/** The count on the asked-back disclosure: "2 questions asked back · 1 waiting". */
+export function askBackSummary(asks: readonly HandoverAsk[]): string {
+  const waiting = asks.filter((ask) => ask.status === "asking").length;
+  const count = `${asks.length} ${asks.length === 1 ? "question" : "questions"} asked back`;
+  return waiting ? `${count} · ${waiting} waiting` : count;
 }
 
 /** One line about the asking agent being told, when it has not been, or the
