@@ -299,6 +299,18 @@ pub struct OutcomeBack {
     pub at: i64,
 }
 
+/// What a used outcome requestId stands for, kept for the handover's whole
+/// life (`back::MAX_OUTCOME_REPORTS` of them at most) while only the last few
+/// `OutcomeBack`s are kept to be shown. A retry of an old report is then
+/// still a retry, however many reports came after it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutcomeReceipt {
+    pub request_id: String,
+    pub digest: String,
+    pub at: i64,
+}
+
 /// One handover, as it is stored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -350,9 +362,14 @@ pub struct Handover {
     /// Outcome reports from the new chat, oldest first; the last one counts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outcomes: Vec<OutcomeBack>,
+    /// Every outcome requestId used on this handover, oldest first. Never
+    /// pruned; records written before it existed start from `outcomes`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcome_receipts: Vec<OutcomeReceipt>,
 }
 
-/// A handover as the browser sees it: everything but the private origin.
+/// A handover as the browser sees it: everything but the private origin
+/// and the outcome receipts.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Public {
@@ -999,6 +1016,7 @@ pub fn request(path: &Path, host: &dyn Host, source: Source, ask: Ask) -> Result
         origin: Some(source.origin),
         asks: Vec::new(),
         outcomes: Vec::new(),
+        outcome_receipts: Vec::new(),
     };
     stored.handovers.insert(record.id.clone(), record.clone());
     write(path, &stored)?;

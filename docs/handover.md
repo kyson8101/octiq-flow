@@ -164,8 +164,18 @@ line, wherever 17496c7 placed it: never at the transcript tail, never a card.
     `answered` or `failed` (with the reason) when it ends. An ask still
     `asking` at server start is failed by `handover::recover`.
   - A reused `requestId` with the same content returns the recorded result
-    without running anything. With other content it is refused. The same
-    holds for outcomes.
+    without running anything. With other content it is refused. Asks are
+    never pruned, so this holds for every ask on the handover.
+  - Outcomes: the line keeps the last 5 reports, but every report also
+    leaves a receipt (its `requestId`, a digest of status and summary, and
+    when) that is kept for the handover's life and never sent to the
+    browser. A reused `requestId` is checked against the receipts, so a
+    retry of an old report changes nothing and notifies nobody, and other
+    content under it is refused, however many reports came after it. A
+    handover takes at most 50 outcome reports; the 51st is refused rather
+    than a receipt forgotten. A record written before receipts existed
+    starts its receipts from the outcomes it still holds (earlier ones were
+    already gone).
 - **An outcome starts no turn.** It is never delivered to the source agent
   and wakes nothing. It only changes the record and the lines.
 

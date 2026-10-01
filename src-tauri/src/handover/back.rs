@@ -39,8 +39,12 @@ pub const MAX_ASKS: usize = 5;
 pub const MAX_QUESTION_CHARS: usize = peer::MAX_QUESTION_CHARS;
 /// The longest outcome summary.
 pub const MAX_SUMMARY_CHARS: usize = 1_000;
-/// Outcome reports kept per handover; the oldest go first.
+/// Outcome reports kept to be shown per handover; the oldest go first.
 pub const KEPT_OUTCOMES: usize = 5;
+/// Outcome reports one handover may take in all. Each leaves a receipt (its
+/// requestId and digest) for the handover's life; past this, new reports are
+/// refused rather than a receipt forgotten.
+pub const MAX_OUTCOME_REPORTS: usize = 50;
 /// How long the source agent has to answer before its process is ended.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -460,8 +464,9 @@ pub fn outcome_line(record: &Handover, outcome: &OutcomeBack) -> String {
 }
 
 /// An outcome report from the chat `chat_key`. Latest wins; a few earlier
-/// ones are kept. Starts no turn and is told to no agent. Answers the record
-/// and whether this report is new (a retry of its requestId is not).
+/// ones are kept to be shown, and a receipt of every one is kept for good.
+/// Starts no turn and is told to no agent. Answers the record and whether
+/// this report is new (a retry of its requestId is not).
 pub fn report(
     path: &Path,
     chat_key: &str,
@@ -486,14 +491,46 @@ pub fn report(
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut stored = read(path)?;
     let record = incoming(&mut stored, chat_key)?;
-    if let Some(earlier) = record.outcomes.iter().find(|o| o.request_id == request_id) {
+    // A record written before receipts existed: what it still shows is
+    // what it remembers.
+    if record.outcome_receipts.is_empty() {
+        record.outcome_receipts = record
+            .outcomes
+            .iter()
+            .map(|o| OutcomeReceipt {
+                request_id: o.request_id.clone(),
+                digest: o.digest.clone(),
+                at: o.at,
+            })
+            .collect();
+    }
+    if let Some(earlier) = record
+        .outcome_receipts
+        .iter()
+        .find(|r| r.request_id == request_id)
+    {
         if earlier.digest != digest {
             return Err(format!(
                 "requestId {request_id} was already used for a different outcome. Use a new requestId to update it."
             ));
         }
-        let earlier = earlier.clone();
+        // The same content, so the same report: rebuilt from the call, since
+        // the visible list may have let it go.
+        let earlier = OutcomeBack {
+            request_id,
+            digest,
+            status,
+            summary,
+            at: earlier.at,
+        };
         return Ok((record.clone(), earlier, false));
+    }
+    // Refused rather than forgetting a receipt: a forgotten one would let a
+    // replay through as new.
+    if record.outcome_receipts.len() >= MAX_OUTCOME_REPORTS {
+        return Err(format!(
+            "This handover has had {MAX_OUTCOME_REPORTS} outcome reports, which is the limit. The last one stays on the line."
+        ));
     }
     let outcome = OutcomeBack {
         request_id,
@@ -502,6 +539,11 @@ pub fn report(
         summary,
         at: now_ms(),
     };
+    record.outcome_receipts.push(OutcomeReceipt {
+        request_id: outcome.request_id.clone(),
+        digest: outcome.digest.clone(),
+        at: outcome.at,
+    });
     record.outcomes.push(outcome.clone());
     let over = record.outcomes.len().saturating_sub(KEPT_OUTCOMES);
     record.outcomes.drain(..over);

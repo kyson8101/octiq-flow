@@ -1519,6 +1519,12 @@ fn ask_back_caps_and_request_ids_hold_before_anything_runs() {
         get(&w.store, &record.id).unwrap().asks.len(),
         back::MAX_ASKS
     );
+    // Asks are never pruned, so an early requestId is still known at the cap.
+    let early = back::ask(&w.store, &host, &key, question("q2", "Which file?")).unwrap();
+    assert!(early.contains("Use the session lock."));
+    let early = back::ask(&w.store, &host, &key, question("q2", "Other?")).unwrap_err();
+    assert!(early.contains("already used for a different question"));
+    assert_eq!(host.answered.lock().unwrap().len(), runs);
 }
 
 #[test]
@@ -1737,4 +1743,116 @@ fn asks_and_outcomes_survive_a_restart_and_a_cut_off_ask_is_failed() {
     let retry = back::ask(&w.store, &host, &key, question("q2", "Why?")).unwrap_err();
     assert!(retry.contains("restarted"), "{retry}");
     assert_eq!(host.answered.lock().unwrap().len(), runs);
+}
+
+#[test]
+fn an_old_outcome_request_id_stays_a_retry_after_the_line_lets_it_go() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    for n in 1..=7 {
+        let (_, _, fresh) = back::report(
+            &w.store,
+            &key,
+            outcome(&format!("o{n}"), "done", &format!("step {n}")),
+        )
+        .unwrap();
+        assert!(fresh);
+    }
+    let before = get(&w.store, &record.id).unwrap();
+    assert_eq!(before.outcomes.len(), back::KEPT_OUTCOMES);
+    assert_eq!(before.outcomes[0].request_id, "o3", "o1 has left the line");
+    assert_eq!(before.outcome_receipts.len(), 7);
+    let file = std::fs::read(&w.store).unwrap();
+
+    // The same content: the recorded report, nothing changed, nobody told.
+    let (_, again, fresh) = back::report(&w.store, &key, outcome("o1", "done", "step 1")).unwrap();
+    assert!(!fresh, "a retry notifies nobody");
+    assert_eq!(again.summary, "step 1");
+    assert_eq!(again.at, before.outcome_receipts[0].at);
+    assert_eq!(std::fs::read(&w.store).unwrap(), file, "nothing written");
+    // Other content under it is refused, however long ago it was used.
+    let changed = back::report(&w.store, &key, outcome("o1", "blocked", "No.")).unwrap_err();
+    assert!(
+        changed.contains("already used for a different outcome"),
+        "{changed}"
+    );
+    assert_eq!(std::fs::read(&w.store).unwrap(), file);
+    let after = get(&w.store, &record.id).unwrap();
+    assert_eq!(after.outcomes.last().unwrap().summary, "step 7");
+
+    // Receipts are private: the browser sees the kept outcomes only.
+    let public = serde_json::to_value(after.public()).unwrap();
+    assert!(public.get("outcomeReceipts").is_none());
+
+    // They survive a restart.
+    recover(&w.store, &host).unwrap();
+    let (_, _, fresh) = back::report(&w.store, &key, outcome("o2", "done", "step 2")).unwrap();
+    assert!(!fresh);
+    assert!(back::report(&w.store, &key, outcome("o2", "done", "other")).is_err());
+    assert_eq!(get(&w.store, &record.id).unwrap().outcome_receipts.len(), 7);
+}
+
+#[test]
+fn outcome_receipts_are_capped_and_the_cap_refuses_rather_than_forgets() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    for n in 1..=back::MAX_OUTCOME_REPORTS {
+        back::report(&w.store, &key, outcome(&format!("o{n}"), "done", "x")).unwrap();
+    }
+    let over = back::report(&w.store, &key, outcome("new", "done", "x")).unwrap_err();
+    assert!(over.contains("which is the limit"), "{over}");
+    // Every used requestId still answers as a retry, the first one too.
+    let (_, _, fresh) = back::report(&w.store, &key, outcome("o1", "done", "x")).unwrap();
+    assert!(!fresh);
+    assert!(back::report(&w.store, &key, outcome("o1", "blocked", "x")).is_err());
+    let stored = get(&w.store, &record.id).unwrap();
+    assert_eq!(stored.outcome_receipts.len(), back::MAX_OUTCOME_REPORTS);
+    assert_eq!(stored.outcomes.len(), back::KEPT_OUTCOMES);
+}
+
+#[test]
+fn a_record_written_before_outcome_receipts_still_loads_and_keeps_its_retries() {
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (record, key) = handed_over(&w, &host);
+    for n in 1..=3 {
+        back::report(
+            &w.store,
+            &key,
+            outcome(&format!("o{n}"), "done", &format!("step {n}")),
+        )
+        .unwrap();
+    }
+    // As bb9d9dd wrote it: outcomes, and no receipts.
+    {
+        let mut stored = read(&w.store).unwrap();
+        stored
+            .handovers
+            .get_mut(&record.id)
+            .unwrap()
+            .outcome_receipts
+            .clear();
+        write(&w.store, &stored).unwrap();
+    }
+    let raw = std::fs::read_to_string(&w.store).unwrap();
+    assert!(!raw.contains("outcomeReceipts") && raw.contains("\"outcomes\""));
+    let old = get(&w.store, &record.id).unwrap();
+    assert_eq!(old.outcomes.len(), 3);
+    assert!(old.outcome_receipts.is_empty());
+
+    // What it still shows is what it remembers.
+    let (_, _, fresh) = back::report(&w.store, &key, outcome("o1", "done", "step 1")).unwrap();
+    assert!(!fresh);
+    assert!(back::report(&w.store, &key, outcome("o2", "blocked", "No.")).is_err());
+    let (_, _, fresh) = back::report(&w.store, &key, outcome("o4", "done", "step 4")).unwrap();
+    assert!(fresh);
+    let now = get(&w.store, &record.id).unwrap();
+    let ids: Vec<_> = now
+        .outcome_receipts
+        .iter()
+        .map(|r| r.request_id.as_str())
+        .collect();
+    assert_eq!(ids, ["o1", "o2", "o3", "o4"]);
 }
