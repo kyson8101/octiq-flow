@@ -65,6 +65,16 @@ pub struct BlockedAction {
     /// send that fails in between leaves it to be sent again rather than lost.
     #[serde(skip_serializing_if = "Option::is_none")]
     written: Option<crate::claude_allow::Scope>,
+    /// An "Always allow" is writing this card's rule right now
+    /// (`write_allow`). Nothing takes the card down meanwhile: a dismiss or a
+    /// superseding turn is held in `close_after_write` and applied once the
+    /// write ends, so a card can never close as dismissed while a lasting rule
+    /// goes into a settings file behind it.
+    #[serde(skip_serializing)]
+    writing: bool,
+    /// How the card was asked to close while its rule was being written.
+    #[serde(skip_serializing)]
+    close_after_write: Option<&'static str>,
     /// A judged Claude refusal only: the exact rules "Always allow" writes,
     /// one per segment of the refused line it is safe to name
     /// (`claude_allow::derive_judged_rules`). Empty: no allow is offered.
@@ -299,7 +309,8 @@ fn record_decision(id: &str, decision: &'static str) {
 /// How a card that is no longer pending was decided, when this server saw it:
 /// "authorized_project", "dismissed" or "superseded"; for an outage card also
 /// "retried"; for a Claude card "allowed_project" or "allowed_user" (a
-/// lasting allow rule the person wrote). Nothing records "allowed_exact" any
+/// lasting allow rule the person wrote; a card whose rule was written closes
+/// as that allow however it is closed). Nothing records "allowed_exact" any
 /// more; see `EXACT_GRANT_WITHDRAWN`.
 pub(crate) fn decision(id: &str) -> Option<&'static str> {
     with_decided(|decided| decided.get(id).copied())
@@ -472,13 +483,18 @@ pub struct AllowedOutage {
 fn pending_outage(id: &str) -> Result<BlockedAction, String> {
     let block = with_pending(|pending| pending.get(id).cloned())
         .ok_or("This card is no longer pending.")?;
+    is_outage(&block)?;
+    Ok(block)
+}
+
+fn is_outage(block: &BlockedAction) -> Result<(), String> {
     if block.provider != "claude" || block.kind != "outage" {
         return Err(
             "Only a call refused because Claude's safety check was unavailable can be retried or allowed from its card."
                 .into(),
         );
     }
-    Ok(block)
+    Ok(())
 }
 
 /// A judged Claude refusal whose line has at least one segment an exact rule
@@ -487,13 +503,92 @@ fn pending_outage(id: &str) -> Result<BlockedAction, String> {
 fn pending_judged(id: &str) -> Result<BlockedAction, String> {
     let block = with_pending(|pending| pending.get(id).cloned())
         .ok_or("This card is no longer pending.")?;
+    is_judged(&block)?;
+    Ok(block)
+}
+
+fn is_judged(block: &BlockedAction) -> Result<(), String> {
     if block.provider != "claude" || block.kind != "high-risk-action" || block.rules.is_empty() {
         return Err(
             "No exact allow rule can be written for this card: only a judged Claude refusal of a shell command that can be named exactly offers one."
                 .into(),
         );
     }
-    Ok(block)
+    Ok(())
+}
+
+/// Write one card's "Always allow" as a single transition with the card's
+/// own life: the card is claimed under the pending lock before anything is
+/// written, so it cannot be dismissed or superseded between the decision and
+/// the write.
+///
+/// - A card already gone, or of the wrong kind, writes nothing.
+/// - While the claim is held, a dismiss or a superseding turn is held back
+///   (`close_card`); the card closes the moment the write ends.
+/// - A write that succeeds marks the card `written`, so however it closes
+///   afterwards it is recorded as that allow (`allowed_project` /
+///   `allowed_user`), never as dismissed or superseded.
+/// - A write that fails releases the claim and leaves the card pending —
+///   unless the person closed it meanwhile, which then takes effect as asked.
+///
+/// `rules` turns the claimed card into the rules to write and the calls or
+/// segments they leave uncovered.
+fn write_allow(
+    id: &str,
+    scope: crate::claude_allow::Scope,
+    kind: fn(&BlockedAction) -> Result<(), String>,
+    rules: fn(&BlockedAction) -> Result<(Vec<String>, Vec<String>), String>,
+) -> Result<AllowedOutage, String> {
+    let block = claim_write(id, kind)?;
+    let written = allow_path(&block, scope).and_then(|path| {
+        let (rules, uncovered) = rules(&block)?;
+        let added = crate::claude_allow::add_allow_rules(Path::new(&path), scope, &rules)?;
+        Ok(AllowedOutage {
+            rules,
+            path,
+            added,
+            uncovered,
+        })
+    });
+    finish_write(id, scope, written.is_ok());
+    written
+}
+
+/// Claim a pending card of this kind for one allow write.
+fn claim_write(
+    id: &str,
+    kind: fn(&BlockedAction) -> Result<(), String>,
+) -> Result<BlockedAction, String> {
+    with_pending(|pending| {
+        let block = pending
+            .get_mut(id)
+            .ok_or("This card is no longer pending. Nothing was written.")?;
+        kind(block)?;
+        if block.writing {
+            return Err("This card's allow rule is already being written.".to_string());
+        }
+        block.writing = true;
+        Ok(block.clone())
+    })
+}
+
+/// Release the claim: mark the card written when the write succeeded, and
+/// apply a close that was asked for meanwhile.
+fn finish_write(id: &str, scope: crate::claude_allow::Scope, ok: bool) {
+    let closed = with_pending(|pending| {
+        let block = pending.get_mut(id)?;
+        block.writing = false;
+        if ok {
+            block.written = Some(scope);
+        }
+        let asked = block.close_after_write.take()?;
+        let decision = block.written.map_or(asked, |scope| scope.decision());
+        pending.remove(id);
+        Some(decision)
+    });
+    if let Some(decision) = closed {
+        announce_closed(id, decision);
+    }
 }
 
 /// "Always allow" on any Claude card: an outage card's narrowest rules, or a
@@ -515,20 +610,8 @@ pub fn allow_rule(id: &str, scope: crate::claude_allow::Scope) -> Result<Allowed
 /// the lasting rule `EXACT_GRANT_WITHDRAWN` says a one-time grant could never
 /// avoid being, offered here as exactly that.
 pub fn allow_judged(id: &str, scope: crate::claude_allow::Scope) -> Result<AllowedOutage, String> {
-    let block = pending_judged(id)?;
-    let path = allow_path(&block, scope)?;
-    let rules = block.rules.clone();
-    let added = crate::claude_allow::add_allow_rules(Path::new(&path), scope, &rules)?;
-    with_pending(|pending| {
-        if let Some(block) = pending.get_mut(id) {
-            block.written = Some(scope);
-        }
-    });
-    Ok(AllowedOutage {
-        rules,
-        path,
-        added,
-        uncovered: block.uncovered.clone(),
+    write_allow(id, scope, is_judged, |block| {
+        Ok((block.rules.clone(), block.uncovered.clone()))
     })
 }
 
@@ -569,34 +652,25 @@ fn allow_path(block: &BlockedAction, scope: crate::claude_allow::Scope) -> Resul
 /// the card's refused calls into the chosen settings file. The caller then
 /// asks the agent to retry; nothing here runs anything.
 pub fn allow_outage(id: &str, scope: crate::claude_allow::Scope) -> Result<AllowedOutage, String> {
-    let block = pending_outage(id)?;
-    let path = allow_path(&block, scope)?;
-    let mut rules: Vec<String> = Vec::new();
-    let mut uncovered = Vec::new();
-    for command in &block.commands {
-        match &command.rule {
-            Some(rule) if !rules.contains(rule) => rules.push(rule.clone()),
-            Some(_) => {}
-            None => uncovered.push(command.action.clone()),
-        }
-    }
-    if rules.is_empty() {
-        return Err("No allow rule is narrow enough for these calls. Retry once instead.".into());
-    }
-    let added = crate::claude_allow::add_allow_rules(Path::new(&path), scope, &rules)?;
     // The card stays up: it is decided only once the retry turn is queued
     // (`retry_outage`). Writing the rule again is harmless — it is then
     // `present`, not added twice.
-    with_pending(|pending| {
-        if let Some(block) = pending.get_mut(id) {
-            block.written = Some(scope);
+    write_allow(id, scope, is_outage, |block| {
+        let mut rules: Vec<String> = Vec::new();
+        let mut uncovered = Vec::new();
+        for command in &block.commands {
+            match &command.rule {
+                Some(rule) if !rules.contains(rule) => rules.push(rule.clone()),
+                Some(_) => {}
+                None => uncovered.push(command.action.clone()),
+            }
         }
-    });
-    Ok(AllowedOutage {
-        rules,
-        path,
-        added,
-        uncovered,
+        if rules.is_empty() {
+            return Err(
+                "No allow rule is narrow enough for these calls. Retry once instead.".into(),
+            );
+        }
+        Ok((rules, uncovered))
     })
 }
 
@@ -812,15 +886,52 @@ pub fn dismiss(id: &str) -> bool {
 }
 
 fn dismiss_as(id: &str, decision: &'static str) -> bool {
-    let removed = with_pending(|pending| pending.remove(id).is_some());
-    if removed {
-        record_decision(id, decision);
-        crate::bus::emit(
-            "safety-block-expired",
-            serde_json::json!({ "id": id, "decision": decision }),
-        );
+    match with_pending(|pending| close_card(pending, id, decision)) {
+        Closing::Now(decision) => {
+            announce_closed(id, decision);
+            true
+        }
+        Closing::AfterWrite => true,
+        Closing::Gone => false,
     }
-    removed
+}
+
+enum Closing {
+    /// Taken down, as this decision.
+    Now(&'static str),
+    /// Its allow rule is being written: it closes when the write ends.
+    AfterWrite,
+    /// Not pending.
+    Gone,
+}
+
+/// Take one card down as `decision`, under the pending lock. A card whose
+/// allow rule was written closes as that allow whatever closed it, since the
+/// rule outlives the card; one whose rule is being written right now closes
+/// when the write ends (`write_allow`).
+fn close_card(
+    pending: &mut HashMap<String, BlockedAction>,
+    id: &str,
+    decision: &'static str,
+) -> Closing {
+    let Some(block) = pending.get_mut(id) else {
+        return Closing::Gone;
+    };
+    if block.writing {
+        block.close_after_write.get_or_insert(decision);
+        return Closing::AfterWrite;
+    }
+    let decision = block.written.map_or(decision, |scope| scope.decision());
+    pending.remove(id);
+    Closing::Now(decision)
+}
+
+fn announce_closed(id: &str, decision: &'static str) {
+    record_decision(id, decision);
+    crate::bus::emit(
+        "safety-block-expired",
+        serde_json::json!({ "id": id, "decision": decision }),
+    );
 }
 
 /// What the agent tried, in one line: the shell line, or the tool and the
@@ -971,6 +1082,8 @@ pub(crate) fn observe_claude_refusal(
         refusals: Vec::new(),
         allow,
         written: None,
+        writing: false,
+        close_after_write: None,
         rules,
         uncovered,
     })
@@ -1030,6 +1143,8 @@ fn publish_outage(chat_key: &str, reason: &str, message: String, refusal: Refusa
             refusals: vec![refusal],
             allow: allow_targets(chat_key),
             written: None,
+            writing: false,
+            close_after_write: None,
             rules: Vec::new(),
             uncovered: Vec::new(),
         };
@@ -1103,23 +1218,21 @@ pub const EXACT_GRANT_WITHDRAWN: &str = "OctiqFlow cannot allow a command Claude
 
 /// A new user turn supersedes any unanswered post-hoc choice in that chat.
 pub fn forget_chat(chat_key: &str) {
-    let removed: Vec<String> = with_pending(|pending| {
+    let removed: Vec<(String, &'static str)> = with_pending(|pending| {
         let ids = pending
             .values()
             .filter(|block| block.chat_key == chat_key)
             .map(|block| block.id.clone())
             .collect::<Vec<_>>();
-        for id in &ids {
-            pending.remove(id);
-        }
-        ids
+        ids.into_iter()
+            .filter_map(|id| match close_card(pending, &id, "superseded") {
+                Closing::Now(decision) => Some((id, decision)),
+                Closing::AfterWrite | Closing::Gone => None,
+            })
+            .collect()
     });
-    for id in removed {
-        record_decision(&id, "superseded");
-        crate::bus::emit(
-            "safety-block-expired",
-            serde_json::json!({ "id": id, "decision": "superseded" }),
-        );
+    for (id, decision) in removed {
+        announce_closed(&id, decision);
     }
     with_drafts(|drafts| {
         drafts.remove(chat_key);
@@ -1239,6 +1352,8 @@ fn publish(chat_key: &str, summary: String, detail: String) -> bool {
         refusals: Vec::new(),
         allow: None,
         written: None,
+        writing: false,
+        close_after_write: None,
         rules: Vec::new(),
         uncovered: Vec::new(),
     })
@@ -1404,6 +1519,8 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
             refusals: Vec::new(),
             allow: None,
             written: None,
+            writing: false,
+            close_after_write: None,
             rules: Vec::new(),
             uncovered: Vec::new(),
         };
@@ -2501,6 +2618,181 @@ or if the user explicitly approves the action after being informed of the risk."
         assert!(allow_rule(&card.id, crate::claude_allow::Scope::Project).is_err());
         assert!(allow_judged(&card.id, crate::claude_allow::Scope::Project).is_err());
         forget_chat(&codex);
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    fn allowed_in(settings: &Path, rule: &str) -> bool {
+        fs::read_to_string(settings)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|json| json["permissions"]["allow"].as_array().cloned())
+            .is_some_and(|rules| rules.iter().any(|r| r == rule))
+    }
+
+    /// Review (Tofu, 2026-10-01): a dismiss racing an allow could close the
+    /// card as dismissed while the rule still went into the settings file.
+    /// Only two outcomes may exist: nothing written and dismissed, or the rule
+    /// written and the card closed as that allow.
+    #[test]
+    fn a_dismiss_racing_an_allow_ends_in_one_of_two_consistent_states() {
+        const RULE: &str = "Bash(git push origin main)";
+        let (mut allowed, mut dismissed) = (0, 0);
+        for round in 0..40 {
+            let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+            let project = temp_dir("judged-race");
+            remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+            let card = judged_card(&chat, &format!("toolu_race{round}"), "git push origin main");
+            let settings = project.join(".claude").join("settings.local.json");
+            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let allow = {
+                let (id, start) = (card.id.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    // Staggered, so both sides win some rounds.
+                    std::thread::sleep(std::time::Duration::from_micros((round % 8) * 40));
+                    allow_judged(&id, crate::claude_allow::Scope::Project)
+                })
+            };
+            start.wait();
+            // A new person turn supersedes through the same close as dismiss.
+            if round % 2 == 0 {
+                dismiss(&card.id);
+            } else {
+                forget_chat(&chat);
+            }
+            let result = allow.join().unwrap();
+            assert!(cards_in(&chat).is_empty(), "round {round}: the card closed");
+            match result {
+                Ok(_) => {
+                    allowed += 1;
+                    assert!(allowed_in(&settings, RULE), "round {round}");
+                    assert_eq!(decision(&card.id), Some("allowed_project"), "round {round}");
+                }
+                Err(err) => {
+                    dismissed += 1;
+                    assert!(err.contains("no longer pending"), "round {round}: {err}");
+                    assert!(!allowed_in(&settings, RULE), "round {round}");
+                    let closed = if round % 2 == 0 {
+                        "dismissed"
+                    } else {
+                        "superseded"
+                    };
+                    assert_eq!(decision(&card.id), Some(closed), "round {round}");
+                }
+            }
+            fs::remove_dir_all(project).unwrap();
+        }
+        assert_eq!(allowed + dismissed, 40);
+    }
+
+    /// The same two orders, forced: a close asked for mid-write waits for the
+    /// write, and a write after the close writes nothing.
+    #[test]
+    fn a_close_during_the_write_waits_for_it_and_one_before_it_writes_nothing() {
+        use crate::claude_allow::Scope;
+        let project = temp_dir("judged-order");
+        let settings = project.join(".claude").join("settings.local.json");
+
+        // Dismissed first: the allow finds no card and writes nothing.
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        let card = judged_card(&chat, "toolu_o1", "git push origin main");
+        assert!(dismiss(&card.id));
+        let err = allow_judged(&card.id, Scope::Project).unwrap_err();
+        assert!(err.contains("Nothing was written"), "{err}");
+        assert!(!settings.exists());
+        assert_eq!(decision(&card.id), Some("dismissed"));
+
+        // Claimed first: dismiss, a superseding turn and a second allow all
+        // leave the card to the write in flight.
+        let card = judged_card(&chat, "toolu_o2", "git push origin main");
+        claim_write(&card.id, is_judged).unwrap();
+        assert!(dismiss(&card.id), "the dismiss is taken, and held");
+        forget_chat(&chat);
+        let _: Result<(), String> = person_turn(&chat, None, || Ok(()));
+        assert!(allow_judged(&card.id, Scope::Project)
+            .unwrap_err()
+            .contains("already being written"));
+        assert_eq!(
+            cards_in(&chat).len(),
+            1,
+            "still up while the rule is written"
+        );
+        assert_eq!(decision(&card.id), None);
+        finish_write(&card.id, Scope::Project, true);
+        assert!(cards_in(&chat).is_empty());
+        assert_eq!(decision(&card.id), Some("allowed_project"));
+
+        // A write that fails with a close held closes as the person asked.
+        let card = judged_card(&chat, "toolu_o3", "git push origin main");
+        claim_write(&card.id, is_judged).unwrap();
+        assert!(dismiss(&card.id));
+        finish_write(&card.id, Scope::Project, false);
+        assert!(cards_in(&chat).is_empty());
+        assert_eq!(decision(&card.id), Some("dismissed"));
+
+        // A rule written earlier still decides a later dismiss.
+        let card = judged_card(&chat, "toolu_o4", "git status --short");
+        allow_judged(&card.id, Scope::Project).unwrap();
+        assert!(dismiss(&card.id));
+        assert_eq!(decision(&card.id), Some("allowed_project"));
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    /// A write that fails releases the claim and leaves the card pending, to
+    /// be allowed again or dismissed.
+    #[test]
+    fn a_failed_write_leaves_the_card_pending_and_unclaimed() {
+        use crate::claude_allow::Scope;
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("judged-fail");
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        let card = judged_card(&chat, "toolu_f1", "git push origin main");
+        let settings = project.join(".claude").join("settings.local.json");
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, "not json").unwrap();
+        assert!(allow_judged(&card.id, Scope::Project).is_err());
+        assert_eq!(fs::read_to_string(&settings).unwrap(), "not json");
+        let still = cards_in(&chat);
+        assert_eq!(still.len(), 1);
+        assert!(!still[0].writing && still[0].written.is_none());
+        assert_eq!(decision(&card.id), None);
+        // Released: a fixed file takes the next allow.
+        fs::remove_file(&settings).unwrap();
+        allow_judged(&card.id, Scope::Project).unwrap();
+        assert!(allowed_in(&settings, "Bash(git push origin main)"));
+        forget_chat(&chat);
+        assert_eq!(decision(&card.id), Some("allowed_project"));
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    /// The outage card's allow goes through the same claim.
+    #[test]
+    fn an_outage_allow_holds_its_card_the_same_way() {
+        use crate::claude_allow::Scope;
+        let chat = format!("chat:test-{}", uuid::Uuid::new_v4());
+        let project = temp_dir("outage-claim");
+        remember_claude_launch(&chat, true, project.to_str().unwrap(), false, None);
+        assert!(observe_claude_denial_at(
+            &chat,
+            &outage_denial("toolu_oc"),
+            Some(("Bash", &bash("git push origin main"))),
+            now_ms()
+        ));
+        let card = cards_in(&chat).pop().unwrap();
+        claim_write(&card.id, is_outage).unwrap();
+        assert!(allow_outage(&card.id, Scope::Project).is_err());
+        assert!(
+            retry_outage(&card.id).unwrap(),
+            "the retry is taken, and held"
+        );
+        assert_eq!(cards_in(&chat).len(), 1);
+        finish_write(&card.id, Scope::Project, true);
+        assert!(cards_in(&chat).is_empty());
+        assert_eq!(decision(&card.id), Some("allowed_project"));
+        // Closed: a later allow writes nothing.
+        assert!(allow_outage(&card.id, Scope::Project).is_err());
+        assert!(!project.join(".claude").exists());
         fs::remove_dir_all(project).unwrap();
     }
 }

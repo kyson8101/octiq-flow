@@ -119,6 +119,83 @@ const RUNS_ANYTHING: &[&str] = &[
     "ssh",
 ];
 
+/// More programs that run another program, never named by a judged EXACT
+/// rule (`exact_nameable`) — whether first on the line or later. Kept apart
+/// from RUNS_ANYTHING so the outage card's prefix rules stay as they were.
+const RUNS_ANOTHER: &[&str] = &[
+    "parallel",
+    // Build and task runners run whatever their project file says today.
+    "make",
+    "gmake",
+    "just",
+    "task",
+    "entr",
+    "flock",
+    "script",
+    "expect",
+    "strace",
+    "ltrace",
+    "gdb",
+    "lldb",
+    "chroot",
+    "unshare",
+    "nsenter",
+    "setsid",
+    "stdbuf",
+    "ionice",
+    "caffeinate",
+    // Openers hand a file to whatever program is registered for it.
+    "open",
+    "xdg-open",
+    "start",
+];
+
+/// Options and subcommands that turn an otherwise plain program into one
+/// that runs another: `find -exec`, `git bisect run`, `npm run`. A segment
+/// carrying one is never named by a judged rule, because the program it hands
+/// over to — often a script in the project — can change after the rule is
+/// written while the rule's text stays the same. `find`'s own writing actions
+/// are here too, since an exact rule for them is no narrower than `rm`.
+const HANDS_OFF: &[(&str, &[&str])] = &[
+    ("find", FIND_ACTIONS),
+    ("gfind", FIND_ACTIONS),
+    (
+        "git",
+        &[
+            // A config value can name a pager, an ssh command or a `!` alias.
+            "-c",
+            "--config-env",
+            "--exec",
+            "-x",
+            "run",
+            "foreach",
+            "filter-branch",
+        ],
+    ),
+    ("npm", PACKAGE_SCRIPTS),
+    ("pnpm", PACKAGE_SCRIPTS),
+    ("yarn", PACKAGE_SCRIPTS),
+    ("cargo", &["run"]),
+    ("go", &["run", "generate"]),
+];
+
+const FIND_ACTIONS: &[&str] = &[
+    "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
+];
+
+/// What runs a package.json script or a downloaded package.
+const PACKAGE_SCRIPTS: &[&str] = &[
+    "run",
+    "run-script",
+    "exec",
+    "dlx",
+    "test",
+    "start",
+    "restart",
+    "stop",
+    "create",
+];
+
 /// Tools organised by subcommand. For these, the program alone
 /// (`Bash(git:*)`) would allow every subcommand — `git push --force` along
 /// with `git status` — so a line whose second word is not a subcommand gets
@@ -452,9 +529,13 @@ fn exact_nameable(segment: &str) -> bool {
     if program.contains(['=', '"', '\'', '\\', '~']) {
         return false;
     }
-    let base = program.rsplit('/').next().unwrap_or(program);
-    let family = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-    if RUNS_ANYTHING.contains(&base) || RUNS_ANYTHING.contains(&family) {
+    // A program named by its path is a file, and a file's contents change:
+    // `./deploy.sh` today is not `./deploy.sh` tomorrow.
+    if program.contains('/') {
+        return false;
+    }
+    let base = program;
+    if is_runner(base) {
         return false;
     }
     // `tee` writes whatever is piped into it over the files it names, so
@@ -463,10 +544,52 @@ fn exact_nameable(segment: &str) -> bool {
     if base == "tee" {
         return false;
     }
+    let args: Vec<&str> = words.collect();
+    // A runner anywhere on the line, not only first: `find … -exec sh {} \;`,
+    // `docker exec box sh`, `kubectl exec pod -- bash`.
+    if args.iter().any(|word| names_a_runner(word)) {
+        return false;
+    }
+    if let Some((_, triggers)) = HANDS_OFF.iter().find(|(name, _)| *name == base) {
+        let hands_off = args.iter().any(|word| {
+            let word = word.trim_matches(['"', '\'']);
+            triggers.iter().any(|t| {
+                word == *t
+                    || word
+                        .strip_prefix(t)
+                        .is_some_and(|rest| rest.starts_with('='))
+            })
+        });
+        if hands_off {
+            return false;
+        }
+    }
     if matches!(base, "rm" | "rmdir" | "unlink") {
-        return removes_only_plain_relative_paths(words);
+        return removes_only_plain_relative_paths(args.into_iter());
     }
     true
+}
+
+/// Whether a program name (a basename) is one that runs another program,
+/// version digits aside (`python3.12` is `python`).
+fn is_runner(base: &str) -> bool {
+    let family = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    [base, family]
+        .iter()
+        .any(|name| RUNS_ANYTHING.contains(name) || RUNS_ANOTHER.contains(name))
+}
+
+/// Whether one argument names a program that runs another — as itself
+/// (`sh`), by a path (`/bin/bash`), with a version (`python3.12`), or as an
+/// option's value (`--pre=bash`). A lone `.` is a folder here, not `source`:
+/// `git add .` and `find .` run nothing.
+fn names_a_runner(word: &str) -> bool {
+    fn runner(w: &str) -> bool {
+        let base = w.rsplit(['/', '\\']).next().unwrap_or(w);
+        base != "." && is_runner(base)
+    }
+    let word = word.replace(['"', '\''], "");
+    runner(&word) || word.rsplit('=').next().is_some_and(runner)
 }
 
 /// The one shape of `rm` (and `rmdir`, `unlink`) an exact rule may name:
@@ -1547,6 +1670,125 @@ mod tests {
             "eval ls",
         ] {
             assert_eq!(judged(line), None, "{line:?}");
+        }
+    }
+
+    /// Review (Tofu, 2026-10-01): only the first word was checked, so a
+    /// runner later on the line slipped through.
+    #[test]
+    fn a_runner_anywhere_on_the_line_gets_no_judged_rule() {
+        for line in [
+            // The reviewer's line, exactly as reported.
+            "find /tmp/commands -type f -exec sh '{}' \\;",
+            "git bisect run bash test.sh",
+            "docker exec box sh",
+            "docker exec -it box /bin/bash",
+            "kubectl exec pod -- bash",
+            "kubectl exec pod -- \"zsh\"",
+            "rg --pre=bash x",
+            "git -c core.pager=less log",
+            "ssh-agent python3.12 x",
+            "gh pr create --title 'sudo'",
+        ] {
+            assert_eq!(judged(line), None, "{line:?}");
+            assert_eq!(
+                judged(&format!("{line}; pwd")),
+                Some((rules(&["Bash(pwd)"]), vec![line.to_string()])),
+                "{line:?}"
+            );
+        }
+        // A `.` argument is a folder, not `source`.
+        for line in ["git add .", "ls .", "grep -rn foo ."] {
+            assert_eq!(judged(line).unwrap().0, vec![format!("Bash({line})")]);
+        }
+    }
+
+    #[test]
+    fn find_is_named_only_without_an_action_that_runs_or_writes() {
+        for line in [
+            "find . -name Cargo.toml",
+            "find src -type f -newer Cargo.toml",
+            "gfind . -maxdepth 2 -print",
+        ] {
+            assert_eq!(judged(line).unwrap().0, vec![format!("Bash({line})")]);
+        }
+        for action in FIND_ACTIONS {
+            for program in ["find", "gfind"] {
+                let line = format!("{program} . -type f {action} x");
+                assert_eq!(judged(&line), None, "{line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_program_that_runs_another_is_never_named() {
+        for program in [
+            "parallel",
+            "make",
+            "gmake",
+            "just",
+            "task",
+            "entr",
+            "flock",
+            "script",
+            "expect",
+            "strace",
+            "ltrace",
+            "gdb",
+            "lldb",
+            "chroot",
+            "unshare",
+            "nsenter",
+            "setsid",
+            "stdbuf",
+            "ionice",
+            "caffeinate",
+            "open",
+            "xdg-open",
+            "start",
+        ] {
+            let line = format!("{program} build");
+            assert_eq!(judged(&line), None, "{line:?}");
+            // Also as a later word: `nice -n 5 make`, `time gdb`.
+            let later = format!("echo {program}");
+            assert_eq!(judged(&later), None, "{later:?}");
+        }
+        // A script run by its path can change after the rule is written.
+        for line in ["./deploy.sh", "scripts/release.sh --yes", "/tmp/x"] {
+            assert_eq!(judged(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_subcommand_that_hands_off_execution_is_never_named() {
+        for line in [
+            "git bisect run ./test.sh",
+            "git submodule foreach git clean -fdx",
+            "git rebase -x 'cargo test' main",
+            "git rebase --exec=./check main",
+            "git -c alias.x=!rm x",
+            "git --config-env=core.pager=PAGER log",
+            "git filter-branch --tree-filter x HEAD",
+            "npm run build",
+            "npm test",
+            "pnpm exec vitest",
+            "pnpm dlx create-thing",
+            "yarn run lint",
+            "cargo run --release",
+            "go run ./cmd/x",
+            "go generate ./...",
+        ] {
+            assert_eq!(judged(line), None, "{line:?}");
+        }
+        // The same programs stay namable for what runs nothing of the project's.
+        for line in [
+            "git push --force origin main",
+            "git clean -fdx",
+            "npm view octiqflow version",
+            "cargo build --release",
+            "go version",
+        ] {
+            assert_eq!(judged(line).unwrap().0, vec![format!("Bash({line})")]);
         }
     }
 

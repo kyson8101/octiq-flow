@@ -280,9 +280,23 @@ describe("SafetyBlock", () => {
           { rules: ["Bash(git status)"], path: "/p", added: [], present: ["Bash(git status)"], uncovered: ["node x.js"] },
           "node x.js; git status",
         );
-        expect(reply).toContain("allow rule `Bash(git status)` to /p.");
+        expect(reply).toContain("allow rule `Bash(git status)` was already in /p; nothing new was written.");
+        expect(reply).not.toContain("I added");
         expect(reply).toContain("No rule covers `node x.js`");
         expect(reply).toContain("may be refused again");
+      });
+
+      it("says which rules it added and which were already there", () => {
+        const both = judgedAllowedReply(
+          { rules: ["Bash(a)", "Bash(b)", "Bash(c)"], path: "/p", added: ["Bash(a)"], present: ["Bash(b)", "Bash(c)"], uncovered: [] },
+          "a; b; c",
+        );
+        expect(both).toContain("I added the Claude permission allow rule `Bash(a)` to /p. `Bash(b)`, `Bash(c)` were already there.");
+        const none = judgedAllowedReply(
+          { rules: ["Bash(a)", "Bash(b)"], path: "/p", added: [], present: ["Bash(a)", "Bash(b)"], uncovered: [] },
+          "a; b",
+        );
+        expect(none).toContain("allow rules `Bash(a)`, `Bash(b)` were already in /p; nothing new was written.");
       });
 
       it("a refused write tells the agent nothing; a send not taken leaves the card up", async () => {

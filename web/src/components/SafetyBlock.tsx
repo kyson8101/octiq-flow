@@ -330,14 +330,23 @@ export const ALLOW_NOT_SENT =
  * command again itself. No rule covers a reworded line, so it says not to.
  */
 export function judgedAllowedReply(allowed: AllowedOutage, action: string | null | undefined): string {
-  const one = allowed.rules.length === 1;
-  const rules = allowed.rules.map((rule) => `\`${rule}\``).join(", ");
+  const listed = (rules: string[]) => rules.map((rule) => `\`${rule}\``).join(", ");
+  const kind = (rules: string[]) => (rules.length === 1 ? "rule" : "rules");
+  const were = (rules: string[]) => (rules.length === 1 ? "was" : "were");
+  // A host that reports neither list is taken to have added them all.
+  const reported = allowed.added.length > 0 || allowed.present.length > 0;
+  const added = reported ? allowed.added : allowed.rules;
+  const present = reported ? allowed.present : [];
+  const wrote = added.length
+    ? `I added the Claude permission allow ${kind(added)} ${listed(added)} to ${allowed.path}.` +
+      (present.length ? ` ${listed(present)} ${were(present)} already there.` : "")
+    : `The Claude permission allow ${kind(present)} ${listed(present)} ${were(present)} already in ${allowed.path}; nothing new was written.`;
   const uncovered = allowed.uncovered.length
     ? ` No rule covers ${allowed.uncovered.map((part) => `\`${part}\``).join(", ")}: ` +
       "Claude's safety check still judges a line that contains it, so it may be refused again."
     : "";
   return (
-    `I added the Claude permission allow ${one ? "rule" : "rules"} ${rules} to ${allowed.path}. ` +
+    `${wrote} ` +
     "From now on Claude runs matching commands without its safety check. OctiqFlow did not run the refused command." +
     uncovered + "\n\n" +
     (action ? `If you still need it, run it again exactly as before:\n\`${action}\`\n` : "If you still need it, run it again exactly as before. ") +

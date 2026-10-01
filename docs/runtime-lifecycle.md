@@ -39,7 +39,12 @@ to the project's `.claude/settings.local.json` or the person's own
 `settings.json` on a click. From then on Claude runs matching commands without
 its safety check. The host runs nothing; a message tells the agent the rule
 exists, and the decision reads `allowed_project` or `allowed_user` with
-recovery text saying the agent may run the command again, unchanged. An
+recovery text saying the agent may run the command again, unchanged. The
+write holds the card: a dismiss or a new turn arriving meanwhile waits for it,
+and a card whose rule was written is recorded as that allow however it closes,
+never as dismissed or superseded. A segment that hands execution to another
+program (`find -exec`, `git bisect run`, `npm run`, `make`, a shell named
+anywhere on it, a script run by its path) is never named. An
 `allowed_exact` status from an earlier build is
 history and authorizes nothing, and that build's queued "exact-grant" notices
 are cancelled rather than delivered. Settled or

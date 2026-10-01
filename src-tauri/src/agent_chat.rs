@@ -6913,7 +6913,9 @@ mod tests {
         assert_eq!(crate::safety_block::decision(&card), None);
 
         // Ordinary words are unchanged: they supersede every card at once,
-        // taken or not — an outage card included.
+        // taken or not — an outage card included. Its rule is already in the
+        // settings file, though, so it is recorded as that allow, never as
+        // superseded (review, 2026-10-01).
         let ordinary = chat_send_user_impl(
             manager.clone(),
             key.clone(),
@@ -6925,7 +6927,10 @@ mod tests {
         );
         assert!(ordinary.is_err());
         assert!(!is_pending(&card) && !is_pending(&beside));
-        assert_eq!(crate::safety_block::decision(&card), Some("superseded"));
+        assert_eq!(
+            crate::safety_block::decision(&card),
+            Some("allowed_project")
+        );
         assert_eq!(crate::safety_block::decision(&beside), Some("superseded"));
 
         end_process(&manager, &key).expect("end the stand-in");
