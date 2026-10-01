@@ -428,8 +428,10 @@ pub fn is_octiq_variable(name: &str) -> bool {
 /// `AgentShell::command_on`, never as a raw `-lc` argument (on Windows, Git
 /// Bash would parse that again, cutting it near 8186 characters and halving
 /// its backslashes), in `cwd` with no stdin, every `OCTIQ_*` variable removed
-/// (inherited or in `env`) but the one that carries the line on Windows,
-/// which the shell takes back out before it runs anything.
+/// (inherited or in `env`). The one exception is Windows' carrier, which
+/// `command_on` has just set to `line`, overriding any inherited copy, and
+/// which the shell takes back out before it runs anything. Elsewhere the line
+/// is an argument, so the carrier goes like every other `OCTIQ_*` variable.
 pub fn one_shot_command(
     shell: &crate::proc::AgentShell,
     line: &str,
@@ -442,7 +444,7 @@ pub fn one_shot_command(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let carrier = |name: &str| name == crate::proc::LINE_ENV;
+    let carrier = |name: &str| is_windows && name == crate::proc::LINE_ENV;
     for (name, _) in std::env::vars_os() {
         if name
             .to_str()
@@ -453,6 +455,9 @@ pub fn one_shot_command(
     }
     for name in CHAT_VARIABLES {
         cmd.env_remove(name);
+    }
+    if !is_windows {
+        cmd.env_remove(crate::proc::LINE_ENV);
     }
     for (name, value) in env.iter().filter(|(name, _)| !is_octiq_variable(name)) {
         cmd.env(name, value);
@@ -1268,14 +1273,81 @@ mod tests {
                 Some(r"C:\Users\me\source")
             );
         }
-        // Off Windows the line is still the `-lc` argument, as before.
-        let (_, line) = &every_one_shot_line(&prompt)[0];
-        let cmd = one_shot_command(&bash, line, "/", &BTreeMap::new(), false);
-        let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert_eq!(args, ["-lc", line.as_str()]);
-        assert!(cmd
-            .get_envs()
-            .all(|(k, v)| k != crate::proc::LINE_ENV || v.is_none()));
+    }
+
+    #[test]
+    fn off_windows_a_one_shot_line_is_the_argument_and_no_octiq_variable_is_set() {
+        let prompt = long_windows_prompt();
+        let sh = crate::proc::AgentShell {
+            program: "/bin/zsh".into(),
+            args: vec!["-lc".into()],
+        };
+        let env = BTreeMap::from([
+            ("KEPT".to_string(), "yes".to_string()),
+            (crate::proc::LINE_ENV.to_string(), "forged".to_string()),
+            ("OCTIQ_CHAT_KEY".to_string(), "chat:leak".to_string()),
+        ]);
+        for (name, line) in every_one_shot_line(&prompt) {
+            let cmd = one_shot_command(&sh, &line, "/", &env, false);
+            let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+            assert_eq!(args, ["-lc", line.as_str()], "{name}");
+            let envs: BTreeMap<_, _> = cmd
+                .get_envs()
+                .map(|(k, v)| (k.to_str().unwrap(), v.map(|v| v.to_str().unwrap())))
+                .collect();
+            assert_eq!(envs.get("KEPT"), Some(&Some("yes")), "{name}");
+            let set: Vec<_> = envs
+                .iter()
+                .filter(|(k, v)| is_octiq_variable(k) && v.is_some())
+                .collect();
+            assert!(set.is_empty(), "{name}: {set:?}");
+            // Removed outright, whatever this process inherited: the carrier
+            // and every variable that ties a process to a chat.
+            for removed in CHAT_VARIABLES.iter().chain([&crate::proc::LINE_ENV]) {
+                assert_eq!(envs.get(removed), Some(&None), "{name}: {removed}");
+            }
+        }
+    }
+
+    /// Set by `an_inherited_octiq_variable_never_reaches_a_one_shot_process`
+    /// on the copy of this test binary it starts.
+    const INHERITING_RUN: &str = "PEER_TEST_INHERITED_OCTIQ";
+
+    /// The suite's own environment decides nothing here: this test starts
+    /// a copy of itself with a forged launch line and chat key really in its
+    /// environment, and that copy runs the one-shot checks. No other test's
+    /// environment is touched.
+    #[cfg(unix)]
+    #[test]
+    fn an_inherited_octiq_variable_never_reaches_a_one_shot_process() {
+        if std::env::var_os(INHERITING_RUN).is_some() {
+            assert_eq!(
+                std::env::var(crate::proc::LINE_ENV).as_deref(),
+                Ok("inherited-forged")
+            );
+            // Off Windows: the agent sees no OCTIQ_ variable at all.
+            a_one_shot_process_gets_no_octiq_variable_from_anywhere();
+            // On Windows' delivery: the shell runs OUR line, not the forged
+            // one, and the agent again sees no OCTIQ_ variable.
+            the_windows_delivery_hands_every_one_shot_line_over_whole();
+            return;
+        }
+        let name = "orchestration::peer::tests::an_inherited_octiq_variable_never_reaches_a_one_shot_process";
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--nocapture", "--test-threads=1"])
+            .env(INHERITING_RUN, "1")
+            .env(crate::proc::LINE_ENV, "inherited-forged")
+            .env("OCTIQ_CHAT_CAPABILITY", "inherited-forged")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{printed}");
+        assert!(printed.contains("1 passed"), "the copy ran it: {printed}");
     }
 
     /// The Windows delivery, run by this machine's own agent shell (Git Bash
