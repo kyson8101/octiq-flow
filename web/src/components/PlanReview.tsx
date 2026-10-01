@@ -1,12 +1,12 @@
 // Plan mode: the main agent's plan, laid out as the order it will run in, with
-// the only two answers it can get — approve it, or say what to change.
+// the three answers it can get — approve, reject, or say what to change.
 //
 // It stands in for the run's progress and task list while the plan waits,
 // because a 0% bar over a column of "pending" rows says nothing about a plan.
 // No worker starts until Approve: the host refuses them, this view only asks.
 // Specs are the agent's prose, so each sits behind its task's disclosure.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { approvePlan } from "../lib/agentsMode";
+import { approvePlan, rejectPlan } from "../lib/agentsMode";
 import { modelFromReported } from "../lib/agentProviders";
 import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 import {
@@ -42,6 +42,9 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
 }) {
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busyAction, setBusyAction] = useState<"approve" | "reject" | null>(null);
   const busy = useApproving(run.id);
   // A task the lead withdrew is no longer part of the plan.
   const tasks = useMemo(() => planTasks(allTasks), [allTasks]);
@@ -69,6 +72,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
 
   const approve = async () => {
     setError("");
+    setBusyAction("approve");
     try {
       // The revision on screen goes with the click: a plan the lead changed
       // a moment ago is refused, not approved unseen.
@@ -77,6 +81,21 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
       if (sent) onApproved?.();
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+  const reject = async () => {
+    setError("");
+    setBusyAction("reject");
+    try {
+      const sent = await approveOnce(run.id, () => rejectPlan(run.coordinatorChatKey, run.id, waiting, revision, reason,
+        { surface, ...cardView(shownRef.current ?? shown, Date.now()) }));
+      if (sent) onApproved?.();
+    } catch (failure) {
+      setError(String((failure as Error).message ?? failure));
+    } finally {
+      setBusyAction(null);
     }
   };
   const requestChanges = () => {
@@ -97,7 +116,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   // the tasks it saw, and the host refuses it if the plan changed since.
   const stillDrafting = !approved && drafting && empty;
   const waitReason = stillDrafting ? "The main agent is still writing the plan." : empty ? "The plan has no tasks yet."
-    : holding ? `Updated just now to revision ${revision}. Look it over, then approve.`
+    : holding ? `Updated just now to revision ${revision}. Look it over, then decide.`
     : drafting ? "The main agent is still active. Approving covers the tasks shown." : "";
   const titleId = `plan-review-title-${run.id}`;
   return (
@@ -162,15 +181,47 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
           />
           <button className="plan-review-quiet" type="button" disabled={!note.trim()} onClick={requestChanges}>Request changes</button>
         </div>}
+        {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={empty || holding}
+          rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
+          onCancel={() => { setRejecting(false); setReason(""); }} />}
         <div className="plan-review-approve">
           <span className="plan-review-hint">{waitReason || (blocked ? "Some tasks wait on each other and will never start." : "No worker starts until you approve.")}</span>
+          {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || empty || holding} onClick={() => setRejecting(true)}>
+            Reject
+          </button>}
           <button className="orch-primary" type="button" disabled={busy || empty || holding} onClick={() => void approve()}>
-            {busy ? "Approving…" : "Approve plan"}
+            {busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"}
           </button>
         </div>
       </footer>}
     </section>
   );
+}
+
+export function PlanRejectConfirmation({ reason, busy, disabled, rejecting, onReason, onConfirm, onCancel }: {
+  reason: string;
+  busy: boolean;
+  disabled: boolean;
+  rejecting: boolean;
+  onReason: (reason: string) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return <div className="plan-review-reject-confirm">
+    <input value={reason} maxLength={500} autoFocus placeholder="Reason (optional)" aria-label="Reason for rejecting plan"
+      onChange={(event) => onReason(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          onConfirm();
+        }
+        if (event.key === "Escape") onCancel();
+      }} />
+    <button className="plan-review-quiet" type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+    <button className="plan-review-reject" type="button" disabled={busy || disabled} onClick={onConfirm}>
+      {rejecting ? "Rejecting…" : "Confirm reject"}
+    </button>
+  </div>;
 }
 
 function PlanTask({ task, run, projectName, added, number, numbers }: {

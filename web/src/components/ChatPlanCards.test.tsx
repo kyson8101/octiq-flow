@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { renderToStaticMarkup } from "react-dom/server";
-import { ApprovedPlan, ChatPlanCards } from "./ChatPlanCards";
+import { ApprovedPlan, ChatPlanCards, RejectedPlan } from "./ChatPlanCards";
 import { chatPlans } from "../lib/chatPlans";
 import type { OrchestrationRun, OrchestrationSnapshot, OrchestrationTask, PlanApproval } from "../lib/orchestration";
 
@@ -35,9 +35,29 @@ describe("ChatPlanCards", () => {
     expect(html).toContain("octiq-flow");
     expect(html).toContain("Plans live outside the chat.");
     expect(html).toContain("Approve plan");
+    expect(html).toContain(">Reject<");
     // The chat's own message box is how to answer; no second one.
     expect(html).toContain("Reply &quot;approve this plan&quot; below, or ask for changes.");
     expect(html).not.toContain("<textarea");
+  });
+
+  it("removes a rejected plan from the transcript tail and folds its record in run history", () => {
+    const rejected = run("run_abcd12", {
+      status: "rejected", requestedAt: 1, revision: 4, decidedAt: 2,
+      rejection: {
+        by: "person", revision: 4, at: 2, reason: "Wrong direction", taskIds: ["a"], surface: "chat",
+      },
+    });
+    const tasks = [task("a", "run_abcd12", { status: "cancelled" })];
+    expect(render([rejected], tasks)).toBe("");
+    const [plan] = chatPlans({ runs: [rejected], tasks, attempts: [], gates: [], messages: [], notifications: [] } as unknown as OrchestrationSnapshot, "chat:lead");
+    const html = renderToStaticMarkup(<RejectedPlan plan={plan} />);
+    expect(html).toMatch(/<details class="chat-plan chat-plan-approved chat-plan-rejected"><summary>/);
+    expect(html).not.toContain("<details class=\"chat-plan chat-plan-approved chat-plan-rejected\" open");
+    expect(html).toContain("Plan rejected · Wrong direction");
+    expect(html).toContain("Reason: Wrong direction");
+    expect(html).toContain("Withdrawn: Task a");
+    expect(html).not.toContain("Approve plan");
   });
 
   it("with several plans waiting, each says its own handle", () => {

@@ -311,9 +311,11 @@ review** view lists each task with who it goes to and **where it runs** —
 project and repository, the full path in its tooltip; a task without a
 destination shows the run's own project and checkout. **Approve plan** calls
 the browser-only `orchestration_plan_approve`, which is deliberately left out
-of the agent hook so no agent can approve its own plan. To change the plan,
-reply in the chat. The button is disabled only while the lead is still
-drafting and there is nothing to review yet.
+of the agent hook so no agent can approve its own plan. **Reject** opens a
+confirmation with an optional one-line reason and calls the likewise
+browser-only `orchestration_plan_reject`. To change the plan, reply in the
+chat. Both decision buttons are disabled only while the lead is still drafting
+and there is nothing to review yet.
 
 The same review is also drawn **at the end of the lead's own chat**
 (`components/ChatPlanCards`, `lib/chatPlans.ts`). It is the same component,
@@ -323,7 +325,19 @@ state. A click in either shows "Approving…" in both and sends once
 hex digits of the run id, and carries its **revision**. An approved plan folds
 to one line, "Approved in chat · revision 4". A plan the lead changes after
 approval comes back as a new, waiting revision. It is never the old card with
-the new scope.
+the new scope. A rejection also leaves the transcript tail and folds to one
+quiet **Plan rejected** line in run history, with its reason when one was given.
+
+Approve and Reject enter the same store-locked decision transition, so only
+the first wins and retries return that recorded decision. Rejecting the first,
+never-approved plan cancels its pending tasks and ends the run as `stopped`;
+`stoppedReason` says the person rejected that revision. Rejecting an amendment
+cancels only tasks added since the last approval; approved, running and
+completed work and their workspaces are untouched, and the run stays live.
+`planApproval.rejection` records `{by, revision, at, reason, taskIds, surface,
+shownMs}` durably. The host queues one `plan_rejected` continuation to the
+coordinator naming the revision, tasks and optional reason; its wording states
+that it is a decision record, not an instruction to make another plan.
 
 ### Approving by chat
 

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { renderToStaticMarkup } from "react-dom/server";
-import { PlanReview } from "./PlanReview";
+import { PlanRejectConfirmation, PlanReview } from "./PlanReview";
 import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 
 const run: OrchestrationRun = {
@@ -27,7 +27,19 @@ describe("PlanReview", () => {
     expect(html).toContain("Maya");
     expect(html).toContain("after #1, #2");
     expect(html).toContain("Approve plan");
+    expect(html).toContain(">Reject<");
+    expect(html).not.toContain("Reason (optional)");
     expect(html).not.toMatch(/disabled=""[^>]*>Approve/);
+  });
+
+  it("reveals an optional one-line reason only in the reject confirmation step", () => {
+    const html = renderToStaticMarkup(<PlanRejectConfirmation reason="Not this direction" busy={false} disabled={false}
+      rejecting={false} onReason={() => {}} onConfirm={() => {}} onCancel={() => {}} />);
+    expect(html).toContain('aria-label="Reason for rejecting plan"');
+    expect(html).toContain('maxLength="500"');
+    expect(html).toContain("Not this direction");
+    expect(html).toContain("Cancel");
+    expect(html).toContain("Confirm reject");
   });
 
   it("keeps a spec behind its task's disclosure", () => {
@@ -50,6 +62,7 @@ describe("PlanReview", () => {
     expect(empty).toContain("Drafting the plan");
     expect(empty).toContain("Tasks appear here as the main agent writes them.");
     expect(empty).toMatch(/<button[^>]*disabled=""[^>]*>Approve plan/);
+    expect(empty).toMatch(/<button[^>]*disabled=""[^>]*>Reject/);
   });
 
   it("shows where each task runs: its destination, else the run's own checkout", () => {
