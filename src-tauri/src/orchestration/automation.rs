@@ -188,7 +188,7 @@ impl OrchestrationStore {
     }
 }
 
-fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
+pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
     if matches!(run.status, RunStatus::Stopped | RunStatus::Completed)
         || run.awaiting_plan_approval()
     {

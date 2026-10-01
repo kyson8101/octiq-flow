@@ -8,7 +8,7 @@
 // A second run proves that rejecting an amendment restores its previously
 // approved task instead of cancelling it.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -19,6 +19,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright")
 const artifacts = process.env.OCTIQ_EVIDENCE_DIR
   || await mkdtemp(join(tmpdir(), "octiq-plan-reject-"));
 await mkdir(artifacts, { recursive: true });
+await rm(join(artifacts, "failure.png"), { force: true });
 
 const now = Date.now();
 const chat = (id, title, age) => ({
@@ -278,6 +279,9 @@ try {
     assert.equal(dependant.status, "pending", `${label}: approved dependant was not cancelled`);
     assert(dependant.approvedAt != null, `${label}: dependant approval remains`);
     assert(await noSideways(page), `${label}: amendment record has no sideways scroll`);
+    if (viewport.width === 375) {
+      await page.screenshot({ path: join(artifacts, "mobile-amendment.png"), fullPage: false });
+    }
     await context.close();
   }
 

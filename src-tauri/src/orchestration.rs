@@ -865,6 +865,7 @@ impl OrchestrationStore {
                 Ok(mut data) if (1..=STORE_VERSION).contains(&data.version) => {
                     recovered = data.version != STORE_VERSION;
                     data.version = STORE_VERSION;
+                    recovered |= backfill_legacy_plan_approvals(&mut data);
                     recovered |= recover_interrupted_workers(&mut data);
                     recovered |= workspaces::recover_workspaces(&mut data);
                     recovered |= lifecycle::recover(&mut data);
@@ -946,6 +947,10 @@ impl OrchestrationStore {
             return Err(error.clone());
         }
         let mut next = inner.data.clone();
+        // Old ledgers can have a decided approval without per-task markers.
+        // Repair that state before applying the next mutation so a newly
+        // inserted task can never be mistaken for part of the old decision.
+        backfill_legacy_plan_approvals(&mut next);
         let result = change(&mut next)?;
         levels::stamp_scoring_since(&mut next, now_ms());
         // In the same write as the change, so no reader ever sees a plan
@@ -3769,6 +3774,70 @@ fn announce_plan_decision(run: &Run) {
     announce(&run.id, event);
 }
 
+/// Persist the approval carried by ledgers written before tasks had
+/// `approved_at`. A retained consent is the strongest evidence when the run
+/// is already showing a later amendment; otherwise an approved plan's own
+/// decision time is sufficient. Creation time separates the tasks that
+/// existed for that decision from genuinely new work.
+fn backfill_legacy_plan_approvals(data: &mut Stored) -> bool {
+    let approval_times: BTreeMap<_, _> = data
+        .runs
+        .iter()
+        .filter_map(|(run_id, run)| {
+            let plan = run.plan_approval.as_ref()?;
+            if plan.status == PlanStatus::Approved {
+                let approved_at = plan
+                    .decided_at
+                    .or_else(|| plan.consent.as_ref().map(|consent| consent.at))?;
+                // Creating work reopens an approved plan, so equality is an
+                // old task at millisecond precision, never a later addition.
+                Some((run_id.clone(), (approved_at, approved_at, true)))
+            } else {
+                let approved_at = plan.consent.as_ref()?.at;
+                // On a later amendment, requested_at is stamped in the same
+                // mutation that inserts the new task. Only older tasks belong
+                // to the retained approval, even if clocks share a millisecond.
+                Some((run_id.clone(), (approved_at, plan.requested_at, false)))
+            }
+        })
+        .collect();
+    let mut changed = false;
+    for task in data.tasks.values_mut() {
+        let Some(&(approved_at, creation_cutoff, inclusive)) = approval_times.get(&task.run_id)
+        else {
+            continue;
+        };
+        if task.parent_task_id.is_none()
+            && task.approved_at.is_none()
+            && task.approval_rollback.is_none()
+            && task.status != TaskStatus::Cancelled
+            && if inclusive {
+                task.created_at <= creation_cutoff
+            } else {
+                task.created_at < creation_cutoff
+            }
+        {
+            task.approved_at = Some(approved_at);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn task_has_attempt(data: &Stored, task_id: &str) -> bool {
+    data.attempts
+        .values()
+        .any(|attempt| attempt.task_id == task_id)
+}
+
+fn task_is_withdrawable_from_plan(data: &Stored, task: &Task) -> bool {
+    task.approval_rollback.is_some()
+        || (!matches!(
+            task.status,
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Running
+        ) && !task_has_attempt(data, &task.id))
+}
+
 /// The tasks a plan approval covers: the lead's own, not yet approved, and
 /// still in the plan.
 fn awaiting_approval<'a>(data: &'a Stored, run_id: &'a str) -> impl Iterator<Item = &'a Task> {
@@ -3777,6 +3846,7 @@ fn awaiting_approval<'a>(data: &'a Stored, run_id: &'a str) -> impl Iterator<Ite
             && task.approved_at.is_none()
             && task.parent_task_id.is_none()
             && task.status != TaskStatus::Cancelled
+            && task_is_withdrawable_from_plan(data, task)
     })
 }
 
@@ -3912,11 +3982,20 @@ fn decide_plan_in(
             let mut restored_labels = Vec::new();
             let mut withdrawn_labels = Vec::new();
             for id in &task_ids {
+                let has_attempt = task_has_attempt(data, id);
                 let task = data.tasks.get_mut(id).expect("the waiting task exists");
                 if let Some(rollback) = task.approval_rollback.take() {
                     restored_task_ids.push(id.clone());
                     restored_labels.push(task.title.clone());
                     rollback.restore(task, now);
+                } else if matches!(
+                    task.status,
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Running
+                ) || has_attempt
+                {
+                    // History-bearing work is never withdrawn by rejecting a
+                    // plan, even if a damaged legacy marker let it reach here.
+                    continue;
                 } else {
                     withdrawn_labels.push(task.title.clone());
                     task.status = TaskStatus::Cancelled;
@@ -3956,6 +4035,10 @@ fn decide_plan_in(
                 };
                 stop_run_in(data, run_id, stopped_reason, now);
             } else {
+                // A dependency may have completed while the amendment was on
+                // screen. Rollbacks carry the status from approval time, so
+                // derive readiness again from the current dependency graph.
+                make_ready(data, run_id);
                 recompute_run(data, run_id);
             }
             let listed = if task_ids.is_empty() {
@@ -5841,25 +5924,297 @@ pub(crate) mod tests {
         );
     }
 
-    fn complete_task(store: &OrchestrationStore, task_id: &str) {
+    fn start_task(store: &OrchestrationStore, task_id: &str) -> Attempt {
         let (_, _, attempt, _) = store
             .reserve_attempt("chat:master", &launch_for(task_id))
             .unwrap();
-        let attempt = store
+        store
             .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
-            .unwrap();
+            .unwrap()
+    }
+
+    fn finish_attempt(store: &OrchestrationStore, attempt: Attempt, outcome: WorkerOutcome) {
         store
             .report_worker(
                 &attempt.worker_chat_key,
                 WorkerReport {
                     attempt_id: attempt.id,
-                    outcome: WorkerOutcome::Completed,
-                    summary: "Done".into(),
+                    outcome,
+                    summary: format!("{outcome:?}"),
                     files_modified: Vec::new(),
                     verdict: None,
                 },
             )
             .unwrap();
+    }
+
+    fn enable_automatic_dispatch(store: &OrchestrationStore, run_id: &str) {
+        store
+            .configure_automation(
+                "chat:master",
+                run_id,
+                Some(automation::WorkerDefaults {
+                    agent: Some(ChatAgent::Codex),
+                    model: Some("gpt-5.6-sol".into()),
+                    access: Access::Auto,
+                    effort: Some("high".into()),
+                    recovery: None,
+                }),
+            )
+            .unwrap();
+    }
+
+    fn three_attempts_then_complete(store: &OrchestrationStore, task_id: &str) {
+        for outcome in [
+            WorkerOutcome::Failed,
+            WorkerOutcome::Failed,
+            WorkerOutcome::Completed,
+        ] {
+            let attempt = start_task(store, task_id);
+            finish_attempt(store, attempt, outcome);
+        }
+    }
+
+    #[test]
+    fn rejecting_a_legacy_approved_plan_with_missing_markers_withdraws_only_new_work() {
+        let store = OrchestrationStore::default();
+        let (run, ready) = pending_plan(&store);
+        let completed = task(&store, &run, Vec::new());
+        let first_plan = plan_of(&store, &run.id);
+        store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[ready.id.clone(), completed.id.clone()]),
+                Some(first_plan.revision),
+            )
+            .unwrap();
+        store
+            .mutate(|data| {
+                let plan = data
+                    .runs
+                    .get_mut(&run.id)
+                    .unwrap()
+                    .plan_approval
+                    .as_mut()
+                    .unwrap();
+                plan.consent = None;
+                data.tasks.get_mut(&ready.id).unwrap().approved_at = None;
+                data.tasks.get_mut(&completed.id).unwrap().approved_at = None;
+                Ok(())
+            })
+            .unwrap();
+        three_attempts_then_complete(&store, &completed.id);
+
+        let new_task = task(&store, &run, Vec::new());
+        let revision = plan_of(&store, &run.id).revision;
+        let rejected = store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&[new_task.id.clone()]),
+                Some(revision),
+                None,
+                CardView {
+                    surface: "panel".into(),
+                    shown_ms: Some(2_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(rejected.status, RunStatus::Running);
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let by_id = |id: &str| snapshot.tasks.iter().find(|task| task.id == id).unwrap();
+        assert_eq!(by_id(&ready.id).status, TaskStatus::Ready);
+        assert_eq!(by_id(&completed.id).status, TaskStatus::Completed);
+        assert_eq!(by_id(&new_task.id).status, TaskStatus::Cancelled);
+        assert_eq!(snapshot.attempts.len(), 3);
+        assert!(by_id(&ready.id).approved_at.is_some());
+        assert!(by_id(&completed.id).approved_at.is_some());
+    }
+
+    #[test]
+    fn loading_a_legacy_decided_plan_persists_approval_markers_and_approves_only_new_work() {
+        let root = std::env::temp_dir().join(format!("octiq-legacy-plan-{}", compact_id()));
+        let path = root.join("orchestrations.json");
+        let store = OrchestrationStore::load(path.clone());
+        let (run, ready) = pending_plan(&store);
+        let completed = task(&store, &run, Vec::new());
+        let first_plan = plan_of(&store, &run.id);
+        let decided_at = store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[ready.id.clone(), completed.id.clone()]),
+                Some(first_plan.revision),
+            )
+            .unwrap()
+            .plan_approval
+            .unwrap()
+            .decided_at
+            .unwrap();
+        three_attempts_then_complete(&store, &completed.id);
+        store
+            .mutate(|data| {
+                data.runs
+                    .get_mut(&run.id)
+                    .unwrap()
+                    .plan_approval
+                    .as_mut()
+                    .unwrap()
+                    .consent = None;
+                data.tasks.get_mut(&ready.id).unwrap().approved_at = None;
+                data.tasks.get_mut(&completed.id).unwrap().approved_at = None;
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+
+        let raw: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(raw["tasks"][&ready.id].get("approvedAt").is_none());
+        assert!(raw["tasks"][&completed.id].get("approvedAt").is_none());
+
+        let store = OrchestrationStore::load(path.clone());
+        let migrated = store.snapshot(Some(&run.id)).unwrap();
+        let by_id = |id: &str| migrated.tasks.iter().find(|task| task.id == id).unwrap();
+        assert_eq!(by_id(&ready.id).approved_at, Some(decided_at));
+        assert_eq!(by_id(&completed.id).approved_at, Some(decided_at));
+        assert_eq!(by_id(&ready.id).status, TaskStatus::Ready);
+        assert_eq!(by_id(&completed.id).status, TaskStatus::Completed);
+        assert_eq!(migrated.attempts.len(), 3);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["tasks"][&ready.id]["approvedAt"], decided_at);
+        assert_eq!(persisted["tasks"][&completed.id]["approvedAt"], decided_at);
+
+        let new_task = task(&store, &run, Vec::new());
+        let before_approval = store.snapshot(Some(&run.id)).unwrap();
+        assert!(before_approval
+            .tasks
+            .iter()
+            .find(|task| task.id == new_task.id)
+            .unwrap()
+            .approved_at
+            .is_none());
+        let revision = plan_of(&store, &run.id).revision;
+        store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[new_task.id.clone()]),
+                Some(revision),
+            )
+            .unwrap();
+        let approved = store.snapshot(Some(&run.id)).unwrap();
+        let by_id = |id: &str| approved.tasks.iter().find(|task| task.id == id).unwrap();
+        assert_eq!(by_id(&ready.id).approved_at, Some(decided_at));
+        assert_eq!(by_id(&completed.id).approved_at, Some(decided_at));
+        assert!(by_id(&new_task.id).approved_at.is_some());
+        assert_eq!(by_id(&completed.id).status, TaskStatus::Completed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejection_never_withdraws_terminal_active_or_history_bearing_tasks() {
+        let store = OrchestrationStore::default();
+        let (run, completed) = pending_plan(&store);
+        let failed = task(&store, &run, Vec::new());
+        let running = task(&store, &run, Vec::new());
+        let history_bearing = task(&store, &run, Vec::new());
+        let plan = plan_of(&store, &run.id);
+        let approved_ids = [
+            completed.id.clone(),
+            failed.id.clone(),
+            running.id.clone(),
+            history_bearing.id.clone(),
+        ];
+        store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&approved_ids),
+                Some(plan.revision),
+            )
+            .unwrap();
+        finish_attempt(
+            &store,
+            start_task(&store, &completed.id),
+            WorkerOutcome::Completed,
+        );
+        finish_attempt(
+            &store,
+            start_task(&store, &failed.id),
+            WorkerOutcome::Failed,
+        );
+        finish_attempt(
+            &store,
+            start_task(&store, &history_bearing.id),
+            WorkerOutcome::Failed,
+        );
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&history_bearing.id).unwrap().status = TaskStatus::Ready;
+                Ok(())
+            })
+            .unwrap();
+        let _running_attempt = start_task(&store, &running.id);
+        let new_task = task(&store, &run, Vec::new());
+        store
+            .mutate(|data| {
+                data.runs
+                    .get_mut(&run.id)
+                    .unwrap()
+                    .plan_approval
+                    .as_mut()
+                    .unwrap()
+                    .consent = None;
+                for id in &approved_ids {
+                    data.tasks.get_mut(id).unwrap().approved_at = None;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let before = store.snapshot(Some(&run.id)).unwrap();
+        let protected: BTreeMap<_, _> = approved_ids
+            .iter()
+            .map(|id| {
+                let task = before.tasks.iter().find(|task| task.id == *id).unwrap();
+                (id.clone(), serde_json::to_value(task).unwrap())
+            })
+            .collect();
+
+        let revision = plan_of(&store, &run.id).revision;
+        let rejected = store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&[new_task.id.clone()]),
+                Some(revision),
+                None,
+                CardView {
+                    surface: "panel".into(),
+                    shown_ms: Some(2_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(rejected.status, RunStatus::Running);
+        let after = store.snapshot(Some(&run.id)).unwrap();
+        for (id, expected) in protected {
+            let task = after.tasks.iter().find(|task| task.id == id).unwrap();
+            assert_eq!(serde_json::to_value(task).unwrap(), expected);
+        }
+        assert_eq!(
+            after
+                .tasks
+                .iter()
+                .find(|task| task.id == new_task.id)
+                .unwrap()
+                .status,
+            TaskStatus::Cancelled
+        );
     }
 
     #[test]
@@ -5878,8 +6233,11 @@ pub(crate) mod tests {
                 Some(plan.revision),
             )
             .unwrap();
-        store.set_task_size(&first.id, TaskSize::Large).unwrap();
+        enable_automatic_dispatch(&store, &run.id);
+        let first_attempt = start_task(&store, &first.id);
+        store.set_task_size(&dependant.id, TaskSize::Large).unwrap();
         let revision = plan_of(&store, &run.id).revision;
+        finish_attempt(&store, first_attempt, WorkerOutcome::Completed);
         drop(store);
         let store = OrchestrationStore::load(path);
 
@@ -5887,7 +6245,7 @@ pub(crate) mod tests {
             .reject_plan_from_card(
                 "chat:master",
                 &run.id,
-                Some(&[first.id.clone()]),
+                Some(&[dependant.id.clone()]),
                 Some(revision),
                 None,
                 CardView {
@@ -5902,7 +6260,7 @@ pub(crate) mod tests {
         let restored = snapshot
             .tasks
             .iter()
-            .find(|task| task.id == first.id)
+            .find(|task| task.id == dependant.id)
             .unwrap();
         assert_eq!(restored.size, Some(TaskSize::Medium));
         assert_eq!(restored.status, TaskStatus::Ready);
@@ -5911,15 +6269,16 @@ pub(crate) mod tests {
             snapshot
                 .tasks
                 .iter()
-                .find(|task| task.id == dependant.id)
+                .find(|task| task.id == first.id)
                 .unwrap()
                 .status,
-            TaskStatus::Pending
+            TaskStatus::Completed
         );
-        complete_task(&store, &first.id);
-        assert!(store
-            .reserve_attempt("chat:master", &launch_for(&dependant.id))
-            .is_ok());
+        let wave = automation::ready_wave(&snapshot, &snapshot.runs[0]);
+        assert_eq!(
+            wave.iter().map(|task| &task.id).collect::<Vec<_>>(),
+            [&dependant.id]
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -5939,10 +6298,11 @@ pub(crate) mod tests {
             effort: None,
             recovery: None,
         };
+        enable_automatic_dispatch(&store, &run.id);
         store
             .reassign_task(
                 "chat:master",
-                &first.id,
+                &dependant.id,
                 (Some(worker("opus")), Some(assignee("maya", "Maya")), None),
                 "Maya owns the approved work.".into(),
             )
@@ -5956,21 +6316,23 @@ pub(crate) mod tests {
                 Some(plan.revision),
             )
             .unwrap();
+        let first_attempt = start_task(&store, &first.id);
         store
             .reassign_task(
                 "chat:master",
-                &first.id,
+                &dependant.id,
                 (Some(worker("sonnet")), Some(assignee("noah", "Noah")), None),
                 "Try a different owner.".into(),
             )
             .unwrap();
         let revision = plan_of(&store, &run.id).revision;
+        finish_attempt(&store, first_attempt, WorkerOutcome::Completed);
 
         store
             .reject_plan_from_card(
                 "chat:master",
                 &run.id,
-                Some(&[first.id.clone()]),
+                Some(&[dependant.id.clone()]),
                 Some(revision),
                 Some("Keep the original assignment.".into()),
                 CardView {
@@ -5985,7 +6347,7 @@ pub(crate) mod tests {
         let restored = snapshot
             .tasks
             .iter()
-            .find(|task| task.id == first.id)
+            .find(|task| task.id == dependant.id)
             .unwrap();
         assert_eq!(restored.assignee.as_ref().unwrap().id, "maya");
         assert_eq!(
@@ -5995,10 +6357,11 @@ pub(crate) mod tests {
         assert_eq!(restored.handoffs.len(), 1);
         assert_eq!(restored.status, TaskStatus::Ready);
         assert!(restored.approved_at.is_some());
-        complete_task(&store, &first.id);
-        assert!(store
-            .reserve_attempt("chat:master", &launch_for(&dependant.id))
-            .is_ok());
+        let wave = automation::ready_wave(&snapshot, &snapshot.runs[0]);
+        assert_eq!(
+            wave.iter().map(|task| &task.id).collect::<Vec<_>>(),
+            [&dependant.id]
+        );
     }
 
     #[test]
