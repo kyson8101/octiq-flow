@@ -31,7 +31,7 @@ pub struct AgentShell {
 }
 
 /// The variable a command line travels in on Windows; see `AgentShell::delivery`.
-const LINE_ENV: &str = "OCTIQ_LAUNCH_LINE";
+pub(crate) const LINE_ENV: &str = "OCTIQ_LAUNCH_LINE";
 
 /// Runs the line `LINE_ENV` carries. The variable is taken back out first, so
 /// the agent and everything it starts never inherit a copy of the line.
@@ -70,7 +70,13 @@ impl AgentShell {
 
     /// A command that runs `line`, a POSIX-quoted command line, in this shell.
     pub fn command(&self, line: &str) -> Command {
-        let (args, env) = self.delivery(line, cfg!(windows));
+        self.command_on(line, cfg!(windows))
+    }
+
+    /// `command`, with the platform as a parameter so the Windows delivery
+    /// can be checked on a Mac.
+    pub(crate) fn command_on(&self, line: &str, is_windows: bool) -> Command {
+        let (args, env) = self.delivery(line, is_windows);
         let mut command = Command::new(&self.program);
         command.args(args);
         if let Some((name, value)) = env {
