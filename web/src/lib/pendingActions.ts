@@ -32,7 +32,7 @@ import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
 import { planTasks } from "./planReview";
 import type { Question } from "../components/UserQuestion";
 
-export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "plan";
+export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "plan" | "handover";
 
 export type PendingAction = {
   /** The host's own identity for it, prefixed by kind: stable across reloads
@@ -75,10 +75,12 @@ export type PendingActionInput = {
   asks?: Requests;
   safetyBlocks?: Requests;
   questions?: Requests;
+  /** Handovers an agent asked for, waiting on the person's confirm. */
+  handovers?: readonly { id: string; sourceChatKey: string; status: string }[];
 };
 
 const LIVE_RUNS = new Set(["planning", "running", "waiting"]);
-const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, outage: 2, question: 3, delivery: 4, gate: 5, plan: 6 };
+const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, outage: 2, question: 3, delivery: 4, gate: 5, plan: 6, handover: 7 };
 
 const chatId = (chatKey: string | undefined) => chatKey?.startsWith("chat:") ? chatKey.slice(5) || null : null;
 
@@ -148,6 +150,11 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
       openChatId: coordinator, surface: "chat", runId: run.id,
     });
   }
+  for (const handover of input.handovers ?? []) {
+    const source = chatId(handover.sourceChatKey);
+    if (!source || handover.status !== "pending") continue;
+    add({ key: `handover:${handover.id}`, kind: "handover", rowId: rowOf(source), openChatId: source, surface: "chat" });
+  }
   return [...found.values()].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);
 }
 
@@ -181,6 +188,7 @@ const LABEL: Record<PendingActionKind, string> = {
   delivery: "Delivery failed",
   gate: "Decision needed",
   plan: "Plan approval",
+  handover: "Handover to confirm",
 };
 
 const NOUN: Record<PendingActionKind, [string, string]> = {
@@ -191,6 +199,7 @@ const NOUN: Record<PendingActionKind, [string, string]> = {
   delivery: ["failed answer delivery", "failed answer deliveries"],
   gate: ["decision", "decisions"],
   plan: ["plan to approve", "plans to approve"],
+  handover: ["handover to confirm", "handovers to confirm"],
 };
 
 /** The badge's words: what it is when there is one, how many when several. */

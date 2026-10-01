@@ -46,6 +46,8 @@ pub struct Services {
     /// Durable runs, task DAGs, authoritative worker attempts and gates.
     pub orchestrations: Arc<OrchestrationStore>,
     pub ptys: Arc<PtyManager>,
+    /// Where handovers are kept and what starts their chats (`handover.rs`).
+    pub handovers: crate::handover::Wiring,
 }
 
 impl Services {
@@ -78,6 +80,7 @@ impl Services {
             git_watch: Arc::new(GitWatchState::default()),
             orchestrations,
             ptys: Arc::new(PtyManager::default()),
+            handovers: crate::handover::Wiring::profile(),
         }
     }
 }
@@ -1282,6 +1285,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 &turn,
             ))
         }
+        // Handovers between agents (`handover.rs`). Only the person's socket
+        // reaches these: an agent asks through `/hook/handover`, which can
+        // only record a pending one.
+        "handover_list" => to_value(crate::handover::list(&svc.handovers.store)),
+        "handover_confirm" => to_value(crate::handover::decide(
+            svc,
+            &arg::<String>(&args, "id")?,
+            crate::handover::Decision::Confirm,
+        )),
+        "handover_decline" => to_value(crate::handover::decide(
+            svc,
+            &arg::<String>(&args, "id")?,
+            crate::handover::Decision::Decline,
+        )),
+        "handover_abandon" => to_value(crate::handover::decide(
+            svc,
+            &arg::<String>(&args, "id")?,
+            crate::handover::Decision::Abandon,
+        )),
         "team_leads" => to_value(crate::team::leads(&crate::team::default_path())),
         "team_brief" => {
             let chat_key: String = arg(&args, "chatKey")?;

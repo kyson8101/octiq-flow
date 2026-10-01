@@ -1005,6 +1005,20 @@ impl OrchestrationStore {
             }))
     }
 
+    /// A run `chat_key` coordinates that has not ended, by objective.
+    pub fn live_run_coordinated_by(&self, chat_key: &str) -> Result<Option<String>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        Ok(inner
+            .data
+            .runs
+            .values()
+            .find(|run| run.coordinator_chat_key == chat_key && !run_has_ended(run))
+            .map(|run| run.objective.clone()))
+    }
+
     /// The chat an attempt's worker runs in, when the attempt exists.
     pub fn attempt_worker_chat(&self, attempt_id: &str) -> Result<Option<String>, String> {
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
@@ -4102,7 +4116,7 @@ pub fn master_prompt(run: &Run) -> String {
     }
 }
 
-fn model_id(agent: ChatAgent, model: Option<&str>) -> String {
+pub(crate) fn model_id(agent: ChatAgent, model: Option<&str>) -> String {
     let provider = match agent {
         ChatAgent::Claude => "claude",
         ChatAgent::Codex => "codex",
@@ -4141,7 +4155,7 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
-fn access_id(access: Access) -> &'static str {
+pub(crate) fn access_id(access: Access) -> &'static str {
     match access {
         Access::Read => "read",
         Access::Manual => "manual",
@@ -5802,6 +5816,7 @@ pub(crate) mod tests {
             git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
             orchestrations: store.clone(),
             ptys: Arc::new(crate::pty::PtyManager::default()),
+            handovers: crate::handover::Wiring::scratch(),
         };
         let commands = [
             "chat_start",

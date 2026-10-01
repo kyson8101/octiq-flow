@@ -1,0 +1,94 @@
+/* A handover in the transcript's own column: quiet like a message, the
+   accent only as a tint while the person still has to choose. */
+.handover-cards { display: grid; gap: 12px; min-width: 0; margin: 4px 0 8px; }
+.handover-card {
+  min-width: 0; max-width: 100%;
+  padding: 12px 16px 14px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-1);
+  transition: border-color 160ms ease-out, background 160ms ease-out;
+}
+.handover-card.is-pending { border-color: var(--accent); background: var(--accent-tint); }
+.handover-card:is(.is-declined, .is-abandoned) { padding: 9px 14px; }
+.handover-card:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+
+.handover-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.handover-head h3 {
+  margin: 0; min-width: 0; flex: 1 1 auto;
+  color: var(--fg-0); font-size: 13px; font-weight: 600; line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.handover-card:is(.is-declined, .is-abandoned) .handover-head h3 { color: var(--fg-2); font-weight: 500; font-size: 12.5px; }
+.handover-mark { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); }
+.handover-card.is-pending .handover-mark,
+.handover-card.is-starting .handover-mark { background: var(--accent); }
+.handover-card.is-confirmed .handover-mark,
+.handover-card.is-incoming .handover-mark { background: var(--ok, var(--fg-2)); }
+
+.handover-facts { display: grid; gap: 4px; margin: 10px 0 0; min-width: 0; }
+.handover-facts > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; min-width: 0; }
+.handover-facts dt { color: var(--fg-3); font-size: 12px; }
+.handover-facts dd { margin: 0; min-width: 0; color: var(--fg-1); font-size: 12.5px; overflow-wrap: anywhere; }
+.handover-dim { color: var(--fg-2); }
+
+.handover-brief { margin-top: 8px; min-width: 0; }
+.handover-brief > summary {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-height: 28px; padding: 0 2px;
+  color: var(--fg-2); font-size: 12px; list-style: none; cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: color 130ms ease-out;
+}
+.handover-brief > summary::-webkit-details-marker { display: none; }
+@media (hover: hover) { .handover-brief > summary:hover { color: var(--fg-0); } }
+.handover-brief > summary:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+.handover-chevron {
+  width: 6px; height: 6px; margin-bottom: 3px;
+  border-right: 1.5px solid var(--fg-3); border-bottom: 1.5px solid var(--fg-3);
+  transform: rotate(45deg); transition: transform 160ms ease-out;
+}
+.handover-brief[open] .handover-chevron { transform: translateY(2px) rotate(-135deg); }
+.handover-brief-body { display: grid; gap: 10px; padding: 6px 0 2px; min-width: 0; }
+.handover-section { min-width: 0; }
+.handover-section h4 { margin: 0 0 2px; color: var(--fg-2); font-size: 11.5px; font-weight: 600; }
+.handover-section p,
+.handover-section li { margin: 0; color: var(--fg-1); font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.handover-section ul { margin: 0; padding-left: 18px; }
+.handover-mono { font-family: var(--mono); font-size: 11.5px !important; color: var(--fg-2) !important; }
+.handover-caveat { margin: -6px 0 0; color: var(--fg-3); font-size: 11.5px; }
+
+.handover-error { margin: 8px 0 0; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.handover-note { margin: 8px 0 0; color: var(--fg-2); font-size: 12px; overflow-wrap: anywhere; }
+
+.handover-actions {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px 10px; margin-top: 12px;
+}
+.handover-hint { flex: 1 1 auto; min-width: 0; color: var(--fg-2); font-size: 12px; }
+.handover-quiet,
+.handover-go,
+.handover-link {
+  min-height: 34px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-1);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: border-color 130ms ease-out, color 130ms ease-out, background 130ms ease-out;
+}
+.handover-go { border-color: var(--accent); background: var(--bg-1); color: var(--fg-0); font-weight: 600; }
+@media (hover: hover) {
+  .handover-quiet:hover:not(:disabled),
+  .handover-link:hover { border-color: var(--accent); color: var(--fg-0); }
+  .handover-go:hover:not(:disabled) { background: var(--accent-tint); }
+}
+.handover-quiet:focus-visible,
+.handover-go:focus-visible,
+.handover-link:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+.handover-quiet:disabled,
+.handover-go:disabled { opacity: 0.5; cursor: default; }
+
+@media (max-width: 640px), (pointer: coarse) {
+  .handover-card { padding: 12px 12px 14px; }
+  .handover-quiet, .handover-go, .handover-link { min-height: 44px; }
+  .handover-actions > button { flex: 1 1 auto; }
+  .handover-hint { flex-basis: 100%; }
+}

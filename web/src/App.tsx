@@ -158,6 +158,9 @@ import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type 
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
 import { ChatPlanCards } from "./components/ChatPlanCards";
+import { HandoverCards } from "./components/HandoverCards";
+import { chatIdOf, handoversFor } from "./lib/handover";
+import { useHandovers } from "./lib/handoverStore";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { pendingActions, pendingByRow, pendingByTask, type PendingAction } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
@@ -4107,10 +4110,31 @@ export default function App() {
     (id: string) => [...workspaces, ...shelved].find((item) => item.id === id)?.name,
     [workspaces, shelved],
   );
+  // Handovers: the card asking the person to confirm, and the links between
+  // the chat that handed a task over and the one that took it.
+  const { handovers, decide: decideHandover } = useHandovers();
+  const handoversHere = useMemo(
+    () => (workerChat || !conversationId ? handoversFor([], null) : handoversFor(handovers, keyFor(conversationId))),
+    [handovers, conversationId, workerChat],
+  );
+  const openHandoverChat = useCallback((chatKey: string, projectId: string | null) => {
+    onOpenChat.current({ conversationId: chatIdOf(chatKey), projectId });
+  }, []);
+  const handoverProjectOf = useCallback(
+    (chatKey: string) => conversationsRef.current.find((c) => c.id === chatIdOf(chatKey))?.projectId ?? null,
+    [],
+  );
   const planTail = useMemo(
-    () => (plansHere.some((plan) => plan.pending)
-      ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : undefined),
-    [plansHere, planDrafting, planProjectName],
+    () => {
+      const plans = plansHere.some((plan) => plan.pending)
+        ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : null;
+      const handed = handoversHere.outgoing.length || handoversHere.incoming
+        ? <HandoverCards outgoing={handoversHere.outgoing} incoming={handoversHere.incoming}
+          onDecide={decideHandover} onOpen={openHandoverChat} projectOf={handoverProjectOf} />
+        : null;
+      return plans || handed ? <>{handed}{plans}</> : undefined;
+    },
+    [plansHere, planDrafting, planProjectName, handoversHere, decideHandover, openHandoverChat, handoverProjectOf],
   );
 
   const changeAccess = useCallback(
@@ -4206,8 +4230,8 @@ export default function App() {
   // from state this tab already holds for every chat: nothing is fetched per
   // row, and a chat never opened still says so.
   const pendingList = useMemo(
-    () => pendingActions({ orchestration, parents: chatParents, asks, safetyBlocks, questions }),
-    [orchestration, chatParents, asks, safetyBlocks, questions],
+    () => pendingActions({ orchestration, parents: chatParents, asks, safetyBlocks, questions, handovers }),
+    [orchestration, chatParents, asks, safetyBlocks, questions, handovers],
   );
   // A badge's way to its card: open the chat (and its run, for a decision),
   // then show the card once it is drawn. `runFocus` tells the run panel which

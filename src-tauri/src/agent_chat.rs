@@ -598,6 +598,29 @@ pub(crate) struct QuestionOrigin {
     start: StartContext,
 }
 
+/// What the asking chat runs on, read-only: a handover to `self` copies it.
+impl QuestionOrigin {
+    pub(crate) fn agent(&self) -> ChatAgent {
+        self.start.agent
+    }
+
+    pub(crate) fn model(&self) -> Option<String> {
+        self.start.model.clone()
+    }
+
+    pub(crate) fn effort(&self) -> Option<String> {
+        self.start.effort.clone()
+    }
+
+    pub(crate) fn access(&self) -> Option<Access> {
+        self.start.access
+    }
+
+    pub(crate) fn cwd(&self) -> &str {
+        &self.start.cwd
+    }
+}
+
 /// A message the person has sent that its agent has not been given yet.
 ///
 /// Both kinds of provider queue, for different reasons, and the queue is OURS
@@ -921,6 +944,27 @@ impl ChatManager {
             ..Self::default()
         }
     }
+    /// The running chats whose recorded working folder is `checkout` or
+    /// inside it. A handover refuses to give a checkout to a new chat while
+    /// another live chat writes there.
+    pub(crate) fn live_chats_in(&self, checkout: &str) -> Vec<String> {
+        let Ok(top) = crate::paths::canonicalize(checkout) else {
+            return Vec::new();
+        };
+        let running: Vec<String> = match self.sessions.lock() {
+            Ok(sessions) => sessions.keys().cloned().collect(),
+            Err(_) => return Vec::new(),
+        };
+        running
+            .into_iter()
+            .filter(|key| {
+                self.start_context(key).is_some_and(|start| {
+                    crate::paths::canonicalize(&start.cwd).is_ok_and(|cwd| cwd.starts_with(&top))
+                })
+            })
+            .collect()
+    }
+
     pub(crate) fn question_origin(
         &self,
         chat_key: &str,
@@ -1709,6 +1753,19 @@ fn cancel_question_work(manager: &ChatManager, key: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// Whether `chat_key` was started with the turn `turn_id`. The durable user
+/// turn is written only once the agent holding it has been spawned
+/// (`start_session`), so its presence is the receipt a retry can trust: a
+/// handover's new chat is never started twice.
+pub(crate) fn turn_was_started(chat_key: &str, turn_id: &str) -> bool {
+    crate::transcript::since(chat_key, 0)
+        .into_iter()
+        .any(|item| {
+            item.event["uuid"].as_str() == Some(turn_id)
+                && item.event["octiq_user_turn"].as_bool() == Some(true)
+        })
+}
+
 /// The durable prompt id is also the retry key. A crash after dispatch must
 /// never cause an automatic second execution of an answer already handed over.
 fn question_receipt(record: &crate::question_store::Record) -> Option<String> {
@@ -1736,7 +1793,24 @@ fn resume_question(
     manager: Arc<ChatManager>,
     record: &crate::question_store::Record,
 ) -> Result<(), String> {
-    let origin = &record.origin;
+    continue_origin(
+        manager,
+        &record.origin,
+        record.continuation(),
+        record.turn_id(),
+    )
+}
+
+/// Hand `text` to the chat that made a saved request, as a host turn: sent
+/// to its running agent, or resumed in its own provider session when it has
+/// stopped. Late `ask_user` answers and handover decisions both come back
+/// this way, and refuse rather than continue a different session.
+pub(crate) fn continue_origin(
+    manager: Arc<ChatManager>,
+    origin: &QuestionOrigin,
+    text: String,
+    turn_id: String,
+) -> Result<(), String> {
     let start = manager
         .start_context(&origin.session_key)
         .unwrap_or_else(|| origin.start.clone());
@@ -1746,14 +1820,13 @@ fn resume_question(
     if origin.session_key != origin.chat_key {
         return Err("Answers for removed additional agents are saved, but cannot be delivered automatically. Continue from them in the chat.".into());
     }
-    let text = record.continuation();
     match chat_send_with_user_turn(
         manager.clone(),
         origin.chat_key.clone(),
         text.clone(),
         None,
         None,
-        Some(record.turn_id()),
+        Some(turn_id.clone()),
     ) {
         Ok(()) => return Ok(()),
         Err(why) if why == "no such chat" || why.ends_with("is not running") => {}
@@ -1774,7 +1847,7 @@ fn resume_question(
         start.effort,
         None,
         start.lite,
-        Some(record.turn_id()),
+        Some(turn_id),
         true,
         None,
     )
@@ -4420,6 +4493,25 @@ impl ChatManager {
             })),
         );
         secret
+    }
+
+    /// The start settings a launched chat would have remembered, with a
+    /// conversation id, so a stand-in can ask the way a real agent does.
+    pub(crate) fn test_remember_start(&self, key: &str, cwd: &str) {
+        self.starts.lock().unwrap().insert(
+            key.to_string(),
+            StartContext {
+                cwd: cwd.into(),
+                agent: ChatAgent::Claude,
+                model: Some("sonnet".into()),
+                access: Some(Access::Auto),
+                extra_dirs: None,
+                env: None,
+                effort: None,
+                lite: None,
+                session_id: Some(format!("session-{key}")),
+            },
+        );
     }
 
     /// Put a stand-in from `test_launch` in a turn, or end its turn.
