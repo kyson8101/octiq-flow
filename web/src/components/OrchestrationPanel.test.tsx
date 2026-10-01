@@ -223,6 +223,12 @@ describe("OrchestrationPanel", () => {
       consent: { via: "button", revision: 4, at: 2, surface: "chat", shownMs: 5_000 } };
     expect(render(approved)).toContain('class="chat-plan chat-plan-approved"');
     expect(render(approved)).toContain("Approved on its card in chat · revision 4");
+    const rejected = structuredClone(pending);
+    rejected.runs[0].planApproval = { status: "rejected", requestedAt: 1, revision: 5,
+      rejection: { by: "person", revision: 5, at: 2, reason: "Too broad", taskIds: [rejected.tasks[0].id], surface: "panel" } };
+    expect(render(rejected)).not.toContain("Approve plan");
+    expect(render(rejected)).toContain("Plan rejected · Too broad");
+    expect(render(rejected)).toContain("Withdrawn: Build the host ledger");
   });
 
   it("keeps acceptance unverified even when every task has completed", () => {

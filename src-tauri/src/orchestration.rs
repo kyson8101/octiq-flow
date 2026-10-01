@@ -131,6 +131,7 @@ pub struct Run {
 pub enum PlanStatus {
     Pending,
     Approved,
+    Rejected,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -158,6 +159,11 @@ pub struct PlanApproval {
     /// given in chat. The evidence an approval rests on, kept with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consent: Option<PlanConsent>,
+    /// The person's most recent rejection from a plan card. Kept separately
+    /// from `consent`, which remains the evidence for the last approval when
+    /// a later amendment is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<PlanRejection>,
     /// Chat turns that have already approved a revision of this plan. One
     /// message approves once: a replay or a retry never approves again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -174,6 +180,7 @@ impl PlanApproval {
             revised_at: now,
             scope: String::new(),
             consent: None,
+            rejection: None,
             consent_turns: Vec::new(),
         }
     }
@@ -206,6 +213,22 @@ pub struct PlanConsent {
     /// click arrived (feedback 713786e9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanRejection {
+    /// A person-only browser command is the sole writer of this record.
+    pub by: String,
+    pub revision: u32,
+    pub at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The exact unapproved top-level tasks withdrawn by this decision.
+    pub task_ids: Vec<String>,
+    pub surface: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown_ms: Option<u64>,
 }
@@ -1340,7 +1363,7 @@ impl OrchestrationStore {
             };
             approve_in(data, actor_chat_key, run_id, seen, revision, consent)
         })
-        .inspect(|run| announce(&run.id, "plan_approved"))
+        .inspect(|run| announce_plan_decision(run))
     }
 
     /// The Approve button on a plan card, as the browser sends it. Unlike
@@ -1388,7 +1411,54 @@ impl OrchestrationStore {
                 consent,
             )
         })
-        .inspect(|run| announce(&run.id, "plan_approved"))
+        .inspect(|run| announce_plan_decision(run))
+    }
+
+    /// The Reject button on a plan card. It has the same evidence boundary as
+    /// Approve: the browser must name the exact task set and revision it drew,
+    /// and a just-replaced revision cannot be rejected by a stray click.
+    pub fn reject_plan_from_card(
+        &self,
+        actor_chat_key: &str,
+        run_id: &str,
+        seen: Option<&[String]>,
+        revision: Option<u32>,
+        reason: Option<String>,
+        view: CardView,
+    ) -> Result<Run, String> {
+        let (Some(seen), Some(revision)) = (seen, revision) else {
+            return Err("This page did not say which version of the plan you rejected. Reload OctiqFlow, look the plan over, then reject it.".into());
+        };
+        if view.updated_ms.is_some_and(|ms| ms < PLAN_SETTLE_MS) {
+            return Err(
+                "The plan changed a moment before your click. Look it over again, then reject it."
+                    .into(),
+            );
+        }
+        let reason = reason
+            .map(|reason| reason.trim().to_string())
+            .filter(|reason| !reason.is_empty())
+            .map(|reason| required_text("plan rejection reason", reason, 500))
+            .transpose()?;
+        let surface = match view.surface.as_str() {
+            "chat" | "panel" => view.surface,
+            _ => "unknown".into(),
+        };
+        self.mutate(|data| {
+            decide_plan_in(
+                data,
+                actor_chat_key,
+                run_id,
+                Some(seen),
+                Some(revision),
+                PlanDecision::Reject {
+                    reason,
+                    surface,
+                    shown_ms: view.shown_ms,
+                },
+            )
+        })
+        .inspect(|run| announce_plan_decision(run))
     }
 
     /// The lead approves its plan because the person just told it to, in the
@@ -1465,8 +1535,8 @@ impl OrchestrationStore {
                         .map(|seen| seen.revision)
                 })
                 .collect();
-            if plan.status == PlanStatus::Approved {
-                return Err("This plan is already approved.".into());
+            if plan.status != PlanStatus::Pending {
+                return Ok(run.clone());
             }
             if saw.is_empty() || saw.iter().any(Option::is_none) {
                 return Err("This plan was not on the person's screen when they sent that message, so it cannot be their approval. Show them the plan; they can approve it in chat or on its card.".into());
@@ -1499,7 +1569,7 @@ impl OrchestrationStore {
             };
             approve_in(data, actor_chat_key, run_id, None, Some(revision), consent)
         })
-        .inspect(|run| announce(&run.id, "plan_approved"))
+        .inspect(|run| announce_plan_decision(run))
     }
 
     #[cfg(test)]
@@ -1719,7 +1789,7 @@ impl OrchestrationStore {
                     if let Some(plan) = run
                         .plan_approval
                         .as_mut()
-                        .filter(|plan| plan.status == PlanStatus::Approved)
+                        .filter(|plan| plan.status != PlanStatus::Pending)
                     {
                         plan.status = PlanStatus::Pending;
                         plan.requested_at = now;
@@ -1840,7 +1910,7 @@ impl OrchestrationStore {
                 if let Some(plan) = run
                     .plan_approval
                     .as_mut()
-                    .filter(|plan| plan.status == PlanStatus::Approved)
+                    .filter(|plan| plan.status != PlanStatus::Pending)
                 {
                     plan.status = PlanStatus::Pending;
                     plan.requested_at = now;
@@ -3616,6 +3686,15 @@ fn run_has_ended(run: &Run) -> bool {
     )
 }
 
+fn announce_plan_decision(run: &Run) {
+    let event = match run.plan_approval.as_ref().map(|plan| plan.status) {
+        Some(PlanStatus::Approved) => "plan_approved",
+        Some(PlanStatus::Rejected) => "plan_rejected",
+        _ => "plan_pending",
+    };
+    announce(&run.id, event);
+}
+
 /// The tasks a plan approval covers: the lead's own, not yet approved, and
 /// still in the plan.
 fn awaiting_approval<'a>(data: &'a Stored, run_id: &'a str) -> impl Iterator<Item = &'a Task> {
@@ -3627,29 +3706,59 @@ fn awaiting_approval<'a>(data: &'a Stored, run_id: &'a str) -> impl Iterator<Ite
     })
 }
 
-/// The one place a plan becomes approved, whichever way the person said so.
+/// The one place a plan is decided, whichever answer or surface supplied it.
 fn approve_in(
     data: &mut Stored,
     actor_chat_key: &str,
     run_id: &str,
     seen: Option<&[String]>,
     revision: Option<u32>,
-    mut consent: PlanConsent,
+    consent: PlanConsent,
+) -> Result<Run, String> {
+    decide_plan_in(
+        data,
+        actor_chat_key,
+        run_id,
+        seen,
+        revision,
+        PlanDecision::Approve(consent),
+    )
+}
+
+enum PlanDecision {
+    Approve(PlanConsent),
+    Reject {
+        reason: Option<String>,
+        surface: String,
+        shown_ms: Option<u64>,
+    },
+}
+
+/// The single plan-decision transition. `mutate` holds the store lock for the
+/// whole call, so concurrent Approve and Reject clicks cannot both win. Once
+/// one decision is recorded, every later call returns that persisted record.
+fn decide_plan_in(
+    data: &mut Stored,
+    actor_chat_key: &str,
+    run_id: &str,
+    seen: Option<&[String]>,
+    revision: Option<u32>,
+    decision: PlanDecision,
 ) -> Result<Run, String> {
     coordinator(data, run_id, actor_chat_key)?;
     let waiting: BTreeSet<String> = awaiting_approval(data, run_id)
         .map(|task| task.id.clone())
         .collect();
     let run = data.runs.get(run_id).ok_or("The run does not exist.")?;
-    if run_has_ended(run) {
-        return Err("This run has ended.".into());
-    }
     let plan = run
         .plan_approval
         .as_ref()
         .ok_or("This run has no plan waiting for approval.")?;
-    if plan.status == PlanStatus::Approved {
-        return Err("This plan is already approved.".into());
+    if plan.status != PlanStatus::Pending {
+        return Ok(run.clone());
+    }
+    if run_has_ended(run) {
+        return Err("This run has ended.".into());
     }
     if waiting.is_empty() {
         return Err("The plan has no tasks yet.".into());
@@ -3658,41 +3767,137 @@ fn approve_in(
         let seen: BTreeSet<String> = seen.iter().cloned().collect();
         if seen != waiting {
             return Err(
-                "The plan changed while you were reviewing it. Look it over again, then approve."
+                "The plan changed while you were reviewing it. Look it over again, then decide."
                     .into(),
             );
         }
     }
     if revision.is_some_and(|revision| revision != plan.revision) {
         return Err(
-            "The plan changed while you were reviewing it. Look it over again, then approve."
-                .into(),
+            "The plan changed while you were reviewing it. Look it over again, then decide.".into(),
         );
     }
+    let plan_revision = plan.revision;
+    let previously_approved = plan.consent.is_some();
     let now = now_ms();
-    consent.revision = plan.revision;
-    consent.at = now;
-    let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
-    let plan = run
-        .plan_approval
-        .as_mut()
-        .ok_or("This run has no plan waiting for approval.")?;
-    plan.status = PlanStatus::Approved;
-    plan.decided_at = Some(now);
-    if let Some(turn) = &consent.turn_id {
-        plan.consent_turns.push(turn.clone());
-        let over = plan.consent_turns.len().saturating_sub(32);
-        plan.consent_turns.drain(..over);
-    }
-    plan.consent = Some(consent);
-    run.updated_at = now;
-    let approved = run.clone();
-    for task in data.tasks.values_mut() {
-        if waiting.contains(&task.id) {
-            task.approved_at = Some(now);
+    match decision {
+        PlanDecision::Approve(mut consent) => {
+            consent.revision = plan_revision;
+            consent.at = now;
+            let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
+            let plan = run
+                .plan_approval
+                .as_mut()
+                .ok_or("This run has no plan waiting for approval.")?;
+            plan.status = PlanStatus::Approved;
+            plan.decided_at = Some(now);
+            if let Some(turn) = &consent.turn_id {
+                plan.consent_turns.push(turn.clone());
+                let over = plan.consent_turns.len().saturating_sub(32);
+                plan.consent_turns.drain(..over);
+            }
+            plan.consent = Some(consent);
+            run.updated_at = now;
+            for task in data.tasks.values_mut() {
+                if waiting.contains(&task.id) {
+                    task.approved_at = Some(now);
+                }
+            }
+        }
+        PlanDecision::Reject {
+            reason,
+            surface,
+            shown_ms,
+        } => {
+            let task_ids: Vec<String> = waiting.iter().cloned().collect();
+            let task_labels: Vec<String> = task_ids
+                .iter()
+                .filter_map(|id| data.tasks.get(id).map(|task| task.title.clone()))
+                .collect();
+            let rejection = PlanRejection {
+                by: "person".into(),
+                revision: plan_revision,
+                at: now,
+                reason: reason.clone(),
+                task_ids: task_ids.clone(),
+                surface,
+                shown_ms,
+            };
+            for task in data.tasks.values_mut().filter(|task| {
+                task.run_id == run_id
+                    && if previously_approved {
+                        waiting.contains(&task.id)
+                    } else {
+                        !matches!(task.status, TaskStatus::Completed | TaskStatus::Failed)
+                    }
+            }) {
+                task.status = TaskStatus::Cancelled;
+                task.result = Some(format!(
+                    "Rejected by the person with plan revision {plan_revision}."
+                ));
+                task.updated_at = now;
+            }
+            {
+                let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
+                let plan = run
+                    .plan_approval
+                    .as_mut()
+                    .ok_or("This run has no plan waiting for approval.")?;
+                plan.status = PlanStatus::Rejected;
+                plan.decided_at = Some(now);
+                plan.rejection = Some(rejection);
+                run.updated_at = now;
+                if !previously_approved {
+                    run.status = RunStatus::Stopped;
+                    run.stopped_reason = Some(match &reason {
+                        Some(reason) => format!(
+                            "Plan revision {plan_revision} rejected by the person: {reason}"
+                        ),
+                        None => format!("Plan revision {plan_revision} rejected by the person."),
+                    });
+                }
+            }
+            if previously_approved {
+                recompute_run(data, run_id);
+            } else {
+                for notification in data.notifications.values_mut().filter(|notification| {
+                    notification.run_id == run_id
+                        && matches!(
+                            notification.state,
+                            inbox::DeliveryState::Pending | inbox::DeliveryState::Delivering
+                        )
+                }) {
+                    notification.state = inbox::DeliveryState::Cancelled;
+                    notification.updated_at = now;
+                }
+            }
+            let listed = if task_labels.is_empty() {
+                "no tasks".into()
+            } else {
+                task_labels.join(", ")
+            };
+            let why = reason
+                .as_deref()
+                .map(|reason| format!(" Their reason was: “{reason}”"))
+                .unwrap_or_default();
+            inbox::enqueue(
+                data,
+                run_id,
+                "host",
+                actor_chat_key,
+                format!("plan-rejected:{run_id}:{plan_revision}"),
+                "plan_rejected",
+                format!(
+                    "The person rejected plan revision {plan_revision} ({listed}).{why} This records their decision; it is not an instruction to make another plan."
+                ),
+            );
+            retention::prune_run(data, run_id);
         }
     }
-    Ok(approved)
+    data.runs
+        .get(run_id)
+        .cloned()
+        .ok_or("The run does not exist.".into())
 }
 
 /// What an approval of this plan would cover, as a digest: every field the
@@ -4105,7 +4310,7 @@ pub fn master_prompt(run: &Run) -> String {
     let brief = format!("{brief}\n\nChoose the provider, model, and reasoning effort suitable for EACH task and include them in orchestration_task_create's worker settings (agent, model, access, effort). You may mix Claude and Codex workers in one run. Use Sol (codex, gpt-5.6-sol) or Opus (claude, opus) for demanding implementation or review, Terra (codex, gpt-5.6-terra) or Sonnet (claude, sonnet) for everyday execution, and Luna (codex, gpt-5.6-luna) or Haiku (claude, haiku) for small, well-bounded tasks. Match effort to complexity. Use access=auto unless the task needs another boundary, such as read for investigation. Fable and Astra are reserved for main agents orchestrating other agents; NEVER choose either for an execution worker, including retries or review tasks. Do not inherit the main agent's model or leave worker selection to a CLI default. Explain the assignment briefly in the task spec. For manual dispatch and retries, pass the chosen settings to orchestration_worker_start.");
     let brief = format!("{brief}\n\nUse attempt.execution as host evidence of activity: state, lastActivityAt, lastProgressAt, lastProgress, currentOperation, and latestError. Task status running alone does not mean a worker is executing. Capacity-blocked, retrying, stalled, and disconnected workers need attention. The host records provider failures and durable notifications even when the worker cannot respond. Before a manual retry, inspect nextRetryAt and retryCount; an automatic recovery may already be scheduled. Recovery preserves the workspace and creates a new attempt. Do not replay a tool merely because it is quiet.");
     let brief = if run.awaiting_plan_approval() {
-        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses every dispatch until then. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval. The plan card (plan {}) shows in this chat. When the person's own message is just an approval of it, such as \"approve this plan\", call orchestration_plan_approve with the runId and the plan revision from orchestration_snapshot. The host reads their message itself and refuses anything else, so never call it for a message that asks for a change, is conditional or a question, or is a notification. When they ask for changes, apply them with orchestration_task_revise (or withdraw a task there) and orchestration_task_create. Then end your turn so they see and approve the new revision. Plan approval never covers deploying, restarting, gates or permission prompts.\n\nGive each task a size on orchestration_task_create: small, medium (the default) or large, by scope and risk. It sets the XP its assignee earns when the result is accepted, and it is fixed once the task starts. A worker reporting completed is not acceptance: check each completed task's result against its acceptance criteria, then accept it with orchestration_task_accept (taskId and the completed attemptId) only if it meets them. Otherwise reopen or retry it. Never accept a task you did not review.", consent::plan_handle(&run.id))
+        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses every dispatch until then. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval. The plan card (plan {}) shows in this chat. When the person's own message is just an approval of it, such as \"approve this plan\", call orchestration_plan_approve with the runId and the plan revision from orchestration_snapshot. The host reads their message itself and refuses anything else, so never call it for a message that asks for a change, is conditional or a question, or is a notification. The person can also reject the card; the host then gives you one continuation naming the rejected revision, tasks and optional reason. It records their decision, not an instruction to re-plan, so decide what to do next. When they ask for changes, apply them with orchestration_task_revise (or withdraw a task there) and orchestration_task_create. Then end your turn so they see and approve the new revision. Plan approval never covers deploying, restarting, gates or permission prompts.\n\nGive each task a size on orchestration_task_create: small, medium (the default) or large, by scope and risk. It sets the XP its assignee earns when the result is accepted, and it is fixed once the task starts. A worker reporting completed is not acceptance: check each completed task's result against its acceptance criteria, then accept it with orchestration_task_accept (taskId and the completed attemptId) only if it meets them. Otherwise reopen or retry it. Never accept a task you did not review.", consent::plan_handle(&run.id))
     } else {
         brief
     };
@@ -4461,9 +4666,15 @@ pub(crate) mod tests {
             approved.plan_approval.unwrap().consent.unwrap().via,
             ConsentVia::Button
         );
-        assert!(store
-            .approve_plan("chat:master", &run.id, None, None)
-            .is_err());
+        assert_eq!(
+            store
+                .approve_plan("chat:master", &run.id, None, None)
+                .unwrap()
+                .plan_approval
+                .unwrap()
+                .status,
+            PlanStatus::Approved
+        );
         assert!(store
             .reserve_attempt("chat:master", &launch_for(&first.id))
             .is_ok());
@@ -5244,6 +5455,260 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn rejecting_the_current_first_plan_stops_it_and_delivers_one_durable_record() {
+        let root = std::env::temp_dir().join(format!("octiq-plan-reject-{}", compact_id()));
+        let path = root.join("orchestrations.json");
+        let store = OrchestrationStore::load(path.clone());
+        let (run, task) = pending_plan(&store);
+        let revision = plan_of(&store, &run.id).revision;
+        let seen = [task.id.clone()];
+        let view = || CardView {
+            surface: "chat".into(),
+            shown_ms: Some(4_000),
+            updated_ms: None,
+        };
+
+        let stale = revision.saturating_sub(1);
+        assert!(store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(stale),
+                None,
+                view(),
+            )
+            .unwrap_err()
+            .contains("changed"));
+        assert!(store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(revision),
+                Some("x".repeat(501)),
+                view(),
+            )
+            .unwrap_err()
+            .contains("too long"));
+        assert!(store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(revision),
+                None,
+                CardView {
+                    surface: "chat".into(),
+                    shown_ms: Some(100),
+                    updated_ms: Some(100),
+                },
+            )
+            .unwrap_err()
+            .contains("moment before"));
+        let rejected = store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(revision),
+                Some("Do not spend time on this direction.".into()),
+                view(),
+            )
+            .unwrap();
+        assert_eq!(rejected.status, RunStatus::Stopped);
+        assert!(rejected
+            .stopped_reason
+            .as_deref()
+            .unwrap()
+            .contains("rejected by the person"));
+        let plan = rejected.plan_approval.unwrap();
+        assert_eq!(plan.status, PlanStatus::Rejected);
+        let rejection = plan.rejection.unwrap();
+        assert_eq!(rejection.by, "person");
+        assert_eq!(rejection.revision, revision);
+        assert_eq!(rejection.task_ids, seen);
+        assert_eq!(rejection.surface, "chat");
+        assert_eq!(
+            rejection.reason.as_deref(),
+            Some("Do not spend time on this direction.")
+        );
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Cancelled);
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&task.id))
+            .is_err());
+        let notices: Vec<_> = snapshot
+            .notifications
+            .iter()
+            .filter(|notice| notice.kind == "plan_rejected")
+            .collect();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].body.contains("Do not spend time"));
+        assert!(notices[0].body.contains("not an instruction"));
+        let due = store.due_notifications(now_ms() + 1).unwrap();
+        assert_eq!(due.len(), 1, "the stopped run still delivers its rejection");
+        let delivered = store
+            .claim_notification(&due[0].id, now_ms() + 1)
+            .unwrap()
+            .unwrap();
+        store
+            .acknowledge_notification("chat:master", &delivered.id)
+            .unwrap();
+        assert!(store
+            .due_notifications(now_ms() + 120_000)
+            .unwrap()
+            .is_empty());
+
+        // A retry returns the recorded decision and cannot enqueue it twice.
+        let again = store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(revision),
+                Some("different words".into()),
+                view(),
+            )
+            .unwrap();
+        assert_eq!(again.plan_approval.unwrap().rejection.unwrap(), rejection);
+        assert_eq!(
+            store
+                .snapshot(Some(&run.id))
+                .unwrap()
+                .notifications
+                .iter()
+                .filter(|notice| notice.kind == "plan_rejected")
+                .count(),
+            1
+        );
+
+        drop(store);
+        let saved = OrchestrationStore::load(path)
+            .snapshot(Some(&run.id))
+            .unwrap();
+        assert_eq!(saved.runs[0].status, RunStatus::Stopped);
+        assert_eq!(
+            saved.runs[0]
+                .plan_approval
+                .as_ref()
+                .unwrap()
+                .rejection
+                .as_ref(),
+            Some(&rejection)
+        );
+        assert!(saved.notifications.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejecting_an_amendment_withdraws_only_new_tasks_and_keeps_the_run_alive() {
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let first_revision = plan_of(&store, &run.id).revision;
+        store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[first.id.clone()]),
+                Some(first_revision),
+            )
+            .unwrap();
+        let second = task(&store, &run, Vec::new());
+        let revision = plan_of(&store, &run.id).revision;
+        let rejected = store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&[second.id.clone()]),
+                Some(revision),
+                None,
+                CardView {
+                    surface: "panel".into(),
+                    shown_ms: Some(2_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(rejected.status, RunStatus::Running);
+        assert_eq!(rejected.plan_approval.unwrap().status, PlanStatus::Rejected);
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let by_id = |id: &str| snapshot.tasks.iter().find(|task| task.id == id).unwrap();
+        assert_eq!(by_id(&first.id).status, TaskStatus::Ready);
+        assert!(by_id(&first.id).approved_at.is_some());
+        assert_eq!(by_id(&second.id).status, TaskStatus::Cancelled);
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .is_ok());
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&second.id))
+            .is_err());
+    }
+
+    #[test]
+    fn concurrent_approve_and_reject_record_exactly_one_decision() {
+        let store = Arc::new(OrchestrationStore::default());
+        let (run, task) = pending_plan(&store);
+        let revision = plan_of(&store, &run.id).revision;
+        let seen = vec![task.id.clone()];
+        let approve_store = store.clone();
+        let approve_run = run.id.clone();
+        let approve_seen = seen.clone();
+        let approve = std::thread::spawn(move || {
+            approve_store
+                .approve_plan(
+                    "chat:master",
+                    &approve_run,
+                    Some(&approve_seen),
+                    Some(revision),
+                )
+                .unwrap()
+        });
+        let reject_store = store.clone();
+        let reject_run = run.id.clone();
+        let reject = std::thread::spawn(move || {
+            reject_store
+                .reject_plan_from_card(
+                    "chat:master",
+                    &reject_run,
+                    Some(&seen),
+                    Some(revision),
+                    None,
+                    CardView {
+                        surface: "panel".into(),
+                        shown_ms: Some(2_000),
+                        updated_ms: None,
+                    },
+                )
+                .unwrap()
+        });
+        let approved_view = approve.join().unwrap();
+        let rejected_view = reject.join().unwrap();
+        let status = plan_of(&store, &run.id).status;
+        assert_eq!(approved_view.plan_approval.unwrap().status, status);
+        assert_eq!(rejected_view.plan_approval.unwrap().status, status);
+        assert!(matches!(
+            status,
+            PlanStatus::Approved | PlanStatus::Rejected
+        ));
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        assert_ne!(
+            snapshot.runs[0]
+                .plan_approval
+                .as_ref()
+                .unwrap()
+                .consent
+                .is_some(),
+            snapshot.runs[0]
+                .plan_approval
+                .as_ref()
+                .unwrap()
+                .rejection
+                .is_some()
+        );
+    }
+
+    #[test]
     fn every_change_to_a_waiting_plan_is_a_new_revision() {
         let store = OrchestrationStore::default();
         let (run, first) = pending_plan(&store);
@@ -5409,11 +5874,20 @@ pub(crate) mod tests {
         assert_eq!(consent.revision, revision);
         assert_eq!(consent.turn_id.as_deref(), Some("user-1"));
         assert_eq!(consent.words.as_deref(), Some("Approve this plan"));
-        // The same message again: nothing more to approve.
-        assert!(store
-            .approve_plan_in_conversation("chat:master", &run.id, revision, &turn)
-            .unwrap_err()
-            .contains("already approved"));
+        // The same message again returns the recorded decision without
+        // changing it or creating a second decision.
+        assert_eq!(
+            store
+                .approve_plan_in_conversation("chat:master", &run.id, revision, &turn)
+                .unwrap()
+                .plan_approval
+                .unwrap()
+                .consent
+                .unwrap()
+                .turn_id
+                .as_deref(),
+            Some("user-1")
+        );
     }
 
     #[test]

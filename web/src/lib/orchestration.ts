@@ -82,7 +82,7 @@ type AttemptStatus = "preparing" | "running" | "blocked" | "completed" | "failed
  *  moves on every change to what an approval would cover; an approval names
  *  the revision it saw and the host refuses any other. */
 export type PlanApproval = {
-  status: "pending" | "approved";
+  status: "pending" | "approved" | "rejected";
   requestedAt: number;
   decidedAt?: number;
   revision?: number;
@@ -93,6 +93,10 @@ export type PlanApproval = {
     via: "button" | "conversation"; revision: number; at: number; turnId?: string; words?: string;
     /** A button approval: which card, and how long it had shown the revision. */
     surface?: "chat" | "panel" | "unknown"; shownMs?: number;
+  };
+  rejection?: {
+    by: "person"; revision: number; at: number; reason?: string; taskIds: string[];
+    surface: "chat" | "panel" | "unknown"; shownMs?: number;
   };
 };
 

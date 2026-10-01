@@ -5,8 +5,9 @@
 // waiting for the person is open, with Approve and a line on how to answer in
 // chat. Once the host records the decision the card leaves the chat: a
 // settled plan above the message box is a row of nothing to do. The record of
-// how it was approved stays in the run panel (`ApprovedPlan`). A plan the lead
-// changes after approval is a new revision, waiting again, and comes back.
+// how it was decided stays folded in the run panel (`ApprovedPlan` or
+// `RejectedPlan`). A plan the lead changes after approval is a new revision,
+// waiting again, and comes back.
 import { approvalLabel, chatApprovalHint, type ChatPlan } from "../lib/chatPlans";
 import { PlanReview } from "./PlanReview";
 import "./ChatPlanCards.css";
@@ -55,6 +56,30 @@ export function ApprovedPlan({ plan, projectName }: {
       {consent?.words && <p className="chat-plan-words">You said: “{consent.words}”</p>}
       <PlanReview run={plan.run} tasks={plan.tasks} drafting={false} projectName={projectName}
         approved onRequestChanges={inChat} />
+    </details>
+  );
+}
+
+/** A rejected revision leaves the transcript tail and stays as one quiet,
+ *  folded record in the run history. */
+export function RejectedPlan({ plan }: { plan: ChatPlan }) {
+  const rejection = plan.run.planApproval?.rejection;
+  const rejected = new Set(rejection?.taskIds ?? []);
+  const tasks = plan.tasks.filter((task) => rejected.has(task.id));
+  return (
+    <details className="chat-plan chat-plan-approved chat-plan-rejected"
+      key={`${plan.run.id}:${rejection?.revision ?? plan.revision}`}>
+      <summary>
+        <span className="chat-plan-mark" aria-hidden="true" />
+        <span className="chat-plan-line" title={rejection?.reason}>Plan rejected{rejection?.reason ? ` · ${rejection.reason}` : ""}</span>
+        <span className="chat-plan-id">Plan {plan.handle}{rejection?.revision ? ` · revision ${rejection.revision}` : ""}</span>
+        <span className="plan-task-chevron" aria-hidden="true" />
+      </summary>
+      <div className="chat-plan-rejection-detail">
+        <p>Rejected by the person{rejection?.surface === "chat" ? " in chat" : rejection?.surface === "panel" ? " in the run panel" : ""}.</p>
+        {rejection?.reason && <p>Reason: {rejection.reason}</p>}
+        {tasks.length > 0 && <p>Withdrawn: {tasks.map((task) => task.title).join(", ")}</p>}
+      </div>
     </details>
   );
 }

@@ -1269,6 +1269,20 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 updated_ms: arg(&args, "updatedMs")?,
             },
         )),
+        // Browser-only: the person rejects exactly the revision shown on a
+        // plan card. Deliberately absent from the hook/MCP action whitelist.
+        "orchestration_plan_reject" => to_value(svc.orchestrations.reject_plan_from_card(
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+            arg::<Option<Vec<String>>>(&args, "taskIds")?.as_deref(),
+            arg::<Option<u32>>(&args, "revision")?,
+            arg::<Option<String>>(&args, "reason")?,
+            crate::orchestration::CardView {
+                surface: arg::<Option<String>>(&args, "surface")?.unwrap_or_default(),
+                shown_ms: arg(&args, "shownMs")?,
+                updated_ms: arg(&args, "updatedMs")?,
+            },
+        )),
         // Agent-reachable, and still the person's approval: the host reads
         // the message the lead is answering from its own record of what the
         // browser sent, and the lead supplies only which plan and revision.

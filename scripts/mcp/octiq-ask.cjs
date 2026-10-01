@@ -1538,7 +1538,9 @@ const ORCHESTRATION_PLAN_APPROVE = {
     "showed them (planApproval.revision from orchestration_snapshot). It refuses a message that asks for any change, is a " +
     "question or conditional, names another plan, or leaves the plan ambiguous; a plan that changed since they saw it; and " +
     "any turn that is a notification, a gate answer or a host message. A refusal means nothing was approved: tell the person " +
-    "why in one line. Plan approval never covers deploys, restarts, gates or permission prompts.",
+    "why in one line. The person may instead reject the card; the host sends one continuation naming the revision, tasks and " +
+    "optional reason. That is a decision record, not an instruction to re-plan. Plan approval never covers deploys, restarts, " +
+    "gates or permission prompts.",
   inputSchema: {
     type: "object",
     properties: {

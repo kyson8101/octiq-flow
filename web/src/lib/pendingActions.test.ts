@@ -187,6 +187,8 @@ describe("pending actions", () => {
     }
     const approved = ledger({ runs: [run("r1", { planApproval: { status: "approved", requestedAt: 1, revision: 2 } })] });
     expect(pendingActions(input(approved))).toEqual([]);
+    const rejected = ledger({ runs: [run("r1", { planApproval: { status: "rejected", requestedAt: 1, revision: 2 } })] });
+    expect(pendingActions(input(rejected))).toEqual([]);
   });
 
   it("asks for a waiting handover on the chat that asked for it, and only while it waits", () => {

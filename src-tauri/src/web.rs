@@ -2406,6 +2406,7 @@ mod tests {
         "orchestration_task_accept",
         "orchestration_task_size",
         "orchestration_plan_approve",
+        "orchestration_plan_reject",
         "orchestration_run_archive",
         "orchestration_master_start",
         "orchestration_bridge_open",
@@ -2451,6 +2452,7 @@ mod tests {
         for command in [
             "orchestration_task_accept",
             "orchestration_plan_approve",
+            "orchestration_plan_reject",
             "orchestration_bridge_open",
             "orchestration_bridge_close",
             "chat_send",

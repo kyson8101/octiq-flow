@@ -109,7 +109,10 @@ fn valid(data: &Stored, n: &Notification) -> bool {
     let Some(run) = data.runs.get(&n.run_id) else {
         return false;
     };
-    if run.status == RunStatus::Stopped {
+    // A first plan rejection stops the run in the same transaction that
+    // creates its one host continuation. That decision receipt is the sole
+    // notification allowed to cross the stopped-run boundary.
+    if run.status == RunStatus::Stopped && n.kind != "plan_rejected" {
         return false;
     }
     // Queued before its run settled, or by a build that still sent them.

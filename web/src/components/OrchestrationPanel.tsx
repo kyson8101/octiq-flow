@@ -25,7 +25,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { TaskPlanCard } from "./TaskPlanCard";
 import { AgentRosterContext, useRosterAgent } from "../lib/agentRoster";
 import { PlanReview } from "./PlanReview";
-import { ApprovedPlan } from "./ChatPlanCards";
+import { ApprovedPlan, RejectedPlan } from "./ChatPlanCards";
 import { planHandle } from "../lib/chatPlans";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
@@ -871,6 +871,13 @@ function RunDetail({
       {run.planApproval?.status === "approved" && (
         <div className="orch-plan-record">
           <ApprovedPlan projectName={projectName} plan={{
+            run, tasks, handle: planHandle(run.id), revision: run.planApproval.revision ?? 0, pending: false,
+          }} />
+        </div>
+      )}
+      {run.planApproval?.status === "rejected" && (
+        <div className="orch-plan-record">
+          <RejectedPlan plan={{
             run, tasks, handle: planHandle(run.id), revision: run.planApproval.revision ?? 0, pending: false,
           }} />
         </div>

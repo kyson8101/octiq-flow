@@ -172,6 +172,20 @@
 }
 .plan-review-quiet:hover:not(:disabled) { border-color: var(--accent); color: var(--fg-0); }
 .plan-review-quiet:disabled { opacity: 0.45; cursor: default; }
+.plan-review-reject-confirm { display: flex; align-items: center; gap: 8px; }
+.plan-review-reject-confirm input {
+  flex: 1 1 auto; min-width: 0; min-height: 34px; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-0, transparent); color: var(--fg-0); font: inherit; font-size: 12.5px;
+}
+.plan-review-reject-confirm input:focus { outline: none; border-color: color-mix(in srgb, var(--danger, var(--warn)) 55%, var(--border)); }
+.plan-review-reject {
+  flex: 0 0 auto; min-height: 34px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-2); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.plan-review-reject:hover:not(:disabled) { border-color: color-mix(in srgb, var(--danger, var(--warn)) 55%, var(--border)); color: var(--danger, var(--warn)); }
+.plan-review-reject:disabled { opacity: 0.45; cursor: default; }
 .plan-review-approve { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 14px; }
 /* In the lead's own chat the message box is right below: say how to answer
    there instead of offering a second box. */
@@ -184,6 +198,8 @@
   .plan-task-owner { max-width: 34%; }
   .plan-task-after { display: none; }
   .plan-review-approve .orch-primary { width: 100%; }
+  .plan-review-reject-confirm { flex-wrap: wrap; }
+  .plan-review-reject-confirm input { flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   .plan-review, .plan-review-dot, .plan-review-ghost { animation: none !important; }

@@ -29,3 +29,6 @@
 .chat-plan-words { padding: 0 14px; }
 .chat-plan-approved > .plan-review { margin: 4px 0 14px; }
 .chat-plan-words { margin: 0; color: var(--fg-2); font-size: 12px; overflow-wrap: anywhere; }
+.chat-plan-rejected .chat-plan-mark { background: var(--danger, var(--warn)); }
+.chat-plan-rejection-detail { padding: 0 14px 12px; color: var(--fg-2); font-size: 12px; }
+.chat-plan-rejection-detail p { margin: 0 0 5px; overflow-wrap: anywhere; }

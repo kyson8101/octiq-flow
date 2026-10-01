@@ -159,6 +159,16 @@ export async function approvePlan(
   await bridge.invoke("orchestration_plan_approve", { actorChatKey: chatKey, runId, taskIds, revision, ...view });
 }
 
+/** The person rejects exactly the pending revision drawn on a plan card. */
+export async function rejectPlan(
+  chatKey: string, runId: string, taskIds: string[], revision: number | undefined, reason: string,
+  view?: { surface: "chat" | "panel"; shownMs: number; updatedMs: number | null },
+): Promise<void> {
+  await bridge.invoke("orchestration_plan_reject", {
+    actorChatKey: chatKey, runId, taskIds, revision, reason: reason.trim() || undefined, ...view,
+  });
+}
+
 /** The conversation to reopen for "Talk to <head>": the newest one handed to
  *  THIS head that still exists. A conversation handed to an earlier head is
  *  never offered under a new one's name. */

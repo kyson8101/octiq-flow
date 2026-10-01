@@ -419,7 +419,7 @@ impl OrchestrationStore {
                     .and_then(|run| run.plan_approval.as_mut())
                 {
                     data.tasks.get_mut(task_id).expect("read above").approved_at = None;
-                    if plan.status == PlanStatus::Approved {
+                    if plan.status != PlanStatus::Pending {
                         plan.status = PlanStatus::Pending;
                         plan.requested_at = now;
                         plan.decided_at = None;
