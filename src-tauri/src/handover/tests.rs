@@ -1391,7 +1391,9 @@ fn an_ask_back_is_paired_from_the_record_and_answered_by_a_read_only_fork() {
         .prompt
         .contains("read-only turn forked from this conversation"));
     assert!(turn.prompt.contains("the task is no longer yours"));
-    assert!(turn.prompt.contains(&format!("- {checkout}/notes.md")));
+    // Joined the platform's way: `\` on Windows.
+    let notes = Path::new(&checkout).join("notes.md");
+    assert!(turn.prompt.contains(&format!("- {}", notes.display())));
     assert!(turn.prompt.ends_with(
         "Mango's question (its words, not the person's):\nWhich lock guards the ledger?"
     ));

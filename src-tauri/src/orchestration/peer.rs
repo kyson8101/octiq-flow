@@ -1278,12 +1278,14 @@ mod tests {
             .all(|(k, v)| k != crate::proc::LINE_ENV || v.is_none()));
     }
 
-    /// The Windows delivery, run by this machine's own shell: the stand-in
-    /// for the agent writes back every argument it got, and what OCTIQ_
-    /// variables it saw.
-    #[cfg(unix)]
+    /// The Windows delivery, run by this machine's own agent shell (Git Bash
+    /// on Windows, where it matters; the same one-liner runs in zsh): the
+    /// stand-in for the agent writes back every argument it got, and what
+    /// OCTIQ_ variables it saw.
     #[test]
     fn the_windows_delivery_hands_every_one_shot_line_over_whole() {
+        // Forward slashes, which Git Bash reads as readily as `\`.
+        let posix = |p: &Path| p.display().to_string().replace('\\', "/");
         let dir = std::env::temp_dir().join(format!("octiq-oneshot-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let stub = dir.join("agent");
@@ -1292,23 +1294,27 @@ mod tests {
             "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > \"$OUT\"\nenv | grep -c '^OCTIQ_' > \"$OUT.env\"\nexit 0\n",
         )
         .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let shell = crate::proc::resolve_agent_shell(
             std::env::var("SHELL").ok(),
-            None,
-            false,
+            std::env::var("LOCALAPPDATA").ok(),
+            cfg!(windows),
             &crate::proc::find_executable,
         )
         .unwrap();
         let prompt = long_windows_prompt();
+        let stub = crate::agent_provider::sh_quote(&posix(&stub));
         for (name, line) in every_one_shot_line(&prompt) {
             let out = dir.join(name.replace(' ', "-"));
             // The same quoting, with the stand-in in the agent's place.
             let line = line
-                .replacen("exec claude ", &format!("exec {} ", stub.display()), 1)
-                .replacen("exec codex ", &format!("exec {} ", stub.display()), 1);
-            let env = BTreeMap::from([("OUT".to_string(), out.display().to_string())]);
+                .replacen("exec claude ", &format!("exec {stub} "), 1)
+                .replacen("exec codex ", &format!("exec {stub} "), 1);
+            let env = BTreeMap::from([("OUT".to_string(), posix(&out))]);
             let status = one_shot_command(&shell, &line, "/", &env, true)
                 .status()
                 .unwrap();
