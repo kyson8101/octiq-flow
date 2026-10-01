@@ -3,7 +3,7 @@
 // the same record, so they cannot disagree.
 import { useCallback, useEffect, useState } from "react";
 import { bridge } from "./bridge";
-import { mergeHandover, type Handover } from "./handover";
+import { mergeHandover, type Handover, type HandoverAction } from "./handover";
 
 export function useHandovers(enabled = true) {
   const [handovers, setHandovers] = useState<Handover[]>([]);
@@ -30,8 +30,8 @@ export function useHandovers(enabled = true) {
   }, [enabled, refresh]);
 
   /** The person's decision. Only this socket can make it; an agent cannot. */
-  const decide = useCallback(async (id: string, confirm: boolean): Promise<Handover> => {
-    const record = await bridge.invoke<Handover>(confirm ? "handover_confirm" : "handover_decline", { id });
+  const decide = useCallback(async (id: string, action: HandoverAction): Promise<Handover> => {
+    const record = await bridge.invoke<Handover>(`handover_${action}`, { id });
     setHandovers((list) => mergeHandover(list, record));
     return record;
   }, []);

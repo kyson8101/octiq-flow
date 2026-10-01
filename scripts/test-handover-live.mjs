@@ -251,6 +251,11 @@ try {
   assert.match(first.user, new RegExp(`http://127\\.0\\.0\\.1:${PORT}/#/p/fixture/c/source-a`));
   assert.match(first.user, /OctiqFlow did not grant these/);
   assert.match(first.user, /You continue in the existing checkout/);
+  // Only what held when the person confirmed: A was blocked in its waiting
+  // call. Never that it has stopped.
+  assert.match(first.user, /was still waiting on its handover call when the person confirmed/);
+  assert.match(first.user, /check with the person before going on/);
+  assert.doesNotMatch(first.user, /has been told/);
   assert.equal(stub().filter((e) => e.launch && e.key !== "chat:source-a").length, 1, "exactly one new chat");
   await card.scrollIntoViewIfNeeded();
   await shot(page, "4-source-confirmed-desktop.png");

@@ -1753,6 +1753,19 @@ fn cancel_question_work(manager: &ChatManager, key: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// Whether `chat_key` was started with the turn `turn_id`. The durable user
+/// turn is written only once the agent holding it has been spawned
+/// (`start_session`), so its presence is the receipt a retry can trust: a
+/// handover's new chat is never started twice.
+pub(crate) fn turn_was_started(chat_key: &str, turn_id: &str) -> bool {
+    crate::transcript::since(chat_key, 0)
+        .into_iter()
+        .any(|item| {
+            item.event["uuid"].as_str() == Some(turn_id)
+                && item.event["octiq_user_turn"].as_bool() == Some(true)
+        })
+}
+
 /// The durable prompt id is also the retry key. A crash after dispatch must
 /// never cause an automatic second execution of an answer already handed over.
 fn question_receipt(record: &crate::question_store::Record) -> Option<String> {
@@ -4480,6 +4493,25 @@ impl ChatManager {
             })),
         );
         secret
+    }
+
+    /// The start settings a launched chat would have remembered, with a
+    /// conversation id, so a stand-in can ask the way a real agent does.
+    pub(crate) fn test_remember_start(&self, key: &str, cwd: &str) {
+        self.starts.lock().unwrap().insert(
+            key.to_string(),
+            StartContext {
+                cwd: cwd.into(),
+                agent: ChatAgent::Claude,
+                model: Some("sonnet".into()),
+                access: Some(Access::Auto),
+                extra_dirs: None,
+                env: None,
+                effort: None,
+                lite: None,
+                session_id: Some(format!("session-{key}")),
+            },
+        );
     }
 
     /// Put a stand-in from `test_launch` in a turn, or end its turn.

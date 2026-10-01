@@ -21,11 +21,19 @@
 //!   is shown to the recipient as the source agent's words, never as anything
 //!   the host granted.
 //!
-//! The record is durable (`handovers.json` in the profile): pending, confirmed
-//! and declined handovers survive a reload and a restart, and the two chats
-//! link to each other through it. The target chat's id is written BEFORE the
-//! chat is started, so a confirm retried after a failure reuses it, and a
-//! handover never makes two chats.
+//! The record is durable (`handovers.json` in the profile): pending, starting,
+//! confirmed and declined handovers survive a reload and a restart, and the
+//! two chats link to each other through it.
+//!
+//! A confirm is decided in two steps. Every check that can still refuse it
+//! (the registry, the destination, the checkout as git has it now, the source
+//! agent not writing) runs while the handover is `Pending`, so a refusal
+//! leaves it declinable. Then `Starting` is saved, with the new chat's id,
+//! BEFORE anything irreversible: a worktree, the chat index, the lead record,
+//! the agent. From there a decline is refused, since the new chat may exist.
+//! A confirm retried after a failure, and the recovery at startup, look for
+//! the new chat's first turn on record (`Host::started`): when it is there
+//! the record is only finished, so a handover never starts two chats.
 //!
 //! The calling agent hears the decision the way it hears an `ask_user` answer:
 //! as the tool result while the tool still waits, and otherwise as a host
@@ -33,7 +41,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -187,6 +195,11 @@ pub struct WorkspacePlan {
     /// worktree the brief named, verified with git) or `new`.
     #[serde(default)]
     pub chosen: String,
+    /// The checkout's own git directory when the card was made (`continue`
+    /// only). Each worktree has its own, inside its repository's: it says
+    /// which worktree of which repository this is, and a confirm re-checks it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub git_dir: String,
     /// What the confirm actually prepared. Kept so a retried confirm never
     /// makes a second worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -199,8 +212,16 @@ pub struct WorkspacePlan {
 #[serde(rename_all = "camelCase")]
 pub enum Status {
     Pending,
+    /// The person confirmed and the new chat is being started, or its start
+    /// failed and waits for a retry. It may already exist, so it can no
+    /// longer be declined.
+    Starting,
     Confirmed,
     Declined,
+    /// Its chat could not be started, and the person gave up on it once the
+    /// host had made sure none was. Nothing was handed over; anything made
+    /// for it (a worktree) is kept.
+    Abandoned,
 }
 
 /// How far the calling agent has been told the decision.
@@ -243,9 +264,14 @@ pub struct Handover {
     /// The new chat. Assigned before it is started (see the module docs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_chat_key: Option<String>,
-    /// Why the last confirm could not finish. The handover stays pending.
+    /// Why the last confirm could not finish. The handover stays pending,
+    /// or starting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// A starting handover whose start failed, and the host made sure no
+    /// chat was started: the person may give up on it (`abandon`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abandonable: bool,
     pub notice: Notice,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice_error: Option<String>,
@@ -281,6 +307,8 @@ pub struct Public {
     pub target_chat_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub abandonable: bool,
     pub notice: Notice,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice_error: Option<String>,
@@ -304,6 +332,7 @@ impl Handover {
             decided_at: self.decided_at,
             target_chat_key: self.target_chat_key.clone(),
             error: self.error.clone(),
+            abandonable: self.abandonable,
             notice: self.notice,
             notice_error: self.notice_error.clone(),
         }
@@ -311,6 +340,26 @@ impl Handover {
 
     fn turn_id(&self) -> String {
         format!("octiq-handover-{}", self.id)
+    }
+
+    /// The new chat's first turn. Not the source's continuation id: each
+    /// chat's turn is its own.
+    fn start_turn_id(&self) -> String {
+        format!("{}-start", self.turn_id())
+    }
+
+    /// Whether the asking agent has a final answer to be told: confirmed and
+    /// started, declined, or abandoned. A start in progress is not one yet.
+    fn decided(&self) -> bool {
+        matches!(
+            self.status,
+            Status::Confirmed | Status::Declined | Status::Abandoned
+        )
+    }
+
+    /// One handover from a chat waits on the person (or its start) at a time.
+    fn open(&self) -> bool {
+        matches!(self.status, Status::Pending | Status::Starting)
     }
 }
 
@@ -617,6 +666,12 @@ fn common_dir(path: &str) -> Option<PathBuf> {
     canonical(out.trim())
 }
 
+/// The git directory of the checkout `path` is in: one per worktree.
+fn own_git_dir(path: &str) -> Option<PathBuf> {
+    let out = crate::git::run_git(path, &["rev-parse", "--absolute-git-dir"])?;
+    canonical(out.trim())
+}
+
 /// The top of the checkout `path` is in.
 fn toplevel(path: &str) -> Option<String> {
     crate::git::run_git(path, &["rev-parse", "--show-toplevel"])
@@ -667,6 +722,9 @@ fn observed(mut plan: WorkspacePlan) -> WorkspacePlan {
 }
 
 fn continuing(path: String, branch: String, chosen: &str) -> WorkspacePlan {
+    let git_dir = own_git_dir(&path)
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default();
     observed(WorkspacePlan {
         mode: "continue".into(),
         path,
@@ -674,6 +732,7 @@ fn continuing(path: String, branch: String, chosen: &str) -> WorkspacePlan {
         head: String::new(),
         uncommitted: None,
         chosen: chosen.into(),
+        git_dir,
         prepared_cwd: None,
         prepared_branch: String::new(),
     })
@@ -699,6 +758,7 @@ fn plan_workspace(
             head: String::new(),
             uncommitted: None,
             chosen: "new".into(),
+            git_dir: String::new(),
             prepared_cwd: None,
             prepared_branch: String::new(),
         });
@@ -750,6 +810,7 @@ fn plan_workspace(
         head: String::new(),
         uncommitted: None,
         chosen: "new".into(),
+        git_dir: String::new(),
         prepared_cwd: None,
         prepared_branch: String::new(),
     })
@@ -795,11 +856,16 @@ pub fn request(path: &Path, host: &dyn Host, source: Source, ask: Ask) -> Result
     if let Some(open) = stored
         .handovers
         .values()
-        .find(|h| h.source_chat_key == source.chat_key && h.status == Status::Pending)
+        .find(|h| h.source_chat_key == source.chat_key && h.open())
     {
         return Err(format!(
-            "Handover {} from this chat is still waiting for the person. End your turn; OctiqFlow tells you the decision.",
-            open.id
+            "Handover {} from this chat is still waiting {}. End your turn; OctiqFlow tells you the decision.",
+            open.id,
+            if open.status == Status::Starting {
+                "for its new chat to start"
+            } else {
+                "for the person"
+            }
         ));
     }
     let team = team::list(&host.team_path(), None, true)?;
@@ -853,6 +919,7 @@ pub fn request(path: &Path, host: &dyn Host, source: Source, ask: Ask) -> Result
         decided_at: None,
         target_chat_key: None,
         error: None,
+        abandonable: false,
         notice: Notice::Pending,
         notice_error: None,
         request_digest,
@@ -870,6 +937,14 @@ pub fn outcome_text(record: &Handover, base_url: Option<&str>) -> String {
         Status::Pending => format!(
             "Handover {} is waiting for the person to confirm or decline it on a card in this chat. End this turn now: do not continue the task and do not repeat the request. OctiqFlow will tell you the decision.",
             record.id
+        ),
+        Status::Starting => format!(
+            "The person confirmed handover {}, and {}'s new chat is being started. The task is no longer yours. Stop now: do not write, commit or run anything further for it, and end your turn. OctiqFlow tells you when the new chat is running.",
+            record.id, record.to.name
+        ),
+        Status::Abandoned => format!(
+            "Handover {} was not completed: {}'s new chat could not be started, and the person gave up on it. Nothing was handed over. The task is yours again: check its state, then carry on or ask the person how they want to proceed.",
+            record.id, record.to.name
         ),
         Status::Declined => format!(
             "The person declined handover {}. Nothing was created and this chat is unchanged. The task is still yours: carry on, or ask the person how they want to proceed.",
@@ -920,7 +995,12 @@ pub fn chat_url(base: &str, project_name: &str, chat_id: &str) -> String {
 
 /// The first message of the new chat: the brief as a readable handover, with
 /// the source conversation as a reference the recipient may read.
-pub fn render_message(record: &Handover, cwd: &str, base_url: Option<&str>) -> String {
+pub fn render_message(
+    record: &Handover,
+    cwd: &str,
+    base_url: Option<&str>,
+    fence: Fence,
+) -> String {
     let source_id = record
         .source_chat_key
         .strip_prefix("chat:")
@@ -1004,10 +1084,27 @@ pub fn render_message(record: &Handover, cwd: &str, base_url: Option<&str>) -> S
                 .join("\n")
         ));
     }
-    let place = match record.workspace.mode.as_str() {
-        "continue" => format!(
-            "You continue in the existing checkout {cwd}. The source agent has been told to stop writing there."
+    // What is true of the source agent when the person confirmed, and no more:
+    // the host knows it was blocked in its handover call or had no turn
+    // running, not that it has read the stop and obeyed it.
+    let source = match fence {
+        Fence::NotShared => String::new(),
+        Fence::Waiting => format!(
+            " {} was still waiting on its handover call when the person confirmed, and that call returns telling it to stop writing there.",
+            record.from.name
         ),
+        Fence::Idle => format!(
+            " {} had no turn running when the person confirmed, and is sent a message telling it to stop writing there.",
+            record.from.name
+        ),
+    };
+    let check = if source.is_empty() {
+        ""
+    } else {
+        " If you find changes there that you did not make, check with the person before going on."
+    };
+    let place = match record.workspace.mode.as_str() {
+        "continue" => format!("You continue in the existing checkout {cwd}.{source}{check}"),
         "worktree" => format!(
             "You work in a new worktree at {cwd}{}.",
             if record.workspace.prepared_branch.is_empty() {
@@ -1016,7 +1113,7 @@ pub fn render_message(record: &Handover, cwd: &str, base_url: Option<&str>) -> S
                 format!(" on branch {}", record.workspace.prepared_branch)
             }
         ),
-        _ => format!("You work in {cwd}."),
+        _ => format!("You work in {cwd}.{source}{check}"),
     };
     out.push_str(&format!(
         "\n## Where\nProject {}, repository {}. {place}\n",
@@ -1040,9 +1137,24 @@ pub trait Host {
     ) -> Result<crate::git_ops::PreparedWorkspace, String>;
     fn save_index(&self, meta: crate::chat_index::ChatMeta) -> Result<(), String>;
     fn start(&self, start: Start) -> Result<(), String>;
+    /// Whether the chat `key` was started with the turn `turn_id`. Its first
+    /// turn is on record only once an agent was spawned with it, so this is
+    /// what a retried confirm and the startup recovery trust over the record.
+    fn started(&self, key: &str, turn_id: &str) -> bool;
+    /// Whether a process is running for the chat `key`. Unknown counts as yes.
+    fn chat_live(&self, key: &str) -> bool;
     /// Refuse a checkout another writer holds: one leased to an orchestration
     /// attempt, or the workspace of a live chat other than `except`.
     fn checkout_free(&self, path: &str, except: &[&str]) -> Result<(), String>;
+    /// Whether `chat_key` has a turn in flight. Unknown counts as yes.
+    fn turn_in_flight(&self, chat_key: &str) -> bool;
+    /// Hand a decision to the asking chat as a host turn.
+    fn tell_source(
+        &self,
+        origin: &QuestionOrigin,
+        text: String,
+        turn_id: String,
+    ) -> Result<(), String>;
     /// The address the browser reaches this server on, for chat links.
     fn base_url(&self) -> Option<String>;
 }
@@ -1062,6 +1174,19 @@ pub struct Start {
     pub turn_id: String,
 }
 
+/// What keeps the source agent from writing where the new chat works, as the
+/// host knew it when the person confirmed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fence {
+    /// The new chat gets a fresh worktree: nothing is shared.
+    NotShared,
+    /// The source agent was blocked in its handover call, still waiting, and
+    /// the decision is that call's result.
+    Waiting,
+    /// The source chat had no turn in flight.
+    Idle,
+}
+
 fn save_record(path: &Path, record: &Handover) -> Result<(), String> {
     let mut stored = read(path)?;
     stored.handovers.insert(record.id.clone(), record.clone());
@@ -1073,8 +1198,9 @@ fn save_record(path: &Path, record: &Handover) -> Result<(), String> {
 /// The person confirmed: create the recipient's chat, exactly once.
 ///
 /// Holds the store lock throughout, so two confirms (two tabs, a double
-/// click) cannot both start a chat. Re-reads the registry and the project
-/// store first: what the card showed is not trusted to still be true.
+/// click) cannot both start a chat, and a decline cannot slip in between.
+/// Re-reads the registry, the project store and the checkout first: what
+/// the card showed is not trusted to still be true.
 pub fn confirm(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut record = read(path)?
@@ -1086,26 +1212,86 @@ pub fn confirm(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, Strin
         Status::Declined => {
             return Err("This handover was declined. Ask the agent for a new one.".into())
         }
-        Status::Pending => {}
-    }
-    let result = start_target(path, &mut record, host);
-    match result {
-        Ok(()) => {
-            record.status = Status::Confirmed;
-            record.decided_at = Some(now_ms());
-            record.error = None;
-            save_record(path, &record)?;
-            Ok(record)
+        Status::Abandoned => {
+            return Err("This handover was given up on. Ask the agent for a new one.".into())
         }
+        Status::Pending | Status::Starting => {}
+    }
+    // Started before the record could say so (a failed save, a restart):
+    // finish the record, never start a second time.
+    if record.status == Status::Starting && launched(&record, host) {
+        return finish(path, record);
+    }
+    let checked = match prepare(&mut record, host) {
+        Ok(checked) => checked,
         Err(error) => {
             record.error = Some(error.clone());
+            record.abandonable =
+                record.status == Status::Starting && !may_have_started(&record, host);
             let _ = save_record(path, &record);
-            Err(error)
+            return Err(error);
         }
+    };
+    if record.status == Status::Pending {
+        record.status = Status::Starting;
+        record.decided_at = Some(now_ms());
+        record.error = None;
+        record.abandonable = false;
+        if record.target_chat_key.is_none() {
+            record.target_chat_key = Some(format!("chat:{}", uuid::Uuid::new_v4()));
+        }
+        // On disk before anything irreversible. If this save fails nothing
+        // was created, and the handover stays pending.
+        save_record(path, &record)?;
     }
+    if let Err(error) = launch(path, &mut record, host, &checked) {
+        record.error = Some(error.clone());
+        record.abandonable = !may_have_started(&record, host);
+        let _ = save_record(path, &record);
+        return Err(error);
+    }
+    finish(path, record)
 }
 
-fn start_target(path: &Path, record: &mut Handover, host: &dyn Host) -> Result<(), String> {
+/// Whether the new chat of a starting handover was started.
+fn launched(record: &Handover, host: &dyn Host) -> bool {
+    record
+        .target_chat_key
+        .as_deref()
+        .is_some_and(|key| host.started(key, &record.start_turn_id()))
+}
+
+/// Whether the new chat of a starting handover may exist: its first turn is
+/// on record, or a process runs under its id. Only a no here lets the person
+/// give up on it.
+fn may_have_started(record: &Handover, host: &dyn Host) -> bool {
+    launched(record, host)
+        || record
+            .target_chat_key
+            .as_deref()
+            .is_some_and(|key| host.chat_live(key))
+}
+
+fn finish(path: &Path, mut record: Handover) -> Result<Handover, String> {
+    record.status = Status::Confirmed;
+    record.decided_at = record.decided_at.or_else(|| Some(now_ms()));
+    record.error = None;
+    record.abandonable = false;
+    save_record(path, &record)?;
+    Ok(record)
+}
+
+/// What the checks found, for the launch.
+struct Checked {
+    project: Workspace,
+    projects: Vec<Workspace>,
+    agent: Option<TeamAgent>,
+    fence: Fence,
+}
+
+/// Every check that can still refuse a confirm, run immediately before the
+/// start. Changes nothing outside the record.
+fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
     let team = team::list(&host.team_path(), None, true)?;
     let projects = host.projects()?;
     let project = destination::verify(&projects, &record.destination)?.clone();
@@ -1129,18 +1315,122 @@ fn start_target(path: &Path, record: &mut Handover, host: &dyn Host) -> Result<(
         }
         None => (None, record.settings.clone()),
     };
-    record.settings = settings.clone();
+    record.settings = settings;
 
-    // The chat id first, on disk, so every retry is the same chat.
-    let key = match &record.target_chat_key {
-        Some(key) => key.clone(),
-        None => {
-            let key = format!("chat:{}", uuid::Uuid::new_v4());
-            record.target_chat_key = Some(key.clone());
-            save_record(path, record)?;
-            key
+    if record.workspace.mode == "continue" {
+        recheck_checkout(&record.destination, &mut record.workspace)?;
+        // Checked again: a worker or another chat may have taken it since
+        // the card was drawn.
+        let key = record.target_chat_key.clone().unwrap_or_default();
+        host.checkout_free(&record.workspace.path, &[&record.source_chat_key, &key])?;
+    }
+    let fence = if record.workspace.mode == "worktree" {
+        Fence::NotShared
+    } else if source_waiting(&record.id)? {
+        Fence::Waiting
+    } else if host.turn_in_flight(&record.source_chat_key) {
+        // The new chat would share a checkout with an agent that is working.
+        // Telling it to stop only queues behind its turn, so nothing starts
+        // until that turn is over.
+        return Err(format!(
+            "{} still has a turn running in the source chat, so it may still be writing in {}, which the new chat takes over. Stop that turn or let it finish, then confirm again.",
+            record.from.name, record.workspace.path
+        ));
+    } else {
+        Fence::Idle
+    };
+    Ok(Checked {
+        project,
+        projects,
+        agent,
+        fence,
+    })
+}
+
+/// Whether the source agent's handover call is still open on `id`: then it
+/// is blocked in that call, and the decision is its result. Taken under
+/// `LOCK`, which the call's own timeout needs before it can return.
+fn source_waiting(id: &str) -> Result<bool, String> {
+    Ok(WAITERS
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(id)
+        .is_some_and(|tx| !tx.is_closed()))
+}
+
+/// The checkout a handover continues, as git has it now, against what the
+/// card recorded: the same worktree of the same repository with the same
+/// branch. Anything else is refused with what is there now. Commits made on
+/// that branch since are not a change of place: the HEAD and uncommitted
+/// facts are refreshed instead, so the started chat's card is current.
+fn recheck_checkout(destination: &TaskDestination, plan: &mut WorkspacePlan) -> Result<(), String> {
+    let path = plan.path.clone();
+    let repository = destination.repository.as_str();
+    let changed = |why: String| -> Result<(), String> {
+        Err(format!(
+            "{why} The card no longer describes it, so nothing was started. Keep the task here, and ask the agent for a new handover if it is still wanted."
+        ))
+    };
+    if !Path::new(&path).is_dir() {
+        return changed(format!("The checkout {path} no longer exists."));
+    }
+    let Some(repo_common) = common_dir(repository) else {
+        return changed(format!("{repository} is no longer a git repository."));
+    };
+    if common_dir(&path).as_ref() != Some(&repo_common) {
+        return changed(format!("{path} is no longer a checkout of {repository}."));
+    }
+    if !plan.git_dir.is_empty() && own_git_dir(&path) != canonical(&plan.git_dir) {
+        return changed(format!(
+            "{path} is now a different worktree of {repository} than the card showed."
+        ));
+    }
+    let top = toplevel(&path).and_then(|top| canonical(&top));
+    let listed = worktrees(repository)
+        .into_iter()
+        .find(|(listed, _)| *listed == path);
+    let branch = match (listed, top) {
+        (Some((listed, branch)), Some(top)) if canonical(&listed).as_ref() == Some(&top) => branch,
+        _ => {
+            return changed(format!(
+                "{path} is no longer the worktree of {repository} the card showed, according to git worktree list."
+            ))
         }
     };
+    if branch != plan.branch {
+        let named = |branch: &str| {
+            if branch.is_empty() {
+                "a detached HEAD".to_owned()
+            } else {
+                format!("branch {branch}")
+            }
+        };
+        return changed(format!(
+            "{path} now has {} checked out, not {} as the card showed.",
+            named(&branch),
+            named(&plan.branch)
+        ));
+    }
+    let now = observed(plan.clone());
+    plan.head = now.head;
+    plan.uncommitted = now.uncommitted;
+    Ok(())
+}
+
+/// Everything irreversible, in order, each step safe to repeat on a retry:
+/// the worktree is made once and remembered, the index and the lead record
+/// are rewritten in place, and the agent is started only when its first turn
+/// is not already on record.
+fn launch(
+    path: &Path,
+    record: &mut Handover,
+    host: &dyn Host,
+    checked: &Checked,
+) -> Result<(), String> {
+    let key = record
+        .target_chat_key
+        .clone()
+        .ok_or("This handover has no chat id to start.")?;
     let chat_id = key.strip_prefix("chat:").unwrap_or(&key).to_owned();
 
     let cwd = match (
@@ -1148,18 +1438,6 @@ fn start_target(path: &Path, record: &mut Handover, host: &dyn Host) -> Result<(
         record.workspace.mode.as_str(),
     ) {
         (Some(cwd), _) => cwd.clone(),
-        (None, "continue") => {
-            if !Path::new(&record.workspace.path).is_dir() {
-                return Err(format!(
-                    "The checkout {} no longer exists.",
-                    record.workspace.path
-                ));
-            }
-            // Checked again: a worker or another chat may have taken it since
-            // the card was drawn.
-            host.checkout_free(&record.workspace.path, &[&record.source_chat_key, &key])?;
-            record.workspace.path.clone()
-        }
         (None, "worktree") => {
             let prepared = host.new_worktree(
                 &record.workspace.path,
@@ -1177,10 +1455,11 @@ fn start_target(path: &Path, record: &mut Handover, host: &dyn Host) -> Result<(
     record.workspace.prepared_cwd = Some(cwd.clone());
 
     let base = host.base_url();
-    let message = render_message(record, &cwd, base.as_deref());
-    let prompt = match &agent {
+    let message = render_message(record, &cwd, base.as_deref(), checked.fence);
+    let prompt = match &checked.agent {
         Some(agent) => {
-            let names: Vec<(String, String)> = projects
+            let names: Vec<(String, String)> = checked
+                .projects
                 .iter()
                 .map(|p| (p.id.clone(), p.name.clone()))
                 .collect();
@@ -1198,9 +1477,10 @@ fn start_target(path: &Path, record: &mut Handover, host: &dyn Host) -> Result<(
 
     let now = now_ms();
     let title: String = record.brief.objective.chars().take(80).collect();
+    let settings = record.settings.clone();
     host.save_index(crate::chat_index::ChatMeta {
         id: chat_id.clone(),
-        project_id: project.id.clone(),
+        project_id: checked.project.id.clone(),
         title: title.lines().next().unwrap_or("Handover").to_owned(),
         latest_response: None,
         custom_title: false,
@@ -1221,7 +1501,7 @@ fn start_target(path: &Path, record: &mut Handover, host: &dyn Host) -> Result<(
         generation: 0,
         launch: None,
     })?;
-    let mut extra_dirs = destination::repositories(&project);
+    let mut extra_dirs = destination::repositories(&checked.project);
     extra_dirs.retain(|dir| dir != &record.destination.repository);
     host.start(Start {
         key,
@@ -1232,13 +1512,13 @@ fn start_target(path: &Path, record: &mut Handover, host: &dyn Host) -> Result<(
         effort: settings.effort,
         prompt,
         extra_dirs,
-        env: project.env.clone(),
-        // Not the source's continuation id: each chat's turn is its own.
-        turn_id: format!("{}-start", record.turn_id()),
+        env: checked.project.env.clone(),
+        turn_id: record.start_turn_id(),
     })
 }
 
-/// The person declined. Nothing is created.
+/// The person declined. Nothing is created. Only a pending handover can be
+/// declined: once it is starting, its chat may already exist.
 pub fn decline(path: &Path, id: &str) -> Result<Handover, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut record = read(path)?
@@ -1250,12 +1530,89 @@ pub fn decline(path: &Path, id: &str) -> Result<Handover, String> {
         Status::Confirmed => {
             return Err("This handover was already confirmed and its chat started.".into())
         }
+        Status::Starting => {
+            return Err("This handover is already being started and its new chat may exist, so it can no longer be declined. Try the handover again to finish starting it.".into())
+        }
+        Status::Abandoned => return Err("This handover was already given up on.".into()),
         Status::Pending => {}
     }
     record.status = Status::Declined;
     record.decided_at = Some(now_ms());
     save_record(path, &record)?;
     Ok(record)
+}
+
+/// The person gives up on a handover whose chat could not be started. Only
+/// once the host has made sure no chat was: no first turn on record and no
+/// process under its id. Otherwise a retry is the only way on, since the
+/// chat may be running. Nothing is removed: a worktree made for it stays.
+pub fn abandon(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut record = read(path)?
+        .handovers
+        .remove(id)
+        .ok_or("That handover no longer exists.")?;
+    match record.status {
+        Status::Abandoned => return Ok(record),
+        Status::Starting => {}
+        Status::Pending => {
+            return Err("This handover has not been confirmed. Keep it here instead.".into())
+        }
+        Status::Confirmed => {
+            return Err("This handover was already confirmed and its chat started.".into())
+        }
+        Status::Declined => return Err("This handover was declined.".into()),
+    }
+    if may_have_started(&record, host) {
+        record.abandonable = false;
+        let _ = save_record(path, &record);
+        return Err("Its new chat may already have started, so it cannot be given up on. Try again to finish starting it.".into());
+    }
+    record.status = Status::Abandoned;
+    record.abandonable = false;
+    save_record(path, &record)?;
+    Ok(record)
+}
+
+/// What a handover left `Starting` by a restart says, when its chat had not
+/// been started.
+const INTERRUPTED: &str =
+    "OctiqFlow restarted before the new chat started. Try the handover again to start it.";
+
+/// At startup: finish every handover whose start went through before the
+/// record could say so, and mark the rest as interrupted, still starting and
+/// still not declinable. Never starts a chat. Answers the finished ones,
+/// whose asking agent is now owed the decision.
+pub fn recover(path: &Path, host: &dyn Host) -> Result<Vec<String>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    let mut finished = Vec::new();
+    let mut changed = Vec::new();
+    for record in stored
+        .handovers
+        .values_mut()
+        .filter(|h| h.status == Status::Starting)
+    {
+        if launched(record, host) {
+            record.status = Status::Confirmed;
+            record.error = None;
+            record.abandonable = false;
+            finished.push(record.id.clone());
+        } else {
+            let abandonable = !may_have_started(record, host);
+            if record.error.as_deref() == Some(INTERRUPTED) && record.abandonable == abandonable {
+                continue;
+            }
+            record.error = Some(INTERRUPTED.into());
+            record.abandonable = abandonable;
+        }
+        changed.push(record.clone());
+    }
+    if !changed.is_empty() {
+        write(path, &stored)?;
+        changed.iter().for_each(announce);
+    }
+    Ok(finished)
 }
 
 /// Hold the tool open on `id` until a decision or the timeout. Answers what
@@ -1272,7 +1629,7 @@ pub async fn wait(
             .handovers
             .remove(&id)
             .ok_or("That handover no longer exists.")?;
-        if record.status != Status::Pending {
+        if record.decided() {
             drop(_guard);
             return take(&path, &id, base_url.as_deref());
         }
@@ -1298,7 +1655,7 @@ fn take(path: &Path, id: &str, base_url: Option<&str>) -> Result<String, String>
         .handovers
         .get_mut(id)
         .ok_or("That handover no longer exists.")?;
-    if record.status != Status::Pending && record.notice == Notice::Pending {
+    if record.decided() && record.notice == Notice::Pending {
         record.notice = Notice::Tool;
         let record = record.clone();
         write(path, &stored)?;
@@ -1322,7 +1679,7 @@ pub fn hand_off_notice(path: &Path, id: &str) -> Result<Option<Handover>, String
         .handovers
         .remove(id)
         .ok_or("That handover no longer exists.")?;
-    if record.status == Status::Pending || record.notice != Notice::Pending {
+    if !record.decided() || record.notice != Notice::Pending {
         return Ok(None);
     }
     Ok(Some(record))
@@ -1375,6 +1732,38 @@ fn live_base_url() -> Option<String> {
     crate::web::hook_port().map(|port| format!("http://127.0.0.1:{port}"))
 }
 
+/// Where the app keeps its handovers and its registry, and what starts their
+/// chats: `Live` over the app's own services, unless a test stands a `Host`
+/// of its own in.
+#[derive(Clone)]
+pub struct Wiring {
+    pub store: PathBuf,
+    pub team: PathBuf,
+    pub host: Option<Arc<dyn Host + Send + Sync>>,
+}
+
+impl Wiring {
+    /// The profile's handovers over the running app.
+    pub fn profile() -> Self {
+        Self {
+            store: default_path(),
+            team: team::default_path(),
+            host: None,
+        }
+    }
+
+    /// Handovers and a registry of their own, in a throwaway folder.
+    #[cfg(test)]
+    pub fn scratch() -> Self {
+        let dir = std::env::temp_dir().join(format!("octiq-handover-{}", uuid::Uuid::new_v4()));
+        Self {
+            store: dir.join("handovers.json"),
+            team: dir.join("team.json"),
+            host: None,
+        }
+    }
+}
+
 /// `Host` over the running app's services.
 pub struct Live<'a>(pub &'a crate::dispatch::Services);
 
@@ -1384,7 +1773,7 @@ impl Host for Live<'_> {
     }
 
     fn team_path(&self) -> PathBuf {
-        team::default_path()
+        self.0.handovers.team.clone()
     }
 
     fn new_worktree(
@@ -1432,6 +1821,14 @@ impl Host for Live<'_> {
         }
     }
 
+    fn started(&self, key: &str, turn_id: &str) -> bool {
+        crate::agent_chat::turn_was_started(key, turn_id)
+    }
+
+    fn chat_live(&self, key: &str) -> bool {
+        self.0.chats.has_process(key)
+    }
+
     fn checkout_free(&self, path: &str, except: &[&str]) -> Result<(), String> {
         self.0
             .orchestrations
@@ -1451,8 +1848,29 @@ impl Host for Live<'_> {
         Ok(())
     }
 
+    fn turn_in_flight(&self, chat_key: &str) -> bool {
+        self.0.chats.turn_in_flight(chat_key)
+    }
+
+    fn tell_source(
+        &self,
+        origin: &QuestionOrigin,
+        text: String,
+        turn_id: String,
+    ) -> Result<(), String> {
+        crate::agent_chat::continue_origin(self.0.chats.clone(), origin, text, turn_id)
+    }
+
     fn base_url(&self) -> Option<String> {
         live_base_url()
+    }
+}
+
+/// The host a call runs against: the test's, or the running app.
+fn with_host<R>(svc: &crate::dispatch::Services, act: impl FnOnce(&dyn Host) -> R) -> R {
+    match &svc.handovers.host {
+        Some(host) => act(host.as_ref()),
+        None => act(&Live(svc)),
     }
 }
 
@@ -1482,7 +1900,7 @@ pub fn live_source(
         chat_key: chat_key.into(),
         title: meta.as_ref().map(|m| m.title.clone()).unwrap_or_default(),
         project_id: meta.map(|m| m.project_id),
-        lead: team::lead_for_chat(&team::default_path(), chat_key)?,
+        lead: team::lead_for_chat(&svc.handovers.team, chat_key)?,
         origin,
         worker: false,
         cwd: Some(cwd).filter(|cwd| !cwd.is_empty()),
@@ -1492,7 +1910,7 @@ pub fn live_source(
 
 /// A `handover` call from an agent's MCP: validate and record it, and say
 /// whether it is new (a retry of the same requestId is not). The caller then
-/// waits on it (`wait`) or answers at once (`answer_now`).
+/// waits on it (`live_wait`) or answers at once (`answer_now`).
 pub fn live_request(
     svc: &crate::dispatch::Services,
     chat_key: &str,
@@ -1501,26 +1919,27 @@ pub fn live_request(
     ask: Ask,
 ) -> Result<(Handover, bool), String> {
     let source = live_source(svc, chat_key, session_key, launch_id)?;
-    let path = default_path();
+    let path = &svc.handovers.store;
     let known = {
         let _guard = LOCK.lock().map_err(|e| e.to_string())?;
-        read(&path)?
+        read(path)?
             .handovers
             .values()
             .any(|h| h.source_chat_key == chat_key && h.request_id == ask.request_id.trim())
     };
-    Ok((request(&path, &Live(svc), source, ask)?, !known))
+    let record = with_host(svc, |host| request(path, host, source, ask))?;
+    Ok((record, !known))
 }
 
 /// What a tool that does not wait is told: the decision when there is one
 /// (and it now owns telling it), else that the decision will follow.
-pub fn answer_now(id: &str) -> Result<String, String> {
-    take(&default_path(), id, live_base_url().as_deref())
+pub fn answer_now(wiring: &Wiring, id: &str) -> Result<String, String> {
+    take(&wiring.store, id, live_base_url().as_deref())
 }
 
-pub async fn live_wait(id: String) -> Result<String, String> {
+pub async fn live_wait(wiring: &Wiring, id: String) -> Result<String, String> {
     wait(
-        default_path(),
+        wiring.store.clone(),
         id,
         crate::question::ANSWER_TIMEOUT,
         live_base_url(),
@@ -1528,32 +1947,67 @@ pub async fn live_wait(id: String) -> Result<String, String> {
     .await
 }
 
-/// The person's Confirm or Decline, from their socket. Then the calling
-/// agent is told: by its waiting tool, or by a continuation turn.
+/// After a decision: wake the waiting tool, or send the decision to the
+/// asking chat as a continuation turn and record how that went. `None` when
+/// the tool has it or it was already told.
+fn tell(path: &Path, id: &str, host: &dyn Host) -> Result<Option<Public>, String> {
+    let Some(record) = hand_off_notice(path, id)? else {
+        return Ok(None);
+    };
+    let outcome = match &record.origin {
+        Some(origin) => {
+            let (text, turn_id) = continuation(&record, host.base_url().as_deref());
+            host.tell_source(origin, text, turn_id)
+        }
+        None => Err("The asking agent left no way back to it.".into()),
+    };
+    noticed(path, id, outcome)?;
+    Ok(Some(get(path, id)?.public()))
+}
+
+/// What the person decided on a card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Confirm,
+    Decline,
+    /// Give up on a confirmed handover whose chat could not be started.
+    Abandon,
+}
+
+/// The person's decision, from their socket. Then the calling agent is told:
+/// by its waiting tool, or by a continuation turn.
 pub fn decide(
     svc: &crate::dispatch::Services,
     id: &str,
-    confirmed: bool,
+    decision: Decision,
 ) -> Result<Public, String> {
-    let path = default_path();
-    let record = if confirmed {
-        confirm(&path, id, &Live(svc))?
-    } else {
-        decline(&path, id)?
-    };
-    if let Some(record) = hand_off_notice(&path, id)? {
-        let outcome = match &record.origin {
-            Some(origin) => {
-                let (text, turn_id) = continuation(&record, live_base_url().as_deref());
-                crate::agent_chat::continue_origin(svc.chats.clone(), origin, text, turn_id)
-            }
-            None => Err("The asking agent left no way back to it.".into()),
+    let path = &svc.handovers.store;
+    with_host(svc, |host| {
+        let record = match decision {
+            Decision::Confirm => confirm(path, id, host)?,
+            Decision::Decline => decline(path, id)?,
+            Decision::Abandon => abandon(path, id, host)?,
         };
-        noticed(&path, id, outcome)?;
-        return Ok(get(&path, id)?.public());
-    }
-    Ok(record.public())
+        Ok(tell(path, id, host)?.unwrap_or_else(|| record.public()))
+    })
+}
+
+/// At startup: finish the handovers a restart cut off after their chat had
+/// started, and tell their asking agents (`recover`).
+pub fn live_recover(svc: &crate::dispatch::Services) {
+    let path = &svc.handovers.store;
+    with_host(svc, |host| {
+        let finished = match recover(path, host) {
+            Ok(finished) => finished,
+            Err(why) => return eprintln!("[handover] recovery: {why}"),
+        };
+        for id in finished {
+            if let Err(why) = tell(path, &id, host) {
+                eprintln!("[handover] {id}: {why}");
+            }
+        }
+    });
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -58,6 +58,33 @@ describe("HandoverCards", () => {
     expect(html).toContain("Hand over to Mango");
   });
 
+  it("offers only a retry once a start is under way, never keeping it here", () => {
+    const failed = render([handover({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable" })], "chat:source");
+    expect(failed).toContain('data-status="starting"');
+    expect(failed).toContain("Mango&#x27;s chat did not start");
+    expect(failed).toContain("CLI unavailable");
+    expect(failed).toContain("Try again");
+    expect(failed).toContain("it can only be tried again");
+    expect(failed).not.toContain("Keep it here");
+    expect(failed).not.toContain("Give up");
+    const running = render([handover({ status: "starting", targetChatKey: "chat:new" })], "chat:source");
+    expect(running).toContain("Starting the new chat.");
+    expect(running).not.toContain("<button");
+  });
+
+  it("lets the person give up on a failed start only once the host ruled a chat out", () => {
+    const stuck = render([handover({
+      status: "starting", targetChatKey: "chat:new", error: "CLI unavailable", abandonable: true,
+    })], "chat:source");
+    expect(stuck).toContain("No chat was started. Try again, or give up and keep the task here.");
+    expect(stuck).toContain("Give up");
+    expect(stuck).toContain("Try again");
+    const given = render([handover({ status: "abandoned", targetChatKey: "chat:new", error: "CLI unavailable" })], "chat:source");
+    expect(given).toContain("Kept here: Mango&#x27;s chat could not start");
+    expect(given).not.toContain("<button");
+    expect(given).not.toContain("handover-brief");
+  });
+
   it("draws nothing for a chat with no handovers", () => {
     expect(render([handover()], "chat:elsewhere")).toBe("");
   });

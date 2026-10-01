@@ -388,6 +388,9 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
         // lands here, token and all.
         println!("[web] (the older /v2/ URL redirects to this one)");
         crate::agent_chat::start_question_recovery(ctx.services.chats.clone());
+        // A handover a restart cut off between its start and its record.
+        let services = ctx.services.clone();
+        std::thread::spawn(move || crate::handover::live_recover(&services));
         let service = router.into_make_service_with_connect_info::<SocketAddr>();
         if let Err(e) = axum::serve(listener, service).await {
             eprintln!("[web] server stopped: {e}");
@@ -1034,10 +1037,11 @@ async fn handover_handler(
                 .into_response()
         }
     };
+    let wiring = &ctx.services.handovers;
     let told = if request.wait {
-        crate::handover::live_wait(record.id.clone()).await
+        crate::handover::live_wait(wiring, record.id.clone()).await
     } else {
-        crate::handover::answer_now(&record.id)
+        crate::handover::answer_now(wiring, &record.id)
     };
     match told {
         Ok(text) => {
@@ -1800,6 +1804,16 @@ mod tests {
         chats: Arc<crate::agent_chat::ChatManager>,
         store: Arc<crate::orchestration::OrchestrationStore>,
     ) -> (Ctx, String) {
+        test_server_handing_over(cfg, chats, store, crate::handover::Wiring::scratch()).await
+    }
+
+    /// `test_server_with`, keeping handovers where `handovers` says.
+    async fn test_server_handing_over(
+        cfg: WebConfig,
+        chats: Arc<crate::agent_chat::ChatManager>,
+        store: Arc<crate::orchestration::OrchestrationStore>,
+        handovers: crate::handover::Wiring,
+    ) -> (Ctx, String) {
         let ctx = Ctx {
             state: Arc::new(WebState::new(cfg)),
             services: crate::dispatch::Services {
@@ -1809,6 +1823,7 @@ mod tests {
                 git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
                 orchestrations: store,
                 ptys: Arc::new(crate::pty::PtyManager::default()),
+                handovers,
             },
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2137,7 +2152,7 @@ mod tests {
         );
         // And no hook names the person's decision: there is no action to
         // pass, and the orchestration whitelist has neither command.
-        for command in ["handover_confirm", "handover_decline"] {
+        for command in ["handover_confirm", "handover_decline", "handover_abandon"] {
             assert_eq!(orchestration_hook_command(command), None);
             assert!(!ORCHESTRATION_HOOK_ACTIONS
                 .iter()
@@ -2145,6 +2160,235 @@ mod tests {
         }
         chats.test_end("chat:orch-worker");
         chats.test_end("chat:plain");
+    }
+
+    /// The person's socket running one command, as `client` does for an
+    /// `invoke` frame.
+    async fn socket_invoke(ctx: &Ctx, cmd: &str, args: Value) -> Result<Value, String> {
+        if let Some(refused) = socket_refusal(cmd) {
+            return Err(refused);
+        }
+        run_command(ctx, cmd.to_string(), args).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_handover_hook_records_it_pending_and_only_the_persons_confirm_starts_its_chat() {
+        use crate::handover::tests::{
+            git, is_waiting, mend_store, project, register, repo, scratch, FakeHost,
+        };
+        use crate::handover::Status;
+        let root = scratch("hook");
+        let app = repo(&root, "app");
+        let tree = root.join("app-work");
+        git(
+            &app,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "work",
+                &tree.to_string_lossy(),
+            ],
+        );
+        let team = root.join("team.json");
+        register(
+            &team,
+            "Mango",
+            Some("p-app"),
+            "sonnet",
+            crate::agent_chat::Access::Edits,
+        );
+        let host = Arc::new(FakeHost {
+            projects: vec![project("p-app", "App", &[&app])],
+            team: team.clone(),
+            root: root.clone(),
+            ..FakeHost::default()
+        });
+        let store_path = root.join("handovers.json");
+        let wiring = crate::handover::Wiring {
+            store: store_path.clone(),
+            team,
+            host: Some(host.clone()),
+        };
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        // A source chat working in the worktree, mid-turn, as an agent
+        // calling the tool is.
+        let launch = |key: &str| {
+            let capability = chats.test_launch(key);
+            chats.test_remember_start(key, &tree.to_string_lossy());
+            chats.test_busy(key, true);
+            capability
+        };
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        let orchestrations = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let (ctx, base) =
+            test_server_handing_over(cfg, chats.clone(), orchestrations, wiring).await;
+        let body = |chat: &str, wait: bool| {
+            json!({ "chatKey": chat, "wait": wait, "args": {
+                "recipient": "Mango", "project": "App", "requestId": "r1",
+                "brief": { "objective": "Finish the login fix" },
+            } })
+        };
+        let status_of = |id: &str| {
+            crate::handover::list(&store_path)
+                .unwrap()
+                .into_iter()
+                .find(|h| h.id == id)
+                .map(|h| h.status)
+        };
+
+        // The agent asks, and its call waits for the person.
+        let first = launch("chat:handing");
+        let asking = {
+            let (base, body) = (base.clone(), body("chat:handing", true));
+            tokio::spawn(
+                async move { post_hook(&base, "handover", None, Some(&first), body).await },
+            )
+        };
+        let mut recorded = Vec::new();
+        for _ in 0..300 {
+            recorded = crate::handover::list(&store_path).unwrap();
+            if recorded.first().is_some_and(|h| is_waiting(&h.id)) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(recorded.len(), 1, "one handover recorded");
+        let id = recorded[0].id.clone();
+        assert!(is_waiting(&id), "the call is held open");
+        // Pending, on disk, and nothing exists for it yet.
+        let raw: Value = serde_json::from_slice(&std::fs::read(&store_path).unwrap()).unwrap();
+        assert_eq!(raw["handovers"][&id]["status"], json!("pending"));
+        assert_eq!(
+            raw["handovers"][&id]["workspace"]["mode"],
+            json!("continue")
+        );
+        assert!(raw["handovers"][&id].get("targetChatKey").is_none());
+        assert!(host.starts.lock().unwrap().is_empty(), "no chat started");
+        assert!(host.saved.lock().unwrap().is_empty(), "no chat indexed");
+        assert!(!asking.is_finished());
+
+        // The person's socket confirms it: exactly one chat.
+        let confirmed = socket_invoke(&ctx, "handover_confirm", json!({ "id": id }))
+            .await
+            .unwrap();
+        assert_eq!(confirmed["status"], json!("confirmed"), "{confirmed}");
+        let (status, answer) = asking.await.unwrap();
+        assert_eq!(status, 200, "{answer}");
+        let told = answer["result"]["text"].as_str().unwrap();
+        assert!(told.contains("confirmed handover"), "{told}");
+        socket_invoke(&ctx, "handover_confirm", json!({ "id": id }))
+            .await
+            .unwrap();
+        let starts = host.starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 1, "a second confirm starts nothing");
+        assert_eq!(confirmed["targetChatKey"], json!(starts[0].key));
+        assert!(
+            starts[0]
+                .prompt
+                .contains("was still waiting on its handover call"),
+            "{}",
+            starts[0].prompt
+        );
+
+        // The checkout's branch switches before the person confirms.
+        let second = launch("chat:second");
+        let (status, answer) = post_hook(
+            &base,
+            "handover",
+            None,
+            Some(&second),
+            body("chat:second", false),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        let second_id = answer["result"]["id"].as_str().unwrap().to_owned();
+        git(&tree, &["checkout", "-q", "-b", "elsewhere"]);
+        let refused = socket_invoke(&ctx, "handover_confirm", json!({ "id": second_id }))
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("now has branch elsewhere checked out, not branch work"),
+            "{refused}"
+        );
+        assert_eq!(host.starts.lock().unwrap().len(), 1);
+        assert_eq!(status_of(&second_id), Some(Status::Pending));
+        let declined = socket_invoke(&ctx, "handover_decline", json!({ "id": second_id }))
+            .await
+            .unwrap();
+        assert_eq!(declined["status"], json!("declined"));
+
+        // Started, then its record cannot be saved: never declined, and a
+        // restart finishes it without a second start.
+        let third = launch("chat:third");
+        let (status, answer) = post_hook(
+            &base,
+            "handover",
+            None,
+            Some(&third),
+            body("chat:third", false),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        let third_id = answer["result"]["id"].as_str().unwrap().to_owned();
+        chats.test_busy("chat:third", false);
+        *host.break_store.lock().unwrap() = Some(store_path.clone());
+        socket_invoke(&ctx, "handover_confirm", json!({ "id": third_id }))
+            .await
+            .unwrap_err();
+        assert_eq!(host.starts.lock().unwrap().len(), 2, "the chat did start");
+        mend_store(&store_path);
+        assert_eq!(status_of(&third_id), Some(Status::Starting));
+        let refused = socket_invoke(&ctx, "handover_decline", json!({ "id": third_id }))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("can no longer be declined"), "{refused}");
+        crate::handover::live_recover(&ctx.services);
+        assert_eq!(status_of(&third_id), Some(Status::Confirmed));
+        assert_eq!(host.starts.lock().unwrap().len(), 2, "never started twice");
+        // Both callers that let go are told by a continuation, once each.
+        let told = host.told.lock().unwrap().clone();
+        let chats_told: Vec<&str> = told.iter().map(|(chat, _)| chat.as_str()).collect();
+        assert_eq!(chats_told, ["chat:second", "chat:third"], "{told:?}");
+        assert!(told[0].1.contains("declined handover"), "{}", told[0].1);
+        assert!(told[1].1.contains("confirmed handover"), "{}", told[1].1);
+
+        // A start that keeps failing, where no chat was started: the person
+        // gives up on it from the socket, and nothing is created.
+        let fourth = launch("chat:fourth");
+        let (status, answer) = post_hook(
+            &base,
+            "handover",
+            None,
+            Some(&fourth),
+            body("chat:fourth", false),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        let fourth_id = answer["result"]["id"].as_str().unwrap().to_owned();
+        chats.test_busy("chat:fourth", false);
+        *host.fail_start.lock().unwrap() = true;
+        socket_invoke(&ctx, "handover_confirm", json!({ "id": fourth_id }))
+            .await
+            .unwrap_err();
+        let given_up = socket_invoke(&ctx, "handover_abandon", json!({ "id": fourth_id }))
+            .await
+            .unwrap();
+        assert_eq!(given_up["status"], json!("abandoned"), "{given_up}");
+        assert_eq!(host.starts.lock().unwrap().len(), 2, "nothing more started");
+        let told = host.told.lock().unwrap().clone();
+        assert_eq!(
+            told.last().map(|(chat, _)| chat.as_str()),
+            Some("chat:fourth")
+        );
+
+        for key in ["chat:handing", "chat:second", "chat:third", "chat:fourth"] {
+            chats.test_end(key);
+        }
     }
 
     #[test]
@@ -2171,6 +2415,7 @@ mod tests {
         // A handover is created by an agent but only the person decides it.
         "handover_confirm",
         "handover_decline",
+        "handover_abandon",
     ];
 
     #[test]

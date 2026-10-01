@@ -6,13 +6,13 @@ use crate::git_ops::PreparedWorkspace;
 use crate::team::TeamDraft;
 
 /// A throwaway folder for one test.
-fn scratch(tag: &str) -> PathBuf {
+pub(crate) fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("octiq-handover-{tag}-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&dir).unwrap();
     crate::paths::canonicalize(&dir).unwrap()
 }
 
-fn git(dir: &Path, args: &[&str]) {
+pub(crate) fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -35,7 +35,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// A repository with one commit on `main`.
-fn repo(root: &Path, name: &str) -> PathBuf {
+pub(crate) fn repo(root: &Path, name: &str) -> PathBuf {
     let dir = root.join(name);
     fs::create_dir_all(&dir).unwrap();
     git(&dir, &["init", "-q", "-b", "main"]);
@@ -46,7 +46,7 @@ fn repo(root: &Path, name: &str) -> PathBuf {
     dir
 }
 
-fn project(id: &str, name: &str, paths: &[&Path]) -> Workspace {
+pub(crate) fn project(id: &str, name: &str, paths: &[&Path]) -> Workspace {
     let paths: Vec<String> = paths
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
@@ -60,7 +60,7 @@ fn project(id: &str, name: &str, paths: &[&Path]) -> Workspace {
     .unwrap()
 }
 
-fn register(
+pub(crate) fn register(
     team: &Path,
     name: &str,
     project: Option<&str>,
@@ -155,16 +155,36 @@ fn team_of(w: &World) -> Vec<TeamAgent> {
 }
 
 #[derive(Default)]
-struct FakeHost {
-    projects: Vec<Workspace>,
-    team: PathBuf,
-    root: PathBuf,
-    starts: StdMutex<Vec<Start>>,
-    saved: StdMutex<Vec<crate::chat_index::ChatMeta>>,
-    worktrees: StdMutex<usize>,
-    fail_start: StdMutex<bool>,
+pub(crate) struct FakeHost {
+    pub(crate) projects: Vec<Workspace>,
+    pub(crate) team: PathBuf,
+    pub(crate) root: PathBuf,
+    pub(crate) starts: StdMutex<Vec<Start>>,
+    pub(crate) saved: StdMutex<Vec<crate::chat_index::ChatMeta>>,
+    pub(crate) worktrees: StdMutex<usize>,
+    pub(crate) fail_start: StdMutex<bool>,
     /// Checkouts another writer holds.
-    taken: StdMutex<Vec<String>>,
+    pub(crate) taken: StdMutex<Vec<String>>,
+    /// Chats with a turn in flight.
+    pub(crate) busy: StdMutex<Vec<String>>,
+    /// Chats with a running process.
+    pub(crate) live: StdMutex<Vec<String>>,
+    /// Decisions handed to asking chats as continuations: (chat, text).
+    pub(crate) told: StdMutex<Vec<(String, String)>>,
+    /// The handover store to break as the next start returns, the way a full
+    /// disk would: the chat is started and its record cannot be saved.
+    pub(crate) break_store: StdMutex<Option<PathBuf>>,
+}
+
+/// Whether a handover call is being held open on `id`.
+pub(crate) fn is_waiting(id: &str) -> bool {
+    WAITERS.lock().unwrap().contains_key(id)
+}
+
+/// The store `FakeHost::break_store` broke, put back as it was.
+pub(crate) fn mend_store(store: &Path) {
+    fs::remove_dir(store).unwrap();
+    fs::rename(store.with_extension("json.saved"), store).unwrap();
 }
 
 impl FakeHost {
@@ -214,6 +234,35 @@ impl Host for FakeHost {
             return Err("CLI unavailable".into());
         }
         self.starts.lock().unwrap().push(start);
+        if let Some(store) = self.break_store.lock().unwrap().take() {
+            fs::rename(&store, store.with_extension("json.saved")).unwrap();
+            fs::create_dir(&store).unwrap();
+        }
+        Ok(())
+    }
+    fn started(&self, key: &str, turn_id: &str) -> bool {
+        self.starts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|start| start.key == key && start.turn_id == turn_id)
+    }
+    fn chat_live(&self, key: &str) -> bool {
+        self.live.lock().unwrap().iter().any(|live| live == key)
+    }
+    fn turn_in_flight(&self, chat_key: &str) -> bool {
+        self.busy.lock().unwrap().iter().any(|key| key == chat_key)
+    }
+    fn tell_source(
+        &self,
+        origin: &QuestionOrigin,
+        text: String,
+        _turn_id: String,
+    ) -> Result<(), String> {
+        self.told
+            .lock()
+            .unwrap()
+            .push((origin.chat_key.clone(), text));
         Ok(())
     }
     fn checkout_free(&self, path: &str, _except: &[&str]) -> Result<(), String> {
@@ -477,9 +526,13 @@ fn a_failed_start_keeps_the_chat_id_and_the_worktree_for_the_retry() {
     let error = confirm(&w.store, &record.id, &host).unwrap_err();
     assert!(error.contains("CLI unavailable"));
     let failed = get(&w.store, &record.id).unwrap();
-    assert_eq!(failed.status, Status::Pending);
+    // Past the checks the worktree and the index exist: a start that failed
+    // there is retried, never declined.
+    assert_eq!(failed.status, Status::Starting);
     assert_eq!(failed.error.as_deref(), Some("CLI unavailable"));
     let key = failed.target_chat_key.clone().expect("the chat id is kept");
+    let refused = decline(&w.store, &record.id).unwrap_err();
+    assert!(refused.contains("can no longer be declined"), "{refused}");
 
     *host.fail_start.lock().unwrap() = false;
     let confirmed = confirm(&w.store, &record.id, &host).unwrap();
@@ -876,4 +929,356 @@ async fn a_tool_that_times_out_says_pending_and_leaves_the_decision_to_a_continu
     assert!(text.contains("End this turn now"), "{text}");
     decline(&w.store, &record.id).unwrap();
     assert!(hand_off_notice(&w.store, &record.id).unwrap().is_some());
+}
+
+// ---- review fixes: the checkout at confirm, a durable start, one writer -----
+
+/// A new worktree `name` of the app repository, and a source chat in it.
+fn source_in_worktree(w: &World, chat: &str, name: &str) -> (Source, PathBuf) {
+    let tree = w.root.join(name);
+    git(
+        &w.app,
+        &["worktree", "add", "-q", "-b", name, &tree.to_string_lossy()],
+    );
+    let mut src = source(chat);
+    src.cwd = Some(tree.to_string_lossy().into_owned());
+    (src, tree)
+}
+
+#[test]
+fn a_continued_checkout_that_changed_before_confirm_is_refused_and_stays_declinable() {
+    let w = world();
+    let host = FakeHost::of(&w);
+
+    // Its branch switched.
+    let (src, tree) = source_in_worktree(&w, "chat:s1", "work");
+    let record = request(&w.store, &host, src, ask("Mango", "r1")).unwrap();
+    assert_eq!(record.workspace.mode, "continue");
+    assert!(
+        !record.workspace.git_dir.is_empty(),
+        "the repository identity is recorded"
+    );
+    git(&tree, &["checkout", "-q", "-b", "elsewhere"]);
+    let error = confirm(&w.store, &record.id, &host).unwrap_err();
+    assert!(
+        error.contains("now has branch elsewhere checked out, not branch work"),
+        "{error}"
+    );
+    let kept = get(&w.store, &record.id).unwrap();
+    assert_eq!(kept.status, Status::Pending);
+    assert_eq!(
+        kept.error.as_deref(),
+        Some(error.as_str()),
+        "the card says why"
+    );
+    assert_eq!(kept.target_chat_key, None);
+    assert!(host.starts.lock().unwrap().is_empty());
+    assert!(host.saved.lock().unwrap().is_empty());
+    decline(&w.store, &record.id).unwrap();
+
+    // Moved away.
+    let (src, tree) = source_in_worktree(&w, "chat:s2", "moving");
+    let record = request(&w.store, &host, src, ask("Mango", "r1")).unwrap();
+    let moved = w.root.join("moved");
+    git(
+        &w.app,
+        &[
+            "worktree",
+            "move",
+            &tree.to_string_lossy(),
+            &moved.to_string_lossy(),
+        ],
+    );
+    let error = confirm(&w.store, &record.id, &host).unwrap_err();
+    assert!(error.contains("no longer exists"), "{error}");
+
+    // Replaced by a checkout of another repository at the same path.
+    let (src, replaced) = source_in_worktree(&w, "chat:s3", "replaced");
+    let record = request(&w.store, &host, src, ask("Mango", "r1")).unwrap();
+    fs::remove_dir_all(&replaced).unwrap();
+    let cloned = Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&w.other)
+        .arg(&replaced)
+        .output()
+        .unwrap();
+    assert!(cloned.status.success());
+    let error = confirm(&w.store, &record.id, &host).unwrap_err();
+    assert!(error.contains("is no longer a checkout of"), "{error}");
+
+    // Another worktree of the same repository, standing where the card's was.
+    #[cfg(unix)]
+    {
+        let (src, swapped) = source_in_worktree(&w, "chat:s4", "swapped");
+        let record = request(&w.store, &host, src, ask("Mango", "r1")).unwrap();
+        let decoy = w.root.join("decoy");
+        git(
+            &w.app,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "decoy",
+                &decoy.to_string_lossy(),
+            ],
+        );
+        fs::remove_dir_all(&swapped).unwrap();
+        std::os::unix::fs::symlink(&decoy, &swapped).unwrap();
+        let error = confirm(&w.store, &record.id, &host).unwrap_err();
+        assert!(error.contains("is now a different worktree of"), "{error}");
+    }
+    assert!(
+        host.starts.lock().unwrap().is_empty(),
+        "nothing ever started"
+    );
+}
+
+#[test]
+fn a_head_that_advanced_on_the_same_branch_is_refreshed_not_refused() {
+    let w = world();
+    let (src, tree) = source_in_worktree(&w, "chat:s1", "work");
+    let record = request(&w.store, &FakeHost::of(&w), src, ask("Mango", "r1")).unwrap();
+    assert_eq!(record.workspace.uncommitted, Some(false));
+    fs::write(tree.join("more"), "work").unwrap();
+    git(&tree, &["add", "more"]);
+    git(&tree, &["commit", "-q", "-m", "more"]);
+    fs::write(tree.join("wip"), "half").unwrap();
+    let head = crate::git::run_git(&tree.to_string_lossy(), &["rev-parse", "--short", "HEAD"])
+        .unwrap()
+        .trim()
+        .to_owned();
+    assert_ne!(head, record.workspace.head);
+
+    let host = FakeHost::of(&w);
+    let confirmed = confirm(&w.store, &record.id, &host).unwrap();
+    assert_eq!(
+        confirmed.workspace.head, head,
+        "the card shows what started"
+    );
+    assert_eq!(confirmed.workspace.uncommitted, Some(true));
+    assert_eq!(get(&w.store, &record.id).unwrap().workspace.head, head);
+    assert_eq!(host.starts.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_start_whose_record_could_not_be_saved_is_never_declined_or_started_twice() {
+    for recovered_by in ["retry", "restart"] {
+        let w = world();
+        let record = request(
+            &w.store,
+            &FakeHost::of(&w),
+            source("chat:s1"),
+            ask("Mango", "r1"),
+        )
+        .unwrap();
+        let host = FakeHost::of(&w);
+        *host.break_store.lock().unwrap() = Some(w.store.clone());
+        assert!(confirm(&w.store, &record.id, &host).is_err());
+        assert_eq!(host.starts.lock().unwrap().len(), 1, "the chat did start");
+        mend_store(&w.store);
+
+        // On disk it is starting: the chat may exist, so no decline.
+        let stuck = get(&w.store, &record.id).unwrap();
+        assert_eq!(stuck.status, Status::Starting);
+        assert!(stuck.target_chat_key.is_some());
+        let refused = decline(&w.store, &record.id).unwrap_err();
+        assert!(refused.contains("can no longer be declined"), "{refused}");
+        assert_eq!(get(&w.store, &record.id).unwrap().status, Status::Starting);
+
+        if recovered_by == "retry" {
+            let done = confirm(&w.store, &record.id, &host).unwrap();
+            assert_eq!(done.status, Status::Confirmed);
+        } else {
+            // The restart: no waiter, no memory, only the file.
+            WAITERS.lock().unwrap().remove(&record.id);
+            let finished = recover(&w.store, &host).unwrap();
+            assert_eq!(finished, vec![record.id.clone()]);
+            assert!(recover(&w.store, &host).unwrap().is_empty(), "once");
+        }
+        let done = get(&w.store, &record.id).unwrap();
+        assert_eq!(done.status, Status::Confirmed, "{recovered_by}");
+        assert_eq!(done.target_chat_key, stuck.target_chat_key);
+        assert_eq!(host.starts.lock().unwrap().len(), 1, "never twice");
+        assert!(decline(&w.store, &record.id).is_err());
+        // And the asking agent is owed the decision.
+        assert!(hand_off_notice(&w.store, &record.id).unwrap().is_some());
+    }
+}
+
+#[test]
+fn a_start_a_restart_cut_off_before_the_chat_is_retried_and_never_declined() {
+    let w = world();
+    let record = request(
+        &w.store,
+        &FakeHost::of(&w),
+        source("chat:s1"),
+        ask("Mango", "r1"),
+    )
+    .unwrap();
+    let host = FakeHost::of(&w);
+    *host.fail_start.lock().unwrap() = true;
+    confirm(&w.store, &record.id, &host).unwrap_err();
+    assert!(recover(&w.store, &host).unwrap().is_empty());
+    let after = get(&w.store, &record.id).unwrap();
+    assert_eq!(after.status, Status::Starting);
+    assert_eq!(after.error.as_deref(), Some(INTERRUPTED));
+    assert!(decline(&w.store, &record.id).is_err());
+    assert!(
+        host.starts.lock().unwrap().is_empty(),
+        "recovery starts nothing"
+    );
+    assert!(
+        after.abandonable,
+        "no chat was started, so it may be given up"
+    );
+    *host.fail_start.lock().unwrap() = false;
+    confirm(&w.store, &record.id, &host).unwrap();
+    assert_eq!(host.starts.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_start_that_keeps_failing_can_be_given_up_once_no_chat_was_started() {
+    let w = world();
+    let record = request(
+        &w.store,
+        &FakeHost::of(&w),
+        source("chat:s1"),
+        ask("Mango", "r1"),
+    )
+    .unwrap();
+    let host = FakeHost::of(&w);
+    *host.fail_start.lock().unwrap() = true;
+    // Abandoning is for a confirmed handover only.
+    let early = abandon(&w.store, &record.id, &host).unwrap_err();
+    assert!(early.contains("Keep it here"), "{early}");
+    for _ in 0..3 {
+        confirm(&w.store, &record.id, &host).unwrap_err();
+    }
+    let stuck = get(&w.store, &record.id).unwrap();
+    assert_eq!(stuck.status, Status::Starting);
+    assert!(stuck.abandonable);
+    let worktree = stuck.workspace.prepared_cwd.clone().expect("made once");
+
+    // A process under its id rules nothing out: refused while it runs.
+    let key = stuck.target_chat_key.clone().unwrap();
+    host.live.lock().unwrap().push(key.clone());
+    let refused = abandon(&w.store, &record.id, &host).unwrap_err();
+    assert!(refused.contains("may already have started"), "{refused}");
+    assert!(!get(&w.store, &record.id).unwrap().abandonable);
+    host.live.lock().unwrap().clear();
+
+    let given_up = abandon(&w.store, &record.id, &host).unwrap();
+    assert_eq!(given_up.status, Status::Abandoned);
+    assert!(abandon(&w.store, &record.id, &host).is_ok(), "idempotent");
+    assert!(confirm(&w.store, &record.id, &host).is_err());
+    assert!(decline(&w.store, &record.id).is_err());
+    assert!(
+        host.starts.lock().unwrap().is_empty(),
+        "nothing was started"
+    );
+    assert_eq!(
+        *host.worktrees.lock().unwrap(),
+        1,
+        "one worktree, made once"
+    );
+    assert!(Path::new(&worktree).is_dir(), "and kept");
+    // The asking agent is told the task is its own again.
+    let owed = hand_off_notice(&w.store, &record.id).unwrap().unwrap();
+    let (text, _) = continuation(&owed, None);
+    assert!(text.contains("Nothing was handed over"), "{text}");
+    // And the chat may ask again.
+    let mut again = ask("Mango", "r2");
+    again.brief.objective = "Try again".into();
+    request(&w.store, &FakeHost::of(&w), source("chat:s1"), again).unwrap();
+}
+
+#[test]
+fn a_start_that_may_have_happened_cannot_be_given_up_and_a_retry_finishes_it() {
+    let w = world();
+    let record = request(
+        &w.store,
+        &FakeHost::of(&w),
+        source("chat:s1"),
+        ask("Mango", "r1"),
+    )
+    .unwrap();
+    let host = FakeHost::of(&w);
+    *host.break_store.lock().unwrap() = Some(w.store.clone());
+    confirm(&w.store, &record.id, &host).unwrap_err();
+    mend_store(&w.store);
+    let stuck = get(&w.store, &record.id).unwrap();
+    assert_eq!(stuck.status, Status::Starting);
+    assert!(!stuck.abandonable, "the card offers a retry only");
+    // A second handover from the chat waits while this one is starting.
+    let mut again = ask("Mango", "r2");
+    again.brief.objective = "Another".into();
+    let open = request(&w.store, &FakeHost::of(&w), source("chat:s1"), again).unwrap_err();
+    assert!(open.contains("still waiting"), "{open}");
+
+    let refused = abandon(&w.store, &record.id, &host).unwrap_err();
+    assert!(refused.contains("may already have started"), "{refused}");
+    assert_eq!(get(&w.store, &record.id).unwrap().status, Status::Starting);
+    let done = confirm(&w.store, &record.id, &host).unwrap();
+    assert_eq!(done.status, Status::Confirmed);
+    assert_eq!(host.starts.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_source_still_working_in_the_checkout_is_never_given_a_second_writer() {
+    let w = world();
+    let (src, _tree) = source_in_worktree(&w, "chat:s1", "work");
+    let record = request(&w.store, &FakeHost::of(&w), src, ask("Mango", "r1")).unwrap();
+    let host = FakeHost::of(&w);
+    host.busy.lock().unwrap().push("chat:s1".into());
+
+    // The source resumed work after its call let go: nothing starts.
+    let error = confirm(&w.store, &record.id, &host).unwrap_err();
+    assert!(error.contains("still has a turn running"), "{error}");
+    assert!(host.starts.lock().unwrap().is_empty());
+    assert_eq!(get(&w.store, &record.id).unwrap().status, Status::Pending);
+
+    // Blocked in its own handover call, it is fenced: the decision is that
+    // call's result.
+    let (tx, rx) = oneshot::channel();
+    WAITERS.lock().unwrap().insert(record.id.clone(), tx);
+    confirm(&w.store, &record.id, &host).unwrap();
+    drop(rx);
+    WAITERS.lock().unwrap().remove(&record.id);
+    let prompt = host.starts.lock().unwrap()[0].prompt.clone();
+    assert!(
+        prompt.contains("was still waiting on its handover call"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("has been told"), "{prompt}");
+
+    // A source with no turn running is said to be just that.
+    let (src, _tree) = source_in_worktree(&w, "chat:s2", "idle");
+    let record = request(&w.store, &FakeHost::of(&w), src, ask("Mango", "r1")).unwrap();
+    confirm(&w.store, &record.id, &host).unwrap();
+    let prompt = host.starts.lock().unwrap()[1].prompt.clone();
+    assert!(prompt.contains("had no turn running"), "{prompt}");
+    assert!(prompt.contains("check with the person"), "{prompt}");
+
+    // A call whose connection has gone is no fence.
+    let (src, _tree) = source_in_worktree(&w, "chat:s3", "gone");
+    let record = request(&w.store, &FakeHost::of(&w), src, ask("Mango", "r1")).unwrap();
+    host.busy.lock().unwrap().push("chat:s3".into());
+    let (tx, rx) = oneshot::channel::<()>();
+    drop(rx);
+    WAITERS.lock().unwrap().insert(record.id.clone(), tx);
+    let error = confirm(&w.store, &record.id, &host).unwrap_err();
+    WAITERS.lock().unwrap().remove(&record.id);
+    assert!(error.contains("still has a turn running"), "{error}");
+
+    // A fresh worktree shares nothing, so a working source holds nothing up.
+    let mut src = source("chat:s4");
+    src.cwd = Some(w.other.to_string_lossy().into_owned());
+    let record = request(&w.store, &FakeHost::of(&w), src, ask("Mango", "r1")).unwrap();
+    assert_eq!(record.workspace.mode, "worktree");
+    host.busy.lock().unwrap().push("chat:s4".into());
+    confirm(&w.store, &record.id, &host).unwrap();
+    assert!(host.starts.lock().unwrap()[2]
+        .prompt
+        .contains("new worktree"));
 }

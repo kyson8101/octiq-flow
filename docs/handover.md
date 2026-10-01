@@ -19,10 +19,22 @@ Code: `src-tauri/src/handover.rs` (host), `scripts/mcp/octiq-ask.cjs` (the
 3. The person presses **Hand over** (`handover_confirm`) or **Keep it here**
    (`handover_decline`). Both are socket-only commands. No hook action reaches
    them, and the hook takes only a brief.
-4. On confirm, the host starts the recipient's chat. A waiting tool returns the
-   decision. Otherwise the decision reaches the source chat as a host
-   continuation turn (`agent_chat::continue_origin`, the same path a late
-   `ask_user` answer takes).
+4. On confirm, the host re-runs every check (see below). A refusal leaves the
+   handover PENDING, with the reason on the card, and it can still be
+   declined. Otherwise the host saves it as STARTING, with the new chat's id,
+   before anything irreversible, and then starts the recipient's chat. A
+   STARTING handover can no longer be declined, because its chat may exist. A
+   start that fails is retried from the card. When the host has made sure no
+   chat was started, the card also offers **Give up** (`handover_abandon`,
+   socket-only). To be sure, there must be no first turn in the new chat's
+   transcript and no process under its id. Give up ends the handover as
+   ABANDONED, a terminal state distinct from declined, keeps any worktree made
+   for it, and tells the source agent the task is its own again. If a start
+   cannot be ruled out, Give up is refused and the card offers only a retry.
+   Only PENDING and STARTING block a new handover from the same chat.
+5. A waiting tool returns the decision. Otherwise the decision reaches the
+   source chat as a host continuation turn (`agent_chat::continue_origin`, the
+   same path a late `ask_user` answer takes).
 
 ## What the host decides, never the model
 
@@ -46,6 +58,18 @@ Code: `src-tauri/src/handover.rs` (host), `scripts/mcp/octiq-ask.cjs` (the
     live chat, is refused at request time and checked again at confirm.
   - The card shows branch, HEAD and whether anything is uncommitted. These are
     read from git, not from the brief.
+  - At confirm, a continued checkout is read from git again. It must still be
+    listed by `git worktree list` for the destination repository at the same
+    path, with the same git directory (the request records it, and it is one
+    per worktree) and the same branch. A moved, replaced or branch-switched
+    checkout is refused. Commits added on the same branch are not: HEAD and
+    the uncommitted flag are refreshed, so the card matches what started.
+- **One writer**: when the new chat shares a checkout with the source (a
+  continued worktree, or a plain folder), the confirm is refused while the
+  source chat has a turn in flight. The exception is the source's own
+  `handover` call still waiting: the agent is blocked in it, and the decision
+  is that call's result. The new chat's first message says which of the two
+  held when the person confirmed, and never claims the source has stopped.
 - **Refused outright**:
   - orchestration workers, which settle through `orchestration_worker_report`;
   - a chat coordinating a run that has not ended, since the run stays with it;
@@ -54,9 +78,15 @@ Code: `src-tauri/src/handover.rs` (host), `scripts/mcp/octiq-ask.cjs` (the
 
 ## Guarantees
 
-- Exactly one chat per handover. The target chat id is written before the
-  start, and a retried confirm reuses it along with any worktree it made.
-  Confirm and decline share one lock, so only one of them can win.
+- Exactly one chat per handover. The target chat id is saved with STARTING,
+  before the start, and a retried confirm reuses it along with any worktree it
+  made. A retry, and the recovery that runs at server start
+  (`handover::live_recover`), first look for the new chat's first turn in its
+  transcript. That turn is recorded only once the agent was spawned with it.
+  When it is there, the record is only finished as CONFIRMED and the source is
+  told. When it is not, recovery marks the handover as interrupted, to retry
+  from the card. Recovery never starts a chat. Confirm and decline share one
+  lock, so only one of them can win.
 - Approvals do not travel. What the brief lists as carried authorization is
   shown to the recipient as the source agent's quoted words, not as a grant.
 - A registered recipient's chat becomes its lead chat (`team::handover_brief`

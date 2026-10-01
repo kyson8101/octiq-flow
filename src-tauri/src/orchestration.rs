@@ -5816,6 +5816,7 @@ pub(crate) mod tests {
             git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
             orchestrations: store.clone(),
             ptys: Arc::new(crate::pty::PtyManager::default()),
+            handovers: crate::handover::Wiring::scratch(),
         };
         let commands = [
             "chat_start",

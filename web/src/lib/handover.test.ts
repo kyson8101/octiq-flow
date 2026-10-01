@@ -28,6 +28,12 @@ describe("handover records", () => {
     expect(mergeHandover(list, handover())).toEqual(list);
     const declined = mergeHandover([handover()], handover({ status: "declined" }));
     expect(declined[0].status).toBe("declined");
+    // Starting sits between: past pending, short of confirmed.
+    const starting = mergeHandover([handover()], handover({ status: "starting" }));
+    expect(starting[0].status).toBe("starting");
+    expect(mergeHandover(starting, handover())).toEqual(starting);
+    expect(mergeHandover(starting, decided)[0].status).toBe("confirmed");
+    expect(mergeHandover(list, handover({ status: "starting" }))).toEqual(list);
     // New records keep creation order.
     expect(mergeHandover([handover({ id: "b", createdAt: 20 })], handover({ id: "a", createdAt: 5 })).map((h) => h.id))
       .toEqual(["a", "b"]);
@@ -35,7 +41,11 @@ describe("handover records", () => {
 
   it("names each state the way the card says it", () => {
     expect(handoverHeadline(handover(), "source")).toBe("Hand this task to Mango?");
+    expect(handoverHeadline(handover({ status: "starting" }), "source")).toBe("Starting Mango's chat…");
+    expect(handoverHeadline(handover({ status: "starting", error: "CLI unavailable" }), "source"))
+      .toBe("Mango's chat did not start");
     expect(handoverHeadline(handover({ status: "confirmed" }), "source")).toBe("Handed over to Mango");
+    expect(handoverHeadline(handover({ status: "abandoned" }), "source")).toBe("Kept here: Mango's chat could not start");
     expect(handoverHeadline(handover({ status: "declined" }), "source")).toBe("Kept here: handover to Mango declined");
     expect(handoverHeadline(handover({ status: "confirmed" }), "target")).toBe("Handed over from Potato");
   });

@@ -8,7 +8,7 @@
 import { useState } from "react";
 import {
   chatIdOf, handoverHeadline, noticeLine, placeLine, settingsLine,
-  type Handover,
+  type Handover, type HandoverAction,
 } from "../lib/handover";
 import "./HandoverCards.css";
 
@@ -88,25 +88,29 @@ function Facts({ handover }: { handover: Handover }) {
 
 function SourceCard({ handover, onDecide, onOpen }: {
   handover: Handover;
-  onDecide: (id: string, confirm: boolean) => Promise<unknown>;
+  onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
   onOpen: Open;
 }) {
-  const [busy, setBusy] = useState<"confirm" | "decline" | null>(null);
+  const [busy, setBusy] = useState<HandoverAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pending = handover.status === "pending";
-  const decide = async (confirm: boolean) => {
-    setBusy(confirm ? "confirm" : "decline");
+  // Confirmed, and its chat not started yet: it can only go forward.
+  const starting = handover.status === "starting";
+  const decide = async (action: HandoverAction) => {
+    setBusy(action);
     setError(null);
     try {
-      await onDecide(handover.id, confirm);
+      await onDecide(handover.id, action);
     } catch (reason) {
       setError(String((reason as Error)?.message ?? reason));
     } finally {
       setBusy(null);
     }
   };
-  const failed = error ?? (pending ? handover.error : undefined);
+  const failed = error ?? (pending || starting ? handover.error : undefined);
   const notice = noticeLine(handover);
+  // Declined or given up: one quiet line.
+  const folded = handover.status === "declined" || handover.status === "abandoned";
   return (
     <section
       className={`handover-card is-${handover.status}`}
@@ -118,19 +122,40 @@ function SourceCard({ handover, onDecide, onOpen }: {
         <span className="handover-mark" aria-hidden="true" />
         <h3>{handoverHeadline(handover, "source")}</h3>
       </header>
-      {handover.status !== "declined" && <Facts handover={handover} />}
-      {handover.status !== "declined" && <BriefDetails handover={handover} />}
+      {!folded && <Facts handover={handover} />}
+      {!folded && <BriefDetails handover={handover} />}
       {failed && <p className="handover-error" role="alert">{failed}</p>}
       {notice && <p className="handover-note">{notice}</p>}
       {pending && (
         <footer className="handover-actions">
           <span className="handover-hint">Nothing starts until you choose.</span>
-          <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide(false)}>
+          <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")}>
             {busy === "decline" ? "Keeping…" : "Keep it here"}
           </button>
-          <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide(true)}>
+          <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
             {busy === "confirm" ? "Handing over…" : `Hand over to ${handover.to.name}`}
           </button>
+        </footer>
+      )}
+      {starting && (
+        <footer className="handover-actions">
+          <span className="handover-hint">
+            {!handover.error
+              ? "Starting the new chat."
+              : handover.abandonable
+                ? "No chat was started. Try again, or give up and keep the task here."
+                : "Its chat may already have started, so it can only be tried again."}
+          </span>
+          {handover.error && handover.abandonable && (
+            <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")}>
+              {busy === "abandon" ? "Giving up…" : "Give up"}
+            </button>
+          )}
+          {handover.error && (
+            <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
+              {busy === "confirm" ? "Starting…" : "Try again"}
+            </button>
+          )}
         </footer>
       )}
       {handover.status === "confirmed" && handover.targetChatKey && (
@@ -182,7 +207,7 @@ function TargetCard({ handover, onOpen, sourceProjectId }: {
 export function HandoverCards({ outgoing, incoming, onDecide, onOpen, projectOf }: {
   outgoing: readonly Handover[];
   incoming: Handover | null;
-  onDecide: (id: string, confirm: boolean) => Promise<unknown>;
+  onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
   onOpen: Open;
   /** The project a chat belongs to, for opening it. */
   projectOf?: (chatKey: string) => string | null;
