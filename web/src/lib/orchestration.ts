@@ -96,6 +96,7 @@ export type PlanApproval = {
   };
   rejection?: {
     by: "person"; revision: number; at: number; reason?: string; taskIds: string[];
+    restoredTaskIds?: string[];
     surface: "chat" | "panel" | "unknown"; shownMs?: number;
   };
 };

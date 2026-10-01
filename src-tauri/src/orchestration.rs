@@ -226,8 +226,12 @@ pub struct PlanRejection {
     pub at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// The exact unapproved top-level tasks withdrawn by this decision.
+    /// The exact top-level tasks in the rejected revision.
     pub task_ids: Vec<String>,
+    /// Tasks in that revision which had an earlier approved state restored
+    /// instead of being withdrawn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restored_task_ids: Vec<String>,
     pub surface: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown_ms: Option<u64>,
@@ -341,6 +345,12 @@ pub struct Task {
     /// again, so new or re-routed work never rides an earlier approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_at: Option<i64>,
+    /// The state the person approved before a resize or reassignment put this
+    /// task back in front of them. Approving the amendment discards it;
+    /// rejecting the amendment restores it. Persisted because the decision
+    /// may arrive after a host restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approval_rollback: Option<TaskApprovalRollback>,
     /// The task in the plan's standard shape: one line of problem, one line
     /// of goal, and a few checkable acceptance criteria. Given by the lead
     /// when it creates the task and fixed from then on, like the destination.
@@ -392,6 +402,55 @@ pub struct Task {
     pub handoffs: Vec<TaskHandoff>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskApprovalRollback {
+    approved_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    worker: Option<automation::WorkerSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assignee: Option<TaskAssignee>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination: Option<TaskDestination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size: Option<TaskSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_proposal: Option<WorkspaceProposal>,
+    status: TaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result: Option<String>,
+    handoffs_len: usize,
+}
+
+impl TaskApprovalRollback {
+    fn capture(task: &Task) -> Option<Self> {
+        Some(Self {
+            approved_at: task.approved_at?,
+            worker: task.worker.clone(),
+            assignee: task.assignee.clone(),
+            destination: task.destination.clone(),
+            size: task.size,
+            workspace_proposal: task.workspace_proposal.clone(),
+            status: task.status,
+            result: task.result.clone(),
+            handoffs_len: task.handoffs.len(),
+        })
+    }
+
+    fn restore(self, task: &mut Task, now: i64) {
+        task.approved_at = Some(self.approved_at);
+        task.worker = self.worker;
+        task.assignee = self.assignee;
+        task.destination = self.destination;
+        task.size = self.size;
+        task.workspace_proposal = self.workspace_proposal;
+        task.status = self.status;
+        task.result = self.result;
+        task.handoffs.truncate(self.handoffs_len);
+        task.updated_at = now;
+    }
 }
 
 /// The pending host operation an attempt shows while its environment builds.
@@ -1536,7 +1595,13 @@ impl OrchestrationStore {
                 })
                 .collect();
             if plan.status != PlanStatus::Pending {
-                return Ok(run.clone());
+                return match plan.status {
+                    PlanStatus::Approved => Ok(run.clone()),
+                    PlanStatus::Rejected => Err(
+                        "The person rejected this plan; nothing was approved".into(),
+                    ),
+                    PlanStatus::Pending => unreachable!(),
+                };
             }
             if saw.is_empty() || saw.iter().any(Option::is_none) {
                 return Err("This plan was not on the person's screen when they sent that message, so it cannot be their approval. Show them the plan; they can approve it in chat or on its card.".into());
@@ -1742,6 +1807,7 @@ impl OrchestrationStore {
                 assignee,
                 destination,
                 approved_at: None,
+                approval_rollback: None,
                 card,
                 size: Some(size.unwrap_or_default()),
                 acceptance: None,
@@ -1887,6 +1953,9 @@ impl OrchestrationStore {
             });
             let now = now_ms();
             let task = data.tasks.get_mut(task_id).ok_or("The task does not exist.")?;
+            if task.approval_rollback.is_none() {
+                task.approval_rollback = TaskApprovalRollback::capture(task);
+            }
             task.handoffs.push(TaskHandoff {
                 from: task.assignee.clone(),
                 to: assignee.clone(),
@@ -3524,59 +3593,64 @@ impl OrchestrationStore {
         self.mutate(|data| {
             coordinator(data, &run_id, actor_chat_key)?;
             let now = now_ms();
-            for n in data.notifications.values_mut().filter(|n| {
-                n.run_id == run_id
-                    && matches!(
-                        n.state,
-                        inbox::DeliveryState::Pending | inbox::DeliveryState::Delivering
-                    )
-            }) {
-                n.state = inbox::DeliveryState::Cancelled;
-                n.updated_at = now;
-            }
-            let mut workers = Vec::new();
-            for task in data.tasks.values_mut().filter(|task| task.run_id == run_id) {
-                if !matches!(task.status, TaskStatus::Completed | TaskStatus::Failed) {
-                    task.status = TaskStatus::Cancelled;
-                    task.updated_at = now;
-                }
-            }
-            for attempt in data
-                .attempts
-                .values_mut()
-                .filter(|attempt| attempt.run_id == run_id)
-            {
-                attempt.execution.next_retry_at = None;
-                if matches!(
-                    attempt.status,
-                    AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
-                ) {
-                    attempt.status = AttemptStatus::Cancelled;
-                    attempt.execution.state = execution::ExecutionState::Cancelled;
-                    attempt.execution.current_operation = None;
-                    attempt.finished_at.get_or_insert(now);
-                    attempt.updated_at = now;
-                    workers.push(attempt.worker_chat_key.clone());
-                }
-            }
-            for gate in data.gates.values_mut().filter(|gate| gate.run_id == run_id) {
-                if gate.status == GateStatus::Open {
-                    gate.status = GateStatus::Cancelled;
-                    gate.updated_at = now;
-                }
-            }
-            let run = data
-                .runs
-                .get_mut(&run_id)
-                .expect("the run was checked above");
-            run.status = RunStatus::Stopped;
-            run.stopped_reason = Some(reason);
-            run.updated_at = now;
+            let workers = stop_run_in(data, &run_id, reason, now);
             retention::prune_run(data, &run_id);
             Ok(workers)
         })
         .inspect(|_| announce(&run_id_for_event, "run_stopped"))
     }
+}
+
+fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec<String> {
+    for notification in data.notifications.values_mut().filter(|notification| {
+        notification.run_id == run_id
+            && matches!(
+                notification.state,
+                inbox::DeliveryState::Pending | inbox::DeliveryState::Delivering
+            )
+    }) {
+        notification.state = inbox::DeliveryState::Cancelled;
+        notification.updated_at = now;
+    }
+    for task in data.tasks.values_mut().filter(|task| task.run_id == run_id) {
+        if !matches!(task.status, TaskStatus::Completed | TaskStatus::Failed) {
+            task.status = TaskStatus::Cancelled;
+            task.updated_at = now;
+        }
+    }
+    let mut workers = Vec::new();
+    for attempt in data
+        .attempts
+        .values_mut()
+        .filter(|attempt| attempt.run_id == run_id)
+    {
+        attempt.execution.next_retry_at = None;
+        if matches!(
+            attempt.status,
+            AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
+        ) {
+            attempt.status = AttemptStatus::Cancelled;
+            attempt.execution.state = execution::ExecutionState::Cancelled;
+            attempt.execution.current_operation = None;
+            attempt.finished_at.get_or_insert(now);
+            attempt.updated_at = now;
+            workers.push(attempt.worker_chat_key.clone());
+        }
+    }
+    for gate in data.gates.values_mut().filter(|gate| gate.run_id == run_id) {
+        if gate.status == GateStatus::Open {
+            gate.status = GateStatus::Cancelled;
+            gate.updated_at = now;
+        }
+    }
+    let run = data
+        .runs
+        .get_mut(run_id)
+        .expect("the run was checked above");
+    run.status = RunStatus::Stopped;
+    run.stopped_reason = Some(reason);
+    run.updated_at = now;
+    workers
 }
 
 fn workspace(state: &WorkspaceState, id: &str) -> Result<Workspace, String> {
@@ -3755,7 +3829,17 @@ fn decide_plan_in(
         .as_ref()
         .ok_or("This run has no plan waiting for approval.")?;
     if plan.status != PlanStatus::Pending {
-        return Ok(run.clone());
+        return match (&decision, plan.status) {
+            (PlanDecision::Approve(_), PlanStatus::Approved)
+            | (PlanDecision::Reject { .. }, PlanStatus::Rejected) => Ok(run.clone()),
+            (PlanDecision::Approve(_), PlanStatus::Rejected) => {
+                Err("The person rejected this plan; nothing was approved".into())
+            }
+            (PlanDecision::Reject { .. }, PlanStatus::Approved) => {
+                Err("The person approved this plan; nothing was rejected".into())
+            }
+            (_, PlanStatus::Pending) => unreachable!(),
+        };
     }
     if run_has_ended(run) {
         return Err("This run has ended.".into());
@@ -3778,7 +3862,20 @@ fn decide_plan_in(
         );
     }
     let plan_revision = plan.revision;
-    let previously_approved = plan.consent.is_some();
+    let first_plan = !data.tasks.values().any(|task| {
+        task.run_id == run_id
+            && !waiting.contains(&task.id)
+            && task.approved_at.is_some()
+            && task.status != TaskStatus::Cancelled
+    }) && !data
+        .attempts
+        .values()
+        .any(|attempt| attempt.run_id == run_id)
+        && !waiting.iter().any(|id| {
+            data.tasks
+                .get(id)
+                .is_some_and(|task| task.approval_rollback.is_some())
+        });
     let now = now_ms();
     match decision {
         PlanDecision::Approve(mut consent) => {
@@ -3801,6 +3898,7 @@ fn decide_plan_in(
             for task in data.tasks.values_mut() {
                 if waiting.contains(&task.id) {
                     task.approved_at = Some(now);
+                    task.approval_rollback = None;
                 }
             }
         }
@@ -3810,33 +3908,34 @@ fn decide_plan_in(
             shown_ms,
         } => {
             let task_ids: Vec<String> = waiting.iter().cloned().collect();
-            let task_labels: Vec<String> = task_ids
-                .iter()
-                .filter_map(|id| data.tasks.get(id).map(|task| task.title.clone()))
-                .collect();
+            let mut restored_task_ids = Vec::new();
+            let mut restored_labels = Vec::new();
+            let mut withdrawn_labels = Vec::new();
+            for id in &task_ids {
+                let task = data.tasks.get_mut(id).expect("the waiting task exists");
+                if let Some(rollback) = task.approval_rollback.take() {
+                    restored_task_ids.push(id.clone());
+                    restored_labels.push(task.title.clone());
+                    rollback.restore(task, now);
+                } else {
+                    withdrawn_labels.push(task.title.clone());
+                    task.status = TaskStatus::Cancelled;
+                    task.result = Some(format!(
+                        "Rejected by the person with plan revision {plan_revision}."
+                    ));
+                    task.updated_at = now;
+                }
+            }
             let rejection = PlanRejection {
                 by: "person".into(),
                 revision: plan_revision,
                 at: now,
                 reason: reason.clone(),
                 task_ids: task_ids.clone(),
+                restored_task_ids,
                 surface,
                 shown_ms,
             };
-            for task in data.tasks.values_mut().filter(|task| {
-                task.run_id == run_id
-                    && if previously_approved {
-                        waiting.contains(&task.id)
-                    } else {
-                        !matches!(task.status, TaskStatus::Completed | TaskStatus::Failed)
-                    }
-            }) {
-                task.status = TaskStatus::Cancelled;
-                task.result = Some(format!(
-                    "Rejected by the person with plan revision {plan_revision}."
-                ));
-                task.updated_at = now;
-            }
             {
                 let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
                 let plan = run
@@ -3847,39 +3946,48 @@ fn decide_plan_in(
                 plan.decided_at = Some(now);
                 plan.rejection = Some(rejection);
                 run.updated_at = now;
-                if !previously_approved {
-                    run.status = RunStatus::Stopped;
-                    run.stopped_reason = Some(match &reason {
-                        Some(reason) => format!(
-                            "Plan revision {plan_revision} rejected by the person: {reason}"
-                        ),
-                        None => format!("Plan revision {plan_revision} rejected by the person."),
-                    });
-                }
             }
-            if previously_approved {
-                recompute_run(data, run_id);
+            if first_plan {
+                let stopped_reason = match &reason {
+                    Some(reason) => {
+                        format!("Plan revision {plan_revision} rejected by the person: {reason}")
+                    }
+                    None => format!("Plan revision {plan_revision} rejected by the person."),
+                };
+                stop_run_in(data, run_id, stopped_reason, now);
             } else {
-                for notification in data.notifications.values_mut().filter(|notification| {
-                    notification.run_id == run_id
-                        && matches!(
-                            notification.state,
-                            inbox::DeliveryState::Pending | inbox::DeliveryState::Delivering
-                        )
-                }) {
-                    notification.state = inbox::DeliveryState::Cancelled;
-                    notification.updated_at = now;
-                }
+                recompute_run(data, run_id);
             }
-            let listed = if task_labels.is_empty() {
+            let listed = if task_ids.is_empty() {
                 "no tasks".into()
             } else {
-                task_labels.join(", ")
+                task_ids
+                    .iter()
+                    .filter_map(|id| data.tasks.get(id).map(|task| task.title.clone()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             };
             let why = reason
                 .as_deref()
                 .map(|reason| format!(" Their reason was: “{reason}”"))
                 .unwrap_or_default();
+            let amendment_result = if first_plan {
+                String::new()
+            } else {
+                let withdrawn = (!withdrawn_labels.is_empty())
+                    .then(|| format!(" New tasks withdrawn: {}.", withdrawn_labels.join(", ")));
+                let restored = (!restored_labels.is_empty()).then(|| {
+                    format!(
+                        " Previously approved tasks restored: {}. Their approved size and assignment remain in effect.",
+                        restored_labels.join(", ")
+                    )
+                });
+                format!(
+                    "{}{} The run continues from the previously approved plan.",
+                    withdrawn.unwrap_or_default(),
+                    restored.unwrap_or_default()
+                )
+            };
             inbox::enqueue(
                 data,
                 run_id,
@@ -3888,7 +3996,7 @@ fn decide_plan_in(
                 format!("plan-rejected:{run_id}:{plan_revision}"),
                 "plan_rejected",
                 format!(
-                    "The person rejected plan revision {plan_revision} ({listed}).{why} This records their decision; it is not an instruction to make another plan."
+                    "The person rejected plan revision {plan_revision} ({listed}).{why}{amendment_result} This records their decision; it is not an instruction to make another plan."
                 ),
             );
             retention::prune_run(data, run_id);
@@ -5462,6 +5570,15 @@ pub(crate) mod tests {
         let (run, task) = pending_plan(&store);
         let revision = plan_of(&store, &run.id).revision;
         let seen = [task.id.clone()];
+        let gate = store
+            .create_gate(
+                "chat:master",
+                run.id.clone(),
+                None,
+                "Should this plan proceed?".into(),
+                vec!["Yes".into(), "No".into()],
+            )
+            .unwrap();
         let view = || CardView {
             surface: "chat".into(),
             shown_ms: Some(4_000),
@@ -5535,6 +5652,19 @@ pub(crate) mod tests {
         );
         let snapshot = store.snapshot(Some(&run.id)).unwrap();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Cancelled);
+        assert_eq!(
+            snapshot
+                .gates
+                .iter()
+                .find(|candidate| candidate.id == gate.id)
+                .unwrap()
+                .status,
+            GateStatus::Cancelled
+        );
+        assert!(snapshot.attempts.iter().all(|attempt| !matches!(
+            attempt.status,
+            AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
+        )));
         assert!(store
             .reserve_attempt("chat:master", &launch_for(&task.id))
             .is_err());
@@ -5646,6 +5776,330 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn rejecting_new_work_on_a_legacy_approved_run_never_stops_its_worker() {
+        // Runs approved before consent evidence was introduced have approved
+        // tasks and attempts but no PlanConsent. That missing evidence must
+        // not turn a later amendment rejection into a whole-plan stop.
+        let store = OrchestrationStore::default();
+        let (run, approved_task) = pending_plan(&store);
+        let first_revision = plan_of(&store, &run.id).revision;
+        store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[approved_task.id.clone()]),
+                Some(first_revision),
+            )
+            .unwrap();
+        store
+            .mutate(|data| {
+                data.runs
+                    .get_mut(&run.id)
+                    .unwrap()
+                    .plan_approval
+                    .as_mut()
+                    .unwrap()
+                    .consent = None;
+                Ok(())
+            })
+            .unwrap();
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(&approved_task.id))
+            .unwrap();
+        let new_task = task(&store, &run, Vec::new());
+        let revision = plan_of(&store, &run.id).revision;
+
+        let rejected = store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&[new_task.id.clone()]),
+                Some(revision),
+                None,
+                CardView {
+                    surface: "panel".into(),
+                    shown_ms: Some(2_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(rejected.status, RunStatus::Running);
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let by_id = |id: &str| snapshot.tasks.iter().find(|task| task.id == id).unwrap();
+        assert_eq!(by_id(&approved_task.id).status, TaskStatus::Running);
+        assert!(by_id(&approved_task.id).approved_at.is_some());
+        assert_eq!(by_id(&new_task.id).status, TaskStatus::Cancelled);
+        assert_eq!(
+            snapshot
+                .attempts
+                .iter()
+                .find(|candidate| candidate.id == attempt.id)
+                .unwrap()
+                .status,
+            AttemptStatus::Preparing
+        );
+    }
+
+    fn complete_task(store: &OrchestrationStore, task_id: &str) {
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(task_id))
+            .unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
+            .unwrap();
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id,
+                    outcome: WorkerOutcome::Completed,
+                    summary: "Done".into(),
+                    files_modified: Vec::new(),
+                    verdict: None,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn rejecting_a_resize_restores_the_approved_size_and_dependency_flow() {
+        let root = std::env::temp_dir().join(format!("octiq-plan-rollback-{}", compact_id()));
+        let path = root.join("orchestrations.json");
+        let store = OrchestrationStore::load(path.clone());
+        let (run, first) = pending_plan(&store);
+        let dependant = task(&store, &run, vec![first.id.clone()]);
+        let plan = plan_of(&store, &run.id);
+        store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[first.id.clone(), dependant.id.clone()]),
+                Some(plan.revision),
+            )
+            .unwrap();
+        store.set_task_size(&first.id, TaskSize::Large).unwrap();
+        let revision = plan_of(&store, &run.id).revision;
+        drop(store);
+        let store = OrchestrationStore::load(path);
+
+        store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&[first.id.clone()]),
+                Some(revision),
+                None,
+                CardView {
+                    surface: "panel".into(),
+                    shown_ms: Some(2_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let restored = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == first.id)
+            .unwrap();
+        assert_eq!(restored.size, Some(TaskSize::Medium));
+        assert_eq!(restored.status, TaskStatus::Ready);
+        assert!(restored.approved_at.is_some());
+        assert_eq!(
+            snapshot
+                .tasks
+                .iter()
+                .find(|task| task.id == dependant.id)
+                .unwrap()
+                .status,
+            TaskStatus::Pending
+        );
+        complete_task(&store, &first.id);
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&dependant.id))
+            .is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejecting_a_reassignment_restores_the_approved_owner_and_dependency_flow() {
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let dependant = task(&store, &run, vec![first.id.clone()]);
+        let assignee = |id: &str, name: &str| TaskAssignee {
+            id: id.into(),
+            name: name.into(),
+        };
+        let worker = |model: &str| automation::WorkerSettings {
+            agent: ChatAgent::Claude,
+            access: Access::Auto,
+            model: Some(model.into()),
+            effort: None,
+            recovery: None,
+        };
+        store
+            .reassign_task(
+                "chat:master",
+                &first.id,
+                (Some(worker("opus")), Some(assignee("maya", "Maya")), None),
+                "Maya owns the approved work.".into(),
+            )
+            .unwrap();
+        let plan = plan_of(&store, &run.id);
+        store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[first.id.clone(), dependant.id.clone()]),
+                Some(plan.revision),
+            )
+            .unwrap();
+        store
+            .reassign_task(
+                "chat:master",
+                &first.id,
+                (Some(worker("sonnet")), Some(assignee("noah", "Noah")), None),
+                "Try a different owner.".into(),
+            )
+            .unwrap();
+        let revision = plan_of(&store, &run.id).revision;
+
+        store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&[first.id.clone()]),
+                Some(revision),
+                Some("Keep the original assignment.".into()),
+                CardView {
+                    surface: "chat".into(),
+                    shown_ms: Some(2_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let restored = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == first.id)
+            .unwrap();
+        assert_eq!(restored.assignee.as_ref().unwrap().id, "maya");
+        assert_eq!(
+            restored.worker.as_ref().unwrap().model.as_deref(),
+            Some("opus")
+        );
+        assert_eq!(restored.handoffs.len(), 1);
+        assert_eq!(restored.status, TaskStatus::Ready);
+        assert!(restored.approved_at.is_some());
+        complete_task(&store, &first.id);
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&dependant.id))
+            .is_ok());
+    }
+
+    #[test]
+    fn opposite_plan_decisions_are_errors_but_identical_retries_are_idempotent() {
+        let view = || CardView {
+            surface: "chat".into(),
+            shown_ms: Some(2_000),
+            updated_ms: None,
+        };
+
+        let rejected_store = OrchestrationStore::default();
+        let (rejected_run, rejected_task) = pending_plan(&rejected_store);
+        let rejected_revision = plan_of(&rejected_store, &rejected_run.id).revision;
+        let rejected_seen = [rejected_task.id.clone()];
+        rejected_store
+            .reject_plan_from_card(
+                "chat:master",
+                &rejected_run.id,
+                Some(&rejected_seen),
+                Some(rejected_revision),
+                None,
+                view(),
+            )
+            .unwrap();
+        assert!(rejected_store
+            .reject_plan_from_card(
+                "chat:master",
+                &rejected_run.id,
+                Some(&rejected_seen),
+                Some(rejected_revision),
+                None,
+                view(),
+            )
+            .is_ok());
+        assert_eq!(
+            rejected_store
+                .approve_plan_from_card(
+                    "chat:master",
+                    &rejected_run.id,
+                    Some(&rejected_seen),
+                    Some(rejected_revision),
+                    view(),
+                )
+                .unwrap_err(),
+            "The person rejected this plan; nothing was approved"
+        );
+        let turn = said(
+            "user-after-reject",
+            "approve this plan",
+            &[(&rejected_run.id, rejected_revision)],
+        );
+        assert_eq!(
+            rejected_store
+                .approve_plan_in_conversation(
+                    "chat:master",
+                    &rejected_run.id,
+                    rejected_revision,
+                    &turn,
+                )
+                .unwrap_err(),
+            "The person rejected this plan; nothing was approved"
+        );
+
+        let approved_store = OrchestrationStore::default();
+        let (approved_run, approved_task) = pending_plan(&approved_store);
+        let approved_revision = plan_of(&approved_store, &approved_run.id).revision;
+        let approved_seen = [approved_task.id.clone()];
+        approved_store
+            .approve_plan_from_card(
+                "chat:master",
+                &approved_run.id,
+                Some(&approved_seen),
+                Some(approved_revision),
+                view(),
+            )
+            .unwrap();
+        assert!(approved_store
+            .approve_plan_from_card(
+                "chat:master",
+                &approved_run.id,
+                Some(&approved_seen),
+                Some(approved_revision),
+                view(),
+            )
+            .is_ok());
+        assert_eq!(
+            approved_store
+                .reject_plan_from_card(
+                    "chat:master",
+                    &approved_run.id,
+                    Some(&approved_seen),
+                    Some(approved_revision),
+                    None,
+                    view(),
+                )
+                .unwrap_err(),
+            "The person approved this plan; nothing was rejected"
+        );
+    }
+
+    #[test]
     fn concurrent_approve_and_reject_record_exactly_one_decision() {
         let store = Arc::new(OrchestrationStore::default());
         let (run, task) = pending_plan(&store);
@@ -5655,38 +6109,55 @@ pub(crate) mod tests {
         let approve_run = run.id.clone();
         let approve_seen = seen.clone();
         let approve = std::thread::spawn(move || {
-            approve_store
-                .approve_plan(
-                    "chat:master",
-                    &approve_run,
-                    Some(&approve_seen),
-                    Some(revision),
-                )
-                .unwrap()
+            approve_store.approve_plan(
+                "chat:master",
+                &approve_run,
+                Some(&approve_seen),
+                Some(revision),
+            )
         });
         let reject_store = store.clone();
         let reject_run = run.id.clone();
         let reject = std::thread::spawn(move || {
-            reject_store
-                .reject_plan_from_card(
-                    "chat:master",
-                    &reject_run,
-                    Some(&seen),
-                    Some(revision),
-                    None,
-                    CardView {
-                        surface: "panel".into(),
-                        shown_ms: Some(2_000),
-                        updated_ms: None,
-                    },
-                )
-                .unwrap()
+            reject_store.reject_plan_from_card(
+                "chat:master",
+                &reject_run,
+                Some(&seen),
+                Some(revision),
+                None,
+                CardView {
+                    surface: "panel".into(),
+                    shown_ms: Some(2_000),
+                    updated_ms: None,
+                },
+            )
         });
         let approved_view = approve.join().unwrap();
         let rejected_view = reject.join().unwrap();
         let status = plan_of(&store, &run.id).status;
-        assert_eq!(approved_view.plan_approval.unwrap().status, status);
-        assert_eq!(rejected_view.plan_approval.unwrap().status, status);
+        match status {
+            PlanStatus::Approved => {
+                assert_eq!(
+                    approved_view.unwrap().plan_approval.unwrap().status,
+                    PlanStatus::Approved
+                );
+                assert_eq!(
+                    rejected_view.unwrap_err(),
+                    "The person approved this plan; nothing was rejected"
+                );
+            }
+            PlanStatus::Rejected => {
+                assert_eq!(
+                    rejected_view.unwrap().plan_approval.unwrap().status,
+                    PlanStatus::Rejected
+                );
+                assert_eq!(
+                    approved_view.unwrap_err(),
+                    "The person rejected this plan; nothing was approved"
+                );
+            }
+            PlanStatus::Pending => panic!("one decision must win"),
+        }
         assert!(matches!(
             status,
             PlanStatus::Approved | PlanStatus::Rejected

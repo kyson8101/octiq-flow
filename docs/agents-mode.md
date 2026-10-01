@@ -329,15 +329,20 @@ the new scope. A rejection also leaves the transcript tail and folds to one
 quiet **Plan rejected** line in run history, with its reason when one was given.
 
 Approve and Reject enter the same store-locked decision transition, so only
-the first wins and retries return that recorded decision. Rejecting the first,
-never-approved plan cancels its pending tasks and ends the run as `stopped`;
-`stoppedReason` says the person rejected that revision. Rejecting an amendment
-cancels only tasks added since the last approval; approved, running and
-completed work and their workspaces are untouched, and the run stays live.
-`planApproval.rejection` records `{by, revision, at, reason, taskIds, surface,
-shownMs}` durably. The host queues one `plan_rejected` continuation to the
-coordinator naming the revision, tasks and optional reason; its wording states
-that it is a decision record, not an instruction to make another plan.
+the first wins. An identical retry returns that recorded decision; trying the
+opposite decision says what the person already chose and changes nothing.
+Rejecting the first, never-approved plan cancels its pending tasks and ends the
+run as `stopped`; `stoppedReason` says the person rejected that revision, and
+open gates or attempts are cancelled through the same transition as Stop.
+Rejecting an amendment cancels only tasks that were never approved. A resize
+or reassignment of an approved task keeps its prior approved state with the
+ledger: rejection restores that size or assignment and its approval, while
+other approved, running and completed work and their workspaces remain
+untouched and the run stays live. `planApproval.rejection` records `{by,
+revision, at, reason, taskIds, restoredTaskIds, surface, shownMs}` durably. The
+host queues one `plan_rejected` continuation to the coordinator naming the
+revision, reason, withdrawn new tasks and restored approved tasks; its wording
+states that it is a decision record, not an instruction to make another plan.
 
 ### Approving by chat
 

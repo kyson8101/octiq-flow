@@ -65,20 +65,22 @@ export function ApprovedPlan({ plan, projectName }: {
 export function RejectedPlan({ plan }: { plan: ChatPlan }) {
   const rejection = plan.run.planApproval?.rejection;
   const rejected = new Set(rejection?.taskIds ?? []);
-  const tasks = plan.tasks.filter((task) => rejected.has(task.id));
+  const restored = new Set(rejection?.restoredTaskIds ?? []);
+  const withdrawnTasks = plan.tasks.filter((task) => rejected.has(task.id) && !restored.has(task.id));
+  const restoredTasks = plan.tasks.filter((task) => restored.has(task.id));
   return (
-    <details className="chat-plan chat-plan-approved chat-plan-rejected"
-      key={`${plan.run.id}:${rejection?.revision ?? plan.revision}`}>
+    <details className="chat-plan chat-plan-approved chat-plan-rejected">
       <summary>
         <span className="chat-plan-mark" aria-hidden="true" />
         <span className="chat-plan-line" title={rejection?.reason}>Plan rejected{rejection?.reason ? ` · ${rejection.reason}` : ""}</span>
-        <span className="chat-plan-id">Plan {plan.handle}{rejection?.revision ? ` · revision ${rejection.revision}` : ""}</span>
+        <span className="chat-plan-id">Plan {plan.handle}{rejection?.revision != null ? ` · revision ${rejection.revision}` : ""}</span>
         <span className="plan-task-chevron" aria-hidden="true" />
       </summary>
       <div className="chat-plan-rejection-detail">
         <p>Rejected by the person{rejection?.surface === "chat" ? " in chat" : rejection?.surface === "panel" ? " in the run panel" : ""}.</p>
         {rejection?.reason && <p>Reason: {rejection.reason}</p>}
-        {tasks.length > 0 && <p>Withdrawn: {tasks.map((task) => task.title).join(", ")}</p>}
+        {withdrawnTasks.length > 0 && <p>Withdrawn: {withdrawnTasks.map((task) => task.title).join(", ")}</p>}
+        {restoredTasks.length > 0 && <p>Restored to the approved plan: {restoredTasks.map((task) => task.title).join(", ")}</p>}
       </div>
     </details>
   );

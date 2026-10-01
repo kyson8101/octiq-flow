@@ -43,9 +43,9 @@ describe("ChatPlanCards", () => {
 
   it("removes a rejected plan from the transcript tail and folds its record in run history", () => {
     const rejected = run("run_abcd12", {
-      status: "rejected", requestedAt: 1, revision: 4, decidedAt: 2,
+      status: "rejected", requestedAt: 1, revision: 0, decidedAt: 2,
       rejection: {
-        by: "person", revision: 4, at: 2, reason: "Wrong direction", taskIds: ["a"], surface: "chat",
+        by: "person", revision: 0, at: 2, reason: "Wrong direction", taskIds: ["a"], surface: "chat",
       },
     });
     const tasks = [task("a", "run_abcd12", { status: "cancelled" })];
@@ -55,9 +55,25 @@ describe("ChatPlanCards", () => {
     expect(html).toMatch(/<details class="chat-plan chat-plan-approved chat-plan-rejected"><summary>/);
     expect(html).not.toContain("<details class=\"chat-plan chat-plan-approved chat-plan-rejected\" open");
     expect(html).toContain("Plan rejected · Wrong direction");
+    expect(html).toContain("revision 0");
     expect(html).toContain("Reason: Wrong direction");
     expect(html).toContain("Withdrawn: Task a");
     expect(html).not.toContain("Approve plan");
+  });
+
+  it("distinguishes a restored approved task from work that was withdrawn", () => {
+    const rejected = run("run_abcd12", {
+      status: "rejected", requestedAt: 1, revision: 5, decidedAt: 2,
+      rejection: {
+        by: "person", revision: 5, at: 2, taskIds: ["a", "b"], restoredTaskIds: ["a"], surface: "panel",
+      },
+    });
+    const tasks = [task("a", "run_abcd12", { approvedAt: 1, status: "ready" }), task("b", "run_abcd12", { status: "cancelled" })];
+    const [plan] = chatPlans({ runs: [rejected], tasks, attempts: [], gates: [], messages: [], notifications: [] } as unknown as OrchestrationSnapshot, "chat:lead");
+    const html = renderToStaticMarkup(<RejectedPlan plan={plan} />);
+    expect(html).toContain("Restored to the approved plan: Task a");
+    expect(html).toContain("Withdrawn: Task b");
+    expect(html).not.toContain("Withdrawn: Task a");
   });
 
   it("with several plans waiting, each says its own handle", () => {

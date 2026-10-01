@@ -409,6 +409,12 @@ impl OrchestrationStore {
                 return Ok(task.clone());
             }
             let now = now_ms();
+            if task.parent_task_id.is_none()
+                && task.approved_at.is_some()
+                && task.approval_rollback.is_none()
+            {
+                task.approval_rollback = TaskApprovalRollback::capture(task);
+            }
             task.size = Some(size);
             task.updated_at = now;
             let changed = task.clone();
