@@ -63,7 +63,9 @@ function BriefDetails({ handover }: { handover: Handover }) {
           <h4>Checkout</h4>
           <p className="handover-mono">{where}</p>
           {workspace.head && <p className="handover-mono">HEAD {workspace.head}</p>}
-          <p className="handover-mono">{handover.destination.repository}</p>
+          {handover.destination.repository !== where && (
+            <p className="handover-mono">Repository {handover.destination.repository}</p>
+          )}
         </div>
       </div>
     </details>

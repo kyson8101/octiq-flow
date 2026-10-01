@@ -1000,18 +1000,25 @@ async fn handover_handler(
     let services = ctx.services.clone();
     let ask = request.args;
     let recorded = tokio::task::spawn_blocking(move || {
-        let record = crate::handover::live_request(
+        let (record, fresh) = crate::handover::live_request(
             &services,
             &caller.chat_key,
             &caller.session_key,
             &caller.launch_id,
             ask,
         )?;
-        crate::push::notify_chat(
-            Some(&caller.chat_key),
-            "handover",
-            "An agent wants to hand its task over",
-        );
+        // Only for a new request: a retry with the same requestId is the
+        // same card, already announced.
+        if fresh {
+            crate::push::notify_chat(
+                Some(&caller.chat_key),
+                "handover",
+                &format!(
+                    "Wants to hand this task to {}. Confirm or keep it.",
+                    record.to.name
+                ),
+            );
+        }
         Ok::<_, String>(record)
     })
     .await

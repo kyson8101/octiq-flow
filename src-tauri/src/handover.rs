@@ -1490,17 +1490,26 @@ pub fn live_source(
     })
 }
 
-/// A `handover` call from an agent's MCP: validate and record it. The caller
-/// then waits on it (`wait`) or answers at once (`answer_now`).
+/// A `handover` call from an agent's MCP: validate and record it, and say
+/// whether it is new (a retry of the same requestId is not). The caller then
+/// waits on it (`wait`) or answers at once (`answer_now`).
 pub fn live_request(
     svc: &crate::dispatch::Services,
     chat_key: &str,
     session_key: &str,
     launch_id: &str,
     ask: Ask,
-) -> Result<Handover, String> {
+) -> Result<(Handover, bool), String> {
     let source = live_source(svc, chat_key, session_key, launch_id)?;
-    request(&default_path(), &Live(svc), source, ask)
+    let path = default_path();
+    let known = {
+        let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+        read(&path)?
+            .handovers
+            .values()
+            .any(|h| h.source_chat_key == chat_key && h.request_id == ask.request_id.trim())
+    };
+    Ok((request(&path, &Live(svc), source, ask)?, !known))
 }
 
 /// What a tool that does not wait is told: the decision when there is one
