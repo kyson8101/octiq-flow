@@ -32,6 +32,7 @@ mod fsbrowse;
 mod git;
 mod git_ops;
 mod git_watch;
+mod handover;
 mod image_preview;
 mod memory;
 mod memory_activity;

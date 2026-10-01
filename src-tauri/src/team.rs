@@ -1493,6 +1493,46 @@ pub fn brief(
     cross_project: bool,
     projects: &[(String, String)],
 ) -> Result<String, String> {
+    lead_brief(
+        path,
+        chat_key,
+        project_id,
+        lead_id,
+        task,
+        cross_project,
+        projects,
+        true,
+    )
+}
+
+/// The first message of a chat a task was handed over to (`handover.rs`):
+/// the same lead brief as a new task, so the recipient can still pass the
+/// work on to its own reports. The person confirmed the handover, so the
+/// recipient need not be one who reports to them.
+pub fn handover_brief(
+    path: &Path,
+    chat_key: &str,
+    project_id: &str,
+    lead_id: &str,
+    task: &str,
+    projects: &[(String, String)],
+) -> Result<String, String> {
+    lead_brief(
+        path, chat_key, project_id, lead_id, task, false, projects, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lead_brief(
+    path: &Path,
+    chat_key: &str,
+    project_id: &str,
+    lead_id: &str,
+    task: &str,
+    cross_project: bool,
+    projects: &[(String, String)],
+    person_starts: bool,
+) -> Result<String, String> {
     let task = task.trim();
     if task.is_empty() {
         return Err("Describe the task first.".into());
@@ -1522,7 +1562,7 @@ pub fn brief(
     // already has a lead keeps it, whatever the chart says now, and handing
     // it to anyone else is refused by `record_lead`.
     let new_conversation = lead_for_chat(path, chat_key)?.is_none();
-    if new_conversation && !reports_to_person(&lead, &team) {
+    if person_starts && new_conversation && !reports_to_person(&lead, &team) {
         let manager = team
             .iter()
             .find(|a| Some(a.id.as_str()) == lead.reports_to.as_deref())

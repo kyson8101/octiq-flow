@@ -1281,6 +1281,20 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 &turn,
             ))
         }
+        // Handovers between agents (`handover.rs`). Only the person's socket
+        // reaches these: an agent asks through `/hook/handover`, which can
+        // only record a pending one.
+        "handover_list" => to_value(crate::handover::list(&crate::handover::default_path())),
+        "handover_confirm" => to_value(crate::handover::decide(
+            svc,
+            &arg::<String>(&args, "id")?,
+            true,
+        )),
+        "handover_decline" => to_value(crate::handover::decide(
+            svc,
+            &arg::<String>(&args, "id")?,
+            false,
+        )),
         "team_leads" => to_value(crate::team::leads(&crate::team::default_path())),
         "team_brief" => {
             let chat_key: String = arg(&args, "chatKey")?;

@@ -409,6 +409,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/task", post(task_handler))
         .route("/hook/feedback", post(feedback_handler))
         .route("/hook/vault", post(vault_handler))
+        .route("/hook/handover", post(handover_handler))
         .fallback(get(asset_handler))
         .with_state(ctx)
 }
@@ -959,6 +960,88 @@ async fn ask_handler(
     let request = crate::question::Request::Many(batch);
     let answer = crate::question::ask_request(ctx.services.chats.clone(), request).await;
     axum::Json(json!({ "answer": answer })).into_response()
+}
+
+/// A `handover` call: the agent asking to pass its task on.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoverHook {
+    #[serde(default)]
+    chat_key: Option<String>,
+    #[serde(default)]
+    session_key: Option<String>,
+    #[serde(default)]
+    launch_id: Option<String>,
+    /// Hold the call open for the person's decision. Off for a provider that
+    /// cannot keep a tool call waiting (Codex), which hears it as a
+    /// continuation turn instead.
+    #[serde(default)]
+    wait: bool,
+    args: crate::handover::Ask,
+}
+
+/// The agent asking to hand its task over. It can only RECORD a pending
+/// handover for the chat its capability proves; the new chat is created by
+/// the person's `handover_confirm`, never from here.
+async fn handover_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<HandoverHook>,
+) -> Response {
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: request.launch_id.as_deref(),
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let services = ctx.services.clone();
+    let ask = request.args;
+    let recorded = tokio::task::spawn_blocking(move || {
+        let record = crate::handover::live_request(
+            &services,
+            &caller.chat_key,
+            &caller.session_key,
+            &caller.launch_id,
+            ask,
+        )?;
+        crate::push::notify_chat(
+            Some(&caller.chat_key),
+            "handover",
+            "An agent wants to hand its task over",
+        );
+        Ok::<_, String>(record)
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result);
+    let record = match recorded {
+        Ok(record) => record,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let told = if request.wait {
+        crate::handover::live_wait(record.id.clone()).await
+    } else {
+        crate::handover::answer_now(&record.id)
+    };
+    match told {
+        Ok(text) => {
+            axum::Json(json!({ "result": { "id": record.id, "text": text } })).into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
 }
 
 /// A chat-bound MCP call into the orchestration kernel.
@@ -1937,6 +2020,13 @@ mod tests {
                 ),
                 ("ask", json!({ "chatKey": chat, "questions": question })),
                 ("permission", json!({ "chatKey": chat, "toolName": "Bash" })),
+                (
+                    "handover",
+                    json!({ "chatKey": chat, "args": {
+                        "recipient": "self", "requestId": "r1",
+                        "brief": { "objective": "carry on" },
+                    } }),
+                ),
             ]
         };
 
@@ -1997,6 +2087,59 @@ mod tests {
         chats.test_end("chat:worker");
     }
 
+    #[tokio::test]
+    async fn a_handover_hook_records_at_most_and_never_from_a_worker() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let worker = chats.test_launch("chat:orch-worker");
+        let plain = chats.test_launch("chat:plain");
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let body = |chat: &str| {
+            json!({ "chatKey": chat, "wait": true, "args": {
+                "recipient": "self", "requestId": "r1",
+                "brief": { "objective": "carry on" },
+            } })
+        };
+        // A worker on an attempt settles through its report instead.
+        let (status, answer) = post_hook(
+            &base,
+            "handover",
+            None,
+            Some(&worker),
+            body("chat:orch-worker"),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("orchestration_worker_report"),
+            "{answer}"
+        );
+        // An ordinary chat whose turn is not running cannot ask either.
+        let (status, answer) =
+            post_hook(&base, "handover", None, Some(&plain), body("chat:plain")).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("turn has already ended"),
+            "{answer}"
+        );
+        // And no hook names the person's decision: there is no action to
+        // pass, and the orchestration whitelist has neither command.
+        for command in ["handover_confirm", "handover_decline"] {
+            assert_eq!(orchestration_hook_command(command), None);
+            assert!(!ORCHESTRATION_HOOK_ACTIONS
+                .iter()
+                .any(|(_, c)| *c == command));
+        }
+        chats.test_end("chat:orch-worker");
+        chats.test_end("chat:plain");
+    }
+
     #[test]
     fn a_task_hook_acts_on_the_proven_chat() {
         let args =
@@ -2018,6 +2161,9 @@ mod tests {
         "orchestration_bridge_close",
         "orchestration_task_access",
         "team_head_set",
+        // A handover is created by an agent but only the person decides it.
+        "handover_confirm",
+        "handover_decline",
     ];
 
     #[test]

@@ -189,6 +189,17 @@ describe("pending actions", () => {
     expect(pendingActions(input(approved))).toEqual([]);
   });
 
+  it("asks for a waiting handover on the chat that asked for it, and only while it waits", () => {
+    const handovers = [
+      { id: "h1", sourceChatKey: "chat:main", status: "pending" },
+      { id: "h2", sourceChatKey: "chat:main", status: "confirmed" },
+      { id: "h3", sourceChatKey: "chat:other", status: "declined" },
+    ];
+    const actions = pendingActions(input(ledger(), { handovers }));
+    expect(actions).toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat" }]);
+    expect(pendingLabel(actions)).toBe("Handover to confirm");
+  });
+
   it("keys a plan by revision, so a revision after approval is a new action", () => {
     const pending = (revision: number) => pendingActions(input(ledger({
       runs: [run("r1", { planApproval: { status: "pending", requestedAt: 1, revision } })],
