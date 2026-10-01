@@ -26,11 +26,18 @@
          iOS caches the manifest at INSTALL time, so testing it means deleting
          the home-screen icon and adding it again, not reloading.
 
-         The status-bar-style is not part of that choice and must not be
-         removed with it: it is what puts the page UNDER the status bar. The
-         top bar is sized `48px + env(safe-area-inset-top)` (styles.css), so
-         dropping it moves the inset out from under the layout and the bar
-         comes out wrong.
+         The status-bar-style is `default`, an opaque status bar with the page
+         starting below it. It was `black-translucent`, which put the page
+         UNDER the clock, and on iOS 26+ an installed web app gets a Liquid
+         Glass blur over the top ~36pt of the page there that no page can
+         turn off: on iOS 27 the top bar came out smeared whatever it did.
+         With an opaque status bar, WebKit replaces that blur with the colour
+         of a fixed or sticky box at the top edge, which is why the top bar is
+         sticky (styles.css). Its height still adds
+         `env(safe-area-inset-top)`, which is 0 here and the clock's height
+         for an icon added under the old setting: iOS reads this tag once, at
+         install, so the change only reaches a phone whose icon is added
+         again.
 
          iOS reads none of the manifest for the ICON: it wants its own, and it
          composites transparency onto black, so this one is already flattened
@@ -41,7 +48,7 @@
          alone, and reads this one. -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="OctiqFlow" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <link rel="manifest" href="./manifest.webmanifest" />
 
     <title>OctiqFlow</title>

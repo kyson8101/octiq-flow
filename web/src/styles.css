@@ -57,13 +57,13 @@ body {
   align-items: center;
   gap: var(--space-2);
   flex: 0 0 auto;
-  /* Installed to a home screen the page starts at the very top of the display,
-     under the clock: `apple-mobile-web-app-status-bar-style` is
-     black-translucent and the viewport is `viewport-fit=cover`, which together
-     hand us the whole screen INCLUDING the status bar. So the bar is 48px of
-     content plus however tall that bar is — grown rather than padded, because
-     `box-sizing: border-box` would otherwise take the inset out of the 48px and
-     squash the row instead of moving it down.
+  /* Wherever the page reaches under the status bar — a home-screen app
+     installed while index.html still asked for a black-translucent status bar
+     (iOS keeps what it read at install), an edge-to-edge Android one — the
+     bar is 48px of content plus however tall that bar is: grown rather than
+     padded, because `box-sizing: border-box` would otherwise take the inset
+     out of the 48px and squash the row instead of moving it down. Installed
+     today the status bar is opaque, the inset is 0 and this is plain 48px.
 
      The left and right insets were the wrong way round here: the shorthand runs
      top-right-bottom-left, so `-left` was being applied on the right. Both are
@@ -73,6 +73,17 @@ body {
     max(8px, env(safe-area-inset-left));
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--border);
+  /* Sticky only so iOS sees it: an installed web app on iOS 26+ lays a
+     Liquid Glass blur over the top of the page, and WebKit swaps that blur
+     for a solid colour only when a fixed or sticky box spans the top edge
+     (`LocalFrameView::fixedContainerEdges`) AND the status bar is opaque
+     (index.html), which is what gives `WKWebView` an inset to colour.
+     Nothing scrolls `.app` vertically, so the bar never moves.
+     It does make the bar a stacking context; 30 keeps its dropdowns above the
+     page and the sidebar (20) and under every sheet and scrim (40+). */
+  position: sticky;
+  top: 0;
+  z-index: 30;
 }
 
 .topbar-leading,
@@ -479,8 +490,14 @@ body {
   .topbar {
     gap: 3px;
     /* Match the drawer's 8px outer gutter. With 4px here, the return arrow
-       sat four pixels to the right of the chat-list menu on phones. */
-    padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+       sat four pixels to the right of the chat-list menu on phones.
+
+       The sides only. This was the `padding` shorthand, which also set the
+       top to 0 and took the status-bar inset away from the bar above while
+       its height kept it — so in an installed app the row was centred across
+       the whole bar, half under the clock, where iOS 26+ blurs the page. */
+    padding-right: max(8px, env(safe-area-inset-right));
+    padding-left: max(8px, env(safe-area-inset-left));
   }
 
   .topbar-actions { gap: 2px; }
