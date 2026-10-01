@@ -128,7 +128,7 @@ import { Sidebar, type Project } from "./components/Sidebar";
 import { ChatSearchPage } from "./components/ChatSearchPage";
 import { WorkspaceSlotsContext, type WorkspaceSlots } from "./components/WorkspaceHeader";
 import type { ChatSearchHit } from "./lib/chatSearch";
-import { loadAgents, type AgentInstall } from "./components/AgentsPage";
+import { loadAgents, type AgentInstall } from "./lib/agentInstalls";
 import { ShelvedProjects } from "./components/ShelvedProjects";
 import { DeletedChats } from "./components/DeletedChats";
 import { FeedbackInbox } from "./components/FeedbackInbox";
