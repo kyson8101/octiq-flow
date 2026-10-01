@@ -619,6 +619,16 @@ impl QuestionOrigin {
     pub(crate) fn cwd(&self) -> &str {
         &self.start.cwd
     }
+
+    /// The provider's own id for the conversation, when it was known.
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.start.session_id.as_deref()
+    }
+
+    /// The project environment the chat was started with.
+    pub(crate) fn env(&self) -> std::collections::BTreeMap<String, String> {
+        self.start.env.clone().unwrap_or_default()
+    }
 }
 
 /// A message the person has sent that its agent has not been given yet.
@@ -1052,6 +1062,14 @@ impl ChatManager {
 
     fn start_context(&self, session_key: &str) -> Option<StartContext> {
         self.starts.lock().ok()?.get(session_key).cloned()
+    }
+
+    /// The provider's own conversation id for `session_key`, as its process
+    /// last reported it. Read-only: a handover's ask back forks from it.
+    pub(crate) fn provider_session(&self, session_key: &str) -> Option<String> {
+        self.start_context(session_key)?
+            .session_id
+            .filter(|id| safe_session_id(id).is_some())
     }
 
     fn queue_context(&self, session_key: &str) -> Option<QueueContext> {

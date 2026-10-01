@@ -319,7 +319,7 @@ pub fn parse_claude(stdout: &str) -> Result<HelperAnswer, String> {
         .rev()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
         .find(|v| v.get("type").and_then(Value::as_str) == Some("result"))
-        .ok_or("The teammate gave no answer.")?;
+        .ok_or("No answer came back.")?;
     let text = result
         .get("result")
         .and_then(Value::as_str)
@@ -328,13 +328,13 @@ pub fn parse_claude(stdout: &str) -> Result<HelperAnswer, String> {
         .to_owned();
     if result.get("is_error").and_then(Value::as_bool) == Some(true) {
         return Err(if text.is_empty() {
-            "The teammate's turn failed.".into()
+            "The answering turn failed.".into()
         } else {
             text
         });
     }
     if text.is_empty() {
-        return Err("The teammate gave no answer.".into());
+        return Err("No answer came back.".into());
     }
     let usage = result.get("usage").map(|u| PeerUsage {
         input_tokens: number(u.get("input_tokens"))
@@ -388,7 +388,7 @@ pub fn parse_codex(stdout: &str) -> Result<HelperAnswer, String> {
     }
     match text.filter(|t| !t.is_empty()) {
         Some(text) => Ok(HelperAnswer { text, usage }),
-        None => Err(failure.unwrap_or_else(|| "The teammate gave no answer.".into())),
+        None => Err(failure.unwrap_or_else(|| "No answer came back.".into())),
     }
 }
 
@@ -408,6 +408,33 @@ const CHAT_VARIABLES: [&str; 7] = [
 /// Run the teammate's answer for real: one process, a deadline, no stdin.
 pub fn run_helper(turn: &HelperTurn) -> Result<HelperAnswer, String> {
     let line = helper_command(turn)?;
+    run_one_shot(
+        turn.agent,
+        &line,
+        &turn.cwd,
+        &BTreeMap::new(),
+        HELPER_TIMEOUT,
+        "The teammate",
+    )
+}
+
+/// Whether `name` is one of OctiqFlow's own variables, which tie a process
+/// to a chat. A one-shot answering process gets none of them.
+pub fn is_octiq_variable(name: &str) -> bool {
+    name.starts_with("OCTIQ_") || CHAT_VARIABLES.contains(&name)
+}
+
+/// Run one read-only answering process to its end: `line` through the agent
+/// shell in `cwd`, no stdin, every `OCTIQ_*` variable removed (inherited or in
+/// `env`), and killed at `timeout`. `who` names it in the errors.
+pub fn run_one_shot(
+    agent: ChatAgent,
+    line: &str,
+    cwd: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+    who: &str,
+) -> Result<HelperAnswer, String> {
     let shell = crate::proc::resolve_agent_shell(
         std::env::var("SHELL").ok(),
         std::env::var("LOCALAPPDATA").ok(),
@@ -417,17 +444,25 @@ pub fn run_helper(turn: &HelperTurn) -> Result<HelperAnswer, String> {
     let mut cmd = Command::new(&shell.program);
     cmd.args(&shell.args)
         .arg(line)
-        .current_dir(&turn.cwd)
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(is_octiq_variable) {
+            cmd.env_remove(name);
+        }
+    }
     for name in CHAT_VARIABLES {
         cmd.env_remove(name);
+    }
+    for (name, value) in env.iter().filter(|(name, _)| !is_octiq_variable(name)) {
+        cmd.env(name, value);
     }
     crate::proc::no_console(&mut cmd);
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("The teammate could not be started: {e}"))?;
+        .map_err(|e| format!("{who} could not be started: {e}"))?;
     // Read both pipes as they fill, or a long answer blocks the process.
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
@@ -454,21 +489,23 @@ pub fn run_helper(turn: &HelperTurn) -> Result<HelperAnswer, String> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() > HELPER_TIMEOUT => {
+            Ok(None) if started.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "The teammate did not answer within {} minutes.",
-                    HELPER_TIMEOUT.as_secs() / 60
-                ));
+                let secs = timeout.as_secs_f64().ceil() as u64;
+                return Err(if secs >= 60 {
+                    format!("{who} did not answer within {} minutes.", secs / 60)
+                } else {
+                    format!("{who} did not answer within {secs}s.")
+                });
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(200)),
-            Err(e) => return Err(format!("The teammate's process was lost: {e}")),
+            Err(e) => return Err(format!("{who}'s process was lost: {e}")),
         }
     };
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
-    let parsed = match turn.agent {
+    let parsed = match agent {
         ChatAgent::Codex => parse_codex(&stdout),
         _ => parse_claude(&stdout),
     };
@@ -1084,6 +1121,46 @@ mod tests {
             },
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_one_shot_process_gets_no_octiq_variable_from_anywhere() {
+        // This suite usually runs inside an OctiqFlow chat, whose own
+        // OCTIQ_* variables the child would otherwise inherit.
+        let env = BTreeMap::from([
+            ("KEPT".to_string(), "yes".to_string()),
+            ("OCTIQ_CHAT_KEY".to_string(), "chat:leak".to_string()),
+            ("OCTIQ_HOOK_PORT".to_string(), "1".to_string()),
+        ]);
+        let line = r#"printf '{"type":"result","is_error":false,"result":"octiq=%s kept=%s"}\n' "$(env | grep -c '^OCTIQ_')" "$KEPT""#;
+        let answer = run_one_shot(
+            ChatAgent::Claude,
+            line,
+            "/",
+            &env,
+            Duration::from_secs(30),
+            "The stand-in",
+        )
+        .unwrap();
+        assert_eq!(answer.text, "octiq=0 kept=yes");
+        assert!(is_octiq_variable("OCTIQ_ANYTHING_NEW"));
+        assert!(!is_octiq_variable("PATH"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_one_shot_process_that_overruns_is_ended() {
+        let error = run_one_shot(
+            ChatAgent::Claude,
+            "exec sleep 30",
+            "/",
+            &BTreeMap::new(),
+            Duration::from_millis(300),
+            "The stand-in",
+        )
+        .unwrap_err();
+        assert_eq!(error, "The stand-in did not answer within 1s.");
     }
 
     #[test]

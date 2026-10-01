@@ -413,6 +413,8 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/feedback", post(feedback_handler))
         .route("/hook/vault", post(vault_handler))
         .route("/hook/handover", post(handover_handler))
+        .route("/hook/handover/ask", post(handover_ask_handler))
+        .route("/hook/handover/outcome", post(handover_outcome_handler))
         .fallback(get(asset_handler))
         .with_state(ctx)
 }
@@ -1053,6 +1055,73 @@ async fn handover_handler(
         )
             .into_response(),
     }
+}
+
+/// A call back along a confirmed handover, from the chat that received it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoverBackHook<A> {
+    #[serde(default)]
+    chat_key: Option<String>,
+    #[serde(default)]
+    session_key: Option<String>,
+    #[serde(default)]
+    launch_id: Option<String>,
+    args: A,
+}
+
+/// Run one handover-back call for the chat its capability proves. The other
+/// chat comes from the handover record, never from the call.
+async fn handover_back<A: Send + 'static>(
+    ctx: Ctx,
+    headers: axum::http::HeaderMap,
+    request: HandoverBackHook<A>,
+    act: fn(&crate::dispatch::Services, &str, &str, A) -> Result<String, String>,
+) -> Response {
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: request.launch_id.as_deref(),
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let services = ctx.services.clone();
+    let args = request.args;
+    let done = tokio::task::spawn_blocking(move || {
+        act(&services, &caller.chat_key, &caller.session_key, args)
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result);
+    match done {
+        Ok(text) => axum::Json(json!({ "result": { "text": text } })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
+}
+
+/// `handover_ask`: one question to the original chat's agent, answered in a
+/// read-only fork of its conversation.
+async fn handover_ask_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<HandoverBackHook<crate::handover::back::Question>>,
+) -> Response {
+    handover_back(ctx, headers, request, crate::handover::back::live_ask).await
+}
+
+/// `handover_outcome`: done or blocked, shown on the original chat's line.
+async fn handover_outcome_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<HandoverBackHook<crate::handover::back::Report>>,
+) -> Response {
+    handover_back(ctx, headers, request, crate::handover::back::live_report).await
 }
 
 /// A chat-bound MCP call into the orchestration kernel.
@@ -2157,6 +2226,68 @@ mod tests {
             assert!(!ORCHESTRATION_HOOK_ACTIONS
                 .iter()
                 .any(|(_, c)| *c == command));
+        }
+        chats.test_end("chat:orch-worker");
+        chats.test_end("chat:plain");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handover_back_hooks_take_the_chat_from_the_capability_and_refuse_workers() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let worker = chats.test_launch("chat:orch-worker");
+        let plain = chats.test_launch("chat:plain");
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let ask = |chat: &str| {
+            json!({ "chatKey": chat, "args": {
+                "requestId": "q1", "question": "Which lock?",
+                // Not a field: the other chat is never the caller's word.
+                "sourceChatKey": "chat:plain",
+            } })
+        };
+        let outcome = |chat: &str| {
+            json!({ "chatKey": chat, "args": {
+                "requestId": "o1", "status": "done", "summary": "Shipped.",
+            } })
+        };
+        // No capability, no call.
+        let (status, _) = post_hook(&base, "handover/ask", None, None, ask("chat:plain")).await;
+        assert_eq!(status, 401);
+        // A capability speaks for its own chat only.
+        let (status, _) = post_hook(
+            &base,
+            "handover/ask",
+            None,
+            Some(&plain),
+            ask("chat:orch-worker"),
+        )
+        .await;
+        assert_eq!(status, 401);
+        for (route, body) in [
+            ("handover/ask", ask as fn(&str) -> Value),
+            ("handover/outcome", outcome),
+        ] {
+            let (status, answer) =
+                post_hook(&base, route, None, Some(&worker), body("chat:orch-worker")).await;
+            assert_eq!(status, 400, "{answer}");
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("orchestration_worker_report"),
+                "{answer}"
+            );
+            // A chat no handover started has no one to ask or report to.
+            let (status, answer) =
+                post_hook(&base, route, None, Some(&plain), body("chat:plain")).await;
+            assert_eq!(status, 400, "{answer}");
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not started by a confirmed handover"),
+                "{answer}"
+            );
         }
         chats.test_end("chat:orch-worker");
         chats.test_end("chat:plain");

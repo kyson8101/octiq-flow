@@ -9,8 +9,9 @@
 // a disclosure, like every other piece of agent prose.
 import { useId, useState, type ReactNode } from "react";
 import {
-  chatIdOf, handoverHeadline, noticeLine, placeLine, settingsLine, waitsOnPerson,
-  type Handover, type HandoverAction, type handoverLayout,
+  askBackSummary, chatIdOf, handoverHeadline, latestOutcome, noticeLine, outcomeText, placeLine,
+  settingsLine, waitsOnPerson,
+  type Handover, type HandoverAction, type HandoverAsk, type handoverLayout,
 } from "../lib/handover";
 import "./HandoverCards.css";
 
@@ -187,6 +188,76 @@ export function HandoverCards({ outgoing, onDecide }: {
   );
 }
 
+const ASK_STATUS: Record<HandoverAsk["status"], string> = {
+  asking: "Waiting for an answer",
+  answered: "Answered",
+  failed: "No answer",
+};
+
+/** The questions the new chat asked back, under a count. Their words are
+ *  agent prose, so they open only on request, like peer help. */
+function AskBackLog({ handover }: { handover: Handover }) {
+  const asks = handover.asks ?? [];
+  if (!asks.length) return null;
+  return (
+    <details className="handover-asks" data-asks={asks.length}>
+      <summary>
+        <span>{askBackSummary(asks)}</span>
+        <span className="handover-chevron" aria-hidden="true" />
+      </summary>
+      <ol aria-label={`Questions ${handover.to.name} asked ${handover.from.name}`}>
+        {asks.map((ask) => (
+          <li key={ask.id} data-ask={ask.id} data-status={ask.status}>
+            <p className="handover-ask-who">
+              <strong><bdi>{handover.to.name}</bdi></strong> asked <strong><bdi>{handover.from.name}</bdi></strong>
+              <span> · {ASK_STATUS[ask.status]}</span>
+            </p>
+            <p className="handover-ask-question">{ask.question}</p>
+            {ask.contextPaths?.length ? (
+              <p className="handover-ask-paths">Pointed at {ask.contextPaths.map((path, index) => (
+                <span key={path}>{index > 0 && ", "}<code>{path}</code></span>
+              ))}</p>
+            ) : null}
+            {ask.status === "answered" && (
+              <p className="handover-ask-answer">
+                {ask.answer}{ask.truncated && <em> (answer cut at the length limit)</em>}
+              </p>
+            )}
+            {ask.status === "failed" && <p className="handover-ask-error">{ask.error ?? "No answer came back."}</p>}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+/** What the new chat said came of the work: the latest report, on one line. */
+function OutcomeLine({ handover }: { handover: Handover }) {
+  const outcome = latestOutcome(handover);
+  if (!outcome) return null;
+  const text = outcomeText(handover, outcome);
+  return (
+    <p className={`handover-outcome is-${outcome.status}`} data-outcome={outcome.status} title={text}>
+      <span className="handover-outcome-mark" aria-hidden="true" />
+      <span className="handover-outcome-text">{text}</span>
+    </p>
+  );
+}
+
+/** Earlier outcome reports, when the latest replaced some. */
+function OutcomeHistory({ handover }: { handover: Handover }) {
+  const outcomes = handover.outcomes ?? [];
+  if (outcomes.length < 2) return null;
+  return (
+    <div className="handover-section">
+      <h4>Outcome reports</h4>
+      <ul>{outcomes.slice().reverse().map((outcome) => (
+        <li key={outcome.requestId}>{outcomeText(handover, outcome)}</li>
+      ))}</ul>
+    </div>
+  );
+}
+
 /** A settled handover, as one line of the transcript: where the task went, or
  *  where it came from. The facts and the brief open under it, and the other
  *  chat is one click away. Declined and given-up ones are the headline only. */
@@ -247,9 +318,13 @@ export function HandoverLine({ handover, side, onOpen, projectOf }: {
               <div><dt>Where</dt><dd>{placeLine(handover)}</dd></div>
             </dl>
           ) : <Facts handover={handover} />}
+          <OutcomeHistory handover={handover} />
           <BriefBody handover={handover} />
         </div>
       )}
+      {/* Under the Brief, so an open Brief stays with the line it opens from. */}
+      {!quiet && <OutcomeLine handover={handover} />}
+      {!quiet && <AskBackLog handover={handover} />}
     </div>
   );
 }
