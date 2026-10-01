@@ -96,6 +96,13 @@ export function needsPerson(handover: Handover): boolean {
   return handover.status === "pending" || handover.status === "starting";
 }
 
+/** Whether the next move is the person's: undecided, or a start that failed
+ *  and offers Try again / Give up. A start still under way is the host's
+ *  move, so it holds the tail but asks nothing (no pending-action badge). */
+export function waitsOnPerson(handover: { status: string; error?: string }): boolean {
+  return handover.status === "pending" || (handover.status === "starting" && !!handover.error);
+}
+
 /** Where each of a chat's handovers is drawn. `tail`: the full cards at the
  *  end of the transcript, the ones the person still has to act on. `settled`:
  *  the outgoing ones that are history, each a line at the turn where it was
@@ -110,6 +117,29 @@ export function handoverPlaces(here: ReturnType<typeof handoversFor>): {
     settled: here.outgoing.filter((item) => !needsPerson(item)),
     incoming: here.incoming,
   };
+}
+
+/** Every handover of a chat at the one place it is drawn, each exactly once.
+ *  `head`: the one this chat was started by, then the settled outgoing ones
+ *  whose call is not in the loaded transcript. `marks`: the other settled
+ *  ones, under the message holding their call (`anchors`, from
+ *  `handoverAnchors`). `tail`: the cards still waiting on the person. */
+export function handoverLayout(
+  places: ReturnType<typeof handoverPlaces>,
+  anchors: ReadonlyMap<string, string>,
+): {
+  head: { incoming: Handover | null; outgoing: Handover[] };
+  marks: Map<string, Handover[]>;
+  tail: Handover[];
+} {
+  const marks = new Map<string, Handover[]>();
+  const unplaced: Handover[] = [];
+  for (const handover of places.settled) {
+    const at = anchors.get(handover.id);
+    if (!at) unplaced.push(handover);
+    else marks.set(at, [...(marks.get(at) ?? []), handover]);
+  }
+  return { head: { incoming: places.incoming, outgoing: unplaced }, marks, tail: places.tail };
 }
 
 /** The tool an agent asks for a handover with, under either provider (Codex
@@ -142,6 +172,13 @@ export function handoverAnchors(
     }
   }
   return out;
+}
+
+/** `handoverAnchors` as a string, for a memo to key on: a streaming delta that
+ *  moves no handover leaves it equal, so the lines drawn from it keep their
+ *  identity while the transcript grows. */
+export function handoverAnchorKey(messages: readonly Message[], handovers: readonly Handover[]): string {
+  return JSON.stringify([...handoverAnchors(messages, handovers)]);
 }
 
 /** The chat id behind a `chat:` key. */

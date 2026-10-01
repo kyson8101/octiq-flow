@@ -200,6 +200,16 @@ describe("pending actions", () => {
     expect(pendingLabel(actions)).toBe("Handover to confirm");
   });
 
+  it("asks for a handover whose start failed, and not for one still starting", () => {
+    const handovers = [
+      { id: "h1", sourceChatKey: "chat:main", status: "starting", error: "CLI unavailable" },
+      { id: "h2", sourceChatKey: "chat:main", status: "starting" },
+      { id: "h3", sourceChatKey: "chat:main", status: "abandoned", error: "CLI unavailable" },
+    ];
+    expect(pendingActions(input(ledger(), { handovers })))
+      .toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat" }]);
+  });
+
   it("keys a plan by revision, so a revision after approval is a new action", () => {
     const pending = (revision: number) => pendingActions(input(ledger({
       runs: [run("r1", { planApproval: { status: "pending", requestedAt: 1, revision } })],

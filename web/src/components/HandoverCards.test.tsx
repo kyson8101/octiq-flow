@@ -56,6 +56,17 @@ describe("HandoverCards", () => {
     expect(running.tail).not.toContain("<button");
   });
 
+  it("marks a failed start as waiting on the person, and a start under way as not", () => {
+    const failed = render([handover({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable" })], "chat:source");
+    expect(failed.tail).toContain('data-pending=""');
+    expect(failed.tail).toContain('data-pending-keys="handover:handover_1"');
+    expect(failed.tail).toContain('tabindex="-1"');
+    const running = render([handover({ status: "starting", targetChatKey: "chat:new" })], "chat:source");
+    expect(running.tail).toContain('data-status="starting"');
+    expect(running.tail).not.toContain("data-pending");
+    expect(running.tail).not.toContain("tabindex");
+  });
+
   it("lets the person give up on a failed start only once the host ruled a chat out", () => {
     const { tail: stuck } = render([handover({
       status: "starting", targetChatKey: "chat:new", error: "CLI unavailable", abandonable: true,
@@ -108,7 +119,10 @@ describe("a settled handover", () => {
     expect(lines).toContain("Handed over from Potato");
   });
 
-  it("folds a declined handover to a quiet headline with no buttons", () => {
+  // By design: a handover that went nowhere is a headline and nothing else.
+  // No facts, no Brief and no Open, as on the base before these lines existed:
+  // the task stayed in this chat, so there is nothing to look up or go to.
+  it("keeps a declined handover a quiet headline, with no Brief and no Open, by design", () => {
     const { tail, lines } = render([handover({ status: "declined" })], "chat:source");
     expect(tail).toBe("");
     expect(lines).toContain("Kept here: handover to Mango declined");
@@ -116,7 +130,10 @@ describe("a settled handover", () => {
     expect(lines).not.toContain("handover-brief");
   });
 
-  it("folds a given-up handover the same way, and says when the agent could not be told", () => {
+  // A given-up handover still carries the key its chat was reserved under at
+  // confirm (handover.rs `confirm`), but `abandon` is refused once that chat
+  // may have started, so no chat exists to open.
+  it("keeps a given-up handover quiet the same way by design, with no Open for the chat that never started", () => {
     const { tail, lines } = render([handover({
       status: "abandoned", targetChatKey: "chat:new", error: "CLI unavailable", notice: "failed", noticeError: "agent gone",
     })], "chat:source");
@@ -124,6 +141,7 @@ describe("a settled handover", () => {
     expect(lines).toContain("Kept here: Mango&#x27;s chat could not start");
     expect(lines).toContain("Potato could not be told: agent gone");
     expect(lines).not.toContain("<button");
+    expect(lines).not.toContain("data-open-chat");
     expect(lines).not.toContain("handover-brief");
   });
 });

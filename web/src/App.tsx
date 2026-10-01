@@ -25,7 +25,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
@@ -159,8 +158,8 @@ import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type 
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
 import { ChatPlanCards } from "./components/ChatPlanCards";
-import { HandoverCards, HandoverLines } from "./components/HandoverCards";
-import { chatIdOf, handoverAnchors, handoverPlaces, handoversFor, type Handover } from "./lib/handover";
+import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
+import { chatIdOf, handoverAnchorKey, handoverLayout, handoverPlaces, handoversFor } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { pendingActions, pendingByRow, pendingByTask, type PendingAction } from "./lib/pendingActions";
@@ -4127,36 +4126,23 @@ export default function App() {
   );
   // Only a handover still waiting on the person holds the end of the chat. A
   // settled one is history: a line under the turn that asked for it, or, when
-  // that turn is not loaded, at the head of the transcript, where the one this
-  // chat was started by always sits. Neither follows new messages.
+  // that turn is not loaded or not shown yet, at the head of the transcript,
+  // after the one this chat was started by. Each is drawn exactly once, and
+  // neither follows new messages.
   const handoverPlace = useMemo(() => handoverPlaces(handoversHere), [handoversHere]);
   // Walks the transcript, so only while there is something to place; the key
   // keeps the lines' identity across the streaming deltas that move nothing.
-  const handoverAnchorKey = useMemo(
-    () => JSON.stringify([...handoverAnchors(chat.messages, handoverPlace.settled)]),
+  const handoverAnchorsKey = useMemo(
+    () => handoverAnchorKey(chat.messages, handoverPlace.settled),
     [chat.messages, handoverPlace.settled],
   );
-  const { transcriptHead, transcriptMarks } = useMemo(() => {
-    const anchors = new Map<string, string>(JSON.parse(handoverAnchorKey));
-    const byMessage = new Map<string, Handover[]>();
-    const unplaced: Handover[] = [];
-    for (const handover of handoverPlace.settled) {
-      const at = anchors.get(handover.id);
-      if (!at) unplaced.push(handover);
-      else byMessage.set(at, [...(byMessage.get(at) ?? []), handover]);
-    }
-    const marks = new Map<string, ReactNode>();
-    for (const [at, list] of byMessage) {
-      marks.set(at, <HandoverLines key={`handover-${at}`} outgoing={list} onOpen={openHandoverChat} />);
-    }
-    return {
-      transcriptHead: handoverPlace.incoming || unplaced.length
-        ? <HandoverLines incoming={handoverPlace.incoming} outgoing={unplaced}
-          onOpen={openHandoverChat} projectOf={handoverProjectOf} />
-        : undefined,
-      transcriptMarks: marks.size ? marks : undefined,
-    };
-  }, [handoverPlace, handoverAnchorKey, openHandoverChat, handoverProjectOf]);
+  const { head: transcriptHead, marks: transcriptMarks } = useMemo(
+    () => handoverTranscript(
+      handoverLayout(handoverPlace, new Map<string, string>(JSON.parse(handoverAnchorsKey))),
+      openHandoverChat, handoverProjectOf,
+    ),
+    [handoverPlace, handoverAnchorsKey, openHandoverChat, handoverProjectOf],
+  );
   const planTail = useMemo(
     () => {
       const plans = plansHere.some((plan) => plan.pending)

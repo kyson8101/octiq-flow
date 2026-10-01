@@ -1266,7 +1266,9 @@ const MessageListBody = function MessageList({
   head?: React.ReactNode;
   /** Drawn under the turn holding the message with that id: something that
    *  happened at that point of the conversation and stays there, such as a
-   *  settled handover. Memoised by the caller, like `tail`. */
+   *  settled handover. While that turn is behind "Load earlier messages" it
+   *  is drawn after `head` instead, so it is never missing from the page.
+   *  Memoised by the caller, like `tail`. */
   marks?: ReadonlyMap<string, React.ReactNode>;
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
@@ -1680,6 +1682,13 @@ const MessageListBody = function MessageList({
   }
   const start = turnWindowStart(turns, visibleWindow.first);
   const visibleTurns = useMemo(() => turns.slice(start), [turns, start]);
+  // Marks whose turn is not shown yet: at the head until it is.
+  const earlierMarks = useMemo(
+    () => (marks?.size && start > 0
+      ? turns.slice(0, start).flatMap((turn) => turn.map((m) => marks.get(m.id)).filter(Boolean))
+      : []),
+    [marks, turns, start],
+  );
   const hasMore = start > 0 || hasEarlier;
   const loadMore = async () => {
     if (!hasMore || loadingEarlier || morePending.current) return;
@@ -1787,6 +1796,7 @@ const MessageListBody = function MessageList({
           </div>
         )}
         {head}
+        {earlierMarks}
         {visibleTurns.map((turn, i) => (
           <Fragment key={turn[0].id}>
             <TurnView

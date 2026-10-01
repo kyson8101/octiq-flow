@@ -28,6 +28,7 @@
 // sources are tab-wide already — the request lists are refilled from the host
 // on every connection, and the ledger holds every run — so a row knows before
 // its chat was ever opened, and costs no request of its own.
+import { waitsOnPerson } from "./handover";
 import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
 import { planTasks } from "./planReview";
 import type { Question } from "../components/UserQuestion";
@@ -75,8 +76,9 @@ export type PendingActionInput = {
   asks?: Requests;
   safetyBlocks?: Requests;
   questions?: Requests;
-  /** Handovers an agent asked for, waiting on the person's confirm. */
-  handovers?: readonly { id: string; sourceChatKey: string; status: string }[];
+  /** Handovers an agent asked for: waiting on the person's confirm, or on
+   *  their Try again / Give up after a start that failed. */
+  handovers?: readonly { id: string; sourceChatKey: string; status: string; error?: string }[];
 };
 
 const LIVE_RUNS = new Set(["planning", "running", "waiting"]);
@@ -152,7 +154,7 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
   }
   for (const handover of input.handovers ?? []) {
     const source = chatId(handover.sourceChatKey);
-    if (!source || handover.status !== "pending") continue;
+    if (!source || !waitsOnPerson(handover)) continue;
     add({ key: `handover:${handover.id}`, kind: "handover", rowId: rowOf(source), openChatId: source, surface: "chat" });
   }
   return [...found.values()].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);

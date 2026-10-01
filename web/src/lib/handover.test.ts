@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  handoverAnchors, handoverHeadline, handoverPlaces, handoversFor, mergeHandover, needsPerson, noticeLine,
-  placeLine, settingsLine,
+  handoverAnchorKey, handoverAnchors, handoverHeadline, handoverLayout, handoverPlaces, handoversFor, mergeHandover, needsPerson,
+  noticeLine, placeLine, settingsLine, waitsOnPerson,
 } from "./handover";
 import { handover } from "./handover.fixture";
 import type { Message } from "./chat";
@@ -125,5 +125,86 @@ describe("handover records", () => {
       called("c", "handover handover_9", "mcp__octiq__handover", "tool_parent"),
     ], [h]).size).toBe(0);
     expect(handoverAnchors([called("a", "handover handover_9")], []).size).toBe(0);
+  });
+
+  it("asks the person only when the next move is theirs", () => {
+    expect(waitsOnPerson(handover())).toBe(true);
+    expect(waitsOnPerson(handover({ status: "starting", error: "CLI unavailable" }))).toBe(true);
+    // Still starting with no error: the host's move, though it holds the tail.
+    expect(waitsOnPerson(handover({ status: "starting" }))).toBe(false);
+    expect(needsPerson(handover({ status: "starting" }))).toBe(true);
+    for (const status of ["confirmed", "declined", "abandoned"] as const) {
+      expect(waitsOnPerson(handover({ status, error: "CLI unavailable" }))).toBe(false);
+    }
+  });
+});
+
+/** A chat started by a handover that then handed the task on: Potato handed
+ *  `chat:source` to Mango in `chat:mid`, and Mango hands `chat:mid` on. */
+describe("a chat that was handed a task and handed it on", () => {
+  const incoming = handover({ id: "handover_in", status: "confirmed", targetChatKey: "chat:mid" });
+  const onward = (extra: Parameters<typeof handover>[0] = {}) => handover({
+    id: "handover_out", sourceChatKey: "chat:mid", sourceTitle: "Finish the login fix",
+    from: { name: "Mango" }, to: { name: "Tofu" }, status: "confirmed", targetChatKey: "chat:last", ...extra,
+  });
+  const messages = [
+    called("a1", "The person confirmed handover handover_out. Tofu now continues the task."),
+  ];
+  const layout = (list: ReturnType<typeof handover>[], loaded = messages) => {
+    const places = handoverPlaces(handoversFor(list, "chat:mid"));
+    return handoverLayout(places, handoverAnchors(loaded, places.settled));
+  };
+  const ids = (l: ReturnType<typeof layout>) => [
+    ...(l.head.incoming ? [l.head.incoming.id] : []),
+    ...l.head.outgoing.map((h) => h.id),
+    ...[...l.marks.values()].flat().map((h) => h.id),
+    ...l.tail.map((h) => h.id),
+  ];
+
+  it("puts the incoming line at the head and the outgoing one under its call, nothing at the tail", () => {
+    const l = layout([incoming, onward()]);
+    expect(l.tail).toEqual([]);
+    expect(l.head.incoming?.id).toBe("handover_in");
+    expect(l.head.outgoing).toEqual([]);
+    expect([...l.marks.keys()]).toEqual(["a1"]);
+    expect(l.marks.get("a1")?.map((h) => h.id)).toEqual(["handover_out"]);
+    expect(ids(l)).toEqual(["handover_in", "handover_out"]);
+  });
+
+  it("puts both at the head, incoming first, when the call's turn is not loaded", () => {
+    const l = layout([incoming, onward()], []);
+    expect(l.tail).toEqual([]);
+    expect(l.marks.size).toBe(0);
+    expect(l.head.incoming?.id).toBe("handover_in");
+    expect(l.head.outgoing.map((h) => h.id)).toEqual(["handover_out"]);
+    expect(ids(l)).toEqual(["handover_in", "handover_out"]);
+  });
+
+  it("holds the tail with only the outgoing card while it waits", () => {
+    for (const waiting of [onward({ status: "pending", targetChatKey: undefined }), onward({ status: "starting", error: "CLI unavailable" })]) {
+      const l = layout([incoming, waiting]);
+      expect(l.tail.map((h) => h.id)).toEqual(["handover_out"]);
+      expect(l.head).toEqual({ incoming, outgoing: [] });
+      // A waiting handover is never also a line, even once its call answered.
+      expect(l.marks.size).toBe(0);
+      expect(ids(l)).toEqual(["handover_in", "handover_out"]);
+    }
+  });
+
+  it("keys the placement so a streaming delta that moves nothing keeps it", () => {
+    const settled = [onward()];
+    const before = handoverAnchorKey(messages, settled);
+    const streaming: Message = { id: "a2", role: "assistant", streaming: true, blocks: [{ kind: "text", text: "more" }] };
+    expect(handoverAnchorKey([...messages, streaming], settled)).toBe(before);
+    expect(handoverAnchorKey([...messages, { ...streaming, blocks: [{ kind: "text", text: "more words" }] }], settled)).toBe(before);
+    // The call's answer arriving is what moves it: from nowhere to its turn.
+    const unanswered = [called("a1", undefined)];
+    expect(handoverAnchorKey(unanswered, settled)).toBe("[]");
+    expect(handoverAnchorKey(messages, settled)).toBe('[["handover_out","a1"]]');
+  });
+
+  it("is the incoming handover in the chat it went on to, and nothing else", () => {
+    const places = handoverPlaces(handoversFor([incoming, onward()], "chat:last"));
+    expect(places).toEqual({ tail: [], settled: [], incoming: onward() });
   });
 });

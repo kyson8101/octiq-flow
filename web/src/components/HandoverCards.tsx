@@ -7,10 +7,10 @@
 //
 // Labels and counts up front; the brief, paths and the HEAD commit sit behind
 // a disclosure, like every other piece of agent prose.
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import {
-  chatIdOf, handoverHeadline, noticeLine, placeLine, settingsLine,
-  type Handover, type HandoverAction,
+  chatIdOf, handoverHeadline, noticeLine, placeLine, settingsLine, waitsOnPerson,
+  type Handover, type HandoverAction, type handoverLayout,
 } from "../lib/handover";
 import "./HandoverCards.css";
 
@@ -119,12 +119,14 @@ function SourceCard({ handover, onDecide }: {
     }
   };
   const failed = error ?? (pending || starting ? handover.error : undefined);
+  // Undecided, or a start that failed: the badge in the chat list points here.
+  const waiting = waitsOnPerson(handover);
   return (
     <section
       className={`handover-card is-${handover.status}`}
       data-handover={handover.id}
       data-status={handover.status}
-      {...(pending ? { "data-pending": "", "data-pending-keys": `handover:${handover.id}`, tabIndex: -1 } : {})}
+      {...(waiting ? { "data-pending": "", "data-pending-keys": `handover:${handover.id}`, tabIndex: -1 } : {})}
     >
       <header className="handover-head">
         <span className="handover-mark" aria-hidden="true" />
@@ -269,4 +271,24 @@ export function HandoverLines({ incoming, outgoing, onOpen, projectOf }: {
       ))}
     </div>
   );
+}
+
+/** The settled lines of a `handoverLayout`, as MessageList's `head` and
+ *  `marks`. The tail is `HandoverCards` over `layout.tail`. */
+export function handoverTranscript(
+  layout: ReturnType<typeof handoverLayout>,
+  onOpen: Open,
+  projectOf?: (chatKey: string) => string | null,
+): { head?: ReactNode; marks?: Map<string, ReactNode> } {
+  const marks = new Map<string, ReactNode>();
+  for (const [at, list] of layout.marks) {
+    marks.set(at, <HandoverLines key={`handover-${at}`} outgoing={list} onOpen={onOpen} />);
+  }
+  const { incoming, outgoing } = layout.head;
+  return {
+    head: incoming || outgoing.length
+      ? <HandoverLines incoming={incoming} outgoing={outgoing} onOpen={onOpen} projectOf={projectOf} />
+      : undefined,
+    marks: marks.size ? marks : undefined,
+  };
 }
