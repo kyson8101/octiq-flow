@@ -484,6 +484,9 @@ impl Handover {
 struct Stored {
     #[serde(default)]
     handovers: BTreeMap<String, Handover>,
+    /// Route folders made for a card not yet saved (`route::request`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    staged_folders: Vec<String>,
 }
 
 /// Serializes every read-modify-write of the file and the live waiters, so a
@@ -1833,7 +1836,8 @@ pub fn recover(path: &Path, host: &dyn Host) -> Result<Vec<String>, String> {
             changed.push(record.clone());
         }
     }
-    if !changed.is_empty() {
+    let staged = route::discard_staged(&mut stored);
+    if staged || !changed.is_empty() {
         write(path, &stored)?;
         changed.iter().for_each(announce);
     }

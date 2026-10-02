@@ -270,7 +270,16 @@ fn display_name(file_name: &str) -> String {
 }
 
 /// Copy each attachment into `folder` for the new chat; name the rest.
-fn carry(uploads: &Path, folder: &Path, paths: &[String]) -> (Vec<RouteFile>, Vec<Unreadable>) {
+///
+/// A copy that fails leaves nothing behind in `folder`: the new chat may
+/// read the whole folder, and half a file is not one the person sent. When
+/// nothing was copied the folder goes too, since no record will name it.
+fn carry(
+    uploads: &Path,
+    folder: &Path,
+    paths: &[String],
+    copy: &dyn Fn(&Path, &Path) -> std::io::Result<u64>,
+) -> (Vec<RouteFile>, Vec<Unreadable>) {
     let mut files = Vec::new();
     let mut unreadable = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -296,15 +305,21 @@ fn carry(uploads: &Path, folder: &Path, paths: &[String]) -> (Vec<RouteFile>, Ve
             .unwrap_or_default();
         let name = display_name(&file_name);
         let target = folder.join(&file_name);
-        let copied = fs::create_dir_all(folder).and_then(|_| fs::copy(&source, &target));
+        let copied = fs::create_dir_all(folder).and_then(|_| copy(&source, &target));
         match copied {
             Ok(_) => files.push(RouteFile {
                 image: is_image(&name),
                 name,
                 path: target.to_string_lossy().into_owned(),
             }),
-            Err(e) => unreadable.push(refuse(format!("could not be copied for the new chat: {e}"))),
+            Err(e) => {
+                let _ = fs::remove_file(&target);
+                unreadable.push(refuse(format!("could not be copied for the new chat: {e}")));
+            }
         }
+    }
+    if files.is_empty() {
+        let _ = fs::remove_dir_all(folder);
     }
     (files, unreadable)
 }
@@ -326,6 +341,16 @@ pub fn render(desk: &str, brief: &str, files: &[RouteFile]) -> String {
         "\n(Opened by {desk}, the person's front desk, once the person confirmed it.)"
     ));
     out
+}
+
+/// Remove the folders of routes whose record was never written: the
+/// server stopped between copying the files and saving the card.
+pub(super) fn discard_staged(stored: &mut Stored) -> bool {
+    let staged = std::mem::take(&mut stored.staged_folders);
+    for folder in &staged {
+        let _ = fs::remove_dir_all(folder);
+    }
+    !staged.is_empty()
 }
 
 /// Remove a route's copied files.
@@ -431,8 +456,16 @@ pub fn request(
     } else {
         let uploads = host.attachments_dir()?;
         let folder = uploads.join(format!("route-{id}"));
-        let (files, unreadable) = carry(&uploads, &folder, &ask.attachments);
-        let folder = (!files.is_empty()).then(|| folder.to_string_lossy().into_owned());
+        // On disk before the folder exists, so a server stopped before the
+        // record is written still has it removed at the next start.
+        let staged = folder.to_string_lossy().into_owned();
+        stored.staged_folders.push(staged.clone());
+        write(path, &stored)?;
+        let (files, unreadable) = carry(&uploads, &folder, &ask.attachments, &|from, to| {
+            fs::copy(from, to)
+        });
+        stored.staged_folders.retain(|f| *f != staged);
+        let folder = (!files.is_empty()).then_some(staged);
         (files, unreadable, folder)
     };
     let message = render(&source.desk.name, &brief, &attachments);
@@ -1128,5 +1161,121 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("front desk opened this chat"), "{error}");
+    }
+
+    fn route_folders(uploads: &Path) -> Vec<String> {
+        fs::read_dir(uploads)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("route-"))
+            .collect()
+    }
+
+    /// A copy that fails part way leaves no half file for the new chat, and
+    /// when nothing was copied, no folder nobody owns.
+    #[test]
+    fn a_failed_copy_leaves_no_partial_file_and_no_empty_folder() {
+        let root = scratch("route-copy");
+        let uploads = root.join("attachments");
+        fs::create_dir_all(&uploads).unwrap();
+        let good = uploads.join(format!("{}-good.txt", uuid::Uuid::new_v4()));
+        let torn = uploads.join(format!("{}-torn.txt", uuid::Uuid::new_v4()));
+        fs::write(&good, b"whole").unwrap();
+        fs::write(&torn, b"whole").unwrap();
+        // Writes half the file, then fails: a full disk, say.
+        let failing = |from: &Path, to: &Path| -> std::io::Result<u64> {
+            if from.to_string_lossy().ends_with("torn.txt") {
+                fs::write(to, b"wh")?;
+                return Err(std::io::Error::other("disk full"));
+            }
+            fs::copy(from, to)
+        };
+        let path = |p: &Path| p.to_string_lossy().into_owned();
+
+        let folder = uploads.join("route-only-torn");
+        let (files, unreadable) = carry(&uploads, &folder, &[path(&torn)], &failing);
+        assert!(files.is_empty());
+        assert_eq!(unreadable.len(), 1);
+        assert!(
+            unreadable[0].problem.contains("disk full"),
+            "{unreadable:?}"
+        );
+        assert!(!folder.exists(), "no folder that no record will name");
+
+        let folder = uploads.join("route-both");
+        let (files, unreadable) = carry(&uploads, &folder, &[path(&good), path(&torn)], &failing);
+        assert_eq!(files.len(), 1);
+        assert_eq!(unreadable.len(), 1);
+        let left: Vec<_> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(left, vec![PathBuf::from(&files[0].path)], "no half file");
+        assert!(torn.exists() && good.exists(), "the uploads are untouched");
+    }
+
+    /// Through `request`: a copy the OS refuses leaves a card naming the
+    /// file, no folder, and nothing staged.
+    #[cfg(unix)]
+    #[test]
+    fn a_route_whose_only_copy_fails_leaves_no_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = desk_world();
+        let host = host(&w);
+        let uploads = host.attachments_dir().unwrap();
+        let upload = uploads.join(format!("{}-locked.txt", uuid::Uuid::new_v4()));
+        fs::write(&upload, b"secret").unwrap();
+        fs::set_permissions(&upload, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&upload).is_ok() {
+            // Running as root: nothing here can make the copy fail.
+            return;
+        }
+        let mut asked = ask("Mango", "r1");
+        asked.attachments = vec![upload.to_string_lossy().into_owned()];
+        let record = request(&w.store, &host, source(&w, "chat:desk1"), asked).unwrap();
+        let route = record.route.clone().unwrap();
+        assert!(route.attachments.is_empty());
+        assert_eq!(route.unreadable.len(), 1, "{:?}", route.unreadable);
+        assert!(route.folder.is_none());
+        assert!(route_folders(&uploads).is_empty(), "no orphan route folder");
+        assert!(read(&w.store).unwrap().staged_folders.is_empty());
+        fs::set_permissions(&upload, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    /// The server stopping between copying the files and saving the card
+    /// leaves a folder no record names: the next start removes it, and only
+    /// it.
+    #[test]
+    fn a_folder_copied_for_a_card_never_saved_goes_at_the_next_start() {
+        let w = desk_world();
+        let host = host(&w);
+        let uploads = host.attachments_dir().unwrap();
+        let upload = uploads.join(format!("{}-shot.png", uuid::Uuid::new_v4()));
+        fs::write(&upload, b"png").unwrap();
+        let mut asked = ask("Quill", "r1");
+        asked.attachments = vec![upload.to_string_lossy().into_owned()];
+        let kept = request(&w.store, &host, source(&w, "chat:desk1"), asked).unwrap();
+        let kept_folder = kept.route.clone().unwrap().folder.unwrap();
+        confirm(&w.store, &kept.id, &host).unwrap();
+
+        // What `request` leaves on disk when it stops right after the copy.
+        let orphan = uploads.join("route-handover_cut_off");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join("half.png"), b"p").unwrap();
+        let mut stored = read(&w.store).unwrap();
+        stored
+            .staged_folders
+            .push(orphan.to_string_lossy().into_owned());
+        write(&w.store, &stored).unwrap();
+
+        recover(&w.store, &host).unwrap();
+        assert!(!orphan.exists(), "the unsaved card's folder is gone");
+        assert!(read(&w.store).unwrap().staged_folders.is_empty());
+        assert!(
+            Path::new(&kept_folder).is_dir(),
+            "a confirmed route keeps the files its chat reads"
+        );
+        assert!(upload.exists());
     }
 }
