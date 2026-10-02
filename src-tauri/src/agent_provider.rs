@@ -150,6 +150,105 @@ pub struct AgentCommand<'a> {
     /// A front-desk chat (`handover::route`): it routes the person to an
     /// agent and does nothing else, so it gets no tool but `route_chat`.
     pub front_desk: bool,
+    /// The person's own Codex MCP servers, which a Codex front desk turns
+    /// off one by one (`codex_front_desk_mcp_servers`). Empty otherwise.
+    pub codex_user_mcp: &'a [CodexMcpServer],
+}
+
+/// One MCP server from the person's own Codex configuration, as
+/// `codex mcp list --json` reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexMcpServer {
+    pub name: String,
+    /// Reached by URL rather than started as a command.
+    pub remote: bool,
+}
+
+/// The person's Codex MCP servers, read from `codex mcp list --json`. Codex
+/// has no `--strict-mcp-config`, so this list is how a front desk knows what
+/// to turn off. A name Codex itself would refuse is an error: a server the
+/// front desk cannot name is one it cannot turn off.
+pub fn codex_front_desk_mcp_servers(json: &str) -> Result<Vec<CodexMcpServer>, String> {
+    let listed: Vec<Value> = serde_json::from_str(json)
+        .map_err(|e| format!("Codex's MCP server list could not be read: {e}"))?;
+    let mut servers = Vec::new();
+    for server in listed {
+        let name = server
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("Codex listed an MCP server with no name.")?;
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(format!(
+                "Codex listed an MCP server named {name:?}, which the front desk cannot turn off."
+            ));
+        }
+        // Ours is set on the command line and replaces any of that name.
+        if name == "octiq" {
+            continue;
+        }
+        let remote = server
+            .get("transport")
+            .and_then(|t| t.get("type"))
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind != "stdio");
+        servers.push(CodexMcpServer {
+            name: name.to_owned(),
+            remote,
+        });
+    }
+    Ok(servers)
+}
+
+/// Codex features that hand the model a tool of its own: a shell, web search,
+/// apps and plugins (with their MCP servers), sub-agents, goals, images,
+/// browser and computer use. A front desk turns every one off; the person's
+/// hooks and memories go too. Probed against codex-cli 0.158.0, where what is
+/// left is `route_chat`, Codex's own question card, `view_image` and the MCP
+/// resource readers, which have no switch.
+const CODEX_FRONT_DESK_FEATURES_OFF: &[&str] = &[
+    "shell_tool",
+    "unified_exec",
+    "apps",
+    "plugins",
+    "goals",
+    "hooks",
+    "multi_agent",
+    "image_generation",
+    "browser_use",
+    "computer_use",
+    "tool_suggest",
+    "sleep_tool",
+    "memories",
+];
+
+/// Codex's equivalent of Claude's `--tools ''` and `--strict-mcp-config`.
+/// A server is turned off with a placeholder transport of its own kind,
+/// because Codex checks each `-c` override as a whole server entry.
+fn append_codex_front_desk(cmd: &mut String, servers: &[CodexMcpServer]) {
+    for feature in CODEX_FRONT_DESK_FEATURES_OFF {
+        cmd.push_str(&format!(" --disable {feature}"));
+    }
+    cmd.push_str(&format!(" -c {}", sh_quote("web_search=\"disabled\"")));
+    for server in servers {
+        let off = if server.remote {
+            format!(
+                "mcp_servers.{}={{url={},enabled=false}}",
+                server.name,
+                toml_string("http://127.0.0.1:9/")
+            )
+        } else {
+            format!(
+                "mcp_servers.{}={{command={},enabled=false}}",
+                server.name,
+                toml_string("false")
+            )
+        };
+        cmd.push_str(&format!(" -c {}", sh_quote(&off)));
+    }
 }
 
 /// The whole system prompt of a front-desk chat. Its rules and roster are in
@@ -572,7 +671,7 @@ fn codex_exec_fallback() -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("exec"))
 }
 
-fn append_codex_mcp(cmd: &mut String, mcp: Option<&Path>) {
+fn append_codex_mcp(cmd: &mut String, mcp: Option<&Path>, front_desk: bool) {
     let Some(mcp) = mcp else { return };
     // The shared writer gives us Claude's JSON config path; the stdio script
     // beside it is the part both providers need. The legacy MCP `ask_user`
@@ -584,13 +683,44 @@ fn append_codex_mcp(cmd: &mut String, mcp: Option<&Path>) {
         toml_string(&script.to_string_lossy()),
         toml_string("--disable-ask-user"),
     );
-    let env_vars = "mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\",\"OCTIQ_SESSION_KEY\",\"OCTIQ_LAUNCH_ID\",\"OCTIQ_CHAT_CAPABILITY\",\"OCTIQ_HOOK_PORT\"]";
+    // Codex passes its MCP server only the variables named here. The front
+    // desk's marker is named for a front desk alone, so its MCP offers
+    // `route_chat` and nothing else (`octiq-ask.cjs`).
+    let mut vars = vec![
+        "OCTIQ_CHAT_KEY",
+        "OCTIQ_ROOT",
+        "OCTIQ_SESSION_KEY",
+        "OCTIQ_LAUNCH_ID",
+        "OCTIQ_CHAT_CAPABILITY",
+        "OCTIQ_HOOK_PORT",
+    ];
+    if front_desk {
+        vars.push("OCTIQ_FRONT_DESK");
+    }
+    let env_vars = format!(
+        "mcp_servers.octiq.env_vars=[{}]",
+        vars.iter()
+            .map(|v| toml_string(v))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     cmd.push_str(&format!(
         " -c {} -c {} -c {}",
         sh_quote(&command),
         sh_quote(&args),
-        sh_quote(env_vars),
+        sh_quote(&env_vars),
     ));
+    if front_desk {
+        // A front desk runs read-only, which is approval policy `never`,
+        // and under it Codex fails an MCP call that wants approval. Its one
+        // tool only puts a card in front of the person, who confirms it or
+        // not, so it is approved here: Claude's `--allowedTools
+        // mcp__octiq__route_chat`. No other tool is named.
+        cmd.push_str(&format!(
+            " -c {}",
+            sh_quote("mcp_servers.octiq.tools.route_chat.approval_mode=\"approve\"")
+        ));
+    }
 }
 
 /// The former Codex transport, retained behind `OCTIQ_CODEX_TRANSPORT=exec`.
@@ -623,18 +753,30 @@ fn codex_exec_command(request: &AgentCommand<'_>, provider: &CodexProvider) -> S
     if let Some(effort) = effort {
         cmd.push_str(&format!(" -c model_reasoning_effort={}", sh_quote(effort)));
     }
-    let instructions = codex_developer_instructions(
-        model.as_deref(),
-        effort,
-        request.access,
-        request.persistent_authorizations,
-        false,
-        request.orchestration_worker,
-    );
+    let instructions = if request.front_desk {
+        codex_front_desk_instructions(model.as_deref(), effort, request.access)
+    } else {
+        codex_developer_instructions(
+            model.as_deref(),
+            effort,
+            request.access,
+            request.persistent_authorizations,
+            false,
+            request.orchestration_worker,
+        )
+    };
     let host_instructions = format!("developer_instructions={}", toml_string(&instructions));
     cmd.push_str(&format!(" -c {}", sh_quote(&host_instructions)));
-    append_codex_mcp(&mut cmd, request.mcp_config);
-    for dir in request.extra_dirs {
+    append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
+    if request.front_desk {
+        append_codex_front_desk(&mut cmd, request.codex_user_mcp);
+    }
+    let extra_dirs: &[String] = if request.front_desk {
+        &[]
+    } else {
+        request.extra_dirs
+    };
+    for dir in extra_dirs {
         if resuming.is_some() {
             cmd.push_str(&format!(
                 " -c sandbox_workspace_write.writable_roots={}",
@@ -701,7 +843,10 @@ impl AgentProvider for CodexProvider {
             // OctiqFlow answers app-server's native question request. Enable
             // it in Default mode so Codex never needs the legacy MCP ask tool.
             let mut cmd = String::from("codex app-server --enable default_mode_request_user_input");
-            append_codex_mcp(&mut cmd, request.mcp_config);
+            append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
+            if request.front_desk {
+                append_codex_front_desk(&mut cmd, request.codex_user_mcp);
+            }
             cmd
         }
     }
@@ -1045,6 +1190,19 @@ pub(crate) fn codex_runtime_context(
     )
 }
 
+/// A Codex front desk's whole host prompt: what it is, and the runtime facts.
+/// None of the host prompts for tools it does not have.
+pub(crate) fn codex_front_desk_instructions(
+    model: Option<&str>,
+    effort: Option<&str>,
+    access: Option<Access>,
+) -> String {
+    let model = model.and_then(safe_model);
+    let effort = effort.and_then(|requested| CODEX.effort(requested));
+    let runtime = codex_runtime_context(model.as_deref(), effort, access);
+    format!("{FRONT_DESK_PROMPT}\n\n{runtime}")
+}
+
 pub(crate) fn codex_developer_instructions(
     model: Option<&str>,
     effort: Option<&str>,
@@ -1159,6 +1317,7 @@ mod tests {
             persistent_authorizations: None,
             orchestration_worker: false,
             front_desk: false,
+            codex_user_mcp: &[],
         })
     }
 
@@ -1355,6 +1514,7 @@ mod tests {
             persistent_authorizations: None,
             orchestration_worker: true,
             front_desk: false,
+            codex_user_mcp: &[],
         });
         assert!(claude.contains("orchestration_gate_create"));
         assert!(claude.contains("orchestration_worker_report"));
@@ -1376,6 +1536,7 @@ mod tests {
             persistent_authorizations: None,
             orchestration_worker: false,
             front_desk: true,
+            codex_user_mcp: &[],
         });
         assert!(line.contains(" --tools ''"), "no built-in tool: {line}");
         assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
@@ -1397,6 +1558,180 @@ mod tests {
         ] {
             assert!(!line.contains(absent), "{absent} in {line}");
         }
+    }
+
+    fn codex_request<'a>(front_desk: bool, servers: &'a [CodexMcpServer]) -> AgentCommand<'a> {
+        AgentCommand {
+            model: Some("gpt-5.6-luna"),
+            access: Some(Access::Read),
+            prompt: "where do I take this",
+            resume: None,
+            extra_dirs: &[],
+            effort: Some("low"),
+            images: &[],
+            lite: true,
+            mcp_config: Some(Path::new("octiq-ask.json")),
+            persistent_authorizations: None,
+            orchestration_worker: false,
+            front_desk,
+            codex_user_mcp: servers,
+        }
+    }
+
+    fn person_servers() -> Vec<CodexMcpServer> {
+        vec![
+            CodexMcpServer {
+                name: "node_repl".into(),
+                remote: false,
+            },
+            CodexMcpServer {
+                name: "sentry".into(),
+                remote: true,
+            },
+        ]
+    }
+
+    /// Review of 7ca0e78: Codex forwards its MCP server only the variables
+    /// named in `env_vars`, and the front desk's marker was not one of them,
+    /// so a Codex front desk's MCP listed the ordinary tools and no
+    /// `route_chat`. Both transports build the same MCP config.
+    #[test]
+    fn a_codex_front_desk_hands_its_marker_to_the_mcp_and_an_ordinary_chat_does_not() {
+        let servers = person_servers();
+        let desk = codex_request(true, &servers);
+        let ordinary = codex_request(false, &[]);
+        let marker = "\"OCTIQ_HOOK_PORT\",\"OCTIQ_FRONT_DESK\"]";
+        // Read-only is approval policy `never`, under which Codex fails an
+        // MCP call that wants approval: a live probe's route_chat did. Only
+        // route_chat is approved, and only for a front desk.
+        let approve = "-c 'mcp_servers.octiq.tools.route_chat.approval_mode=\"approve\"'";
+        for line in [
+            CODEX.build_command(&desk),
+            codex_exec_command(&desk, &CODEX),
+        ] {
+            assert!(line.contains(marker), "{line}");
+            assert!(line.contains(approve), "{line}");
+            assert_eq!(line.matches("approval_mode").count(), 1, "{line}");
+        }
+        for line in [
+            CODEX.build_command(&ordinary),
+            codex_exec_command(&ordinary, &CODEX),
+        ] {
+            assert!(!line.contains("OCTIQ_FRONT_DESK"), "{line}");
+            assert!(!line.contains("approval_mode"), "{line}");
+            assert!(line.contains("\"OCTIQ_HOOK_PORT\"]"), "{line}");
+        }
+        // With no MCP config written there is no server to approve a tool on;
+        // a lone tools entry would be an invalid server to Codex.
+        let bare = AgentCommand {
+            mcp_config: None,
+            ..codex_request(true, &[])
+        };
+        assert!(!CODEX.build_command(&bare).contains("mcp_servers.octiq"));
+    }
+
+    /// Codex has no `--tools ''` and no `--strict-mcp-config`: a front desk
+    /// turns off every feature that brings a tool, and each of the person's
+    /// own MCP servers by name. An ordinary Codex chat keeps all of them.
+    #[test]
+    fn a_codex_front_desk_turns_off_its_own_tools_and_the_persons_mcp_servers() {
+        let servers = person_servers();
+        let desk = codex_request(true, &servers);
+        for line in [
+            CODEX.build_command(&desk),
+            codex_exec_command(&desk, &CODEX),
+        ] {
+            for feature in CODEX_FRONT_DESK_FEATURES_OFF {
+                assert!(
+                    line.contains(&format!(" --disable {feature}")),
+                    "{feature}: {line}"
+                );
+            }
+            assert!(line.contains("-c 'web_search=\"disabled\"'"), "{line}");
+            assert!(
+                line.contains("-c 'mcp_servers.node_repl={command=\"false\",enabled=false}'"),
+                "{line}"
+            );
+            assert!(
+                line.contains(
+                    "-c 'mcp_servers.sentry={url=\"http://127.0.0.1:9/\",enabled=false}'"
+                ),
+                "{line}"
+            );
+        }
+        let ordinary = codex_request(false, &servers);
+        for line in [
+            CODEX.build_command(&ordinary),
+            codex_exec_command(&ordinary, &CODEX),
+        ] {
+            assert!(!line.contains(" --disable "), "{line}");
+            assert!(!line.contains("enabled=false"), "{line}");
+            assert!(!line.contains("web_search"), "{line}");
+        }
+    }
+
+    /// The host prompt a Codex front desk gets is the front desk's, not the
+    /// one describing orchestration, previews and the vault it cannot reach.
+    #[test]
+    fn a_codex_front_desk_is_told_it_only_routes() {
+        let desk =
+            codex_front_desk_instructions(Some("gpt-5.6-luna"), Some("low"), Some(Access::Read));
+        assert!(desk.starts_with(FRONT_DESK_PROMPT), "{desk}");
+        assert!(desk.contains("model: gpt-5.6-luna"), "{desk}");
+        for absent in [ORCHESTRATION_PROMPT, MEMORY_VAULT_PROMPT, FEEDBACK_PROMPT] {
+            assert!(!desk.contains(absent));
+        }
+        let servers = person_servers();
+        let exec = codex_exec_command(&codex_request(true, &servers), &CODEX);
+        assert!(exec.contains("You are an OctiqFlow front desk"), "{exec}");
+        assert!(
+            !exec.contains("orchestration tools are a host-owned"),
+            "{exec}"
+        );
+        let ordinary = codex_exec_command(&codex_request(false, &[]), &CODEX);
+        assert!(!ordinary.contains("You are an OctiqFlow front desk"));
+        assert!(ordinary.contains("orchestration tools are a host-owned"));
+    }
+
+    #[test]
+    fn the_persons_codex_mcp_servers_are_read_from_codex_mcp_list() {
+        let listed = r#"[
+            {"name":"chatgpt-bridge","enabled":true,"transport":{"type":"stdio","command":"node"}},
+            {"name":"codex_app","enabled":false,"transport":{"type":"stdio","command":"x"}},
+            {"name":"octiq","enabled":true,"transport":{"type":"stdio","command":"node"}},
+            {"name":"sentry","enabled":true,"transport":{"type":"streamable_http","url":"https://mcp.sentry.dev/mcp"}}
+        ]"#;
+        assert_eq!(
+            codex_front_desk_mcp_servers(listed).unwrap(),
+            vec![
+                CodexMcpServer {
+                    name: "chatgpt-bridge".into(),
+                    remote: false
+                },
+                CodexMcpServer {
+                    name: "codex_app".into(),
+                    remote: false
+                },
+                CodexMcpServer {
+                    name: "sentry".into(),
+                    remote: true
+                },
+            ],
+            "ours is set on the command line; a disabled one is turned off all the same"
+        );
+        assert_eq!(codex_front_desk_mcp_servers("[]").unwrap(), vec![]);
+        // A list it cannot read, or a name it cannot write as a config key,
+        // stops the launch rather than leave a server on.
+        assert!(codex_front_desk_mcp_servers("Not logged in").is_err());
+        assert!(
+            codex_front_desk_mcp_servers(r#"[{"name":"a.b","transport":{"type":"stdio"}}]"#)
+                .is_err()
+        );
+        assert!(codex_front_desk_mcp_servers(
+            r#"[{"name":"x' -c y","transport":{"type":"stdio"}}]"#
+        )
+        .is_err());
+        assert!(codex_front_desk_mcp_servers(r#"[{"transport":{"type":"stdio"}}]"#).is_err());
     }
 
     /// Feedback 57fbac34: the worker prompt, the card and the snapshot gave
@@ -1426,6 +1761,7 @@ mod tests {
             persistent_authorizations: None,
             orchestration_worker: true,
             front_desk: false,
+            codex_user_mcp: &[],
         });
         // Quoted for the shell, so look for a stretch without apostrophes.
         let tail = guidance
@@ -1454,6 +1790,7 @@ mod tests {
             persistent_authorizations: None,
             orchestration_worker: true,
             front_desk: false,
+            codex_user_mcp: &[],
         });
         let shell = crate::proc::resolve_agent_shell(
             std::env::var("SHELL").ok(),
@@ -1500,6 +1837,7 @@ mod tests {
                     persistent_authorizations: None,
                     orchestration_worker: worker,
                     front_desk: false,
+                    codex_user_mcp: &[],
                 });
                 assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
                 let rules = line
@@ -1560,6 +1898,7 @@ mod tests {
             persistent_authorizations: None,
             orchestration_worker: false,
             front_desk: false,
+            codex_user_mcp: &[],
         });
 
         assert!(pi.starts_with("pi --mode json --provider openai-codex"));

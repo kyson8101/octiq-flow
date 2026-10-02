@@ -104,9 +104,16 @@ designated, the page is the plain picker above.
 - **It only routes.** Every launch runs read-only and lite. On Claude it has
   no built-in tools, only `mcp__octiq__route_chat`, and its own system prompt.
   Its MCP offers nothing else. Every other agent hook refuses it by identity
-  (`web::not_front_desk`). Codex has no tool switch: there it is read-only and
-  sandboxed, with the same MCP and hook limits, and it keeps a read-only
-  shell.
+  (`web::not_front_desk`). Codex has no single tool switch, so a Codex front
+  desk is launched with every feature that brings a tool turned off (shell,
+  web search, apps, plugins, sub-agents, goals, images, browser and computer
+  use, hooks, memories), each of the person's own MCP servers turned off by
+  name (read from `codex mcp list --json` in the chat's folder; a list it
+  cannot read stops the launch), only `OCTIQ_FRONT_DESK` added to what its MCP
+  may see, `route_chat` approved (read-only is approval policy `never`, which
+  fails an unapproved call), and the front desk's own host prompt. What
+  Codex 0.158 still offers beside `route_chat` has no switch: its question
+  card, `view_image` and the MCP resource readers.
 - The head and any agent who manages others cannot be the front desk, and
   nobody can report to it. Designating an agent changes none of its earlier
   chats.

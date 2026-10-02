@@ -1611,6 +1611,7 @@ fn build_command_with_context(
         persistent_authorizations,
         orchestration_worker: false,
         front_desk: false,
+        codex_user_mcp: &[],
     })
 }
 
@@ -2156,6 +2157,73 @@ fn initialize_codex_app_server(
     Ok((thread_id, prelude))
 }
 
+/// The person's own Codex MCP servers, as the Codex this chat would start
+/// sees them: `codex mcp list --json` through the agent shell, in the chat's
+/// folder, with the project's environment (a project may set `CODEX_HOME`).
+fn codex_user_mcp_servers(
+    cwd: &str,
+    env: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<Vec<crate::agent_provider::CodexMcpServer>, String> {
+    use std::io::Read;
+    const WHY: &str = "The front desk could not check which MCP servers Codex would give it";
+    let shell = crate::proc::resolve_agent_shell(
+        std::env::var("SHELL").ok(),
+        std::env::var("LOCALAPPDATA").ok(),
+        cfg!(windows),
+        &crate::proc::find_executable,
+    )
+    .map_err(|e| format!("{WHY}: {e}"))?;
+    let folder = if cwd.trim().is_empty() {
+        crate::paths::home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".into())
+    } else {
+        cwd.to_owned()
+    };
+    let env: std::collections::BTreeMap<String, String> =
+        crate::workspaces::resolved_env(&env.cloned().unwrap_or_default())
+            .into_iter()
+            .collect();
+    let mut child = crate::orchestration::peer::one_shot_command(
+        &shell,
+        "exec codex mcp list --json",
+        &folder,
+        &env,
+        cfg!(windows),
+    )
+    .stderr(Stdio::null())
+    .spawn()
+    .map_err(|e| format!("{WHY}: {e}"))?;
+    let stdout = child.stdout.take();
+    let reader = thread::spawn(move || {
+        let mut out = String::new();
+        if let Some(mut pipe) = stdout {
+            let _ = pipe.read_to_string(&mut out);
+        }
+        out
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() > Duration::from_secs(20) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{WHY}: `codex mcp list` did not answer within 20s."
+                ));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(format!("{WHY}: {e}")),
+        }
+    };
+    let out = reader.join().unwrap_or_default();
+    if !status.success() {
+        return Err(format!("{WHY}: `codex mcp list` exited with {status}."));
+    }
+    crate::agent_provider::codex_front_desk_mcp_servers(&out).map_err(|e| format!("{WHY}: {e}"))
+}
+
 /// Start one agent process.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn start_session(
@@ -2208,6 +2276,15 @@ pub(crate) fn start_session(
             desks.insert(session_key.clone());
         }
     }
+    // Codex has no `--strict-mcp-config`: a Codex front desk turns off each
+    // of the person's own MCP servers by name, so it has to know them. Asked
+    // before the session table is locked; a list it cannot read stops the
+    // launch rather than start a front desk with the person's tools.
+    let codex_user_mcp = if front_desk && agent == ChatAgent::Codex {
+        codex_user_mcp_servers(&cwd, env.as_ref())?
+    } else {
+        Vec::new()
+    };
     manager.orchestrations.require_workspace_access(
         &session_key,
         &cwd,
@@ -2339,6 +2416,7 @@ pub(crate) fn start_session(
         persistent_authorizations: authorizations.as_deref(),
         orchestration_worker,
         front_desk,
+        codex_user_mcp: &codex_user_mcp,
     });
     let process_cwd = if cwd.trim().is_empty() {
         // `home_dir` reads USERPROFILE too, so this does not land on "/" the
@@ -2368,14 +2446,22 @@ pub(crate) fn start_session(
         .and_then(|requested| provider.effort(requested))
         .map(str::to_string);
     let codex_instructions = transport.is_app_server().then(|| {
-        crate::agent_provider::codex_developer_instructions(
-            selected_model.as_deref(),
-            selected_effort.as_deref(),
-            access,
-            authorizations.as_deref(),
-            true,
-            orchestration_worker,
-        )
+        if front_desk {
+            crate::agent_provider::codex_front_desk_instructions(
+                selected_model.as_deref(),
+                selected_effort.as_deref(),
+                access,
+            )
+        } else {
+            crate::agent_provider::codex_developer_instructions(
+                selected_model.as_deref(),
+                selected_effort.as_deref(),
+                access,
+                authorizations.as_deref(),
+                true,
+                orchestration_worker,
+            )
+        }
     });
 
     // Login shell, for PATH — see the module docs. Windows has no login shell,
@@ -5254,6 +5340,61 @@ mod tests {
 
     const CONVERSATION_URL: &str =
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
+
+    /// Whether a launch is a front desk is decided in ONE place: `start_session`
+    /// asks `team::is_front_desk_chat` by the chat's own key, and that answer
+    /// alone sets the access, the tools, the provider's front-desk flags and
+    /// `OCTIQ_FRONT_DESK`. First start, resume, restart recovery, a queued Codex
+    /// turn, a notification, a scheduled resume and a handover's origin all
+    /// come through it, so each carries the marker, and an ordinary chat is
+    /// handed an empty one whatever the server inherited. This pins that
+    /// shape: a second spawn site, a second command builder, or a process
+    /// whose key is not its chat's would each be a launch path that skips it.
+    #[test]
+    fn every_agent_launch_decides_front_desk_by_the_chat_key_in_one_place() {
+        let source = include_str!("agent_chat.rs");
+        let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        assert_eq!(production.matches("provider.build_command(").count(), 1);
+        assert_eq!(
+            production
+                .matches(".env(\"OCTIQ_FRONT_DESK\", if front_desk { \"1\" } else { \"\" })")
+                .count(),
+            1
+        );
+        assert_eq!(
+            production
+                .matches("crate::team::is_front_desk_chat(&crate::team::default_path(), &key)")
+                .count(),
+            1
+        );
+        // The agent itself is started once, in `start_session`.
+        assert_eq!(
+            production
+                .matches(".command(&format!(\"exec {line}\"))")
+                .count(),
+            1
+        );
+        let calls: Vec<&str> = production
+            .match_indices("start_session(")
+            .map(|(at, _)| &production[at..])
+            .filter(|rest| !production[..production.len() - rest.len()].ends_with("fn "))
+            .collect();
+        assert!(calls.len() >= 6, "{} launch sites", calls.len());
+        for call in calls {
+            let args = &call[..call.find(')').unwrap() + 1];
+            let voice = call["start_session(".len()..].trim_start();
+            assert!(
+                voice.starts_with("manager") || voice.starts_with("manager.clone()"),
+                "{args}"
+            );
+            let after_manager = voice[voice.find(',').unwrap() + 1..].trim_start();
+            assert!(
+                after_manager.starts_with("Voice::host("),
+                "a launch whose process key is not its chat's: {}",
+                &after_manager[..after_manager.len().min(60)]
+            );
+        }
+    }
 
     /// Feedback 56dd3f24: a refusal names the exact call it refused, from the
     /// assistant message that made it. The card is a record and a decision;
