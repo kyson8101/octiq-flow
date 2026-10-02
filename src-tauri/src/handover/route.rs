@@ -960,6 +960,44 @@ mod tests {
         );
     }
 
+    /// Only a file the person uploaded, by its own name in the uploads folder:
+    /// no way out through `..`, a symlink, or a symlinked folder.
+    #[cfg(unix)]
+    #[test]
+    fn an_attachment_cannot_climb_or_link_out_of_the_uploads_folder() {
+        let w = desk_world();
+        let host = host(&w);
+        let uploads = host.attachments_dir().unwrap();
+        let secret = w.root.join("secret.txt");
+        fs::write(&secret, b"no").unwrap();
+        let link = uploads.join(format!("{}-notes.txt", uuid::Uuid::new_v4()));
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let outside_dir = w.root.join("elsewhere");
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(outside_dir.join("key.pem"), b"no").unwrap();
+        let linked_dir = uploads.join("folder");
+        std::os::unix::fs::symlink(&outside_dir, &linked_dir).unwrap();
+        let tries = [
+            uploads.join("..").join("secret.txt"),
+            link.clone(),
+            linked_dir.join("key.pem"),
+            uploads.clone(),
+        ];
+        let mut asked = ask("Mango", "r1");
+        asked.attachments = tries
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .chain(["relative.txt".to_owned()])
+            .collect();
+        let record = request(&w.store, &host, source(&w, "chat:desk1"), asked).unwrap();
+        let route = record.route.clone().unwrap();
+        assert!(route.attachments.is_empty(), "{:?}", route.attachments);
+        assert_eq!(route.unreadable.len(), 5, "{:?}", route.unreadable);
+        if let Some(folder) = route.folder.as_deref() {
+            assert_eq!(fs::read_dir(folder).map(|d| d.count()).unwrap_or(0), 0);
+        }
+    }
+
     #[test]
     fn after_a_restart_a_pending_route_goes_and_a_confirmed_one_is_finished() {
         let w = desk_world();

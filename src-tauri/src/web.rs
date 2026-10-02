@@ -2709,6 +2709,11 @@ mod tests {
         "orchestration_bridge_close",
         "orchestration_task_access",
         "team_head_set",
+        // What makes a chat a front desk (hidden, route-only) is the
+        // person's: the brief that records it and who the front desk is.
+        "team_brief",
+        "team_front_desk_set",
+        "team_front_desk_create",
         // A handover is created by an agent but only the person decides it.
         "handover_confirm",
         "handover_decline",
