@@ -83,6 +83,13 @@ const TYPES_ON_GLASS =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
+/** The idle line in front of the box. On a touch screen Enter is a new line
+ *  and nothing else — the keyboard's own return key, sent with the button —
+ *  so there is no keyboard rule worth a line to state. */
+export function idleHint(onGlass: boolean): string | null {
+  return onGlass ? null : "Enter to send · Shift+Enter for a new line";
+}
+
 /** Whether the browser will let the PAGE read the clipboard at all.
  *
  *  Only in a secure context, which on a phone means the https address rather
@@ -994,7 +1001,7 @@ export function Composer({
             {identity
               ? <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={18} removed={identity.removed} className="composer-hint-avatar" />
               : <Mascot robot={choice.composerStyle} mood="idle" />}
-            {activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")}
+            {activity ?? idleHint(TYPES_ON_GLASS)}
           </>
         )}
         </BackgroundNote>

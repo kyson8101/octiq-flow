@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 // contract: no test below talks to the server.
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
-import { ACCESS, Composer, MODELS, providerFor, type ModelChoice } from "./Composer";
+import { ACCESS, Composer, MODELS, idleHint, providerFor, type ModelChoice } from "./Composer";
 
 function renderComposer(choice: ModelChoice, showWorkLocation = false): string {
   const provider = providerFor(choice.agent);
@@ -50,5 +50,12 @@ describe("the model-driven composer style", () => {
   it("shows work location only on the new-chat composer", () => {
     expect(renderComposer(MODELS[0])).not.toContain('aria-label="Work location"');
     expect(renderComposer(MODELS[0], true)).toContain('aria-label="Work location"');
+  });
+
+  it("states the keyboard rule only where there is a keyboard", () => {
+    expect(idleHint(false)).toBe("Enter to send · Shift+Enter for a new line");
+    expect(idleHint(true)).toBeNull();
+    // Node has no pointer, so the rendered composer is the keyboard one.
+    expect(renderComposer(MODELS[0])).toContain("Enter to send · Shift+Enter for a new line");
   });
 });
