@@ -64,6 +64,53 @@ project has nowhere to work, so it is left out as well.
   later. Delegation inside a run is unchanged: an assignee must still be a
   direct report of whoever assigns it.
 
+## The front desk
+
+**Settings → Agents → Front desk** designates one global agent that every new
+conversation opens on, in every project and in General. **Create front desk**
+registers one in a step, with the router role, on the provider's smallest
+model at its lowest effort (Claude Haiku, low; Codex Luna, low). The same row
+changes what it runs on, and the next new chat uses it. With no front desk
+designated, the page is the plain picker above.
+
+- The person says what they want. The front desk's brief
+  (`team::front_desk_brief`) lists **every** registered agent, whoever it
+  reports to, with its role, its project scope and its manager, plus every
+  project. It routes to one agent, asks when two fit and nothing tells them
+  apart, and says so when none fits.
+- To route, it calls `route_chat` (`/hook/route`). That records a **route**,
+  a handover of kind `route` (`handover/route.rs`), and draws a card in its
+  chat with the agent, the project and the brief. Nothing is created until the
+  person confirms on that card. Confirm then starts an ordinary chat with
+  that agent, on its registered provider, model, effort and access, exactly
+  where a conversation the person started would run: a project agent in a new
+  worktree of its project, the head as its cross-project conversation at
+  home, any other global agent in the named project or at home. The brief,
+  as the card showed it, is the first message, followed by the agent's usual
+  lead brief, and the page goes into that chat. Attachments are copied to a
+  folder of the route's own, which the new chat may read. A file that could
+  not be given is named on the card. A newer proposal replaces a pending one.
+  Cancel leaves no record and no file.
+- The host checks scope at the proposal and again at confirm, and refuses a
+  route to the front desk itself or from any chat that is not a front-desk
+  chat.
+- **A front-desk chat is hidden** from the sidebar, Recent, project pages,
+  search and the resume list, by its identity on the host
+  (`team::FrontDeskChat`). It is never saved to the chat index, so the next
+  start removes its transcript, and a pending route goes with it
+  (`handover::recover`). A route already confirmed is finished at that start.
+  If it cannot be, the failure and the brief are written into the chat it was
+  meant to open.
+- **It only routes.** Every launch runs read-only and lite. On Claude it has
+  no built-in tools, only `mcp__octiq__route_chat`, and its own system prompt.
+  Its MCP offers nothing else. Every other agent hook refuses it by identity
+  (`web::not_front_desk`). Codex has no tool switch: there it is read-only and
+  sandboxed, with the same MCP and hook limits, and it keeps a read-only
+  shell.
+- The head and any agent who manages others cannot be the front desk, and
+  nobody can report to it. Designating an agent changes none of its earlier
+  chats.
+
 ## Where a new task runs (automatic, with Advanced overrides)
 
 The project, branch, worktree and sandbox controls are hidden on a new task.

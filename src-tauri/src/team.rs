@@ -162,7 +162,47 @@ struct Stored {
     /// falls back to the project named General.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     home: Option<String>,
+    /// The agent every new conversation opens on, which only routes the
+    /// person to the right agent (`front_desk_brief`). Configured, never
+    /// inferred; `None` keeps the plain "Talk to" picker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    front_desk: Option<String>,
+    /// The conversations started as front-desk chats. Kept apart from
+    /// `leads`, and the only thing that hides a chat: an agent designated
+    /// later keeps its earlier ordinary chats, and one undesignated keeps its
+    /// front-desk chats hidden.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    front_desk_chats: Vec<FrontDeskChat>,
 }
+
+/// A conversation started with the front desk. Hidden from every chat list,
+/// search and the resume list: what the person meant to start is the chat
+/// the front desk routes them to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontDeskChat {
+    pub chat_key: String,
+    pub agent_id: String,
+    /// The provider's own ids for this conversation, as its processes named
+    /// them, so its session stays out of "Resume an earlier session".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_ids: Vec<String>,
+    pub created_at: i64,
+}
+
+/// How many front-desk chats are remembered. Their transcripts are not
+/// indexed, so the next start removes them; this only has to outlive that.
+const FRONT_DESK_CHATS_KEPT: usize = 500;
+
+/// The role a front desk is created with, in the person's words for it. The
+/// rules it works by are the host's (`front_desk_brief`), not this text.
+pub const FRONT_DESK_ROLE: &str = "Listens to what the person wants, works out which registered agent should handle it and in which project, and opens a new chat with that agent carrying a short brief of the request. Only routes: it does no work itself.";
+
+/// The model and effort a front desk is created with when nothing else is
+/// chosen: the smallest Claude model at its lowest effort. Routing reads a
+/// roster and writes a paragraph; it needs speed, not depth.
+pub const FRONT_DESK_MODEL: &str = "haiku";
+pub const FRONT_DESK_EFFORT: &str = "low";
 
 /// Serializes read-modify-write of the file; the store is small enough to be
 /// read whole on every call.
@@ -376,6 +416,24 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
                 "{name} is the lead you talk to across projects, so it stays global. Choose another lead first."
             ));
         }
+        if stored.front_desk.as_deref() == Some(me.as_str()) {
+            return Err(format!(
+                "{name} is your front desk, which routes from every project, so it stays global. Choose another front desk first."
+            ));
+        }
+    }
+    // The front desk only routes: nobody reports to it.
+    if let (Some(manager), Some(desk)) = (&reports_to, stored.front_desk.as_deref()) {
+        if manager == desk {
+            let desk_name = stored
+                .agents
+                .iter()
+                .find(|a| a.id == desk)
+                .map_or("The front desk", |a| a.name.as_str());
+            return Err(format!(
+                "{desk_name} is your front desk. It only routes conversations, so no agent can report to it."
+            ));
+        }
     }
     if let Some(me) = &id {
         // Moving an agent into one project must not strand a report that is
@@ -466,6 +524,9 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
     stored.agents.retain(|a| a.id != id);
     if stored.head.as_deref() == Some(id) {
         stored.head = None;
+    }
+    if stored.front_desk.as_deref() == Some(id) {
+        stored.front_desk = None;
     }
     for agent in &mut stored.agents {
         if agent.reports_to.as_deref() == Some(id) {
@@ -687,12 +748,213 @@ pub fn set_head(path: &Path, id: Option<&str>) -> Result<Option<TeamAgent>, Stri
                     agent.name
                 ));
             }
+            if stored.front_desk.as_deref() == Some(agent.id.as_str()) {
+                return Err(format!(
+                    "{} is your front desk, which only routes. Choose another lead, or another front desk first.",
+                    agent.name
+                ));
+            }
             Some(agent)
         }
     };
     stored.head = chosen.as_ref().map(|a| a.id.clone());
     write(path, &stored)?;
     Ok(chosen)
+}
+
+/// The designated front desk, when one is designated and still registered
+/// as a global agent.
+pub fn front_desk(path: &Path) -> Result<Option<TeamAgent>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    Ok(desk_of(&read(path)?))
+}
+
+fn desk_of(stored: &Stored) -> Option<TeamAgent> {
+    stored.front_desk.as_deref().and_then(|id| {
+        stored
+            .agents
+            .iter()
+            .find(|a| a.id == id && a.project_id.is_none())
+            .cloned()
+    })
+}
+
+/// Why `agent` cannot be the front desk, if it cannot. A front-desk chat is
+/// hidden and stripped of every tool but routing, so the head and anyone who
+/// manages agents would lose the conversations they lead. It routes from
+/// every project, so it is global.
+fn front_desk_refusal(stored: &Stored, agent: &TeamAgent) -> Option<String> {
+    if agent.project_id.is_some() {
+        return Some(format!(
+            "{} belongs to one project. The front desk routes from every project, so pick a global agent.",
+            agent.name
+        ));
+    }
+    if stored.head.as_deref() == Some(agent.id.as_str()) {
+        return Some(format!(
+            "{} is the lead you talk to across projects. A front desk only routes and its chats are hidden, so pick or create a separate agent.",
+            agent.name
+        ));
+    }
+    if stored
+        .agents
+        .iter()
+        .any(|a| a.reports_to.as_deref() == Some(agent.id.as_str()))
+    {
+        return Some(format!(
+            "{} manages other agents. A front desk only routes and its chats are hidden, so pick or create a separate agent.",
+            agent.name
+        ));
+    }
+    None
+}
+
+/// Designate (or clear, with `None`) the front desk. Changes no chat: the
+/// agent's earlier conversations stay as they were, and only conversations
+/// started with it from now on are front-desk chats.
+pub fn set_front_desk(path: &Path, id: Option<&str>) -> Result<Option<TeamAgent>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    let chosen = match id.map(str::trim).filter(|id| !id.is_empty()) {
+        None => None,
+        Some(id) => {
+            let agent = stored
+                .agents
+                .iter()
+                .find(|a| a.id == id)
+                .cloned()
+                .ok_or("That agent no longer exists.")?;
+            if let Some(why) = front_desk_refusal(&stored, &agent) {
+                return Err(why);
+            }
+            Some(agent)
+        }
+    };
+    stored.front_desk = chosen.as_ref().map(|a| a.id.clone());
+    write(path, &stored)?;
+    Ok(chosen)
+}
+
+/// What the browser sends to create a front desk in one step. Everything is
+/// optional: the defaults are the router role and the smallest Claude model
+/// at its lowest effort.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontDeskDraft {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub agent: Option<ChatAgent>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+}
+
+/// Register a new global agent with the router role and designate it.
+pub fn create_front_desk(path: &Path, draft: FrontDeskDraft) -> Result<TeamAgent, String> {
+    let agent = draft.agent.unwrap_or(ChatAgent::Claude);
+    let model = draft
+        .model
+        .map(|m| m.trim().to_owned())
+        .filter(|m| !m.is_empty())
+        .or_else(|| (agent == ChatAgent::Claude).then(|| FRONT_DESK_MODEL.to_owned()))
+        .ok_or("Choose the model the front desk runs on.")?;
+    let saved = save(
+        path,
+        TeamDraft {
+            id: None,
+            name: draft
+                .name
+                .map(|n| n.trim().to_owned())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "Front desk".into()),
+            role: FRONT_DESK_ROLE.into(),
+            agent,
+            model,
+            effort: Some(
+                draft
+                    .effort
+                    .filter(|e| !e.trim().is_empty())
+                    .unwrap_or_else(|| FRONT_DESK_EFFORT.into()),
+            ),
+            // It reads a roster and writes a brief; nothing it does needs
+            // more, and a Codex front desk is then sandboxed read-only.
+            access: Some(Access::Read),
+            project_id: None,
+            reports_to: None,
+            avatar: None,
+            team_id: None,
+        },
+    )?;
+    set_front_desk(path, Some(&saved.id))?;
+    Ok(saved)
+}
+
+/// Whether `chat_key` was started as a front-desk chat.
+pub fn is_front_desk_chat(path: &Path, chat_key: &str) -> bool {
+    front_desk_chat(path, chat_key).is_some()
+}
+
+pub fn front_desk_chat(path: &Path, chat_key: &str) -> Option<FrontDeskChat> {
+    let _guard = LOCK.lock().ok()?;
+    read(path)
+        .ok()?
+        .front_desk_chats
+        .into_iter()
+        .find(|c| c.chat_key == chat_key)
+}
+
+/// Every front-desk chat, for the listings that leave them out.
+pub fn front_desk_chats(path: &Path) -> Vec<FrontDeskChat> {
+    let Ok(_guard) = LOCK.lock() else {
+        return Vec::new();
+    };
+    read(path).map(|s| s.front_desk_chats).unwrap_or_default()
+}
+
+/// Remember the provider's id for a front-desk chat's conversation. Nothing
+/// for any other chat.
+pub fn note_front_desk_session(path: &Path, chat_key: &str, session_id: &str) {
+    let Ok(_guard) = LOCK.lock() else {
+        return;
+    };
+    let Ok(mut stored) = read(path) else {
+        return;
+    };
+    let Some(chat) = stored
+        .front_desk_chats
+        .iter_mut()
+        .find(|c| c.chat_key == chat_key)
+    else {
+        return;
+    };
+    if chat.session_ids.iter().any(|id| id == session_id) {
+        return;
+    }
+    chat.session_ids.push(session_id.to_owned());
+    let _ = write(path, &stored);
+}
+
+fn record_front_desk_chat(stored: &mut Stored, chat_key: &str, agent_id: &str) {
+    if stored
+        .front_desk_chats
+        .iter()
+        .any(|c| c.chat_key == chat_key)
+    {
+        return;
+    }
+    stored.front_desk_chats.push(FrontDeskChat {
+        chat_key: chat_key.to_owned(),
+        agent_id: agent_id.to_owned(),
+        session_ids: Vec::new(),
+        created_at: now_ms(),
+    });
+    let over = stored
+        .front_desk_chats
+        .len()
+        .saturating_sub(FRONT_DESK_CHATS_KEPT);
+    stored.front_desk_chats.drain(..over);
 }
 
 /// The configured coordination home: a workspace id, or `None` when the
@@ -1493,6 +1755,9 @@ pub fn brief(
     cross_project: bool,
     projects: &[(String, String)],
 ) -> Result<String, String> {
+    if let Some(text) = front_desk_brief(path, chat_key, lead_id, task, projects)? {
+        return Ok(text);
+    }
     lead_brief(
         path,
         chat_key,
@@ -1502,6 +1767,201 @@ pub fn brief(
         cross_project,
         projects,
         true,
+    )
+}
+
+/// The longest role a front-desk roster line carries. Roles run to a
+/// thousand characters and the roster lists every agent.
+const ROSTER_ROLE_MAX: usize = 400;
+
+/// The workspace conversations that belong to no code project live in: the
+/// configured home, else the project named General. `None` when neither is
+/// registered.
+pub fn home_project<'a>(
+    home: Option<&str>,
+    projects: &'a [(String, String)],
+) -> Option<&'a (String, String)> {
+    home.and_then(|id| projects.iter().find(|(pid, _)| pid == id))
+        .or_else(|| {
+            projects
+                .iter()
+                .find(|(_, name)| name.trim().eq_ignore_ascii_case("general"))
+        })
+}
+
+/// The first message of a conversation with the front desk: the person's
+/// words, then everything the front desk needs to route them, which is the
+/// WHOLE roster (every registered agent, whoever it reports to) and every
+/// project. Records `chat_key` as a front-desk chat.
+///
+/// `None` when `lead_id` is not the designated front desk, or `chat_key`
+/// already belongs to an ordinary conversation with that agent: designating
+/// it later changes none of its earlier chats.
+pub fn front_desk_brief(
+    path: &Path,
+    chat_key: &str,
+    lead_id: &str,
+    task: &str,
+    projects: &[(String, String)],
+) -> Result<Option<String>, String> {
+    let task = task.trim();
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    let Some(desk) = desk_of(&stored).filter(|desk| desk.id == lead_id) else {
+        return Ok(None);
+    };
+    if stored
+        .leads
+        .iter()
+        .any(|record| record.chat_key == chat_key)
+    {
+        return Ok(None);
+    }
+    if task.is_empty() {
+        return Err("Say what you need first.".into());
+    }
+    let text = front_desk_text(&stored, &desk, task, projects);
+    record_front_desk_chat(&mut stored, chat_key, &desk.id);
+    write(path, &stored)?;
+    Ok(Some(text))
+}
+
+fn front_desk_text(
+    stored: &Stored,
+    desk: &TeamAgent,
+    task: &str,
+    projects: &[(String, String)],
+) -> String {
+    let name_of = |id: &str| {
+        projects
+            .iter()
+            .find(|(pid, _)| pid == id)
+            .map(|(_, name)| name.clone())
+    };
+    let home = home_project(stored.home.as_deref(), projects);
+    let head = desk_head(stored);
+    let project_rows = if projects.is_empty() {
+        "(none registered)".to_owned()
+    } else {
+        projects
+            .iter()
+            .map(|(id, name)| {
+                let mark = if home.is_some_and(|(home_id, _)| home_id == id) {
+                    " (home: for anything that belongs to no code project)"
+                } else {
+                    ""
+                };
+                format!("- id `{id}` · {name}{mark}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let agents: Vec<&TeamAgent> = stored
+        .agents
+        .iter()
+        .filter(|a| a.id != desk.id)
+        .filter(|a| {
+            a.project_id
+                .as_deref()
+                .is_none_or(|p| projects.iter().any(|(id, _)| id == p))
+        })
+        .collect();
+    let roster = if agents.is_empty() {
+        "(no other agent is registered)".to_owned()
+    } else {
+        agents
+            .iter()
+            .map(|agent| roster_line(agent, &stored.agents, head.as_ref(), &name_of))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let role = if desk.role.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Your role: {}.",
+            desk.role.replace('\n', " ").trim_end_matches('.')
+        )
+    };
+    let head_rule = match &head {
+        Some(head) => format!(
+            " {} is the person's lead across projects: send it work that spans several projects or needs planning across teams.",
+            head.name
+        ),
+        None => String::new(),
+    };
+    let home_rule = match home {
+        Some((_, name)) => {
+            format!(" Work that belongs to no code project goes to {name}, the home workspace.")
+        }
+        None => String::new(),
+    };
+    format!(
+        "{task}{BRIEF_MARK}Front desk: {name}\n\n\
+You are {name}, the person's front desk in OctiqFlow.{role} You never do the work yourself, never act for another agent, and have no tools but route_chat. Your one job is to find the registered agent who should handle what the person wants and open a new chat with them.\n\n\
+How to route:\n\
+- Pick the ONE agent below whose role and project fit the request best. When the person names an agent or a project, follow that if it is in the lists.\n\
+- If two or more agents fit and nothing in the request tells them apart, ask the person one short question that names the candidates, then end your turn. Do not guess.\n\
+- If the request clearly fits no registered agent, say so in one or two sentences, name the closest agents, and do not call route_chat.\n\
+- Otherwise call route_chat with `agent` (the agent's id), `project` (a project id from the list; a project agent's own project is the default),{home_short} `brief` and `attachments`. Write the brief for the agent, who has not seen this chat: what the person wants, the goal, and every constraint, name, link and detail they gave, in their words where it matters. Invent nothing. Pass every path listed under \"Attachments:\" in the person's messages unless they asked to leave one out.\n\
+- An agent that works only in one project can be sent only there.{head_rule}{home_rule}\n\
+- route_chat only shows the person a card with the agent, the project and your brief. Nothing is created until they confirm it. After calling it, say in one short line what the card proposes and end your turn. If the person asks for a change, call route_chat again with the revised brief; it replaces the card.\n\n\
+Reply briefly, in the person's language.\n\n\
+Registered projects:\n{project_rows}\n\n\
+Registered agents:\n{roster}",
+        name = desk.name,
+        home_short = if home.is_some() {
+            " leave `project` out to use the home workspace,"
+        } else {
+            ""
+        },
+    )
+}
+
+/// The head, when one is configured and still registered.
+fn desk_head(stored: &Stored) -> Option<TeamAgent> {
+    stored
+        .head
+        .as_deref()
+        .and_then(|id| stored.agents.iter().find(|a| a.id == id).cloned())
+}
+
+fn roster_line(
+    agent: &TeamAgent,
+    team: &[TeamAgent],
+    head: Option<&TeamAgent>,
+    name_of: &dyn Fn(&str) -> Option<String>,
+) -> String {
+    let mut role: String = agent.role.replace('\n', " ").trim().to_owned();
+    if role.chars().count() > ROSTER_ROLE_MAX {
+        role = role.chars().take(ROSTER_ROLE_MAX).collect::<String>() + "…";
+    }
+    if role.is_empty() {
+        role = "no role given".into();
+    }
+    let scope = match agent.project_id.as_deref() {
+        None => "works in any project".to_owned(),
+        Some(project) => format!(
+            "works only in project {} (id `{project}`)",
+            name_of(project).unwrap_or_else(|| "that no longer exists".into())
+        ),
+    };
+    let reports = match agent
+        .reports_to
+        .as_deref()
+        .and_then(|m| team.iter().find(|a| a.id == m))
+    {
+        Some(manager) => format!("reports to {}", manager.name),
+        None => "reports to the person".into(),
+    };
+    let lead = if head.is_some_and(|h| h.id == agent.id) {
+        " · the person's lead across projects"
+    } else {
+        ""
+    };
+    format!(
+        "- id `{}` · {}{lead} — {role} · {scope} · {reports}",
+        agent.id, agent.name
     )
 }
 
@@ -1519,6 +1979,32 @@ pub fn handover_brief(
 ) -> Result<String, String> {
     lead_brief(
         path, chat_key, project_id, lead_id, task, false, projects, false,
+    )
+}
+
+/// The first message of a chat the front desk routed the person to: the
+/// same lead brief as a conversation they start themselves, so a lead still
+/// plans and delegates. `cross_project` is a route to the head, whose
+/// conversation spans every project exactly as "Talk to <head>" does. The
+/// person confirmed the route, so the agent need not report to them.
+pub fn route_brief(
+    path: &Path,
+    chat_key: &str,
+    project_id: &str,
+    lead_id: &str,
+    task: &str,
+    cross_project: bool,
+    projects: &[(String, String)],
+) -> Result<String, String> {
+    lead_brief(
+        path,
+        chat_key,
+        project_id,
+        lead_id,
+        task,
+        cross_project,
+        projects,
+        false,
     )
 }
 
@@ -2682,5 +3168,217 @@ mod tests {
         )
         .unwrap_err()
         .contains("no longer works in this project"));
+    }
+
+    #[test]
+    fn a_front_desk_is_created_in_one_step_on_the_smallest_model_at_its_lowest_effort() {
+        let path = temp();
+        assert!(
+            front_desk(&path).unwrap().is_none(),
+            "none until the person makes one"
+        );
+        let desk = create_front_desk(&path, FrontDeskDraft::default()).unwrap();
+        assert_eq!(desk.agent, ChatAgent::Claude);
+        assert_eq!(desk.model, FRONT_DESK_MODEL);
+        assert_eq!(desk.model, "haiku");
+        assert_eq!(desk.effort.as_deref(), Some("low"));
+        assert_eq!(desk.access, Access::Read);
+        assert!(desk.project_id.is_none() && desk.reports_to.is_none());
+        assert_eq!(desk.role, FRONT_DESK_ROLE);
+        assert_eq!(front_desk(&path).unwrap().unwrap().id, desk.id);
+
+        // The person picks Codex: the browser sends its smallest model.
+        let other = temp();
+        let codex = create_front_desk(
+            &other,
+            FrontDeskDraft {
+                name: Some("Reception".into()),
+                agent: Some(ChatAgent::Codex),
+                model: Some("gpt-5.6-luna".into()),
+                effort: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (codex.name.as_str(), codex.model.as_str()),
+            ("Reception", "gpt-5.6-luna")
+        );
+        assert_eq!(codex.effort.as_deref(), Some("low"));
+        // Codex has no default model here to fall back on.
+        assert!(create_front_desk(
+            &temp(),
+            FrontDeskDraft {
+                agent: Some(ChatAgent::Codex),
+                ..FrontDeskDraft::default()
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_changed_front_desk_model_is_what_the_next_front_desk_chat_reads() {
+        let path = temp();
+        let desk = create_front_desk(&path, FrontDeskDraft::default()).unwrap();
+        save(
+            &path,
+            TeamDraft {
+                id: Some(desk.id.clone()),
+                model: "sonnet".into(),
+                effort: Some("medium".into()),
+                access: Some(desk.access),
+                role: desk.role.clone(),
+                ..draft(&desk.name, None)
+            },
+        )
+        .unwrap();
+        let now = front_desk(&path).unwrap().unwrap();
+        assert_eq!(
+            (now.model.as_str(), now.effort.as_deref()),
+            ("sonnet", Some("medium"))
+        );
+        // Read from the store each time: nothing to restart.
+        assert_eq!(now.id, desk.id);
+    }
+
+    #[test]
+    fn the_head_managers_and_project_agents_cannot_be_the_front_desk() {
+        let path = temp();
+        let cto = save(&path, draft("Potato", None)).unwrap();
+        set_head(&path, Some(&cto.id)).unwrap();
+        assert!(set_front_desk(&path, Some(&cto.id))
+            .unwrap_err()
+            .contains("lead you talk to across projects"));
+        let lead = save(&path, draft("Lead", None)).unwrap();
+        save(&path, under("Worker", None, &lead)).unwrap();
+        assert!(set_front_desk(&path, Some(&lead.id))
+            .unwrap_err()
+            .contains("manages other agents"));
+        let local = save(&path, draft("Local", Some("p1"))).unwrap();
+        assert!(set_front_desk(&path, Some(&local.id))
+            .unwrap_err()
+            .contains("global agent"));
+        assert!(front_desk(&path).unwrap().is_none());
+
+        // And the other way round: the front desk stays a router.
+        let desk = save(&path, draft("Desk", None)).unwrap();
+        set_front_desk(&path, Some(&desk.id)).unwrap();
+        assert!(set_head(&path, Some(&desk.id))
+            .unwrap_err()
+            .contains("front desk"));
+        assert!(save(&path, under("Helper", None, &desk))
+            .unwrap_err()
+            .contains("no agent can report to it"));
+        let mut moved = draft("Desk", Some("p1"));
+        moved.id = Some(desk.id.clone());
+        assert!(save(&path, moved).unwrap_err().contains("stays global"));
+        // Clearing and removing leave no front desk behind.
+        assert!(set_front_desk(&path, None).unwrap().is_none());
+        set_front_desk(&path, Some(&desk.id)).unwrap();
+        delete(&path, &desk.id).unwrap();
+        assert!(front_desk(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_front_desk_brief_carries_the_whole_roster_and_records_a_hidden_chat() {
+        let path = temp();
+        let cto = save(&path, draft("Potato", None)).unwrap();
+        set_head(&path, Some(&cto.id)).unwrap();
+        // Agents reporting to the person, to the head, and in one project.
+        let starfall = save(
+            &path,
+            TeamDraft {
+                role: "Writes the Starfall novel chapters.\nKeeps the tone.".into(),
+                ..draft("Vesper", Some("p-star"))
+            },
+        )
+        .unwrap();
+        let report = save(&path, under("Mango", Some("p-app"), &cto)).unwrap();
+        let desk = create_front_desk(&path, FrontDeskDraft::default()).unwrap();
+        let projects = [
+            ("p-app".to_owned(), "App".to_owned()),
+            ("p-star".to_owned(), "starfall-novel".to_owned()),
+            ("p-gen".to_owned(), "General".to_owned()),
+        ];
+        let text = brief(
+            &path,
+            "chat:desk1",
+            "p-gen",
+            &desk.id,
+            "Draft chapter 3",
+            false,
+            &projects,
+        )
+        .unwrap();
+        let (person, host) = text.split_once(BRIEF_MARK).unwrap();
+        assert_eq!(person, "Draft chapter 3");
+        assert!(
+            host.starts_with(&format!("Front desk: {}", desk.name)),
+            "{host}"
+        );
+        for agent in [&cto, &starfall, &report] {
+            assert!(
+                host.contains(&format!("id `{}` · {}", agent.id, agent.name)),
+                "{host}"
+            );
+        }
+        assert!(
+            !host.contains(&format!("id `{}`", desk.id)),
+            "not itself: {host}"
+        );
+        assert!(
+            host.contains("Writes the Starfall novel chapters. Keeps the tone."),
+            "{host}"
+        );
+        assert!(
+            host.contains("works only in project starfall-novel (id `p-star`)"),
+            "{host}"
+        );
+        assert!(host.contains("reports to Potato"), "{host}");
+        assert!(host.contains("the person's lead across projects"), "{host}");
+        assert!(host.contains("id `p-gen` · General (home"), "{host}");
+        assert!(host.contains("ask the person one short question"), "{host}");
+        assert!(host.contains("fits no registered agent"), "{host}");
+        assert!(host.contains("route_chat"), "{host}");
+        // Recorded as a front-desk chat, never as anyone's lead.
+        assert!(is_front_desk_chat(&path, "chat:desk1"));
+        assert!(lead_for_chat(&path, "chat:desk1").unwrap().is_none());
+        assert!(text.len() < 20_000, "bounded");
+    }
+
+    #[test]
+    fn designating_a_front_desk_changes_none_of_its_earlier_chats() {
+        let path = temp();
+        let agent = save(&path, draft("Desk", None)).unwrap();
+        // An ordinary conversation with it, before it is the front desk.
+        brief(&path, "chat:before", "p1", &agent.id, "Hello", false, &[]).unwrap();
+        set_front_desk(&path, Some(&agent.id)).unwrap();
+        // That chat keeps its lead brief and stays visible.
+        let later = brief(&path, "chat:before", "p1", &agent.id, "Again", false, &[]).unwrap();
+        assert!(!later.contains("Front desk:"), "{later}");
+        assert!(!is_front_desk_chat(&path, "chat:before"));
+        // A new one is a front-desk chat; clearing the designation keeps it hidden.
+        brief(&path, "chat:after", "p1", &agent.id, "Hello", false, &[]).unwrap();
+        assert!(is_front_desk_chat(&path, "chat:after"));
+        set_front_desk(&path, None).unwrap();
+        assert!(is_front_desk_chat(&path, "chat:after"));
+        let plain = brief(&path, "chat:third", "p1", &agent.id, "Hello", false, &[]).unwrap();
+        assert!(
+            !plain.contains("Front desk:"),
+            "no longer the desk: {plain}"
+        );
+    }
+
+    #[test]
+    fn a_front_desk_chat_remembers_its_provider_sessions_and_nothing_else_does() {
+        let path = temp();
+        let desk = create_front_desk(&path, FrontDeskDraft::default()).unwrap();
+        brief(&path, "chat:desk1", "p1", &desk.id, "Hi", false, &[]).unwrap();
+        note_front_desk_session(&path, "chat:desk1", "sess-1");
+        note_front_desk_session(&path, "chat:desk1", "sess-1");
+        note_front_desk_session(&path, "chat:desk1", "sess-2");
+        note_front_desk_session(&path, "chat:ordinary", "sess-3");
+        let chats = front_desk_chats(&path);
+        assert_eq!(chats.len(), 1);
+        assert_eq!(chats[0].session_ids, vec!["sess-1", "sess-2"]);
     }
 }

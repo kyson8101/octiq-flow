@@ -147,7 +147,14 @@ pub struct AgentCommand<'a> {
     /// This process owns one host orchestration attempt. Its decision and
     /// completion protocol overrides ordinary chat question behaviour.
     pub orchestration_worker: bool,
+    /// A front-desk chat (`handover::route`): it routes the person to an
+    /// agent and does nothing else, so it gets no tool but `route_chat`.
+    pub front_desk: bool,
 }
+
+/// The whole system prompt of a front-desk chat. Its rules and roster are in
+/// its first message (`team::front_desk_brief`); this only says what it is.
+pub const FRONT_DESK_PROMPT: &str = "You are an OctiqFlow front desk. You route the person to the registered agent who should handle their request, by calling the route_chat tool, which only shows them a card to confirm. You have no other tools: you cannot read files, run commands, edit anything, use orchestration or act for another agent, and you must not try. If you need to know more, ask the person one short question.";
 
 /// A provider-specific permission request normalized for the shared responder.
 pub struct PermissionRequest<'a> {
@@ -405,6 +412,20 @@ impl AgentProvider for ClaudeProvider {
         // that built-in tool is removed in favour of OctiqFlow's MCP tool.
         cmd.push_str(" --permission-prompt-tool stdio");
         cmd.push_str(" --disallowedTools AskUserQuestion");
+        if request.front_desk {
+            // No built-in tool at all, the one MCP tool it needs, and none of
+            // the person's MCP servers, skills or settings.
+            cmd.push_str(" --tools ''");
+            if let Some(mcp) = request.mcp_config {
+                cmd.push_str(&format!(
+                    " --mcp-config {} --allowedTools mcp__octiq__route_chat --system-prompt {}",
+                    sh_quote(&mcp.to_string_lossy()),
+                    sh_quote(FRONT_DESK_PROMPT),
+                ));
+            }
+            cmd.push_str(" --strict-mcp-config --disable-slash-commands --setting-sources ''");
+            return cmd;
+        }
         if let Some(mcp) = request.mcp_config {
             let worker_prompt = request
                 .orchestration_worker
@@ -1137,6 +1158,7 @@ mod tests {
             mcp_config,
             persistent_authorizations: None,
             orchestration_worker: false,
+            front_desk: false,
         })
     }
 
@@ -1332,9 +1354,49 @@ mod tests {
             mcp_config: Some(Path::new("octiq-ask.json")),
             persistent_authorizations: None,
             orchestration_worker: true,
+            front_desk: false,
         });
         assert!(claude.contains("orchestration_gate_create"));
         assert!(claude.contains("orchestration_worker_report"));
+    }
+
+    #[test]
+    fn a_front_desk_gets_route_chat_and_no_other_tool() {
+        let line = provider_for(AgentKind::Claude).build_command(&AgentCommand {
+            model: Some("haiku"),
+            // Whatever access it was given, the tools are what stop it.
+            access: Some(Access::Full),
+            prompt: "where do I take this",
+            resume: None,
+            extra_dirs: &["/tmp/extra".to_owned()],
+            effort: Some("low"),
+            images: &[],
+            lite: true,
+            mcp_config: Some(Path::new("octiq-ask.json")),
+            persistent_authorizations: None,
+            orchestration_worker: false,
+            front_desk: true,
+        });
+        assert!(line.contains(" --tools ''"), "no built-in tool: {line}");
+        assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
+        assert!(
+            line.contains("--allowedTools mcp__octiq__route_chat --system-prompt"),
+            "{line}"
+        );
+        assert!(line.contains("--strict-mcp-config --disable-slash-commands --setting-sources ''"));
+        assert!(
+            line.contains("--model 'haiku'") && line.contains("--effort low"),
+            "{line}"
+        );
+        for absent in [
+            "orchestration_run_create",
+            "mcp__octiq__handover",
+            "vault_write",
+            "--append-system-prompt",
+            "--add-dir",
+        ] {
+            assert!(!line.contains(absent), "{absent} in {line}");
+        }
     }
 
     /// Feedback 57fbac34: the worker prompt, the card and the snapshot gave
@@ -1363,6 +1425,7 @@ mod tests {
             mcp_config: Some(Path::new("octiq-ask.json")),
             persistent_authorizations: None,
             orchestration_worker: true,
+            front_desk: false,
         });
         // Quoted for the shell, so look for a stretch without apostrophes.
         let tail = guidance
@@ -1390,6 +1453,7 @@ mod tests {
             mcp_config: Some(Path::new("octiq-ask.json")),
             persistent_authorizations: None,
             orchestration_worker: true,
+            front_desk: false,
         });
         let shell = crate::proc::resolve_agent_shell(
             std::env::var("SHELL").ok(),
@@ -1435,6 +1499,7 @@ mod tests {
                     mcp_config: Some(Path::new("octiq-ask.json")),
                     persistent_authorizations: None,
                     orchestration_worker: worker,
+                    front_desk: false,
                 });
                 assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
                 let rules = line
@@ -1494,6 +1559,7 @@ mod tests {
             mcp_config: None,
             persistent_authorizations: None,
             orchestration_worker: false,
+            front_desk: false,
         });
 
         assert!(pi.starts_with("pi --mode json --provider openai-codex"));

@@ -1346,6 +1346,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &crate::team::default_path(),
             arg::<Option<String>>(&args, "id")?.as_deref(),
         )),
+        // The front desk every new conversation opens on (`handover::route`).
+        // Browser-only, like the rest of the team store.
+        "team_front_desk" => to_value(crate::team::front_desk(&crate::team::default_path())),
+        "team_front_desk_set" => to_value(crate::team::set_front_desk(
+            &crate::team::default_path(),
+            arg::<Option<String>>(&args, "id")?.as_deref(),
+        )),
+        "team_front_desk_create" => {
+            let saved = crate::team::create_front_desk(
+                &crate::team::default_path(),
+                arg::<Option<crate::team::FrontDeskDraft>>(&args, "draft")?.unwrap_or_default(),
+            )?;
+            let _ = crate::team::ensure_memory(
+                &crate::memory_vault::Vault::profile(),
+                "octiq:team",
+                &saved,
+            );
+            to_value(Ok::<_, String>(saved))
+        }
         // The coordination home: the workspace the head's conversations live
         // in. Only a registered workspace may be chosen.
         "team_home" => to_value(crate::team::home(&crate::team::default_path())),

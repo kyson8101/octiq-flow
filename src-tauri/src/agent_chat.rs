@@ -202,6 +202,15 @@ pub(crate) fn record_chat_event(key: &str, event: Value) -> Option<u64> {
 
 /// `record_chat_event` for a line a ledger will call delivered: `Some` only
 /// once it is synced to the transcript on disk.
+/// Say in a chat that it could not be started, where its first message
+/// would have been. The page shows it as the chat's failure.
+pub(crate) fn record_start_failure(key: &str, message: &str) {
+    record_chat_event_synced(
+        key,
+        serde_json::json!({ "type": "octiq_start_failed", "message": message }),
+    );
+}
+
 pub(crate) fn record_chat_event_synced(key: &str, event: Value) -> Option<u64> {
     fan_out(key, crate::transcript::append_synced(key, &event), event)
 }
@@ -736,6 +745,9 @@ pub struct ChatManager {
     /// Each running agent's hook credential — see `LaunchCapability`. Keyed
     /// by process key.
     capabilities: Mutex<HashMap<String, LaunchCapability>>,
+    /// Processes launched as front-desk chats (`team::front_desk_chat`), so
+    /// the session id each one names is kept out of the resume list.
+    front_desks: Mutex<std::collections::HashSet<String>>,
 }
 
 /// The secret one launch of one agent proves itself with on
@@ -1054,6 +1066,17 @@ impl ChatManager {
             if let Some(start) = m.get_mut(session_key) {
                 start.session_id = Some(session_id.to_string());
             }
+        }
+        if self
+            .front_desks
+            .lock()
+            .is_ok_and(|desks| desks.contains(session_key))
+        {
+            crate::team::note_front_desk_session(
+                &crate::team::default_path(),
+                session_key,
+                session_id,
+            );
         }
         if let Err(error) = self.persist_orchestration_context(session_key) {
             eprintln!("orchestration: could not save provider session: {error}");
@@ -1587,6 +1610,7 @@ fn build_command_with_context(
         mcp_config,
         persistent_authorizations,
         orchestration_worker: false,
+        front_desk: false,
     })
 }
 
@@ -2169,6 +2193,21 @@ pub(crate) fn start_session(
     {
         return Err(format!("chat '{session_key}' is already running"));
     }
+    // A front-desk chat only routes (`handover::route`): it is launched
+    // read-only with no tool but `route_chat`, whatever its registration
+    // says, on every start, resume and relaunch alike.
+    let front_desk =
+        session_key == key && crate::team::is_front_desk_chat(&crate::team::default_path(), &key);
+    let access = if front_desk {
+        Some(Access::Read)
+    } else {
+        access
+    };
+    if front_desk {
+        if let Ok(mut desks) = manager.front_desks.lock() {
+            desks.insert(session_key.clone());
+        }
+    }
     manager.orchestrations.require_workspace_access(
         &session_key,
         &cwd,
@@ -2295,10 +2334,11 @@ pub(crate) fn start_session(
         extra_dirs: &extras,
         effort: effort.as_deref(),
         images: &images,
-        lite: lite.unwrap_or(false),
+        lite: lite.unwrap_or(false) || front_desk,
         mcp_config: mcp.as_deref(),
         persistent_authorizations: authorizations.as_deref(),
         orchestration_worker,
+        front_desk,
     });
     let process_cwd = if cwd.trim().is_empty() {
         // `home_dir` reads USERPROFILE too, so this does not land on "/" the
@@ -2369,6 +2409,9 @@ pub(crate) fn start_session(
         .env("OCTIQ_CHAT_AGENT", agent.id())
         .env("OCTIQ_SESSION_KEY", &session_key)
         .env("OCTIQ_LAUNCH_ID", &launch_id)
+        // The MCP then offers a front desk `route_chat` and nothing else.
+        // The hooks refuse the rest by the chat's identity regardless.
+        .env("OCTIQ_FRONT_DESK", if front_desk { "1" } else { "" })
         // Which chat this is, as every hook will believe it — see
         // `LaunchCapability`. `OCTIQ_CHAT_KEY` only names it. It is the
         // agent's only credential: the MCP is told where the hooks are and
@@ -4872,7 +4915,7 @@ pub fn start_deleted_chat_reaper() {
 /// Where pasted images are kept. Under ~/.octiqflow rather than in the
 /// project, because a screenshot pasted into a chat is not part of a
 /// repository and must never turn up in git status.
-fn attachments_dir() -> Result<std::path::PathBuf, String> {
+pub(crate) fn attachments_dir() -> Result<std::path::PathBuf, String> {
     let dir = crate::paths::home_dir()
         .ok_or("could not find your home folder")?
         .join(".octiqflow")
@@ -4982,7 +5025,27 @@ mod upload_tests {
 /// The chats that exist, newest first.
 pub fn chat_index_list() -> Vec<crate::chat_index::ChatMeta> {
     let _ = purge_deleted_chats();
-    crate::chat_index::list()
+    visible_chats(crate::chat_index::list())
+}
+
+/// Every chat but the front-desk ones (`team::FrontDeskChat`), which no list,
+/// count or search ever shows. Keyed by the chat's identity on the host, so
+/// a page that saved one anyway still never gets it back.
+pub(crate) fn visible_chats(
+    chats: Vec<crate::chat_index::ChatMeta>,
+) -> Vec<crate::chat_index::ChatMeta> {
+    let hidden: std::collections::HashSet<String> =
+        crate::team::front_desk_chats(&crate::team::default_path())
+            .into_iter()
+            .map(|chat| chat.chat_key)
+            .collect();
+    if hidden.is_empty() {
+        return chats;
+    }
+    chats
+        .into_iter()
+        .filter(|meta| !hidden.contains(&format!("chat:{}", meta.id)))
+        .collect()
 }
 
 /// Chats in the one-day trash, newest deletion first.
@@ -5002,7 +5065,7 @@ pub fn chat_index_deleted() -> Vec<crate::chat_index::ChatMeta> {
 /// and the client is free to use neither — it re-reads the whole list. That is
 /// deliberate. One shape of answer means a row on screen can only ever be one
 /// this server actually holds, and the list is metadata for a handful of chats.
-fn announce_index_change(id: &str, gone: bool) {
+pub(crate) fn announce_index_change(id: &str, gone: bool) {
     crate::bus::emit(
         "chat-index-changed",
         serde_json::json!({ "id": id, "gone": gone }),
@@ -5012,6 +5075,11 @@ fn announce_index_change(id: &str, gone: bool) {
 /// Record a chat, or update what is known about it.
 pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> {
     let id = meta.id.clone();
+    // A front-desk chat is never recorded: nothing lists it, and its
+    // transcript goes at the next start like any chat no row points at.
+    if crate::team::is_front_desk_chat(&crate::team::default_path(), &format!("chat:{id}")) {
+        return Ok(());
+    }
     crate::chat_index::upsert(meta)?;
     // Only once it is actually on disk. Announcing a write that failed would
     // send every other device to fetch a list that has not changed.

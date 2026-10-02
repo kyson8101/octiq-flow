@@ -1220,6 +1220,65 @@ const HANDOVER = {
   },
 };
 
+/** A front-desk chat (team::front_desk_brief) routes the person and does
+ *  nothing else: it is offered route_chat and no other tool. The host
+ *  refuses every other hook from it by the chat's identity regardless. */
+const IS_FRONT_DESK = !!String(process.env.OCTIQ_FRONT_DESK || "").trim();
+
+const ROUTE_CHAT = {
+  name: "route_chat",
+  description:
+    "Front desk only: propose a new chat between the person and one registered " +
+    "agent, carrying a brief of what they want. The host checks the agent and " +
+    "the project it may work in, then shows the person a card with the agent, " +
+    "the project and your brief; nothing is created unless THEY confirm it, and " +
+    "the new chat runs on the agent's own registered settings. Returns at once. " +
+    "Call it again with a new requestId to revise the proposal; that replaces " +
+    "the card. Ask the person instead when the request fits more than one agent, " +
+    "and say so instead when it fits none.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      agent: {
+        type: "string",
+        minLength: 1,
+        description: "The registered agent's id from your roster (or its exact name).",
+      },
+      project: {
+        type: "string",
+        description:
+          "A registered project's id or name. A project agent's own project is " +
+          "the default; leave it out for an agent that works in any project to " +
+          "use the home workspace.",
+      },
+      brief: {
+        type: "string",
+        minLength: 1,
+        maxLength: 8000,
+        description:
+          "For the agent, who has not seen this chat: what the person wants, the " +
+          "goal, and every constraint, name, link and detail they gave. Invent nothing.",
+      },
+      attachments: {
+        type: "array",
+        maxItems: 20,
+        items: { type: "string" },
+        description:
+          "Paths listed under \"Attachments:\" in the person's messages that " +
+          "the agent should get. The host copies them where the new chat can open them.",
+      },
+      requestId: {
+        type: "string",
+        minLength: 1,
+        maxLength: 128,
+        description: "A unique id for this proposal. Reuse it only to retry this exact call.",
+      },
+    },
+    required: ["agent", "brief", "requestId"],
+    additionalProperties: false,
+  },
+};
+
 const HANDOVER_ASK = {
   name: "handover_ask",
   description:
@@ -1287,6 +1346,62 @@ const HANDOVER_OUTCOME = {
     additionalProperties: false,
   },
 };
+
+/** The front desk proposing a chat. Only documented fields cross: who and
+ *  where are checked, and the new chat's settings chosen, by the host. */
+function callRoute(args = {}) {
+  const text = (value) => (typeof value === "string" ? value : "");
+  const body = {
+    agent: text(args.agent),
+    ...(text(args.project).trim() ? { project: text(args.project) } : {}),
+    brief: text(args.brief),
+    attachments: Array.isArray(args.attachments)
+      ? args.attachments.filter((item) => typeof item === "string")
+      : [],
+    requestId: text(args.requestId),
+  };
+  return new Promise((resolve, reject) => {
+    if (!CHAT_KEY) return reject(new Error("This tool requires an OctiqFlow chat."));
+    let port;
+    try {
+      port = hookPort();
+    } catch {
+      return reject(new Error("OctiqFlow is not reachable."));
+    }
+    const payload = JSON.stringify({
+      chatKey: CHAT_KEY,
+      sessionKey: process.env.OCTIQ_SESSION_KEY || CHAT_KEY,
+      launchId: process.env.OCTIQ_LAUNCH_ID || undefined,
+      args: body,
+    });
+    const req = http.request(
+      { host: "127.0.0.1", port, path: "/hook/route", method: "POST", headers: hookHeaders(payload) },
+      (res) => {
+        let out = "";
+        res.on("data", (chunk) => (out += chunk));
+        res.on("end", () => {
+          try {
+            const answer = JSON.parse(out);
+            if (res.statusCode < 200 || res.statusCode >= 300 || answer.error) {
+              reject(new Error(answer.error || `OctiqFlow returned ${res.statusCode}.`));
+            } else {
+              resolve(answer.result?.text || "OctiqFlow showed the person the card.");
+            }
+          } catch {
+            reject(new Error("OctiqFlow gave no answer."));
+          }
+        });
+      },
+    );
+    req.on("error", () => reject(new Error("OctiqFlow could not be reached.")));
+    req.setTimeout(60 * 1000, () => {
+      req.destroy();
+      reject(new Error("The call timed out. Retry with the same requestId to read what was recorded."));
+    });
+    req.write(payload);
+    req.end();
+  });
+}
 
 /** One call back along a confirmed handover. Only documented fields cross:
  *  which chat is on the other end is the host's to say, never these. */
@@ -2022,7 +2137,14 @@ const BASE_SERVER_INSTRUCTIONS =
   "branch, the worktree, the commits, the merge and the release itself, and your " +
   "word does not move them.";
 
-const SERVER_INSTRUCTIONS = ASK_USER_ENABLED
+const FRONT_DESK_INSTRUCTIONS =
+  "You are a front desk. Use route_chat to propose a new chat between the person " +
+  "and the registered agent who should handle their request; the person confirms " +
+  "it on a card. You have no other tools.";
+
+const SERVER_INSTRUCTIONS = IS_FRONT_DESK
+  ? FRONT_DESK_INSTRUCTIONS
+  : ASK_USER_ENABLED
   ? BASE_SERVER_INSTRUCTIONS +
     " In an OctiqFlow chat, ask_user is the way to ask the person a decision " +
     "question, and all questions belong in one call. Permission for an " +
@@ -2054,6 +2176,7 @@ async function handle(msg) {
       // fails. Reading a supplied conversation reference is deliberately still
       // useful to a separately installed copy of this MCP, so it remains
       // available.
+      if (CHAT_KEY && IS_FRONT_DESK) return reply(msg.id, { tools: [ROUTE_CHAT] });
       return reply(msg.id, {
         tools: CHAT_KEY
           ? [
@@ -2075,6 +2198,23 @@ async function handle(msg) {
       });
 
     case "tools/call": {
+      if (IS_FRONT_DESK && msg.params?.name !== "route_chat") {
+        return reply(msg.id, {
+          isError: true,
+          content: [{ type: "text", text: "A front desk only routes: route_chat is its one tool." }],
+        });
+      }
+      if (msg.params?.name === "route_chat") {
+        try {
+          const text = await callRoute(msg.params.arguments || {});
+          return reply(msg.id, { content: [{ type: "text", text }] });
+        } catch (error) {
+          return reply(msg.id, {
+            isError: true,
+            content: [{ type: "text", text: error instanceof Error ? error.message : "The chat could not be proposed." }],
+          });
+        }
+      }
       if (String(msg.params?.name || "").startsWith("feedback_")) {
         const tool = FEEDBACK_TOOLS.find(candidate => candidate.name === msg.params.name);
         if (!CHAT_KEY || !tool) {

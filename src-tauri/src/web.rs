@@ -413,6 +413,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/feedback", post(feedback_handler))
         .route("/hook/vault", post(vault_handler))
         .route("/hook/handover", post(handover_handler))
+        .route("/hook/route", post(route_handler))
         .route("/hook/handover/ask", post(handover_ask_handler))
         .route("/hook/handover/outcome", post(handover_outcome_handler))
         .fallback(get(asset_handler))
@@ -998,7 +999,9 @@ async fn handover_handler(
         session_key: request.session_key.as_deref(),
         launch_id: request.launch_id.as_deref(),
     };
-    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim)
+        .and_then(|caller| not_front_desk(&ctx, caller))
+    {
         Ok(caller) => caller,
         Err(refused) => return hook_refusal(refused),
     };
@@ -1083,7 +1086,9 @@ async fn handover_back<A: Send + 'static>(
         session_key: request.session_key.as_deref(),
         launch_id: request.launch_id.as_deref(),
     };
-    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim)
+        .and_then(|caller| not_front_desk(&ctx, caller))
+    {
         Ok(caller) => caller,
         Err(refused) => return hook_refusal(refused),
     };
@@ -1225,6 +1230,74 @@ fn hook_refusal((status, error): (StatusCode, &'static str)) -> Response {
     (status, axum::Json(json!({ "error": error }))).into_response()
 }
 
+const FRONT_DESK_ONLY: &str = "This is a front-desk chat: it only routes the person with route_chat, and every other OctiqFlow tool is refused.";
+
+/// A front-desk chat routes and does nothing else (`handover::route`). Every
+/// hook but `/hook/route` (and a question to the person) refuses it, by the
+/// chat its capability proves, whatever its MCP offered.
+fn not_front_desk(ctx: &Ctx, caller: HookCaller) -> Result<HookCaller, (StatusCode, &'static str)> {
+    if crate::team::is_front_desk_chat(&ctx.services.handovers.team, &caller.chat_key) {
+        return Err((StatusCode::FORBIDDEN, FRONT_DESK_ONLY));
+    }
+    Ok(caller)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RouteHook {
+    #[serde(default)]
+    chat_key: Option<String>,
+    #[serde(default)]
+    session_key: Option<String>,
+    #[serde(default)]
+    launch_id: Option<String>,
+    args: crate::handover::route::RouteAsk,
+}
+
+/// The front desk proposing a chat with another agent. Like a handover it can
+/// only RECORD a pending card for the person; it never waits, so the person
+/// can talk on, and a newer proposal replaces the card.
+async fn route_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<RouteHook>,
+) -> Response {
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: request.launch_id.as_deref(),
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let services = ctx.services.clone();
+    let ask = request.args;
+    let recorded = tokio::task::spawn_blocking(move || {
+        crate::handover::live_route_request(
+            &services,
+            &caller.chat_key,
+            &caller.session_key,
+            &caller.launch_id,
+            ask,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result);
+    match recorded {
+        Ok(record) => axum::Json(json!({
+            "result": { "id": record.id, "text": crate::handover::route::proposed_text(&record) }
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
+}
+
 /// Every action an agent may take on `/hook/orchestration`, and the command
 /// each one runs. A whitelist, not a bridge: nothing the person alone decides
 /// is on it (see the `the_hook_reaches_no_person_only_command` test).
@@ -1281,7 +1354,9 @@ async fn orchestration_handler(
         session_key: request.session_key.as_deref(),
         launch_id: None,
     };
-    let actor = match hook_caller(&ctx.services.chats, &headers, claim) {
+    let actor = match hook_caller(&ctx.services.chats, &headers, claim)
+        .and_then(|caller| not_front_desk(&ctx, caller))
+    {
         Ok(caller) => caller.chat_key,
         Err(refused) => return hook_refusal(refused),
     };
@@ -1347,7 +1422,9 @@ fn task_hook_caller(
         session_key: request.session_key.as_deref(),
         launch_id: None,
     };
-    hook_caller(&ctx.services.chats, headers, claim).map(|caller| caller.chat_key)
+    hook_caller(&ctx.services.chats, headers, claim)
+        .and_then(|caller| not_front_desk(ctx, caller))
+        .map(|caller| caller.chat_key)
 }
 
 /// Native vault operations only. Configuration is a browser setting, never an
@@ -2228,6 +2305,94 @@ mod tests {
                 .any(|(_, c)| *c == command));
         }
         chats.test_end("chat:orch-worker");
+        chats.test_end("chat:plain");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_front_desk_chat_may_only_route_and_only_a_front_desk_may() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let wiring = crate::handover::Wiring::scratch();
+        let desk = crate::team::create_front_desk(&wiring.team, Default::default()).unwrap();
+        crate::team::brief(&wiring.team, "chat:desk", "p1", &desk.id, "Hi", false, &[]).unwrap();
+        let desk_cap = chats.test_launch("chat:desk");
+        let plain = chats.test_launch("chat:plain");
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        let (_ctx, base) = test_server_handing_over(cfg, chats.clone(), store, wiring).await;
+        // Every agent hook but a question to the person refuses it outright,
+        // whatever its MCP offered.
+        for (route, body) in [
+            (
+                "orchestration",
+                json!({ "chatKey": "chat:desk", "action": "run_create", "args": {} }),
+            ),
+            (
+                "task",
+                json!({ "chatKey": "chat:desk", "action": "report", "args": {} }),
+            ),
+            (
+                "vault",
+                json!({ "chatKey": "chat:desk", "action": "write", "args": {} }),
+            ),
+            (
+                "feedback",
+                json!({ "chatKey": "chat:desk", "action": "submit", "args": {} }),
+            ),
+            (
+                "handover",
+                json!({ "chatKey": "chat:desk", "args": {
+                    "recipient": "self", "requestId": "r1", "brief": { "objective": "x" },
+                } }),
+            ),
+            (
+                "handover/outcome",
+                json!({ "chatKey": "chat:desk", "args": {
+                    "requestId": "o1", "status": "done", "summary": "x",
+                } }),
+            ),
+        ] {
+            let (status, answer) = post_hook(&base, route, None, Some(&desk_cap), body).await;
+            assert_eq!(status, 403, "/hook/{route}: {answer}");
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("front-desk chat"),
+                "{answer}"
+            );
+        }
+        let route = |chat: &str| {
+            json!({ "chatKey": chat, "args": {
+                "agent": "Anyone", "brief": "help", "requestId": "r1",
+            } })
+        };
+        // /hook/route takes the front desk past its identity check: what
+        // stops this call is only that its turn is not running.
+        let (status, answer) =
+            post_hook(&base, "route", None, Some(&desk_cap), route("chat:desk")).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            !answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("Only the front desk"),
+            "{answer}"
+        );
+        // Any other chat is refused by identity.
+        let (status, answer) =
+            post_hook(&base, "route", None, Some(&plain), route("chat:plain")).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("Only the front desk routes"),
+            "{answer}"
+        );
+        chats.test_end("chat:desk");
         chats.test_end("chat:plain");
     }
 

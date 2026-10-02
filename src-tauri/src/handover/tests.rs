@@ -179,6 +179,10 @@ pub(crate) struct FakeHost {
     /// Every answering turn run, and what each answers.
     pub(crate) answered: StdMutex<Vec<back::AnswerTurn>>,
     pub(crate) answer_with: StdMutex<Option<Result<String, String>>>,
+    /// Chats taken out of the index.
+    pub(crate) removed: StdMutex<Vec<String>>,
+    /// Start failures written into chats: (chat, text).
+    pub(crate) failures: StdMutex<Vec<(String, String)>>,
 }
 
 /// Whether a handover call is being held open on `id`.
@@ -282,6 +286,22 @@ impl Host for FakeHost {
             return Err(format!("{} is held by another writer", path.display()));
         }
         Ok(())
+    }
+    fn attachments_dir(&self) -> Result<PathBuf, String> {
+        let dir = self.root.join("attachments");
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(dir)
+    }
+    fn remove_index(&self, chat_id: &str) -> Result<(), String> {
+        self.saved.lock().unwrap().retain(|meta| meta.id != chat_id);
+        self.removed.lock().unwrap().push(chat_id.to_owned());
+        Ok(())
+    }
+    fn note_start_failed(&self, chat_key: &str, text: &str) {
+        self.failures
+            .lock()
+            .unwrap()
+            .push((chat_key.to_owned(), text.to_owned()));
     }
     fn base_url(&self) -> Option<String> {
         Some("http://127.0.0.1:1421".into())

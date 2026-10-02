@@ -188,6 +188,15 @@ fn checked_request_id(id: &str) -> Result<String, String> {
 /// The confirmed handover whose new chat is `chat_key`: the only record a
 /// call from that chat may act on. Everything else is refused, with why.
 fn incoming<'a>(stored: &'a mut Stored, chat_key: &str) -> Result<&'a mut Handover, String> {
+    // A chat the front desk opened has nobody to ask or report back to: the
+    // front desk only routed it, and its chat is hidden.
+    if stored
+        .handovers
+        .values()
+        .any(|h| h.kind == Kind::Route && h.target_chat_key.as_deref() == Some(chat_key))
+    {
+        return Err("The front desk opened this chat for the person; there is no earlier chat to ask or report to. Ask the person instead.".into());
+    }
     let Some(id) = stored
         .handovers
         .values()

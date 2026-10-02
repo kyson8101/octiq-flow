@@ -116,7 +116,8 @@ pub fn search(
         return Err("Search needs letters or numbers.".into());
     }
 
-    let chats = crate::chat_index::list();
+    // Front-desk chats are in no listing, this one included.
+    let chats = crate::agent_chat::visible_chats(crate::chat_index::list());
     let workspace_names: HashMap<String, String> =
         crate::workspaces::list_workspaces_impl(workspaces)?
             .into_iter()
@@ -558,5 +559,88 @@ mod tests {
         let chunks = entry_chunks(&text);
         assert_eq!(chunks.len(), 2);
         assert!(chunks.iter().any(|chunk| chunk.contains("boundary phrase")));
+    }
+
+    #[test]
+    fn a_front_desk_chat_is_in_no_list_no_search_and_no_resume_list() {
+        let team = std::env::temp_dir()
+            .join(format!("octiq-desk-{}", uuid::Uuid::new_v4()))
+            .join("team.json");
+        let _team = crate::team::use_test_path(team.clone());
+        let desk = crate::team::create_front_desk(&team, Default::default()).unwrap();
+        let desk_id = uuid::Uuid::new_v4().to_string();
+        let plain_id = uuid::Uuid::new_v4().to_string();
+        let desk_key = format!("chat:{desk_id}");
+        crate::team::brief(
+            &team,
+            &desk_key,
+            "p1",
+            &desk.id,
+            "find the zebra",
+            false,
+            &[],
+        )
+        .unwrap();
+        crate::team::note_front_desk_session(&team, &desk_key, "desk-session");
+        let meta = |id: &str| -> crate::chat_index::ChatMeta {
+            serde_json::from_value(json!({
+                "id": id, "projectId": "p1", "title": "zebra hunt", "createdAt": 1, "updatedAt": 1,
+            }))
+            .unwrap()
+        };
+
+        // A page saving it is a no-op...
+        crate::agent_chat::chat_index_save(meta(&desk_id)).unwrap();
+        assert!(!crate::chat_index::list().iter().any(|m| m.id == desk_id));
+        crate::agent_chat::chat_index_save(meta(&plain_id)).unwrap();
+        // ...and a row an older page wrote anyway is still never listed.
+        crate::chat_index::upsert(meta(&desk_id)).unwrap();
+        let listed = crate::agent_chat::chat_index_list();
+        assert!(listed.iter().any(|m| m.id == plain_id));
+        assert!(
+            !listed.iter().any(|m| m.id == desk_id),
+            "hidden by identity"
+        );
+
+        for id in [&desk_id, &plain_id] {
+            crate::transcript::append(
+                &format!("chat:{id}"),
+                &json!({"type":"user","message":{"content":"where is the zebra"}}),
+            );
+        }
+        let hits = search(
+            &crate::workspaces::WorkspaceState::with_projects(Vec::new()),
+            "zebra".into(),
+            Some(50),
+        )
+        .unwrap();
+        assert!(hits.iter().any(|hit| hit.id == plain_id));
+        assert!(!hits.iter().any(|hit| hit.id == desk_id));
+
+        // "Resume an earlier session" and its count.
+        let session = |id: &str| crate::agent_history::HistorySession {
+            agent: "claude".into(),
+            session_id: id.into(),
+            title: "where is the zebra".into(),
+            cwd: "/tmp".into(),
+            started_at: 1,
+            updated_at: 1,
+            model: None,
+            effort: None,
+            origin: None,
+        };
+        let kept = crate::agent_history::without_front_desks(
+            vec![session("desk-session"), session("other-session")],
+            &crate::team::front_desk_chats(&team),
+        );
+        assert_eq!(
+            kept.iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["other-session"]
+        );
+
+        crate::chat_index::remove(&desk_id).unwrap();
+        crate::chat_index::remove(&plain_id).unwrap();
     }
 }

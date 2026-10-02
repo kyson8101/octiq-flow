@@ -311,10 +311,31 @@ pub struct OutcomeReceipt {
     pub at: i64,
 }
 
+/// What a record is: an agent handing its own task over, or the front desk
+/// opening a chat for the person (`route.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Kind {
+    #[default]
+    Handover,
+    Route,
+}
+
+impl Kind {
+    fn is_handover(&self) -> bool {
+        *self == Kind::Handover
+    }
+}
+
 /// One handover, as it is stored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Handover {
+    #[serde(default, skip_serializing_if = "Kind::is_handover")]
+    pub kind: Kind,
+    /// What a route adds: the message the new chat receives and its files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<route::RouteDetail>,
     pub id: String,
     pub request_id: String,
     /// The chat whose agent asked.
@@ -373,6 +394,10 @@ pub struct Handover {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Public {
+    #[serde(skip_serializing_if = "Kind::is_handover")]
+    pub kind: Kind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<route::RouteDetail>,
     pub id: String,
     pub source_chat_key: String,
     pub source_title: String,
@@ -405,6 +430,8 @@ pub struct Public {
 impl Handover {
     pub fn public(&self) -> Public {
         Public {
+            kind: self.kind,
+            route: self.route.clone(),
             id: self.id.clone(),
             source_chat_key: self.source_chat_key.clone(),
             source_title: self.source_title.clone(),
@@ -1017,6 +1044,8 @@ pub fn request(path: &Path, host: &dyn Host, source: Source, ask: Ask) -> Result
         asks: Vec::new(),
         outcomes: Vec::new(),
         outcome_receipts: Vec::new(),
+        kind: Kind::Handover,
+        route: None,
     };
     stored.handovers.insert(record.id.clone(), record.clone());
     write(path, &stored)?;
@@ -1267,6 +1296,13 @@ pub trait Host {
         &self,
         turn: &back::AnswerTurn,
     ) -> Result<crate::orchestration::peer::HelperAnswer, String>;
+    /// Where the person's uploads are kept (`agent_chat::save_attachment`):
+    /// the only files a route may carry.
+    fn attachments_dir(&self) -> Result<PathBuf, String>;
+    /// Take a chat out of the index: a route given up on leaves no row.
+    fn remove_index(&self, chat_id: &str) -> Result<(), String>;
+    /// Say in a chat's own transcript that it could not be started.
+    fn note_start_failed(&self, chat_key: &str, text: &str);
 }
 
 /// The one chat a confirm starts.
@@ -1282,6 +1318,8 @@ pub struct Start {
     pub extra_dirs: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub turn_id: String,
+    /// Pictures sent with the first message (a route's attachments).
+    pub images: Vec<String>,
 }
 
 /// What keeps the source agent from writing where the new chat works, as the
@@ -1434,7 +1472,8 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
         let key = record.target_chat_key.clone().unwrap_or_default();
         host.checkout_free(&record.workspace.path, &[&record.source_chat_key, &key])?;
     }
-    let fence = if record.workspace.mode == "worktree" {
+    // A route's source is the front desk, which has no tool that writes.
+    let fence = if record.workspace.mode == "worktree" || record.kind == Kind::Route {
         Fence::NotShared
     } else if source_waiting(&record.id)? {
         Fence::Waiting
@@ -1565,24 +1604,32 @@ fn launch(
     record.workspace.prepared_cwd = Some(cwd.clone());
 
     let base = host.base_url();
-    let message = render_message(record, &cwd, base.as_deref(), checked.fence);
-    let prompt = match &checked.agent {
-        Some(agent) => {
-            let names: Vec<(String, String)> = checked
-                .projects
-                .iter()
-                .map(|p| (p.id.clone(), p.name.clone()))
-                .collect();
-            team::handover_brief(
-                &host.team_path(),
-                &key,
-                &record.destination.project_id,
-                &agent.id,
-                &message,
-                &names,
-            )?
-        }
-        None => message,
+    let names: Vec<(String, String)> = checked
+        .projects
+        .iter()
+        .map(|p| (p.id.clone(), p.name.clone()))
+        .collect();
+    let prompt = match (&record.route, &checked.agent) {
+        // Exactly the message the card showed, then the agent's own brief.
+        (Some(route), Some(agent)) => team::route_brief(
+            &host.team_path(),
+            &key,
+            &record.destination.project_id,
+            &agent.id,
+            &route.message,
+            route.cross_project,
+            &names,
+        )?,
+        (Some(_), None) => return Err("A route needs a registered agent.".into()),
+        (None, Some(agent)) => team::handover_brief(
+            &host.team_path(),
+            &key,
+            &record.destination.project_id,
+            &agent.id,
+            &render_message(record, &cwd, base.as_deref(), checked.fence),
+            &names,
+        )?,
+        (None, None) => render_message(record, &cwd, base.as_deref(), checked.fence),
     };
 
     let now = now_ms();
@@ -1613,6 +1660,22 @@ fn launch(
     })?;
     let mut extra_dirs = destination::repositories(&checked.project);
     extra_dirs.retain(|dir| dir != &record.destination.repository);
+    // A route's files are copied to a folder of their own, which the new
+    // chat may read like its checkout; nothing else of the uploads.
+    if let Some(folder) = record.route.as_ref().and_then(|r| r.folder.clone()) {
+        extra_dirs.push(folder);
+    }
+    let images = record
+        .route
+        .as_ref()
+        .map(|r| {
+            r.attachments
+                .iter()
+                .filter(|f| f.image)
+                .map(|f| f.path.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     host.start(Start {
         key,
         cwd,
@@ -1624,6 +1687,7 @@ fn launch(
         extra_dirs,
         env: checked.project.env.clone(),
         turn_id: record.start_turn_id(),
+        images,
     })
 }
 
@@ -1645,6 +1709,15 @@ pub fn decline(path: &Path, id: &str) -> Result<Handover, String> {
         }
         Status::Abandoned => return Err("This handover was already given up on.".into()),
         Status::Pending => {}
+    }
+    if record.kind == Kind::Route {
+        // Cancelled leaves nothing: no record, no copied file. Pages are
+        // told once more, declined, so the card goes.
+        let mut stored = read(path)?;
+        let gone = route::forget(&mut stored, id).unwrap_or(record);
+        write(path, &stored)?;
+        announce(&gone);
+        return Ok(gone);
     }
     record.status = Status::Declined;
     record.decided_at = Some(now_ms());
@@ -1680,6 +1753,18 @@ pub fn abandon(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, Strin
     }
     record.status = Status::Abandoned;
     record.abandonable = false;
+    if record.kind == Kind::Route {
+        // Nothing started, and the person gave up: no chat row, no record.
+        if let Some(key) = &record.target_chat_key {
+            host.remove_index(key.strip_prefix("chat:").unwrap_or(key))?;
+        }
+        let mut stored = read(path)?;
+        stored.handovers.remove(id);
+        route::discard(&record);
+        write(path, &stored)?;
+        announce(&record);
+        return Ok(record);
+    }
     save_record(path, &record)?;
     Ok(record)
 }
@@ -1698,10 +1783,33 @@ pub fn recover(path: &Path, host: &dyn Host) -> Result<Vec<String>, String> {
     let mut stored = read(path)?;
     let mut finished = Vec::new();
     let mut changed = Vec::new();
+    // A pending route's card lived in a front-desk chat, which is never
+    // indexed and so was removed at this start: nobody can see the card any
+    // more, so the route goes with it rather than waiting forever.
+    let unseen: Vec<String> = stored
+        .handovers
+        .values()
+        .filter(|h| h.kind == Kind::Route && h.status == Status::Pending)
+        .map(|h| h.id.clone())
+        .collect();
+    for id in &unseen {
+        if let Some(gone) = route::forget(&mut stored, id) {
+            changed.push(gone);
+        }
+    }
+    // A route the person confirmed is finished below, never left waiting on
+    // a card nobody sees.
+    let confirmed_routes: Vec<String> = stored
+        .handovers
+        .values()
+        .filter(|h| h.kind == Kind::Route && h.status == Status::Starting)
+        .filter(|h| !launched(h, host))
+        .map(|h| h.id.clone())
+        .collect();
     for record in stored
         .handovers
         .values_mut()
-        .filter(|h| h.status == Status::Starting)
+        .filter(|h| h.status == Status::Starting && !confirmed_routes.contains(&h.id))
     {
         if launched(record, host) {
             record.status = Status::Confirmed;
@@ -1729,7 +1837,75 @@ pub fn recover(path: &Path, host: &dyn Host) -> Result<Vec<String>, String> {
         write(path, &stored)?;
         changed.iter().for_each(announce);
     }
+    for id in confirmed_routes {
+        if let Some(done) = finish_route(path, &id, host)? {
+            finished.push(done);
+        }
+    }
     Ok(finished)
+}
+
+/// Start a route the person confirmed before a restart cut it off. When it
+/// cannot be started, say so in the chat it was meant to open, with the
+/// brief, so the failure is where the person looks: never only on a card in
+/// a front-desk chat nobody can see any more. Called under `LOCK`.
+fn finish_route(path: &Path, id: &str, host: &dyn Host) -> Result<Option<String>, String> {
+    let Some(mut record) = read(path)?.handovers.remove(id) else {
+        return Ok(None);
+    };
+    let tried =
+        prepare(&mut record, host).and_then(|checked| launch(path, &mut record, host, &checked));
+    let error = match tried {
+        Ok(()) => {
+            finish(path, record)?;
+            return Ok(Some(id.to_owned()));
+        }
+        Err(error) => error,
+    };
+    if may_have_started(&record, host) {
+        // It may be running: leave it starting, to be finished next time.
+        record.error = Some(error);
+        record.abandonable = false;
+        save_record(path, &record)?;
+        return Ok(None);
+    }
+    let key = record
+        .target_chat_key
+        .clone()
+        .unwrap_or_else(|| format!("chat:{}", uuid::Uuid::new_v4()));
+    let chat_id = key.strip_prefix("chat:").unwrap_or(&key).to_owned();
+    let now = now_ms();
+    let title: String = record.brief.objective.chars().take(80).collect();
+    host.save_index(crate::chat_index::ChatMeta {
+        id: chat_id,
+        project_id: record.destination.project_id.clone(),
+        title: title.lines().next().unwrap_or("Routed chat").to_owned(),
+        latest_response: None,
+        custom_title: false,
+        agent_title: false,
+        session_id: None,
+        cwd: record.workspace.prepared_cwd.clone(),
+        model_id: Some(crate::orchestration::model_id(
+            record.settings.agent,
+            record.settings.model.as_deref(),
+        )),
+        access: Some(crate::orchestration::access_id(record.settings.access).into()),
+        created_at: now,
+        updated_at: now,
+        read_at: None,
+        pinned: false,
+        done_at: None,
+        deleted_at: None,
+        generation: 0,
+        launch: None,
+    })?;
+    host.note_start_failed(&key, &route::failure_text(&record, &error));
+    record.target_chat_key = Some(key);
+    record.status = Status::Abandoned;
+    record.error = Some(error);
+    record.abandonable = false;
+    save_record(path, &record)?;
+    Ok(None)
 }
 
 /// Hold the tool open on `id` until a decision or the timeout. Answers what
@@ -1998,6 +2174,20 @@ impl Host for Live<'_> {
     ) -> Result<crate::orchestration::peer::HelperAnswer, String> {
         back::run(turn)
     }
+
+    fn attachments_dir(&self) -> Result<PathBuf, String> {
+        crate::agent_chat::attachments_dir()
+    }
+
+    fn remove_index(&self, chat_id: &str) -> Result<(), String> {
+        crate::chat_index::remove(chat_id)?;
+        crate::agent_chat::announce_index_change(chat_id, true);
+        Ok(())
+    }
+
+    fn note_start_failed(&self, chat_key: &str, text: &str) {
+        crate::agent_chat::record_start_failure(chat_key, text);
+    }
 }
 
 /// The host a call runs against: the test's, or the running app.
@@ -2065,6 +2255,39 @@ pub fn live_request(
     Ok((record, !known))
 }
 
+/// A `route_chat` call from a front-desk chat. The caller has checked that
+/// the chat IS one; this checks the rest and records the card.
+pub fn live_route_request(
+    svc: &crate::dispatch::Services,
+    chat_key: &str,
+    session_key: &str,
+    launch_id: &str,
+    ask: route::RouteAsk,
+) -> Result<Handover, String> {
+    let chat = team::front_desk_chat(&svc.handovers.team, chat_key)
+        .ok_or("Only the front desk routes conversations.")?;
+    let desk = team::list(&svc.handovers.team, None, true)?
+        .into_iter()
+        .find(|a| a.id == chat.agent_id)
+        .ok_or("This front desk is no longer a registered agent. Start a new chat.")?;
+    let origin = svc
+        .chats
+        .question_origin(chat_key, Some(session_key), Some(launch_id))?;
+    let path = &svc.handovers.store;
+    with_host(svc, |host| {
+        route::request(
+            path,
+            host,
+            route::RouteSource {
+                chat_key: chat_key.to_owned(),
+                desk,
+                origin,
+            },
+            ask,
+        )
+    })
+}
+
 /// What a tool that does not wait is told: the decision when there is one
 /// (and it now owns telling it), else that the decision will follow.
 pub fn answer_now(wiring: &Wiring, id: &str) -> Result<String, String> {
@@ -2088,6 +2311,11 @@ fn tell(path: &Path, id: &str, host: &dyn Host) -> Result<Option<Public>, String
     let Some(record) = hand_off_notice(path, id)? else {
         return Ok(None);
     };
+    // The front desk's call returned at once and its chat is hidden: a
+    // continuation would only wake it to say what the person already saw.
+    if record.kind == Kind::Route {
+        return Ok(None);
+    }
     let outcome = match &record.origin {
         Some(origin) => {
             let (text, turn_id) = continuation(&record, host.base_url().as_deref());
@@ -2122,6 +2350,10 @@ pub fn decide(
             Decision::Decline => decline(path, id)?,
             Decision::Abandon => abandon(path, id, host)?,
         };
+        // A route tells nobody, and a cancelled one is already gone.
+        if record.kind == Kind::Route {
+            return Ok(record.public());
+        }
         Ok(tell(path, id, host)?.unwrap_or_else(|| record.public()))
     })
 }
@@ -2144,6 +2376,7 @@ pub fn live_recover(svc: &crate::dispatch::Services) {
 }
 
 pub mod back;
+pub mod route;
 
 #[cfg(test)]
 pub(crate) mod tests;

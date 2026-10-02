@@ -99,9 +99,27 @@ static CACHE: Mutex<Option<HashMap<PathBuf, Parsed>>> = Mutex::new(None);
 pub fn agent_history_list(limit: Option<usize>) -> Vec<HistorySession> {
     let mut all = scan_claude();
     all.extend(scan_codex());
+    let desks = crate::team::front_desk_chats(&crate::team::default_path());
+    let mut all = without_front_desks(all, &desks);
     all.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     all.truncate(limit.unwrap_or(600));
     all
+}
+
+/// Every session but those of front-desk chats, which the person never
+/// meant to come back to: what they started is the chat it routed them to.
+pub(crate) fn without_front_desks(
+    sessions: Vec<HistorySession>,
+    desks: &[crate::team::FrontDeskChat],
+) -> Vec<HistorySession> {
+    let hidden: std::collections::HashSet<&str> = desks
+        .iter()
+        .flat_map(|desk| desk.session_ids.iter().map(String::as_str))
+        .collect();
+    sessions
+        .into_iter()
+        .filter(|s| !hidden.contains(s.session_id.as_str()))
+        .collect()
 }
 
 // ---- reading one session back --------------------------------------------

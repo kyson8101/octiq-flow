@@ -583,8 +583,8 @@ fn now_ms() -> i64 {
 }
 
 /// Forget a chat. Its transcript is removed separately — this is only the
-/// entry in the list.
-#[cfg(test)]
+/// entry in the list. Outside tests, only a route given up on before its
+/// chat ever started uses it (`handover::abandon`).
 pub fn remove(id: &str) -> Result<(), String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // An index we cannot read is not a list to delete one entry from. Refuse,
