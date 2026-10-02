@@ -10,7 +10,10 @@ import {
   allowForProjectReply,
   allowOnceReply,
   type AllowedOutage,
+  answerClaude,
   answerJudged,
+  CLAUDE_ALLOW_ROUTES,
+  CLAUDE_BLOCKED_STATUS,
   answerOutage,
   judgedAllowedReply,
   outageAllowedReply,
@@ -113,35 +116,141 @@ describe("SafetyBlock", () => {
       provider: "claude",
       action: "eas update --branch production",
     };
-    const drawClaude = (notice: SafetyBlockNotice) =>
-      renderToStaticMarkup(<SafetyBlock block={notice} onContinue={() => {}} onAnswered={() => {}} />);
+    const drawClaude = (notice: SafetyBlockNotice, startOpen = false) =>
+      renderToStaticMarkup(
+        <SafetyBlock block={notice} onContinue={() => {}} onAnswered={() => {}} startOpen={startOpen} />,
+      );
 
     it("names the refused line and offers no way to allow it", () => {
-      const html = drawClaude(claude);
-      expect(html).toContain("Claude auto-mode review");
-      expect(html).toContain("eas update --branch production");
-      expect(html).toContain("Use safer approach");
-      expect(html).toContain("Dismiss");
-      expect(html).not.toMatch(/Allow/);
-      expect(html).not.toContain("Codex");
+      for (const html of [drawClaude(claude), drawClaude(claude, true)]) {
+        expect(html).toContain("eas update --branch production");
+        expect(html).toContain("Use safer approach");
+        expect(html).toContain("Dismiss");
+        expect(html).not.toMatch(/Always allow|Allow once|Retry/);
+        expect(html).not.toContain("Codex");
+      }
     });
 
     it("says plainly that the refusal stands, even if an older server still sends a grant", () => {
       const stale = { ...claude, exactGrant: "Bash(eas update --branch production)" } as SafetyBlockNotice;
-      const html = drawClaude(stale);
+      const html = drawClaude(stale, true);
       expect(html).not.toContain("Allow this exact command once");
       expect(html).not.toContain("Bash(");
       expect(html).toContain("cannot approve a call");
       expect(CLAUDE_REFUSAL_NOTE).toContain("will not rerun it");
     });
 
+    describe("compact by default (\"it showing too much info\")", () => {
+      const line = "rm -rf web/node_modules web/dist && git worktree prune && git status --short";
+      const long: SafetyBlockNotice = { ...claude, summary: "Irreversible Local Destruction", action: line };
+      const shown = line.replace(/&/g, "&amp;");
+
+      it("says what was blocked, why, that nothing ran, and one next step", () => {
+        const html = drawClaude(long);
+        // Headline and reason, one quiet status line, the start of the line.
+        expect(html).toContain("Claude&#x27;s auto mode blocked an action");
+        expect(html).toContain('<span class="safety-card-reason">Irreversible Local Destruction</span>');
+        expect(html).toContain(`<pre class="safety-card-action safety-card-preview"><span>${shown}</span></pre>`);
+        expect(html).toContain(CLAUDE_BLOCKED_STATUS);
+        // Primary, secondary, and a low-emphasis disclosure that is shut.
+        expect(html).toContain("Use safer approach");
+        expect(html).toContain("Dismiss");
+        expect(html).toMatch(/<button class="safety-card-toggle" type="button" aria-expanded="false">Details/);
+        expect(html.indexOf("Use safer approach")).toBeLessThan(html.indexOf("Dismiss"));
+      });
+
+      it("drops the eyebrow, the badge, the banner, the section labels and the notes", () => {
+        const html = drawClaude(long);
+        for (const gone of [
+          "Claude auto-mode review", "OctiqFlow is okay", "safety-card-context", "safety-card-status",
+          "Why it was blocked", "What it tried", "Technical details", "How to allow this",
+          "Permission for this action was denied", "cannot approve a call", "Manual command approval",
+          "safety-card-more",
+        ]) expect(html).not.toContain(gone);
+        // The line appears once: as the preview, not again in full.
+        expect(html.split(shown).length - 1).toBe(1);
+      });
+
+      it("opens to the full line, the technical details and every way to allow it", () => {
+        const html = drawClaude(long, true);
+        expect(html).toMatch(/aria-expanded="true" aria-controls="([^"]+)">Details[\s\S]*class="safety-card-more" id="\1"/);
+        expect(html).toContain(`<pre class="safety-card-action safety-card-full">${shown}</pre>`);
+        expect(html).toContain('aria-label="Copy the command"');
+        expect(html).toContain("Technical details");
+        expect(html).toContain("Permission for this action was denied by the Claude Code auto mode classifier.");
+        expect(html).toContain("How to allow this");
+        for (const route of CLAUDE_ALLOW_ROUTES) expect(html).toContain(route.replace(/'/g, "&#x27;"));
+        expect(html).toContain("Run it yourself.");
+        expect(html).toContain("Claude permission rule");
+        expect(html).toContain("choose Manual command approval");
+        // The quick answers stay where they were.
+        expect(html).toContain("Use safer approach");
+        expect(html).toContain("Dismiss");
+      });
+
+      it("keeps the same shape without a command, and for a call that is not a shell line", () => {
+        const bare = drawClaude({ ...claude, action: null, summary: "Blocked by auto mode" });
+        expect(bare).not.toContain("safety-card-preview");
+        expect(bare).toContain("Blocked by auto mode");
+        expect(bare).toContain(CLAUDE_BLOCKED_STATUS);
+        expect(bare).toContain("Use safer approach");
+        const bareOpen = drawClaude({ ...claude, action: null }, true);
+        expect(bareOpen).not.toContain("Copy the command");
+        expect(bareOpen).toContain("How to allow this");
+
+        const write = drawClaude({ ...claude, action: "Write /Users/me/.ssh/config", summary: "Credential Exposure" });
+        expect(write).toContain("<span>Write /Users/me/.ssh/config</span>");
+        expect(write).toContain("Credential Exposure");
+      });
+    });
+
+    describe("the two answers do exactly what they did", () => {
+      const record = () => {
+        const order: string[] = [];
+        const calls: [string, Record<string, unknown>][] = [];
+        const sent: [string, unknown][] = [];
+        return {
+          order, calls, sent,
+          io: {
+            invoke: async <T,>(cmd: string, args: Record<string, unknown>) => {
+              calls.push([cmd, args]); order.push(cmd); return true as T;
+            },
+            onAnswered: (id: string) => { order.push(`answered:${id}`); },
+            onContinue: async (message: string, options?: { safetyBlock?: string }) => {
+              sent.push([message, options]); order.push("send");
+            },
+          },
+        };
+      };
+
+      it("Use safer approach takes the card down, then asks for a safer alternative", async () => {
+        const t = record();
+        await answerClaude("safer", claude, t.io);
+        expect(t.calls).toEqual([["safety_block_dismiss", { id: "claude-1" }]]);
+        expect(t.order).toEqual(["safety_block_dismiss", "answered:claude-1", "send"]);
+        expect(t.sent).toEqual([[SAFER_APPROACH_REPLY, undefined]]);
+      });
+
+      it("Dismiss takes the card down and sends the agent nothing", async () => {
+        const t = record();
+        await answerClaude("dismiss", claude, t.io);
+        expect(t.order).toEqual(["safety_block_dismiss", "answered:claude-1"]);
+        expect(t.sent).toEqual([]);
+      });
+
+      it("a dismiss the host refuses leaves the card up and sends nothing", async () => {
+        const t = record();
+        t.io.invoke = async () => { throw new Error("no such card"); };
+        await expect(answerClaude("safer", claude, t.io)).rejects.toThrow("no such card");
+        expect(t.order).toEqual([]);
+      });
+    });
+
     it("is unchanged by the outage kind: same title, buttons and Manual route", () => {
-      const html = drawClaude(claude);
+      const html = drawClaude(claude, true);
       expect(html).toContain("Claude&#x27;s auto mode blocked an action");
-      expect(html).toContain("Why it was blocked");
-      expect(html).toContain("What it tried");
       expect(html).toContain("Use safer approach");
-      expect(html).toContain("Technical details");
+      expect(html).toContain("Details");
       expect(html).toContain("Dismiss");
       expect(html).toContain("choose Manual command approval");
       expect(html).not.toContain("safety check was unavailable");
@@ -151,12 +260,12 @@ describe("SafetyBlock", () => {
     });
 
     it("points to the supported route: a new task with Manual approval, never a rerun (d59f830a)", () => {
-      const html = drawClaude(claude);
+      const html = drawClaude(claude, true);
       expect(html).toContain("choose Manual command approval");
       expect(html).toContain("before you approve the plan");
       expect(html).toContain("does not run again unless you approve it there");
       // Still no button that could let the refused line through.
-      expect(html).not.toMatch(/Allow|Retry/);
+      expect(html).not.toMatch(/Always allow|Allow once|Retry/);
     });
 
     describe("Always allow on a judged refusal (the lasting rule, never once)", () => {
@@ -177,8 +286,17 @@ describe("SafetyBlock", () => {
         },
       };
 
+      it("keeps the rules and their buttons behind Details, never a button without its rules", () => {
+        const shut = drawClaude(judged);
+        expect(shut).not.toContain("Always allow");
+        expect(shut).not.toContain("Bash(");
+        expect(shut).not.toContain("settings.json");
+        expect(shut).toContain("Use safer approach");
+        expect(shut).toContain('aria-expanded="false"');
+      });
+
       it("shows every exact rule and both files before anything is written", () => {
-        const html = drawClaude(judged);
+        const html = drawClaude(judged, true);
         expect(html).toContain("Rules Always allow adds");
         expect(html).toContain("Bash(rm -f web/pnpm-workspace.yaml)");
         expect(html).toContain("Bash(git status --short)");
@@ -207,7 +325,7 @@ describe("SafetyBlock", () => {
           rules: ["Bash(git status)"],
           uncovered: ["python3 -c 'print(1)'"],
           allow: { project: "/work/repo/.claude/settings.local.json" },
-        });
+        }, true);
         expect(partial).toContain("Rule Always allow adds");
         expect(partial).toContain("Not covered: Claude still checks these");
         expect(partial).toContain("python3 -c &#x27;print(1)&#x27;");
@@ -223,7 +341,7 @@ describe("SafetyBlock", () => {
           { ...judged, allow: undefined },
           { ...judged, allow: {} },
         ]) {
-          const html = drawClaude(notice);
+          const html = drawClaude(notice, true);
           expect(html).not.toContain("Always allow");
           expect(html).not.toContain("Bash(");
           expect(html).toContain("Use safer approach");

@@ -10,8 +10,9 @@
 // agent the rule exists, so the agent retries itself. Its outage card (the
 // classifier gave no verdict) offers the one as-is retry Claude itself allows,
 // and an allow rule the person adds to their own settings.
-import { useState } from "react";
+import { useId, useState } from "react";
 import { bridge } from "../lib/bridge";
+import { CopyBit, CopyIcon } from "./CopyBit";
 
 export type SafetyBlockNotice = {
   id: string;
@@ -311,8 +312,10 @@ function OutageBlock({
  * what it is — a lasting rule — and only where the host can name it exactly.
  */
 export const CLAUDE_REFUSAL_NOTE =
-  "OctiqFlow cannot approve a call Claude's auto mode refused, and will not rerun it. " +
-  "If it should run, run it yourself, or allow it for good with a Claude permission rule.";
+  "OctiqFlow cannot approve a call Claude's auto mode refused, and will not rerun it.";
+
+/** The card's one-line answer to "did anything happen?". */
+export const CLAUDE_BLOCKED_STATUS = "Nothing ran. OctiqFlow is still running.";
 
 /** What "Always allow" on a judged card says it does, before the click. */
 export const JUDGED_ALLOW_NOTE =
@@ -384,9 +387,15 @@ export async function answerJudged(
  * card before approving, and never reruns the refused call by itself.
  */
 export const CLAUDE_MANUAL_ROUTE_NOTE =
-  "To approve a command like this yourself, ask the main agent for a new task and choose Manual command approval " +
-  "on its plan card before you approve the plan. That task asks you before each command runs. " +
-  "This refused command does not run again unless you approve it there.";
+  "Ask the main agent for a new task and choose Manual command approval on its plan card before you approve " +
+  "the plan. That task asks you before each command, and this one does not run again unless you approve it there.";
+
+/** "How to allow this", in the order the card lists it. */
+export const CLAUDE_ALLOW_ROUTES = [
+  "Run it yourself.",
+  "Allow it for good with a Claude permission rule.",
+  CLAUDE_MANUAL_ROUTE_NOTE,
+];
 
 export const LOCAL_ONLY_REPLY =
   "Continue without sending any local data to an external service. Use only local tools and local reasoning for this task.";
@@ -430,6 +439,26 @@ export function allowForProjectReply(block: SafetyBlockNotice): string {
 }
 
 /**
+ * "Use safer approach" or "Dismiss" on Claude's auto-mode card. Both take the
+ * card down first; only the safer choice sends the agent a turn. "Dismiss"
+ * is for when the person has dealt with the command themselves and the agent
+ * needs no new instruction.
+ */
+export async function answerClaude(
+  choice: "safer" | "dismiss",
+  block: SafetyBlockNotice,
+  io: {
+    invoke: <T>(cmd: string, args: Record<string, unknown>) => Promise<T>;
+    onAnswered: (id: string) => void;
+    onContinue: Continue;
+  },
+): Promise<void> {
+  await io.invoke("safety_block_dismiss", { id: block.id });
+  io.onAnswered(block.id);
+  if (choice === "safer") await io.onContinue(SAFER_APPROACH_REPLY);
+}
+
+/**
  * Claude's auto-mode card: what was refused, that nothing here approves that
  * call, and — when the host could name the line exactly — a lasting "Always
  * allow" whose rules and file are shown before anything is written.
@@ -449,21 +478,18 @@ function ClaudeSafetyBlock({
   const [sending, setSending] = useState<"safer" | "dismiss" | AllowScope | null>(null);
   const [error, setError] = useState("");
   const [wrote, setWrote] = useState<AllowedOutage | null>(null);
+  const detailsId = useId();
   const rules = block.rules ?? [];
   const uncovered = block.uncovered ?? [];
   const projectPath = rules.length ? block.allow?.project : undefined;
   const userPath = rules.length ? block.allow?.user : undefined;
   const offersAllow = !!(projectPath || userPath);
 
-  // "Dismiss" only takes the card down: for when the person has dealt with
-  // the command themselves and the agent needs no new instruction.
   const answer = async (choice: "safer" | "dismiss") => {
     setSending(choice);
     setError("");
     try {
-      await bridge.invoke("safety_block_dismiss", { id: block.id });
-      onAnswered(block.id);
-      if (choice === "safer") await onContinue(SAFER_APPROACH_REPLY);
+      await answerClaude(choice, block, { invoke: bridge.invoke.bind(bridge), onAnswered, onContinue });
     } catch (why) {
       setError(String((why as Error)?.message ?? why));
       setSending(null);
@@ -490,84 +516,106 @@ function ClaudeSafetyBlock({
       ? `The rule is already in ${block.written === "project" ? "this project's" : "your own"} settings.`
       : "";
 
+  // At a glance: what was blocked and why, that nothing ran, and one next
+  // step. The whole line, the classifier's words and every way to allow it
+  // (with the exact rules and files "Always allow" writes, shown before the
+  // button) wait behind Details.
   return (
-    <div className="ask-card safety-card" role="alert" aria-label={block.title}>
-      <div className="safety-card-context">
-        <span>Claude auto-mode review</span>
-        <span className="safety-card-ok">OctiqFlow is okay</span>
-      </div>
-      <div className="ask-card-head">
+    <div className="ask-card safety-card is-compact" role="alert" aria-label={block.title}>
+      <div className="ask-card-head safety-card-head">
         <span className="safety-card-icon" aria-hidden="true">!</span>
-        <span className="ask-card-title"><strong>{block.title}</strong></span>
+        <span className="safety-card-heading">
+          <strong className="ask-card-title">{block.title}</strong>
+          {block.summary && <span className="safety-card-reason">{block.summary}</span>}
+        </span>
       </div>
 
-      <div className="safety-card-label">Why it was blocked</div>
-      <p className="safety-card-summary">{block.summary}</p>
-      {block.action && <>
-        <div className="safety-card-label">What it tried</div>
-        <pre className="safety-card-action">{block.action}</pre>
-      </>}
-      <p className="safety-card-status">OctiqFlow is still running. The blocked action did not run.</p>
-
-      {open && (
-        <div className="ask-card-detail safety-card-detail">
-          <div className="ask-card-label">Technical details</div>
-          <pre className="ask-card-body">{block.detail}</pre>
-        </div>
+      {block.action && (
+        <pre className="safety-card-action safety-card-preview"><span>{block.action}</span></pre>
       )}
+      <p className="safety-card-calm">{CLAUDE_BLOCKED_STATUS}</p>
 
-      {offersAllow && <>
-        <div className="safety-card-label">{rules.length === 1 ? "Rule Always allow adds" : "Rules Always allow adds"}</div>
-        <ul className="safety-card-commands safety-card-rules">
-          {rules.map((rule) => <li key={rule}><pre className="safety-card-action">{rule}</pre></li>)}
-        </ul>
-        {uncovered.length > 0 && <>
-          <div className="safety-card-label">Not covered: Claude still checks these</div>
-          <ul className="safety-card-commands safety-card-uncovered">
-            {uncovered.map((part) => <li key={part}><pre className="safety-card-action">{part}</pre></li>)}
-          </ul>
-        </>}
-        <div className="safety-card-label">Where it goes</div>
-        <pre className="ask-card-body safety-card-targets">
-          {projectPath && `This project: ${projectPath}`}
-          {projectPath && userPath && "\n"}
-          {userPath && `Everywhere: ${userPath}`}
-        </pre>
-      </>}
+      {written && <p className="ask-card-note safety-card-written" role="status">{written}</p>}
+      {error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
 
       <div className="ask-card-buttons safety-card-buttons">
+        <button className="safety-card-toggle" type="button" aria-expanded={open}
+          aria-controls={open ? detailsId : undefined} onClick={() => setOpen((shown) => !shown)}>
+          {/* One label both ways, so the row never re-wraps on a phone:
+              the chevron and aria-expanded carry the state. */}
+          Details
+          <svg className="safety-card-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
         <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void answer("safer")}>
           {sending === "safer" ? "Continuing…" : "Use safer approach"}
-        </button>
-        {projectPath && (
-          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-            title={`Adds ${rules.join(", ")} to ${projectPath}, then tells the agent`}
-            onClick={() => void allow("project")}>
-            {sending === "project" ? "Saving…" : "Always allow in this project"}
-          </button>
-        )}
-        {userPath && (
-          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-            title={`Adds ${rules.join(", ")} to ${userPath}, then tells the agent`}
-            onClick={() => void allow("user")}>
-            {sending === "user" ? "Saving…" : "Always allow everywhere"}
-          </button>
-        )}
-        <button className="ask-btn" type="button" disabled={!!sending} aria-expanded={open}
-          onClick={() => setOpen((shown) => !shown)}>
-          {open ? "Hide technical details" : "Technical details"}
         </button>
         <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("dismiss")}>
           {sending === "dismiss" ? "Dismissing…" : "Dismiss"}
         </button>
       </div>
 
-      {offersAllow && <p className="ask-card-note safety-card-rule">{JUDGED_ALLOW_NOTE}</p>}
-      {written && <p className="ask-card-note safety-card-written" role="status">{written}</p>}
-      {error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
+      {open && (
+        <div className="safety-card-more" id={detailsId}>
+          {block.action && <>
+            <div className="safety-card-label safety-card-label-row">
+              <span>Command</span>
+              <CopyBit className="panel-act safety-card-copy" icon={<CopyIcon />} idle="Copy the command"
+                done="Command copied" read={() => ({ text: block.action ?? null })} />
+            </div>
+            <pre className="safety-card-action safety-card-full">{block.action}</pre>
+          </>}
 
-      <p className="ask-card-note">{CLAUDE_REFUSAL_NOTE}</p>
-      <p className="ask-card-note safety-card-route">{CLAUDE_MANUAL_ROUTE_NOTE}</p>
+          {block.detail && <>
+            <div className="safety-card-label">Technical details</div>
+            <pre className="ask-card-body">{block.detail}</pre>
+          </>}
+
+          <div className="safety-card-label">How to allow this</div>
+          <p className="ask-card-note safety-card-refusal">{CLAUDE_REFUSAL_NOTE}</p>
+          <ul className="safety-card-routes">
+            {CLAUDE_ALLOW_ROUTES.map((route) => <li key={route}>{route}</li>)}
+          </ul>
+
+          {offersAllow && <div className="safety-card-allow">
+            <div className="safety-card-label">{rules.length === 1 ? "Rule Always allow adds" : "Rules Always allow adds"}</div>
+            <ul className="safety-card-commands safety-card-rules">
+              {rules.map((rule) => <li key={rule}><pre className="safety-card-action">{rule}</pre></li>)}
+            </ul>
+            {uncovered.length > 0 && <>
+              <div className="safety-card-label">Not covered: Claude still checks these</div>
+              <ul className="safety-card-commands safety-card-uncovered">
+                {uncovered.map((part) => <li key={part}><pre className="safety-card-action">{part}</pre></li>)}
+              </ul>
+            </>}
+            <div className="safety-card-label">Where it goes</div>
+            <pre className="ask-card-body safety-card-targets">
+              {projectPath && `This project: ${projectPath}`}
+              {projectPath && userPath && "\n"}
+              {userPath && `Everywhere: ${userPath}`}
+            </pre>
+            <p className="ask-card-note safety-card-rule">{JUDGED_ALLOW_NOTE}</p>
+            <div className="ask-card-buttons safety-card-buttons">
+              {projectPath && (
+                <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+                  title={`Adds ${rules.join(", ")} to ${projectPath}, then tells the agent`}
+                  onClick={() => void allow("project")}>
+                  {sending === "project" ? "Saving…" : "Always allow in this project"}
+                </button>
+              )}
+              {userPath && (
+                <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+                  title={`Adds ${rules.join(", ")} to ${userPath}, then tells the agent`}
+                  onClick={() => void allow("user")}>
+                  {sending === "user" ? "Saving…" : "Always allow everywhere"}
+                </button>
+              )}
+            </div>
+          </div>}
+        </div>
+      )}
     </div>
   );
 }

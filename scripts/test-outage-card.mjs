@@ -194,19 +194,26 @@ try {
   await shoot(page, outage, "desktop-outage-4-details");
   await outage.getByRole("button", { name: "Hide technical details" }).click();
 
-  // 3. The ordinary safety card is unchanged.
+  // 3. The ordinary safety card: compact, with the rest behind Details.
   step("3 safety card, desktop");
   await rowButton(page, "Deploy worker").click();
   const safety = cards(page).filter({ hasText: "blocked an action" });
   await safety.waitFor();
   const safetyText = await safety.innerText();
-  assert.match(safetyText, /Why it was blocked/i);
   assert.match(safetyText, /Production Deploy/);
   assert.match(safetyText, /eas update --branch production/);
+  assert.match(safetyText, /Nothing ran\. OctiqFlow is still running\./);
   assert.match(safetyText, /Use safer approach/);
-  assert.match(safetyText, /Manual command approval/);
+  assert.doesNotMatch(safetyText, /Why it was blocked|Manual command approval|OctiqFlow is okay/i);
   assert.doesNotMatch(safetyText, /safety check was unavailable|once more/);
   await shoot(page, safety, "desktop-safety");
+  const details = safety.getByRole("button", { name: "Details" });
+  assert.equal(await details.getAttribute("aria-expanded"), "false");
+  await details.click();
+  assert.equal(await details.getAttribute("aria-expanded"), "true");
+  assert.match(await safety.innerText(), /Manual command approval/);
+  await shoot(page, safety, "desktop-safety-details");
+  await details.click();
 
   // 4. Phone width, both cards.
   step("4 phones");
