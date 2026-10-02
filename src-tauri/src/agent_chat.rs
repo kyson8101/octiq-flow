@@ -747,7 +747,8 @@ pub struct ChatManager {
     capabilities: Mutex<HashMap<String, LaunchCapability>>,
     /// Processes launched as front-desk chats (`team::front_desk_chat`), so
     /// the session id each one names is kept out of the resume list.
-    front_desks: Mutex<std::collections::HashSet<String>>,
+    /// Each with the provider it runs on, which is half of a session's name.
+    front_desks: Mutex<HashMap<String, ChatAgent>>,
 }
 
 /// The secret one launch of one agent proves itself with on
@@ -1067,14 +1068,16 @@ impl ChatManager {
                 start.session_id = Some(session_id.to_string());
             }
         }
-        if self
+        let desk = self
             .front_desks
             .lock()
-            .is_ok_and(|desks| desks.contains(session_key))
-        {
+            .ok()
+            .and_then(|desks| desks.get(session_key).copied());
+        if let Some(provider) = desk {
             crate::team::note_front_desk_session(
                 &crate::team::default_path(),
                 session_key,
+                provider,
                 session_id,
             );
         }
@@ -2273,7 +2276,7 @@ pub(crate) fn start_session(
     };
     if front_desk {
         if let Ok(mut desks) = manager.front_desks.lock() {
-            desks.insert(session_key.clone());
+            desks.insert(session_key.clone(), agent);
         }
     }
     // Codex has no `--strict-mcp-config`: a Codex front desk turns off each

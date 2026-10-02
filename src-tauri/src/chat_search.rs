@@ -581,7 +581,12 @@ mod tests {
             &[],
         )
         .unwrap();
-        crate::team::note_front_desk_session(&team, &desk_key, "desk-session");
+        crate::team::note_front_desk_session(
+            &team,
+            &desk_key,
+            crate::agent_chat::ChatAgent::Claude,
+            "desk-session",
+        );
         let meta = |id: &str| -> crate::chat_index::ChatMeta {
             serde_json::from_value(json!({
                 "id": id, "projectId": "p1", "title": "zebra hunt", "createdAt": 1, "updatedAt": 1,
@@ -618,8 +623,8 @@ mod tests {
         assert!(!hits.iter().any(|hit| hit.id == desk_id));
 
         // "Resume an earlier session" and its count.
-        let session = |id: &str| crate::agent_history::HistorySession {
-            agent: "claude".into(),
+        let session = |agent: &str, id: &str| crate::agent_history::HistorySession {
+            agent: agent.into(),
             session_id: id.into(),
             title: "where is the zebra".into(),
             cwd: "/tmp".into(),
@@ -630,14 +635,19 @@ mod tests {
             origin: None,
         };
         let kept = crate::agent_history::without_front_desks(
-            vec![session("desk-session"), session("other-session")],
+            vec![
+                session("claude", "desk-session"),
+                session("codex", "desk-session"),
+                session("claude", "other-session"),
+            ],
             &crate::team::front_desk_chats(&team),
         );
         assert_eq!(
             kept.iter()
-                .map(|s| s.session_id.as_str())
+                .map(|s| format!("{}:{}", s.agent, s.session_id))
                 .collect::<Vec<_>>(),
-            vec!["other-session"]
+            vec!["codex:desk-session", "claude:other-session"],
+            "another provider's session sharing the id is not the desk's"
         );
 
         crate::chat_index::remove(&desk_id).unwrap();

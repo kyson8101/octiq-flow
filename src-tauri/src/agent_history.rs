@@ -108,17 +108,41 @@ pub fn agent_history_list(limit: Option<usize>) -> Vec<HistorySession> {
 
 /// Every session but those of front-desk chats, which the person never
 /// meant to come back to: what they started is the chat it routed them to.
+///
+/// A session is named by its provider AND its id: each provider picks its
+/// own ids, so a Codex session sharing a Claude front desk's id is someone
+/// else's conversation. An id recorded before the provider was is hidden
+/// only while it is the one session listed under that id; when two
+/// providers share it, nothing says which was the front desk, and showing
+/// a hidden chat beats hiding a real one.
 pub(crate) fn without_front_desks(
     sessions: Vec<HistorySession>,
     desks: &[crate::team::FrontDeskChat],
 ) -> Vec<HistorySession> {
-    let hidden: std::collections::HashSet<&str> = desks
+    use std::collections::HashSet;
+    let hidden: HashSet<(&str, &str)> = desks
+        .iter()
+        .flat_map(|desk| &desk.sessions)
+        .map(|s| (s.provider.id(), s.session_id.as_str()))
+        .collect();
+    let unproven: HashSet<&str> = desks
         .iter()
         .flat_map(|desk| desk.session_ids.iter().map(String::as_str))
         .collect();
+    let mut listed: HashMap<String, usize> = HashMap::new();
+    for s in sessions
+        .iter()
+        .filter(|s| unproven.contains(s.session_id.as_str()))
+    {
+        *listed.entry(s.session_id.clone()).or_default() += 1;
+    }
     sessions
         .into_iter()
-        .filter(|s| !hidden.contains(s.session_id.as_str()))
+        .filter(|s| {
+            let id = s.session_id.as_str();
+            !hidden.contains(&(s.agent.as_str(), id))
+                && !(unproven.contains(id) && listed.get(id) == Some(&1))
+        })
         .collect()
 }
 
@@ -772,6 +796,86 @@ mod tests {
         let mut file = File::create(&path).unwrap();
         file.write_all(body.as_bytes()).unwrap();
         Temp(path)
+    }
+
+    fn listed(agent: &str, id: &str) -> HistorySession {
+        HistorySession {
+            agent: agent.into(),
+            session_id: id.into(),
+            title: "t".into(),
+            cwd: "/tmp".into(),
+            started_at: 1,
+            updated_at: 1,
+            model: None,
+            effort: None,
+            origin: None,
+        }
+    }
+
+    fn desk(
+        sessions: &[(crate::agent_chat::ChatAgent, &str)],
+        legacy: &[&str],
+    ) -> crate::team::FrontDeskChat {
+        crate::team::FrontDeskChat {
+            chat_key: "chat:desk".into(),
+            agent_id: "desk".into(),
+            sessions: sessions
+                .iter()
+                .map(|(provider, id)| crate::team::FrontDeskSession {
+                    provider: *provider,
+                    session_id: (*id).into(),
+                })
+                .collect(),
+            session_ids: legacy.iter().map(|id| (*id).to_string()).collect(),
+            created_at: 1,
+        }
+    }
+
+    fn kept(sessions: Vec<HistorySession>, desks: &[crate::team::FrontDeskChat]) -> Vec<String> {
+        without_front_desks(sessions, desks)
+            .into_iter()
+            .map(|s| format!("{}:{}", s.agent, s.session_id))
+            .collect()
+    }
+
+    /// Two providers pick their ids apart, so one id can be a Claude front
+    /// desk AND someone's ordinary Codex session. Only the front desk goes.
+    #[test]
+    fn a_front_desk_hides_its_own_provider_session_and_not_one_sharing_its_id() {
+        use crate::agent_chat::ChatAgent;
+        let both = || vec![listed("claude", "same"), listed("codex", "same")];
+        assert_eq!(
+            kept(both(), &[desk(&[(ChatAgent::Claude, "same")], &[])]),
+            vec!["codex:same"]
+        );
+        assert_eq!(
+            kept(both(), &[desk(&[(ChatAgent::Codex, "same")], &[])]),
+            vec!["claude:same"]
+        );
+        assert_eq!(kept(both(), &[]), vec!["claude:same", "codex:same"]);
+    }
+
+    /// An id recorded before sessions carried their provider still hides
+    /// its own session, and never one another provider shares it with.
+    #[test]
+    fn a_front_desk_id_without_a_provider_hides_only_a_session_it_alone_names() {
+        let old = [desk(&[], &["old"])];
+        assert_eq!(
+            kept(
+                vec![listed("claude", "old"), listed("codex", "other")],
+                &old
+            ),
+            vec!["codex:other"]
+        );
+        assert_eq!(
+            kept(vec![listed("codex", "old")], &old),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            kept(vec![listed("claude", "old"), listed("codex", "old")], &old),
+            vec!["claude:old", "codex:old"],
+            "two providers share it: nothing proves which was the desk"
+        );
     }
 
     #[test]

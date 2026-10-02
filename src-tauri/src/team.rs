@@ -184,10 +184,24 @@ pub struct FrontDeskChat {
     pub chat_key: String,
     pub agent_id: String,
     /// The provider's own ids for this conversation, as its processes named
-    /// them, so its session stays out of "Resume an earlier session".
+    /// them, so its session stays out of "Resume an earlier session". Each
+    /// with its provider: two providers' ids are not one namespace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<FrontDeskSession>,
+    /// Ids recorded before the provider was, whose provider could not be
+    /// worked out since (`upgrade_front_desk_sessions`). Hidden only where
+    /// no other session shares the id (`agent_history::without_front_desks`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session_ids: Vec<String>,
     pub created_at: i64,
+}
+
+/// One provider session a front-desk chat ran as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontDeskSession {
+    pub provider: ChatAgent,
+    pub session_id: String,
 }
 
 /// How many front-desk chats are remembered. Their transcripts are not
@@ -913,9 +927,9 @@ pub fn front_desk_chats(path: &Path) -> Vec<FrontDeskChat> {
     read(path).map(|s| s.front_desk_chats).unwrap_or_default()
 }
 
-/// Remember the provider's id for a front-desk chat's conversation. Nothing
-/// for any other chat.
-pub fn note_front_desk_session(path: &Path, chat_key: &str, session_id: &str) {
+/// Remember the provider's id for a front-desk chat's conversation, with
+/// the provider that named it. Nothing for any other chat.
+pub fn note_front_desk_session(path: &Path, chat_key: &str, provider: ChatAgent, session_id: &str) {
     let Ok(_guard) = LOCK.lock() else {
         return;
     };
@@ -929,10 +943,14 @@ pub fn note_front_desk_session(path: &Path, chat_key: &str, session_id: &str) {
     else {
         return;
     };
-    if chat.session_ids.iter().any(|id| id == session_id) {
+    let session = FrontDeskSession {
+        provider,
+        session_id: session_id.to_owned(),
+    };
+    if chat.sessions.contains(&session) {
         return;
     }
-    chat.session_ids.push(session_id.to_owned());
+    chat.sessions.push(session);
     let _ = write(path, &stored);
 }
 
@@ -947,6 +965,7 @@ fn record_front_desk_chat(stored: &mut Stored, chat_key: &str, agent_id: &str) {
     stored.front_desk_chats.push(FrontDeskChat {
         chat_key: chat_key.to_owned(),
         agent_id: agent_id.to_owned(),
+        sessions: Vec::new(),
         session_ids: Vec::new(),
         created_at: now_ms(),
     });
@@ -3373,12 +3392,47 @@ mod tests {
         let path = temp();
         let desk = create_front_desk(&path, FrontDeskDraft::default()).unwrap();
         brief(&path, "chat:desk1", "p1", &desk.id, "Hi", false, &[]).unwrap();
-        note_front_desk_session(&path, "chat:desk1", "sess-1");
-        note_front_desk_session(&path, "chat:desk1", "sess-1");
-        note_front_desk_session(&path, "chat:desk1", "sess-2");
-        note_front_desk_session(&path, "chat:ordinary", "sess-3");
+        note_front_desk_session(&path, "chat:desk1", ChatAgent::Claude, "sess-1");
+        note_front_desk_session(&path, "chat:desk1", ChatAgent::Claude, "sess-1");
+        note_front_desk_session(&path, "chat:desk1", ChatAgent::Codex, "sess-1");
+        note_front_desk_session(&path, "chat:desk1", ChatAgent::Claude, "sess-2");
+        note_front_desk_session(&path, "chat:ordinary", ChatAgent::Claude, "sess-3");
         let chats = front_desk_chats(&path);
         assert_eq!(chats.len(), 1);
-        assert_eq!(chats[0].session_ids, vec!["sess-1", "sess-2"]);
+        let session = |provider, id: &str| FrontDeskSession {
+            provider,
+            session_id: id.into(),
+        };
+        assert_eq!(
+            chats[0].sessions,
+            vec![
+                session(ChatAgent::Claude, "sess-1"),
+                session(ChatAgent::Codex, "sess-1"),
+                session(ChatAgent::Claude, "sess-2"),
+            ]
+        );
+        assert!(chats[0].session_ids.is_empty(), "never the old shape");
+    }
+
+    /// A record written before sessions carried their provider still reads,
+    /// with its ids kept apart for `agent_history::without_front_desks`.
+    #[test]
+    fn a_front_desk_record_without_providers_still_reads() {
+        let path = temp();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"agents":[],"front_desk_chats":[{"chatKey":"chat:old","agentId":"a1","sessionIds":["sess-old"],"createdAt":1}]}"#,
+        )
+        .unwrap();
+        let chats = front_desk_chats(&path);
+        assert_eq!(chats.len(), 1);
+        assert!(chats[0].sessions.is_empty());
+        assert_eq!(chats[0].session_ids, vec!["sess-old"]);
+        // Learning a new session keeps the old ids where they were.
+        note_front_desk_session(&path, "chat:old", ChatAgent::Codex, "sess-new");
+        let chats = front_desk_chats(&path);
+        assert_eq!(chats[0].session_ids, vec!["sess-old"]);
+        assert_eq!(chats[0].sessions.len(), 1);
     }
 }
