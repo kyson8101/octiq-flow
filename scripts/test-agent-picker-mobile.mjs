@@ -185,7 +185,8 @@ try {
     await radios(page).filter({ hasText: "STAR STORY Vesper" }).click();
     await page.getByRole("heading", { name: "Talk to STAR STORY Vesper", exact: true }).waitFor();
     await page.locator(".hero .resume-count").waitFor();
-    await page.waitForTimeout(250);
+    // Past the row's 150ms background fade, which WebKit is slow to finish.
+    await page.waitForTimeout(600);
     await page.screenshot({ path: join(artifacts, `picker-${width}.png`) });
     const shot = await layout(page);
     measured[width] = shot;
