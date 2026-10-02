@@ -550,6 +550,7 @@ export function FrontDeskBlock({ desk, roster, headId, loading, busy, onPick, on
   onSettings: (settings: { agent: Provider; model: string; effort?: Effort }) => void;
 }) {
   const globals = roster.filter((agent) => !agent.projectId);
+  const unavailable = globals.filter((agent) => agent.id !== desk?.id && frontDeskRefusal(agent, roster, headId));
   return (
     <div className="front-desk-block">
       <div className="settings-control-row team-choice-row">
@@ -575,6 +576,12 @@ export function FrontDeskBlock({ desk, roster, headId, loading, busy, onPick, on
           })}
         </select>
       </div>
+      {unavailable.length > 0 && (
+        <p className="settings-note front-desk-unavailable">
+          Not available: {unavailable.map((agent) => agent.name).join(", ")}. The lead you talk to across projects
+          and agents who manage others keep their own chats; a front desk's chats are hidden and it only routes.
+        </p>
+      )}
       {desk ? (
         <div className="front-desk-model" role="group" aria-label={`What ${desk.name} runs on`}>
           <ModelFields

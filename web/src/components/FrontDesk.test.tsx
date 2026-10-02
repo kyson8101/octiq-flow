@@ -154,6 +154,9 @@ describe("the front desk in Settings", () => {
     expect(html).toMatch(/<option value="potato" disabled="">Potato · not available<\/option>/);
     expect(html).toMatch(/<option value="boss" disabled="">Boss · not available<\/option>/);
     expect(html).not.toContain('value="local"');
+    // And the page says why.
+    expect(html).toContain("Not available: Potato, Boss.");
+    expect(html).toContain("a front desk&#x27;s chats are hidden and it only routes");
   });
 
   it("shows what the front desk runs on, with the agent form's own provider, model and effort controls", () => {
