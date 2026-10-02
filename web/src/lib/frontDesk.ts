@@ -8,6 +8,10 @@
 import type { ExecutionPlan } from "./agentExecution";
 import type { TeamAgent } from "./agentsMode";
 
+/** The line under "Talk to <front desk>", said to the person. Its role is
+ *  written about the person, so it stays under Details. */
+export const FRONT_DESK_GREETING = "Tell me what you need and I'll open the right agent's chat.";
+
 /** The designated front desk as the roster has it now (a rename or a model
  *  change shows at once), or null when none is designated or it is gone. */
 export function currentFrontDesk(

@@ -215,7 +215,32 @@ try {
     assert(Math.abs(shot.manage.top - shot.resume.top) < 2, `Manage agents and Resume on one line at ${width}`);
     assert(shot.resume.bottom <= shot.composer.top, `links above the composer at ${width}`);
     assert(shot.composer.bottom <= height, `composer on screen at ${width}`);
+    // The line under the title is said to the person; the role, written
+    // about the person, waits under Details.
+    const welcome = page.locator(".agent-welcome-summary");
+    assert.equal(await welcome.innerText(), "Tell me what you need and I'll open the right agent's chat.");
+    assert.equal(await page.locator(".agent-welcome-role").isVisible(), false, `role hidden until Details at ${width}`);
+    // A touch screen has no keyboard rule to state, and no face is left
+    // alone on that line; a keyboard keeps both.
+    const hint = await page.evaluate(() => {
+      const said = document.querySelector(".composer-hint-said");
+      const words = said.cloneNode(true);
+      words.querySelectorAll(".composer-hint-avatar").forEach((face) => face.remove());
+      return { avatars: said.querySelectorAll(".composer-hint-avatar").length, text: words.textContent.trim(), coarse: matchMedia("(pointer: coarse)").matches };
+    });
+    assert.equal(hint.coarse, touch, `pointer emulation at ${width}`);
+    assert.deepEqual(
+      { avatars: hint.avatars, text: hint.text },
+      touch ? { avatars: 0, text: "" } : { avatars: 1, text: "Enter to send · Shift+Enter for a new line" },
+      `idle hint line at ${width}`,
+    );
     await page.screenshot({ path: join(artifacts, `new-chat-${width}.png`) });
+    await page.getByRole("button", { name: "Details about Front desk" }).click();
+    await page.locator(".agent-welcome-role").waitFor();
+    assert.match(await page.locator(".agent-welcome-role").innerText(), /^Listens to what the person wants/);
+    await page.screenshot({ path: join(artifacts, `new-chat-details-${width}.png`) });
+    await page.getByRole("button", { name: "Details about Front desk" }).click();
+    await page.locator(".agent-welcome-role").waitFor({ state: "hidden" });
 
     // 2. "Talk to someone else" opens the tidy list, without the front desk.
     await page.getByRole("button", { name: "Talk to someone else" }).click();

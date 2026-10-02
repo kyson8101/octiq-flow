@@ -6,6 +6,8 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => null } }));
 import { renderToStaticMarkup } from "react-dom/server";
 import { HandoverCards, HandoverLines } from "./HandoverCards";
 import { FrontDeskBlock, RecipientPicker } from "./AgentsSettings";
+import { AgentWelcome } from "./AgentRole";
+import { FRONT_DESK_GREETING } from "../lib/frontDesk";
 import { handover } from "../lib/handover.fixture";
 import {
   handoverPlaces, handoversFor, isRoute, mergeHandover, routeHeadline, routePlaceLine, type Handover,
@@ -171,5 +173,25 @@ describe("the front desk in Settings", () => {
     expect(html).toMatch(/<option value="low" selected="">Low<\/option>/);
     expect(html).toContain("Now Claude Haiku latest · low. Used from the next new chat.");
     expect(html).toMatch(/<option value="desk" selected="">Desk<\/option>/);
+  });
+});
+
+describe("Talk to the front desk", () => {
+  const role = "Listens to what the person wants, works out which registered agent should handle it.";
+  it("speaks to the person under the title and keeps its role under Details", () => {
+    const html = renderToStaticMarkup(
+      <AgentWelcome name="Front desk" role={role} scope="Your front desk" how="Say what you need." greeting={FRONT_DESK_GREETING} />,
+    );
+    const summary = html.match(/<span class="agent-welcome-summary">(.*?)<\/span>/)?.[1];
+    expect(summary).toBe("Tell me what you need and I&#x27;ll open the right agent&#x27;s chat.");
+    expect(html).toContain(`<p class="agent-welcome-role">${role}</p>`);
+    expect(html).toContain('aria-label="Details about Front desk"');
+  });
+
+  it("leaves every other agent's line as its role and scope", () => {
+    const html = renderToStaticMarkup(
+      <AgentWelcome name="Vesper" role="Writes Starfall prose." scope="Works only in starfall" how="Does the work." />,
+    );
+    expect(html).toContain('<span class="agent-welcome-summary">Writes Starfall prose · Works only in starfall</span>');
   });
 });

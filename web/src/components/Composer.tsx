@@ -90,6 +90,15 @@ export function idleHint(onGlass: boolean): string | null {
   return onGlass ? null : "Enter to send · Shift+Enter for a new line";
 }
 
+/** Who sits in front of the idle line. A registered agent's face introduces
+ *  the words after it, so with no words (a touch screen, nothing running) it
+ *  would sit there alone and is left out. A companion stays: it is the
+ *  person's chosen mascot, not a label. */
+export function idleCompanion(isAgent: boolean, text: string | null | undefined): "avatar" | "mascot" | null {
+  if (!isAgent) return "mascot";
+  return text ? "avatar" : null;
+}
+
 /** Whether the browser will let the PAGE read the clipboard at all.
  *
  *  Only in a secure context, which on a phone means the https address rather
@@ -994,16 +1003,20 @@ export function Composer({
             robot={choice.composerStyle}
             persona={identity}
           />
-        ) : (
-          <>
-            {/* Idle companions dance in the same full-body slot used during work.
-                A registered agent is its own face instead. */}
-            {identity
-              ? <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={18} removed={identity.removed} className="composer-hint-avatar" />
-              : <Mascot robot={choice.composerStyle} mood="idle" />}
-            {activity ?? idleHint(TYPES_ON_GLASS)}
-          </>
-        )}
+        ) : (() => {
+          // Idle companions dance in the same full-body slot used during work.
+          // A registered agent is its own face instead.
+          const text = activity ?? idleHint(TYPES_ON_GLASS);
+          const face = idleCompanion(!!identity, text);
+          return (
+            <>
+              {face === "avatar" && identity
+                ? <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={18} removed={identity.removed} className="composer-hint-avatar" />
+                : face === "mascot" ? <Mascot robot={choice.composerStyle} mood="idle" /> : null}
+              {text}
+            </>
+          );
+        })()}
         </BackgroundNote>
         </span>
 

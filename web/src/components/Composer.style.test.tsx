@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 // contract: no test below talks to the server.
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
-import { ACCESS, Composer, MODELS, idleHint, providerFor, type ModelChoice } from "./Composer";
+import { ACCESS, Composer, MODELS, idleCompanion, idleHint, providerFor, type ModelChoice } from "./Composer";
 
 function renderComposer(choice: ModelChoice, showWorkLocation = false): string {
   const provider = providerFor(choice.agent);
@@ -57,5 +57,15 @@ describe("the model-driven composer style", () => {
     expect(idleHint(true)).toBeNull();
     // Node has no pointer, so the rendered composer is the keyboard one.
     expect(renderComposer(MODELS[0])).toContain("Enter to send · Shift+Enter for a new line");
+  });
+
+  it("leaves no agent face alone on the idle line when it has nothing to say", () => {
+    // A touch screen with nothing running: no words, so no face for them.
+    expect(idleCompanion(true, idleHint(true))).toBeNull();
+    expect(idleCompanion(true, idleHint(false))).toBe("avatar");
+    expect(idleCompanion(true, "Reading the repo")).toBe("avatar");
+    // The person's own mascot is not a label, and stays.
+    expect(idleCompanion(false, idleHint(true))).toBe("mascot");
+    expect(idleCompanion(false, idleHint(false))).toBe("mascot");
   });
 });

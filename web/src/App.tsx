@@ -143,7 +143,7 @@ import {
   agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadFrontDesk, loadHead, loadHome,
   loadLeads, loadTeam, recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
-import { currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText, newChatLead } from "./lib/frontDesk";
+import { FRONT_DESK_GREETING, currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText, newChatLead } from "./lib/frontDesk";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
 import { personaFor, senderName, type Persona } from "./lib/agentPersona";
 import type { LaunchPlan } from "./lib/taskEnvironment";
@@ -4873,6 +4873,7 @@ export default function App() {
                   key={lead.id}
                   name={lead.name}
                   role={lead.role ?? ""}
+                  greeting={talkingToDesk ? FRONT_DESK_GREETING : undefined}
                   scope={talkingToDesk
                     ? "Your front desk"
                     : headAtHome

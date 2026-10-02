@@ -44,17 +44,22 @@ export function AgentRole({ text, name, className }: {
  *  screen, so this is one line — the role's first sentence and where the agent
  *  works — and the rest opens on request, in place. Keyed by agent where it is
  *  used, so picking someone else starts shut. */
-export function AgentWelcome({ name, role, scope, how }: {
+export function AgentWelcome({ name, role, scope, how, greeting }: {
   name: string;
   role: string;
   /** Where it works, short: "Works only in starfall". */
   scope: string;
   /** How a conversation with it goes, in a sentence. */
   how: string;
+  /** A line said TO the person in place of the role and scope, for an agent
+   *  whose role is written about the person (the front desk). The role
+   *  still opens under Details. */
+  greeting?: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
-  const summary = [role.trim() ? rolePreview(role, 64) : "", scope].filter(Boolean).join(" · ");
+  const summary = greeting?.trim()
+    || [role.trim() ? rolePreview(role, 64) : "", scope].filter(Boolean).join(" · ");
   return <>
     <p className="hero-sub agent-welcome">
       <span className="agent-welcome-summary">{summary}</span>
