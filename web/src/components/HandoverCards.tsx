@@ -9,8 +9,8 @@
 // a disclosure, like every other piece of agent prose.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
-  askBackSummary, chatIdOf, handoverHeadline, latestOutcome, noticeLine, outcomeText, placeLine,
-  settingsLine, waitsOnPerson,
+  askBackSummary, chatIdOf, handoverHeadline, isRoute, latestOutcome, noticeLine, outcomeText, placeLine,
+  routeHeadline, routePlaceLine, settingsLine, waitsOnPerson,
   type Handover, type HandoverAction, type HandoverAsk, type handoverLayout,
 } from "../lib/handover";
 import "./HandoverCards.css";
@@ -172,6 +172,114 @@ function SourceCard({ handover, onDecide }: {
   );
 }
 
+/** The last folder or file of a path, for a label. */
+function leafName(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+}
+
+/** The front desk's proposal: which agent, in which project, with the brief
+ *  it will receive. Confirming is the only thing that opens the chat; the
+ *  page then goes there. The brief is shown whole, since it is what the
+ *  person is agreeing to send; the exact first message, file paths and all,
+ *  is one click further. */
+export function RouteCard({ handover, onDecide }: {
+  handover: Handover;
+  onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
+}) {
+  const [busy, setBusy] = useState<HandoverAction | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pending = handover.status === "pending";
+  const starting = handover.status === "starting";
+  const decide = async (action: HandoverAction) => {
+    setBusy(action);
+    setError(null);
+    try {
+      await onDecide(handover.id, action);
+    } catch (reason) {
+      setError(String((reason as Error)?.message ?? reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const route = handover.route;
+  const files = route?.attachments ?? [];
+  const unreadable = route?.unreadable ?? [];
+  const failed = error ?? handover.error;
+  return (
+    <section
+      className={`handover-card route-card is-${handover.status}`}
+      data-handover={handover.id}
+      data-status={handover.status}
+      data-kind="route"
+    >
+      <header className="handover-head">
+        <span className="handover-mark" aria-hidden="true" />
+        <h3>{routeHeadline(handover)}</h3>
+      </header>
+      <dl className="handover-facts">
+        <div><dt>Agent</dt><dd>{handover.to.name} <span className="handover-dim">· {settingsLine(handover.settings)}</span></dd></div>
+        <div><dt>Project</dt><dd>{routePlaceLine(handover)}</dd></div>
+        {files.length > 0 && (
+          <div><dt>Files</dt><dd>{files.map((file) => file.name).join(", ")}</dd></div>
+        )}
+      </dl>
+      <div className="route-brief">
+        <h4>Brief</h4>
+        <p className="route-brief-text">{handover.brief.objective}</p>
+      </div>
+      {unreadable.length > 0 && (
+        <ul className="route-unreadable" role="alert" aria-label="Not passed on">
+          {unreadable.map((file) => (
+            <li key={file.path}>Not passed on: {leafName(file.path)} ({file.problem})</li>
+          ))}
+        </ul>
+      )}
+      {route?.message && (
+        <details className="handover-brief route-message">
+          <summary>
+            <span>Exact first message</span>
+            <span className="handover-chevron" aria-hidden="true" />
+          </summary>
+          <pre className="route-message-text">{route.message}</pre>
+        </details>
+      )}
+      {failed && <p className="handover-error" role="alert">{failed}</p>}
+      {pending && (
+        <footer className="handover-actions">
+          <span className="handover-hint">Nothing opens until you choose.</span>
+          <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")}>
+            {busy === "decline" ? "Cancelling…" : "Cancel"}
+          </button>
+          <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
+            {busy === "confirm" ? "Opening…" : `Open chat with ${handover.to.name}`}
+          </button>
+        </footer>
+      )}
+      {starting && (
+        <footer className="handover-actions">
+          <span className="handover-hint">
+            {!handover.error
+              ? "Opening the chat."
+              : handover.abandonable
+                ? "No chat was opened. Try again, or give up."
+                : "Its chat may already have started, so it can only be tried again."}
+          </span>
+          {handover.error && handover.abandonable && (
+            <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")}>
+              {busy === "abandon" ? "Giving up…" : "Give up"}
+            </button>
+          )}
+          {handover.error && (
+            <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
+              {busy === "confirm" ? "Opening…" : "Try again"}
+            </button>
+          )}
+        </footer>
+      )}
+    </section>
+  );
+}
+
 /** The handovers at the end of a chat: only the ones the person still has to
  *  act on (`handoverPlaces(…).tail`). */
 export function HandoverCards({ outgoing, onDecide }: {
@@ -181,9 +289,9 @@ export function HandoverCards({ outgoing, onDecide }: {
   if (!outgoing.length) return null;
   return (
     <div className="handover-cards">
-      {outgoing.map((handover) => (
-        <SourceCard key={handover.id} handover={handover} onDecide={onDecide} />
-      ))}
+      {outgoing.map((handover) => isRoute(handover)
+        ? <RouteCard key={handover.id} handover={handover} onDecide={onDecide} />
+        : <SourceCard key={handover.id} handover={handover} onDecide={onDecide} />)}
     </div>
   );
 }

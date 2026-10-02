@@ -8,7 +8,7 @@ import { bridge } from "./bridge";
 import type { LeadRecord } from "./agentsDashboard";
 import { recall, remember } from "./remember";
 import {
-  MODELS, claudeModelName, effortFor, accessFor,
+  MODELS, claudeModelName, effortFor, effortSteps, accessFor,
   type AccessLevel, type Effort, type ModelChoice, type Provider,
 } from "./agentProviders";
 
@@ -137,6 +137,40 @@ export async function loadHead(): Promise<TeamAgent | null> {
 
 export async function saveHead(id: string | null): Promise<TeamAgent | null> {
   return await bridge.invoke<TeamAgent | null>("team_head_set", { id });
+}
+
+/** The front desk every new conversation opens on, or null when none is
+ *  designated (the plain "Talk to" picker then stays). */
+export async function loadFrontDesk(): Promise<TeamAgent | null> {
+  return await bridge.invoke<TeamAgent | null>("team_front_desk", {});
+}
+
+export async function saveFrontDesk(id: string | null): Promise<TeamAgent | null> {
+  return await bridge.invoke<TeamAgent | null>("team_front_desk_set", { id });
+}
+
+/** Register a front desk with the router role and designate it, in one step. */
+export async function createFrontDesk(draft: { name?: string; agent: Provider; model: string; effort: Effort }): Promise<TeamAgent> {
+  return await bridge.invoke<TeamAgent>("team_front_desk_create", { draft });
+}
+
+/** What a front desk runs on unless the person picks otherwise: the
+ *  provider's smallest model at its lowest effort. Routing reads a roster and
+ *  writes a paragraph; it needs speed, not depth. */
+export function frontDeskDefaults(provider: Provider): { model: string; effort: Effort } {
+  const smallest: Record<Provider, string> = { claude: "haiku", codex: "gpt-5.6-luna", pi: "gpt-5.6-luna" };
+  const efforts = effortSteps(provider);
+  return { model: smallest[provider], effort: efforts[0]?.id ?? "low" };
+}
+
+/** Why an agent cannot be the front desk, as the host says it too
+ *  (`team::front_desk_refusal`): its chats would be hidden and stripped of
+ *  every tool but routing. `null` when it can. */
+export function frontDeskRefusal(agent: TeamAgent, roster: readonly TeamAgent[], headId: string | null | undefined): string | null {
+  if (agent.projectId) return `${agent.name} belongs to one project; the front desk routes from every project.`;
+  if (agent.id === headId) return `${agent.name} is the lead you talk to across projects.`;
+  if (roster.some((other) => other.reportsTo === agent.id)) return `${agent.name} manages other agents.`;
+  return null;
 }
 
 /** The coordination home: the workspace the head's conversations live in.

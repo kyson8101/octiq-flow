@@ -62,7 +62,24 @@ export type HandoverOutcome = {
   at: number;
 };
 
+/** A file a route carries, copied where the new chat may open it. */
+export type RouteFile = { name: string; path: string; image?: boolean };
+
+/** What a front-desk route adds (`handover/route.rs`). */
+export type RouteDetail = {
+  /** The new chat's first message, exactly as the agent will read it. */
+  message: string;
+  attachments?: RouteFile[];
+  /** Files the front desk named that the new chat could not be given. */
+  unreadable?: { path: string; problem: string }[];
+  /** A route to the head: its conversation spans every project. */
+  crossProject?: boolean;
+};
+
 export type Handover = {
+  /** Absent for a handover; `route` for a chat the front desk opens. */
+  kind?: "handover" | "route";
+  route?: RouteDetail;
   id: string;
   sourceChatKey: string;
   sourceTitle: string;
@@ -105,6 +122,11 @@ function behindBack(next: Handover, current: Handover): boolean {
 /** Upsert one record into a list, keeping creation order. A late event for an
  *  earlier state of the same record never wins over a later one. */
 export function mergeHandover(list: readonly Handover[], next: Handover): Handover[] {
+  // A route cancelled or given up on leaves nothing: the host deleted it and
+  // says so once, with this last state.
+  if (isRoute(next) && (next.status === "declined" || next.status === "abandoned")) {
+    return list.some((item) => item.id === next.id) ? list.filter((item) => item.id !== next.id) : list as Handover[];
+  }
   const at = list.findIndex((item) => item.id === next.id);
   if (at < 0) return [...list, next].sort((a, b) => a.createdAt - b.createdAt);
   const current = list[at];
@@ -115,7 +137,14 @@ export function mergeHandover(list: readonly Handover[], next: Handover): Handov
   return copy;
 }
 
-/** What a chat shows: the handovers it asked for, and the one it came from. */
+/** Whether a record is a chat the front desk opens rather than a handover. */
+export function isRoute(handover: Pick<Handover, "kind">): boolean {
+  return handover.kind === "route";
+}
+
+/** What a chat shows: the handovers it asked for, and the one it came from.
+ *  A chat the front desk opened shows none: the front-desk chat is hidden,
+ *  and the brief is the chat's own first message. */
 export function handoversFor(list: readonly Handover[], chatKey: string | null | undefined): {
   outgoing: Handover[];
   incoming: Handover | null;
@@ -123,7 +152,7 @@ export function handoversFor(list: readonly Handover[], chatKey: string | null |
   if (!chatKey) return { outgoing: [], incoming: null };
   return {
     outgoing: list.filter((item) => item.sourceChatKey === chatKey),
-    incoming: list.find((item) => item.targetChatKey === chatKey) ?? null,
+    incoming: list.find((item) => item.targetChatKey === chatKey && !isRoute(item)) ?? null,
   };
 }
 
@@ -153,7 +182,8 @@ export function handoverPlaces(here: ReturnType<typeof handoversFor>): {
 } {
   return {
     tail: here.outgoing.filter(needsPerson),
-    settled: here.outgoing.filter((item) => !needsPerson(item)),
+    // A route that opened its chat is done with: the person is in that chat.
+    settled: here.outgoing.filter((item) => !needsPerson(item) && !isRoute(item)),
     incoming: here.incoming,
   };
 }
@@ -261,6 +291,22 @@ export function placeLine(handover: Handover): string {
     return `${project} · ${from}`;
   }
   return `${project} · ${leaf(ws.path)}`;
+}
+
+/** A route's card headline in the front-desk chat. */
+export function routeHeadline(handover: Handover): string {
+  if (handover.status === "starting") {
+    return handover.error ? `${handover.to.name}'s chat did not start` : `Opening a chat with ${handover.to.name}…`;
+  }
+  return `Open a chat with ${handover.to.name}?`;
+}
+
+/** Where a routed chat works, in a few words. */
+export function routePlaceLine(handover: Handover): string {
+  const project = handover.destination.projectName;
+  if (handover.route?.crossProject) return `${project} · plans across every project`;
+  if (handover.workspace.mode === "worktree") return `${project} · new worktree`;
+  return project;
 }
 
 /** The headline of a card, from where it is drawn. */

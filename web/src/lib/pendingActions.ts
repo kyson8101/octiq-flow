@@ -78,7 +78,7 @@ export type PendingActionInput = {
   questions?: Requests;
   /** Handovers an agent asked for: waiting on the person's confirm, or on
    *  their Try again / Give up after a start that failed. */
-  handovers?: readonly { id: string; sourceChatKey: string; status: string; error?: string }[];
+  handovers?: readonly { id: string; sourceChatKey: string; status: string; error?: string; kind?: string }[];
 };
 
 const LIVE_RUNS = new Set(["planning", "running", "waiting"]);
@@ -154,7 +154,9 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
   }
   for (const handover of input.handovers ?? []) {
     const source = chatId(handover.sourceChatKey);
-    if (!source || !waitsOnPerson(handover)) continue;
+    // A route waits in a front-desk chat, which no list shows: walking away
+    // from it leaves nothing to badge.
+    if (!source || !waitsOnPerson(handover) || handover.kind === "route") continue;
     add({ key: `handover:${handover.id}`, kind: "handover", rowId: rowOf(source), openChatId: source, surface: "chat" });
   }
   return [...found.values()].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);

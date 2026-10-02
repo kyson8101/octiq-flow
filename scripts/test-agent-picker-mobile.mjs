@@ -115,7 +115,7 @@ async function layout(page) {
       overflowX: document.documentElement.scrollWidth > innerWidth,
       picker: rect(list),
       pickerScrolls: list ? list.scrollHeight > list.clientHeight + 1 : false,
-      manage: rect(document.querySelector(".lead-picker-note button")),
+      manage: rect(document.querySelector(".hero-links > .hero-link")),
       resume: rect(document.querySelector(".hero .resume-open")),
       composer: rect(document.querySelector("textarea")),
       hint: document.querySelector(".composer-hint")?.textContent ?? null,

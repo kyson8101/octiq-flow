@@ -140,9 +140,10 @@ import { AgentWelcome } from "./components/AgentRole";
 import { AgentsDashboard } from "./components/AgentsDashboard";
 import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import {
-  agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadHead, loadHome,
+  agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadFrontDesk, loadHead, loadHome,
   loadLeads, loadTeam, recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
+import { currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText, newChatLead } from "./lib/frontDesk";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
 import { personaFor, senderName, type Persona } from "./lib/agentPersona";
 import type { LaunchPlan } from "./lib/taskEnvironment";
@@ -159,7 +160,9 @@ import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
 import { ChatPlanCards } from "./components/ChatPlanCards";
 import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
-import { chatIdOf, handoverAnchorKey, handoverLayout, handoverPlaces, handoversFor } from "./lib/handover";
+import {
+  chatIdOf, handoverAnchorKey, handoverLayout, handoverPlaces, handoversFor, isRoute, type HandoverAction,
+} from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { pendingActions, pendingByRow, pendingByTask, type PendingAction } from "./lib/pendingActions";
@@ -709,6 +712,16 @@ export default function App() {
   // registered agent (to name the lead of a conversation from any project),
   // and which chats were handed to whom.
   const [head, setHead] = useState<TeamAgent | null>(null);
+  /** The front desk every new conversation opens on (Settings, Agents), or
+   *  null for the plain picker. */
+  const [frontDeskAgent, setFrontDeskAgent] = useState<TeamAgent | null>(null);
+  /** The chats this page started with the front desk. They are never listed
+   *  (the host leaves them out of every list too), never saved to the index,
+   *  and say who they are with although no lead record names them. */
+  const frontDeskChatIds = useRef(new Set<string>());
+  const [frontDeskChats, setFrontDeskChats] = useState<ReadonlySet<string>>(() => new Set());
+  /** "Talk to someone else" is open on the new-chat page. */
+  const [rosterOpen, setRosterOpen] = useState(false);
   const [roster, setRoster] = useState<TeamAgent[]>([]);
   const [leads, setLeads] = useState<LeadRecord[]>([]);
   /** Who the new conversation on screen is with, when the person picked
@@ -1714,6 +1727,9 @@ export default function App() {
         const changedIds = new Set<string>();
         for (const [id, s] of Object.entries(chats)) {
           if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id) || chatHistory.current.hasEarlier(id)) continue;
+          // A front-desk chat is never listed or saved: what the person meant
+          // to start is the chat it routes them to.
+          if (frontDeskChatIds.current.has(id)) continue;
           const info = meta.current[id];
           if (!info || s.messages.length === 0) continue;
           const before = list.find((c) => c.id === id);
@@ -1892,10 +1908,15 @@ export default function App() {
     if (conn !== "open" || appSettings) return;
     let alive = true;
     setLeadRecordsState("loading");
-    Promise.all([loadHead(), loadTeam(null, true), loadLeads(), loadHome().catch(() => null)])
-      .then(([configured, everyone, handed, home]) => {
+    Promise.all([
+      loadHead(), loadTeam(null, true), loadLeads(), loadHome().catch(() => null),
+      // An older server has no front desk: the plain picker stays.
+      loadFrontDesk().catch(() => null),
+    ])
+      .then(([configured, everyone, handed, home, desk]) => {
         if (!alive) return;
         setHead(configured);
+        setFrontDeskAgent(desk);
         setRoster(everyone);
         setLeads(handed);
         setHomeId(home);
@@ -1920,9 +1941,20 @@ export default function App() {
     () => conversationRecipients(roster, head?.id, (id) => workspaces.some((w) => w.id === id)),
     [roster, head?.id, workspaces],
   );
+  // With a front desk designated, a new conversation opens on it; the
+  // person can still pick anyone directly ("Talk to someone else").
+  const frontDesk = useMemo(() => currentFrontDesk(frontDeskAgent, roster), [frontDeskAgent, roster]);
   const lead = newTask
-    ? conversationRecipient({ recipients, pickedId: recipientId, headId: head?.id, projectId: project?.id })
+    ? newChatLead({
+      recipients,
+      pickedId: recipientId,
+      desk: frontDesk,
+      projectId: project?.id,
+      fallback: () => conversationRecipient({ recipients, pickedId: null, headId: head?.id, projectId: project?.id }),
+    })
     : null;
+  const talkingToDesk = !!frontDesk && lead?.id === frontDesk.id;
+  const pickable = useMemo(() => directRecipients(recipients, frontDesk), [recipients, frontDesk]);
   useEffect(() => {
     if (!newTask || !lead) return;
     const settings = leadSettings(lead);
@@ -1941,18 +1973,21 @@ export default function App() {
   const composerIdentity = useMemo(() => {
     if (!agentsMode || workerChat) return null;
     if (conversationId) {
+      if (frontDeskChats.has(conversationId) && frontDesk) return agentIdentity(frontDesk, frontDesk.name, choice);
       if (!chatLead) return null;
       return agentIdentity(roster.find((agent) => agent.id === chatLead.leadId), chatLead.leadName, choice);
     }
     return lead ? agentIdentity(lead, lead.name, choice) : null;
-  }, [agentsMode, workerChat, conversationId, chatLead, roster, lead, choice]);
+  }, [agentsMode, workerChat, conversationId, chatLead, roster, lead, choice, frontDeskChats, frontDesk]);
   // Agents mode: where a new task runs, chosen automatically (lib/agentExecution).
   // The head coordinates from home, whichever page the conversation was
   // started from; a project lead gets a new worktree. Only what the person
   // changes under Advanced overrides it.
   const headAtHome = newTask && headCoordination({ recipientId: lead?.id, headId: head?.id });
   const executionPlan = useMemo(
-    () => newTask
+    () => newTask && talkingToDesk
+      ? frontDeskExecution(homeId)
+      : newTask
       ? autoExecution({
         toHead: headAtHome,
         project: project ?? null,
@@ -1962,7 +1997,7 @@ export default function App() {
         overrides,
       })
       : null,
-    [newTask, headAtHome, project, homeId, branches, sandboxes.snapshot?.defaultEnabled, overrides],
+    [newTask, talkingToDesk, headAtHome, project, homeId, branches, sandboxes.snapshot?.defaultEnabled, overrides],
   );
   // The registered agent a chat belongs to — its lead, or the assignee of the
   // task a worker chat runs. It is the voice of every reply in that chat.
@@ -1980,12 +2015,14 @@ export default function App() {
     [agentsMode, leads, roster, workerAssignees],
   );
   const persona = useMemo(
-    () => agentsMode && conversationId
+    () => agentsMode && conversationId && frontDeskChats.has(conversationId) && composerIdentity
+      ? { id: composerIdentity.id, name: composerIdentity.name, avatar: composerIdentity.avatar }
+      : agentsMode && conversationId
       ? personaFor(keyFor(conversationId), leads, roster, workerAssignees)
       : agentsMode && composerIdentity
         ? { id: composerIdentity.id, name: composerIdentity.name, avatar: composerIdentity.avatar }
         : null,
-    [agentsMode, conversationId, leads, roster, workerAssignees, composerIdentity],
+    [agentsMode, conversationId, leads, roster, workerAssignees, composerIdentity, frontDeskChats],
   );
   // Task details combine the chat's recorded launch plan, the newest worker
   // attempt, sandbox state and registered persona with live host verification.
@@ -2376,6 +2413,7 @@ export default function App() {
     setUnavailableChat(null);
     setNewChatError(null);
     setRecipientId(null);
+    setRosterOpen(false);
     setPendingNotification(null);
     setProjectId(null);
     setConversationId(null);
@@ -3336,12 +3374,30 @@ export default function App() {
       // pushing a whole file into the prompt sight unseen.
       const images = attachments.filter((a) => a.isImage).map((a) => a.path);
       const files = attachments.filter((a) => !a.isImage).map((a) => a.path);
-      if (files.length) {
+      const id = conversationId ?? crypto.randomUUID();
+      // The front desk is told every file by path, pictures too: the paths
+      // are how it hands them on to the agent it routes the person to.
+      const deskChat = (!!taskLead && !!frontDesk && taskLead.id === frontDesk.id)
+        || (!!conversationId && frontDeskChatIds.current.has(conversationId));
+      if (deskChat) {
+        text = frontDeskText(text, attachments);
+      } else if (files.length) {
         text = `${text}\n\nFiles to look at:\n${files.map((f) => `- ${f}`).join("\n")}`.trim();
       }
-      const id = conversationId ?? crypto.randomUUID();
       const typed = text;
-      if (taskLead) {
+      if (taskLead && deskChat) {
+        try {
+          text = await taskBrief(keyFor(id), targetProject.id, taskLead.id, text, false);
+        } catch (error) {
+          setNewChatError(
+            `Could not reach ${taskLead.name}: ${String((error as Error).message ?? error)}`,
+          );
+          return false;
+        }
+        // Hidden from every list from its first message on; no lead record.
+        frontDeskChatIds.current.add(id);
+        setFrontDeskChats(new Set(frontDeskChatIds.current));
+      } else if (taskLead) {
         try {
           text = await taskBrief(keyFor(id), targetProject.id, taskLead.id, text, crossProject);
         } catch (error) {
@@ -3539,13 +3595,15 @@ export default function App() {
         });
         // A user send is meaningful activity and moves the row immediately.
         // The later streaming transcript saves preserve this timestamp until
-        // the agent finishes the turn and touches it once more.
-        setConversations((current) => {
+        // the agent finishes the turn and touches it once more. A front-desk
+        // chat has no row and no index entry at all: nothing lists it, and
+        // the host removes its transcript at the next start.
+        if (!deskChat) setConversations((current) => {
           const next = [activity, ...current.filter((conversation) => conversation.id !== id)];
           saveConversations(next);
           return next;
         });
-        saveIndexEntry({
+        if (!deskChat) saveIndexEntry({
           id: activity.id,
           projectId: activity.projectId,
           title: activity.title,
@@ -3679,6 +3737,7 @@ export default function App() {
       syncQueue,
       agentsMode,
       lead,
+      frontDesk,
       recipients,
       leadRecordsState,
       workspaces,
@@ -4120,6 +4179,27 @@ export default function App() {
   const openHandoverChat = useCallback((chatKey: string, projectId: string | null) => {
     onOpenChat.current({ conversationId: chatIdOf(chatKey), projectId });
   }, []);
+  // The person confirmed the front desk's card: the chat it opened is where
+  // they go. The front-desk chat behind them is never listed.
+  const decideAndGo = useCallback(async (id: string, action: HandoverAction) => {
+    const record = await decideHandover(id, action);
+    const target = record.targetChatKey;
+    if (isRoute(record) && record.status === "confirmed" && target) {
+      // The host recorded the new chat as this agent's; known here at once,
+      // so its composer names the agent rather than a model picker.
+      if (record.to.agentId) {
+        const routedLead: LeadRecord = {
+          chatKey: target, leadId: record.to.agentId, leadName: record.to.name,
+          projectId: record.destination.projectId, crossProject: record.route?.crossProject || undefined,
+          createdAt: record.decidedAt ?? Date.now(),
+        };
+        setLeads((current) => [...current.filter((item) => item.chatKey !== target), routedLead]);
+      }
+      openHandoverChat(target, record.destination.projectId);
+      loadLeads().then(setLeads, () => undefined);
+    }
+    return record;
+  }, [decideHandover, openHandoverChat]);
   const handoverProjectOf = useCallback(
     (chatKey: string) => conversationsRef.current.find((c) => c.id === chatIdOf(chatKey))?.projectId ?? null,
     [],
@@ -4148,11 +4228,11 @@ export default function App() {
       const plans = plansHere.some((plan) => plan.pending)
         ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : null;
       const handed = handoverPlace.tail.length
-        ? <HandoverCards outgoing={handoverPlace.tail} onDecide={decideHandover} />
+        ? <HandoverCards outgoing={handoverPlace.tail} onDecide={decideAndGo} />
         : null;
       return plans || handed ? <>{handed}{plans}</> : undefined;
     },
-    [plansHere, planDrafting, planProjectName, handoverPlace, decideHandover],
+    [plansHere, planDrafting, planProjectName, handoverPlace, decideAndGo],
   );
 
   const changeAccess = useCallback(
@@ -4313,11 +4393,13 @@ export default function App() {
   // silently reopen the last one.
   const startAgentConversation = async () => {
     // Re-read the head and the chart: either may have changed on another device.
-    const [configured, everyone] = await Promise.all([
+    const [configured, everyone, desk] = await Promise.all([
       loadHead().catch(() => head),
       loadTeam(null, true).catch(() => roster),
+      loadFrontDesk().catch(() => frontDeskAgent),
     ]);
     setHead(configured);
+    setFrontDeskAgent(desk);
     setRoster(everyone);
     if (conversationRecipients(everyone, configured?.id).length === 0) {
       openAgentsSettings();
@@ -4791,10 +4873,14 @@ export default function App() {
                   key={lead.id}
                   name={lead.name}
                   role={lead.role ?? ""}
-                  scope={headAtHome
+                  scope={talkingToDesk
+                    ? "Your front desk"
+                    : headAtHome
                     ? "Works across every project"
                     : `Works ${lead.projectId ? `only in ${project?.name ?? "its project"}` : "in any project"}`}
-                  how={headAtHome
+                  how={talkingToDesk
+                    ? "Say what you need. It finds the right agent and project, shows you who on a card, and opens that agent's chat with your request once you confirm."
+                    : headAtHome
                     ? "Picks the project, repository and teammate for each part, and you approve the plan before anyone starts."
                     : "Does the work itself or hands parts to its team, and you approve any plan first."}
                 />
@@ -4802,14 +4888,47 @@ export default function App() {
               {(!project || newTask) && (
                 newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>
               )}
-              {newTask && (
+              {/* With a front desk, the full picker is one tap away rather than
+                  the first thing on the page; without one it is the page. */}
+              {newTask && frontDesk && (
+                talkingToDesk ? (
+                  <button
+                    className="hero-link hero-roster-toggle"
+                    type="button"
+                    aria-expanded={rosterOpen}
+                    onClick={() => setRosterOpen((open) => !open)}
+                  >
+                    Talk to someone else
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+                  </button>
+                ) : (
+                  <button
+                    className="hero-link hero-roster-toggle"
+                    type="button"
+                    onClick={() => { setRecipientId(null); setRosterOpen(false); }}
+                  >
+                    Back to {frontDesk.name}
+                  </button>
+                )
+              )}
+              {newTask && (!frontDesk || rosterOpen) && (
                 <RecipientPicker
-                  agents={recipients}
-                  selectedId={lead?.id ?? null}
+                  agents={frontDesk ? pickable : recipients}
+                  selectedId={talkingToDesk ? null : lead?.id ?? null}
                   projectName={(id) => workspaces.find((w) => w.id === id)?.name}
                   onPick={pickRecipient}
                   onManage={openAgentsSettings}
+                  showManage={false}
+                  label={frontDesk ? "Talk to someone else" : "Talk to"}
                 />
+              )}
+              {/* One quiet row: managing agents and picking up an earlier
+                  session, side by side on a phone where they fit. */}
+              {newTask && (
+                <div className="hero-links">
+                  <button className="hero-link" type="button" onClick={openAgentsSettings}>Manage agents</button>
+                  {project && !workerChat && <SessionSearch projectPath={effectiveCwd} onResume={resumeHistory} />}
+                </div>
               )}
               {chat.sessionId &&
                 (conversationId && resumed[conversationId] ? (
@@ -4830,7 +4949,7 @@ export default function App() {
                 ) : (
                   <p className="hero-sub">continuing an earlier session</p>
                 ))}
-              {project && !workerChat && <SessionSearch projectPath={effectiveCwd} onResume={resumeHistory} />}
+              {project && !workerChat && !newTask && <SessionSearch projectPath={effectiveCwd} onResume={resumeHistory} />}
             </div>
           ) : (
             // The transcript and the agent rail sit side by side. The rail

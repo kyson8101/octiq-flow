@@ -9,14 +9,16 @@ import {
   type AccessLevel, type Effort, type Provider,
 } from "../lib/agentProviders";
 import {
-  deleteAgentTeam, deleteTeamAgent, joinableTeams, leadOnly, loadAgentTeams, loadHead, loadHome, loadTeam,
-  saveAgentTeam, saveHead, saveHome, saveTeamAgent, teamModelLabel, teamModels,
+  createFrontDesk, deleteAgentTeam, deleteTeamAgent, frontDeskDefaults, frontDeskRefusal, joinableTeams, leadOnly,
+  loadAgentTeams, loadFrontDesk, loadHead, loadHome, loadTeam,
+  saveAgentTeam, saveFrontDesk, saveHead, saveHome, saveTeamAgent, teamModelLabel, teamModels,
   type AgentTeam, type AgentTeamDraft, type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
 import { orgChart, teamBadge } from "../lib/agentsDashboard";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentAvatarEditor } from "./AgentAvatarEditor";
 import { AgentRole, rolePreview } from "./AgentRole";
+import { sharedProject } from "../lib/frontDesk";
 
 type ProjectRef = { id: string; name: string };
 
@@ -40,17 +42,23 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const [homeId, setHomeId] = useState<string | null>(null);
   const [teams, setTeams] = useState<AgentTeam[]>([]);
   const [teamDraft, setTeamDraft] = useState<AgentTeamDraft | null>(null);
+  const [deskId, setDeskId] = useState<string | null>(null);
+  const [deskBusy, setDeskBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    // An older backend has no teams: the section just shows none.
-    Promise.all([loadTeam(null, true), loadHead(), loadHome().catch(() => null), loadAgentTeams().catch(() => [])])
-      .then(([agents, head, home, groups]) => {
+    // An older backend has no teams or front desk: those sections show none.
+    Promise.all([
+      loadTeam(null, true), loadHead(), loadHome().catch(() => null), loadAgentTeams().catch(() => []),
+      loadFrontDesk().catch(() => null),
+    ])
+      .then(([agents, head, home, groups, desk]) => {
         if (!alive) return;
         setTeam(agents);
         setHeadId(head?.id ?? null);
         setHomeId(home);
         setTeams(groups);
+        setDeskId(desk?.id ?? null);
       })
       .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); })
       .finally(() => { if (alive) setLoading(false); });
@@ -58,7 +66,8 @@ export function AgentsSettings({ on, onToggle, projects }: {
   }, []);
 
   // Only a global agent can be talked to from every project.
-  const globalAgents = useMemo(() => team.filter((agent) => !agent.projectId), [team]);
+  // The front desk only routes, so it is not offered as the lead either.
+  const globalAgents = useMemo(() => team.filter((agent) => !agent.projectId && agent.id !== deskId), [team, deskId]);
   const pickHead = async (id: string | null) => {
     setError("");
     try {
@@ -68,6 +77,35 @@ export function AgentsSettings({ on, onToggle, projects }: {
       setError(String((reason as Error).message ?? reason));
     }
   };
+
+  const desk = useMemo(() => team.find((agent) => agent.id === deskId) ?? null, [team, deskId]);
+  const deskAction = async (act: () => Promise<void>) => {
+    setError("");
+    setDeskBusy(true);
+    try {
+      await act();
+    } catch (reason) {
+      setError(String((reason as Error).message ?? reason));
+    } finally {
+      setDeskBusy(false);
+    }
+  };
+  const pickDesk = (id: string | null) => deskAction(async () => {
+    setDeskId((await saveFrontDesk(id))?.id ?? null);
+  });
+  const createDesk = () => deskAction(async () => {
+    const created = await createFrontDesk({ agent: "claude", ...frontDeskDefaults("claude") });
+    setTeam(await loadTeam(null, true));
+    setDeskId(created.id);
+  });
+  const changeDesk = (settings: { agent: Provider; model: string; effort?: Effort }) => deskAction(async () => {
+    if (!desk) return;
+    await saveTeamAgent({
+      id: desk.id, name: desk.name, role: desk.role, agent: settings.agent, model: settings.model,
+      effort: settings.effort, access: desk.access, projectId: null, reportsTo: null, teamId: desk.teamId ?? null,
+    });
+    setTeam(await loadTeam(null, true));
+  });
 
   const pickHome = async (id: string | null) => {
     setError("");
@@ -138,6 +176,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
       // longer the one you talk to.
       setTeam(await loadTeam(null, true));
       setHeadId((await loadHead())?.id ?? null);
+      setDeskId((await loadFrontDesk().catch(() => null))?.id ?? null);
       if (draft?.id === agent.id) setDraft(null);
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
@@ -223,6 +262,17 @@ export function AgentsSettings({ on, onToggle, projects }: {
         </select>
       </div>
 
+      <FrontDeskBlock
+        desk={desk}
+        roster={team}
+        headId={headId}
+        loading={loading}
+        busy={deskBusy}
+        onPick={(id) => void pickDesk(id)}
+        onCreate={() => void createDesk()}
+        onSettings={(settings) => void changeDesk(settings)}
+      />
+
       <div className="settings-control-row team-choice-row">
         <div className="settings-control-copy">
           <h3>Home workspace</h3>
@@ -298,13 +348,16 @@ export function AgentsSettings({ on, onToggle, projects }: {
  *  carries its brief. With a single choice already made there is nothing to
  *  pick, so it draws nothing. A radio group: arrow keys move the choice, Tab
  *  leaves it. */
-export function RecipientPicker({ agents, selectedId, projectName, onPick, onManage }: {
+export function RecipientPicker({ agents, selectedId, projectName, onPick, onManage, showManage = true, label = "Talk to" }: {
   agents: readonly TeamAgent[];
   selectedId: string | null;
   /** A project agent's project, named on its chip. */
   projectName: (id: string) => string | undefined;
   onPick: (agent: TeamAgent) => void;
   onManage: () => void;
+  /** Off where the page draws "Manage agents" itself, beside its other links. */
+  showManage?: boolean;
+  label?: string;
 }) {
   if (agents.length === 0) {
     return (
@@ -317,6 +370,8 @@ export function RecipientPicker({ agents, selectedId, projectName, onPick, onMan
   }
   if (agents.length === 1 && agents[0].id === selectedId) return null;
   const focusable = agents.some((agent) => agent.id === selectedId) ? selectedId : agents[0].id;
+  // Every row in one project: say it once, not on every row.
+  const shared = sharedProject(agents);
   const move = (event: KeyboardEvent<HTMLDivElement>) => {
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
     const at = agents.findIndex((agent) => agent.id === focusable);
@@ -331,9 +386,13 @@ export function RecipientPicker({ agents, selectedId, projectName, onPick, onMan
   };
   return (
     <div className="lead-picker">
-      <div className="lead-picker-list" role="radiogroup" aria-label="Talk to" onKeyDown={move}>
+      {shared && (
+        <p className="lead-picker-scope">All in {projectName(shared) ?? "another project"}</p>
+      )}
+      <div className="lead-picker-list" role="radiogroup" aria-label={label} onKeyDown={move}>
         {agents.map((agent) => {
           const project = agent.projectId ? projectName(agent.projectId) ?? "another project" : null;
+          const meta = shared ? null : project;
           return (
             <button
               key={agent.id}
@@ -348,16 +407,18 @@ export function RecipientPicker({ agents, selectedId, projectName, onPick, onMan
             >
               <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={20} decorative />
               <span className="lead-chip-name">{agent.name}</span>
-              {project && <span className="lead-chip-meta">{project}</span>}
+              {meta && <span className="lead-chip-meta">{meta}</span>}
             </button>
           );
         })}
       </div>
       {/* Who is offered is the org chart's top row; the chips say who, so
           only the way to change it is left under them. */}
-      <p className="lead-picker-note">
-        <button type="button" onClick={onManage}>Manage agents</button>
-      </p>
+      {showManage && (
+        <p className="lead-picker-note">
+          <button type="button" onClick={onManage}>Manage agents</button>
+        </p>
+      )}
     </div>
   );
 }
@@ -438,6 +499,109 @@ export function TeamsBlock({ teams, agents, draft, projects, projectName, onDraf
   );
 }
 
+/** Provider, model and effort: the same three selects wherever an agent's
+ *  model is chosen (the agent form, the front desk). */
+export function ModelFields({ agent, model, effort, onProvider, onModel, onEffort, disabled }: {
+  agent: Provider;
+  model: string;
+  effort?: Effort;
+  onProvider: (agent: Provider) => void;
+  onModel: (model: string) => void;
+  onEffort: (effort: Effort) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <>
+      <label>
+        <span>Provider</span>
+        <select value={agent} disabled={disabled} onChange={(event) => onProvider(event.target.value as Provider)}>
+          {PROVIDERS.map((p) => <option key={p} value={p}>{AGENT_NAME[p]}</option>)}
+        </select>
+      </label>
+      <label>
+        <span>Model</span>
+        <select value={model} disabled={disabled} onChange={(event) => onModel(event.target.value)}>
+          {teamModels(agent).map((m) => <option key={m.id} value={m.flag}>{m.model}</option>)}
+        </select>
+      </label>
+      <label>
+        <span>Effort</span>
+        <select value={effort ?? ""} disabled={disabled} onChange={(event) => onEffort(event.target.value as Effort)}>
+          {EFFORTS[agent].map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+        </select>
+      </label>
+    </>
+  );
+}
+
+/** Settings → Agents: the front desk every new chat opens on. Pick one, or
+ *  create one in a step on the smallest model at its lowest effort, and
+ *  change what it runs on here; it is read for every new chat, so a change
+ *  needs no restart. The head and any agent who manages others are not
+ *  offered: a front desk's chats are hidden and it only routes. */
+export function FrontDeskBlock({ desk, roster, headId, loading, busy, onPick, onCreate, onSettings }: {
+  desk: TeamAgent | null;
+  roster: readonly TeamAgent[];
+  headId: string | null;
+  loading: boolean;
+  busy: boolean;
+  onPick: (id: string | null) => void;
+  onCreate: () => void;
+  onSettings: (settings: { agent: Provider; model: string; effort?: Effort }) => void;
+}) {
+  const globals = roster.filter((agent) => !agent.projectId);
+  return (
+    <div className="front-desk-block">
+      <div className="settings-control-row team-choice-row">
+        <div className="settings-control-copy">
+          <h3>Front desk</h3>
+          <p>Every new chat opens on it. It works out who should handle what you ask and opens that agent's chat once you confirm on a card. Its own chats are never listed.</p>
+        </div>
+        <select
+          className="team-head-select"
+          aria-label="Front desk"
+          value={desk?.id ?? ""}
+          disabled={loading || busy}
+          onChange={(event) => onPick(event.target.value || null)}
+        >
+          <option value="">No front desk</option>
+          {globals.map((agent) => {
+            const refused = agent.id === desk?.id ? null : frontDeskRefusal(agent, roster, headId);
+            return (
+              <option key={agent.id} value={agent.id} disabled={!!refused}>
+                {agent.name}{refused ? " · not available" : ""}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+      {desk ? (
+        <div className="front-desk-model" role="group" aria-label={`What ${desk.name} runs on`}>
+          <ModelFields
+            agent={desk.agent}
+            model={desk.model}
+            effort={desk.effort}
+            disabled={busy}
+            onProvider={(agent) => onSettings({ agent, ...frontDeskDefaults(agent) })}
+            onModel={(model) => onSettings({ agent: desk.agent, model, effort: desk.effort })}
+            onEffort={(effort) => onSettings({ agent: desk.agent, model: desk.model, effort })}
+          />
+          <p className="settings-note">Now {AGENT_NAME[desk.agent]} {teamModelLabel(desk)}{desk.effort ? ` · ${desk.effort}` : ""}. Used from the next new chat.</p>
+        </div>
+      ) : (
+        <div className="front-desk-create">
+          <button className="settings-primary" type="button" disabled={loading || busy} onClick={onCreate}>
+            Create front desk
+          </button>
+          <span className="settings-note">
+            A router on {AGENT_NAME.claude} {teamModelLabel({ agent: "claude", model: frontDeskDefaults("claude").model })}, {frontDeskDefaults("claude").effort} effort. You can change what it runs on here after.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TeamForm({ draft, team, teams, projects, saving, onChange, onSave, onCancel }: {
   draft: TeamDraft;
   team: TeamAgent[];
@@ -448,8 +612,6 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const models = teamModels(draft.agent);
-  const efforts = EFFORTS[draft.agent];
   const access = ACCESS[draft.agent];
   const set = (patch: Partial<TeamDraft>) => onChange({ ...draft, ...patch });
   const pickProvider = (agent: Provider) => {
@@ -506,24 +668,14 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
           placeholder="What this agent is good at, and what it should take on"
           onChange={(event) => set({ role: event.target.value })} />
       </label>
-      <label>
-        <span>Provider</span>
-        <select value={draft.agent} onChange={(event) => pickProvider(event.target.value as Provider)}>
-          {PROVIDERS.map((p) => <option key={p} value={p}>{AGENT_NAME[p]}</option>)}
-        </select>
-      </label>
-      <label>
-        <span>Model</span>
-        <select value={draft.model} onChange={(event) => set({ model: event.target.value })}>
-          {models.map((m) => <option key={m.id} value={m.flag}>{m.model}</option>)}
-        </select>
-      </label>
-      <label>
-        <span>Effort</span>
-        <select value={draft.effort ?? ""} onChange={(event) => set({ effort: event.target.value as Effort })}>
-          {efforts.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
-        </select>
-      </label>
+      <ModelFields
+        agent={draft.agent}
+        model={draft.model}
+        effort={draft.effort}
+        onProvider={pickProvider}
+        onModel={(model) => set({ model })}
+        onEffort={(effort) => set({ effort })}
+      />
       <label>
         <span>Access</span>
         <select value={draft.access} onChange={(event) => set({ access: event.target.value as AccessLevel })}>

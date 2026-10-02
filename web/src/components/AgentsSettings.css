@@ -218,7 +218,9 @@
     display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; width: 100%;
   }
   .lead-picker .lead-picker-list {
-    flex-direction: column; flex-wrap: nowrap; gap: 0; flex: 0 1 auto;
+    /* Start, not centre: a squeezed column would otherwise spill its first
+       rows off the top, where scrolling cannot reach them. */
+    flex-direction: column; flex-wrap: nowrap; justify-content: flex-start; gap: 0; flex: 0 1 auto;
     min-height: 132px; overflow-y: auto; overscroll-behavior: contain;
     border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1);
   }
@@ -245,6 +247,71 @@
   .hero.is-agent-welcome { min-height: 0; overflow-y: auto; justify-content: safe center; }
   .hero.is-agent-welcome .resume-open { margin-top: 4px; }
 }
+/* The front desk's page: "Talk to someone else" opens the picker under it,
+   and the quiet links share one row. */
+.hero-roster-toggle {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 34px; margin-top: 12px; padding: 0 14px;
+  border: 1px solid var(--border); border-radius: 999px; background: transparent;
+  color: var(--fg-1); font: inherit; font-size: 13px; cursor: pointer;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+.hero-roster-toggle svg { transition: transform 180ms ease-out; }
+.hero-roster-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.hero-roster-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hero-roster-toggle + .lead-picker { margin-top: 8px; }
+.lead-picker-scope { margin: 0; color: var(--fg-3); font-size: 12px; text-align: center; }
+.hero-links {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px;
+  width: min(560px, 100%); margin-top: 12px;
+}
+.hero-links > .hero-link {
+  min-height: 34px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: none;
+  color: var(--fg-2); font: inherit; font-size: 13px; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--border);
+  transition: color 150ms ease-out;
+}
+.hero-links > .hero-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hero.is-agent-welcome .hero-links > .resume-open { margin-top: 0; }
+/* Open, the session search takes the row's whole width under the links. */
+.hero-links > .resume { flex: 1 0 100%; margin-top: 4px; }
+@media (hover: hover) {
+  .hero-roster-toggle:hover { background: var(--bg-2); color: var(--fg-0); }
+  .hero-links > .hero-link:hover { color: var(--fg-0); }
+}
+@media (max-width: 859.98px), (pointer: coarse) {
+  .hero-roster-toggle, .hero-links > .hero-link, .hero-links > .resume-open { min-height: 44px; }
+}
+@media (max-width: 640px) {
+  .hero-links { gap: 4px; }
+  .hero-links > .hero-link { padding: 0 6px; }
+  .hero-links > .resume-open { gap: 6px; padding: 0 9px; font-size: 12.5px; }
+}
+
+/* Settings: the front desk, and what it runs on, as one block under one
+   divider: the choice row gives its line up to the block. */
+.front-desk-block { border-bottom: 1px solid var(--border); }
+.front-desk-block > .settings-control-row { border-bottom: 0; padding-bottom: 8px; }
+.front-desk-model {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: end;
+  margin: 0 0 14px;
+}
+.front-desk-model label { display: grid; gap: 5px; min-width: 0; color: var(--fg-2); font-size: 12px; }
+/* The agent form's own selects. */
+.front-desk-model select {
+  width: 100%; min-width: 0; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-0); color: var(--fg-1); font: inherit; font-size: 13px;
+}
+.front-desk-model select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.front-desk-model .settings-note { grid-column: 1 / -1; margin: 0; }
+.front-desk-create { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 14px; }
+.front-desk-create .settings-note { margin: 0; }
+@media (max-width: 520px) {
+  .front-desk-model { grid-template-columns: minmax(0, 1fr); }
+  .front-desk-model select { min-height: 44px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .agent-welcome-toggle, .agent-welcome-toggle svg { transition: none; }
+  .hero-roster-toggle, .hero-roster-toggle svg { transition: none; }
 }

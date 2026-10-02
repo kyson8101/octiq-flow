@@ -1066,6 +1066,20 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     };
   }
 
+  // A chat the front desk opened, whose start a restart cut off and which
+  // could then not be started: the host says so here, with the request it
+  // was opened for, so nothing the person asked for is lost.
+  if (type === "octiq_start_failed") {
+    return {
+      ...state,
+      busy: false,
+      failure: {
+        title: "This chat could not start",
+        detail: asStr(e.message) || "Send a message to start it.",
+      },
+    };
+  }
+
   if (type === "octiq_auto_resume_failed") {
     return {
       ...state,
