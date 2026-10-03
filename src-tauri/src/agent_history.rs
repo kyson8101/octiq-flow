@@ -828,6 +828,7 @@ mod tests {
                 .collect(),
             session_ids: legacy.iter().map(|id| (*id).to_string()).collect(),
             created_at: 1,
+            opening: None,
         }
     }
 

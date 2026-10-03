@@ -5,11 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 const invoke = vi.fn(async (..._args: unknown[]): Promise<unknown> => null);
 vi.mock("./bridge", () => ({ bridge: { invoke: (...args: unknown[]) => invoke(...args) } }));
 import {
-  currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText, newChatLead, sharedProject,
+  CONTINUE_DESK_MAX, continuableDeskChats, currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText,
+  newChatLead, sharedProject,
 } from "./frontDesk";
 import {
   conversationRecipients, createFrontDesk, frontDeskDefaults, frontDeskRefusal, leadSettings, loadFrontDesk,
-  saveFrontDesk, type TeamAgent,
+  loadUnfinishedDeskChats, saveFrontDesk, type TeamAgent, type UnfinishedDeskChat,
 } from "./agentsMode";
 
 const agent = (id: string, over: Partial<TeamAgent> = {}): TeamAgent => ({
@@ -83,6 +84,39 @@ describe("the new-chat screen with a front desk", () => {
     expect(leadSettings(desk)).toMatchObject({ choice: { flag: "haiku" }, effort: "low", access: "read" });
     const changed = { ...desk, agent: "codex" as const, model: "gpt-5.6-luna", effort: "medium" as const };
     expect(leadSettings(changed)).toMatchObject({ choice: { agent: "codex", flag: "gpt-5.6-luna" }, effort: "medium" });
+  });
+});
+
+describe("the way back to an unfinished front-desk conversation", () => {
+  const left = (chatKey: string, createdAt: number, agentId = "desk"): UnfinishedDeskChat => ({
+    chatKey, agentId, createdAt, opening: `asked at ${createdAt}`,
+  });
+
+  it("offers the front desk's own unfinished chats, newest first, at most three", () => {
+    const chats = [left("chat:a", 1), left("chat:b", 4), left("chat:c", 2), left("chat:d", 3)];
+    expect(continuableDeskChats(chats, desk, new Set()).map((c) => c.chatKey))
+      .toEqual(["chat:b", "chat:d", "chat:c"]);
+    expect(CONTINUE_DESK_MAX).toBe(3);
+  });
+
+  it("drops one this page has since seen routed, and another agent's", () => {
+    // Another front desk's chat would reopen under the wrong name.
+    const chats = [left("chat:routed", 3), left("chat:old-desk", 2, "potato"), left("chat:open", 1)];
+    expect(continuableDeskChats(chats, desk, new Set(["chat:routed"])).map((c) => c.chatKey))
+      .toEqual(["chat:open"]);
+  });
+
+  it("offers nothing without a front desk", () => {
+    expect(continuableDeskChats([left("chat:a", 1)], null, new Set())).toEqual([]);
+  });
+
+  it("asks the host, and reads an older server's missing command as none", async () => {
+    invoke.mockClear();
+    invoke.mockResolvedValueOnce([left("chat:a", 1)]);
+    expect(await loadUnfinishedDeskChats()).toEqual([left("chat:a", 1)]);
+    expect(invoke.mock.calls).toEqual([["front_desk_unfinished", {}]]);
+    invoke.mockRejectedValueOnce(new Error("'front_desk_unfinished' is not available on this backend"));
+    expect(await loadUnfinishedDeskChats()).toEqual([]);
   });
 });
 

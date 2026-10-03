@@ -152,6 +152,26 @@ export async function loadFrontDesk(): Promise<TeamAgent | null> {
   return await bridge.invoke<TeamAgent | null>("team_front_desk", {});
 }
 
+/** A front-desk chat the person left before it routed them anywhere
+ *  (`handover::route::unfinished`). */
+export type UnfinishedDeskChat = {
+  chatKey: string;
+  agentId: string;
+  createdAt: number;
+  /** The start of what the person first said, on one line. */
+  opening?: string;
+};
+
+/** The front-desk chats there is still a way back to, newest first. An older
+ *  server has no such command: then there are none. */
+export async function loadUnfinishedDeskChats(): Promise<UnfinishedDeskChat[]> {
+  try {
+    return (await bridge.invoke<UnfinishedDeskChat[]>("front_desk_unfinished", {})) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function saveFrontDesk(id: string | null): Promise<TeamAgent | null> {
   return await bridge.invoke<TeamAgent | null>("team_front_desk_set", { id });
 }

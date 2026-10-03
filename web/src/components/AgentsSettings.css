@@ -261,6 +261,32 @@
 .hero-roster-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .hero-roster-toggle + .lead-picker { margin-top: 8px; }
 .lead-picker-scope { margin: 0; color: var(--fg-3); font-size: 12px; text-align: center; }
+/* The way back to a front-desk conversation left before it routed: a quiet
+   list under the welcome, one line a row. Neutral, never the accent — nothing
+   here is in flight. */
+.hero-continue { width: min(560px, 100%); margin-top: 14px; }
+.hero-continue-label {
+  margin: 0 0 6px; color: var(--fg-3); font-size: 11.5px; font-weight: 600; text-align: center;
+}
+.hero-continue-list {
+  display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none;
+  border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden;
+}
+.hero-continue-list > li + li { border-top: 1px solid var(--border); }
+.hero-continue-row {
+  display: flex; align-items: baseline; gap: 10px; width: 100%; min-height: 38px; padding: 8px 12px;
+  border: 0; background: transparent; color: var(--fg-1); font: inherit; font-size: 13px;
+  text-align: left; cursor: pointer; transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+.hero-continue-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.hero-continue-text { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.hero-continue-time { flex: 0 0 auto; color: var(--fg-3); font-size: 11.5px; }
+@media (hover: hover) {
+  .hero-continue-row:hover { background: var(--bg-2); color: var(--fg-0); }
+}
+@media (max-width: 859.98px), (pointer: coarse) {
+  .hero-continue-row { min-height: 44px; }
+}
 .hero-links {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px;
   width: min(560px, 100%); margin-top: 12px;

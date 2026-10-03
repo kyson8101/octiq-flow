@@ -194,6 +194,27 @@ pub struct FrontDeskChat {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session_ids: Vec<String>,
     pub created_at: i64,
+    /// The start of what the person first said, so the new-chat screen can
+    /// name a conversation they left before it routed them
+    /// (`handover::route::unfinished`). Absent on chats recorded before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening: Option<String>,
+}
+
+/// How much of the person's first message a front-desk chat keeps.
+const FRONT_DESK_OPENING_MAX: usize = 160;
+
+/// The person's first words, on one line and cut on a character boundary.
+fn front_desk_opening(task: &str) -> Option<String> {
+    let line = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        return None;
+    }
+    if line.chars().count() <= FRONT_DESK_OPENING_MAX {
+        return Some(line);
+    }
+    let cut: String = line.chars().take(FRONT_DESK_OPENING_MAX - 1).collect();
+    Some(format!("{}…", cut.trim_end()))
 }
 
 /// One provider session a front-desk chat ran as.
@@ -997,7 +1018,7 @@ pub fn note_front_desk_session(path: &Path, chat_key: &str, provider: ChatAgent,
     let _ = write(path, &stored);
 }
 
-fn record_front_desk_chat(stored: &mut Stored, chat_key: &str, agent_id: &str) {
+fn record_front_desk_chat(stored: &mut Stored, chat_key: &str, agent_id: &str, task: &str) {
     if stored
         .front_desk_chats
         .iter()
@@ -1011,6 +1032,7 @@ fn record_front_desk_chat(stored: &mut Stored, chat_key: &str, agent_id: &str) {
         sessions: Vec::new(),
         session_ids: Vec::new(),
         created_at: now_ms(),
+        opening: front_desk_opening(task),
     });
     let over = stored
         .front_desk_chats
@@ -1883,7 +1905,7 @@ pub fn front_desk_brief(
         return Err("Say what you need first.".into());
     }
     let text = front_desk_text(&stored, &desk, task, projects);
-    record_front_desk_chat(&mut stored, chat_key, &desk.id);
+    record_front_desk_chat(&mut stored, chat_key, &desk.id, task);
     write(path, &stored)?;
     Ok(Some(text))
 }

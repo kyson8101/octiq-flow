@@ -101,6 +101,15 @@ designated, the page is the plain picker above.
   (`handover::recover`). A route already confirmed is finished at that start.
   If it cannot be, the failure and the brief are written into the chat it was
   meant to open.
+- **The way back is on the new-chat screen.** A front-desk chat left before
+  it routed anywhere (a tap on New conversation or another chat) is offered
+  under the front desk's welcome as **Continue with <front desk>**, newest
+  first, at most three, each named by the start of what the person first said
+  (`FrontDeskChat.opening`). The host lists them (`front_desk_unfinished`,
+  `handover::route::unfinished`): the transcript is still on disk and no route
+  from it is confirmed. A pending card or a failed start still counts as
+  unfinished. Only the designated front desk's own chats are offered. After
+  the next start removes the transcript, nothing is offered for it.
 - **It only routes.** Every launch runs read-only and lite. On Claude it has
   no built-in tools, only `mcp__octiq__route_chat`, and its own system prompt.
   Its MCP offers nothing else. Every other agent hook refuses it by identity

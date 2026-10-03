@@ -572,6 +572,60 @@ pub fn failure_text(record: &Handover, error: &str) -> String {
     )
 }
 
+/// A front-desk chat the person left before it opened anyone's chat, for
+/// the way back to it on the new-chat screen. Every list leaves front-desk
+/// chats out, so without this one a conversation left by accident (a tap on
+/// New conversation, another chat) was out of reach until it was gone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Unfinished {
+    pub chat_key: String,
+    pub agent_id: String,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opening: Option<String>,
+}
+
+/// Which front-desk chats are unfinished, newest first: their transcript is
+/// still there (the next start removes it, `recover`), and no route from
+/// them has opened its chat. A pending card, or a confirmed one whose start
+/// failed, still needs the person in that chat, so it counts as unfinished.
+pub fn unfinished(
+    chats: Vec<team::FrontDeskChat>,
+    records: &[Handover],
+    has_transcript: impl Fn(&str) -> bool,
+) -> Vec<Unfinished> {
+    let routed: std::collections::HashSet<&str> = records
+        .iter()
+        .filter(|record| record.kind == Kind::Route && record.status == Status::Confirmed)
+        .map(|record| record.source_chat_key.as_str())
+        .collect();
+    let mut open: Vec<Unfinished> = chats
+        .into_iter()
+        .filter(|chat| !routed.contains(chat.chat_key.as_str()) && has_transcript(&chat.chat_key))
+        .map(|chat| Unfinished {
+            chat_key: chat.chat_key,
+            agent_id: chat.agent_id,
+            created_at: chat.created_at,
+            opening: chat.opening,
+        })
+        .collect();
+    open.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    open
+}
+
+/// `unfinished`, read from the stores.
+pub fn unfinished_desks(store: &Path, team_path: &Path) -> Result<Vec<Unfinished>, String> {
+    let chats = team::front_desk_chats(team_path);
+    let records: Vec<Handover> = {
+        let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+        read(store)?.handovers.into_values().collect()
+    };
+    Ok(unfinished(chats, &records, |key| {
+        crate::transcript::path_for(key).is_some_and(|path| path.exists())
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,6 +900,67 @@ mod tests {
         // Confirming again starts nothing more.
         confirm(&w.store, &record.id, &host).unwrap();
         assert_eq!(host.starts.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_front_desk_chat_is_unfinished_until_a_route_from_it_opens_its_chat() {
+        let w = desk_world();
+        let host = host(&w);
+        let pairs: Vec<(String, String)> = w
+            .projects
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        let opened = |key: &str, words: &str| {
+            team::front_desk_brief(&w.team, key, &w.desk.id, words, &pairs)
+                .unwrap()
+                .expect("a front-desk chat");
+        };
+        opened("chat:routed", "Fix the login bug");
+        opened("chat:pending", "Draft the release notes");
+        opened(
+            "chat:talking",
+            &format!("  Which agent\n  owns the {}", "very long ".repeat(30)),
+        );
+        opened("chat:restarted", "Anything");
+
+        let routed = request(
+            &w.store,
+            &host,
+            source(&w, "chat:routed"),
+            ask("Mango", "r1"),
+        )
+        .unwrap();
+        confirm(&w.store, &routed.id, &host).unwrap();
+        request(
+            &w.store,
+            &host,
+            source(&w, "chat:pending"),
+            ask("Mango", "r2"),
+        )
+        .unwrap();
+
+        let records: Vec<Handover> = read(&w.store).unwrap().handovers.into_values().collect();
+        let open = unfinished(team::front_desk_chats(&w.team), &records, |key| {
+            key != "chat:restarted"
+        });
+        let keys: Vec<&str> = open.iter().map(|u| u.chat_key.as_str()).collect();
+        // Routed and confirmed: done with. No transcript (the start after a
+        // restart removed it): nothing to go back to. A pending card and a
+        // conversation that has not proposed anything yet both still wait.
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert!(
+            keys.contains(&"chat:pending") && keys.contains(&"chat:talking"),
+            "{keys:?}"
+        );
+        assert!(open.iter().all(|u| u.agent_id == w.desk.id));
+        let pending = open.iter().find(|u| u.chat_key == "chat:pending").unwrap();
+        assert_eq!(pending.opening.as_deref(), Some("Draft the release notes"));
+        // One line, cut short, never the whole message.
+        let talking = open.iter().find(|u| u.chat_key == "chat:talking").unwrap();
+        let line = talking.opening.as_deref().unwrap();
+        assert!(line.starts_with("Which agent owns the very long"), "{line}");
+        assert!(line.ends_with('…') && line.chars().count() <= 160, "{line}");
     }
 
     #[test]

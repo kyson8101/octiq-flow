@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { HandoverCards, HandoverLines } from "./HandoverCards";
 import { FrontDeskBlock, RecipientPicker } from "./AgentsSettings";
 import { AgentWelcome } from "./AgentRole";
+import { ContinueDesk } from "./ContinueDesk";
 import { FRONT_DESK_GREETING } from "../lib/frontDesk";
 import { handover } from "../lib/handover.fixture";
 import {
@@ -186,6 +187,33 @@ describe("Talk to the front desk", () => {
     expect(summary).toBe("Tell me what you need and I&#x27;ll open the right agent&#x27;s chat.");
     expect(html).toContain(`<p class="agent-welcome-role">${role}</p>`);
     expect(html).toContain('aria-label="Details about Front desk"');
+  });
+
+  it("offers the way back to a conversation left before it routed", () => {
+    const now = 10 * 60_000;
+    const html = renderToStaticMarkup(
+      <ContinueDesk
+        name="Front desk"
+        now={now}
+        onContinue={() => undefined}
+        chats={[
+          { chatKey: "chat:a", agentId: "agent_desk", createdAt: now - 5 * 60_000, opening: "Draft chapter 3" },
+          { chatKey: "chat:b", agentId: "agent_desk", createdAt: now - 20_000 },
+        ]}
+      />,
+    );
+    expect(html).toContain('aria-label="Continue with Front desk"');
+    expect(html).toContain('<span class="hero-continue-text">Draft chapter 3</span>');
+    expect(html).toContain('<span class="hero-continue-time">5m ago</span>');
+    // A chat recorded before its opening words were kept still has a row.
+    expect(html).toContain('<span class="hero-continue-text">Your earlier conversation</span>');
+    expect(html.match(/<button type="button" class="hero-continue-row"/g)).toHaveLength(2);
+  });
+
+  it("draws nothing when there is nothing to go back to", () => {
+    expect(renderToStaticMarkup(
+      <ContinueDesk name="Front desk" now={1} chats={[]} onContinue={() => undefined} />,
+    )).toBe("");
   });
 
   it("leaves every other agent's line as its role and scope", () => {

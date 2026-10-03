@@ -6,7 +6,27 @@
 // still there, one tap further ("Talk to someone else"). With none, the
 // screen is the plain picker it always was. Pure, so every rule is a test.
 import type { ExecutionPlan } from "./agentExecution";
-import type { TeamAgent } from "./agentsMode";
+import type { TeamAgent, UnfinishedDeskChat } from "./agentsMode";
+
+/** How many unfinished front-desk chats the new-chat screen offers. */
+export const CONTINUE_DESK_MAX = 3;
+
+/** The front-desk chats the new-chat screen offers to go back to: the
+ *  designated desk's own (another agent's would reopen under the wrong
+ *  name), minus any this page has since seen routed (`routedFrom`, the
+ *  source chats of confirmed routes), newest first. Every chat list leaves
+ *  front-desk chats out, so this is the only way back to one. */
+export function continuableDeskChats(
+  unfinished: readonly UnfinishedDeskChat[],
+  desk: TeamAgent | null,
+  routedFrom: ReadonlySet<string>,
+): UnfinishedDeskChat[] {
+  if (!desk) return [];
+  return unfinished
+    .filter((chat) => chat.agentId === desk.id && !routedFrom.has(chat.chatKey))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, CONTINUE_DESK_MAX);
+}
 
 /** The line under "Talk to <front desk>", said to the person. Its role is
  *  written about the person, so it stays under Details. */
