@@ -165,8 +165,12 @@ impl WorkspaceState {
                 workspaces,
                 global_actions: Vec::new(),
             }),
-            file: std::env::temp_dir()
-                .join(format!("octiq-workspaces-{}.json", uuid::Uuid::new_v4())),
+            file: {
+                // Saved nowhere that outlives the test binary.
+                static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+                DIR.get_or_init(|| crate::test_dir::TestDir::new("workspaces").remove_at_exit())
+                    .join(format!("{}.json", uuid::Uuid::new_v4()))
+            },
         }
     }
 
@@ -853,32 +857,24 @@ mod tests {
         set_workspace_icon_impl, set_workspace_initial_impl, set_workspace_shelved_impl,
         set_workspace_sibling_impl, WorkspaceData, WorkspaceState,
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::test_dir::TestDir;
     use std::sync::Mutex;
 
     /// A store backed by a throwaway file, plus a folder path inside a temp dir
-    /// that does NOT exist yet. `label` keeps parallel tests off each other.
-    fn scratch(label: &str) -> (WorkspaceState, std::path::PathBuf) {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let unique = format!(
-            "octiqflow-ws-{}-{}-{}",
-            label,
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
-        let root = std::env::temp_dir().join(unique);
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("temp root");
+    /// that does NOT exist yet. Both go when the returned guard drops.
+    fn scratch(label: &str) -> (WorkspaceState, std::path::PathBuf, TestDir) {
+        let root = TestDir::new(&format!("ws-{label}"));
         let state = WorkspaceState {
             data: Mutex::new(WorkspaceData::default()),
             file: root.join("workspaces.json"),
         };
-        (state, root.join("new").join("nested"))
+        let missing = root.join("new").join("nested");
+        (state, missing, root)
     }
 
     #[test]
     fn creates_the_main_folder_when_it_does_not_exist() {
-        let (state, missing) = scratch("create");
+        let (state, missing, _root) = scratch("create");
         assert!(!missing.exists(), "the test folder must start missing");
 
         let ws = add_workspace_impl(
@@ -894,7 +890,7 @@ mod tests {
 
     #[test]
     fn changing_the_main_folder_creates_it_too() {
-        let (state, missing) = scratch("change");
+        let (state, missing, _root) = scratch("change");
         let ws = add_workspace_impl(&state, "demo".into(), String::new()).expect("create");
 
         set_primary_path_impl(&state, ws.id, missing.to_string_lossy().into_owned())
@@ -908,7 +904,7 @@ mod tests {
 
     #[test]
     fn adding_an_extra_folder_creates_it_too() {
-        let (state, missing) = scratch("extra");
+        let (state, missing, _root) = scratch("extra");
         let ws = add_workspace_impl(&state, "demo".into(), String::new()).expect("create");
 
         add_workspace_path_impl(&state, ws.id, missing.to_string_lossy().into_owned())
@@ -922,7 +918,7 @@ mod tests {
 
     #[test]
     fn refuses_an_extra_folder_that_is_a_file() {
-        let (state, missing) = scratch("extra-file");
+        let (state, missing, _root) = scratch("extra-file");
         std::fs::create_dir_all(missing.parent().unwrap()).unwrap();
         std::fs::write(&missing, b"not a folder").unwrap();
         let ws = add_workspace_impl(&state, "demo".into(), String::new()).expect("create");
@@ -934,7 +930,7 @@ mod tests {
 
     #[test]
     fn refuses_a_main_folder_that_is_a_file() {
-        let (state, missing) = scratch("file");
+        let (state, missing, _root) = scratch("file");
         std::fs::create_dir_all(missing.parent().unwrap()).unwrap();
         std::fs::write(&missing, b"not a folder").unwrap();
 
@@ -949,7 +945,7 @@ mod tests {
 
     #[test]
     fn refuses_a_second_project_whose_label_slugs_the_same() {
-        let (state, _missing) = scratch("dup-create");
+        let (state, _missing, _root) = scratch("dup-create");
         add_workspace_impl(&state, "My App".into(), String::new()).expect("create the first");
 
         // "my-app" is a different string but the same address once slugged —
@@ -961,7 +957,7 @@ mod tests {
 
     #[test]
     fn refuses_a_rename_onto_another_projects_label() {
-        let (state, _missing) = scratch("dup-rename");
+        let (state, _missing, _root) = scratch("dup-rename");
         add_workspace_impl(&state, "My App".into(), String::new()).expect("create the first");
         let second = add_workspace_impl(&state, "Other App".into(), String::new())
             .expect("create the second");
@@ -973,7 +969,7 @@ mod tests {
 
     #[test]
     fn allows_renaming_a_project_to_a_slug_variant_of_its_own_name() {
-        let (state, _missing) = scratch("self-rename");
+        let (state, _missing, _root) = scratch("self-rename");
         let ws = add_workspace_impl(&state, "My App".into(), String::new()).expect("create");
 
         // Same slug as before ("my-app"), but the project being renamed is
@@ -998,7 +994,7 @@ mod tests {
 
     #[test]
     fn reorders_projects_in_the_order_the_browser_supplies() {
-        let (state, _missing) = scratch("reorder");
+        let (state, _missing, _root) = scratch("reorder");
         let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
         let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
         let third = add_workspace_impl(&state, "third".into(), String::new()).unwrap();
@@ -1019,7 +1015,7 @@ mod tests {
 
     #[test]
     fn reordering_active_projects_leaves_shelved_projects_in_place() {
-        let (state, _missing) = scratch("reorder-subset");
+        let (state, _missing, _root) = scratch("reorder-subset");
         let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
         let shelved = add_workspace_impl(&state, "shelved".into(), String::new()).unwrap();
         let third = add_workspace_impl(&state, "third".into(), String::new()).unwrap();
@@ -1038,7 +1034,7 @@ mod tests {
 
     #[test]
     fn refuses_an_invalid_project_order_without_changing_the_store() {
-        let (state, _missing) = scratch("reorder-invalid");
+        let (state, _missing, _root) = scratch("reorder-invalid");
         let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
         let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
 
@@ -1060,7 +1056,7 @@ mod tests {
 
     #[test]
     fn sibling_links_are_symmetric_and_can_be_unlinked() {
-        let (state, _missing) = scratch("siblings");
+        let (state, _missing, _root) = scratch("siblings");
         let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
         let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
 
@@ -1082,7 +1078,7 @@ mod tests {
 
     #[test]
     fn linking_projects_compacts_their_whole_sibling_group() {
-        let (state, _missing) = scratch("sibling-order");
+        let (state, _missing, _root) = scratch("sibling-order");
         let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
         let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
         let third = add_workspace_impl(&state, "third".into(), String::new()).unwrap();
@@ -1117,7 +1113,7 @@ mod tests {
 
     #[test]
     fn deleting_a_project_removes_its_sibling_links() {
-        let (state, _missing) = scratch("sibling-delete");
+        let (state, _missing, _root) = scratch("sibling-delete");
         let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
         let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
         set_workspace_sibling_impl(&state, first.id.clone(), second.id.clone(), true).unwrap();
@@ -1132,7 +1128,7 @@ mod tests {
 
     #[test]
     fn a_project_cannot_link_to_itself() {
-        let (state, _missing) = scratch("sibling-self");
+        let (state, _missing, _root) = scratch("sibling-self");
         let project = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
         let error = set_workspace_sibling_impl(&state, project.id.clone(), project.id, true)
             .expect_err("self-links must be refused");
@@ -1141,7 +1137,7 @@ mod tests {
 
     #[test]
     fn project_initials_are_trimmed_capped_and_clearable() {
-        let (state, _missing) = scratch("initial");
+        let (state, _missing, _root) = scratch("initial");
         let ws = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
 
         set_workspace_initial_impl(&state, ws.id.clone(), " of ".into()).unwrap();
@@ -1157,7 +1153,7 @@ mod tests {
 
     #[test]
     fn project_colors_are_normalized_validated_and_clearable() {
-        let (state, _missing) = scratch("color");
+        let (state, _missing, _root) = scratch("color");
         let ws = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
 
         set_workspace_color_impl(&state, ws.id.clone(), " #12AB34 ".into()).unwrap();
@@ -1174,7 +1170,7 @@ mod tests {
 
     #[test]
     fn project_icons_accept_supported_inline_images_and_can_be_cleared() {
-        let (state, _missing) = scratch("icon");
+        let (state, _missing, _root) = scratch("icon");
         let ws = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
         let icon = "data:image/png;base64,aWNvbg==".to_string();
 
@@ -1195,7 +1191,7 @@ mod tests {
 
     #[test]
     fn set_workspace_env_trims_and_stores_the_pairs() {
-        let (state, _missing) = scratch("env-set");
+        let (state, _missing, _root) = scratch("env-set");
         let ws = add_workspace_impl(&state, "starfall".into(), String::new()).unwrap();
 
         let mut env = std::collections::BTreeMap::new();
@@ -1214,7 +1210,7 @@ mod tests {
 
     #[test]
     fn set_workspace_env_refuses_a_bad_key() {
-        let (state, _missing) = scratch("env-bad-key");
+        let (state, _missing, _root) = scratch("env-bad-key");
         let ws = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
 
         let mut env = std::collections::BTreeMap::new();

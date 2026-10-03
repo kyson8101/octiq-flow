@@ -950,9 +950,7 @@ mod tests {
         assert!(d.recovery.contains("OctiqFlow did not run it"));
 
         // An allow: the card's project is a temp folder.
-        let project =
-            std::env::temp_dir().join(format!("octiq-lifecycle-allow-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&project).unwrap();
+        let project = crate::test_dir::TestDir::new("lifecycle-allow");
         crate::safety_block::remember_claude_launch(
             &chat,
             true,
@@ -992,9 +990,7 @@ mod tests {
         let store = OrchestrationStore::default();
         let (run, attempt) = worker(&store);
         let chat = attempt.worker_chat_key.clone();
-        let project =
-            std::env::temp_dir().join(format!("octiq-lifecycle-judged-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&project).unwrap();
+        let project = crate::test_dir::TestDir::new("lifecycle-judged");
         crate::safety_block::remember_claude_launch(
             &chat,
             true,
@@ -1488,7 +1484,7 @@ mod tests {
         assert_eq!(old.kind, "safety");
         assert!(old.group_id.is_none());
 
-        let root = std::env::temp_dir().join(format!("octiq-lifecycle-old-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("lifecycle-old");
         let path = root.join("state.json");
         let store = OrchestrationStore::load(path.clone());
         let (run, attempt) = worker(&store);
@@ -1526,7 +1522,6 @@ mod tests {
             decision.recovery
         );
         assert_ne!(decision.recovery, crate::safety_block::outage_guidance());
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1608,7 +1603,7 @@ mod tests {
 
     #[test]
     fn restart_invalidates_services_and_native_cards_without_reopening_finished_tasks() {
-        let root = std::env::temp_dir().join(format!("octiq-lifecycle-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("lifecycle");
         let path = root.join("state.json");
         let store = OrchestrationStore::load(path.clone());
         let (run, attempt) = worker(&store);
@@ -1644,7 +1639,6 @@ mod tests {
         assert_eq!(snapshot.services[0].checked_at, None);
         assert_eq!(snapshot.native_decisions[0].status, "expired");
         assert_eq!(snapshot.native_decisions[0].continuation, "unavailable");
-        fs::remove_dir_all(root).unwrap();
     }
 
     fn service_notices(store: &OrchestrationStore, run: &Run) -> Vec<inbox::Notification> {
@@ -1746,7 +1740,7 @@ mod tests {
 
     #[test]
     fn a_restart_tells_an_active_run_only_what_changed_about_its_service() {
-        let root = std::env::temp_dir().join(format!("octiq-lifecycle-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("lifecycle");
         let path = root.join("state.json");
         let store = OrchestrationStore::load(path.clone());
         let (run, attempt) = worker(&store);
@@ -1793,6 +1787,5 @@ mod tests {
         store.check_services_with(410_001, |_| true).unwrap();
         assert_eq!(service_notices(&store, &run).len(), 3);
         drop(store);
-        fs::remove_dir_all(root).unwrap();
     }
 }

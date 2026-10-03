@@ -7,7 +7,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { previewImage } = require("./preview.cjs");
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", "base64");
-const setup = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-image-test-")); const source = path.join(root, "source.png"); fs.writeFileSync(source, PNG); return { root, source }; };
+const setup = (t) => { const root = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-image-test-")); t.after(() => fs.rmSync(root, { recursive: true, force: true })); const source = path.join(root, "source.png"); fs.writeFileSync(source, PNG); return { root, source }; };
 
 function mcp(root, key, method, params, scriptArgs = []) {
   return new Promise((resolve, reject) => {
@@ -21,8 +21,8 @@ function mcp(root, key, method, params, scriptArgs = []) {
   });
 }
 
-test("snapshots preserve overwritten sources and isolate conversation slots", () => {
-  const { root, source } = setup();
+test("snapshots preserve overwritten sources and isolate conversation slots", (t) => {
+  const { root, source } = setup(t);
   const first = previewImage({ path: source, slot: "hero" }, root, "chat:one");
   fs.writeFileSync(source, Buffer.concat([PNG, Buffer.from("revision")]));
   const next = previewImage({ path: source, slot: "hero", title: "Revision" }, root, "chat:one");
@@ -35,8 +35,8 @@ test("snapshots preserve overwritten sources and isolate conversation slots", ()
   assert.equal(fs.statSync(first.path).mode & 0o777, 0o600);
 });
 
-test("rejects invalid paths, formats, oversized files and redirected stores", () => {
-  const { root, source } = setup();
+test("rejects invalid paths, formats, oversized files and redirected stores", (t) => {
+  const { root, source } = setup(t);
   assert.throws(() => previewImage({ path: source }, root, "chat:../two"));
   assert.throws(() => previewImage({ path: "relative.png" }, root, "chat:one"));
   assert.throws(() => previewImage({ path: root }, root, "chat:one"));
@@ -51,8 +51,8 @@ test("rejects invalid paths, formats, oversized files and redirected stores", ()
   assert.throws(() => previewImage({ path: source }, root, "chat:one"), /symlink/);
 });
 
-test("stdio MCP discovery and concurrent publishing preserve every image", async () => {
-  const { root, source } = setup();
+test("stdio MCP discovery and concurrent publishing preserve every image", async (t) => {
+  const { root, source } = setup(t);
   const standalone = await mcp(root, "", "tools/list");
   assert.ok(!standalone.result.tools.some(tool => tool.name === "preview_image"));
   const bound = await mcp(root, "chat:one", "tools/list");
@@ -135,9 +135,9 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   assert.equal(fs.readdirSync(path.join(root, "previews/one")).filter(file => file.endsWith(".json")).length, 8);
 });
 
-test("HTML accepts file or inline source and snapshots revisions without altering the document", async () => {
+test("HTML accepts file or inline source and snapshots revisions without altering the document", async (t) => {
   const { previewHtml } = require("./preview.cjs");
-  const { root } = setup();
+  const { root } = setup(t);
   const html = '<!doctype html><html><body><h1>Review 中文</h1><script>window.ready = true;</script></body></html>';
   const source = path.join(root, "review.html");
   fs.writeFileSync(source, html);
@@ -161,9 +161,9 @@ test("HTML accepts file or inline source and snapshots revisions without alterin
   assert.equal(denied.result.isError, true);
 });
 
-test("HTML rejects ambiguous, empty, oversized and non-UTF-8 inputs", () => {
+test("HTML rejects ambiguous, empty, oversized and non-UTF-8 inputs", (t) => {
   const { previewHtml } = require("./preview.cjs");
-  const { root, source } = setup();
+  const { root, source } = setup(t);
   for (const args of [{}, { html: " " }, { html: "a\0b" }, { html: false }, { path: source }, { path: "relative.html" }, { path: source, html: "<p>Both</p>" }, { html: "中".repeat(700_000) }]) {
     assert.throws(() => previewHtml(args, root, "chat:one"));
   }

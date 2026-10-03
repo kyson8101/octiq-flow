@@ -1091,8 +1091,7 @@ mod tests {
     #[test]
     fn corrupt_and_future_stores_are_never_silently_replaced() {
         let _guard = TEST_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("octiq-pr-store-{}", Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("pr-store");
         let path = dir.join("store.json");
         fs::write(&path, b"not json").unwrap();
         assert!(read_store(&path).unwrap_err().contains("could not be read"));
@@ -1113,7 +1112,6 @@ mod tests {
         assert!(read_store(&path)
             .unwrap_err()
             .contains("unsupported version"));
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

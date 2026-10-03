@@ -460,8 +460,8 @@ mod tests {
     }
     #[test]
     fn reload_preserves_inbox_and_sanitized_resume_context() {
-        let path = std::env::temp_dir().join(format!("octiq-inbox-{}.json", compact_id()));
-        let store = OrchestrationStore::load(path.clone());
+        let path = crate::test_dir::TestPath::new("inbox", "orchestrations.json");
+        let store = OrchestrationStore::load(path.to_path_buf());
         let run = run(&store);
         let worker = running_worker(&store, &run);
         ping(&store, &run, &worker, "question", "survive restart");
@@ -481,7 +481,7 @@ mod tests {
             .unwrap();
         let saved = fs::read_to_string(&path).unwrap();
         assert!(!saved.contains("must not persist"));
-        let loaded = OrchestrationStore::load(path.clone());
+        let loaded = OrchestrationStore::load(path.to_path_buf());
         assert_eq!(
             loaded
                 .snapshot(None)
@@ -543,7 +543,7 @@ mod tests {
     }
     #[test]
     fn version_two_migrates_without_losing_existing_runs() {
-        let path = std::env::temp_dir().join(format!("octiq-inbox-v2-{}.json", compact_id()));
+        let path = crate::test_dir::TestPath::new("inbox-v2", "orchestrations.json");
         let store = OrchestrationStore::default();
         let run = run(&store);
         let mut value = serde_json::to_value(&store.inner.lock().unwrap().data).unwrap();
@@ -551,7 +551,7 @@ mod tests {
         value.as_object_mut().unwrap().remove("notifications");
         value.as_object_mut().unwrap().remove("resumeContexts");
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        let loaded = OrchestrationStore::load(path.clone());
+        let loaded = OrchestrationStore::load(path.to_path_buf());
         assert_eq!(loaded.snapshot(None).unwrap().runs[0].id, run.id);
         assert!(loaded.snapshot(None).unwrap().notifications.is_empty());
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

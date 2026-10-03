@@ -459,10 +459,8 @@ pub(crate) fn test_origin(key: &str) -> QuestionOrigin {
 mod tests {
     use super::*;
 
-    fn path() -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("octiq-question-{}", uuid::Uuid::new_v4()))
-            .join("questions.json")
+    fn path() -> crate::test_dir::TestPath {
+        crate::test_dir::TestPath::new("question", "questions.json")
     }
     fn questions() -> Vec<Question> {
         ["Which database?", "Which region?"]
@@ -486,14 +484,14 @@ mod tests {
     #[tokio::test]
     async fn offline_questions_survive_restart_and_a_late_answer() {
         let path = path();
-        let store = QuestionStore::load(path.clone());
+        let store = QuestionStore::load(path.to_path_buf());
         let (id, _rx) = store
             .insert(test_origin("chat:offline"), questions())
             .unwrap();
         store.detach(&id); // Same transition as a timed-out or cancelled HTTP future.
         assert_eq!(store.pending().unwrap().len(), 2);
         drop(store);
-        let restored = QuestionStore::load(path.clone());
+        let restored = QuestionStore::load(path.to_path_buf());
         restored.answer(&answers(&restored)).unwrap();
         let ready = restored.outbox().unwrap();
         assert_eq!(ready.len(), 1);
@@ -503,7 +501,7 @@ mod tests {
         assert!(ready[0]
             .continuation()
             .contains("Q2: Which region?\nA2: Asia"));
-        let after_answer_restart = QuestionStore::load(path);
+        let after_answer_restart = QuestionStore::load(path.to_path_buf());
         assert_eq!(
             after_answer_restart.outbox().unwrap()[0].turn_id(),
             ready[0].turn_id()
@@ -513,7 +511,8 @@ mod tests {
 
     #[tokio::test]
     async fn live_answers_return_once_and_never_enter_the_resume_outbox() {
-        let store = QuestionStore::load(path());
+        let path = path();
+        let store = QuestionStore::load(path.to_path_buf());
         let (id, rx) = store.insert(test_origin("chat:live"), questions()).unwrap();
         let answers = answers(&store);
         store.answer(&answers).unwrap();
@@ -534,7 +533,8 @@ mod tests {
 
     #[tokio::test]
     async fn native_answers_keep_question_order_and_return_only_once() {
-        let store = QuestionStore::load(path());
+        let path = path();
+        let store = QuestionStore::load(path.to_path_buf());
         let (id, rx) = store
             .insert(test_origin("chat:native"), questions())
             .unwrap();
@@ -578,7 +578,7 @@ mod tests {
     #[tokio::test]
     async fn failed_storage_keeps_the_question_and_refuses_a_false_receipt() {
         let path = path();
-        let store = QuestionStore::load(path.clone());
+        let store = QuestionStore::load(path.to_path_buf());
         store.insert(test_origin("chat:disk"), questions()).unwrap();
         let answers = answers(&store);
         // Make the final atomic rename impossible without changing permissions
@@ -592,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn manual_cancellation_survives_restart_and_rejects_late_answers() {
         let path = path();
-        let store = QuestionStore::load(path.clone());
+        let store = QuestionStore::load(path.to_path_buf());
         let (id, rx) = store
             .insert(test_origin("chat:stopped"), questions())
             .unwrap();
@@ -600,7 +600,7 @@ mod tests {
         store.cancel_chat("chat:stopped").unwrap();
         assert!(rx.await.is_err());
         assert!(store.take_tool(&id).unwrap().unwrap().contains("cancelled"));
-        let restored = QuestionStore::load(path);
+        let restored = QuestionStore::load(path.to_path_buf());
         assert!(restored.answer(&answers).is_err());
         assert!(restored.pending().unwrap().is_empty());
         assert!(restored.outbox().unwrap().is_empty());
@@ -608,7 +608,8 @@ mod tests {
 
     #[tokio::test]
     async fn native_cancellation_returns_an_empty_answer_set() {
-        let store = QuestionStore::load(path());
+        let path = path();
+        let store = QuestionStore::load(path.to_path_buf());
         let (id, rx) = store
             .insert(test_origin("chat:native-cancelled"), questions())
             .unwrap();
@@ -622,7 +623,7 @@ mod tests {
         let path = path();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "broken").unwrap();
-        let store = QuestionStore::load(path.clone());
+        let store = QuestionStore::load(path.to_path_buf());
         assert!(store.pending().is_err());
         assert!(store
             .insert(test_origin("chat:broken"), questions())

@@ -4,12 +4,11 @@ use std::sync::Mutex as StdMutex;
 use super::*;
 use crate::git_ops::PreparedWorkspace;
 use crate::team::TeamDraft;
+use crate::test_dir::TestDir;
 
-/// A throwaway folder for one test.
-pub(crate) fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("octiq-handover-{tag}-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&dir).unwrap();
-    crate::paths::canonicalize(&dir).unwrap()
+/// A throwaway folder for one test, removed when it drops.
+pub(crate) fn scratch(tag: &str) -> TestDir {
+    TestDir::new(&format!("handover-{tag}")).canonicalized()
 }
 
 pub(crate) fn git(dir: &Path, args: &[&str]) {
@@ -87,7 +86,7 @@ pub(crate) fn register(
 }
 
 struct World {
-    root: PathBuf,
+    root: TestDir,
     store: PathBuf,
     team: PathBuf,
     app: PathBuf,
@@ -201,7 +200,7 @@ impl FakeHost {
         Self {
             projects: w.projects.clone(),
             team: w.team.clone(),
-            root: w.root.clone(),
+            root: w.root.to_path_buf(),
             ..Self::default()
         }
     }

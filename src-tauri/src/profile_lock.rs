@@ -148,11 +148,8 @@ mod tests {
             .stdout(Stdio::null())
             .spawn()
             .unwrap();
-        let path = std::env::temp_dir().join(format!(
-            "octiq-owner-test-{}-{}.lock",
-            std::process::id(),
-            child.id()
-        ));
+        let dir = crate::test_dir::TestDir::new("owner-test");
+        let path = dir.join("profile.lock");
         let owner = Owner {
             pid: child.id(),
             kind: "server".into(),
@@ -166,7 +163,6 @@ mod tests {
         assert!(child.wait().unwrap().success());
         let exited_owner = current_owner_at(&path);
         let new_claim = acquire_at(&path, "server");
-        let _ = fs::remove_file(&path);
 
         assert_eq!(live_owner, Some(owner.clone()));
         assert_eq!(live_claim, Err(owner));

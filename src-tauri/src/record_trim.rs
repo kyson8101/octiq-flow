@@ -266,8 +266,7 @@ mod tests {
 
     #[test]
     fn pruning_keeps_every_line_in_its_place() {
-        let dir = std::env::temp_dir().join(format!("octiq-record-trim-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("record-trim");
         let path = dir.join("chat_master.jsonl");
         let small = codex_read(8_000).to_string();
         let lines = [
@@ -297,6 +296,5 @@ mod tests {
         assert!(!text.ends_with('\n'));
 
         assert_eq!(prune_record(&path).unwrap(), None);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

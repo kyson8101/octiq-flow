@@ -55,6 +55,8 @@ mod safety_block;
 mod sandbox;
 mod team;
 mod team_tools;
+#[cfg(test)]
+mod test_dir;
 mod transcript;
 mod usage_limits;
 mod web;

@@ -543,15 +543,13 @@ pub fn remove_validation(plan: &WorkspacePlan, path: &str) -> Result<(), String>
 pub(crate) mod tests {
     use super::*;
     pub(crate) struct Repo {
-        pub dir: std::path::PathBuf,
+        pub dir: crate::test_dir::TestDir,
         pub root: String,
     }
     impl Repo {
         pub(crate) fn new() -> Self {
-            let dir =
-                std::env::temp_dir().join(format!("octiq-workflow-test-{}", uuid::Uuid::new_v4()));
+            let dir = crate::test_dir::TestDir::new("workflow-test").canonicalized();
             std::fs::create_dir_all(dir.join("repo")).unwrap();
-            let dir = dir.canonical().unwrap();
             let root = dir.join("repo").to_string_lossy().into_owned();
             git(&root, &["init", "-b", "main"]).unwrap();
             git(&root, &["config", "user.name", "Workflow test"]).unwrap();
@@ -581,12 +579,6 @@ pub(crate) mod tests {
             self.git(&["push", "-u", "origin", "main"]);
         }
     }
-    impl Drop for Repo {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
     #[test]
     fn stable_allocation_preserves_primary_and_disables_inherited_tracking() {
         let repo = Repo::new();

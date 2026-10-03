@@ -279,14 +279,12 @@ pub fn difference(recorded: &Fingerprint, live: &Fingerprint) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::Canonical;
 
-    fn repo() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("octiq-fp-{}", uuid::Uuid::new_v4().simple()));
-        fs::create_dir_all(&dir).unwrap();
+    fn repo() -> crate::test_dir::TestDir {
+        let dir = crate::test_dir::TestDir::new("fp").canonicalized();
         assert!(git(&dir, &["init", "-q"]).is_some());
         commit(&dir, "first");
-        dir.canonical().unwrap()
+        dir
     }
 
     fn commit(dir: &Path, message: &str) {
@@ -340,7 +338,6 @@ mod tests {
         let checked = now(&dir);
         fs::write(dir.join("new.txt"), "b").unwrap();
         assert!(difference(&checked, &now(&dir)).is_some());
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -355,7 +352,6 @@ mod tests {
         live.fixture_version = Some("v2".into());
         let fixture = difference(&checked, &live).unwrap();
         assert!(fixture.contains("v1 to v2"), "{fixture}");
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -392,13 +388,11 @@ mod tests {
         assert!(difference(&checked, &live)
             .unwrap()
             .starts_with(&api.to_string_lossy().into_owned()));
-        fs::remove_dir_all(own).unwrap();
-        fs::remove_dir_all(api).unwrap();
     }
 
     #[test]
     fn the_recipe_digest_covers_every_recipe_file_and_the_env_file() {
-        let dir = std::env::temp_dir().join(format!("octiq-rd-{}", uuid::Uuid::new_v4().simple()));
+        let dir = crate::test_dir::TestDir::new("rd");
         let octiq = dir.join(".octiq");
         fs::create_dir_all(octiq.join("kit")).unwrap();
         fs::write(octiq.join("sandbox.json"), "{}").unwrap();
@@ -412,6 +406,5 @@ mod tests {
         assert_ne!(first, second);
         fs::write(&env, "TOKEN=b").unwrap();
         assert_ne!(second, recipe_digest(&octiq, Some(&env)).unwrap());
-        fs::remove_dir_all(dir).unwrap();
     }
 }

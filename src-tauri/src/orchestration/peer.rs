@@ -890,7 +890,7 @@ mod tests {
 
     #[test]
     fn context_paths_stay_inside_the_workspace() {
-        let root = std::env::temp_dir().join(format!("octiq-peer-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("peer");
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/a.rs"), "").unwrap();
         let cwd = root.to_string_lossy().into_owned();
@@ -906,7 +906,6 @@ mod tests {
             .unwrap_err()
             .contains("does not exist"));
         assert!(context_paths(&cwd, &vec!["src".to_string(); MAX_CONTEXT_PATHS + 1]).is_err());
-        let _ = fs::remove_dir_all(root);
     }
 
     fn worker_on_a_team(store: &OrchestrationStore) -> Attempt {
@@ -1124,7 +1123,7 @@ mod tests {
 
     #[test]
     fn an_ask_cut_off_by_a_restart_is_failed_on_load() {
-        let dir = std::env::temp_dir().join(format!("octiq-peer-store-{}", compact_id()));
+        let dir = crate::test_dir::TestDir::new("peer-store");
         let path = dir.join("orchestrations.json");
         let store = OrchestrationStore::load(path.clone());
         let attempt = worker_on_a_team(&store);
@@ -1144,7 +1143,6 @@ mod tests {
                 answered("late")
             },
         );
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[cfg(unix)]
@@ -1358,8 +1356,7 @@ mod tests {
     fn the_windows_delivery_hands_every_one_shot_line_over_whole() {
         // Forward slashes, which Git Bash reads as readily as `\`.
         let posix = |p: &Path| p.display().to_string().replace('\\', "/");
-        let dir = std::env::temp_dir().join(format!("octiq-oneshot-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("oneshot");
         let stub = dir.join("agent");
         fs::write(
             &stub,
@@ -1412,7 +1409,6 @@ mod tests {
                 "{name}: no OCTIQ_ variable, the line's included"
             );
         }
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[cfg(unix)]

@@ -518,6 +518,13 @@ fn main() -> ExitCode {
     }
 }
 
+// The library's self-removing test folder; this binary does not link the
+// library, so it compiles its own copy.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../test_dir.rs"]
+mod test_dir;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,8 +617,7 @@ mod tests {
     // is already satisfied before the next is called).
     #[test]
     fn ask_recv_reply_round_trip_via_filesystem() {
-        let root = std::env::temp_dir().join(format!("octiq-bus-test-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("bus-test");
 
         // 1) Claude asks Codex. run_ask would block on the reply, so instead
         //    write the request directly the same way run_ask does, then assert
@@ -645,8 +651,6 @@ mod tests {
         // current.json is consumed so a stray second reply has nothing to send.
         assert!(!current_path(&root, "codex").exists());
         assert!(run_reply(&root, "codex", "again").is_err());
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -663,8 +667,7 @@ mod tests {
 
     #[test]
     fn recv_drops_a_request_with_a_traversal_sender_and_keeps_waiting() {
-        let root = std::env::temp_dir().join(format!("octiq-bus-test-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("bus-test");
         // A malicious request whose `from` would escape the bus on reply.
         let ts = now_millis();
         write_json_atomic(
@@ -681,23 +684,18 @@ mod tests {
         assert!(run_recv(&root, "codex", 1).is_err());
         // No current.json was written (nothing was claimed).
         assert!(!current_path(&root, "codex").exists());
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn ask_rejects_a_traversal_target() {
-        let root = std::env::temp_dir().join(format!("octiq-bus-test-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("bus-test");
         assert!(run_ask(&root, "claude", "../../etc", "hi", 1).is_err());
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn recv_times_out_when_no_task_arrives() {
-        let root = std::env::temp_dir().join(format!("octiq-bus-test-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("bus-test");
         // timeout 1s, empty inbox -> Err, and quickly.
         assert!(run_recv(&root, "lonely", 1).is_err());
-        let _ = fs::remove_dir_all(&root);
     }
 }

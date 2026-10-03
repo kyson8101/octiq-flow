@@ -7112,10 +7112,8 @@ mod tests {
 
     /// An outage card in `key`'s chat, launched from a scratch project, with
     /// its "Always allow in this project" rule already written.
-    fn allowed_outage_card(key: &str) -> (String, std::path::PathBuf) {
-        let project =
-            std::env::temp_dir().join(format!("octiq-outage-send-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&project).unwrap();
+    fn allowed_outage_card(key: &str) -> (String, crate::test_dir::TestDir) {
+        let project = crate::test_dir::TestDir::new("outage-send");
         crate::safety_block::remember_claude_launch(
             key,
             true,
@@ -7276,7 +7274,6 @@ mod tests {
 
         end_process(&manager, &key).expect("end the stand-in");
         crate::transcript::forget(&key);
-        std::fs::remove_dir_all(project).unwrap();
     }
 
     #[test]
@@ -8571,10 +8568,8 @@ mod question_delivery_tests {
 
     #[test]
     fn saved_answers_resume_after_a_server_restart_without_a_browser() {
-        let path = std::env::temp_dir()
-            .join(format!("octiq-question-recovery-{}", uuid::Uuid::new_v4()))
-            .join("questions.json");
-        let manager = Arc::new(ChatManager::with_saved_questions(path.clone()));
+        let path = crate::test_dir::TestPath::new("question-recovery", "questions.json");
+        let manager = Arc::new(ChatManager::with_saved_questions(path.to_path_buf()));
         let key = format!("question-restart-{}", uuid::Uuid::new_v4());
         manager
             .questions
@@ -8592,7 +8587,7 @@ mod question_delivery_tests {
             }])
             .unwrap();
         drop(manager);
-        let restored = Arc::new(ChatManager::with_saved_questions(path));
+        let restored = Arc::new(ChatManager::with_saved_questions(path.to_path_buf()));
         deliver_question_answers_with(restored.clone(), |record| {
             assert_eq!(record.origin.start.agent, ChatAgent::Codex);
             assert_eq!(record.origin.start.cwd, "/tmp");

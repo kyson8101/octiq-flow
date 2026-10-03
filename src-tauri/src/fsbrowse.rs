@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn listing_marks_hidden_entries_without_removing_them() {
-        let dir = std::env::temp_dir().join(format!("octiq-list-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dir::TestDir::new("list");
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::create_dir(dir.join("project")).unwrap();
         std::fs::write(dir.join(".env"), "").unwrap();
@@ -402,13 +402,11 @@ mod tests {
         let file = entries.iter().find(|entry| entry.name == ".env").unwrap();
         assert!(!file.is_dir && file.is_hidden);
         assert_eq!(serde_json::to_value(hidden).unwrap()["is_hidden"], true);
-
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn browser_video_files_are_classified_for_inline_playback() {
-        let path = std::env::temp_dir().join(format!("octiq-video-{}.mp4", uuid::Uuid::new_v4()));
+        let path = crate::test_dir::TestPath::new("video", "clip.mp4");
         std::fs::write(&path, [0_u8, 1, 2, 3]).unwrap();
 
         let preview = super::read_file_preview(path.to_string_lossy().into_owned()).unwrap();
@@ -416,12 +414,12 @@ mod tests {
         assert_eq!(preview.kind, "video");
         assert_eq!(preview.size, 4);
         assert!(preview.content.is_empty());
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn app_bundles_offer_native_opening_without_reading_the_directory() {
-        let dir = std::env::temp_dir().join(format!("octiq-native-{}.app", uuid::Uuid::new_v4()));
+        let scratch = crate::test_dir::TestDir::new("native");
+        let dir = scratch.join("Native.app");
         std::fs::create_dir(&dir).unwrap();
         let preview = super::read_file_preview(dir.to_string_lossy().into_owned()).unwrap();
         assert_eq!(preview.kind, "binary");
@@ -432,8 +430,7 @@ mod tests {
 
     #[test]
     fn stat_paths_reports_a_modified_time_only_for_files_that_exist() {
-        let dir = std::env::temp_dir().join(format!("octiq-stat-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("stat-test");
         let file = dir.join("stamped.txt");
         std::fs::write(&file, "x").unwrap();
         let file_s = file.to_string_lossy().into_owned();
@@ -505,9 +502,7 @@ mod tests {
         {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("octiq-search-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("search-test");
         std::fs::write(dir.join("needle.txt"), "nothing here\n").unwrap();
         std::fs::write(dir.join("other.txt"), "first\nholds a needle inside\n").unwrap();
         let roots = vec![dir.to_string_lossy().into_owned()];
@@ -543,9 +538,7 @@ mod tests {
         {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("octiq-quickopen-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("quickopen-test");
         std::fs::write(dir.join("a.txt"), "a").unwrap();
         std::fs::write(dir.join("b.txt"), "b").unwrap();
         let roots = vec![dir.to_string_lossy().into_owned()];
@@ -564,9 +557,7 @@ mod tests {
 
     #[test]
     fn resolve_path_handles_absolute_relative_tilde_and_missing() {
-        let dir =
-            std::env::temp_dir().join(format!("octiq-resolve-path-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("resolve-path-test");
         let file = dir.join("hit.txt");
         std::fs::write(&file, "x").unwrap();
         let dir_s = dir.to_string_lossy().into_owned();

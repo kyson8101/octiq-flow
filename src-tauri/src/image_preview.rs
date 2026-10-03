@@ -110,7 +110,7 @@ mod tests {
     use super::*;
     #[test]
     fn snapshots_are_scoped_and_untrusted_paths_are_ignored() {
-        let root = std::env::temp_dir().join(format!("octiq-preview-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dir::TestDir::new("preview");
         let dir = root.join("previews").join("one");
         std::fs::create_dir_all(&dir).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
@@ -130,8 +130,7 @@ mod tests {
     }
     #[test]
     fn html_metadata_requires_a_matching_kind_and_remains_chat_scoped() {
-        let root =
-            std::env::temp_dir().join(format!("octiq-html-preview-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dir::TestDir::new("html-preview");
         let dir = root.join("previews").join("one");
         std::fs::create_dir_all(&dir).unwrap();
         let id = uuid::Uuid::new_v4().to_string();

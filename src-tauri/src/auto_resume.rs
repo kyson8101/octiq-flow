@@ -554,8 +554,7 @@ mod tests {
 
     #[test]
     fn one_chat_gets_one_durable_one_shot_per_reset() {
-        let dir =
-            std::env::temp_dir().join(format!("octiq-auto-resume-test-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dir::TestDir::new("auto-resume-test");
         let path = dir.join("auto-resumes.json");
         let store = Store::load(path.clone());
         let first = store
@@ -599,8 +598,7 @@ mod tests {
 
     #[test]
     fn a_cancel_tombstone_survives_restart_and_can_never_be_claimed() {
-        let dir =
-            std::env::temp_dir().join(format!("octiq-auto-cancel-test-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dir::TestDir::new("auto-cancel-test");
         let path = dir.join("auto-resumes.json");
         let store = Store::load(path.clone());
         store

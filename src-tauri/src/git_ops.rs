@@ -615,10 +615,10 @@ mod tests {
 
     /// A throwaway repo with one commit and a `user.*` identity, so `git commit`
     /// works on a machine with no global git config.
-    fn temp_repo(name: &str) -> Option<std::path::PathBuf> {
-        let dir =
-            std::env::temp_dir().join(format!("octiq-gitops-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    /// The repository sits one level down, so the `.worktrees` folder git
+    /// work puts beside it goes when the guard drops too.
+    fn temp_repo(name: &str) -> Option<crate::test_dir::TestPath> {
+        let dir = crate::test_dir::TestPath::new(&format!("gitops-test-{name}"), "repo");
         std::fs::create_dir_all(&dir).ok()?;
         let git = |args: &[&str]| {
             Command::new("git")
@@ -671,8 +671,6 @@ mod tests {
         // …and the file that was not ticked is still an uncommitted change.
         let status = run_git(&root, &["status", "--porcelain"]).unwrap();
         assert_eq!(status.trim(), "?? untouched.txt");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -703,8 +701,6 @@ mod tests {
         // It is still staged, exactly as the user left it.
         let staged = run_git(&root, &["diff", "--cached", "--name-only"]).unwrap();
         assert_eq!(staged.trim(), "gone.txt");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -720,8 +716,6 @@ mod tests {
         // Neither attempt created a commit.
         let log = run_git(&root, &["log", "--oneline"]).unwrap();
         assert_eq!(log.lines().count(), 1);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -756,8 +750,6 @@ mod tests {
             run_git(&root, &["status", "--porcelain"]).unwrap().trim(),
             ""
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -781,8 +773,6 @@ mod tests {
                 .trim(),
             "feature/x"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -806,8 +796,6 @@ mod tests {
             run_git(&root, &["status", "--porcelain"]).unwrap().trim(),
             "M kept.txt"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -817,8 +805,6 @@ mod tests {
         };
         let err = git_switch_branch(dir.to_string_lossy().into_owned(), "   ".into()).unwrap_err();
         assert!(err.contains("Pick a branch"), "{err}");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -830,8 +816,6 @@ mod tests {
         let err = git_switch_branch(root, "no-such-branch".into()).unwrap_err();
         // git's own words, not ours — the panel shows this line verbatim.
         assert!(err.contains("no-such-branch"), "{err}");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -860,8 +844,6 @@ mod tests {
         assert_eq!(prepared.branch, "feature/selected");
         assert!(!prepared.is_worktree);
         assert_eq!(current_branch(&prepared.cwd).unwrap(), "feature/selected");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -899,7 +881,6 @@ mod tests {
         if let Some(group) = Path::new(&worktree).ancestors().nth(2) {
             let _ = std::fs::remove_dir_all(group);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -909,8 +890,6 @@ mod tests {
         };
         let err = git_pull(dir.to_string_lossy().into_owned(), "rebase".into()).unwrap_err();
         assert!(err.contains("Push it first"), "{err}");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -920,7 +899,5 @@ mod tests {
         };
         let err = git_push(dir.to_string_lossy().into_owned()).unwrap_err();
         assert!(err.contains("no remote"), "{err}");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

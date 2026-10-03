@@ -104,11 +104,8 @@ fn append(path: &Path, entry: &Value) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn temp_file(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("octiq-diagnostics-{name}-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir.join("agent-diagnostics.jsonl")
+    fn temp_file(name: &str) -> crate::test_dir::TestPath {
+        crate::test_dir::TestPath::new(&format!("diagnostics-{name}"), "agent-diagnostics.jsonl")
     }
 
     #[test]

@@ -563,10 +563,8 @@ mod tests {
 
     #[test]
     fn a_front_desk_chat_is_in_no_list_no_search_and_no_resume_list() {
-        let team = std::env::temp_dir()
-            .join(format!("octiq-desk-{}", uuid::Uuid::new_v4()))
-            .join("team.json");
-        let _team = crate::team::use_test_path(team.clone());
+        let team = crate::test_dir::TestPath::new("desk", "team.json");
+        let _team = crate::team::use_test_path(team.to_path_buf());
         let desk = crate::team::create_front_desk(&team, Default::default()).unwrap();
         let desk_id = uuid::Uuid::new_v4().to_string();
         let plain_id = uuid::Uuid::new_v4().to_string();

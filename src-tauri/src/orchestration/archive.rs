@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn archive_and_restore_survive_reload_without_changing_task_or_workspace() {
-        let dir = std::env::temp_dir().join(format!("octiq-archive-{}", compact_id()));
+        let dir = crate::test_dir::TestDir::new("archive");
         let path = dir.join("orchestrations.json");
         let store = OrchestrationStore::load(path.clone());
         let run = run(&store);
@@ -273,7 +273,6 @@ mod tests {
             .unwrap()
             .archived_at
             .is_none());
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -453,7 +452,7 @@ mod tests {
 
     #[test]
     fn run_archive_needs_a_stopped_run_keeps_its_evidence_and_restores_after_reload() {
-        let dir = std::env::temp_dir().join(format!("octiq-run-archive-{}", compact_id()));
+        let dir = crate::test_dir::TestDir::new("run-archive");
         let path = dir.join("orchestrations.json");
         let store = OrchestrationStore::load(path.clone());
         let run = run(&store);
@@ -592,6 +591,5 @@ mod tests {
             .unwrap()
             .archived_at
             .is_none());
-        fs::remove_dir_all(dir).unwrap();
     }
 }

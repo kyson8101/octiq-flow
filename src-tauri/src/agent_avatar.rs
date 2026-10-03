@@ -722,10 +722,8 @@ mod tests {
         Fake(Arc::new(AtomicUsize::new(0)))
     }
 
-    fn scratch() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("octiq-avatar-jobs-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch() -> crate::test_dir::TestDir {
+        crate::test_dir::TestDir::new("avatar-jobs")
     }
 
     fn running(table: &JobTable<Fake>) -> usize {
@@ -752,7 +750,7 @@ mod tests {
             .map(|_| {
                 let (table, root, at_gate, spawning, launched) = (
                     table.clone(),
-                    root.clone(),
+                    root.to_path_buf(),
                     at_gate.clone(),
                     spawning.clone(),
                     launched.clone(),
@@ -883,8 +881,7 @@ mod tests {
 
     #[test]
     fn a_job_only_yields_a_real_image_file() {
-        let dir = std::env::temp_dir().join(format!("octiq-avatar-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("avatar");
         assert!(collect(&dir).is_err(), "nothing saved");
         fs::write(
             dir.join(OUTPUT_FILE),
@@ -902,6 +899,5 @@ mod tests {
             std::os::unix::fs::symlink(&target, dir.join(OUTPUT_FILE)).unwrap();
             assert!(collect(&dir).is_err(), "symlink refused");
         }
-        let _ = fs::remove_dir_all(&dir);
     }
 }

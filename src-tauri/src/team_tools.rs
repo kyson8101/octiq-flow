@@ -508,18 +508,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// A team file of the test's own, removed when the guard drops.
-    struct Temp(std::path::PathBuf);
-
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn temp_team() -> (Temp, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("octiq-team-tools-{}", uuid::Uuid::new_v4()));
+    fn temp_team() -> (crate::test_dir::TestDir, std::path::PathBuf) {
+        let dir = crate::test_dir::TestDir::new("team-tools");
         let path = dir.join("team.json");
-        (Temp(dir), path)
+        (dir, path)
     }
 
     fn workspace(id: &str, name: &str) -> Workspace {

@@ -2542,10 +2542,8 @@ mod tests {
             .contains("Ada —"));
     }
 
-    fn temp() -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("octiq-team-{}", uuid::Uuid::new_v4()))
-            .join("team.json")
+    fn temp() -> crate::test_dir::TestPath {
+        crate::test_dir::TestPath::new("team", "team.json")
     }
 
     const PNG_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
@@ -2927,7 +2925,7 @@ mod tests {
     fn a_renamed_agents_memory_header_names_it_and_its_history_is_untouched() {
         // Feedback 10cc5a23: after Settings renamed Maya to Mango Juice, the
         // note still read "agent: Maya" and "# Maya — memory".
-        let base = std::env::temp_dir().join(format!("octiq-memory-{}", uuid::Uuid::new_v4()));
+        let base = crate::test_dir::TestDir::new("memory");
         let root = base.join("vault");
         std::fs::create_dir_all(&root).unwrap();
         let vault = crate::memory_vault::Vault::at(base.join("profile"));

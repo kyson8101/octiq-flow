@@ -166,8 +166,7 @@ mod tests {
             .unwrap();
         assert_eq!(store.snapshot(None).unwrap().messages.len(), KEPT_MESSAGES);
 
-        let root = std::env::temp_dir().join(format!("octiq-retention-{}", compact_id()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("retention");
         let path = root.join("orchestrations.json");
         fs::write(&path, serde_json::to_vec(&stored("completed")).unwrap()).unwrap();
         let loaded = OrchestrationStore::load(path.clone());
@@ -175,6 +174,5 @@ mod tests {
         let saved: Stored = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.messages.len(), KEPT_MESSAGES);
         assert_eq!(saved.notifications.len(), 1);
-        fs::remove_dir_all(root).unwrap();
     }
 }

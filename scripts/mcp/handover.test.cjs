@@ -29,6 +29,7 @@ function mcp(env, method, params, scriptArgs = []) {
     child.on("exit", (code) => {
       if (!out) reject(Error(`MCP exited ${code}: ${errors}`));
     });
+    child.on("close", () => fs.rmSync(root, { recursive: true, force: true }));
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) + "\n");
   });
 }

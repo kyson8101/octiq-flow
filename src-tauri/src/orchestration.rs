@@ -4784,8 +4784,7 @@ pub(crate) mod tests {
         assert!(TaskCard::checked(None, None, Some(vec!["a".into(); 6])).is_err());
         assert!(TaskCard::checked(None, None, Some(vec!["a".repeat(241)])).is_err());
 
-        let root = std::env::temp_dir().join(format!("octiq-orchestration-{}", compact_id()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("orchestration");
         let file = root.join("orchestrations.json");
         let store = OrchestrationStore::load(file.clone());
         let run = run(&store);
@@ -4829,7 +4828,6 @@ pub(crate) mod tests {
         // A refused create leaves no task behind, carded or not.
         assert!(carded("chat:stranger", card).is_err());
         assert_eq!(store.snapshot(Some(&run.id)).unwrap().tasks.len(), 2);
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -5274,8 +5272,7 @@ pub(crate) mod tests {
         // ready. A task that needs its environment starts only once the
         // recipe's check passes; without a recipe it fails with that cause.
         let store = Arc::new(OrchestrationStore::default());
-        let project = std::env::temp_dir().join(format!("octiq-env-{}", compact_id()));
-        fs::create_dir_all(&project).unwrap();
+        let project = crate::test_dir::TestDir::new("env");
         let sandboxes = crate::sandbox::Store::at(project.join("sandboxes"));
         let (run, needs, dependant, attempt) = environment_task(&store, project.to_str().unwrap());
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -5321,7 +5318,6 @@ pub(crate) mod tests {
             .notifications
             .iter()
             .any(|n| n.kind == "environment" && n.body.contains("Test environment not ready")));
-        let _ = fs::remove_dir_all(&project);
     }
 
     #[test]
@@ -5331,7 +5327,7 @@ pub(crate) mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let store = Arc::new(OrchestrationStore::default());
-        let project = std::env::temp_dir().join(format!("octiq-env-ready-{}", compact_id()));
+        let project = crate::test_dir::TestDir::new("env-ready");
         fs::create_dir_all(project.join(".octiq")).unwrap();
         fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","checkService":"verify","fixtureVersion":"env-test-v1","endpoints":{"app":{"service":"app","port":80,"path":"/"}}}"#).unwrap();
         fs::write(project.join(".octiq/compose.json"), serde_json::to_vec(&json!({"services":{
@@ -5357,13 +5353,13 @@ pub(crate) mod tests {
             "-m",
             "fixture",
         ]);
-        let sandbox_root = std::env::temp_dir().join(format!("octiq-env-store-{}", compact_id()));
+        let sandbox_root = crate::test_dir::TestDir::new("env-store");
         let (run, needs, _, attempt) = environment_task(&store, project.to_str().unwrap());
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = started.clone();
         OrchestrationStore::start_after_environment(
             store.clone(),
-            crate::sandbox::Store::at(sandbox_root.clone()),
+            crate::sandbox::Store::at(sandbox_root.to_path_buf()),
             attempt.clone(),
             move || {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -5403,7 +5399,7 @@ pub(crate) mod tests {
             "{:?}",
             ready.execution.last_progress
         );
-        let sandboxes = crate::sandbox::Store::at(sandbox_root.clone());
+        let sandboxes = crate::sandbox::Store::at(sandbox_root.to_path_buf());
         let view = agent_view::environments(
             &store.snapshot(None).unwrap(),
             &sandboxes.snapshot().unwrap(),
@@ -5438,7 +5434,6 @@ pub(crate) mod tests {
         sandboxes
             .action(&attempt.worker_chat_key, "stop", None)
             .ok();
-        let _ = fs::remove_dir_all(&project);
     }
 
     #[test]
@@ -5450,8 +5445,8 @@ pub(crate) mod tests {
         // Feedback f6886885: services answering directly is not a person
         // being able to use them. A check through the gateway that fails
         // holds the worker back like any other environment failure.
-        let root = std::env::temp_dir().join(format!("octiq-env-gateway-{}", compact_id()));
-        let sandboxes = crate::sandbox::Store::at(root.clone());
+        let root = crate::test_dir::TestDir::new("env-gateway");
+        let sandboxes = crate::sandbox::Store::at(root.to_path_buf());
         let cwd = crate::sandbox::tests::gateway_project(&sandboxes, true, true);
         let store = Arc::new(OrchestrationStore::default());
         let (run, needs, dependant, attempt) = environment_task(&store, &cwd);
@@ -5459,7 +5454,7 @@ pub(crate) mod tests {
         let flag = started.clone();
         OrchestrationStore::start_after_environment(
             store.clone(),
-            crate::sandbox::Store::at(root.clone()),
+            crate::sandbox::Store::at(root.to_path_buf()),
             attempt.clone(),
             move || {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -5488,7 +5483,6 @@ pub(crate) mod tests {
             .output()
             .unwrap();
         assert!(down.status.success());
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -5647,7 +5641,7 @@ pub(crate) mod tests {
 
     #[test]
     fn rejecting_the_current_first_plan_stops_it_and_delivers_one_durable_record() {
-        let root = std::env::temp_dir().join(format!("octiq-plan-reject-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("plan-reject");
         let path = root.join("orchestrations.json");
         let store = OrchestrationStore::load(path.clone());
         let (run, task) = pending_plan(&store);
@@ -5811,7 +5805,6 @@ pub(crate) mod tests {
             Some(&rejection)
         );
         assert!(saved.notifications.is_empty());
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6036,7 +6029,7 @@ pub(crate) mod tests {
 
     #[test]
     fn loading_a_legacy_decided_plan_persists_approval_markers_and_approves_only_new_work() {
-        let root = std::env::temp_dir().join(format!("octiq-legacy-plan-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("legacy-plan");
         let path = root.join("orchestrations.json");
         let store = OrchestrationStore::load(path.clone());
         let (run, ready) = pending_plan(&store);
@@ -6112,7 +6105,6 @@ pub(crate) mod tests {
         assert_eq!(by_id(&completed.id).approved_at, Some(decided_at));
         assert!(by_id(&new_task.id).approved_at.is_some());
         assert_eq!(by_id(&completed.id).status, TaskStatus::Completed);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6219,7 +6211,7 @@ pub(crate) mod tests {
 
     #[test]
     fn rejecting_a_resize_restores_the_approved_size_and_dependency_flow() {
-        let root = std::env::temp_dir().join(format!("octiq-plan-rollback-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("plan-rollback");
         let path = root.join("orchestrations.json");
         let store = OrchestrationStore::load(path.clone());
         let (run, first) = pending_plan(&store);
@@ -6279,7 +6271,6 @@ pub(crate) mod tests {
             wave.iter().map(|task| &task.id).collect::<Vec<_>>(),
             [&dependant.id]
         );
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6636,7 +6627,7 @@ pub(crate) mod tests {
 
     #[test]
     fn revision_survives_a_restart_unchanged() {
-        let dir = std::env::temp_dir().join(format!("octiq-plan-{}", compact_id()));
+        let dir = crate::test_dir::TestDir::new("plan");
         let path = dir.join("orchestrations.json");
         let store = OrchestrationStore::load(path.clone());
         let (run, _) = pending_plan(&store);
@@ -6648,7 +6639,6 @@ pub(crate) mod tests {
             (after.revision, after.revised_at),
             (before.revision, before.revised_at)
         );
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -7654,8 +7644,7 @@ pub(crate) mod tests {
 
     #[test]
     fn unreadable_state_is_never_overwritten_by_a_new_run() {
-        let root = std::env::temp_dir().join(format!("octiq-orchestration-{}", compact_id()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("orchestration");
         let file = root.join("orchestrations.json");
         fs::write(&file, b"not json").unwrap();
         let store = OrchestrationStore::load(file.clone());
@@ -7669,7 +7658,6 @@ pub(crate) mod tests {
             )
             .is_err());
         assert_eq!(fs::read(&file).unwrap(), b"not json");
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -7712,8 +7700,7 @@ pub(crate) mod tests {
 
     #[test]
     fn active_workers_become_retriable_after_a_server_restart() {
-        let root = std::env::temp_dir().join(format!("octiq-orchestration-{}", compact_id()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("orchestration");
         let file = root.join("orchestrations.json");
         let store = OrchestrationStore::load(file.clone());
         let run = run(&store);
@@ -7739,13 +7726,11 @@ pub(crate) mod tests {
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Failed);
         assert_eq!(snapshot.runs[0].status, RunStatus::Failed);
         restored.reserve_attempt("chat:master", &launch).unwrap();
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn a_reported_block_stays_settled_after_a_server_restart() {
-        let root = std::env::temp_dir().join(format!("octiq-orchestration-{}", compact_id()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("orchestration");
         let file = root.join("orchestrations.json");
         let store = OrchestrationStore::load(file.clone());
         let run = run(&store);
@@ -7782,6 +7767,5 @@ pub(crate) mod tests {
         assert_eq!(snapshot.attempts[0].status, AttemptStatus::Blocked);
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Blocked);
         assert_eq!(snapshot.runs[0].status, RunStatus::Waiting);
-        let _ = fs::remove_dir_all(root);
     }
 }

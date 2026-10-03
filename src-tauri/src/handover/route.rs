@@ -632,7 +632,7 @@ mod tests {
     use crate::handover::tests::{project, register, repo, scratch, FakeHost};
 
     struct Desk {
-        root: PathBuf,
+        root: crate::test_dir::TestDir,
         store: PathBuf,
         team: PathBuf,
         projects: Vec<Workspace>,
@@ -702,7 +702,7 @@ mod tests {
         FakeHost {
             projects: w.projects.clone(),
             team: w.team.clone(),
-            root: w.root.clone(),
+            root: w.root.to_path_buf(),
             ..FakeHost::default()
         }
     }

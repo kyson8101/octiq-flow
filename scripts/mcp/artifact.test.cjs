@@ -47,8 +47,9 @@ test("script-like content stays inert and generated runtime parses", () => {
   assert.ok(html.includes("connect-src 'none'"));
 });
 
-test("writes exclusive private HTML files without replacing prior revisions", () => {
+test("writes exclusive private HTML files without replacing prior revisions", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-artifact-test-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const input = { ...sample(), outputDir: dir };
   const first = createArtifact(input);
   const second = createArtifact(input);
@@ -61,9 +62,10 @@ test("writes exclusive private HTML files without replacing prior revisions", ()
   assert.throws(() => createArtifact({ ...input, outputDir: "" }));
 });
 
-test("MCP lists and calls artifact tool both standalone and chat-bound; errors stay in protocol", () => {
+test("MCP lists and calls artifact tool both standalone and chat-bound; errors stay in protocol", (t) => {
   for (const chat of ["", "test-chat"]) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-artifact-mcp-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const requests = [
       { jsonrpc: "2.0", id: 1, method: "tools/list" },
       { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "create_artifact", arguments: { ...sample(), outputDir: dir } } },

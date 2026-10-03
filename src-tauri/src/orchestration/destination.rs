@@ -403,9 +403,12 @@ pub fn directory(team: &[TeamAgent], projects: &[Workspace], manager: Option<&st
 mod tests {
     use super::*;
     use crate::agent_chat::{Access, ChatAgent};
+    use crate::test_dir::TestDir;
 
-    fn dir() -> String {
-        let path = std::env::temp_dir().join(format!("octiq-dest-{}", uuid::Uuid::new_v4()));
+    /// A folder for one repository, removed with `root`. The name is random
+    /// because tests rely on no folder being called "web" or "api".
+    fn dir(root: &TestDir) -> String {
+        let path = root.join(uuid::Uuid::new_v4().simple().to_string());
         std::fs::create_dir_all(&path).unwrap();
         path.to_string_lossy().into_owned()
     }
@@ -444,13 +447,15 @@ mod tests {
         web: String,
         api: String,
         app: String,
+        root: TestDir,
     }
 
     /// Ryan (global head) manages Maya (global) and Sam (app only). Lee is a
     /// project lead in app with Kim under it. Two projects: shop (web + api)
     /// and app (one repository).
     fn world() -> World {
-        let (web, api, app) = (dir(), dir(), dir());
+        let root = TestDir::new("dest");
+        let (web, api, app) = (dir(&root), dir(&root), dir(&root));
         World {
             team: vec![
                 agent("ryan", "Ryan", None, None),
@@ -467,6 +472,7 @@ mod tests {
             web,
             api,
             app,
+            root,
         }
     }
 
@@ -584,7 +590,7 @@ mod tests {
     #[test]
     fn invalid_or_arbitrary_destinations_are_refused_never_replaced() {
         let w = world();
-        let stray = dir();
+        let stray = dir(&w.root);
         for (project, repository, expect) in [
             (
                 Some("nowhere"),

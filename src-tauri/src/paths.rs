@@ -287,17 +287,33 @@ pub fn resolve_writable(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, Strin
 }
 
 #[cfg(test)]
+impl crate::test_dir::TestDir {
+    /// The same directory with every symlink resolved. macOS reaches its temp
+    /// dir through `/var → /private/var`, and code that canonicalizes a path
+    /// would otherwise never match the one the test built.
+    pub fn canonicalized(mut self) -> Self {
+        self.0 = canonicalize(&self.0).expect("canonicalize a test directory");
+        self
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("octiq-paths-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn tmp(name: &str) -> crate::test_dir::TestDir {
         // The temp dir itself may be a symlink (/tmp -> /private/tmp on macOS),
         // so hand back the canonical form — the same thing write_roots stores.
-        canonicalize(&dir).unwrap()
+        crate::test_dir::TestDir::new(&format!("paths-test-{name}")).canonicalized()
+    }
+
+    #[test]
+    fn a_canonicalized_test_dir_is_still_removed_on_drop() {
+        let dir = tmp("canonicalized");
+        let path = dir.to_path_buf();
+        assert_eq!(canonicalize(&path).unwrap(), path);
+        drop(dir);
+        assert!(!path.exists());
     }
 
     // ---- is_within ---------------------------------------------------------
@@ -360,7 +376,7 @@ mod tests {
         let sneaky = dir.join("sub").join("..").join("..");
         // `..` collapses, so the result is the parent of `dir`, NOT inside it.
         let resolved = canonical_target(&sneaky).unwrap();
-        assert!(!is_within(&resolved, &[dir.clone()]));
+        assert!(!is_within(&resolved, &[dir.to_path_buf()]));
         assert_eq!(resolved, dir.parent().unwrap().canonical().unwrap());
     }
 
@@ -431,7 +447,7 @@ mod tests {
     #[test]
     fn a_write_inside_a_root_is_accepted() {
         let dir = tmp("write-ok");
-        let roots = vec![dir.clone()];
+        let roots = vec![dir.to_path_buf()];
         assert!(resolve_writable(&dir.join("new.txt"), &roots).is_ok());
         assert!(resolve_writable(&dir.join("sub/deep.txt"), &roots).is_ok());
     }
@@ -440,7 +456,7 @@ mod tests {
     fn a_write_outside_every_root_is_refused() {
         let dir = tmp("write-outside");
         let other = tmp("write-outside-other");
-        let err = resolve_writable(&other.join("f.txt"), &[dir]).unwrap_err();
+        let err = resolve_writable(&other.join("f.txt"), &[dir.to_path_buf()]).unwrap_err();
         assert!(err.contains("Refusing to write outside"), "{err}");
     }
 
@@ -449,7 +465,7 @@ mod tests {
         let dir = tmp("write-traversal");
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let escape = dir.join("sub").join("..").join("..").join("stolen.txt");
-        assert!(resolve_writable(&escape, &[dir]).is_err());
+        assert!(resolve_writable(&escape, &[dir.to_path_buf()]).is_err());
     }
 
     #[cfg(unix)]
@@ -465,7 +481,7 @@ mod tests {
         let link = root.join("innocent.txt");
         std::os::unix::fs::symlink(&secret, &link).unwrap();
 
-        let err = resolve_writable(&link, &[root]).unwrap_err();
+        let err = resolve_writable(&link, &[root.to_path_buf()]).unwrap_err();
         assert!(err.contains("Refusing to write outside"), "{err}");
         // And the file it pointed at is untouched.
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "old");
@@ -480,7 +496,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
 
         let target = root.join("escape").join("new.txt");
-        assert!(resolve_writable(&target, &[root]).is_err());
+        assert!(resolve_writable(&target, &[root.to_path_buf()]).is_err());
     }
 
     #[cfg(unix)]
@@ -494,7 +510,10 @@ mod tests {
         let link = root.join("alias.txt");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        assert_eq!(resolve_writable(&link, &[root]).unwrap(), real);
+        assert_eq!(
+            resolve_writable(&link, &[root.to_path_buf()]).unwrap(),
+            real
+        );
     }
 
     // ---- home_dir ----------------------------------------------------------
@@ -602,7 +621,7 @@ mod tests {
     fn canonicalize_never_answers_a_verbatim_path() {
         let dir = tmp("verbatim");
         assert!(!dir.to_string_lossy().starts_with(r"\\?\"));
-        assert_eq!(simplified(&dir), dir);
+        assert_eq!(simplified(&dir), dir.to_path_buf());
     }
 
     #[test]

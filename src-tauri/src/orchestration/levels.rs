@@ -1148,8 +1148,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_ledger_survives_a_restart_and_follows_the_id_through_a_rename() {
-        let root = std::env::temp_dir().join(format!("octiq-levels-{}", compact_id()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("levels");
         let file = root.join("orchestrations.json");
         let store = OrchestrationStore::load(file.clone());
         let since = store.level_profile("agent_ada", 0).unwrap().scoring_since;
@@ -1198,7 +1197,6 @@ pub(crate) mod tests {
                 .unwrap()
                 .awarded
         );
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1482,8 +1480,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_store_from_before_the_ledger_gets_its_acceptances_back_once() {
-        let root = std::env::temp_dir().join(format!("octiq-ledger-{}", compact_id()));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("ledger");
         let file = root.join("orchestrations.json");
         let store = OrchestrationStore::load(file.clone());
         let run = run(&store);
@@ -1527,6 +1524,5 @@ pub(crate) mod tests {
             again.level_profile("agent_ada", 0).unwrap().history_total,
             2
         );
-        let _ = fs::remove_dir_all(root);
     }
 }

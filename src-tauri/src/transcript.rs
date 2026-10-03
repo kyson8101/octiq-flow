@@ -58,10 +58,8 @@ fn test_dir() -> Option<PathBuf> {
     use std::sync::OnceLock;
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     Some(
-        DIR.get_or_init(|| {
-            std::env::temp_dir().join(format!("octiq-test-chats-{}", std::process::id()))
-        })
-        .clone(),
+        DIR.get_or_init(|| crate::test_dir::TestDir::new("test-chats").remove_at_exit())
+            .clone(),
     )
 }
 

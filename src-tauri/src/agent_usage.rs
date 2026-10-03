@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn a_repeated_codex_notification_is_counted_once_even_across_restarts() {
-        let root = std::env::temp_dir().join(format!("octiq-usage-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dir::TestDir::new("usage");
         let path = root.join("agent-usage.json");
         let response = |last_in: u64, total: u64| {
             json!({ "type": "token_count", "info": {
@@ -637,7 +637,6 @@ mod tests {
         assert_eq!(usage.usage.input, 150);
         assert_eq!(usage.total, 152);
         assert!(usage.reasoning_reported);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -693,7 +692,7 @@ mod tests {
         let store = Store::default();
         assert_eq!(store.for_agent("a").unwrap().chats, 0);
 
-        let root = std::env::temp_dir().join(format!("octiq-usage-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dir::TestDir::new("usage");
         let path = root.join("agent-usage.json");
         let first = Store::load(path.clone());
         let mut before = Meter::default();
@@ -722,12 +721,11 @@ mod tests {
         let usage = second.for_agent("a").unwrap();
         assert_eq!((usage.usage.output, usage.usage.input), (70, 7));
         assert_eq!(usage.chats, 1);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn concurrent_readings_all_land_and_survive_a_restart() {
-        let root = std::env::temp_dir().join(format!("octiq-usage-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_dir::TestDir::new("usage");
         let path = root.join("agent-usage.json");
         let store = Arc::new(Store::load(path.clone()));
         let reading = Reading {
@@ -772,6 +770,5 @@ mod tests {
             fs::read(root.join("agent-usage.json")).unwrap(),
             b"{not json"
         );
-        let _ = fs::remove_dir_all(root);
     }
 }

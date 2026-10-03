@@ -1735,31 +1735,11 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static NEXT_TEST_REPO: AtomicU64 = AtomicU64::new(0);
 
     struct TestRepo {
         root: PathBuf,
         linked: PathBuf,
-    }
-
-    impl Drop for TestRepo {
-        fn drop(&mut self) {
-            let _ = Command::new("git")
-                .args([
-                    "-C",
-                    self.root.to_str().unwrap(),
-                    "worktree",
-                    "remove",
-                    "--force",
-                ])
-                .arg(&self.linked)
-                .status();
-            let _ = std::fs::remove_dir_all(&self.linked);
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
+        _dir: crate::test_dir::TestDir,
     }
 
     fn git(root: &Path, args: &[&str]) {
@@ -1783,15 +1763,9 @@ mod tests {
     }
 
     fn test_repo(name: &str) -> TestRepo {
-        let nonce = NEXT_TEST_REPO.fetch_add(1, Ordering::Relaxed);
-        let epoch = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "octiq-pr-{name}-{}-{epoch}-{nonce}",
-            std::process::id()
-        ));
+        // The repository and its linked worktree share one guarded folder.
+        let dir = crate::test_dir::TestDir::new(&format!("pr-{name}"));
+        let root = dir.join("repo");
         let linked = root.with_extension("feature-worktree");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "-q", "-b", "main"]);
@@ -1810,7 +1784,11 @@ mod tests {
                 "feature/literal",
             ],
         );
-        TestRepo { root, linked }
+        TestRepo {
+            root,
+            linked,
+            _dir: dir,
+        }
     }
 
     fn remote_test_repo() -> Repository {

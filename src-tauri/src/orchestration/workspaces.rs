@@ -1744,8 +1744,7 @@ mod migration_tests {
     use super::*;
     #[test]
     fn version_one_is_migrated_and_new_records_cannot_be_silently_overwritten_by_an_old_backend() {
-        let root = std::env::temp_dir().join(format!("octiq-workflow-migration-{}", compact_id()));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("workflow-migration");
         let path = root.join("orchestrations.json");
         std::fs::write(
             &path,
@@ -1757,6 +1756,5 @@ mod migration_tests {
         let persisted: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted["version"], STORE_VERSION);
-        let _ = std::fs::remove_dir_all(root);
     }
 }

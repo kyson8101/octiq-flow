@@ -349,19 +349,17 @@ pub fn agent_call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Fixture(Store);
+    /// A store in a folder of its own; the folder goes with the fixture.
+    struct Fixture(Store, #[allow(dead_code)] crate::test_dir::TestDir);
     impl Fixture {
         fn new() -> Self {
-            Self(Store {
-                path: std::env::temp_dir()
-                    .join(format!("octiq-feedback-{}", uuid::Uuid::new_v4()))
-                    .join("feedback.json"),
-            })
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(self.0.path.parent().unwrap());
+            let dir = crate::test_dir::TestDir::new("feedback");
+            Self(
+                Store {
+                    path: dir.join("feedback.json"),
+                },
+                dir,
+            )
         }
     }
     fn submission() -> Submission {

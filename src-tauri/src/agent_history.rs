@@ -785,17 +785,11 @@ mod tests {
     use std::io::Write;
 
     /// A scratch file under the OS temp dir, removed when the test ends.
-    struct Temp(PathBuf);
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = fs::remove_file(&self.0);
-        }
-    }
-    fn write(name: &str, body: &str) -> Temp {
-        let path = std::env::temp_dir().join(name);
+    fn write(name: &str, body: &str) -> crate::test_dir::TestPath {
+        let path = crate::test_dir::TestPath::new("hist", name);
         let mut file = File::create(&path).unwrap();
         file.write_all(body.as_bytes()).unwrap();
-        Temp(path)
+        path
     }
 
     fn listed(agent: &str, id: &str) -> HistorySession {
@@ -892,7 +886,7 @@ mod tests {
             "\n",
         );
         let file = write("octiq-hist-claude.jsonl", body);
-        let s = parse_claude(&file.0, 10, 20).expect("a session");
+        let s = parse_claude(&file, 10, 20).expect("a session");
         assert_eq!(s.session_id, "octiq-hist-claude");
         assert_eq!(s.title, "fix the login bug");
         assert_eq!(s.cwd, "/w");
@@ -909,7 +903,7 @@ mod tests {
             "\n",
         );
         let file = write("octiq-hist-side.jsonl", body);
-        let s = parse_claude(&file.0, 10, 20).expect("a session");
+        let s = parse_claude(&file, 10, 20).expect("a session");
         assert_eq!(s.title, "what I actually asked");
     }
 
@@ -919,7 +913,7 @@ mod tests {
             "octiq-hist-empty.jsonl",
             "{\"type\":\"summary\",\"leafUuid\":\"x\"}\n",
         );
-        assert!(parse_claude(&file.0, 10, 20).is_none());
+        assert!(parse_claude(&file, 10, 20).is_none());
     }
 
     #[test]
@@ -935,7 +929,7 @@ mod tests {
             "\n",
         );
         let file = write("octiq-hist-codex.jsonl", body);
-        let s = parse_codex(&file.0, 10, 20).expect("a session");
+        let s = parse_codex(&file, 10, 20).expect("a session");
         assert_eq!(s.agent, "codex");
         assert_eq!(s.session_id, "019f-abc");
         assert_eq!(s.title, "write the release notes");
@@ -956,7 +950,7 @@ mod tests {
             "\n",
         );
         let file = write("octiq-hist-parts.jsonl", body);
-        let s = parse_codex(&file.0, 10, 20).expect("a session");
+        let s = parse_codex(&file, 10, 20).expect("a session");
         assert_eq!(s.title, "rename the deploy step");
     }
 
@@ -969,7 +963,7 @@ mod tests {
             "\n",
         );
         let file = write("octiq-hist-fallback.jsonl", body);
-        let s = parse_codex(&file.0, 10, 20).expect("a session");
+        let s = parse_codex(&file, 10, 20).expect("a session");
         assert!(
             s.title.starts_with("<environment_context>"),
             "got {}",

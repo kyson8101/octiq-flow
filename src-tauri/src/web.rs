@@ -2075,10 +2075,7 @@ mod tests {
         let chats = Arc::new(crate::agent_chat::ChatManager::default());
         let cap = chats.test_launch("chat:worker");
         let (_ctx, base) = test_server(chats.clone(), store).await;
-        let file = std::env::temp_dir().join(format!(
-            "octiq-person-surface-{}.txt",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let file = crate::test_dir::TestPath::new("person-surface", "surface.txt");
         std::fs::write(&file, "person only").unwrap();
         let path = file.to_string_lossy().into_owned();
 
@@ -2125,7 +2122,6 @@ mod tests {
             );
         }
         chats.test_end("chat:worker");
-        let _ = std::fs::remove_file(file);
     }
 
     /// GET a route and read the body too.
@@ -2705,7 +2701,7 @@ mod tests {
         let host = Arc::new(FakeHost {
             projects: vec![project("p-app", "App", &[&app])],
             team: team.clone(),
-            root: root.clone(),
+            root: root.to_path_buf(),
             ..FakeHost::default()
         });
         let store_path = root.join("handovers.json");
@@ -2713,6 +2709,7 @@ mod tests {
             store: store_path.clone(),
             team,
             host: Some(host.clone()),
+            _scratch: None,
         };
         let chats = Arc::new(crate::agent_chat::ChatManager::default());
         // A source chat working in the worktree, mid-turn, as an agent
@@ -3007,9 +3004,7 @@ mod tests {
         use crate::orchestration::{OrchestrationStore, TaskAssignee, WorkerOutcome};
 
         // Leads live in team.json; this test's are in a throwaway one.
-        let root =
-            std::env::temp_dir().join(format!("octiq-hook-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::test_dir::TestDir::new("hook");
         let team = root.join("team.json");
         let _team = crate::team::use_test_path(team.clone());
         crate::team::record_lead(&team, "chat:master", &agent("agent_lead"), "project", false)
@@ -3218,7 +3213,6 @@ mod tests {
         for key in [worker.as_str(), "chat:master", "chat:other"] {
             chats.test_end(key);
         }
-        let _ = std::fs::remove_dir_all(root);
     }
 
     fn confirm(chat_key: &str, session_key: Option<&str>, args: Value) -> Value {

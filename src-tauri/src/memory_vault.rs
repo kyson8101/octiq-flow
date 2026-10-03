@@ -847,12 +847,11 @@ mod tests {
     struct Fixture {
         vault: Vault,
         root: PathBuf,
-        base: PathBuf,
+        base: crate::test_dir::TestDir,
     }
     impl Fixture {
         fn new() -> Self {
-            let base =
-                std::env::temp_dir().join(format!("octiq-vault-test-{}", uuid::Uuid::new_v4()));
+            let base = crate::test_dir::TestDir::new("vault-test");
             let root = base.join("notes");
             fs::create_dir_all(&root).unwrap();
             let vault = Vault {
@@ -877,12 +876,6 @@ mod tests {
             .unwrap()
         }
     }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.base);
-        }
-    }
-
     #[cfg(windows)]
     #[test]
     fn a_vault_saved_with_a_verbatim_path_still_opens() {

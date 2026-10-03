@@ -964,10 +964,8 @@ mod tests {
 
     /// A throwaway git repo with two subfolders and one changed file.
     /// Returns None when `git` is unavailable, so the test simply skips.
-    fn temp_repo(name: &str) -> Option<std::path::PathBuf> {
-        let dir =
-            std::env::temp_dir().join(format!("octiq-git-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn temp_repo(name: &str) -> Option<crate::test_dir::TestDir> {
+        let dir = crate::test_dir::TestDir::new(&format!("git-test-{name}"));
         std::fs::create_dir_all(dir.join("sub-a")).ok()?;
         std::fs::create_dir_all(dir.join("sub-b")).ok()?;
         let ok = Command::new("git")
@@ -1012,8 +1010,6 @@ mod tests {
         // The untracked file under sub-a is a change for the WHOLE repo, so the
         // sub-b entry reports it too — that is what "one repo" means.
         assert_eq!(out[1].changed, 1);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1033,7 +1029,5 @@ mod tests {
         assert!(!out[0].is_repo);
         assert_eq!(out[1].path, a);
         assert!(out[1].is_repo);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

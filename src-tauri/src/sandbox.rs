@@ -1440,10 +1440,13 @@ fn git(cwd: &Path, args: &[&str]) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    fn store() -> Store {
-        Store {
-            root: std::env::temp_dir().join(format!("octiq-sandbox-test-{}", uuid::Uuid::new_v4())),
-        }
+    /// A store in a folder of its own, removed when the guard drops.
+    fn store() -> (Store, crate::test_dir::TestDir) {
+        let dir = crate::test_dir::TestDir::new("sandbox-test");
+        let store = Store {
+            root: dir.to_path_buf(),
+        };
+        (store, dir)
     }
 
     #[test]
@@ -1467,7 +1470,7 @@ pub(crate) mod tests {
 
     #[test]
     fn runtime_credentials_survive_resume_and_differ_between_sandboxes() {
-        let store = store();
+        let (store, _dir) = store();
         let a = store.root.join("a");
         let b = store.root.join("b");
         let first = runtime_secrets(&a).unwrap();
@@ -1476,12 +1479,11 @@ pub(crate) mod tests {
         for key in first.keys() {
             assert_ne!(first[key], second[key]);
         }
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     fn linked_worktree_inherits_local_recipe_but_can_override_it() {
-        let store = store();
+        let (store, _dir) = store();
         let primary = store.root.join("primary");
         let linked = store.root.join("linked");
         fs::create_dir_all(primary.join(".octiq")).unwrap();
@@ -1537,12 +1539,11 @@ pub(crate) mod tests {
             &["worktree", "remove", "--force", linked.to_str().unwrap()]
         )
         .is_some());
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     fn setting_only_initializes_new_chats_and_resumes_keep_identity() {
-        let store = store();
+        let (store, _dir) = store();
         let cwd = std::env::temp_dir();
         let cwd = cwd.to_str().unwrap();
         store.configure(true).unwrap();
@@ -1563,12 +1564,11 @@ pub(crate) mod tests {
         store.configure(true).unwrap();
         store.select("chat:old", cwd, None, true).unwrap();
         assert!(!store.snapshot().unwrap().environments["chat:old"].enabled);
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     fn restart_invalidates_readiness_and_broken_state_is_not_overwritten() {
-        let store = store();
+        let (store, _dir) = store();
         store
             .select(
                 "chat:a",
@@ -1592,7 +1592,6 @@ pub(crate) mod tests {
         fs::write(store.root.join("state.json"), b"broken").unwrap();
         assert!(store.configure(true).is_err());
         assert_eq!(fs::read(store.root.join("state.json")).unwrap(), b"broken");
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
@@ -1617,7 +1616,7 @@ pub(crate) mod tests {
     #[test]
     #[ignore = "requires local Docker; creates and removes only its own test projects"]
     fn docker_lifecycle_preserves_chat_data_and_reset_is_isolated() {
-        let store = store();
+        let (store, _dir) = store();
         let project = store.root.join("project");
         fs::create_dir_all(project.join(".octiq")).unwrap();
         fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","checkService":"verify","fixtureVersion":"test-v1","endpoints":{"app":{"service":"app","port":80,"path":"/"}}}"#).unwrap();
@@ -1709,7 +1708,6 @@ pub(crate) mod tests {
             )
             .unwrap();
         }
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     /// A project whose healthcheck and check read `$$VAR` shell variables
@@ -1837,7 +1835,7 @@ pub(crate) mod tests {
     /// said ready. Recovery must mend the routes through the URL it hands
     /// out, and never restart a dependency or lose a volume to do it.
     fn gateway_recovery(routed: bool) {
-        let store = store();
+        let (store, _dir) = store();
         let cwd = gateway_project(&store, routed, false);
         store.select("chat:a", &cwd, Some(true), false).unwrap();
         // Keep diagnostics on a failed test; a pass removes its own resources.
@@ -1942,7 +1940,6 @@ pub(crate) mod tests {
             "the gateway's volume survived its recreation"
         );
         frozen_compose(&store, &a, &["down", "--volumes"]).unwrap();
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
@@ -1962,7 +1959,7 @@ pub(crate) mod tests {
     fn docker_a_gateway_that_routes_wrongly_is_never_ready_and_starts_no_chat() {
         // Direct reachability is what the old check proved; it cannot
         // certify the routes a person's browser takes.
-        let store = store();
+        let (store, _dir) = store();
         let cwd = gateway_project(&store, true, true);
         store.select("chat:a", &cwd, Some(true), false).unwrap();
         let error = store.host_action("chat:a", "start").unwrap_err();
@@ -1987,7 +1984,6 @@ pub(crate) mod tests {
         assert!(store.prepare("chat:a", &cwd).is_err());
         assert!(!fs::exists(store.directory(&env).unwrap().join("handoff.json")).unwrap());
         frozen_compose(&store, &env, &["down", "--volumes"]).unwrap();
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     /// Synthetic stand-ins for Core, the Performance API, the frontend and
@@ -2074,7 +2070,7 @@ http.createServer(async (req, res) => {
         // the API were lost rebuilt the upstreams and kept the gateway,
         // whose routes then reached the wrong services or none, while the
         // host said ready. Which address lands where varies from run to run.
-        let store = store();
+        let (store, _dir) = store();
         let cwd = performance_kit_project(&store);
         store.select("chat:a", &cwd, Some(true), false).unwrap();
         let a = store.host_action("chat:a", "start").unwrap();
@@ -2117,13 +2113,12 @@ http.createServer(async (req, res) => {
             "sign-in through the host-issued URL"
         );
         frozen_compose(&store, &a, &["down", "--volumes", "--rmi", "local"]).unwrap();
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     #[ignore = "requires local Docker; creates and removes only its own test project"]
     fn docker_dollars_keep_their_meaning_through_freeze_and_replay() {
-        let store = store();
+        let (store, _dir) = store();
         let cwd = dollar_project(&store);
         store.select("chat:a", &cwd, Some(true), false).unwrap();
         // Keep diagnostics on a failed test; a pass removes its own resources.
@@ -2136,13 +2131,12 @@ http.createServer(async (req, res) => {
         let reset = store.action("chat:a", "reset", Some(&a.id)).unwrap();
         assert_eq!(reset.state, "ready", "{:?}", reset.error);
         frozen_compose(&store, &a, &["down", "--volumes"]).unwrap();
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     #[ignore = "requires local Docker; creates and removes only its own test project"]
     fn docker_a_double_escaped_freeze_is_frozen_again_in_place_keeping_volumes() {
-        let store = store();
+        let (store, _dir) = store();
         let cwd = dollar_project(&store);
         store.select("chat:a", &cwd, Some(true), false).unwrap();
         let a = store.host_action("chat:a", "start").unwrap();
@@ -2202,7 +2196,6 @@ http.createServer(async (req, res) => {
             "volumes survive the repair"
         );
         frozen_compose(&store, &a, &["down", "--volumes"]).unwrap();
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
@@ -2219,7 +2212,7 @@ http.createServer(async (req, res) => {
 
     #[test]
     fn an_environment_frozen_before_the_read_back_proof_is_marked_for_refreezing() {
-        let store = store();
+        let (store, _dir) = store();
         store
             .select(
                 "chat:a",
@@ -2242,12 +2235,11 @@ http.createServer(async (req, res) => {
         env.frozen_replays = true;
         stored = serde_json::to_value(&env).unwrap();
         assert_eq!(stored["frozenReplays"], true);
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     fn reset_requires_exact_ownership_confirmation_before_running_any_command() {
-        let store = store();
+        let (store, _dir) = store();
         store
             .select(
                 "chat:a",
@@ -2264,7 +2256,6 @@ http.createServer(async (req, res) => {
         assert!(store.operation("chat:a").is_err());
         drop(op);
         assert!(store.operation("chat:a").is_ok());
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     fn commit(dir: &Path, message: &str) {
@@ -2339,7 +2330,7 @@ http.createServer(async (req, res) => {
     fn a_ready_environment_goes_stale_with_its_reason_when_its_source_moves_after_the_check() {
         // Feedback caa2ca88 B1: readiness was only ever reset by a restart;
         // a new commit left it "ready" for sources it never checked.
-        let store = store();
+        let (store, _dir) = store();
         let (project, env) = checked(&store, "v1");
         assert_eq!(store.stale_reason(&env).unwrap(), None);
         commit(&project, "moved on");
@@ -2363,12 +2354,11 @@ http.createServer(async (req, res) => {
             store.snapshot().unwrap().environments["chat:a"].state,
             "unverified"
         );
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     fn uncommitted_edits_the_recipe_and_the_fixture_version_each_make_it_stale() {
-        let store = store();
+        let (store, _dir) = store();
         let (project, env) = checked(&store, "v1");
         fs::write(project.join("edit.txt"), "not committed").unwrap();
         assert!(store
@@ -2400,12 +2390,11 @@ http.createServer(async (req, res) => {
             .unwrap()
             .unwrap()
             .contains("Checked before"));
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     fn a_probe_that_cannot_finish_never_leaves_ready_standing_and_digests_stay_private() {
-        let store = store();
+        let (store, _dir) = store();
         let (_project, env) = checked(&store, "v1");
         let public = env.clone().public();
         assert_eq!(public.frozen_recipe.as_deref(), Some("recorded"));
@@ -2426,12 +2415,11 @@ http.createServer(async (req, res) => {
             .unwrap()
             .reason
             .starts_with("The health probe could not finish"));
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     fn a_probe_only_demotes_the_check_it_looked_at() {
-        let store = store();
+        let (store, _dir) = store();
         let (_project, _env) = checked(&store, "v1");
         // A newer check landed while the probe ran: it stands.
         store
@@ -2465,12 +2453,11 @@ http.createServer(async (req, res) => {
             env.invalidated.unwrap().reason,
             "Service api has no container."
         );
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     fn a_retry_takes_over_the_environment_of_the_same_folder_only_and_a_hold_is_never_stopped() {
-        let store = store();
+        let (store, _dir) = store();
         let (project, env) = checked(&store, "v1");
         let other = store.root.join("elsewhere");
         fs::create_dir_all(&other).unwrap();
@@ -2509,13 +2496,12 @@ http.createServer(async (req, res) => {
             .unwrap();
         assert!(store.live_keys().is_empty());
         assert!(!store.host_stop("chat:b", "already stopped").unwrap());
-        fs::remove_dir_all(store.root).unwrap();
     }
 
     #[test]
     #[ignore = "requires local Docker; creates and removes only its own test project"]
     fn docker_health_recipe_change_and_host_stop_keep_ownership_and_data() {
-        let store = store();
+        let (store, _dir) = store();
         let project = store.root.join("project");
         fs::create_dir_all(project.join(".octiq")).unwrap();
         assert!(git(&project, &["init", "-q"]).is_some());
@@ -2647,6 +2633,5 @@ http.createServer(async (req, res) => {
             "kept"
         );
         compose_cmd(&again, &["down", "--volumes"]).unwrap();
-        fs::remove_dir_all(store.root).unwrap();
     }
 }

@@ -1171,10 +1171,8 @@ mod tests {
         assert_eq!(rule("Bash(x)", None), None);
     }
 
-    fn temp() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("octiq-allow-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp() -> crate::test_dir::TestDir {
+        crate::test_dir::TestDir::new("allow")
     }
 
     fn rules(list: &[&str]) -> Vec<String> {
@@ -1315,9 +1313,6 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("symlink"), "{err}");
         assert_eq!(fs::read_to_string(&target).unwrap(), "{}");
-        for dir in [project, elsewhere, user] {
-            fs::remove_dir_all(dir).unwrap();
-        }
     }
 
     #[test]

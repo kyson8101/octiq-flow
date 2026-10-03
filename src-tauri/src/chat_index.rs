@@ -1213,11 +1213,8 @@ mod tests {
 
     /// A directory of this test's own, so writing a broken index here cannot
     /// disturb the shared one every other test in this module uses.
-    fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("octiq-test-index-{}-{name}", std::process::id()));
-        let _ = fs::create_dir_all(&dir);
-        dir.join("index.json")
+    fn scratch(name: &str) -> crate::test_dir::TestPath {
+        crate::test_dir::TestPath::new(&format!("test-index-{name}"), "index.json")
     }
 
     #[test]

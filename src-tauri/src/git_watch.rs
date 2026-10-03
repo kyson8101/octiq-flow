@@ -306,7 +306,6 @@ fn is_relevant(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A branch switch reaches an attached browser.
     ///
@@ -318,12 +317,7 @@ mod tests {
     /// agent had just left.
     #[test]
     fn a_head_rewrite_reaches_the_bus() {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "octiq-gitwatch-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_dir::TestDir::new("gitwatch");
         let git = root.join(".git");
         std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -377,7 +371,6 @@ mod tests {
             }
         }
         drop(state);
-        let _ = std::fs::remove_dir_all(&root);
 
         let frame = got.expect("no git-status-changed frame arrived for a HEAD rewrite");
         let roots = frame["payload"]
@@ -394,15 +387,8 @@ mod tests {
         );
     }
 
-    fn scratch_dir(label: &str) -> PathBuf {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "octiq-gitwatch-{label}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch_dir(label: &str) -> crate::test_dir::TestDir {
+        crate::test_dir::TestDir::new(&format!("gitwatch-{label}"))
     }
 
     /// A folder no repository contains has no `git status` to keep current.
@@ -414,7 +400,6 @@ mod tests {
         let state = GitWatchState::default();
         git_watch_paths_impl(&state, vec![root.to_string_lossy().into_owned()]).unwrap();
         let watching = state.0.lock().unwrap().is_some();
-        let _ = std::fs::remove_dir_all(&root);
         assert!(!watching, "a folder outside any repository was watched");
     }
 
@@ -429,7 +414,6 @@ mod tests {
         git_watch_paths_impl(&state, vec![inner.to_string_lossy().into_owned()]).unwrap();
         let watching = state.0.lock().unwrap().is_some();
         drop(state);
-        let _ = std::fs::remove_dir_all(&repo);
         assert!(watching, "a folder inside a repository was not watched");
     }
 

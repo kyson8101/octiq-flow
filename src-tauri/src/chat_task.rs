@@ -1010,7 +1010,6 @@ mod tests {
             !Path::new(&dir).join("release-check-ran").exists(),
             "a branch git says is unmerged cannot be released; do not go and ask"
         );
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1023,14 +1022,8 @@ mod tests {
     /// A throwaway repository with one commit on `main`. Real git, because
     /// every answer in this module is git's answer and a mocked one would
     /// prove nothing.
-    fn scratch_repo(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "octiq-task-{name}-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("temp dir");
+    fn scratch_repo(name: &str) -> crate::test_dir::TestDir {
+        let dir = crate::test_dir::TestDir::new(&format!("task-{name}"));
         let at = dir.to_string_lossy().to_string();
         let git = |args: &[&str]| {
             run_git(&at, args).unwrap_or_else(|| panic!("git {args:?} failed in {at}"))
@@ -1092,7 +1085,6 @@ mod tests {
             Some(true),
             "a release ref that contains the commit answers yes"
         );
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1117,7 +1109,6 @@ mod tests {
         assert!(delivery.on_target, "this chat is on the default branch");
         assert_eq!(delivery.released, Some(false));
         assert!(delivery.release_note.contains("release"));
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1154,7 +1145,6 @@ mod tests {
         )
         .expect("a delivery");
         assert_eq!(quiet.released, None);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

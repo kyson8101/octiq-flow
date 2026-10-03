@@ -117,7 +117,10 @@ and never again from inside an agent chat:
   survive and can be resumed; the running turns cannot. **Ask before doing it,
   and commit and push first**, because you do not get another turn afterwards.
 - **Rust tests** (inline `#[cfg(test)]` in several modules): `cd src-tauri &&
-  cargo test`.
+  cargo test`. A test that needs disk takes `crate::test_dir::TestDir` (or
+  `TestPath` for a file), never a name joined onto `std::env::temp_dir()`:
+  the guard removes the folder on drop, panics included. Hand-made temp
+  folders left tens of thousands of `octiq-*` entries in `$TMPDIR`.
 - **Web tests**: `cd web && pnpm test` (vitest, node environment, no jsdom).
   These cover `web/src/lib/` pure logic — chiefly the `chat.ts` reducer,
   replayed against **real captured agent streams** in

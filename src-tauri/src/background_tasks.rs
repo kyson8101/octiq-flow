@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn interrupted_ids_survive_restart_and_old_launches_do_not_stop_new_work() {
-        let dir = std::env::temp_dir().join(format!("octiq-background-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dir::TestDir::new("background");
         let path = dir.join("tasks.json");
         let store = Store::load(path.clone());
         let event = json!({"type":"system","subtype":"task_started","task_id":"agent-42","session_id":"old-session","task_type":"local_agent"});
@@ -256,6 +256,5 @@ mod tests {
             .interrupt("fixture", "new", "model switched")
             .unwrap();
         assert!(!restored.has_running("fixture"));
-        fs::remove_dir_all(dir).unwrap();
     }
 }

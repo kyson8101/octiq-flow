@@ -2037,6 +2037,9 @@ pub struct Wiring {
     pub store: PathBuf,
     pub team: PathBuf,
     pub host: Option<Arc<dyn Host + Send + Sync>>,
+    /// Keeps a test's throwaway folder for as long as any copy is wired in.
+    #[cfg(test)]
+    pub _scratch: Option<Arc<crate::test_dir::TestDir>>,
 }
 
 impl Wiring {
@@ -2046,17 +2049,20 @@ impl Wiring {
             store: default_path(),
             team: team::default_path(),
             host: None,
+            #[cfg(test)]
+            _scratch: None,
         }
     }
 
     /// Handovers and a registry of their own, in a throwaway folder.
     #[cfg(test)]
     pub fn scratch() -> Self {
-        let dir = std::env::temp_dir().join(format!("octiq-handover-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_dir::TestDir::new("handover");
         Self {
             store: dir.join("handovers.json"),
             team: dir.join("team.json"),
             host: None,
+            _scratch: Some(Arc::new(dir)),
         }
     }
 }

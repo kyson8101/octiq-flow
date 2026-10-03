@@ -355,18 +355,15 @@ mod tests {
     /// writing can fail with ETXTBSY; renaming hands `exec` a settled inode, so
     /// these tests cannot flake on their own setup.
     #[cfg(unix)]
-    fn script(name: &str, body: &str) -> PathBuf {
+    fn script(name: &str, body: &str) -> crate::test_dir::TestPath {
         use std::os::unix::fs::PermissionsExt;
-        // The pid is in the path because `temp_dir()` is shared by every
+        // A folder of its own per call, because `temp_dir()` is shared by every
         // process on the machine. Two `cargo test` runs at once — a second
         // checkout, a worktree, a watcher — would otherwise write and rename the
         // SAME script file, and one of them execs it mid-rename and reads the
         // wrong body. Seen once: the uppercase hook returned the original title.
-        let dir =
-            std::env::temp_dir().join(format!("octiq-hook-test-{name}-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let staged = dir.join("notify-hook.staged");
-        let path = dir.join("notify-hook");
+        let path = crate::test_dir::TestPath::new(&format!("hook-test-{name}"), "notify-hook");
+        let staged = path.with_extension("staged");
         std::fs::write(&staged, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::rename(&staged, &path).unwrap();
@@ -382,7 +379,8 @@ mod tests {
     #[test]
     fn a_hook_that_uppercases_the_title_is_reflected() {
         let hook = script("upper", r#"printf '{"title":"CLAUDE"}'"#);
-        let out = filter_within(Some(hook), alert(), PATIENT).expect("not suppressed");
+        let out =
+            filter_within(Some(hook.to_path_buf()), alert(), PATIENT).expect("not suppressed");
         assert_eq!(out.title, "CLAUDE");
         assert_eq!(out.body, "needs input");
     }
@@ -407,9 +405,15 @@ mod tests {
             source: "activity".into(),
             ..alert()
         };
-        assert_eq!(filter_within(Some(hook.clone()), activity, PATIENT), None);
+        assert_eq!(
+            filter_within(Some(hook.to_path_buf()), activity, PATIENT),
+            None
+        );
         // An `osc` alert from the same hook survives untouched.
-        assert_eq!(filter_within(Some(hook), alert(), PATIENT), Some(alert()));
+        assert_eq!(
+            filter_within(Some(hook.to_path_buf()), alert(), PATIENT),
+            Some(alert())
+        );
     }
 
     #[cfg(unix)]
@@ -423,7 +427,7 @@ mod tests {
         let hook = script("hang", "sleep 30");
         let started = Instant::now();
         assert_eq!(
-            filter_within(Some(hook), alert(), HOOK_TIMEOUT),
+            filter_within(Some(hook.to_path_buf()), alert(), HOOK_TIMEOUT),
             Some(alert())
         );
         let waited = started.elapsed();
@@ -446,14 +450,20 @@ mod tests {
     fn a_hook_that_exits_non_zero_leaves_the_alert_unchanged() {
         // Its stdout is ignored entirely — a failed hook has no say.
         let hook = script("fail", r#"printf '{"suppress":true}'; exit 3"#);
-        assert_eq!(filter_within(Some(hook), alert(), PATIENT), Some(alert()));
+        assert_eq!(
+            filter_within(Some(hook.to_path_buf()), alert(), PATIENT),
+            Some(alert())
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn a_hook_that_prints_garbage_leaves_the_alert_unchanged() {
         let hook = script("garbage", "printf 'not json at all'");
-        assert_eq!(filter_within(Some(hook), alert(), PATIENT), Some(alert()));
+        assert_eq!(
+            filter_within(Some(hook.to_path_buf()), alert(), PATIENT),
+            Some(alert())
+        );
     }
 
     #[cfg(unix)]
@@ -461,7 +471,10 @@ mod tests {
     fn a_hook_that_prints_nothing_leaves_the_alert_unchanged() {
         // Exit 0 with empty stdout: nothing to apply, so nothing changes.
         let hook = script("silent", "exit 0");
-        assert_eq!(filter_within(Some(hook), alert(), PATIENT), Some(alert()));
+        assert_eq!(
+            filter_within(Some(hook.to_path_buf()), alert(), PATIENT),
+            Some(alert())
+        );
     }
 
     #[cfg(unix)]
@@ -470,7 +483,8 @@ mod tests {
         // Our envelope write gets EPIPE. That is the hook's business, not ours;
         // its reply must still be honoured.
         let hook = script("no-stdin", r#"printf '{"body":"rewritten"}'"#);
-        let out = filter_within(Some(hook), alert(), PATIENT).expect("not suppressed");
+        let out =
+            filter_within(Some(hook.to_path_buf()), alert(), PATIENT).expect("not suppressed");
         assert_eq!(out.body, "rewritten");
     }
 

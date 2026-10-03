@@ -855,7 +855,7 @@ mod tests {
 
     #[test]
     fn capacity_during_dispatch_reaches_ui_and_coordinator_without_a_model_response() {
-        let root = std::env::temp_dir().join(format!("octiq-capacity-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("capacity");
         let path = root.join("orchestrations.json");
         let store = OrchestrationStore::load(path.clone());
         let run = run(&store);
@@ -903,7 +903,6 @@ mod tests {
         );
         assert_eq!(reloaded.notifications[0].id, note.id);
         assert_eq!(reloaded.attempts[0].cwd, attempt.cwd);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

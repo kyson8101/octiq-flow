@@ -154,15 +154,13 @@ pub(super) fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, 
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::{fs, path::PathBuf, process::Command};
+    use std::{fs, process::Command};
 
-    struct Repository(PathBuf);
+    struct Repository(crate::test_dir::TestDir);
 
     impl Repository {
         fn new() -> Self {
-            let root =
-                std::env::temp_dir().join(format!("octiq-pr-routing-{}", uuid::Uuid::new_v4()));
-            fs::create_dir_all(&root).unwrap();
+            let root = crate::test_dir::TestDir::new("pr-routing");
             let repo = Self(root);
             repo.git(&["init", "-q", "-b", "develop"]);
             repo.git(&["config", "user.name", "PR test"]);
@@ -195,12 +193,6 @@ mod tests {
         fn commit(&self, message: &str) {
             self.git(&["add", "."]);
             self.git(&["commit", "-qm", message]);
-        }
-    }
-
-    impl Drop for Repository {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
         }
     }
 

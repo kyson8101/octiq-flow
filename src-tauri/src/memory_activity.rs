@@ -1098,8 +1098,8 @@ mod tests {
         format!("chat:{prefix}-{}", uuid::Uuid::new_v4())
     }
 
-    fn scratch_ledger() -> PathBuf {
-        std::env::temp_dir().join(format!("octiq-memact-ledger-{}.json", uuid::Uuid::new_v4()))
+    fn scratch_ledger() -> crate::test_dir::TestPath {
+        crate::test_dir::TestPath::new("memact-ledger", "memory-activity.json")
     }
 
     fn fresh_id() -> String {
@@ -1307,9 +1307,8 @@ mod tests {
 
     #[test]
     fn a_saved_receipt_check_settles_an_uncertain_line_of_the_same_chat_only() {
-        let store = OrchestrationStore::load(
-            std::env::temp_dir().join(format!("octiq-memact-{}.json", uuid::Uuid::new_v4())),
-        );
+        let file = crate::test_dir::TestPath::new("memact", "orchestrations.json");
+        let store = OrchestrationStore::load(file.to_path_buf());
         let ledger = scratch_ledger();
         let checked =
             |chat: &str, receipt: &Value| receipt_checked_at(&ledger, &store, chat, receipt);
@@ -1337,7 +1336,7 @@ mod tests {
     /// A disposable vault, team and orchestration ledger — nothing here
     /// touches the person's own profile or memory.
     struct World {
-        base: PathBuf,
+        base: crate::test_dir::TestDir,
         root: PathBuf,
         vault: crate::memory_vault::Vault,
         team: PathBuf,
@@ -1351,8 +1350,7 @@ mod tests {
 
     impl World {
         fn new(writable: bool) -> Self {
-            let base = std::env::temp_dir()
-                .join(format!("octiq-memory-activity-{}", uuid::Uuid::new_v4()));
+            let base = crate::test_dir::TestDir::new("memory-activity");
             let root = base.join("vault");
             fs::create_dir_all(&root).unwrap();
             let vault = crate::memory_vault::Vault::at(base.join("profile"));
@@ -1498,12 +1496,6 @@ mod tests {
             index(&coordinator);
             index(&attempt.worker_chat_key);
             (coordinator, attempt.worker_chat_key)
-        }
-    }
-
-    impl Drop for World {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.base);
         }
     }
 
@@ -2469,7 +2461,7 @@ mod tests {
         let started = Instant::now();
         let handles: Vec<_> = (0..4)
             .map(|_| {
-                let (ledger, chat) = (ledger.clone(), chat.clone());
+                let (ledger, chat) = (ledger.to_path_buf(), chat.clone());
                 std::thread::spawn(move || {
                     let t = Instant::now();
                     record_at(

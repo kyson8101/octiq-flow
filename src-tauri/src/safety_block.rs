@@ -1493,10 +1493,7 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
 
     #[test]
     fn a_saved_grant_is_reloaded_only_for_the_same_project() {
-        let root = std::env::temp_dir().join(format!(
-            "octiq-safety-authorizations-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = crate::test_dir::TestDir::new("safety-authorizations");
         let other = root.with_extension("other-project");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&other).unwrap();
@@ -1747,10 +1744,8 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         forget_chat(&chat);
     }
 
-    fn temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("octiq-{label}-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(label: &str) -> crate::test_dir::TestDir {
+        crate::test_dir::TestDir::new(label)
     }
 
     fn mcp_outage(id: &str, tool: &str) -> serde_json::Value {
@@ -2015,7 +2010,6 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         assert_eq!(done["path"], expected.to_str().unwrap());
         assert!(expected.is_file());
         forget_chat(&chat);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

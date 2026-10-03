@@ -471,7 +471,7 @@ mod tests {
         let _serial = capacity::TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let root = std::env::temp_dir().join(format!("octiq-life-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("life");
         let project = root.join("project");
         fs::create_dir_all(project.join(".octiq")).unwrap();
         fs::write(project.join(".octiq/sandbox.json"), r#"{"version":1,"composeFile":"compose.json","checkService":"verify","endpoints":{"app":{"service":"app","port":80,"path":"/"}}}"#).unwrap();
@@ -604,7 +604,6 @@ mod tests {
         let _ = std::process::Command::new(&docker)
             .args(["volume", "rm", &format!("{id}_data")])
             .output();
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -613,7 +612,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         assert_eq!(capacity::limit(), capacity::DEFAULT_LIMIT);
-        let root = std::env::temp_dir().join(format!("octiq-cap-{}", compact_id()));
+        let root = crate::test_dir::TestDir::new("cap");
         let cwd = root.join("work");
         fs::create_dir_all(&cwd).unwrap();
         let sandboxes = crate::sandbox::Store::at(root.join("sandboxes"));
@@ -714,7 +713,6 @@ mod tests {
         assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(read().status, AttemptStatus::Cancelled);
         assert!(capacity::held().is_empty());
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
