@@ -147,7 +147,7 @@ describe("Codex progress", () => {
     expect(html).not.toContain('<details class="agent-progress-log" open=""');
   });
 
-  it("folds the whole working log after the final answer lands", () => {
+  it("keeps the latest update in view after the final answer lands", () => {
     const message: Message = {
       id: "a-progress",
       role: "assistant",
@@ -157,10 +157,40 @@ describe("Codex progress", () => {
     };
     const html = renderToStaticMarkup(<MessageList messages={[message]} busy={false} />);
 
-    expect(html).not.toContain('role="status"');
-    expect(html).toContain("2 progress updates");
+    // Only the earlier update is folded; the newest sits outside the
+    // disclosure, so nothing has to be opened to see it.
+    const fold = html.slice(
+      html.indexOf('<details class="agent-progress-log"'),
+      html.indexOf("</details>"),
+    );
+    expect(fold).toContain("Started the review.");
+    expect(fold).not.toContain("The targeted tests are running.");
+    expect(html).toContain("1 earlier progress update");
     expect(html).toContain("Oldest first");
+    expect(html).toContain("Latest update");
+    expect(html.indexOf("</details>")).toBeLessThan(
+      html.indexOf("The targeted tests are running."),
+    );
+    // It is no longer live: no status region, and the card reads as settled.
+    expect(html).not.toContain('role="status"');
+    expect(html).not.toContain("aria-live");
+    expect(html).toContain('class="agent-progress is-settled"');
     expect(html).toContain("Updated and verified.");
+  });
+
+  it("shows a lone settled update without any disclosure", () => {
+    const message: Message = {
+      id: "a-progress",
+      role: "assistant",
+      blocks: [{ kind: "text", text: "Done." }],
+      progress: ["Checked the config."],
+      streaming: false,
+    };
+    const html = renderToStaticMarkup(<MessageList messages={[message]} busy={false} />);
+
+    expect(html).not.toContain("<details");
+    expect(html).toContain("Latest update");
+    expect(html).toContain("Checked the config.");
   });
 
   it("makes an opened progress history its own keyboard-scrollable region", () => {

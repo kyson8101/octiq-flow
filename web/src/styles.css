@@ -2199,8 +2199,8 @@ body {
 }
 
 /* Codex's intermediary words are a changing status display, not a permanent
-   wall of prose. The current reading stays visible while work runs; its history
-   uses one quiet disclosure and folds completely once the final answer lands. */
+   wall of prose. The newest reading is always visible; its history uses one
+   quiet disclosure. Once the turn is over the newest reading stays, quieter. */
 .agent-progress {
   min-width: 0;
   color: var(--fg-2);
@@ -2246,6 +2246,19 @@ body {
 @keyframes agent-progress-pulse {
   0%, 100% { opacity: 0.35; transform: scale(0.82); }
   50% { opacity: 0.9; transform: scale(1); }
+}
+
+/* The accent and the pulse are for a turn in flight only. A finished turn's
+   last update keeps its place, with a still, neutral dot. */
+.agent-progress.is-settled .agent-progress-live {
+  background: color-mix(in srgb, var(--fg-2) 4%, transparent);
+}
+
+.agent-progress.is-settled .agent-progress-pulse {
+  background: var(--fg-3);
+  opacity: 0.6;
+  animation: none;
+  transition: background-color 180ms ease-out, opacity 180ms ease-out;
 }
 
 .agent-progress .prose {

@@ -133,9 +133,11 @@ function Prose({ text, animate }: { text: string; animate: boolean }) {
 
 /** Codex commentary is a live instrument readout, not the answer.
  *
- * While the turn runs, only the newest update stays open. Earlier updates are
- * one disclosure away. Once the answer lands, the whole working log folds and
- * the final prose takes the visual foreground. */
+ * The newest update is always open, and earlier ones are one disclosure away.
+ * Someone coming back to a finished turn should not have to unfold anything
+ * to see where the work last stood. While the turn runs, that update is the
+ * live status. Once the turn is over it stays as a quiet card, with no pulse
+ * and no live region, so the final prose still takes the foreground. */
 function ProgressLog({
   updates,
   candidate,
@@ -148,9 +150,9 @@ function ProgressLog({
   const all = [...updates, ...(candidate ? [candidate] : [])];
   if (!all.length) return null;
 
-  const latest = streaming ? all.at(-1) : undefined;
-  const earlier = latest ? all.slice(0, -1) : all;
-  const countLabel = `${earlier.length} ${latest ? "earlier " : ""}progress ${earlier.length === 1 ? "update" : "updates"}`;
+  const latest = all[all.length - 1];
+  const earlier = all.slice(0, -1);
+  const countLabel = `${earlier.length} earlier progress ${earlier.length === 1 ? "update" : "updates"}`;
 
   return (
     <div className={`agent-progress ${streaming ? "is-live" : "is-settled"}`}>
@@ -176,15 +178,16 @@ function ProgressLog({
           </div>
         </details>
       )}
-      {latest && (
-        <div className="agent-progress-live" role="status" aria-live="polite">
-          <span className="agent-progress-pulse" aria-hidden="true" />
-          <div className="agent-progress-live-copy">
-            <span className="agent-progress-live-label">Latest update</span>
-            <Prose text={latest} animate={false} />
-          </div>
+      <div
+        className="agent-progress-live"
+        {...(streaming ? { role: "status", "aria-live": "polite" as const } : {})}
+      >
+        <span className="agent-progress-pulse" aria-hidden="true" />
+        <div className="agent-progress-live-copy">
+          <span className="agent-progress-live-label">Latest update</span>
+          <Prose text={latest} animate={false} />
         </div>
-      )}
+      </div>
     </div>
   );
 }
