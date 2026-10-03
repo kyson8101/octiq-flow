@@ -3028,6 +3028,9 @@ pub(crate) fn start_session(
                                 &mut session.user_turn_id,
                             );
                         }
+                        // A provider failure says it is the provider's, and
+                        // which kind, before it is written down (`outcome`).
+                        crate::outcome::annotate(stream_provider.kind(), &mut event);
                         // The agent has its ledger read already; the record and
                         // every tab get a note instead.
                         snapshot_reads.trim(&mut event, crate::record_trim::RECORD_MIN_BYTES);
@@ -4152,13 +4155,16 @@ fn answer_codex_approval(
         return;
     };
     let session = session.clone();
+    let key = key.to_string();
     rt.spawn(async move {
+        let call = ask.tool_use_id.clone();
         let answer = crate::permission::ask(ask).await;
         let decision = if answer.decision == "allow" {
             "accept"
         } else {
             "decline"
         };
+        note_permission_outcome(&key, call.as_deref(), &answer);
         write_codex_response(&session, &request_id, json!({ "decision": decision }));
     });
 }
@@ -4414,7 +4420,9 @@ fn answer_permission(
     let key = key.to_string();
     rt.spawn(async move {
         eprintln!("[perm] {key} asking about {tool}");
+        let call = ask.tool_use_id.clone();
         let answer = crate::permission::ask(ask).await;
+        note_permission_outcome(&key, call.as_deref(), &answer);
         eprintln!(
             "[perm] {key} {tool} -> {} ({})",
             answer.decision, answer.reason
@@ -4430,6 +4438,15 @@ fn answer_permission(
         };
         write_control_response(&session, &request_id, response);
     });
+}
+
+/// A refused permission card is OctiqFlow's refusal, not the provider's: say
+/// so on the call it was about, before the agent hears the answer, so the
+/// line is in the transcript ahead of the failed result it explains.
+fn note_permission_outcome(key: &str, call: Option<&str>, answer: &crate::permission::Answer) {
+    if let (Some(call), Some(outcome)) = (call, crate::outcome::of_permission(answer)) {
+        crate::outcome::record_tool(key, call, &outcome);
+    }
 }
 
 /// Write one `control_response` back to the agent. Best-effort: a chat whose

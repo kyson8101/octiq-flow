@@ -10,6 +10,7 @@
 // them loses nothing.
 import type React from "react";
 import type { ToolKind } from "../lib/toolKind";
+import { originName, outcomeBadge, type ToolOutcome } from "../lib/toolOutcome";
 
 const PATHS: Record<ToolKind, React.ReactNode> = {
   // A page with lines on it.
@@ -110,12 +111,39 @@ export function ToolIcon({ kind }: { kind: ToolKind }) {
  *  the word "done" is noise, so it gets a tick and nothing else. Running,
  *  failed and stopped keep their words: those are the rows a reader is looking
  *  for. */
-export function ToolState({ state }: { state: "running" | "done" | "error" | "stopped" }) {
+export function ToolState({
+  state,
+  outcome,
+}: {
+  state: "running" | "done" | "error" | "stopped";
+  /** Whose failure a failed call was, as the host said it. */
+  outcome?: ToolOutcome;
+}) {
   if (state === "running") {
     return (
       <span className="tool-state is-running">
         <span className="tool-spinner" aria-hidden="true" />
         running
+      </span>
+    );
+  }
+  // Who failed it, and how: "OctiqFlow · approval expired", "Codex · rate
+  // limit". A warning wears the warning colour, never the red of a breakage.
+  // A call with no outcome says "failed", as it always did.
+  if (state === "error" && outcome) {
+    const badge = outcomeBadge(outcome);
+    return (
+      <span
+        className="tool-state is-error tool-outcome"
+        data-origin={outcome.origin}
+        data-severity={outcome.severity}
+        title={badge}
+        aria-label={badge}
+      >
+        <span className="tool-outcome-who">{originName(outcome)}</span>
+        <span className="tool-outcome-why" aria-hidden="true">
+          {badge.slice(originName(outcome).length)}
+        </span>
       </span>
     );
   }

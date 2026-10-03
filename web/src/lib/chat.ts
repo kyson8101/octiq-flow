@@ -50,6 +50,7 @@ import { readChatServiceResumed } from "./carryOn";
 import { readRelay } from "./relay";
 import { mergeMemoryActivity, readMemoryActivity, type MemoryActivity } from "./memoryActivity";
 import { taskLabel, type BackgroundTask } from "./background";
+import { outcomeOfResult, readOutcome, type ToolOutcome } from "./toolOutcome";
 
 /** The one line a turn the CLIENT sent is drawn as, or `undefined` for one a
  *  person typed.
@@ -137,6 +138,10 @@ export type Block =
        *  minutes later as a `<task-notification>` user turn. The card is the
        *  only place those two halves can meet. */
       finish?: TaskNotice;
+      /** Whose failure a failed call was — the provider's or OctiqFlow's —
+       *  as the HOST said it (lib/toolOutcome). Absent on a call that did not
+       *  fail, and on every call recorded before the host said so. */
+      outcome?: ToolOutcome;
       state: ToolState;
     };
 
@@ -328,6 +333,9 @@ export function ownsTurnId(message: Pick<Message, "turnId" | "sourceTurnIds">, t
 
 export type ChatState = {
   messages: Message[];
+  /** The host's word on a call whose card is not drawn yet, by call id. Put
+   *  on the card the moment it is (see `withOutcome`). */
+  pendingOutcomes?: Record<string, ToolOutcome>;
   /** Every agent this conversation has started, oldest first. Empty until one
    *  does, which is how the rail knows to stay hidden. */
   agents: AgentRun[];
@@ -932,6 +940,15 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   if ((parent || speaker) && (type === "system" || type === "result" || type === "thread.started"))
     return state;
 
+  // The host's word on whose failure one call was: its own line about a
+  // permission card (`octiq_tool_outcome`), or the provider's refusal event
+  // it marked. Put on the call's card; the line itself draws nothing.
+  const callOutcome = readOutcome(e.octiq_outcome);
+  if (callOutcome && asStr(e.tool_use_id) && (type === "octiq_tool_outcome" || type === "system")) {
+    state = withOutcome(state, asStr(e.tool_use_id), callOutcome);
+    if (type === "octiq_tool_outcome") return state;
+  }
+
   // A message taken back before its agent was ever given it. OctiqFlow's own
   // event, not either provider's: the words never reached one, so there is
   // nothing here that any agent could report.
@@ -1234,9 +1251,11 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       const blocks = [...last.blocks];
       const previous = blocks.at(-1);
       const id = `agent-error-${last.id}`;
+      const outcome = readOutcome(e.octiq_outcome);
       const error: Block = {
         kind: "tool", id, name: "Agent stream", argsJson: "", args: {},
         result: message || failure.title, state: "error",
+        ...(outcome ? { outcome } : {}),
       };
       // Codex emits error and turn.failed for the same failure. Update the
       // existing card instead of adding a second one during live use or replay.
@@ -1698,6 +1717,9 @@ function foldToolResults(state: ChatState, content: unknown[], envelope: Json): 
   const results = content.filter((c) => asStr(asObj(c).type) === "tool_result");
   const details =
     results.length === 1 ? (envelope.tool_use_result ?? envelope.toolUseResult) : undefined;
+  // A host MCP failure says whose it was on the result's `_meta`, which
+  // Claude hands through on `tool_use_result`.
+  const said = outcomeOfResult(details);
   for (const c of content) {
     const block = asObj(c);
     if (asStr(block.type) !== "tool_result") continue;
@@ -1709,19 +1731,54 @@ function foldToolResults(state: ChatState, content: unknown[], envelope: Json): 
         : asArr(block.content)
             .map((p) => asStr(asObj(p).text))
             .join("");
+    const pending = next.pendingOutcomes?.[toolId];
+    const outcome = isError ? (said ?? pending) : undefined;
     next = {
       ...next,
       messages: next.messages.map((m) => ({
         ...m,
         blocks: m.blocks.map((b) =>
           b.kind === "tool" && b.id === toolId
-            ? { ...b, result: text, details, state: isError ? "error" : "done" }
+            ? {
+                ...b,
+                result: text,
+                details,
+                state: isError ? "error" : "done",
+                // A success keeps no outcome, whatever was said before it.
+                ...(isError ? (outcome ? { outcome } : {}) : { outcome: undefined }),
+              }
             : b,
         ),
       })),
     };
   }
   return next;
+}
+
+/** Does this card belong to call `id`? A Codex card's id is keyed by its
+ *  seat (`codex:host:<item id>`); the host names the item alone. */
+function isCall(block: Block, id: string): block is Extract<Block, { kind: "tool" }> {
+  return block.kind === "tool" && (block.id === id || block.id.endsWith(`:${id}`));
+}
+
+/** Put the host's outcome on call `id`'s card, or hold it until the card is
+ *  drawn. Only a call that failed, or has yet to answer, takes it: the
+ *  outcome explains a failure and must never paint a success. */
+function withOutcome(state: ChatState, id: string, outcome: ToolOutcome): ChatState {
+  let found = false;
+  const messages = state.messages.map((m) => {
+    if (!m.blocks.some((b) => isCall(b, id))) return m;
+    return {
+      ...m,
+      blocks: m.blocks.map((b) => {
+        if (!isCall(b, id)) return b;
+        found = true;
+        return b.state === "done" ? b : { ...b, outcome };
+      }),
+    };
+  });
+  if (found) return { ...state, messages };
+  return { ...state, pendingOutcomes: { ...state.pendingOutcomes, [id]: outcome } };
 }
 
 /** The newest Skill call in the conversation, whichever message it is on. */
@@ -1951,6 +2008,7 @@ function foldCodex(
                 argsJson: JSON.stringify(read.args),
                 ...(read.result !== undefined ? { result: read.result } : {}),
                 ...(read.details !== undefined ? { details: read.details } : {}),
+                ...(read.outcome ? { outcome: read.outcome } : {}),
               }
             : b,
         ),
@@ -1971,6 +2029,7 @@ function foldCodex(
         state: read.state,
         ...(read.result !== undefined ? { result: read.result } : {}),
         ...(read.details !== undefined ? { details: read.details } : {}),
+        ...(read.outcome ? { outcome: read.outcome } : {}),
       },
     ],
   }));

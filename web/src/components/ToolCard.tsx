@@ -175,6 +175,7 @@ export function ToolCard({
       className={[
         "tool",
         `tool-${tool.state}`,
+        tool.state === "error" && tool.outcome?.severity === "warning" ? "is-warning" : "",
         isSkill ? "tool-skill" : "",
       ]
         .filter(Boolean)
@@ -234,7 +235,7 @@ export function ToolCard({
               in background
             </span>
           ) : (
-            <ToolState state={tool.state} />
+            <ToolState state={tool.state} outcome={tool.outcome} />
           )}
           {!opensAgent && (
             <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">

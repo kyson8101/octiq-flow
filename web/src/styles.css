@@ -2984,6 +2984,12 @@ body {
   --tint: var(--danger);
 }
 
+/* A failure that broke nothing (lib/toolOutcome): an expired or declined
+   card, a rate limit. Its icon wears the warning colour, like its badge. */
+.tool-error.is-warning > .tool-head-row .tool-icon {
+  --tint: var(--warn);
+}
+
 /* The copy gets the available middle of the row. Identity and detail are two
    deliberate lines: provider tool names are evidence and stay fully visible,
    while an unbounded command or path may be ellipsised below them. */
@@ -12831,7 +12837,11 @@ body.is-ultra .eff {
 }
 
 .tool-result-counts {
+  flex: 0 1 auto;
+  min-width: 0;
   gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .tool-result-success {
@@ -12840,6 +12850,60 @@ body.is-ultra .eff {
 
 .tool-result-failed {
   color: var(--danger);
+}
+
+/* Whose failure it was (lib/toolOutcome). A warning — an approval card that
+   expired or was declined, a rate limit — broke nothing, so it wears the
+   warning colour rather than the red of a breakage, on the collapsed count
+   and on the row alike. */
+.tool-result-failed[data-severity="warning"],
+.tool-group.tool-error.is-warning .tool-summary-icon {
+  color: var(--warn);
+}
+
+.tool-outcome {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  white-space: nowrap;
+}
+
+.tool-outcome[data-severity="warning"] {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+}
+
+/* On a phone the row keeps who — the part that tells OctiqFlow from the
+   provider — and lets the reason go; it is still in the title. */
+@media (max-width: 640px) {
+  .tool-outcome-why {
+    display: none;
+  }
+}
+
+/* The collapsed count has a long form and a short one. On a phone only the
+   short one shows: one count per origin ("8 OctiqFlow · 1 provider"), so the
+   origin — the part that matters — is never the part clipped. */
+.tool-result-long {
+  display: contents;
+}
+
+.tool-result-short {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .tool-result-counts {
+    flex-shrink: 0;
+  }
+
+  .tool-result-long {
+    display: none;
+  }
+
+  .tool-result-short {
+    display: contents;
+  }
 }
 
 /* The only changing text while a chain is active: which call is running now.

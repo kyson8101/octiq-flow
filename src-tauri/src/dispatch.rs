@@ -107,7 +107,12 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> {
         .or_else(|| args.get(snake(name)))
         .cloned()
         .unwrap_or(Value::Null);
-    serde_json::from_value(value).map_err(|e| format!("bad argument '{name}': {e}"))
+    serde_json::from_value(value).map_err(|e| {
+        crate::outcome::refuse(
+            crate::outcome::ReasonClass::Validation,
+            format!("bad argument '{name}': {e}"),
+        )
+    })
 }
 
 /// An optional list argument: omitted or null is an empty list. The agent
@@ -1289,9 +1294,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // No gate, safety card, deploy or restart is decided here.
         "orchestration_plan_approve_in_chat" => {
             let actor: String = arg(&args, "actorChatKey")?;
-            let turn = svc.chats.person_turn(&actor).ok_or(
-                "Only a message the person typed in this chat can approve a plan, and the message this turn answers is not one (a notification, a gate answer or a host message never is). Nothing was approved.",
-            )?;
+            let turn = svc.chats.person_turn(&actor).ok_or_else(|| {
+                crate::outcome::refuse(
+                    crate::outcome::ReasonClass::ScopeRefused,
+                    "Only a message the person typed in this chat can approve a plan, and the message this turn answers is not one (a notification, a gate answer or a host message never is). Nothing was approved.",
+                )
+            })?;
             to_value(svc.orchestrations.approve_plan_in_conversation(
                 &actor,
                 &arg::<String>(&args, "runId")?,

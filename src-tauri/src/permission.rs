@@ -44,6 +44,12 @@ use tokio::sync::oneshot;
 /// not hold a turn open indefinitely.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// The reason a card nobody answered in time is refused with. Named, because
+/// `outcome::of_permission` tells an expiry from a refusal by it.
+pub const TIMED_OUT: &str = "nobody answered in time";
+/// The reason a card the person answered with Deny is refused with.
+pub const DENIED: &str = "you denied it";
+
 /// What the user said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -353,13 +359,13 @@ pub async fn ask(request: Request) -> Answer {
                 decision,
                 match decision {
                     Decision::Allow => "you allowed it",
-                    Decision::Deny => "you denied it",
+                    Decision::Deny => DENIED,
                     Decision::Abstain => "no opinion",
                 },
             ),
             // Nobody answered, or the waiter was dropped. Silence is not
             // consent: the agent is told no and carries on.
-            _ => (Decision::Deny, "nobody answered in time"),
+            _ => (Decision::Deny, TIMED_OUT),
         },
         // Everyone left while it was up. Not a refusal — the same abstain an
         // unattended run gets, so the chain decides as though we never asked.

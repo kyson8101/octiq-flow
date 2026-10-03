@@ -77,10 +77,25 @@ test("agent calls go to /hook/agents with only documented fields and the provide
   const declined = await call(env, "tools/call", { name: "agent_update", arguments: { agent: "Nova", role: "x" } });
   assert.equal(declined.isError, true);
   assert.match(declined.content[0].text, /declined/);
+  // A host that named no kind is still OctiqFlow's failure, never nobody's.
+  assert.deepEqual(declined._meta["octiq/outcome"], { origin: "octiqflow", reasonClass: "other", severity: "error" });
+
+  // The card nobody answered: the host's own kind travels on the result's
+  // _meta, which both providers hand through to the page untouched.
+  const expired = { origin: "octiqflow", reasonClass: "approval-expired", severity: "warning" };
+  response = { error: "The person did not answer within 180 seconds, so nothing was changed.", outcome: expired };
+  const unanswered = await call(env, "tools/call", { name: "agent_update", arguments: { agent: "Nova", role: "x" } });
+  assert.equal(unanswered.isError, true);
+  assert.deepEqual(unanswered._meta, { "octiq/outcome": expired });
+  // A success carries no outcome at all.
+  status = 200; response = { result: { status: "saved" } };
+  const saved = await call(env, "tools/call", { name: "agent_update", arguments: { agent: "Nova", role: "x" } });
+  assert.equal(saved._meta, undefined);
 
   // A worker may read the roster but not propose a change; nothing is sent.
   const count = requests.length;
   const worker = await call({ ...env, OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, "tools/call", { name: "agent_register", arguments: args });
   assert.equal(worker.isError, true);
+  assert.equal(worker._meta["octiq/outcome"].reasonClass, "validation");
   assert.equal(requests.length, count);
 });

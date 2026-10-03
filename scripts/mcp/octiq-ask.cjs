@@ -113,6 +113,33 @@ function hookHeaders(body) {
   };
 }
 
+/** The tool result `_meta` key a failed call says whose failure it was under.
+ *  Both providers hand a result's `_meta` through to their stream untouched,
+ *  which is how the page can tell OctiqFlow's refusals from the provider's
+ *  without reading the words (src-tauri/src/outcome.rs). */
+const OUTCOME_META = "octiq/outcome";
+const WARNING_REASONS = new Set(["approval-expired", "approval-denied", "rate-limit"]);
+
+/** A failure of this MCP or of the host behind it: always OctiqFlow's. */
+function hostOutcome(reasonClass = "other") {
+  return {
+    origin: "octiqflow",
+    reasonClass,
+    severity: WARNING_REASONS.has(reasonClass) ? "warning" : "error",
+  };
+}
+
+/** An Error that knows whose failure it is: the outcome the host's hook
+ *  answered with, or the kind named here. */
+function hostError(message, outcome) {
+  const error = new Error(message);
+  error.outcome =
+    outcome && typeof outcome === "object" && outcome.origin === "octiqflow"
+      ? outcome
+      : hostOutcome(typeof outcome === "string" ? outcome : "other");
+  return error;
+}
+
 function readJson(file, label) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -794,12 +821,12 @@ function askOctiq(questions) {
  * browser panels listen to. */
 function callHook(route, action, args = {}, timeoutMs = 30 * 60 * 1000, label = "call") {
   return new Promise((resolve, reject) => {
-    if (!CHAT_KEY) return reject(new Error("This tool requires an OctiqFlow chat."));
+    if (!CHAT_KEY) return reject(hostError("This tool requires an OctiqFlow chat.", "scope-refused"));
     let port;
     try {
       port = hookPort();
     } catch {
-      return reject(new Error("OctiqFlow is not reachable."));
+      return reject(hostError("OctiqFlow is not reachable."));
     }
     // An additional agent in a chat runs under its own process key, which is
     // what its capability was issued to.
@@ -821,7 +848,7 @@ function callHook(route, action, args = {}, timeoutMs = 30 * 60 * 1000, label = 
           try {
             const answer = JSON.parse(out);
             if (res.statusCode < 200 || res.statusCode >= 300 || answer.error) {
-              reject(new Error(answer.error || `OctiqFlow returned ${res.statusCode}.`));
+              reject(hostError(answer.error || `OctiqFlow returned ${res.statusCode}.`, answer.outcome));
             } else {
               resolve(answer.result);
             }
@@ -831,10 +858,10 @@ function callHook(route, action, args = {}, timeoutMs = 30 * 60 * 1000, label = 
         });
       },
     );
-    req.on("error", () => reject(new Error("OctiqFlow could not be reached.")));
+    req.on("error", () => reject(hostError("OctiqFlow could not be reached.")));
     req.setTimeout(timeoutMs, () => {
       req.destroy();
-      reject(new Error(`The ${label} timed out.`));
+      reject(hostError(`The ${label} timed out.`, "host-timeout"));
     });
     req.write(body);
     req.end();
@@ -1361,12 +1388,12 @@ function callRoute(args = {}) {
     requestId: text(args.requestId),
   };
   return new Promise((resolve, reject) => {
-    if (!CHAT_KEY) return reject(new Error("This tool requires an OctiqFlow chat."));
+    if (!CHAT_KEY) return reject(hostError("This tool requires an OctiqFlow chat.", "scope-refused"));
     let port;
     try {
       port = hookPort();
     } catch {
-      return reject(new Error("OctiqFlow is not reachable."));
+      return reject(hostError("OctiqFlow is not reachable."));
     }
     const payload = JSON.stringify({
       chatKey: CHAT_KEY,
@@ -1383,7 +1410,7 @@ function callRoute(args = {}) {
           try {
             const answer = JSON.parse(out);
             if (res.statusCode < 200 || res.statusCode >= 300 || answer.error) {
-              reject(new Error(answer.error || `OctiqFlow returned ${res.statusCode}.`));
+              reject(hostError(answer.error || `OctiqFlow returned ${res.statusCode}.`, answer.outcome));
             } else {
               resolve(answer.result?.text || "OctiqFlow showed the person the card.");
             }
@@ -1393,10 +1420,10 @@ function callRoute(args = {}) {
         });
       },
     );
-    req.on("error", () => reject(new Error("OctiqFlow could not be reached.")));
+    req.on("error", () => reject(hostError("OctiqFlow could not be reached.")));
     req.setTimeout(60 * 1000, () => {
       req.destroy();
-      reject(new Error("The call timed out. Retry with the same requestId to read what was recorded."));
+      reject(hostError("The call timed out. Retry with the same requestId to read what was recorded.", "host-timeout"));
     });
     req.write(payload);
     req.end();
@@ -1421,12 +1448,12 @@ function callHandoverBack(tool, args = {}) {
   // The answering turn may take as long as the host's own ten minutes.
   const timeout = tool === "handover_ask" ? 12 * 60 * 1000 : 30 * 1000;
   return new Promise((resolve, reject) => {
-    if (!CHAT_KEY) return reject(new Error("This tool requires an OctiqFlow chat."));
+    if (!CHAT_KEY) return reject(hostError("This tool requires an OctiqFlow chat.", "scope-refused"));
     let port;
     try {
       port = hookPort();
     } catch {
-      return reject(new Error("OctiqFlow is not reachable."));
+      return reject(hostError("OctiqFlow is not reachable."));
     }
     const payload = JSON.stringify({
       chatKey: CHAT_KEY,
@@ -1443,7 +1470,7 @@ function callHandoverBack(tool, args = {}) {
           try {
             const answer = JSON.parse(out);
             if (res.statusCode < 200 || res.statusCode >= 300 || answer.error) {
-              reject(new Error(answer.error || `OctiqFlow returned ${res.statusCode}.`));
+              reject(hostError(answer.error || `OctiqFlow returned ${res.statusCode}.`, answer.outcome));
             } else {
               resolve(answer.result?.text || "OctiqFlow recorded it.");
             }
@@ -1453,10 +1480,10 @@ function callHandoverBack(tool, args = {}) {
         });
       },
     );
-    req.on("error", () => reject(new Error("OctiqFlow could not be reached.")));
+    req.on("error", () => reject(hostError("OctiqFlow could not be reached.")));
     req.setTimeout(timeout, () => {
       req.destroy();
-      reject(new Error("The call timed out. Retry with the same requestId to read what was recorded."));
+      reject(hostError("The call timed out. Retry with the same requestId to read what was recorded.", "host-timeout"));
     });
     req.write(payload);
     req.end();
@@ -1498,12 +1525,12 @@ async function callHandover(args = {}) {
 
 function callHandoverHook(args) {
   return new Promise((resolve, reject) => {
-    if (!CHAT_KEY) return reject(new Error("This tool requires an OctiqFlow chat."));
+    if (!CHAT_KEY) return reject(hostError("This tool requires an OctiqFlow chat.", "scope-refused"));
     let port;
     try {
       port = hookPort();
     } catch {
-      return reject(new Error("OctiqFlow is not reachable."));
+      return reject(hostError("OctiqFlow is not reachable."));
     }
     const payload = JSON.stringify({
       chatKey: CHAT_KEY,
@@ -1521,7 +1548,7 @@ function callHandoverHook(args) {
           try {
             const answer = JSON.parse(out);
             if (res.statusCode < 200 || res.statusCode >= 300 || answer.error) {
-              reject(new Error(answer.error || `OctiqFlow returned ${res.statusCode}.`));
+              reject(hostError(answer.error || `OctiqFlow returned ${res.statusCode}.`, answer.outcome));
             } else {
               resolve(answer.result?.text || "OctiqFlow recorded the handover.");
             }
@@ -1531,12 +1558,12 @@ function callHandoverHook(args) {
         });
       },
     );
-    req.on("error", () => reject(new Error("OctiqFlow could not be reached.")));
+    req.on("error", () => reject(hostError("OctiqFlow could not be reached.")));
     // The host lets go after its own deadline and says the decision is still
     // pending; this only stops a wedged socket holding the turn open.
     req.setTimeout(30 * 60 * 1000, () => {
       req.destroy();
-      reject(new Error("The handover call timed out. Do not assume a decision; end your turn."));
+      reject(hostError("The handover call timed out. Do not assume a decision; end your turn.", "host-timeout"));
     });
     req.write(payload);
     req.end();
@@ -2200,7 +2227,16 @@ function send(message) {
 
 function reply(id, result) {
   if (id === undefined || id === null) return; // a notification wants no reply
-  send({ jsonrpc: "2.0", id, result });
+  send({ jsonrpc: "2.0", id, result: withOutcome(result) });
+}
+
+/** Every failed result this MCP gives says whose failure it was: the
+ *  `outcome` a site named (taken off the result), else OctiqFlow's `other`. */
+function withOutcome(result) {
+  if (!result || typeof result !== "object") return result;
+  const { outcome, ...rest } = result;
+  if (!rest.isError) return rest;
+  return { ...rest, _meta: { ...(rest._meta || {}), [OUTCOME_META]: outcome || hostOutcome() } };
 }
 
 async function handle(msg) {
@@ -2245,6 +2281,7 @@ async function handle(msg) {
       if (IS_FRONT_DESK && msg.params?.name !== "route_chat") {
         return reply(msg.id, {
           isError: true,
+          outcome: hostOutcome("scope-refused"),
           content: [{ type: "text", text: "A front desk only routes: route_chat is its one tool." }],
         });
       }
@@ -2253,7 +2290,7 @@ async function handle(msg) {
           const text = await callRoute(msg.params.arguments || {});
           return reply(msg.id, { content: [{ type: "text", text }] });
         } catch (error) {
-          return reply(msg.id, {
+          return reply(msg.id, { outcome: error?.outcome,
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The chat could not be proposed." }],
           });
@@ -2262,7 +2299,7 @@ async function handle(msg) {
       if (String(msg.params?.name || "").startsWith("agent_")) {
         const tool = AGENT_TOOLS(IS_WORKER).find(candidate => candidate.name === msg.params.name);
         if (!CHAT_KEY || !tool) {
-          return reply(msg.id, { isError: true, content: [{ type: "text", text: "This agents tool requires an OctiqFlow chat and a supported action." }] });
+          return reply(msg.id, { isError: true, outcome: hostOutcome("validation"), content: [{ type: "text", text: "This agents tool requires an OctiqFlow chat and a supported action." }] });
         }
         try {
           const supplied = msg.params.arguments || {};
@@ -2274,13 +2311,13 @@ async function handle(msg) {
           const result = await callHook("agents", action, args, (AGENT_WAIT_SECONDS + 30) * 1000, "agents operation");
           return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
         } catch (error) {
-          return reply(msg.id, { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "The agents operation failed." }] });
+          return reply(msg.id, { outcome: error?.outcome, isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "The agents operation failed." }] });
         }
       }
       if (String(msg.params?.name || "").startsWith("feedback_")) {
         const tool = FEEDBACK_TOOLS.find(candidate => candidate.name === msg.params.name);
         if (!CHAT_KEY || !tool) {
-          return reply(msg.id, { isError: true, content: [{ type: "text", text: "This feedback tool requires an OctiqFlow chat and a supported action." }] });
+          return reply(msg.id, { isError: true, outcome: hostOutcome("validation"), content: [{ type: "text", text: "This feedback tool requires an OctiqFlow chat and a supported action." }] });
         }
         try {
           const supplied = msg.params.arguments || {};
@@ -2289,13 +2326,13 @@ async function handle(msg) {
           const result = await callHook("feedback", msg.params.name.slice(9), args, 15 * 1000, "feedback operation");
           return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
         } catch (error) {
-          return reply(msg.id, { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "The feedback operation failed." }] });
+          return reply(msg.id, { outcome: error?.outcome, isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "The feedback operation failed." }] });
         }
       }
       if (String(msg.params?.name || "").startsWith("vault_")) {
         const tool = VAULT_TOOLS.find((candidate) => candidate.name === msg.params.name);
         if (!CHAT_KEY || !tool) {
-          return reply(msg.id, { isError: true, content: [{ type: "text", text: "This vault tool requires an OctiqFlow chat." }] });
+          return reply(msg.id, { isError: true, outcome: hostOutcome("validation"), content: [{ type: "text", text: "This vault tool requires an OctiqFlow chat." }] });
         }
         try {
           const supplied = msg.params.arguments || {};
@@ -2309,7 +2346,7 @@ async function handle(msg) {
           }
           return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
         } catch (error) {
-          return reply(msg.id, { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "The vault operation failed." }] });
+          return reply(msg.id, { outcome: error?.outcome, isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "The vault operation failed." }] });
         }
       }
       if (String(msg.params?.name || "").startsWith("orchestration_")) {
@@ -2317,6 +2354,7 @@ async function handle(msg) {
         if (!CHAT_KEY || !tool) {
           return reply(msg.id, {
             isError: true,
+            outcome: hostOutcome("validation"),
             content: [{ type: "text", text: `No tool called ${msg.params?.name || ""}` }],
           });
         }
@@ -2329,7 +2367,7 @@ async function handle(msg) {
             content: [{ type: "text", text: JSON.stringify(result) }],
           });
         } catch (error) {
-          return reply(msg.id, {
+          return reply(msg.id, { outcome: error?.outcome,
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The orchestration call failed." }],
           });
@@ -2340,14 +2378,14 @@ async function handle(msg) {
         try {
           const title = msg.params.arguments?.title;
           if (typeof title !== "string" || !title.trim()) {
-            throw new Error("Choose a non-empty chat title.");
+            throw hostError("Choose a non-empty chat title.", "validation");
           }
           // Deliberately forward only the title. The hook gets the chat key
           // from this process, never an agent-supplied conversation ID.
           const result = await callHook("task", "title", { title }, 10 * 1000, "title update");
           return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result) }] });
         } catch (error) {
-          return reply(msg.id, {
+          return reply(msg.id, { outcome: error?.outcome,
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The chat title could not be saved." }],
           });
@@ -2361,7 +2399,7 @@ async function handle(msg) {
           const text = await callHandover(msg.params.arguments || {});
           return reply(msg.id, { content: [{ type: "text", text }] });
         } catch (error) {
-          return reply(msg.id, {
+          return reply(msg.id, { outcome: error?.outcome,
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The handover could not be requested." }],
           });
@@ -2373,7 +2411,7 @@ async function handle(msg) {
           const text = await callHandoverBack(msg.params.name, msg.params.arguments || {});
           return reply(msg.id, { content: [{ type: "text", text }] });
         } catch (error) {
-          return reply(msg.id, {
+          return reply(msg.id, { outcome: error?.outcome,
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The call could not be made." }],
           });
@@ -2385,7 +2423,7 @@ async function handle(msg) {
           const status = await reportTask(msg.params.arguments || {});
           return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] });
         } catch (error) {
-          return reply(msg.id, {
+          return reply(msg.id, { outcome: error?.outcome,
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The task status could not be saved." }],
           });
@@ -2398,7 +2436,7 @@ async function handle(msg) {
           const preview = publish(msg.params.arguments || {}, profileRoot(), CHAT_KEY);
           return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(preview) }] });
         } catch (error) {
-          return reply(msg.id, { isError: true, content: [{ type: "text", text: error.message || "Preview could not be published." }] });
+          return reply(msg.id, { outcome: error?.outcome, isError: true, content: [{ type: "text", text: error.message || "Preview could not be published." }] });
         }
       }
 
@@ -2410,7 +2448,7 @@ async function handle(msg) {
             next: "Link filePath in your reply so the person can open the HTML. Optionally publish it with preview_html (path: filePath) for a clickable Preview card. They can copy feedback JSON back into chat. Match artifactId, revision and item IDs; pending/null is not approval.",
           }) }] });
         } catch (error) {
-          return reply(msg.id, { isError: true, content: [{ type: "text", text: error.message || "Artifact could not be created." }] });
+          return reply(msg.id, { outcome: error?.outcome, isError: true, content: [{ type: "text", text: error.message || "Artifact could not be created." }] });
         }
       }
 
@@ -2419,7 +2457,7 @@ async function handle(msg) {
           const text = await conversationSearch(msg.params.arguments || {});
           return reply(msg.id, { content: [{ type: "text", text }] });
         } catch (error) {
-          return reply(msg.id, {
+          return reply(msg.id, { outcome: error?.outcome,
             content: [{ type: "text", text: error instanceof Error ? error.message : "Conversations could not be searched." }],
             isError: true,
           });
@@ -2431,7 +2469,7 @@ async function handle(msg) {
           const text = await conversationDetail(msg.params.arguments || {});
           return reply(msg.id, { content: [{ type: "text", text }] });
         } catch (error) {
-          return reply(msg.id, {
+          return reply(msg.id, { outcome: error?.outcome,
             content: [
               {
                 type: "text",
@@ -2469,6 +2507,7 @@ async function handle(msg) {
         return reply(msg.id, {
           content: [{ type: "text", text: `No tool called ${msg.params?.name}.` }],
           isError: true,
+          outcome: hostOutcome("validation"),
         });
       }
       const args = msg.params.arguments || {};
@@ -2511,6 +2550,7 @@ async function handle(msg) {
         return reply(msg.id, {
           content: [{ type: "text", text: "No question was given, so nothing was asked." }],
           isError: true,
+          outcome: hostOutcome("validation"),
         });
       }
       const answer = await askOctiq(list);

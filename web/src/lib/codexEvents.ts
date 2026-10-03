@@ -21,12 +21,23 @@
 // turn (`__fixtures__/codex-seat.jsonl`), not guessed.
 
 import type { ToolState } from "./chat";
+import { outcomeOfResult, type ToolOutcome } from "./toolOutcome";
 
 export type CodexRead =
   /** Codex wrote something. It arrives whole — there are no deltas. */
   | { kind: "say"; text: string; phase?: "commentary" | "final_answer" }
   /** Codex ran something. `id` is stable across the started/completed pair. */
-  | { kind: "tool"; id: string; name: string; args: unknown; state: ToolState; result?: string; details?: { exit_code: number } }
+  | {
+      kind: "tool";
+      id: string;
+      name: string;
+      args: unknown;
+      state: ToolState;
+      result?: string;
+      details?: { exit_code: number };
+      /** A failed host MCP call's outcome, off its result's `_meta`. */
+      outcome?: ToolOutcome;
+    }
   /** The turn is over, so nothing may be left looking like it is still writing. */
   | { kind: "done" };
 
@@ -149,13 +160,16 @@ export function readCodexEvent(raw: unknown): CodexRead | null {
 
     case "mcp_tool_call": {
       const result = completed ? mcpResult(item) : "";
+      const state = runState(status, completed);
+      const outcome = state === "error" ? outcomeOfResult(item.result) : undefined;
       return {
         kind: "tool",
         id,
         name: mcpName(item),
         args: item.arguments ?? {},
-        state: runState(status, completed),
+        state,
         ...(completed && result ? { result } : {}),
+        ...(outcome ? { outcome } : {}),
       };
     }
 

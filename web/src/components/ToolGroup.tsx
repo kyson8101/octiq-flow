@@ -4,13 +4,29 @@
 // rather than exposing implementation details. While a call is in flight it
 // adds only the latest call's detail and a spinner. Once the agent speaks or
 // finishes, the completed run settles back to its short summary.
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { groupLook, groupSummary, type Note, type Tool } from "../lib/toolGroups";
+import { failureCounts, originCounts, type FailureCount } from "../lib/toolOutcome";
 import { toolDetail } from "../lib/toolKind";
 import { ToolCard } from "./ToolCard";
 import { ToolIcon } from "./ToolIcon";
 import { useDelayedToolPeek } from "./useDelayedToolPeek";
 import { RollingText } from "./RollingNumber";
+
+function Counts({ list }: { list: FailureCount[] }) {
+  return list.map((failure) => (
+    <Fragment key={failure.key}>
+      <span aria-hidden="true">·</span>
+      <span
+        className="tool-result-failed"
+        data-severity={failure.severity}
+        data-origin={failure.origin}
+      >
+        {failure.text}
+      </span>
+    </Fragment>
+  ));
+}
 
 export function ToolGroup({
   tools,
@@ -34,6 +50,13 @@ export function ToolGroup({
   const allTools = useMemo(() => [...tools, newest], [tools, newest]);
   const look = groupLook(allTools);
   const summary = groupSummary(allTools);
+  // Failures counted by whose they were — "7 not answered (OctiqFlow)" — so an
+  // expired card is never read as the provider refusing. Only the origin is
+  // named here; each row inside says the rest.
+  const failures = failureCounts(allTools);
+  // A phone's shorter form: one count per origin.
+  const byOrigin = originCounts(allTools);
+  const onlyWarnings = failures.length > 0 && failures.every((f) => f.severity === "warning");
   // Calls usually run one at a time, but searching backwards also keeps the
   // row honest if a provider reports overlapping calls: the detail belongs to
   // the call that is actually still running, not simply the last one listed.
@@ -46,7 +69,9 @@ export function ToolGroup({
   const shownState = look.state === "running" && !showLive ? "done" : look.state;
 
   return (
-    <div className={`tool tool-group tool-${shownState} ${open ? "is-open" : ""}`}>
+    <div
+      className={`tool tool-group tool-${shownState} ${onlyWarnings ? "is-warning" : ""} ${open ? "is-open" : ""}`}
+    >
       <button
         className="tool-head tool-group-head"
         onClick={() => setOpen((v) => !v)}
@@ -72,9 +97,13 @@ export function ToolGroup({
         )}
         {look.failed > 0 && (
           <span className="tool-state tool-result-counts">
-            <span className="tool-result-success">{look.success} success</span>
-            <span aria-hidden="true">;</span>
-            <span className="tool-result-failed">{look.failed} failed</span>
+            <span className="tool-result-success">{look.success} ok</span>
+            <span className="tool-result-long">
+              <Counts list={failures} />
+            </span>
+            <span className="tool-result-short">
+              <Counts list={byOrigin} />
+            </span>
           </span>
         )}
       </button>

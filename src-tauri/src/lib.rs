@@ -39,6 +39,7 @@ mod memory_activity;
 mod memory_vault;
 mod notify_hook;
 mod orchestration;
+mod outcome;
 mod paths;
 mod permission;
 mod pr_workflow;

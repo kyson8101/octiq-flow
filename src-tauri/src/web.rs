@@ -265,6 +265,36 @@ async fn run_command(ctx: &Ctx, cmd: String, args: Value) -> Result<Value, Strin
     .await
 }
 
+/// `run_command` for an agent's hook call: a failure keeps the kind of
+/// refusal the command named where it was made (`outcome::refuse`), read back
+/// on the same blocking thread, so the agent's tool result can say whose
+/// failure it was.
+async fn run_hook_command(
+    ctx: &Ctx,
+    cmd: String,
+    args: Value,
+) -> Result<Value, crate::outcome::Refusal> {
+    let services = ctx.services.clone();
+    gated(git_read_slots(), &cmd.clone(), async move {
+        tokio::task::spawn_blocking(move || {
+            crate::outcome::forget();
+            crate::dispatch::dispatch(&services, &cmd, args).map_err(crate::outcome::classify)
+        })
+        .await
+        .map_err(|error| {
+            crate::outcome::Refusal::from(format!("the backend command did not finish: {error}"))
+        })?
+    })
+    .await
+}
+
+/// A failed hook call, as the MCP reads one: the words the agent is shown,
+/// and whose failure it was (`outcome`), which the MCP hands on in the tool
+/// result's `_meta`.
+fn hook_failed(status: StatusCode, refusal: impl Into<crate::outcome::Refusal>) -> Response {
+    (status, axum::Json(refusal.into().body())).into_response()
+}
+
 /// Commands that run `git` only to read, and that every open tab asks again on
 /// each `git-status-changed`.
 ///
@@ -1009,13 +1039,15 @@ async fn handover_handler(
     let services = ctx.services.clone();
     let ask = request.args;
     let recorded = tokio::task::spawn_blocking(move || {
+        crate::outcome::forget();
         let (record, fresh) = crate::handover::live_request(
             &services,
             &caller.chat_key,
             &caller.session_key,
             &caller.launch_id,
             ask,
-        )?;
+        )
+        .map_err(crate::outcome::classify)?;
         // Only for a new request: a retry with the same requestId is the
         // same card, already announced.
         if fresh {
@@ -1028,20 +1060,14 @@ async fn handover_handler(
                 ),
             );
         }
-        Ok::<_, String>(record)
+        Ok::<_, crate::outcome::Refusal>(record)
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| crate::outcome::Refusal::from(error.to_string()))
     .and_then(|result| result);
     let record = match recorded {
         Ok(record) => record,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(json!({ "error": error })),
-            )
-                .into_response()
-        }
+        Err(refusal) => return hook_failed(StatusCode::BAD_REQUEST, refusal),
     };
     let wiring = &ctx.services.handovers;
     let told = if request.wait {
@@ -1053,11 +1079,7 @@ async fn handover_handler(
         Ok(text) => {
             axum::Json(json!({ "result": { "id": record.id, "text": text } })).into_response()
         }
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "error": error })),
-        )
-            .into_response(),
+        Err(error) => hook_failed(StatusCode::BAD_REQUEST, error),
     }
 }
 
@@ -1096,18 +1118,16 @@ async fn handover_back<A: Send + 'static>(
     let services = ctx.services.clone();
     let args = request.args;
     let done = tokio::task::spawn_blocking(move || {
+        crate::outcome::forget();
         act(&services, &caller.chat_key, &caller.session_key, args)
+            .map_err(crate::outcome::classify)
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| crate::outcome::Refusal::from(error.to_string()))
     .and_then(|result| result);
     match done {
         Ok(text) => axum::Json(json!({ "result": { "text": text } })).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "error": error })),
-        )
-            .into_response(),
+        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
 
@@ -1226,9 +1246,15 @@ fn present(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.is_empty())
 }
 
-/// A refused hook call, as the MCP reads one.
+/// A refused hook call, as the MCP reads one. A call with no chat in it is
+/// malformed; every other refusal is about which chat may do this — scope.
 fn hook_refusal((status, error): (StatusCode, &'static str)) -> Response {
-    (status, axum::Json(json!({ "error": error }))).into_response()
+    let reason = if status == StatusCode::BAD_REQUEST {
+        crate::outcome::ReasonClass::Validation
+    } else {
+        crate::outcome::ReasonClass::ScopeRefused
+    };
+    hook_failed(status, crate::outcome::Refusal::new(reason, error))
 }
 
 const FRONT_DESK_ONLY: &str = "This is a front-desk chat: it only routes the person with route_chat, and every other OctiqFlow tool is refused.";
@@ -1275,6 +1301,7 @@ async fn route_handler(
     let services = ctx.services.clone();
     let ask = request.args;
     let recorded = tokio::task::spawn_blocking(move || {
+        crate::outcome::forget();
         crate::handover::live_route_request(
             &services,
             &caller.chat_key,
@@ -1282,20 +1309,17 @@ async fn route_handler(
             &caller.launch_id,
             ask,
         )
+        .map_err(crate::outcome::classify)
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| crate::outcome::Refusal::from(error.to_string()))
     .and_then(|result| result);
     match recorded {
         Ok(record) => axum::Json(json!({
             "result": { "id": record.id, "text": crate::handover::route::proposed_text(&record) }
         }))
         .into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "error": error })),
-        )
-            .into_response(),
+        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
 
@@ -1361,34 +1385,26 @@ async fn orchestration_handler(
         Ok(caller) => caller.chat_key,
         Err(refused) => return hook_refusal(refused),
     };
-    let Some(command) = orchestration_hook_command(&request.action) else {
-        return (
+    let invalid = |error: &str| {
+        hook_failed(
             StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "error": "Unknown orchestration action." })),
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::Validation, error),
         )
-            .into_response();
+    };
+    let Some(command) = orchestration_hook_command(&request.action) else {
+        return invalid("Unknown orchestration action.");
     };
     let mut args = match request.args {
         Value::Object(args) => args,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(json!({ "error": "Orchestration arguments must be an object." })),
-            )
-                .into_response()
-        }
+        _ => return invalid("Orchestration arguments must be an object."),
     };
     args.insert("actorChatKey".into(), Value::String(actor));
     if command == "orchestration_run_create" {
         args.insert("withBrief".into(), Value::Bool(true));
     }
-    match run_command(&ctx, command.into(), Value::Object(args)).await {
+    match run_hook_command(&ctx, command.into(), Value::Object(args)).await {
         Ok(result) => axum::Json(json!({ "result": result })).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "error": error })),
-        )
-            .into_response(),
+        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
 
@@ -1439,7 +1455,7 @@ async fn vault_handler(
         Ok(chat_key) => chat_key,
         Err(refused) => return hook_refusal(refused),
     };
-    match run_command(
+    match run_hook_command(
         &ctx,
         "memory_vault_agent".into(),
         json!({
@@ -1449,9 +1465,7 @@ async fn vault_handler(
     .await
     {
         Ok(result) => axum::Json(json!({"result": result})).into_response(),
-        Err(error) => {
-            (StatusCode::BAD_REQUEST, axum::Json(json!({"error": error}))).into_response()
-        }
+        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
 
@@ -1464,7 +1478,7 @@ async fn feedback_handler(
         Ok(chat_key) => chat_key,
         Err(refused) => return hook_refusal(refused),
     };
-    match run_command(
+    match run_hook_command(
         &ctx,
         "feedback_agent".into(),
         json!({
@@ -1474,11 +1488,7 @@ async fn feedback_handler(
     .await
     {
         Ok(result) => axum::Json(json!({ "result": result })).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "error": error })),
-        )
-            .into_response(),
+        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
 
@@ -1497,11 +1507,7 @@ async fn agents_handler(
     };
     match agents_hook(&ctx, &chat_key, &request.action, request.args).await {
         Ok(result) => axum::Json(json!({ "result": result })).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "error": error })),
-        )
-            .into_response(),
+        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
 
@@ -1510,30 +1516,44 @@ async fn agents_hook(
     chat_key: &str,
     action: &str,
     args: Value,
-) -> Result<Value, String> {
+) -> Result<Value, crate::outcome::Refusal> {
+    use crate::outcome::{ReasonClass, Refusal};
     use crate::team_tools::{Kind, Roster};
     let kind = match action {
         "list" => None,
         "register" => Some(Kind::Register),
         "update" => Some(Kind::Update),
-        _ => return Err("Unknown agents action.".into()),
+        _ => {
+            return Err(Refusal::new(
+                ReasonClass::Validation,
+                "Unknown agents action.",
+            ))
+        }
     };
     let args = match args {
         Value::Null => json!({}),
         args => args,
     };
-    let invalid = |error: serde_json::Error| format!("Those arguments are not valid: {error}");
+    let invalid = |error: serde_json::Error| {
+        Refusal::new(
+            ReasonClass::Validation,
+            format!("Those arguments are not valid: {error}"),
+        )
+    };
     let team = ctx.services.handovers.team.clone();
     let roster = Roster::read(
         &team,
         crate::workspaces::list_workspaces_impl(&ctx.services.workspaces)?,
     )?;
     let Some(kind) = kind else {
-        return crate::team_tools::listing(&roster, serde_json::from_value(args).map_err(invalid)?);
+        return Ok(crate::team_tools::listing(
+            &roster,
+            serde_json::from_value(args).map_err(invalid)?,
+        )?);
     };
     // A worker settles its own attempt; who is on the team is not its call.
     if ctx.services.orchestrations.active_task(chat_key)?.is_some() {
-        return Err("An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead.".into());
+        return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead."));
     }
     let proposal = serde_json::from_value(args).map_err(invalid)?;
     let saved = crate::team_tools::propose(
@@ -1587,30 +1607,27 @@ async fn task_handler(
         "read" => "chat_task",
         "title" => "chat_set_agent_title",
         _ => {
-            return (
+            return hook_failed(
                 StatusCode::BAD_REQUEST,
-                axum::Json(json!({ "error": "Unknown task action." })),
+                crate::outcome::Refusal::new(
+                    crate::outcome::ReasonClass::Validation,
+                    "Unknown task action.",
+                ),
             )
-                .into_response()
         }
     };
     let args = match task_hook_args(&chat_key, request.args) {
         Ok(args) => args,
         Err(error) => {
-            return (
+            return hook_failed(
                 StatusCode::BAD_REQUEST,
-                axum::Json(json!({ "error": error })),
+                crate::outcome::Refusal::new(crate::outcome::ReasonClass::Validation, error),
             )
-                .into_response()
         }
     };
-    match run_command(&ctx, command.into(), Value::Object(args)).await {
+    match run_hook_command(&ctx, command.into(), Value::Object(args)).await {
         Ok(result) => axum::Json(json!({ "result": result })).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "error": error })),
-        )
-            .into_response(),
+        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
 
@@ -2426,6 +2443,8 @@ mod tests {
             post_hook(&base, "agents", None, Some(&lead), call("register", clash)).await;
         assert_eq!(status, 400);
         assert_eq!(answer["error"], "Another agent is already called potato.");
+        assert_eq!(answer["outcome"]["origin"], "octiqflow");
+        assert_eq!(answer["outcome"]["reasonClass"], "validation");
         // …and a valid change with nobody there to approve it saves nothing.
         let nova = json!({ "name": "Nova", "provider": "codex", "model": "gpt-5.5" });
         let (status, answer) =
@@ -2438,8 +2457,59 @@ mod tests {
                 .starts_with("Nobody has OctiqFlow open to approve this"),
             "{answer}"
         );
+        assert_eq!(answer["outcome"]["origin"], "octiqflow", "{answer}");
         assert_eq!(crate::team::list(&team, None, true).unwrap().len(), 1);
         chats.test_end("chat:lead");
+    }
+
+    /// Every hook failure says it is OctiqFlow's, and what kind, so the agent's
+    /// failed tool call is never drawn as the provider's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hook_failure_says_it_is_octiqflows_and_what_kind() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let lead = chats.test_launch("chat:outcomes");
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let call = |action: &str, args: Value| json!({ "chatKey": "chat:outcomes", "action": action, "args": args });
+        let kind = |answer: &Value| {
+            assert_eq!(answer["outcome"]["origin"], "octiqflow", "{answer}");
+            answer["outcome"]["reasonClass"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        // No capability: which chat may do this is the host's refusal.
+        let (status, answer) = hook(&base, None, call("snapshot", json!({}))).await;
+        assert_eq!(status, 401);
+        assert_eq!(kind(&answer), "scope-refused");
+        // An action no hook knows, and arguments of the wrong shape.
+        let (status, answer) = hook(&base, Some(&lead), call("not-an-action", json!({}))).await;
+        assert_eq!(status, 400);
+        assert_eq!(kind(&answer), "validation");
+        let (_, answer) = hook(&base, Some(&lead), call("snapshot", json!([1]))).await;
+        assert_eq!(kind(&answer), "validation");
+        // A bad argument refused deep inside the command keeps its kind on
+        // the way out (`outcome::refuse` → `classify`).
+        let (status, answer) =
+            hook(&base, Some(&lead), call("snapshot", json!({ "runId": 5 }))).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("bad argument 'runId'"));
+        assert_eq!(kind(&answer), "validation");
+        // Anything the host has not named is still OctiqFlow's.
+        let (_, answer) = post_hook(
+            &base,
+            "task",
+            None,
+            Some(&lead),
+            json!({ "chatKey": "chat:outcomes", "action": "not-an-action", "args": {} }),
+        )
+        .await;
+        assert_eq!(kind(&answer), "validation");
+        chats.test_end("chat:outcomes");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

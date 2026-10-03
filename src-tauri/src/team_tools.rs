@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::agent_chat::{Access, ChatAgent};
+use crate::outcome::{ReasonClass, Refusal};
 use crate::permission::Answer;
 use crate::team::{AgentTeam, TeamAgent, TeamDraft};
 use crate::workspaces::Workspace;
@@ -414,16 +415,23 @@ pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
 }
 
 /// How the person answered, as the agent reads it. `Ok` only on an Allow.
-fn approved(answer: &Answer, wait: Duration) -> Result<(), String> {
-    match (answer.decision, answer.reason.as_str()) {
-        ("allow", _) => Ok(()),
-        ("deny", "nobody answered in time") => Err(format!(
+/// Every refusal here is OctiqFlow's card, never the provider's: an expiry is
+/// `approval-expired`, a Deny `approval-denied` (`outcome::of_permission`).
+fn approved(answer: &Answer, wait: Duration) -> Result<(), Refusal> {
+    let Some(outcome) = crate::outcome::of_permission(answer) else {
+        return Ok(());
+    };
+    let message = match outcome.reason_class {
+        ReasonClass::ApprovalExpired => format!(
             "The person did not answer within {} seconds, so nothing was changed. Tell them what you proposed and call again when they are ready to approve it.",
             wait.as_secs()
-        )),
-        ("deny", _) => Err("The person declined this change, so nothing was changed.".into()),
-        _ => Err("Nobody has OctiqFlow open to approve this, so nothing was changed. A change to the registered agents needs the person's approval on its card.".into()),
-    }
+        ),
+        ReasonClass::ApprovalDenied => {
+            "The person declined this change, so nothing was changed.".into()
+        }
+        _ => "Nobody has OctiqFlow open to approve this, so nothing was changed. A change to the registered agents needs the person's approval on its card.".into(),
+    };
+    Err(Refusal { message, outcome })
 }
 
 /// How long the card stays up for this call.
@@ -465,15 +473,16 @@ pub async fn propose<A, F>(
     kind: Kind,
     proposal: Proposal,
     ask: A,
-) -> Result<TeamAgent, String>
+) -> Result<TeamAgent, Refusal>
 where
     A: FnOnce(crate::permission::Request) -> F,
     F: Future<Output = Answer>,
 {
-    let change = draft(roster, kind, &proposal)?;
+    let invalid = |error: String| Refusal::new(ReasonClass::Validation, error);
+    let change = draft(roster, kind, &proposal).map_err(invalid)?;
     // The Settings form's rules, against the agents as they are now. A
     // proposal that would be refused is never put to the person.
-    let after = crate::team::check(team, change.draft.clone())?;
+    let after = crate::team::check(team, change.draft.clone()).map_err(invalid)?;
     let wait = wait_for(proposal.wait_seconds);
     let request = crate::permission::Request {
         chat_key: Some(chat_key.to_string()),
@@ -490,6 +499,7 @@ where
         // meanwhile is refused by the same rules.
         None => crate::team::save(team, change.draft),
     }
+    .map_err(Refusal::from)
 }
 
 #[cfg(test)]
@@ -571,6 +581,65 @@ mod tests {
         crate::team::list(team, None, true).unwrap()
     }
 
+    /// The General-chat report, reproduced: an agent_update card nobody
+    /// answers runs out on OctiqFlow's own timer, through the real
+    /// `permission::ask`, and the refusal says so — OctiqFlow, approval
+    /// expired, a warning — so it can never be drawn as Claude blocking.
+    ///
+    /// The deadline is cut from 180 s to one so the test is quick; it is the
+    /// same timer either way (`answer_within_secs`). The card carries no chat
+    /// key, so the real phone a chat key would push to is never told.
+    #[tokio::test]
+    async fn an_unanswered_card_expires_as_octiqflows_approval_expired() {
+        let (_dir, team) = temp_team();
+        register(&team, "Potato", None);
+        // Someone was here a moment ago, so the question is put up and waited
+        // on rather than answered "nobody is watching".
+        crate::bus::client_joined();
+        crate::bus::client_left();
+        let shown = Arc::new(Mutex::new(None));
+        let seen = shown.clone();
+        let started = std::time::Instant::now();
+        let refused = propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Potato".into()),
+                role: Some("Changed while nobody looked.".into()),
+                ..Proposal::default()
+            },
+            move |mut request: crate::permission::Request| {
+                *seen.lock().unwrap() = request.answer_within_secs;
+                request.chat_key = None;
+                request.answer_within_secs = Some(1);
+                crate::permission::ask(request)
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() >= Duration::from_secs(1),
+            "it waited out the card"
+        );
+        assert_eq!(
+            *shown.lock().unwrap(),
+            Some(180),
+            "the real card's deadline"
+        );
+        assert_eq!(
+            refused.outcome,
+            crate::outcome::Outcome::host(ReasonClass::ApprovalExpired)
+        );
+        assert_eq!(
+            refused.body()["outcome"],
+            json!({"origin": "octiqflow", "reasonClass": "approval-expired", "severity": "warning"})
+        );
+        assert!(refused.message.contains("did not answer"), "{refused}");
+        assert_eq!(stored(&team)[0].role, "Writes code.", "nothing was saved");
+    }
+
     #[tokio::test]
     async fn a_registration_is_saved_only_on_the_persons_allow() {
         let (_dir, team) = temp_team();
@@ -596,9 +665,15 @@ mod tests {
             deny,
         )
         .await;
+        let refused = refused.unwrap_err();
         assert_eq!(
-            refused.unwrap_err(),
+            refused.message,
             "The person declined this change, so nothing was changed."
+        );
+        assert_eq!(
+            refused.outcome,
+            crate::outcome::Outcome::host(ReasonClass::ApprovalDenied),
+            "a Deny is OctiqFlow's card, not the provider"
         );
         assert_eq!(stored(&team).len(), 1, "a denial saves nothing");
         let card = shown.lock().unwrap().pop().unwrap();
@@ -734,7 +809,12 @@ mod tests {
             let error = propose(&roster(&team), &team, "chat:lead", kind, proposal, allow)
                 .await
                 .unwrap_err();
-            assert_eq!(error, expected);
+            assert_eq!(error.message, expected);
+            assert_eq!(
+                error.outcome,
+                crate::outcome::Outcome::host(ReasonClass::Validation),
+                "{expected}: refused before any card, as validation"
+            );
             assert!(shown.lock().unwrap().is_empty(), "{expected}: no card");
         }
         assert_eq!(stored(&team).len(), 2);
@@ -819,7 +899,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("was changed while this waited"), "{error}");
+        assert!(
+            error.message.contains("was changed while this waited"),
+            "{error}"
+        );
         assert_eq!(stored(&team)[0].role, "Edited in Settings.");
     }
 
@@ -827,14 +910,16 @@ mod tests {
     fn every_unanswered_card_is_told_apart() {
         let wait = Duration::from_secs(50);
         assert!(approved(&answer("allow", "you allowed it"), wait).is_ok());
-        assert!(approved(&answer("deny", "nobody answered in time"), wait)
-            .unwrap_err()
-            .contains("within 50 seconds"));
-        assert!(
-            approved(&answer("abstain", "nobody is watching OctiqFlow"), wait)
-                .unwrap_err()
-                .starts_with("Nobody has OctiqFlow open")
+        let expired = approved(&answer("deny", "nobody answered in time"), wait).unwrap_err();
+        assert!(expired.message.contains("within 50 seconds"));
+        assert_eq!(
+            expired.outcome,
+            crate::outcome::Outcome::host(ReasonClass::ApprovalExpired)
         );
+        let unwatched =
+            approved(&answer("abstain", "nobody is watching OctiqFlow"), wait).unwrap_err();
+        assert!(unwatched.message.starts_with("Nobody has OctiqFlow open"));
+        assert_eq!(unwatched.outcome.origin, crate::outcome::Origin::Octiqflow);
         assert_eq!(wait_for(None), crate::permission::ANSWER_TIMEOUT);
         assert_eq!(wait_for(Some(1)), WAIT_MIN);
         assert_eq!(wait_for(Some(50)), Duration::from_secs(50));

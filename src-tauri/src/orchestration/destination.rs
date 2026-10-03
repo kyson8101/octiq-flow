@@ -201,8 +201,14 @@ fn scoped_project<'a>(team: &'a [TeamAgent], who: &str) -> Result<Option<&'a str
 }
 
 /// Resolve a task's assignee and destination. See the module docs for the
-/// rules; every refusal says what to pass instead.
+/// rules; every refusal says what to pass instead, and is OctiqFlow's scope
+/// refusal wherever it is shown (`outcome`).
 pub fn route(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Routed, String> {
+    resolve(team, projects, req)
+        .map_err(|error| crate::outcome::refuse(crate::outcome::ReasonClass::ScopeRefused, error))
+}
+
+fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Routed, String> {
     let manager = match req.manager {
         Some(id) => Some(
             team.iter()
@@ -311,6 +317,14 @@ pub fn route(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<
 /// project deleted or a folder removed since the plan was approved stops the
 /// task; it is never redirected.
 pub fn verify<'a>(
+    projects: &'a [Workspace],
+    destination: &TaskDestination,
+) -> Result<&'a Workspace, String> {
+    still_there(projects, destination)
+        .map_err(|error| crate::outcome::refuse(crate::outcome::ReasonClass::ScopeRefused, error))
+}
+
+fn still_there<'a>(
     projects: &'a [Workspace],
     destination: &TaskDestination,
 ) -> Result<&'a Workspace, String> {
@@ -599,6 +613,29 @@ mod tests {
         projects.push(gone);
         let err = route(&w.team, &projects, &req("maya", Some("gone"), None)).unwrap_err();
         assert!(err.contains("does not exist on disk"), "{err}");
+    }
+
+    #[test]
+    fn a_destination_refusal_is_octiqflows_scope_refusal_wherever_it_surfaces() {
+        let w = world();
+        crate::outcome::forget();
+        let err = route(&w.team, &w.projects, &req("maya", Some("nowhere"), None)).unwrap_err();
+        // A caller that puts its own words around the refusal keeps the kind.
+        let read = crate::outcome::classify(format!("Could not create the task: {err}"));
+        assert_eq!(
+            read.outcome,
+            crate::outcome::Outcome::host(crate::outcome::ReasonClass::ScopeRefused)
+        );
+        let gone = TaskDestination {
+            project_id: "deleted".into(),
+            project_name: "Deleted".into(),
+            repository: "/definitely/not/here".into(),
+        };
+        let err = verify(&w.projects, &gone).unwrap_err();
+        assert_eq!(
+            crate::outcome::classify(err).outcome.reason_class,
+            crate::outcome::ReasonClass::ScopeRefused
+        );
     }
 
     #[test]

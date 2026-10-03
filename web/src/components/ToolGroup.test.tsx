@@ -106,7 +106,7 @@ describe("a run containing failed calls", () => {
     );
 
     expect(markup).toContain("ran 4 commands");
-    expect(markup).toContain("1 success");
+    expect(markup).toContain("1 ok");
     expect(markup).toContain("3 failed");
     expect(markup).toContain('title="Show all 4 calls"');
     expect(markup).toContain("tool-error");
@@ -117,7 +117,69 @@ describe("a run containing failed calls", () => {
       <ToolGroup tools={[bash("1", "npm run lint")]} newest={failedBash("2", "npm test")} />,
     );
 
-    expect(markup).toContain("1 success");
+    expect(markup).toContain("1 ok");
     expect(markup).toContain("1 failed");
+  });
+});
+
+describe("failures say whose they were", () => {
+  const agentUpdate = (id: string, outcome?: Tool["outcome"]): Tool => ({
+    kind: "tool",
+    id,
+    name: "mcp__octiq__agent_update",
+    argsJson: "",
+    args: { agent: "Nova" },
+    state: "error",
+    ...(outcome ? { outcome } : {}),
+  });
+  const expired = { origin: "octiqflow", reasonClass: "approval-expired", severity: "warning" } as const;
+  const codexLimit = { origin: "provider", reasonClass: "rate-limit", providerName: "Codex", severity: "warning" } as const;
+  const claudeAuth = { origin: "provider", reasonClass: "auth", providerName: "Claude", severity: "error" } as const;
+
+  it("collapses seven expired cards to one short line naming OctiqFlow, and nothing more", () => {
+    const markup = renderToStaticMarkup(
+      <ToolGroup
+        tools={[bash("1", "ls"), bash("2", "pwd"), bash("3", "git status"), ...[4, 5, 6, 7, 8, 9].map((n) => agentUpdate(String(n), expired))]}
+        newest={agentUpdate("10", expired)}
+      />,
+    );
+    expect(markup).toContain("3 ok");
+    expect(markup).toContain("7 not answered (OctiqFlow)");
+    // The phone's short form: one count per origin.
+    expect(markup).toContain('<span class="tool-result-short">');
+    expect(markup).toContain(">7 OctiqFlow<");
+    expect(markup).not.toMatch(/>\d+ failed/);
+    // A run whose failures are all warnings is not painted as broken.
+    expect(markup).toContain("is-warning");
+    expect(markup).toContain('data-severity="warning"');
+    // The collapsed line names no reason class and no badge: those are inside.
+    expect(markup).not.toContain("approval expired");
+    expect(markup).not.toContain("tool-outcome");
+  });
+
+  it("keeps the provider's apart without naming the provider", () => {
+    const markup = renderToStaticMarkup(
+      <ToolGroup
+        tools={[bash("1", "ls"), agentUpdate("2", expired), agentUpdate("3", codexLimit)]}
+        newest={agentUpdate("4", claudeAuth)}
+      />,
+    );
+    expect(markup).toContain("1 ok");
+    expect(markup).toContain("1 not answered (OctiqFlow)");
+    expect(markup).toContain("1 rate-limited (provider)");
+    expect(markup).toContain("1 failed (provider)");
+    expect(markup).not.toContain("Codex");
+    expect(markup).not.toContain("Claude");
+    // One real error among them, so the run is not a warning-only run.
+    expect(markup).not.toContain("is-warning");
+  });
+
+  it("draws an old run with no outcomes exactly as before", () => {
+    const markup = renderToStaticMarkup(
+      <ToolGroup tools={[bash("1", "ls")]} newest={agentUpdate("2")} />,
+    );
+    expect(markup).toContain("1 failed");
+    expect(markup).not.toContain("OctiqFlow");
+    expect(markup).not.toContain("is-warning");
   });
 });
