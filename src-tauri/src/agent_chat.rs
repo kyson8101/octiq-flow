@@ -278,29 +278,7 @@ fn durable_user_turn_exists(key: &str, turn_id: &str) -> bool {
 /// Tie each provider acknowledgement to its exact dispatched prompt. Text is
 /// not an identity: identical follow-ups can be waiting at the same time.
 fn stamp_user_turn_id(event: &mut Value, agent: ChatAgent, turn_id: Option<&str>) {
-    let starts_turn = match agent {
-        ChatAgent::Codex => event.get("type").and_then(Value::as_str) == Some("turn.started"),
-        ChatAgent::Pi => event.get("type").and_then(Value::as_str) == Some("turn_start"),
-        // Antigravity reports the person's input as its own first step.
-        ChatAgent::Antigravity => {
-            event.get("event").and_then(Value::as_str) == Some("step_update")
-                && event
-                    .pointer("/step_update/step_type")
-                    .and_then(Value::as_str)
-                    == Some("user_input")
-        }
-        ChatAgent::Claude => {
-            event.get("type").and_then(Value::as_str) == Some("user")
-                && event.get("parent_tool_use_id").is_none_or(Value::is_null)
-                && event.pointer("/message/content").is_some_and(|content| {
-                    content.is_string()
-                        || content.as_array().is_some_and(|blocks| {
-                            !blocks.iter().any(|block| block["type"] == "tool_result")
-                        })
-                })
-        }
-    };
-    if !starts_turn {
+    if !provider_for(agent).acknowledges_user_turn(event) {
         return;
     }
     let Some(turn_id) = turn_id.filter(|id| !id.trim().is_empty()) else {

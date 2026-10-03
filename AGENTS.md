@@ -180,15 +180,20 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 - **Antigravity cannot ask.** Headless, it refuses any call its mode would
   ask about, the refusal ends the turn, and the `result` lists it in
   `denied_actions`; nothing reaches the stream to put a card on. So Read is
-  `--mode plan` (refuses even `ls`), Edits is `--mode accept-edits` (refuses
-  every shell command), and Auto and Full are `--dangerously-skip-permissions`.
+  `--mode plan` (refuses even `ls` and any file write), Edits is `--mode
+  accept-edits` (writes inside the project; refuses every shell command and any
+  file read or write outside the project), and Auto and Full are
+  `--dangerously-skip-permissions`.
   `--sandbox` was tried for Auto and refuses writes inside the project and
   git's read of `~/.gitconfig`, so Auto is unguarded and the UI says so. A
-  refused turn is stamped `octiq_access` and the page says which level refused
-  it. PreToolUse hooks and workspace settings files cannot lift the refusal.
+  refused turn is stamped `octiq_access`; the page fails the refused tool row
+  (agy may report it as a silent success) and asks for the least level that
+  lets it through — Accept edits for a project file write, Auto otherwise. The
+  plugin rules tell the model the level it runs at. PreToolUse hooks and
+  workspace settings files cannot lift the refusal.
 - **What OctiqFlow writes for Antigravity.** Its MCP server and host rules
   ride a plugin in a folder each launch adds with `--add-dir`:
-  `~/.octiqflow/mcp/antigravity/<chat|worker|front-desk>/.agents/plugins/octiqflow/`
+  `~/.octiqflow/mcp/antigravity/<chat-<level>|worker-<level>|front-desk>/.agents/plugins/octiqflow/`
   (`mcp_config.json`, `rules/AGENTS.md`). The server inherits agy's
   environment, so it knows its chat. Antigravity names it `octiqflow_octiq`.
   One thing goes outside `~/.octiqflow`: the rule `mcp(octiqflow_octiq/*)` in
