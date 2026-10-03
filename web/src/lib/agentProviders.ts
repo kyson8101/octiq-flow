@@ -262,13 +262,13 @@ export const providers = {
     // `--sandbox` blocks writes inside the project and git itself. Auto stays
     // a row of its own (one bypass switch per list), named for what it is.
     access: [
-      { id: "read", label: "Plan", hint: "reads and searches; any shell command is refused and ends the turn" },
-      { id: "edits", label: "Accept edits", hint: "edits files without asking; shell commands are refused and end the turn" },
+      { id: "read", label: "Plan", hint: "reads and searches the project; any edit or shell command is refused and ends the turn" },
+      { id: "edits", label: "Accept edits", hint: "edits files in the project without asking; shell commands and files outside the project are refused and end the turn" },
       { id: "auto", label: "Auto · unguarded", hint: "no guarded auto exists: runs commands and edits without asking" },
       { id: "full", label: "Skip permissions", hint: "runs anything without asking", bypass: true },
     ],
     accessNote:
-      "Antigravity cannot ask while it works, so no permission card can appear. Plan and Accept edits refuse every shell command, and the refusal ends the turn; Auto and Skip permissions run everything unasked.",
+      "Antigravity cannot ask while it works, so no permission card can appear. Plan refuses every edit and shell command, Accept edits every shell command and any file outside the project, and the refusal ends the turn; Auto and Skip permissions run everything unasked.",
     // A Gemini model's id names its level (`gemini-3.8-flash-high`) and agy
     // refuses another beside it; an effort applies only to the default model.
     efforts: [

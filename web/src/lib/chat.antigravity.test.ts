@@ -8,6 +8,11 @@ import { antigravityTool, readAntigravityEvent } from "./antigravityEvents";
 // Rust tests read the same files. Re-record them; never edit them.
 import threeTurns from "./__fixtures__/antigravity-three-turns.jsonl?raw";
 import planRefused from "./__fixtures__/antigravity-plan-refused.jsonl?raw";
+// Two one-shot `agy -p --output-format stream-json` captures (same events):
+// the review's write_to_file at `--mode plan`, and a view_file outside the
+// workspace at `--mode accept-edits`.
+import planWriteRefused from "./__fixtures__/antigravity-plan-write-refused.jsonl?raw";
+import editsReadOutside from "./__fixtures__/antigravity-edits-read-outside-refused.jsonl?raw";
 import badModel from "./__fixtures__/antigravity-bad-model.jsonl?raw";
 import interrupted from "./__fixtures__/antigravity-interrupted.jsonl?raw";
 
@@ -130,6 +135,33 @@ describe("Antigravity conversations (real agy 1.2.16 streams)", () => {
     expect(refusal?.result).toContain("at Plan access");
   });
 
+  it("fails a file write Plan refused, and asks only for Accept edits", () => {
+    // The step comes back DONE with no output; only the turn's
+    // denied_actions ({action: write_file, display_name: WriteToFile}) says
+    // the file was never written.
+    const state = fold(asTheHostRecordsIt(planWriteRefused, "read", ["Create read-boundary.txt"]));
+    const write = tools(state.messages).find((b) => b.name === "write_to_file");
+    expect(write?.state).toBe("error");
+    expect(write?.result).toBe("Antigravity refused this call: nobody could approve it at this access level.");
+    expect(write?.outcome).toMatchObject({ origin: "provider", providerName: "Antigravity" });
+    const refusal = tools(state.messages).find((b) => b.id.startsWith("agent-warning-"));
+    expect(refusal?.result).toBe(
+      "Antigravity refused a file change (write to file) at Plan access and ended the turn: it cannot ask anyone while it works, so no permission card can appear. Give this chat Accept edits access to let it change files in this project; a file outside the project needs Auto or Skip permissions.",
+    );
+    expect(refusal?.result).not.toContain("write_file");
+    expect(state.busy).toBe(false);
+  });
+
+  it("fails a read outside the project that Accept edits refused, and asks for Auto", () => {
+    const state = fold(asTheHostRecordsIt(editsReadOutside, "edits", ["Read a file outside the project"]));
+    const read = tools(state.messages).find((b) => b.name === "view_file");
+    expect(read?.state).toBe("error");
+    const refusal = tools(state.messages).find((b) => b.id.startsWith("agent-warning-"));
+    expect(refusal?.result).toMatch(
+      /^Antigravity refused a file read \(view file\) at Accept edits access and ended the turn.*Raise this chat's access to Auto or Skip permissions to let it run\.$/,
+    );
+  });
+
   it("says why a launch failed before any turn", () => {
     const state = fold(lines(badModel), { ...emptyChat(), busy: true });
     expect(state.busy).toBe(false);
@@ -169,8 +201,28 @@ describe("readAntigravityEvent", () => {
   });
 
   it("names both refusals, once each, and falls back when the level is unknown", () => {
-    expect(antigravityRefusal(["mcp", "command", "mcp"], undefined)).toMatch(
-      /^Antigravity refused an MCP tool call and a shell command at this access level and ended the turn/,
+    expect(
+      antigravityRefusal([{ action: "mcp" }, { action: "command", displayName: "RunCommand" }, { action: "mcp" }], undefined),
+    ).toMatch(/^Antigravity refused an MCP tool call and a shell command at this access level and ended the turn/);
+  });
+
+  it("asks for the least access that lets a refusal through", () => {
+    const write = { action: "write_file", displayName: "WriteToFile" };
+    // A write below Accept edits: Accept edits for the project, more beyond it.
+    expect(antigravityRefusal([write], "read")).toMatch(
+      /Give this chat Accept edits access to let it change files in this project; a file outside the project needs Auto or Skip permissions\.$/,
+    );
+    // Accept edits already refused it, so the file was outside the project.
+    expect(antigravityRefusal([write], "edits")).toMatch(
+      /Accept edits covers only files inside this project; raise this chat's access to Auto or Skip permissions to let it run\.$/,
+    );
+    // A command alongside the write needs Auto, whatever the write needed.
+    expect(antigravityRefusal([write, { action: "command" }], "read")).toMatch(
+      /^Antigravity refused a file change \(write to file\) and a shell command at Plan access.*Raise this chat's access to Auto or Skip permissions to let it run\.$/,
+    );
+    // A permission this page has no words for is named by its tool.
+    expect(antigravityRefusal([{ action: "brand_new", displayName: "DoTheThing" }], "read")).toMatch(
+      /^Antigravity refused do the thing at Plan access/,
     );
   });
 });

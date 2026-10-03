@@ -43,7 +43,7 @@ import {
 } from "./skillRun";
 import { readCodexEvent } from "./codexEvents";
 import { readPiEvent, type PiContent, type PiRead } from "./piEvents";
-import { readAntigravityEvent, type AntigravityRead } from "./antigravityEvents";
+import { readAntigravityEvent, type AntigravityDenial, type AntigravityRead } from "./antigravityEvents";
 import { accessLabel, type AccessLevel } from "./agentProviders";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
@@ -2433,12 +2433,12 @@ function foldAntigravity(
  *  as failed rather than ticked. */
 function markAntigravityRefused(
   messages: Message[],
-  denied: readonly string[],
+  denied: readonly AntigravityDenial[],
   outcome: ToolOutcome | undefined,
 ): Message[] {
+  const actions = new Set(denied.map((denial) => denial.action));
   const refused = (name: string) =>
-    (denied.includes("command") && name === "run_command") ||
-    (denied.includes("mcp") && (name === "call_mcp_tool" || /^mcp_/.test(name)));
+    [...actions].some((action) => ANTIGRAVITY_ACTION_TOOLS[action]?.(name));
   const next = [...messages];
   for (let i = next.length - 1; i >= 0; i -= 1) {
     const message = next[i];
@@ -2464,13 +2464,63 @@ function markAntigravityRefused(
   return next;
 }
 
-/** Why an Antigravity turn ended on a refusal, in the person's words. */
-export function antigravityRefusal(denied: readonly string[], access: string | undefined): string {
-  const what = [...new Set(denied)].map((action) =>
-    action === "command" ? "a shell command" : action === "mcp" ? "an MCP tool call" : action,
-  );
+/** The built-in tools (agy 1.2.16's init list) that need each permission
+ *  Antigravity names in `denied_actions`. */
+const ANTIGRAVITY_ACTION_TOOLS: Record<string, (name: string) => boolean> = {
+  command: (name) => name === "run_command" || name === "send_command_input",
+  mcp: (name) => name === "call_mcp_tool" || /^mcp_/.test(name),
+  write_file: (name) =>
+    ["write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file", "notebook_edit"].includes(name),
+  read_file: (name) => ["view_file", "list_dir", "find_by_name", "grep_search"].includes(name),
+  read_url: (name) => name === "read_url_content",
+};
+
+const ANTIGRAVITY_ACTION_WORDS: Record<string, string> = {
+  command: "a shell command",
+  mcp: "an MCP tool call",
+  write_file: "a file change",
+  read_file: "a file read",
+  read_url: "a web page read",
+  execute_url: "opening a web address",
+  unsandboxed: "a command outside its sandbox",
+};
+
+/** `WriteToFile` → `write to file`. */
+function antigravityToolWords(displayName: string): string {
+  return displayName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .toLowerCase();
+}
+
+/** Why an Antigravity turn ended on a refusal, in the person's words, and the
+ *  least access that lets it through. Accept edits writes files inside the
+ *  project without asking (agy 1.2.16); a read or a write outside the project,
+ *  a command or anything else needs Auto or Skip permissions. Which side of
+ *  the project a refused write fell on is not in the refusal, so a write
+ *  refused below Accept edits names both. */
+export function antigravityRefusal(denied: readonly AntigravityDenial[], access: string | undefined): string {
+  const seen = new Map<string, AntigravityDenial>();
+  for (const denial of denied) {
+    const key = denial.action || denial.displayName || "";
+    if (key && !seen.has(key)) seen.set(key, denial);
+  }
+  const what = [...seen.values()].map(({ action, displayName }) => {
+    const words = ANTIGRAVITY_ACTION_WORDS[action];
+    const tool = displayName ? antigravityToolWords(displayName) : "";
+    if (words) return tool && action !== "command" && action !== "mcp" ? `${words} (${tool})` : words;
+    return tool || action;
+  });
   const level = access ? `at ${accessLabel("antigravity", access as AccessLevel)} access` : "at this access level";
-  return `Antigravity refused ${what.join(" and ")} ${level} and ended the turn: it cannot ask anyone while it works, so no permission card can appear. Raise this chat's access to Auto or Skip permissions to let it run.`;
+  const label = (id: AccessLevel) => accessLabel("antigravity", id);
+  const writesOnly = [...seen.values()].every((denial) => denial.action === "write_file");
+  const belowEdits = access === undefined || access === "read" || access === "manual";
+  const way = writesOnly && belowEdits
+    ? `Give this chat ${label("edits")} access to let it change files in this project; a file outside the project needs Auto or ${label("full")}.`
+    : writesOnly && access === "edits"
+      ? `${label("edits")} covers only files inside this project; raise this chat's access to Auto or ${label("full")} to let it run.`
+      : `Raise this chat's access to Auto or ${label("full")} to let it run.`;
+  return `Antigravity refused ${what.join(" and ")} ${level} and ended the turn: it cannot ask anyone while it works, so no permission card can appear. ${way}`;
 }
 
 function piBlock(content: PiContent, speaker: Speaker | undefined): Block {

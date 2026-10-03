@@ -9,6 +9,12 @@
 
 import type { ToolState } from "./chat";
 
+/** One refused call from a `result`'s `denied_actions`: the permission it
+ *  needed (agy 1.2.16 names `command`, `mcp`, `read_file`, `write_file`,
+ *  `read_url`, `execute_url` and `unsandboxed`) and the tool that asked, as
+ *  Antigravity displays it (`WriteToFile`, `RunCommand`). */
+export type AntigravityDenial = { action: string; displayName?: string };
+
 /** One model call's tokens, as its own step reports them (not cumulative). */
 export type AntigravityUsage = { input: number; output: number };
 
@@ -34,9 +40,9 @@ export type AntigravityRead =
       /** The person's own stop, which is not a failure. */
       stopped: boolean;
       error?: string;
-      /** What Antigravity refused because nobody could approve it, by its
-       *  action id (`command`, `mcp`). The turn ended there. */
-      denied: string[];
+      /** What Antigravity refused because nobody could approve it. The turn
+       *  ended there. */
+      denied: AntigravityDenial[];
       /** The access level the host says the refusal happened at. */
       access?: string;
       durationMs?: number;
@@ -135,9 +141,14 @@ export function readAntigravityEvent(raw: unknown): AntigravityRead | null {
     const status = str(result.status);
     const error = str(result.error);
     const stopped = error.trim() === "interrupted" || status === "CANCELED" || status === "INTERRUPTED";
-    const denied = (Array.isArray(result.denied_actions) ? result.denied_actions : [])
-      .map((action) => str(obj(action).action) || str(obj(action).display_name))
-      .filter(Boolean);
+    const denied = (Array.isArray(result.denied_actions) ? result.denied_actions : []).flatMap(
+      (entry): AntigravityDenial[] => {
+        const action = str(obj(entry).action);
+        const displayName = str(obj(entry).display_name);
+        if (!action && !displayName) return [];
+        return [{ action, ...(displayName ? { displayName } : {}) }];
+      },
+    );
     const seconds = typeof result.duration_seconds === "number" ? result.duration_seconds : undefined;
     return {
       kind: "done",

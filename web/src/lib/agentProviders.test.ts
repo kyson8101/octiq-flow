@@ -175,7 +175,7 @@ describe("Antigravity", () => {
 
   it("says what each access level refuses or runs unasked, since no card can ask", () => {
     expect(agy.access.map((a) => a.id)).toEqual(["read", "edits", "auto", "full"]);
-    expect(agy.access.find((a) => a.id === "edits")?.hint).toMatch(/shell commands are refused/);
+    expect(agy.access.find((a) => a.id === "edits")?.hint).toMatch(/shell commands and files outside the project are refused/);
     expect(agy.access.find((a) => a.id === "auto")?.label).toMatch(/unguarded/);
     // One bypass switch per list: Skip permissions.
     expect(agy.access.filter((a) => a.bypass).map((a) => a.id)).toEqual(["full"]);
