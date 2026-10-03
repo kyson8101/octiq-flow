@@ -281,6 +281,14 @@ fn stamp_user_turn_id(event: &mut Value, agent: ChatAgent, turn_id: Option<&str>
     let starts_turn = match agent {
         ChatAgent::Codex => event.get("type").and_then(Value::as_str) == Some("turn.started"),
         ChatAgent::Pi => event.get("type").and_then(Value::as_str) == Some("turn_start"),
+        // Antigravity reports the person's input as its own first step.
+        ChatAgent::Antigravity => {
+            event.get("event").and_then(Value::as_str) == Some("step_update")
+                && event
+                    .pointer("/step_update/step_type")
+                    .and_then(Value::as_str)
+                    == Some("user_input")
+        }
         ChatAgent::Claude => {
             event.get("type").and_then(Value::as_str) == Some("user")
                 && event.get("parent_tool_use_id").is_none_or(Value::is_null)
@@ -2055,11 +2063,7 @@ fn start_queued_command_turn_inner(
     let start = manager
         .start_context(session_key)
         .ok_or_else(|| format!("nothing here knows how to resume '{session_key}'"))?;
-    if provider_for(start.agent)
-        .capabilities()
-        .input
-        .accepts_stdin()
-    {
+    if !relaunches_to_continue(start.agent) {
         return Err(format!("'{session_key}' no longer uses command-line turns"));
     }
     let QueuedTurn {
@@ -2406,7 +2410,7 @@ pub(crate) fn start_session(
     } else {
         Cow::Borrowed(prompt.as_str())
     };
-    let line = provider.build_command(&AgentCommand {
+    let launch = AgentCommand {
         model: model.as_deref(),
         access,
         prompt: &wire_prompt,
@@ -2420,7 +2424,14 @@ pub(crate) fn start_session(
         orchestration_worker,
         front_desk,
         codex_user_mcp: &codex_user_mcp,
-    });
+    };
+    let line = provider.build_command(&launch);
+    // What the provider reads from files rather than its command line:
+    // Antigravity's plugin carrying OctiqFlow's MCP server and rules. A
+    // launch that would have no way to report is refused, naming the file.
+    provider
+        .prepare_launch(&launch)
+        .map_err(|why| format!("could not start {}: {why}", provider.bin()))?;
     let process_cwd = if cwd.trim().is_empty() {
         // `home_dir` reads USERPROFILE too, so this does not land on "/" the
         // moment a Windows machine is asked for a chat with no folder.
@@ -3181,13 +3192,12 @@ pub(crate) fn start_session(
                         // to ride: its stdin died with it, so anything still
                         // waiting is dropped here rather than left to surface
                         // in whatever is started under this key later.
-                        let queued_turn =
-                            if provider_for(agent).capabilities().input.accepts_stdin() {
-                                manager_for_exit.forget_queued_turns(&session_key_for_exit);
-                                None
-                            } else {
-                                manager_for_exit.take_queued_turn(&session_key_for_exit)
-                            };
+                        let queued_turn = if relaunches_to_continue(agent) {
+                            manager_for_exit.take_queued_turn(&session_key_for_exit)
+                        } else {
+                            manager_for_exit.forget_queued_turns(&session_key_for_exit);
+                            None
+                        };
                         if queued_turn.is_some() {
                             manager_for_exit
                                 .handoffs
@@ -3227,7 +3237,7 @@ pub(crate) fn start_session(
             // exit, carry it into the next resume command instead. Keep the
             // UI's running state alive across that handoff: an `exit` here
             // would make a second quick message race the replacement.
-            if was_current && !provider_for(agent).capabilities().input.accepts_stdin() {
+            if was_current && relaunches_to_continue(agent) {
                 if let Some(turn) = queued_turn {
                     match start_queued_command_turn(
                         manager_for_exit.clone(),
@@ -3890,7 +3900,7 @@ pub fn chat_start_queued_impl(
     }
 
     let agent = guard.agent;
-    if provider_for(agent).capabilities().input.accepts_stdin() {
+    if !relaunches_to_continue(agent) {
         interrupt_persistent_turn(&mut guard)?;
         record_delivery(&key, Some(&turn_id), "starting");
         return Ok(true);
@@ -3937,6 +3947,15 @@ fn write_codex_interrupt_locked(session: &mut ChatSession) -> Result<bool, Strin
     write_json_line(stdin, &payload)?;
     codex.interrupt_when_started = false;
     Ok(true)
+}
+
+/// Whether a conversation goes on only in a new process: every turn of a
+/// command-line provider, and the turn after a stop or an exit for a provider
+/// whose stdin takes no control message (Antigravity). Its queue is carried
+/// into that process rather than dropped with the old one.
+fn relaunches_to_continue(agent: ChatAgent) -> bool {
+    let capabilities = provider_for(agent).capabilities();
+    !capabilities.input.accepts_stdin() || capabilities.interrupt_ends_process
 }
 
 /// Send the interrupt understood by a provider with a persistent stdin.
@@ -3997,10 +4016,11 @@ fn interrupt_session(
         let guard = session.lock().map_err(|e| e.to_string())?;
         guard.agent
     };
-    // Command-line providers cannot receive a control message after startup.
-    // Remove and kill their current one-shot process, but deliberately leave
-    // `StartContext` intact so the next user turn can resume it.
-    if !provider_for(agent).capabilities().input.accepts_stdin() {
+    // Command-line providers cannot receive a control message after startup,
+    // and Antigravity's stdin takes none. Remove and kill the current process,
+    // but deliberately leave `StartContext` intact so the next user turn can
+    // resume it.
+    if relaunches_to_continue(agent) {
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         if !sessions
             .get(session_key)
@@ -4528,11 +4548,26 @@ pub fn chat_set_access_impl(
         return Ok(());
     }
     if !provider.capabilities().supports_live_access_change {
+        // A process that keeps the conversation but cannot change its access
+        // (Antigravity) takes the new level in the process that resumes it.
+        let relaunch = provider.capabilities().input.accepts_stdin()
+            && provider.capabilities().interrupt_ends_process;
+        if relaunch && guard.busy {
+            return Err(format!(
+                "{} takes a new access level between turns. Wait for this turn or stop it, then change the access.",
+                provider.display_name()
+            ));
+        }
         if let Some(mut start) = manager.start_context(&key) {
             start.access = Some(access);
             manager.remember_start(&key, start);
         }
-        return manager.persist_orchestration_context(&key);
+        manager.persist_orchestration_context(&key)?;
+        if relaunch {
+            drop(guard);
+            end_process_when(manager, &key, Some(Duration::ZERO))?;
+        }
+        return Ok(());
     }
     if matches!(access, Access::Full) {
         return Err("Full access needs a fresh agent".into());
@@ -5741,6 +5776,34 @@ mod tests {
         let before = pi_answer.clone();
         stamp_user_turn_id(&mut pi_answer, ChatAgent::Pi, Some("user-pi"));
         assert_eq!(pi_answer, before, "only Pi's acknowledgement is stamped");
+
+        // Antigravity's own `user_input` step, from its real stream, is its
+        // acknowledgement; its answer is not.
+        let events =
+            crate::agent_provider::tests::agy_events(crate::agent_provider::tests::AGY_THREE_TURNS);
+        let mut took = events[1].clone();
+        stamp_user_turn_id(&mut took, ChatAgent::Antigravity, Some("user-agy"));
+        assert_eq!(took["octiq_user_turn_id"], json!("user-agy"));
+        let mut answer = events[2].clone();
+        let before = answer.clone();
+        stamp_user_turn_id(&mut answer, ChatAgent::Antigravity, Some("user-agy"));
+        assert_eq!(
+            answer, before,
+            "only Antigravity's acknowledgement is stamped"
+        );
+    }
+
+    /// Antigravity keeps one process across turns like Claude, but a stop or
+    /// an exit continues it in a new one, carrying the queue, like Pi.
+    #[test]
+    fn only_a_provider_without_an_in_band_stop_relaunches_to_continue() {
+        assert!(!relaunches_to_continue(ChatAgent::Claude));
+        assert!(relaunches_to_continue(ChatAgent::Pi));
+        assert!(relaunches_to_continue(ChatAgent::Antigravity));
+        assert!(provider_for(ChatAgent::Antigravity)
+            .capabilities()
+            .input
+            .accepts_stdin());
     }
 
     #[test]

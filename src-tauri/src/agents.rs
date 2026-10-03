@@ -59,7 +59,7 @@ static AGENT_PROBE: Mutex<Option<(Instant, Vec<(String, String)>)>> = Mutex::new
 #[derive(Clone, Serialize)]
 pub struct AgentInstall {
     /// The id the chat backend takes (`ChatAgent`), which is also the binary
-    /// name: "claude" / "codex" / "pi".
+    /// provider id: "claude" / "codex" / "pi" / "antigravity".
     pub id: String,
     /// What the CLI is called on screen.
     pub name: String,
@@ -122,7 +122,79 @@ pub fn agent_models(agent: AgentKind) -> Result<AgentModelCatalog, String> {
         AgentKind::Claude => Ok(claude_models()),
         AgentKind::Codex => codex_models(),
         AgentKind::Pi => Err("pi.dev does not expose a model catalog".into()),
+        AgentKind::Antigravity => antigravity_models(),
     }
+}
+
+/// `agy models` prints one `id<TAB>display name` line per model the signed-in
+/// account can use; 1.2.16 has no JSON form of it. The level a Gemini id ends
+/// in (`-high`) is that model's effort, so no model lists efforts of its own.
+fn antigravity_models() -> Result<AgentModelCatalog, String> {
+    let executable = probe_cached()
+        .into_iter()
+        .find(|(name, _)| name == AgentKind::Antigravity.id())
+        .ok_or_else(|| "Antigravity is not installed on this machine".to_string())?
+        .1;
+    let mut command = Command::new(if executable.is_empty() {
+        provider_for(AgentKind::Antigravity).bin()
+    } else {
+        &executable
+    });
+    command
+        .arg("models")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    no_console(&mut command);
+    let child = command
+        .spawn()
+        .map_err(|e| format!("could not start Antigravity to load models: {e}"))?;
+    let (send, receive) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let _ = send.send(child.wait_with_output());
+    });
+    let output = receive
+        .recv_timeout(Duration::from_secs(20))
+        .map_err(|_| "Antigravity took too long to list its models".to_string())?
+        .map_err(|e| format!("Antigravity could not list its models: {e}"))?;
+    let _ = waiter.join();
+    let models = parse_antigravity_models(&String::from_utf8_lossy(&output.stdout));
+    if models.is_empty() {
+        return Err(if output.status.success() {
+            "Antigravity listed no models; is it signed in?".into()
+        } else {
+            "Antigravity could not list its models; is it signed in?".into()
+        });
+    }
+    Ok(AgentModelCatalog {
+        source: "provider".into(),
+        models,
+        note: Some("A Gemini model's level is part of its id, so it is its effort.".into()),
+    })
+}
+
+/// The `id<TAB>name` rows of `agy models`. Its progress line and anything else
+/// without a tab, or with an id the command line would refuse, is left out.
+fn parse_antigravity_models(stdout: &str) -> Vec<AgentModel> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (id, name) = line.split_once('\t')?;
+            let id = crate::agent_provider::safe_model(id.trim())?;
+            let name = name.trim();
+            Some(AgentModel {
+                display_name: if name.is_empty() {
+                    id.clone()
+                } else {
+                    name.to_string()
+                },
+                description: Some(id.clone()),
+                model: id,
+                is_default: false,
+                supported_efforts: Vec::new(),
+            })
+        })
+        .collect()
 }
 
 /// Claude Platform's public Models API is authoritative when the server has an
@@ -626,11 +698,12 @@ fn parse_probe_output(stdout: &str) -> Vec<(String, String)> {
             None => (l, ""),
         })
         .collect();
+    // The probe prints each BINARY name, which is not always the id
+    // (Antigravity's is `agy`); what comes back is keyed by id.
     known_agents()
         .filter_map(|provider| {
-            let id = provider.kind().id();
-            let (_, path) = lines.iter().find(|(name, _)| *name == id)?;
-            Some((id.to_string(), (*path).to_string()))
+            let (_, path) = lines.iter().find(|(name, _)| *name == provider.bin())?;
+            Some((provider.kind().id().to_string(), (*path).to_string()))
         })
         .collect()
 }
@@ -707,8 +780,10 @@ mod tests {
         // A login shell prints the user's own banners around our echoes, and
         // may print them in any order. Only the known names survive, and they
         // come back in KNOWN_AGENTS order, not in the order the shell printed.
-        let out = "Welcome to zsh!\npi\t/opt/homebrew/bin/pi\ncodex\t/opt/homebrew/bin/codex\nnpm notice: update available\nclaude\t/Users/x/.local/bin/claude\n";
-        assert_eq!(names(out), vec!["claude", "codex", "pi"]);
+        let out = "Welcome to zsh!\nagy\t/Users/x/.local/bin/agy\npi\t/opt/homebrew/bin/pi\ncodex\t/opt/homebrew/bin/codex\nnpm notice: update available\nclaude\t/Users/x/.local/bin/claude\n";
+        // Antigravity is probed as `agy` and reported by its id.
+        assert_eq!(names(out), vec!["claude", "codex", "pi", "antigravity"]);
+        assert!(parse_probe_output("antigravity\t/x\n").is_empty());
         // One installed agent.
         assert_eq!(names("claude\t/usr/local/bin/claude\n"), vec!["claude"]);
         // Neither installed: banner noise alone yields nothing.
@@ -918,5 +993,28 @@ mod tests {
                 provider.bin()
             );
         }
+    }
+
+    /// `agy models` as 1.2.16 prints it on this project's Mac (2026-10-03):
+    /// its progress line, then `id<TAB>name` rows.
+    #[test]
+    fn antigravity_models_are_read_off_agy_models() {
+        let out = "Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.1-pro-low\tGemini 3.1 Pro (Low)\nclaude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\nbad id; rm\tNope\n";
+        let models = parse_antigravity_models(out);
+        let ids: Vec<&str> = models.iter().map(|m| m.model.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "gemini-3.8-flash-high",
+                "gemini-3.1-pro-low",
+                "claude-opus-4-6-thinking",
+                "gpt-oss-120b-medium"
+            ]
+        );
+        assert_eq!(models[0].display_name, "Gemini 3.8 Flash (High)");
+        assert!(models
+            .iter()
+            .all(|m| m.supported_efforts.is_empty() && !m.is_default));
+        assert!(parse_antigravity_models("Fetching available models...\n").is_empty());
     }
 }

@@ -4517,6 +4517,7 @@ pub(crate) fn model_id(agent: ChatAgent, model: Option<&str>) -> String {
         ChatAgent::Claude => "claude",
         ChatAgent::Codex => "codex",
         ChatAgent::Pi => "pi",
+        ChatAgent::Antigravity => "antigravity",
     };
     let Some(model) = model.filter(|model| !model.trim().is_empty()) else {
         return format!("{provider}:default");

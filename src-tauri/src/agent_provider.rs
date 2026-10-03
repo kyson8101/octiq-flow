@@ -1,11 +1,12 @@
 //! The contract between OctiqFlow's chat runtime and the CLI agents it starts.
 //!
 //! A chat is deliberately provider-agnostic: it has a selected `AgentKind`, a
-//! model, a prompt, folders, and an access level. Claude Code, Codex, and Pi
-//! turn that shared request into different processes, however. Claude keeps a
-//! JSON conversation on stdin; Codex uses its long-lived app-server JSON-RPC
-//! protocol; Pi starts one JSON process per turn. Claude and Codex both have
-//! control channels, but with different framing. Keeping those distinctions in
+//! model, a prompt, folders, and an access level. Claude Code, Codex, Pi and
+//! Antigravity turn that shared request into different processes, however.
+//! Claude and Antigravity keep a JSON conversation on stdin; Codex uses its
+//! long-lived app-server JSON-RPC protocol; Pi starts one JSON process per
+//! turn. Claude and Codex both have control channels, but with different
+//! framing; Antigravity has none, so stopping it ends its process. Keeping those distinctions in
 //! the chat manager spread provider checks through session startup, input,
 //! completion, and settings.
 //!
@@ -30,11 +31,13 @@ pub enum AgentKind {
     Claude,
     Codex,
     Pi,
+    /// Google's Antigravity CLI, `agy`.
+    Antigravity,
 }
 
 impl AgentKind {
     /// The order everywhere an agent picker or probe presents providers.
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Pi];
+    pub const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::Pi, Self::Antigravity];
 
     /// Stable lower-case id used in JSON, session records, and command probes.
     pub const fn id(self) -> &'static str {
@@ -42,6 +45,7 @@ impl AgentKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Antigravity => "antigravity",
         }
     }
 }
@@ -98,6 +102,9 @@ pub struct AgentCapabilities {
     pub supports_lite_mode: bool,
     /// Whether its command needs OctiqFlow's MCP config generated before spawn.
     pub uses_octiq_mcp: bool,
+    /// A running turn is stopped by ending the process, which the next turn
+    /// resumes, because the provider's stdin takes no control message.
+    pub interrupt_ends_process: bool,
 }
 
 /// How much the user has allowed an agent to do without an intervention.
@@ -292,6 +299,13 @@ pub trait AgentProvider: Send + Sync {
 
     fn build_command(&self, request: &AgentCommand<'_>) -> String;
 
+    /// Put in place what the CLI reads from files rather than from its command
+    /// line, just before the line `build_command` made for this same request
+    /// is launched. An error refuses the launch, naming what to fix.
+    fn prepare_launch(&self, _request: &AgentCommand<'_>) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Normalize a requested effort level for this provider.
     fn effort(&self, requested: &str) -> Option<&'static str>;
 
@@ -342,10 +356,12 @@ pub trait AgentProvider: Send + Sync {
 struct ClaudeProvider;
 struct CodexProvider;
 struct PiProvider;
+struct AntigravityProvider;
 
 static CLAUDE: ClaudeProvider = ClaudeProvider;
 static CODEX: CodexProvider = CodexProvider;
 static PI: PiProvider = PiProvider;
+static ANTIGRAVITY: AntigravityProvider = AntigravityProvider;
 
 /// The sole factory for agent-specific behavior.
 pub fn provider_for(kind: AgentKind) -> &'static dyn AgentProvider {
@@ -353,6 +369,7 @@ pub fn provider_for(kind: AgentKind) -> &'static dyn AgentProvider {
         AgentKind::Claude => &CLAUDE,
         AgentKind::Codex => &CODEX,
         AgentKind::Pi => &PI,
+        AgentKind::Antigravity => &ANTIGRAVITY,
     }
 }
 
@@ -462,6 +479,7 @@ impl AgentProvider for ClaudeProvider {
             supports_live_access_change: true,
             supports_lite_mode: true,
             uses_octiq_mcp: true,
+            interrupt_ends_process: false,
         }
     }
 
@@ -823,6 +841,7 @@ impl AgentProvider for CodexProvider {
             supports_live_access_change: !codex_exec_fallback(),
             supports_lite_mode: false,
             uses_octiq_mcp: true,
+            interrupt_ends_process: false,
         }
     }
 
@@ -981,6 +1000,7 @@ impl AgentProvider for PiProvider {
             supports_live_access_change: false,
             supports_lite_mode: false,
             uses_octiq_mcp: false,
+            interrupt_ends_process: false,
         }
     }
 
@@ -1069,6 +1089,340 @@ impl AgentProvider for PiProvider {
             _ => {}
         }
         observed
+    }
+}
+
+/// The folder, beside OctiqFlow's other MCP files (`ask_mcp_config`), that an
+/// Antigravity launch adds to its workspace with `--add-dir`. Antigravity
+/// discovers the plugin in its `.agents/plugins` like any workspace's own.
+const ANTIGRAVITY_DIR: &str = "antigravity";
+
+/// The plugin's name. Antigravity names a plugin's MCP server
+/// `<plugin>_<server>`, so OctiqFlow's is `octiqflow_octiq`.
+const ANTIGRAVITY_PLUGIN: &str = "octiqflow";
+
+/// The one rule OctiqFlow adds to Antigravity's own settings. Headless
+/// Antigravity refuses any call its mode would ask about, and it asks about a
+/// call made through its generic `call_mcp_tool` even in accept-edits mode.
+/// A workspace or plugin cannot allow anything; only the person's
+/// `~/.gemini/antigravity-cli/settings.json` can. The rule names a server that
+/// exists only in a launch OctiqFlow made (its plugin is in the `--add-dir`
+/// folder above), so in any other Antigravity session it allows nothing.
+pub(crate) const ANTIGRAVITY_MCP_RULE: &str = "mcp(octiqflow_octiq/*)";
+
+/// Which plugin a launch gets: what its rules say differs, and a front desk's
+/// MCP server offers it `route_chat` alone (`OCTIQ_FRONT_DESK`, which the
+/// server inherits from the agent's own environment).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AntigravityRole {
+    Chat,
+    Worker,
+    FrontDesk,
+}
+
+impl AntigravityRole {
+    fn of(request: &AgentCommand<'_>) -> Self {
+        if request.front_desk {
+            Self::FrontDesk
+        } else if request.orchestration_worker {
+            Self::Worker
+        } else {
+            Self::Chat
+        }
+    }
+
+    const fn folder(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Worker => "worker",
+            Self::FrontDesk => "front-desk",
+        }
+    }
+}
+
+/// The folder a launch adds with `--add-dir`: `<mcp dir>/antigravity/<role>`.
+fn antigravity_workspace(mcp: &Path, role: AntigravityRole) -> std::path::PathBuf {
+    mcp.with_file_name(ANTIGRAVITY_DIR).join(role.folder())
+}
+
+/// What Antigravity's model is told about the host it runs in, before the
+/// rules every OctiqFlow chat gets.
+const ANTIGRAVITY_HOST_PROMPT: &str = "You are running inside OctiqFlow, which owns this conversation. OctiqFlow's host tools come from the MCP server `octiqflow_octiq`: call each one by its own name when it is listed, or through `call_mcp_tool` with ServerName `octiqflow_octiq`. Your built-in `ask_question` cannot reach the person in this mode; use OctiqFlow's `ask_user` instead.\n\nThis session runs headless, so nobody can approve a tool call while it runs. A shell command runs only when the person gave this chat Full access; otherwise Antigravity refuses it and the turn ends. If a task needs a command you cannot run, say which one and why, so the person can run it or raise the access.";
+
+/// The plugin's always-on rules file: the host prompt, then the rules every
+/// OctiqFlow chat follows (Claude's are its `--append-system-prompt`).
+fn antigravity_rules(role: AntigravityRole) -> String {
+    match role {
+        AntigravityRole::FrontDesk => FRONT_DESK_PROMPT.to_string(),
+        AntigravityRole::Chat | AntigravityRole::Worker => {
+            let worker = if role == AntigravityRole::Worker {
+                orchestration_worker_prompt()
+            } else {
+                String::new()
+            };
+            format!(
+                "# OctiqFlow\n\n{ANTIGRAVITY_HOST_PROMPT}\n\n{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker}"
+            )
+            .trim_end()
+            .to_string()
+                + "\n"
+        }
+    }
+}
+
+/// The plugin's three files, by path relative to its workspace folder.
+fn antigravity_plugin_files(script: &Path, role: AntigravityRole) -> Vec<(String, Vec<u8>)> {
+    let plugin = format!(".agents/plugins/{ANTIGRAVITY_PLUGIN}");
+    let manifest = json!({ "name": ANTIGRAVITY_PLUGIN });
+    // The server inherits the agent's environment, OCTIQ_* included, which is
+    // how it knows its chat. Nothing has to be named here.
+    let servers = json!({
+        "mcpServers": {
+            "octiq": {
+                "command": "node",
+                "args": [script.to_string_lossy()],
+            }
+        }
+    });
+    vec![
+        (
+            format!("{plugin}/plugin.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+        ),
+        (
+            format!("{plugin}/mcp_config.json"),
+            serde_json::to_vec_pretty(&servers).unwrap_or_default(),
+        ),
+        (
+            format!("{plugin}/rules/AGENTS.md"),
+            antigravity_rules(role).into_bytes(),
+        ),
+    ]
+}
+
+/// Write the plugin a launch adds, rewriting only a file that changed: every
+/// launch wants the same files. A failure names the path.
+fn write_antigravity_plugin(mcp: &Path, role: AntigravityRole) -> Result<(), String> {
+    let root = antigravity_workspace(mcp, role);
+    let script = mcp.with_file_name("octiq-ask.cjs");
+    for (relative, body) in antigravity_plugin_files(&script, role) {
+        let path = root.join(&relative);
+        if std::fs::read(&path).ok().as_deref() == Some(body.as_slice()) {
+            continue;
+        }
+        let parent = path.parent().unwrap_or(&root);
+        std::fs::create_dir_all(parent)
+            .and_then(|()| std::fs::write(&path, &body))
+            .map_err(|e| {
+                format!(
+                    "OctiqFlow's Antigravity plugin could not be written to {}: {e}",
+                    path.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Antigravity's own user settings, where `ANTIGRAVITY_MCP_RULE` goes.
+fn antigravity_settings(home: &Path) -> std::path::PathBuf {
+    home.join(".gemini")
+        .join("antigravity-cli")
+        .join("settings.json")
+}
+
+/// Whether a model id already names its own effort. Antigravity's ids carry
+/// it (`gemini-3.8-flash-high`) and refuse an `--effort` beside it; so do the
+/// Claude and GPT ids it serves, which take no effort at all.
+fn antigravity_model_sets_effort(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    !lower.starts_with("gemini-")
+        || lower
+            .rsplit('-')
+            .next()
+            .is_some_and(|last| matches!(last, "low" | "medium" | "high" | "xhigh" | "max"))
+}
+
+/// Antigravity CLI, headless (`agy --input-format stream-json
+/// --output-format stream-json`).
+///
+/// Like Claude, one process holds the conversation and takes each turn as one
+/// NDJSON line on stdin (`{"event":"user","message":{"content":[…]}}`, text
+/// blocks only). Its stream (v1.2.16) is three events, each carrying its
+/// payload under its own name: `init` names the conversation, `step_update`
+/// reports a step (the person's input, a model response with its text in
+/// `text_delta` pieces and that call's `usage`, a tool with `tool_info`), and
+/// `result` is the full stop with the turn's `response`. `--conversation`
+/// resumes a conversation in a new process.
+///
+/// Its stdin takes no control message, so a turn is stopped by ending the
+/// process (`interrupt_ends_process`) and the next message resumes it.
+///
+/// Headless, nobody can approve a call, and Antigravity refuses any its mode
+/// would ask about; the refusal ends the turn, listed in the result's
+/// `denied_actions`. OctiqFlow's MCP server and rules arrive as a plugin in a
+/// folder the launch adds to its workspace (`prepare_launch`).
+impl AgentProvider for AntigravityProvider {
+    fn kind(&self) -> AgentKind {
+        AgentKind::Antigravity
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Antigravity"
+    }
+
+    fn bin(&self) -> &'static str {
+        "agy"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            input: InputTransport::StreamJson,
+            supports_live_access_change: false,
+            supports_lite_mode: false,
+            uses_octiq_mcp: true,
+            interrupt_ends_process: true,
+        }
+    }
+
+    fn effort(&self, requested: &str) -> Option<&'static str> {
+        match requested {
+            "low" => Some("low"),
+            "medium" => Some("medium"),
+            "high" => Some("high"),
+            "xhigh" => Some("xhigh"),
+            "max" => Some("max"),
+            _ => None,
+        }
+    }
+
+    fn build_command(&self, request: &AgentCommand<'_>) -> String {
+        let mut cmd = String::from("agy --input-format stream-json --output-format stream-json");
+        // The id is the one Antigravity announced in its `init` event.
+        if let Some(id) = request.resume.and_then(safe_session_id) {
+            cmd.push_str(&format!(" --conversation {}", sh_quote(&id)));
+        }
+        let model = request.model.and_then(safe_model);
+        if let Some(model) = model.as_deref() {
+            cmd.push_str(&format!(" --model {}", sh_quote(model)));
+        }
+        if let Some(effort) = request.effort.and_then(|e| self.effort(e)) {
+            if !model.as_deref().is_some_and(antigravity_model_sets_effort) {
+                cmd.push_str(&format!(" --effort {effort}"));
+            }
+        }
+        let access = if request.front_desk {
+            Access::Read
+        } else {
+            request.access.unwrap_or(Access::Read)
+        };
+        cmd.push_str(antigravity_access_flag(access));
+        if !request.front_desk {
+            for dir in request.extra_dirs {
+                cmd.push_str(&format!(" --add-dir {}", sh_quote(dir)));
+            }
+        }
+        if let Some(mcp) = request.mcp_config {
+            let workspace = antigravity_workspace(mcp, AntigravityRole::of(request));
+            cmd.push_str(&format!(
+                " --add-dir {}",
+                sh_quote(&workspace.to_string_lossy())
+            ));
+        }
+        if request.front_desk || request.lite {
+            cmd.push_str(" --disable-slash-commands");
+        }
+        cmd
+    }
+
+    fn prepare_launch(&self, request: &AgentCommand<'_>) -> Result<(), String> {
+        let Some(mcp) = request.mcp_config else {
+            return Ok(());
+        };
+        write_antigravity_plugin(mcp, AntigravityRole::of(request))?;
+        // Best effort: without the rule a call the model makes by its own
+        // tool name still runs, and a refused one says so in the chat.
+        if let Some(home) = crate::paths::home_dir() {
+            if let Err(why) = crate::claude_allow::add_antigravity_allow_rule(
+                &antigravity_settings(&home),
+                ANTIGRAVITY_MCP_RULE,
+            ) {
+                eprintln!("antigravity: OctiqFlow's MCP allow rule was not added: {why}");
+            }
+        }
+        Ok(())
+    }
+
+    fn user_message_payload(&self, text: &str, images: &[String]) -> Option<Value> {
+        // Antigravity takes text blocks only, so an image is named by its
+        // path for the agent to open with its own file tool.
+        let mut content = Vec::new();
+        for path in images {
+            content.push(json!({ "type": "text", "text": format!("[Attached image: {path}]") }));
+        }
+        let text = if text.trim().is_empty() && !images.is_empty() {
+            "Please inspect the attached image."
+        } else {
+            text
+        };
+        content.push(json!({ "type": "text", "text": text }));
+        Some(json!({ "event": "user", "message": { "content": content } }))
+    }
+
+    fn observe_event<'a>(&self, event: &'a Value) -> AgentEvent<'a> {
+        let mut observed = AgentEvent::default();
+        match event.get("event").and_then(Value::as_str) {
+            Some("init") => {
+                observed.session_id = event
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty());
+            }
+            Some("result") => {
+                observed.turn_finished = true;
+                let result = event.get("result");
+                let response = result
+                    .and_then(|r| r.get("response"))
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty());
+                let error = result
+                    .and_then(|r| r.get("error"))
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty());
+                observed.final_text = response.or(error);
+            }
+            _ => {}
+        }
+        observed
+    }
+
+    fn output_disposition(&self, line: &str) -> OutputDisposition {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return OutputDisposition::Ignore;
+        }
+        // The refusal notice repeats the `result` event's `denied_actions`,
+        // which the chat shows from there. The flag list printed under a
+        // usage error is detail; the error line above it stays visible.
+        if trimmed.starts_with("jetski: no output produced")
+            || trimmed.starts_with("Usage of agy:")
+            || line.starts_with("  ")
+        {
+            return OutputDisposition::DiagnosticsOnly;
+        }
+        OutputDisposition::Visible
+    }
+}
+
+/// The access level as Antigravity's own flag. Headless Antigravity cannot
+/// ask, so whatever a mode would ask about is refused: plan mode refuses even
+/// a read-only shell command, and accept-edits (and the default
+/// request-review mode) every shell command. Only Full runs them.
+fn antigravity_access_flag(access: Access) -> &'static str {
+    match access {
+        Access::Read => " --mode plan",
+        Access::Manual => "",
+        Access::Edits | Access::Auto => " --mode accept-edits",
+        Access::Full => " --dangerously-skip-permissions",
     }
 }
 
@@ -1301,8 +1655,32 @@ pub(crate) fn ask_mcp_config() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Real `agy` 1.2.16 streams, captured on 2026-10-03 on this project's
+    /// Mac with the flags `AntigravityProvider::build_command` uses (no
+    /// OctiqFlow plugin). Recorded verbatim; re-record rather than edit.
+    /// Three turns in one process: a file read, a shell command accept-edits
+    /// refuses (the turn ends, `denied_actions`), then a recall.
+    pub(crate) const AGY_THREE_TURNS: &str =
+        include_str!("../../web/src/lib/__fixtures__/antigravity-three-turns.jsonl");
+    /// `--mode plan`: even a read-only shell command is refused, as an ERROR step.
+    pub(crate) const AGY_PLAN_REFUSED: &str =
+        include_str!("../../web/src/lib/__fixtures__/antigravity-plan-refused.jsonl");
+    /// An unknown `--model`: one failed `result` and exit 1, before any turn.
+    pub(crate) const AGY_BAD_MODEL: &str =
+        include_str!("../../web/src/lib/__fixtures__/antigravity-bad-model.jsonl");
+    /// SIGINT mid-turn: a failed `result` saying `interrupted`, then exit 1.
+    pub(crate) const AGY_INTERRUPTED: &str =
+        include_str!("../../web/src/lib/__fixtures__/antigravity-interrupted.jsonl");
+
+    pub(crate) fn agy_events(stream: &str) -> Vec<Value> {
+        stream
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a captured line is JSON"))
+            .collect()
+    }
 
     fn command(kind: AgentKind, mcp_config: Option<&Path>) -> String {
         provider_for(kind).build_command(&AgentCommand {
@@ -1338,6 +1716,19 @@ mod tests {
         assert_eq!(pi.kind(), AgentKind::Pi);
         assert_eq!(pi.display_name(), "pi.dev");
         assert_eq!(pi.capabilities().input, InputTransport::CommandLine);
+
+        let agy = provider_for(AgentKind::Antigravity);
+        assert_eq!(agy.kind(), AgentKind::Antigravity);
+        assert_eq!(agy.display_name(), "Antigravity");
+        assert_eq!(agy.bin(), "agy");
+        assert_eq!(agy.capabilities().input, InputTransport::StreamJson);
+        assert!(agy.capabilities().uses_octiq_mcp);
+        assert!(agy.capabilities().interrupt_ends_process);
+        assert_eq!(
+            AgentKind::ALL.map(AgentKind::id),
+            ["claude", "codex", "pi", "antigravity"],
+            "the picker order"
+        );
     }
 
     /// The common runtime conformance harness. A new provider is registered in
@@ -1359,7 +1750,12 @@ mod tests {
                 provider.user_message_payload("hello", &[]).is_some(),
                 provider_framed,
             );
-            assert_eq!(provider.interrupt_payload().is_some(), provider_framed);
+            // A framed stdin either takes an interrupt or is stopped by
+            // ending its process; never neither, never both.
+            assert_eq!(
+                provider.interrupt_payload().is_some(),
+                provider_framed && !capabilities.interrupt_ends_process,
+            );
             assert_eq!(
                 provider.access_change_payload(Access::Auto).is_some(),
                 provider_framed && capabilities.supports_live_access_change,
@@ -1967,5 +2363,349 @@ mod tests {
                 .observe_event(&legacy_end)
                 .turn_finished
         );
+    }
+
+    fn agy_request<'a>(access: Option<Access>, mcp: Option<&'a Path>) -> AgentCommand<'a> {
+        AgentCommand {
+            model: Some("gemini-3.8-flash-high"),
+            access,
+            prompt: "fix it",
+            resume: None,
+            extra_dirs: &[],
+            effort: Some("high"),
+            images: &[],
+            lite: false,
+            mcp_config: mcp,
+            persistent_authorizations: None,
+            orchestration_worker: false,
+            front_desk: false,
+            codex_user_mcp: &[],
+        }
+    }
+
+    #[test]
+    fn antigravity_keeps_one_stream_json_process_with_its_own_flags() {
+        let dirs = ["/repo/other side".to_owned(), "/repo/docs".to_owned()];
+        let line = ANTIGRAVITY.build_command(&AgentCommand {
+            resume: Some("bb35e2e1-d2c3-4b8b-913d-7554783273ff"),
+            extra_dirs: &dirs,
+            ..agy_request(Some(Access::Full), None)
+        });
+        assert!(
+            line.starts_with("agy --input-format stream-json --output-format stream-json"),
+            "{line}"
+        );
+        assert!(line.contains(" --conversation 'bb35e2e1-d2c3-4b8b-913d-7554783273ff'"));
+        assert!(line.contains(" --model 'gemini-3.8-flash-high'"));
+        assert!(line.contains(" --dangerously-skip-permissions"));
+        assert!(line.contains(" --add-dir '/repo/other side' --add-dir '/repo/docs'"));
+        // The prompt goes down stdin: `-p` is dropped in streaming mode.
+        assert!(!line.contains("fix it") && !line.contains(" -p"), "{line}");
+
+        // A model or conversation id that is not a plain token never reaches
+        // the shell, and a first turn resumes nothing.
+        let first = ANTIGRAVITY.build_command(&AgentCommand {
+            model: Some("flash; rm -rf ~"),
+            resume: Some("x' --dangerously-skip-permissions"),
+            ..agy_request(Some(Access::Edits), None)
+        });
+        assert!(!first.contains("--conversation"), "{first}");
+        assert!(!first.contains("--model"), "{first}");
+        assert!(!first.contains("--dangerously"), "{first}");
+
+        // The person's words are one NDJSON line of text blocks; an image is
+        // named by its path, since Antigravity takes text blocks only.
+        let images = ["/tmp/shot one.png".to_owned()];
+        let payload = ANTIGRAVITY
+            .user_message_payload("what is this?", &images)
+            .unwrap();
+        assert_eq!(
+            payload,
+            json!({ "event": "user", "message": { "content": [
+                { "type": "text", "text": "[Attached image: /tmp/shot one.png]" },
+                { "type": "text", "text": "what is this?" },
+            ] } })
+        );
+        assert!(ANTIGRAVITY.interrupt_payload().is_none());
+        assert!(ANTIGRAVITY.access_change_payload(Access::Full).is_none());
+    }
+
+    #[test]
+    fn antigravity_maps_each_access_level_to_its_mode() {
+        let flags = |access| ANTIGRAVITY.build_command(&agy_request(access, None));
+        assert!(flags(Some(Access::Read)).contains(" --mode plan"));
+        let manual = flags(Some(Access::Manual));
+        assert!(
+            !manual.contains("--mode ") && !manual.contains("--dangerously"),
+            "{manual}"
+        );
+        assert!(flags(Some(Access::Edits)).contains(" --mode accept-edits"));
+        assert!(flags(Some(Access::Auto)).contains(" --mode accept-edits"));
+        assert!(flags(Some(Access::Full)).contains(" --dangerously-skip-permissions"));
+        // Unset is the most cautious, as `OCTIQ_ACCESS` is.
+        assert!(flags(None).contains(" --mode plan"));
+        for access in [Access::Read, Access::Manual, Access::Edits, Access::Auto] {
+            assert!(!flags(Some(access)).contains("--dangerously"), "{access:?}");
+        }
+    }
+
+    /// Antigravity refuses `--effort` beside a model id that names its own
+    /// level, and beside its Claude and GPT ids (live, agy 1.2.16):
+    /// `--model gemini-3.8-flash-low --effort max` "conflicts", and
+    /// `--model claude-sonnet-4-6 --effort high` "is not supported".
+    #[test]
+    fn antigravity_passes_effort_only_where_the_model_takes_one() {
+        let with = |model: Option<&'static str>| {
+            ANTIGRAVITY.build_command(&AgentCommand {
+                model,
+                ..agy_request(Some(Access::Edits), None)
+            })
+        };
+        for model in [
+            "gemini-3.8-flash-high",
+            "gemini-3.1-pro-low",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6-thinking",
+            "gpt-oss-120b-medium",
+        ] {
+            assert!(!with(Some(model)).contains("--effort"), "{model}");
+        }
+        assert!(with(Some("gemini-3.8-flash")).contains(" --effort high"));
+        assert!(with(None).contains(" --effort high"));
+        assert_eq!(ANTIGRAVITY.effort("max"), Some("max"));
+        assert_eq!(ANTIGRAVITY.effort("ultracode"), None);
+    }
+
+    #[test]
+    fn antigravity_gets_octiqflows_plugin_through_an_added_folder() {
+        let mcp = Path::new("/home/me/.octiqflow/mcp/octiq-ask.json");
+        let chat = ANTIGRAVITY.build_command(&agy_request(Some(Access::Edits), Some(mcp)));
+        assert!(
+            chat.ends_with(" --add-dir '/home/me/.octiqflow/mcp/antigravity/chat'"),
+            "{chat}"
+        );
+        let worker = ANTIGRAVITY.build_command(&AgentCommand {
+            orchestration_worker: true,
+            ..agy_request(Some(Access::Edits), Some(mcp))
+        });
+        assert!(worker.contains(" --add-dir '/home/me/.octiqflow/mcp/antigravity/worker'"));
+        // A front desk is read-only, gets no folder of the chat's, and none
+        // of the person's slash commands.
+        let dirs = ["/repo".to_owned()];
+        let desk = ANTIGRAVITY.build_command(&AgentCommand {
+            front_desk: true,
+            extra_dirs: &dirs,
+            ..agy_request(Some(Access::Full), Some(mcp))
+        });
+        assert!(desk.contains(" --mode plan"), "{desk}");
+        assert!(!desk.contains("'/repo'"), "{desk}");
+        assert!(desk.contains(" --add-dir '/home/me/.octiqflow/mcp/antigravity/front-desk'"));
+        assert!(desk.ends_with(" --disable-slash-commands"), "{desk}");
+        // No MCP config, no plugin and nothing to prepare.
+        let bare = ANTIGRAVITY.build_command(&agy_request(Some(Access::Edits), None));
+        assert!(!bare.contains("antigravity/"), "{bare}");
+        assert!(ANTIGRAVITY
+            .prepare_launch(&agy_request(Some(Access::Edits), None))
+            .is_ok());
+
+        // The plugin: OctiqFlow's server under the name its rule allows, and
+        // the host rules every chat follows; a worker's carry its protocol.
+        let files = antigravity_plugin_files(
+            Path::new("/home/me/.octiqflow/mcp/octiq-ask.cjs"),
+            AntigravityRole::Worker,
+        );
+        let file = |name: &str| {
+            files
+                .iter()
+                .find(|(path, _)| path == &format!(".agents/plugins/octiqflow/{name}"))
+                .map(|(_, body)| String::from_utf8(body.clone()).unwrap())
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(&file("plugin.json")).unwrap(),
+            json!({ "name": "octiqflow" })
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&file("mcp_config.json")).unwrap(),
+            json!({ "mcpServers": { "octiq": {
+                "command": "node",
+                "args": ["/home/me/.octiqflow/mcp/octiq-ask.cjs"],
+            } } })
+        );
+        let rules = file("rules/AGENTS.md");
+        assert!(rules.contains("`octiqflow_octiq`"));
+        assert!(rules.contains("`orchestration_worker_report`"));
+        assert!(rules.contains("call the `ask_user` tool"));
+        assert!(ANTIGRAVITY_MCP_RULE.starts_with("mcp(octiqflow_octiq/"));
+        assert!(!antigravity_rules(AntigravityRole::Chat)
+            .contains("This chat is an OctiqFlow orchestration worker"));
+        assert_eq!(
+            antigravity_rules(AntigravityRole::FrontDesk),
+            FRONT_DESK_PROMPT
+        );
+    }
+
+    #[test]
+    fn the_antigravity_plugin_is_written_once_and_a_failure_names_its_path() {
+        let root = std::env::temp_dir().join(format!("octiq-agy-{}", uuid::Uuid::new_v4()));
+        let mcp = root.join("mcp").join("octiq-ask.json");
+        std::fs::create_dir_all(mcp.parent().unwrap()).unwrap();
+        write_antigravity_plugin(&mcp, AntigravityRole::Chat).unwrap();
+        let manifest = root.join("mcp/antigravity/chat/.agents/plugins/octiqflow/mcp_config.json");
+        let written: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        assert_eq!(
+            written["mcpServers"]["octiq"]["args"][0],
+            json!(root.join("mcp/octiq-ask.cjs").to_string_lossy())
+        );
+        // Unchanged content is not rewritten.
+        let before = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_antigravity_plugin(&mcp, AntigravityRole::Chat).unwrap();
+        assert_eq!(
+            std::fs::metadata(&manifest).unwrap().modified().unwrap(),
+            before
+        );
+
+        // A folder that cannot be made refuses the launch, naming the file.
+        let blocked = root.join("blocked").join("octiq-ask.json");
+        std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+        std::fs::write(root.join("blocked").join("antigravity"), "a file").unwrap();
+        let why = write_antigravity_plugin(&blocked, AntigravityRole::Chat).unwrap_err();
+        assert!(
+            why.starts_with("OctiqFlow's Antigravity plugin could not be written to ")
+                && why.contains("antigravity/chat/.agents/plugins/octiqflow/plugin.json"),
+            "{why}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The same folding the chat runtime's reader does, over the real stream.
+    #[test]
+    fn antigravity_streams_name_their_conversation_and_stop_each_turn() {
+        let mut session = None;
+        let mut said = Vec::new();
+        for event in agy_events(AGY_THREE_TURNS) {
+            let observed = ANTIGRAVITY.observe_event(&event);
+            if let Some(id) = observed.session_id {
+                session = Some(id.to_owned());
+            }
+            if observed.turn_finished {
+                said.push(observed.final_text.map(str::to_owned));
+            }
+        }
+        assert_eq!(
+            session.as_deref(),
+            Some("bb35e2e1-d2c3-4b8b-913d-7554783273ff")
+        );
+        assert_eq!(said.len(), 3, "one full stop per turn");
+        assert!(said[0].as_deref().is_some_and(|text| text.contains("4471")));
+        // The refused command ended its turn with nothing said.
+        assert_eq!(said[1], None);
+        assert_eq!(said[2].as_deref(), Some("HERON\n"));
+
+        // A failure before any turn stops all the same, and says why; it
+        // names no conversation, so nothing is kept to resume.
+        let bad = agy_events(AGY_BAD_MODEL);
+        let observed = ANTIGRAVITY.observe_event(&bad[0]);
+        assert!(observed.turn_finished);
+        assert!(observed.session_id.is_none());
+        assert!(observed
+            .final_text
+            .is_some_and(|why| why.contains("gemini-0-nonexistent is not recognized")));
+        let stopped = agy_events(AGY_INTERRUPTED);
+        let last = ANTIGRAVITY.observe_event(stopped.last().unwrap());
+        assert!(last.turn_finished);
+        assert_eq!(last.final_text, Some("interrupted"));
+    }
+
+    #[test]
+    fn antigravity_tolerates_events_and_lines_it_does_not_know() {
+        for unknown in [
+            json!({ "event": "checkpoint" }),
+            json!({ "event": "step_update", "step_update": { "step_type": "system_message" } }),
+            json!({ "event": "init" }),
+            json!({ "type": "result", "result": "a Claude result is not ours" }),
+            json!("not an object"),
+        ] {
+            let observed = ANTIGRAVITY.observe_event(&unknown);
+            assert!(observed.session_id.is_none(), "{unknown}");
+            assert!(!observed.turn_finished, "{unknown}");
+        }
+        let notice = "jetski: no output produced — a tool required the \"command\" permission that headless mode cannot prompt for, so it was auto-denied.";
+        assert_eq!(
+            ANTIGRAVITY.output_disposition(notice),
+            OutputDisposition::DiagnosticsOnly
+        );
+        assert_eq!(
+            ANTIGRAVITY.output_disposition("error: invalid model selection"),
+            OutputDisposition::Visible
+        );
+        assert_eq!(
+            ANTIGRAVITY.output_disposition("  --add-dir   Add a directory"),
+            OutputDisposition::DiagnosticsOnly
+        );
+        assert_eq!(
+            ANTIGRAVITY.output_disposition("Some new status line"),
+            OutputDisposition::Visible
+        );
+    }
+
+    /// The real CLI, launched the way a chat launches it. Run with
+    /// `cargo test --lib a_real_antigravity -- --ignored --nocapture`; it
+    /// writes OctiqFlow's plugin and allow rule as a real launch does.
+    #[test]
+    #[ignore = "runs the installed agy CLI"]
+    fn a_real_antigravity_launch_through_the_built_command() {
+        use std::io::{BufRead, Write};
+        let project = std::env::temp_dir().join(format!("octiq-agy-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&project).unwrap();
+        let mcp = ask_mcp_config().expect("the MCP files are written");
+        let request = AgentCommand {
+            model: None,
+            effort: None,
+            ..agy_request(Some(Access::Edits), Some(&mcp))
+        };
+        ANTIGRAVITY
+            .prepare_launch(&request)
+            .expect("the plugin is written");
+        let line = ANTIGRAVITY.build_command(&request);
+        println!("LINE: {line}");
+        let shell = crate::proc::resolve_agent_shell(
+            std::env::var("SHELL").ok(),
+            None,
+            cfg!(windows),
+            &|_| None,
+        )
+        .expect("an agent shell");
+        let mut child = shell
+            .command(&line)
+            .current_dir(&project)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("agy starts");
+        let payload = ANTIGRAVITY
+            .user_message_payload(
+                "Reply with exactly three words: hello from antigravity",
+                &[],
+            )
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(stdin, "{payload}").unwrap();
+        let mut finished = false;
+        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines() {
+            let line = line.unwrap();
+            println!("{line}");
+            if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                if ANTIGRAVITY.observe_event(&event).turn_finished {
+                    finished = true;
+                    drop(stdin);
+                    break;
+                }
+            }
+        }
+        assert!(finished);
+        let _ = child.wait();
+        std::fs::remove_dir_all(&project).ok();
     }
 }

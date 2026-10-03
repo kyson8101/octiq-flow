@@ -136,6 +136,9 @@ pub struct Meter {
 impl Meter {
     /// The usage this event reports that was not reported before, if any.
     pub fn observe(&mut self, agent: ChatAgent, event: &Value) -> Option<Reading> {
+        if agent == ChatAgent::Antigravity {
+            return antigravity_step(event).filter(|reading| !reading.usage.is_zero());
+        }
         let kind = event.get("type").and_then(Value::as_str)?;
         let reading = match (agent, kind) {
             (ChatAgent::Claude, "result") => self.claude_result(event),
@@ -217,6 +220,30 @@ fn codex_response(event: &Value) -> Option<Reading> {
 fn codex_exec_turn(event: &Value) -> Option<Reading> {
     Some(Reading {
         usage: codex_usage(event.get("usage")?),
+        thread_total: None,
+    })
+}
+
+/// One Antigravity model call. Its `result` totals the whole conversation,
+/// across processes too (a resumed one starts from the old total), so they
+/// cannot be told apart from a new turn; each model call's own step carries
+/// what that call used, and those add up to the turn exactly. Thinking is
+/// counted inside its output.
+fn antigravity_step(event: &Value) -> Option<Reading> {
+    if event.get("event").and_then(Value::as_str) != Some("step_update") {
+        return None;
+    }
+    let usage = event.pointer("/step_update/usage")?;
+    let input = n(usage.get("input_tokens"));
+    let output = n(usage.get("output_tokens"));
+    Some(Reading {
+        usage: TokenUsage {
+            input,
+            cached_input: n(usage.get("cache_read_tokens")).min(input),
+            cache_write: 0,
+            output,
+            reasoning: n(usage.get("thinking_tokens")).min(output),
+        },
         thread_total: None,
     })
 }
@@ -770,5 +797,44 @@ mod tests {
             fs::read(root.join("agent-usage.json")).unwrap(),
             b"{not json"
         );
+    }
+
+    /// Each Antigravity model call reports its own usage, and those add up to
+    /// the turn's. The `result` totals the whole conversation and is never
+    /// read: in the real stream (agy 1.2.16) the second result is the first
+    /// plus everything after it.
+    #[test]
+    fn an_antigravity_turn_is_the_sum_of_its_model_calls() {
+        let events =
+            crate::agent_provider::tests::agy_events(crate::agent_provider::tests::AGY_THREE_TURNS);
+        let mut meter = Meter::default();
+        let mut turns = Vec::new();
+        let mut turn = TokenUsage::default();
+        for event in &events {
+            if let Some(reading) = meter.observe(ChatAgent::Antigravity, event) {
+                turn.add(&reading.usage);
+            }
+            if event["event"] == "result" {
+                turns.push(std::mem::take(&mut turn));
+            }
+        }
+        let totals: Vec<u64> = events
+            .iter()
+            .filter(|e| e["event"] == "result")
+            .map(|e| e["result"]["usage"]["input_tokens"].as_u64().unwrap())
+            .collect();
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[0].input, totals[0]);
+        assert_eq!(turns[1].input, totals[1] - totals[0]);
+        assert_eq!(turns[2].input, totals[2] - totals[1]);
+        assert!(turns
+            .iter()
+            .all(|t| t.output > 0 && t.reasoning <= t.output));
+        // A result, a tool step and another provider's shapes count nothing.
+        let result = events.iter().find(|e| e["event"] == "result").unwrap();
+        assert!(meter.observe(ChatAgent::Antigravity, result).is_none());
+        assert!(Meter::default()
+            .observe(ChatAgent::Claude, &events[2])
+            .is_none());
     }
 }

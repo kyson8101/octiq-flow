@@ -283,6 +283,20 @@ pub(crate) fn unix_now() -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+/// Why an Antigravity `result` failed, when it did. A stop is not a failure.
+pub(crate) fn antigravity_failure(event: &Value) -> Option<&str> {
+    if event.get("event").and_then(Value::as_str) != Some("result") {
+        return None;
+    }
+    let result = event.get("result")?;
+    match result.get("status").and_then(Value::as_str) {
+        Some("ERROR" | "INVALID") => {}
+        _ => return None,
+    }
+    let error = result.get("error").and_then(Value::as_str)?;
+    (error.trim() != "interrupted").then_some(error)
+}
+
 /// The exact limit messages already recognised by the browser. Normalize
 /// punctuation so provider spellings such as `rate_limit_exceeded` match too.
 pub(crate) fn is_quota_failure(agent: AgentKind, event: &Value) -> bool {
@@ -313,6 +327,8 @@ pub(crate) fn is_quota_failure(agent: AgentKind, event: &Value) -> bool {
                 .or_else(|| event.pointer("/error/message").and_then(Value::as_str)),
             _ => None,
         },
+        // A turn that failed says why in its `result`.
+        AgentKind::Antigravity => antigravity_failure(event),
     };
     let Some(message) = message else {
         return false;

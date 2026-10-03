@@ -799,6 +799,38 @@ pub(crate) fn add_allow_rules(
             parent.display()
         ));
     }
+    merge_into(path, parent, expected, rules)
+}
+
+/// Add OctiqFlow's one rule to Antigravity's user settings
+/// (`~/.gemini/antigravity-cli/settings.json`), the same way a Claude rule is
+/// written: every other key keeps its value and place, a symlink or a file
+/// that is not a JSON object is refused, and the write is atomic. Nothing is
+/// written when the rule is already there.
+pub(crate) fn add_antigravity_allow_rule(path: &Path, rule: &str) -> Result<Added, String> {
+    let parent = path
+        .parent()
+        .filter(|p| p.file_name().and_then(|n| n.to_str()) == Some("antigravity-cli"))
+        .ok_or("OctiqFlow writes an Antigravity rule only to its antigravity-cli folder.")?;
+    if path.file_name().and_then(|n| n.to_str()) != Some("settings.json") {
+        return Err(format!(
+            "OctiqFlow writes allow rules only to settings.json, not {}.",
+            path.display()
+        ));
+    }
+    let _guard = WRITES.lock().unwrap_or_else(|e| e.into_inner());
+    merge_into(path, parent, "settings.json", &[rule.to_string()])
+}
+
+/// The shared write: read the file at `path` (absent is empty), merge `rules`
+/// into it, and rename a temp file over it, keeping its permissions. The
+/// caller holds `WRITES`.
+fn merge_into(
+    path: &Path,
+    parent: &Path,
+    expected: &str,
+    rules: &[String],
+) -> Result<Added, String> {
     fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
     let real_parent = parent
         .canonical()
@@ -1861,5 +1893,50 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_antigravity_rule_joins_its_settings_once_and_keeps_the_rest() {
+        let home = temp();
+        let folder = home.join(".gemini").join("antigravity-cli");
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("settings.json");
+        // The person's own settings, as agy 1.2.16 writes them.
+        fs::write(
+            &path,
+            "{\n  \"colorScheme\": \"tokyo night\",\n  \"trustedWorkspaces\": [\n    \"/Users/me\"\n  ]\n}",
+        )
+        .unwrap();
+        let rule = "mcp(octiqflow_octiq/*)";
+        let added = add_antigravity_allow_rule(&path, rule).unwrap();
+        assert_eq!(added.added, vec![rule.to_string()]);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "{\n  \"colorScheme\": \"tokyo night\",\n  \"trustedWorkspaces\": [\n    \"/Users/me\"\n  ],\n  \"permissions\": {\n    \"allow\": [\n      \"mcp(octiqflow_octiq/*)\"\n    ]\n  }\n}"
+        );
+        // Again: nothing to write.
+        let again = add_antigravity_allow_rule(&path, rule).unwrap();
+        assert!(again.added.is_empty() && again.present == vec![rule.to_string()]);
+
+        // A missing file is made; a file that is not an object, a symlink,
+        // or any other path is refused and left alone.
+        fs::remove_file(&path).unwrap();
+        add_antigravity_allow_rule(&path, rule).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains(rule));
+        fs::write(&path, "[1]").unwrap();
+        assert!(add_antigravity_allow_rule(&path, rule).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[1]");
+        #[cfg(unix)]
+        {
+            let real = home.join("elsewhere.json");
+            fs::write(&real, "{}").unwrap();
+            fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(&real, &path).unwrap();
+            assert!(add_antigravity_allow_rule(&path, rule).is_err());
+            assert_eq!(fs::read_to_string(&real).unwrap(), "{}");
+        }
+        assert!(add_antigravity_allow_rule(&home.join("settings.json"), rule).is_err());
+        assert!(add_antigravity_allow_rule(&folder.join("other.json"), rule).is_err());
+        fs::remove_dir_all(&home).ok();
     }
 }

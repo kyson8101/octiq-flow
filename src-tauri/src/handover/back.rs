@@ -135,6 +135,12 @@ pub fn fork_command(turn: &AnswerTurn) -> Result<String, String> {
             "The original chat runs on pi, which cannot answer from a read-only copy of its conversation. Read it with read_conversation instead."
                 .into(),
         ),
+        // `--conversation` would add the question to the original itself,
+        // and Antigravity has no fork that leaves it untouched.
+        ChatAgent::Antigravity => Err(
+            "The original chat runs on Antigravity, which cannot answer from a read-only copy of its conversation. Read it with read_conversation instead."
+                .into(),
+        ),
     }
 }
 

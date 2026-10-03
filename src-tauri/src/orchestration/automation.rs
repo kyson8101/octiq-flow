@@ -36,7 +36,8 @@ pub(super) fn worker_model(agent: ChatAgent, model: Option<&str>) -> Result<Stri
     let fallback = match agent {
         ChatAgent::Codex => "gpt-5.6-sol",
         ChatAgent::Claude => "sonnet",
-        ChatAgent::Pi => return Err("Choose Claude or Codex for workers.".into()),
+        ChatAgent::Antigravity => "gemini-3.1-pro-high",
+        ChatAgent::Pi => return Err("Choose Claude, Codex or Antigravity for workers.".into()),
     };
     let model = model
         .map(str::trim)

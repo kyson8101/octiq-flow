@@ -374,7 +374,7 @@ fn apply(
     let name = clean(&draft.name, "name", 60, true)?;
     let role = clean(&draft.role, "role", 2000, false)?;
     if draft.agent == ChatAgent::Pi {
-        return Err("Choose Claude or Codex for a registered agent.".into());
+        return Err("Choose Claude, Codex or Antigravity for a registered agent.".into());
     }
     let model = draft.model.trim().to_owned();
     if model.is_empty() || model == "default" || crate::agent_provider::safe_model(&model).is_none()
@@ -1779,6 +1779,7 @@ fn describe(
         ChatAgent::Claude => "Claude",
         ChatAgent::Codex => "Codex",
         ChatAgent::Pi => "pi",
+        ChatAgent::Antigravity => "Antigravity",
     };
     let effort = agent
         .effort

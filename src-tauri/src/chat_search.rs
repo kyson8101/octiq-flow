@@ -341,6 +341,21 @@ fn conversation_entries(event: &Value) -> Vec<Entry> {
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| fallback.to_string())
     };
+    // Antigravity's closing words are its `result`'s response; its other
+    // events carry only pieces of them.
+    if event["event"] == "result" {
+        return event["result"]["response"]
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| Entry {
+                speaker: speaker("Assistant"),
+                role: "assistant".into(),
+                text: text.to_string(),
+            })
+            .into_iter()
+            .collect();
+    }
     match event["type"].as_str().unwrap_or_default() {
         "user" => content_text(&event["message"]["content"])
             .filter(|text| !text.is_empty())
@@ -650,5 +665,21 @@ mod tests {
 
         crate::chat_index::remove(&desk_id).unwrap();
         crate::chat_index::remove(&plain_id).unwrap();
+    }
+
+    #[test]
+    fn antigravity_answers_are_searchable_by_their_result() {
+        let events =
+            crate::agent_provider::tests::agy_events(crate::agent_provider::tests::AGY_THREE_TURNS);
+        let said: Vec<String> = events
+            .iter()
+            .flat_map(conversation_entries)
+            .map(|entry| entry.text)
+            .collect();
+        // Two answers; the refused turn said nothing, and no piece is
+        // indexed twice.
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].contains("4471"));
+        assert_eq!(said[1], "HERON");
     }
 }

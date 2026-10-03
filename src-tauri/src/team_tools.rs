@@ -359,6 +359,7 @@ fn provider_name(agent: ChatAgent) -> &'static str {
         ChatAgent::Claude => "Claude",
         ChatAgent::Codex => "Codex",
         ChatAgent::Pi => "pi",
+        ChatAgent::Antigravity => "Antigravity",
     }
 }
 
@@ -735,7 +736,7 @@ mod tests {
                     model: Some("x".into()),
                     ..Proposal::default()
                 },
-                "Choose Claude or Codex for a registered agent.",
+                "Choose Claude, Codex or Antigravity for a registered agent.",
             ),
             (
                 Kind::Register,

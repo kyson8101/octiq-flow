@@ -551,7 +551,8 @@ pub(crate) fn blocking_reset_at(
     let usage = match agent {
         AgentKind::Claude => claude_usage_cached(),
         AgentKind::Codex => read_codex_usage(),
-        AgentKind::Pi => return None,
+        // Neither publishes an account usage window OctiqFlow can read.
+        AgentKind::Pi | AgentKind::Antigravity => return None,
     };
     if !usage.available {
         return None;

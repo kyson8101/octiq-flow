@@ -236,6 +236,9 @@ fn error_text(event: &Value) -> String {
 }
 
 fn observe(event: &Value, now: i64) -> Vec<Observation> {
+    if let Some(kind) = event["event"].as_str() {
+        return observe_antigravity(kind, event, now);
+    }
     let kind = event["type"].as_str().unwrap_or_default();
     if kind == "model.activity"
         || (kind == "stream_event"
@@ -330,6 +333,42 @@ fn observe(event: &Value, now: i64) -> Vec<Observation> {
         }
     }
     vec![Observation::Activity]
+}
+
+/// Antigravity's stream (`agent_provider::AntigravityProvider`), which names
+/// its events under `event` and nests each payload under that same name.
+fn observe_antigravity(kind: &str, event: &Value, now: i64) -> Vec<Observation> {
+    match kind {
+        "init" => vec![Observation::Executing],
+        "step_update" => {
+            let step = &event["step_update"];
+            let state = step["state"].as_str().unwrap_or_default();
+            match step["step_type"].as_str().unwrap_or_default() {
+                "agent_response" => vec![Observation::ModelActivity],
+                "tool" => {
+                    let id = format!("step-{}", step["step_index"].as_u64().unwrap_or(0));
+                    let name = bounded(
+                        &step["tool_info"]["name"]
+                            .as_str()
+                            .or_else(|| step["tool_name"].as_str())
+                            .unwrap_or("tool")
+                            .replace('_', " "),
+                    );
+                    if state == "ACTIVE" {
+                        vec![Observation::ToolStart(id, name)]
+                    } else {
+                        vec![Observation::ToolEnd(id, format!("Finished {name}"))]
+                    }
+                }
+                _ => vec![Observation::Activity],
+            }
+        }
+        "result" => match crate::auto_resume::antigravity_failure(event) {
+            Some(error) => vec![Observation::Error(classify(error, now), false)],
+            None => vec![Observation::TurnEnded],
+        },
+        _ => vec![Observation::Activity],
+    }
 }
 
 pub(super) fn fail_dispatch(data: &mut Stored, id: &str, reason: &str) {
@@ -1286,5 +1325,38 @@ mod tests {
         }
         .validate(ChatAgent::Claude)
         .is_ok());
+    }
+
+    #[test]
+    fn an_antigravity_worker_stream_reads_as_activity_tools_and_a_full_stop() {
+        use crate::agent_provider::tests::{agy_events, AGY_BAD_MODEL, AGY_THREE_TURNS};
+        let mut started = Vec::new();
+        let mut ended = 0;
+        let mut turns = 0;
+        for event in agy_events(AGY_THREE_TURNS) {
+            for seen in observe(&event, 0) {
+                match seen {
+                    Observation::ToolStart(id, name) => started.push((id, name)),
+                    Observation::ToolEnd(..) => ended += 1,
+                    Observation::TurnEnded => turns += 1,
+                    Observation::Error(..) => panic!("no failure in this stream"),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(
+            started,
+            vec![
+                ("step-2".to_string(), "view file".to_string()),
+                ("step-6".to_string(), "run command".to_string()),
+            ]
+        );
+        assert_eq!(ended, 2);
+        assert_eq!(turns, 3);
+        let bad = agy_events(AGY_BAD_MODEL);
+        assert!(matches!(
+            observe(&bad[0], 0).as_slice(),
+            [Observation::Error(_, false)]
+        ));
     }
 }

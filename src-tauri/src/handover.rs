@@ -626,6 +626,7 @@ fn provider_name(agent: ChatAgent) -> &'static str {
         ChatAgent::Claude => "Claude",
         ChatAgent::Codex => "Codex",
         ChatAgent::Pi => "pi",
+        ChatAgent::Antigravity => "Antigravity",
     }
 }
 

@@ -304,7 +304,22 @@ pub fn helper_command(turn: &HelperTurn) -> Result<String, String> {
             ));
             Ok(cmd)
         }
-        ChatAgent::Pi => Err("A registered agent runs on Claude or Codex.".into()),
+        ChatAgent::Antigravity => {
+            // Plan mode is Antigravity's read-only one, and no OctiqFlow
+            // plugin is added, so it has no MCP server of ours. It keeps no
+            // ephemeral mode: the answer is saved as a conversation of its
+            // own. A model id names its own effort, so none is passed.
+            let prompt = format!(
+                "{}\n\nUse only your file reading and search tools: a shell command is refused here and would end your answer.",
+                turn.prompt
+            );
+            Ok(format!(
+                "exec agy -p {} --output-format stream-json --mode plan --disable-slash-commands --model {}",
+                sh_quote(&prompt),
+                sh_quote(&model)
+            ))
+        }
+        ChatAgent::Pi => Err("A registered agent runs on Claude, Codex or Antigravity.".into()),
     }
 }
 
@@ -390,6 +405,56 @@ pub fn parse_codex(stdout: &str) -> Result<HelperAnswer, String> {
         Some(text) => Ok(HelperAnswer { text, usage }),
         None => Err(failure.unwrap_or_else(|| "No answer came back.".into())),
     }
+}
+
+/// Antigravity's `--output-format stream-json`: the `result` event's
+/// response, and the usage of the turn's model calls.
+pub fn parse_antigravity(stdout: &str) -> Result<HelperAnswer, String> {
+    let mut input = 0;
+    let mut output = 0;
+    let mut result = None;
+    for event in stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+    {
+        match event.get("event").and_then(Value::as_str) {
+            Some("step_update") => {
+                if let Some(usage) = event.pointer("/step_update/usage") {
+                    input += number(usage.get("input_tokens"));
+                    output += number(usage.get("output_tokens"));
+                }
+            }
+            Some("result") => result = event.get("result").cloned(),
+            _ => {}
+        }
+    }
+    let result = result.ok_or("No answer came back.")?;
+    let failed = matches!(
+        result.get("status").and_then(Value::as_str),
+        Some("ERROR" | "INVALID")
+    );
+    if failed {
+        return Err(result
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("The answering turn failed.")
+            .to_owned());
+    }
+    let text = result
+        .get("response")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if text.is_empty() {
+        return Err("No answer came back.".into());
+    }
+    Ok(HelperAnswer {
+        text: text.to_owned(),
+        usage: Some(PeerUsage {
+            input_tokens: input,
+            output_tokens: output,
+        }),
+    })
 }
 
 /// Variables that would tie the answering process to a chat: with none of
@@ -531,6 +596,7 @@ pub fn run_one_shot(
     let stderr = stderr.join().unwrap_or_default();
     let parsed = match agent {
         ChatAgent::Codex => parse_codex(&stdout),
+        ChatAgent::Antigravity => parse_antigravity(&stdout),
         _ => parse_claude(&stdout),
     };
     match parsed {
@@ -1442,5 +1508,46 @@ mod tests {
         assert!(prompt.contains("cannot ask anyone else"));
         assert!(prompt.contains("- src/a.rs"));
         assert!(prompt.ends_with("ADA's question:\nWhy does it 401?"));
+    }
+
+    #[test]
+    fn an_antigravity_teammate_answers_read_only_from_its_stream() {
+        let turn = HelperTurn {
+            agent: ChatAgent::Antigravity,
+            model: "gemini-3.8-flash-high".into(),
+            effort: Some("high".into()),
+            prompt: "it's a question".into(),
+            cwd: "/w".into(),
+        };
+        let line = helper_command(&turn).unwrap();
+        assert!(
+            line.starts_with("exec agy -p 'it'\\''s a question"),
+            "{line}"
+        );
+        assert!(line.contains("--output-format stream-json --mode plan --disable-slash-commands"));
+        assert!(line.ends_with("--model 'gemini-3.8-flash-high'"), "{line}");
+        assert!(
+            !line.contains("--effort"),
+            "the model names its own: {line}"
+        );
+        assert!(!line.contains("--add-dir"), "no OctiqFlow plugin: {line}");
+
+        // The real stream's first turn, cut where `-p` would stop.
+        let stream = crate::agent_provider::tests::AGY_THREE_TURNS;
+        let first: String = stream
+            .lines()
+            .take_while(|line| !line.contains("\"step_index\":4"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let answer = parse_antigravity(&first).unwrap();
+        assert!(answer.text.contains("4471"));
+        let usage = answer.usage.unwrap();
+        assert!(usage.input_tokens > 0 && usage.output_tokens > 0);
+        assert!(
+            parse_antigravity(crate::agent_provider::tests::AGY_BAD_MODEL)
+                .unwrap_err()
+                .contains("is not recognized")
+        );
+        assert!(parse_antigravity("").is_err());
     }
 }

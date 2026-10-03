@@ -126,6 +126,7 @@ pub fn provider_name(agent: AgentKind) -> &'static str {
         AgentKind::Claude => "Claude",
         AgentKind::Codex => "Codex",
         AgentKind::Pi => "Pi",
+        AgentKind::Antigravity => "Antigravity",
     }
 }
 
@@ -265,6 +266,9 @@ pub fn annotate(agent: AgentKind, event: &mut Value) {
 /// none falls back to its words — here, on the host, once — so the page never
 /// has to.
 pub fn of_provider_event(agent: AgentKind, event: &Value) -> Option<Outcome> {
+    if agent == AgentKind::Antigravity {
+        return of_antigravity_event(event);
+    }
     let kind = event.get("type").and_then(Value::as_str)?;
     let reason = match (agent, kind) {
         (AgentKind::Claude, "result") => {
@@ -312,6 +316,42 @@ pub fn of_provider_event(agent: AgentKind, event: &Value) -> Option<Outcome> {
         outcome.severity = Severity::Warning;
     }
     Some(outcome)
+}
+
+/// Antigravity names its events under `event`, not `type`. A failed `result`
+/// is the provider's; so is a turn it ended by refusing a call nobody could
+/// approve (`denied_actions`), and a tool step it refused or that failed.
+fn of_antigravity_event(event: &Value) -> Option<Outcome> {
+    let agent = AgentKind::Antigravity;
+    let reason = match event.get("event").and_then(Value::as_str)? {
+        "result" => {
+            if let Some(error) = crate::auto_resume::antigravity_failure(event) {
+                by_words(agent, event, Some(error))
+            } else if event
+                .pointer("/result/denied_actions")
+                .and_then(Value::as_array)
+                .is_some_and(|denied| !denied.is_empty())
+            {
+                ReasonClass::ProviderError
+            } else {
+                return None;
+            }
+        }
+        "step_update" => {
+            if event.pointer("/step_update/state").and_then(Value::as_str) != Some("ERROR") {
+                return None;
+            }
+            let words = event
+                .pointer("/step_update/tool_info/error/message")
+                .and_then(Value::as_str);
+            match words {
+                Some(words) if words.contains("permission") => ReasonClass::ProviderError,
+                words => by_words(agent, event, words),
+            }
+        }
+        _ => return None,
+    };
+    Some(Outcome::provider(agent, reason))
 }
 
 fn text_of<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -406,6 +446,7 @@ fn by_words(agent: AgentKind, event: &Value, words: Option<&str>) -> ReasonClass
             "not supported",
             "does not exist",
             "not available",
+            "not recognized",
             "may not have access",
             "unknown model",
         ])
@@ -742,5 +783,49 @@ mod tests {
         let mut fine = json!({"type": "result", "is_error": false});
         annotate(AgentKind::Claude, &mut fine);
         assert!(fine.get(EVENT_FIELD).is_none());
+    }
+
+    #[test]
+    fn an_antigravity_failure_or_refusal_is_the_providers_and_a_stop_is_not() {
+        use crate::agent_provider::tests::{
+            agy_events, AGY_BAD_MODEL, AGY_INTERRUPTED, AGY_PLAN_REFUSED, AGY_THREE_TURNS,
+        };
+        let agent = AgentKind::Antigravity;
+        let bad = agy_events(AGY_BAD_MODEL);
+        let outcome = of_provider_event(agent, &bad[0]).unwrap();
+        assert_eq!(outcome.provider_name.as_deref(), Some("Antigravity"));
+        assert_eq!(outcome.reason_class, ReasonClass::ModelUnavailable);
+
+        // A turn ended by a call nobody could approve, and the refused step.
+        let turns = agy_events(AGY_THREE_TURNS);
+        let results: Vec<_> = turns.iter().filter(|e| e["event"] == "result").collect();
+        assert!(of_provider_event(agent, results[0]).is_none());
+        let refused = of_provider_event(agent, results[1]).unwrap();
+        assert_eq!(refused.reason_class, ReasonClass::ProviderError);
+        let plan = agy_events(AGY_PLAN_REFUSED);
+        let step = plan
+            .iter()
+            .find(|e| e["step_update"]["state"] == "ERROR")
+            .unwrap();
+        assert_eq!(
+            of_provider_event(agent, step).unwrap().reason_class,
+            ReasonClass::ProviderError
+        );
+
+        // The person's own stop is not a failure.
+        let stopped = agy_events(AGY_INTERRUPTED);
+        assert!(of_provider_event(agent, stopped.last().unwrap()).is_none());
+
+        // A spent quota is a rate limit, and auto-resume knows it.
+        let quota = json!({ "event": "result", "result": { "status": "ERROR",
+            "error": "You have exhausted your quota on this model." } });
+        assert_eq!(
+            of_provider_event(agent, &quota).unwrap().reason_class,
+            ReasonClass::RateLimit
+        );
+        assert!(crate::auto_resume::is_quota_failure(agent, &quota));
+        assert!(!crate::auto_resume::is_quota_failure(agent, &bad[0]));
+        // Claude's shape is not Antigravity's.
+        assert!(of_provider_event(agent, &json!({ "type": "result", "is_error": true })).is_none());
     }
 }
