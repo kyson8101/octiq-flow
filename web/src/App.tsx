@@ -216,7 +216,7 @@ import {
 } from "./lib/projectGit";
 import type { WorkspaceGitStatus } from "./lib/workspaceContext";
 import { singleFlight } from "./lib/singleFlight";
-import { FocusModeButton, useFocusMode } from "./components/FocusMode";
+import { FocusFontSizeControl, FocusModeButton, focusFontStyle, useFocusFontSize, useFocusMode } from "./components/FocusMode";
 import {
   PullRequestsDashboard,
   type PrDashboardChat,
@@ -496,6 +496,7 @@ export default function App() {
    *  column layout does not imply that every control fits in one header row. */
   const isMobile = useMedia(MOBILE);
   const { focusMode, enterFocus, exitFocus } = useFocusMode(!(isMobile && projectsScreen));
+  const { fontSize: focusFontSize, changeFontSize: changeFocusFontSize } = useFocusFontSize();
   /** What the top bar offers a page. A phone's bar has no room for a page's
    *  buttons or a run's line, and focus mode hides the bar, so those render
    *  in the page instead. */
@@ -4570,8 +4571,14 @@ export default function App() {
     <div
       ref={projectSwipeRef}
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
+      style={focusMode ? focusFontStyle(focusFontSize) : undefined}
     >
-      {focusMode && <FocusModeButton active onClick={exitFocus} />}
+      {focusMode && (
+        <div className="focus-mode-tools">
+          <FocusFontSizeControl fontSize={focusFontSize} onChange={changeFocusFontSize} />
+          <FocusModeButton active onClick={exitFocus} />
+        </div>
+      )}
       {/* Two columns: the chat list runs the full height of the window on the
           left, and the top bar belongs to the workspace on the right. On a
           phone `.shell-main` dissolves (display: contents) and the list is a

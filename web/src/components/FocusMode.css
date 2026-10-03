@@ -2,6 +2,9 @@
    Hide workspace surfaces without unmounting their drafts or sessions. */
 .app.focus-mode {
   --chat-column: 900px;
+  /* The reading size; the person sets it (FocusFontSizeControl), and every
+     other size in the column keeps its old proportion to it. */
+  --focus-font-size: 16px;
   --zen-ease: cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
   background: var(--bg-0);
@@ -21,10 +24,51 @@
   width: 100%;
 }
 
-.focus-mode-exit {
+.focus-mode-tools {
   position: absolute;
   top: calc(6px + env(safe-area-inset-top));
   right: max(16px, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.focus-font-size {
+  display: inline-flex;
+  align-items: center;
+}
+
+.focus-font-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font-family: var(--prose-font);
+  line-height: 1;
+  cursor: pointer;
+  transition: color 240ms ease, background-color 240ms ease, opacity 240ms ease;
+}
+
+.focus-font-step.is-smaller { font-size: 13px; }
+.focus-font-step.is-larger { font-size: 18px; }
+
+.focus-font-step:hover:not([aria-disabled="true"]) {
+  color: var(--fg-0);
+  background: var(--bg-1);
+}
+
+.focus-font-step[aria-disabled="true"] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.focus-mode-exit {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -47,6 +91,7 @@
 }
 
 .focus-mode-exit:focus-visible,
+.focus-font-step:focus-visible,
 .composer-focus .focus-options-toggle:focus-visible,
 .composer-focus .focus-quick-response:focus-visible {
   outline: 2px solid var(--focus);
@@ -59,24 +104,25 @@
 }
 
 .app.focus-mode .prose {
-  font-size: 16px;
+  font-size: var(--focus-font-size);
 }
 
 .app.focus-mode .prose :is(h1, h2, h3) {
-  font-size: 18px;
+  font-size: calc(var(--focus-font-size) * 1.125);
 }
 
 .app.focus-mode .prose code,
 .app.focus-mode .prose-path.is-code {
-  font-size: 14px;
+  font-size: calc(var(--focus-font-size) * 0.875);
 }
 
 .app.focus-mode .prose table {
-  font-size: 15px;
+  font-size: calc(var(--focus-font-size) * 0.9375);
 }
 
+/* Never under 16px: a smaller field makes iOS zoom the page on focus. */
 .app.focus-mode .composer-input {
-  font-size: 17px;
+  font-size: max(16px, calc(var(--focus-font-size) * 1.0625));
 }
 
 .app.focus-mode .composer-focus {
@@ -157,7 +203,7 @@ html[data-zen-transition] .app .main .hero { view-transition-name: zen-chat; }
 html[data-zen-transition] .app .composer-box { view-transition-name: zen-composer; }
 html[data-zen-transition] .app .shell-main > .topbar { view-transition-name: zen-header; }
 html[data-zen-transition] .app .sidebar { view-transition-name: zen-sidebar; }
-html[data-zen-transition] .focus-mode-exit { view-transition-name: zen-exit; }
+html[data-zen-transition] .focus-mode-tools { view-transition-name: zen-exit; }
 
 html[data-zen-transition]::view-transition { pointer-events: none; }
 
@@ -274,7 +320,7 @@ html[data-zen-transition="options"]::view-transition-new(*) { animation: zen-arr
   .app.focus-mode *,
   .app.focus-mode *::before,
   .app.focus-mode *::after,
-  .focus-mode-exit {
+  .focus-mode-tools * {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;

@@ -1,5 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { canStepFocusFontSize, savedFocusFontSize, saveFocusFontSize, stepFocusFontSize } from "../lib/focusFontSize";
 import { cancelZenTransition, transitionZen } from "../lib/zenMotion";
+
+/** The size focus mode reads at, kept per browser (see lib/focusFontSize). */
+export function useFocusFontSize() {
+  const [fontSize, setFontSize] = useState(savedFocusFontSize);
+  const changeFontSize = useCallback((next: number) => {
+    setFontSize(next);
+    saveFocusFontSize(next);
+  }, []);
+  return { fontSize, changeFontSize };
+}
+
+/** What `.app.focus-mode` reads its sizes from (FocusMode.css). */
+export function focusFontStyle(fontSize: number): CSSProperties {
+  return { "--focus-font-size": `${fontSize}px` } as CSSProperties;
+}
 
 /** A temporary view, independent of the user's saved panel preferences. */
 export function useFocusMode(available: boolean) {
@@ -70,5 +86,38 @@ export function FocusModeButton({ active = false, onClick }: { active?: boolean;
       </svg>
       <span className={active ? undefined : "topbar-action-label"}>{active ? "Exit focus" : "Focus mode"}</span>
     </button>
+  );
+}
+
+/** Smaller and larger text, beside the way out. Two letters, as a reader
+ *  expects them; the size itself is in the tooltip, not on the screen.
+ *  An end of the range is `aria-disabled`, not `disabled`: a button that
+ *  disables itself under the keyboard drops focus onto the page. */
+export function FocusFontSizeControl({ fontSize, onChange }: { fontSize: number; onChange: (next: number) => void }) {
+  const smaller = canStepFocusFontSize(fontSize, -1);
+  const larger = canStepFocusFontSize(fontSize, 1);
+  return (
+    <div className="focus-font-size" role="group" aria-label={`Text size, ${fontSize} pixels`}>
+      <button
+        className="focus-font-step is-smaller"
+        type="button"
+        aria-label="Smaller text"
+        title={smaller ? `Smaller text (now ${fontSize}px)` : `Smallest text (${fontSize}px)`}
+        aria-disabled={!smaller}
+        onClick={() => { if (smaller) onChange(stepFocusFontSize(fontSize, -1)); }}
+      >
+        <span aria-hidden="true">A</span>
+      </button>
+      <button
+        className="focus-font-step is-larger"
+        type="button"
+        aria-label="Larger text"
+        title={larger ? `Larger text (now ${fontSize}px)` : `Largest text (${fontSize}px)`}
+        aria-disabled={!larger}
+        onClick={() => { if (larger) onChange(stepFocusFontSize(fontSize, 1)); }}
+      >
+        <span aria-hidden="true">A</span>
+      </button>
+    </div>
   );
 }
