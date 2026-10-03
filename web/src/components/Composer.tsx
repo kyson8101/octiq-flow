@@ -123,7 +123,7 @@ type ModelLoadState = {
 
 /** Load catalogs only when a picker is opened. Claude may answer from its
  * Models API or the backend's active-model fallback; Codex answers from the
- * account-aware app-server `model/list`. Existing authored choices paint
+ * account-aware app-server `model/list`; Antigravity from `agy models`. Existing authored choices paint
  * immediately, so a cold CLI never turns the picker into a spinner. */
 function useProviderModels(open: boolean, installed?: readonly Provider[]) {
   const [choices, setChoices] = useState<Partial<Record<Provider, ModelChoice[]>>>({});
@@ -162,7 +162,7 @@ function useProviderModels(open: boolean, installed?: readonly Provider[]) {
 
   useEffect(() => {
     if (!open) return;
-    for (const provider of ["claude", "codex"] as const) {
+    for (const provider of ["claude", "codex", "antigravity"] as const) {
       if (installed && !installed.includes(provider)) continue;
       load(provider);
     }
@@ -189,10 +189,13 @@ function AccessList({
   list,
   access,
   onPick,
+  note,
 }: {
   list: readonly { id: AccessLevel; label: string; hint: string; bypass?: boolean }[];
   access: AccessLevel;
   onPick: (a: AccessLevel) => void;
+  /** Said before the choice: what the levels cannot do for this provider. */
+  note?: string;
 }) {
   const modes = list.filter((p) => !p.bypass);
   const bypass = list.find((p) => p.bypass);
@@ -204,6 +207,7 @@ function AccessList({
 
   return (
     <>
+      {note && <div className="picker-note">{note}</div>}
       {modes.map((p) => (
         <button
           key={p.id}
@@ -1438,6 +1442,7 @@ export function Composer({
                   <AccessList
                     list={accessList}
                     access={access}
+                    note={providerFor(choice.agent).accessNote}
                     onPick={(a) => {
                       onAccess(a);
                       setPermMenu(false);
@@ -1645,7 +1650,7 @@ export function AgentIdentityChip({ identity }: { identity: AgentIdentity }) {
   // The face and the name are the whole chip. Role, provider and model are
   // the agent's settings, not its voice: they stay in the tooltip and in
   // Settings, Agents, where they are changed.
-  const provider = identity.provider === "codex" ? "Codex" : identity.provider === "claude" ? "Claude" : "pi.dev";
+  const provider = AGENT_NAME[identity.provider];
   const tip = [
     identity.name,
     identity.role,
@@ -1834,7 +1839,7 @@ export function SettingsSheet({
         {page === "access" && (
           <div className="sheet-group">
             <div className="sheet-card">
-              <AccessList list={accessList} access={access} onPick={onAccess} />
+              <AccessList list={accessList} access={access} onPick={onAccess} note={providerFor(choice.agent).accessNote} />
             </div>
             <div className="sheet-foot-note">
               A chat has no way to answer a permission prompt, so this is what
@@ -2116,7 +2121,7 @@ function ModelPicker({
           spellCheck={false}
           autoCapitalize="none"
           autoCorrect="off"
-          placeholder={tab === "claude" ? "claude-opus-4-6" : tab === "codex" ? "gpt-5.5" : "model id"}
+          placeholder={tab === "claude" ? "claude-opus-4-6" : tab === "codex" ? "gpt-5.5" : tab === "antigravity" ? "gemini-3.8-flash-high" : "model id"}
           onChange={(event) => {
             setExactId(event.target.value);
             setExactError(false);

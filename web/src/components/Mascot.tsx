@@ -100,6 +100,7 @@ export function Mascot({
         </g>
       </svg>
       {robot.startsWith("pi") && <span className="mascot-provider-badge" data-provider-mark="pi">P</span>}
+      {robot === "antigravity" && <span className="mascot-provider-badge" data-provider-mark="antigravity">A</span>}
       {asleep && <span className="mascot-z">z</span>}
       {alert && <span className="mascot-task-dot" />}
     </span>

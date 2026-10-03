@@ -3817,6 +3817,12 @@ body {
   --composer-on-accent: #0d191e;
 }
 
+/* Antigravity: one voice for every model it serves. */
+.composer[data-composer-style="antigravity"] {
+  --composer-accent: #6fa2f7;
+  --composer-on-accent: #0b1626;
+}
+
 /* Work the turn left running behind it — see components/Background.
    It has no row of its own: the pieces below sit ON the status line above the
    prompt box (`.composer-hint`), in front of that line's clock and after its
@@ -9700,6 +9706,10 @@ body.is-ultra .eff {
 
 .agent-logo.is-claude {
   color: #d97757;
+}
+
+.agent-logo.is-antigravity {
+  color: #6fa2f7;
 }
 
 .chip {

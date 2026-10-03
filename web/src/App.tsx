@@ -107,6 +107,7 @@ import {
   accessLabel as providerAccessLabel,
   effortFor,
   liveSettingCommand,
+  AGENT_NAME,
   MODELS,
   modelFromId,
   modelFromReported,
@@ -4322,7 +4323,7 @@ export default function App() {
   const ensureCoordinator = async (objective: string): Promise<string> => {
     if (!project) throw new Error("Choose a project before starting a run.");
     if (workerChat) throw new Error("Start runs from the main chat.");
-    if (choice.agent === "pi") throw new Error("Choose Codex or Claude as the main agent.");
+    if (choice.agent === "pi") throw new Error("Choose Codex, Claude or Antigravity as the main agent.");
     const id = conversationId ?? crypto.randomUUID();
     const switching = modelSwitches.current.get(id);
     if (switching) await switching;
@@ -4709,7 +4710,7 @@ export default function App() {
           {/* Plan usage, at every width: one small number that opens the full
               breakdown. Mounted once, outside the actions menu, because it
               polls a rate-limited endpoint and a second copy would double it. */}
-          {!showingProjects && <Usage />}
+          {!showingProjects && <Usage antigravity={installed?.includes("antigravity") ?? false} />}
         </div>
       </header>
 
@@ -4870,7 +4871,7 @@ export default function App() {
                 <label>Main agent<select aria-label="Main agent" value={choice.id} onChange={(event) => {
                   const model = MODELS.find((item) => item.id === event.target.value); if (model) changeModel(model);
                 }}>
-                  {choice.agent === "pi" && <option value={choice.id} disabled>Choose Codex or Claude</option>}
+                  {choice.agent === "pi" && <option value={choice.id} disabled>Choose Codex, Claude or Antigravity</option>}
                   {MODELS.filter((item) => item.agent !== "pi" && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
                 </select></label>
                 <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
@@ -5114,7 +5115,7 @@ export default function App() {
               {autoResume && (
                 <div className="auto-resume-row">
                   <span>
-                    OctiqFlow will resume this {autoResume.agent === "claude" ? "Claude" : autoResume.agent === "codex" ? "Codex" : "Pi"} session around{" "}
+                    OctiqFlow will resume this {autoResume.agent === "pi" ? "Pi" : AGENT_NAME[autoResume.agent]} session around{" "}
                     {new Date(autoResume.runAt * 1000).toLocaleString([], {
                       dateStyle: "medium",
                       timeStyle: "short",

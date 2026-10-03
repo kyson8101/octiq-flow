@@ -43,6 +43,8 @@ import {
 } from "./skillRun";
 import { readCodexEvent } from "./codexEvents";
 import { readPiEvent, type PiContent, type PiRead } from "./piEvents";
+import { readAntigravityEvent, type AntigravityRead } from "./antigravityEvents";
+import { accessLabel, type AccessLevel } from "./agentProviders";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 import { parsePeerMessages, type PeerMessage } from "./peerMessage";
@@ -422,7 +424,7 @@ export type ChatState = {
 
 export type AutoResume = {
   id: string;
-  agent: "claude" | "codex" | "pi";
+  agent: "claude" | "codex" | "pi" | "antigravity";
   resetAt: number;
   runAt: number;
 };
@@ -506,7 +508,7 @@ const IMAGE_NOTE = /\[Image:[^\]]*\]/g;
  *  report it as a wall of prose with links in it. It is not a bug and there is
  *  nothing to debug — the answer is "wait, or buy more" — so it gets said
  *  plainly instead of being dropped into the notices with everything else. */
-export function describeFailure(agent: "claude" | "codex" | "pi", raw: string): Failure {
+export function describeFailure(agent: "claude" | "codex" | "pi" | "antigravity", raw: string): Failure {
   const text = raw.trim();
   const outOfCredit =
     /usage limit|session limit|weekly limit|out of credits|quota|rate.?limit|purchase more credits|upgrade to pro/i.test(
@@ -524,7 +526,9 @@ export function describeFailure(agent: "claude" | "codex" | "pi", raw: string): 
       title:
         agent === "codex" || agent === "pi"
           ? "Your Codex account is out of credits"
-          : "You have hit your Claude usage limit",
+          : agent === "antigravity"
+            ? "You have used up your Antigravity quota"
+            : "You have hit your Claude usage limit",
       detail: when ? `It comes back at ${when}.` : text,
       link: /https?:\/\/[^\s)]+/.exec(text)?.[0],
       outOfCredit: true,
@@ -1049,7 +1053,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     const agent = asStr(e.agent);
     const resetAt = typeof e.reset_at === "number" ? e.reset_at : 0;
     const runAt = typeof e.run_at === "number" ? e.run_at : 0;
-    if (!id || !["claude", "codex", "pi"].includes(agent) || !resetAt || !runAt)
+    if (!id || !["claude", "codex", "pi", "antigravity"].includes(agent) || !resetAt || !runAt)
       return state;
     return {
       ...state,
@@ -1126,6 +1130,11 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // selected upstream model is Codex: Pi owns the session and tool protocol.
   const fromPi = readPiEvent(e);
   if (fromPi) return foldPi(state, fromPi, e, parent, speaker, now);
+
+  // Antigravity is the fourth. Its lines carry an `event` field no other
+  // provider writes, which is all `readAntigravityEvent` goes by.
+  const fromAntigravity = readAntigravityEvent(e);
+  if (fromAntigravity) return foldAntigravity(state, fromAntigravity, e, parent, speaker, now);
 
   if (type === "system") {
     const subtype = asStr(e.subtype);
@@ -2287,6 +2296,143 @@ function foldPi(
         : message,
     ),
   };
+}
+
+/** Antigravity's stream folded into the same message and tool shapes. Its
+ * words arrive in pieces on its model-call steps, a tool is one step reported
+ * running and then done, and its `result` is the full stop. */
+function foldAntigravity(
+  state: ChatState,
+  read: AntigravityRead,
+  event: Json,
+  parent: string | undefined,
+  speaker: Speaker | undefined,
+  now: number,
+): ChatState {
+  const mine = !speaker && !parent;
+  if (read.kind === "session") {
+    if (!mine) return state;
+    return { ...state, sessionId: read.id };
+  }
+
+  if (read.kind === "turn") return codexTurnStarted(state, event, parent, speaker, now);
+
+  const say = (current: ChatState, text: string) =>
+    withCodexCurrent(current, parent, speaker, (message) => ({
+      ...message,
+      blocks: appendText(message.blocks, "text", text),
+    }));
+
+  if (read.kind === "delta") return say(state, read.text);
+
+  if (read.kind === "call") {
+    const next = read.text ? say(state, read.text) : state;
+    if (!mine || !read.usage) return next;
+    // Each model call reports its own tokens; the turn's output is their sum,
+    // and the last call's input is what the context now holds.
+    const held = read.usage.input + read.usage.output;
+    return {
+      ...next,
+      turnTokens: (next.turnTokens ?? 0) + read.usage.output,
+      ...(held ? { contextTokens: held } : {}),
+    };
+  }
+
+  if (read.kind === "tool") {
+    const key = `antigravity:${speaker?.id ?? "host"}:${read.id}`;
+    const outcome = readOutcome(event.octiq_outcome);
+    const settled = (block: Block): Block =>
+      block.kind === "tool"
+        ? {
+            ...block,
+            state: read.state,
+            ...(read.result !== undefined ? { result: read.result } : {}),
+            ...(outcome ? { outcome } : {}),
+          }
+        : block;
+    // Step numbers start again in a new conversation, so only a call still
+    // running can be this one.
+    const open = state.messages.some((message) =>
+      message.blocks.some(
+        (block) => block.kind === "tool" && block.id === key && block.state === "running",
+      ),
+    );
+    if (open) {
+      return {
+        ...state,
+        messages: state.messages.map((message) => ({
+          ...message,
+          blocks: message.blocks.map((block) =>
+            block.kind === "tool" && block.id === key && block.state === "running"
+              ? settled(block)
+              : block,
+          ),
+        })),
+      };
+    }
+    return withCodexCurrent(state, parent, speaker, (message) => ({
+      ...message,
+      blocks: [
+        ...message.blocks,
+        settled({
+          kind: "tool",
+          id: key,
+          name: read.name,
+          args: read.args,
+          argsJson: JSON.stringify(read.args ?? {}),
+          state: read.state,
+        }),
+      ],
+    }));
+  }
+
+  // The full stop. As with Pi, end only this writer when it belongs to a
+  // room seat; the host's full stop ends the visible turn.
+  const outcome = readOutcome(event.octiq_outcome);
+  let messages = state.messages.map((message) =>
+    message.streaming && message.parent === parent && message.speaker?.id === speaker?.id
+      ? { ...message, streaming: false, blocks: message.blocks.map(stopIfRunning) }
+      : message,
+  );
+  let failure = state.failure;
+  if (mine && read.failed) {
+    const said: Failure = {
+      ...describeFailure("antigravity", read.error ?? ""),
+      ...(outcome ? { outcome } : {}),
+    };
+    failure = said.outOfCredit ? said : { ...said, inline: true };
+    if (!said.outOfCredit) {
+      messages = withStreamCard(messages, "agent-error", said.detail ?? "", said.detail || said.title, said.outcome);
+    }
+  }
+  if (mine && read.denied.length) {
+    // Nobody could be asked, so Antigravity refused and ended the turn. Say
+    // what it refused, at which level, and the way on: no card is coming.
+    const why = antigravityRefusal(read.denied, read.access);
+    messages = withStreamCard(messages, "agent-warning", why, why, outcome);
+  }
+  return {
+    ...state,
+    ...(mine
+      ? {
+          ...turnOver,
+          busy: false,
+          stopping: false,
+          ...(read.durationMs !== undefined ? { lastDurationMs: read.durationMs } : {}),
+        }
+      : {}),
+    messages,
+    failure,
+  };
+}
+
+/** Why an Antigravity turn ended on a refusal, in the person's words. */
+export function antigravityRefusal(denied: readonly string[], access: string | undefined): string {
+  const what = [...new Set(denied)].map((action) =>
+    action === "command" ? "a shell command" : action === "mcp" ? "an MCP tool call" : action,
+  );
+  const level = access ? `at ${accessLabel("antigravity", access as AccessLevel)} access` : "at this access level";
+  return `Antigravity refused ${what.join(" and ")} ${level} and ended the turn: it cannot ask anyone while it works, so no permission card can appear. Raise this chat's access to Auto or Skip permissions to let it run.`;
 }
 
 function piBlock(content: PiContent, speaker: Speaker | undefined): Block {

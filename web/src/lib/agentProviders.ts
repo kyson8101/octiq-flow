@@ -7,7 +7,7 @@
 // means a new provider is an adapter here, not another set of `if (claude)`
 // checks across the composer and App.
 
-export type Provider = "claude" | "codex" | "pi";
+export type Provider = "claude" | "codex" | "pi" | "antigravity";
 
 /** A model's visual voice in the composer. The names are deliberately model
  * specific: adding a model means choosing how it looks instead of silently
@@ -27,7 +27,8 @@ export type ComposerStyle =
   | "pi-sol"
   | "pi-terra"
   | "pi-luna"
-  | "pi";
+  | "pi"
+  | "antigravity";
 
 export type ModelChoice = {
   id: string;
@@ -90,6 +91,9 @@ export interface AgentProvider {
   readonly models: readonly ModelChoice[];
   readonly access: readonly AccessOption[];
   readonly efforts: readonly EffortOption[];
+  /** Said above the access levels when they mean something the labels
+   *  alone would not tell (a provider with no permission prompt). */
+  readonly accessNote?: string;
   readonly capabilities: AgentCapabilities;
   /** Turns provider-reported commands into the composer’s common shape. */
   commands(source: readonly string[]): readonly AgentCommand[];
@@ -235,6 +239,58 @@ export const providers = {
       return undefined;
     },
   },
+  antigravity: {
+    id: "antigravity",
+    name: "Antigravity",
+    // What `agy models` lists for a signed-in account (agy 1.2.16). The live
+    // catalog replaces these when it loads; they keep a picker usable before
+    // it does. A Gemini id names its own effort level.
+    models: [
+      { id: "antigravity:gemini-3-8-flash-high", agent: "antigravity", name: "Antigravity", model: "Gemini 3.8 Flash (High)", flag: "gemini-3.8-flash-high", hint: "gemini-3.8-flash-high", composerStyle: "antigravity" },
+      { id: "antigravity:gemini-3-8-flash-medium", agent: "antigravity", name: "Antigravity", model: "Gemini 3.8 Flash (Medium)", flag: "gemini-3.8-flash-medium", hint: "gemini-3.8-flash-medium", composerStyle: "antigravity" },
+      { id: "antigravity:gemini-3-8-flash-low", agent: "antigravity", name: "Antigravity", model: "Gemini 3.8 Flash (Low)", flag: "gemini-3.8-flash-low", hint: "gemini-3.8-flash-low", composerStyle: "antigravity" },
+      { id: "antigravity:gemini-3-1-pro-high", agent: "antigravity", name: "Antigravity", model: "Gemini 3.1 Pro (High)", flag: "gemini-3.1-pro-high", hint: "gemini-3.1-pro-high", composerStyle: "antigravity" },
+      { id: "antigravity:gemini-3-1-pro-low", agent: "antigravity", name: "Antigravity", model: "Gemini 3.1 Pro (Low)", flag: "gemini-3.1-pro-low", hint: "gemini-3.1-pro-low", composerStyle: "antigravity" },
+      { id: "antigravity:claude-sonnet-4-6", agent: "antigravity", name: "Antigravity", model: "Claude Sonnet 4.6 (Thinking)", flag: "claude-sonnet-4-6", hint: "claude-sonnet-4-6 through Antigravity", composerStyle: "antigravity" },
+      { id: "antigravity:claude-opus-4-6-thinking", agent: "antigravity", name: "Antigravity", model: "Claude Opus 4.6 (Thinking)", flag: "claude-opus-4-6-thinking", hint: "claude-opus-4-6-thinking through Antigravity", composerStyle: "antigravity" },
+      { id: "antigravity:gpt-oss-120b-medium", agent: "antigravity", name: "Antigravity", model: "GPT-OSS 120B (Medium)", flag: "gpt-oss-120b-medium", hint: "gpt-oss-120b-medium", composerStyle: "antigravity" },
+      { id: "antigravity:default", agent: "antigravity", name: "Antigravity", model: "Default", flag: "", hint: "whatever agy picks", composerStyle: "antigravity" },
+    ],
+    // Headless Antigravity cannot ask anyone, so whatever a level would ask
+    // about is refused, and the refusal ends the turn. No safety card can
+    // stand in. Auto and Skip permissions both run everything unasked: its
+    // `--sandbox` blocks writes inside the project and git itself. Auto stays
+    // a row of its own (one bypass switch per list), named for what it is.
+    access: [
+      { id: "read", label: "Plan", hint: "reads and searches; any shell command is refused and ends the turn" },
+      { id: "edits", label: "Accept edits", hint: "edits files without asking; shell commands are refused and end the turn" },
+      { id: "auto", label: "Auto · unguarded", hint: "no guarded auto exists: runs commands and edits without asking" },
+      { id: "full", label: "Skip permissions", hint: "runs anything without asking", bypass: true },
+    ],
+    accessNote:
+      "Antigravity cannot ask while it works, so no permission card can appear. Plan and Accept edits refuse every shell command, and the refusal ends the turn; Auto and Skip permissions run everything unasked.",
+    // A Gemini model's id names its level (`gemini-3.8-flash-high`) and agy
+    // refuses another beside it; an effort applies only to the default model.
+    efforts: [
+      { id: "auto", label: "The model's own", short: "Model", hint: "the level the model id names" },
+      { id: "low", label: "Low", short: "Low", hint: "default model only" },
+      { id: "medium", label: "Medium", short: "Med", hint: "default model only" },
+      { id: "high", label: "High", short: "High", hint: "default model only" },
+      { id: "xhigh", label: "Very high", short: "V.high", hint: "default model only, where it has one" },
+      { id: "max", label: "Max", short: "Max", hint: "default model only, where it has one" },
+    ],
+    capabilities: {
+      commands: "none",
+      liveSettings: { model: false, effort: false },
+      cleanStart: false,
+    },
+    commands() {
+      return [];
+    },
+    liveSettingCommand() {
+      return undefined;
+    },
+  },
 } satisfies Record<Provider, AgentProvider>;
 
 export function providerFor(provider: Provider): AgentProvider {
@@ -318,6 +374,7 @@ function styleForModel(provider: Provider, flag: string): ComposerStyle {
     if (lower.includes("luna")) return "luna";
     return "codex";
   }
+  if (provider === "antigravity") return "antigravity";
   if (lower.includes("astra")) return "pi-astra";
   if (lower.includes("sol")) return "pi-sol";
   if (lower.includes("terra")) return "pi-terra";

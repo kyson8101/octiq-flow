@@ -9,12 +9,16 @@ describe("AgentLogo", () => {
   it("names the agent it stands for", () => {
     expect(renderToStaticMarkup(<AgentLogo agent="claude" />)).toContain('aria-label="Claude"');
     expect(renderToStaticMarkup(<AgentLogo agent="codex" />)).toContain('aria-label="Codex"');
+    expect(renderToStaticMarkup(<AgentLogo agent="antigravity" />)).toContain('aria-label="Antigravity"');
+    expect(renderToStaticMarkup(<AgentLogo agent="pi" />)).toContain('aria-label="pi.dev"');
   });
 
   it("draws a different mark for each agent", () => {
     const claude = renderToStaticMarkup(<AgentLogo agent="claude" />);
     const codex = renderToStaticMarkup(<AgentLogo agent="codex" />);
-    expect(claude).not.toEqual(codex);
+    const antigravity = renderToStaticMarkup(<AgentLogo agent="antigravity" />);
+    const pi = renderToStaticMarkup(<AgentLogo agent="pi" />);
+    expect(new Set([claude, codex, antigravity, pi]).size).toBe(4);
   });
 
   /** Toolbar icons here are 14px and sized by their caller, never by a

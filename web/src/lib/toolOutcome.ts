@@ -25,7 +25,7 @@ export type ReasonClass =
 export type ToolOutcome = {
   origin: ToolOrigin;
   reasonClass: ReasonClass;
-  /** Only on a provider outcome: "Claude", "Codex", "Pi". */
+  /** Only on a provider outcome: "Claude", "Codex", "Pi", "Antigravity". */
   providerName?: string;
   /** A warning broke nothing: a person or the clock resolves it. */
   severity: "warning" | "error";

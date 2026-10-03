@@ -156,3 +156,37 @@ describe("claudeModelName", () => {
     }
   });
 });
+
+describe("Antigravity", () => {
+  const agy = providers.antigravity;
+
+  it("offers the models agy lists, each as its own exact id", () => {
+    const flags = agy.models.map((model) => model.flag);
+    expect(flags).toContain("gemini-3.8-flash-high");
+    expect(flags).toContain("gemini-3.1-pro-high");
+    expect(flags).toContain("");
+    expect(agy.models.every((model) => model.agent === "antigravity" && model.composerStyle === "antigravity")).toBe(true);
+    // A newly listed id is still a choice, in Antigravity's own voice.
+    expect(modelChoiceForFlag("antigravity", "gemini-3.9-flash-high", "Gemini 3.9 Flash (High)")).toMatchObject({
+      model: "Gemini 3.9 Flash (High)",
+      composerStyle: "antigravity",
+    });
+  });
+
+  it("says what each access level refuses or runs unasked, since no card can ask", () => {
+    expect(agy.access.map((a) => a.id)).toEqual(["read", "edits", "auto", "full"]);
+    expect(agy.access.find((a) => a.id === "edits")?.hint).toMatch(/shell commands are refused/);
+    expect(agy.access.find((a) => a.id === "auto")?.label).toMatch(/unguarded/);
+    // One bypass switch per list: Skip permissions.
+    expect(agy.access.filter((a) => a.bypass).map((a) => a.id)).toEqual(["full"]);
+    expect(agy.accessNote).toMatch(/no permission card can appear/);
+    expect(accessFor("antigravity", "manual")).toBe("read");
+    expect(accessFor("antigravity", "auto")).toBe("auto");
+  });
+
+  it("leaves the effort to the model unless asked, as an id names its own", () => {
+    expect(agy.efforts[0].id).toBe("auto");
+    expect(effortFor("antigravity", "ultracode")).toBe("auto");
+    expect(effortFor("antigravity", "max")).toBe("max");
+  });
+});

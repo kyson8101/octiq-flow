@@ -1683,9 +1683,9 @@ const READ_CONVERSATION = {
 };
 
 const WORKER_SETTINGS_PROPERTIES = {
-  agent: { type: "string", enum: ["codex", "claude"], description: "Choose the provider suitable for this task; tasks may use different providers." },
+  agent: { type: "string", enum: ["codex", "claude", "antigravity"], description: "Choose the provider suitable for this task; tasks may use different providers. An Antigravity worker cannot be asked about a command: at edits or read access it refuses every shell command and the refusal ends its turn, while auto and full run everything unguarded." },
   access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"] },
-  model: { type: "string", description: "Choose a provider-native execution model: Codex gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna; Claude opus, sonnet, haiku. Fable and Astra (including versioned IDs) are reserved for main orchestrators and rejected for workers. If omitted, uses Sol for Codex or Sonnet for Claude, never a CLI default." },
+  model: { type: "string", description: "Choose a provider-native execution model: Codex gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna; Claude opus, sonnet, haiku; Antigravity gemini-3.1-pro-high, gemini-3.8-flash-high (an Antigravity Gemini id names its own effort). Fable and Astra (including versioned IDs) are reserved for main orchestrators and rejected for workers. If omitted, uses Sol for Codex, Sonnet for Claude or gemini-3.1-pro-high for Antigravity, never a CLI default." },
   effort: { type: "string", description: "Provider-native reasoning effort suited to this task's complexity." },
   recovery: { type: "object", description: "Host recovery for transient provider failures. Defaults to two retries with exponential backoff. Retains the task workspace and starts a new attempt; pending tools and disconnects require coordinator review.", properties: {
     maxRetries: { type: "integer", minimum: 0, maximum: 5, description: "0 disables automatic retries; default 2." },
@@ -1860,7 +1860,7 @@ const ORCHESTRATION_SNAPSHOT = {
 const ORCHESTRATION_WORKER_START = {
   name: "orchestration_worker_start",
   description:
-    "Start an authoritative Claude or Codex worker for a ready task. The host applies the run workspace policy " +
+    "Start an authoritative Claude, Codex or Antigravity worker for a ready task. The host applies the run workspace policy " +
     "and reuses every retry workspace. With automatic dispatch enabled, the host starts ready waves. Failed or " +
     "blocked tasks may be retried; the new attempt becomes authoritative and late older " +
     "workers cannot settle it.",
@@ -1868,7 +1868,7 @@ const ORCHESTRATION_WORKER_START = {
     type: "object",
     properties: {
       taskId: { type: "string" },
-      agent: { type: "string", enum: ["claude", "codex"] },
+      agent: { type: "string", enum: ["claude", "codex", "antigravity"] },
       model: WORKER_SETTINGS_PROPERTIES.model,
       effort: { type: "string", description: "Optional provider-native effort id." },
       access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"], description: "Worker permission level. Use auto unless the task needs a different boundary." },
@@ -2140,7 +2140,7 @@ const FEEDBACK_TOOLS = [
 const AGENT_FIELDS = {
   name: { type: "string", minLength: 1, maxLength: 60 },
   role: { type: "string", maxLength: 2000, description: "What the agent does, in the person's words." },
-  provider: { type: "string", enum: ["claude", "codex"] },
+  provider: { type: "string", enum: ["claude", "codex", "antigravity"] },
   model: { type: "string", minLength: 1, maxLength: 120, description: "An explicit model id, such as one an existing agent of that provider uses. Never \"default\"." },
   effort: { type: "string", maxLength: 16, description: "Reasoning effort, such as low, medium or high. \"\" means the provider's default." },
   access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"], description: "What the agent may do without asking. Defaults to auto for a new agent." },

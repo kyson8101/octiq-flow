@@ -261,7 +261,7 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
             let name = p.name.clone().ok_or("Give the agent a name.")?;
             let provider = p
                 .provider
-                .ok_or("Choose the agent's provider: claude or codex.")?;
+                .ok_or("Choose the agent's provider: claude, codex or antigravity.")?;
             let model = p
                 .model
                 .clone()

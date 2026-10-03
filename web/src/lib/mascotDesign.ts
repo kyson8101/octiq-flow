@@ -1,7 +1,9 @@
 import type { ComposerStyle } from "./agentProviders";
 
 export type MascotMood = "idle" | "still" | "think" | "work";
-export type RobotBody = Exclude<ComposerStyle, `pi${string}`>;
+/** Pi and Antigravity wear another body and a provider badge rather than a
+ *  design of their own (see `robotBody`). */
+export type RobotBody = Exclude<ComposerStyle, `pi${string}` | "antigravity">;
 export type MascotState = { mood: MascotMood; asleep: boolean; alert: boolean };
 
 /** Shared by the lightweight placeholder and the lazily loaded Three.js rig. */
@@ -20,5 +22,8 @@ export const ROBOT_DESIGNS = {
 
 export function robotBody(robot: ComposerStyle): RobotBody {
   if (robot === "pi") return "codex";
+  // A placeholder until Antigravity has its own design: the blue body,
+  // badged "A".
+  if (robot === "antigravity") return "luna";
   return (robot.startsWith("pi-") ? robot.slice(3) : robot) as RobotBody;
 }

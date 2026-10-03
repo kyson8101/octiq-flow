@@ -1,4 +1,4 @@
-import type { Provider } from "../lib/agentProviders";
+import { AGENT_NAME, type Provider } from "../lib/agentProviders";
 
 /** The agents' marks, for the places a name would otherwise be spelled out.
  *
@@ -17,6 +17,10 @@ import type { Provider } from "../lib/agentProviders";
 /** Claude's sunburst: eleven tapered rays from a solid middle. */
 const CLAUDE = "M13.72 11.10L12.00 1.40L10.28 11.10ZM13.93 12.17L17.73 3.08L11.04 10.31ZM13.53 13.19L21.64 7.60L12.10 10.06ZM12.65 13.83L22.49 13.51L13.14 10.43ZM11.55 13.89L20.01 18.94L13.81 11.29ZM10.60 13.35L14.99 22.17L13.90 12.38ZM10.10 12.38L9.01 22.17L13.40 13.35ZM10.19 11.29L3.99 18.94L12.45 13.89ZM10.86 10.43L1.51 13.51L11.35 13.83ZM11.90 10.06L2.36 7.60L10.47 13.19ZM12.96 10.31L6.27 3.08L10.07 12.17Z";
 
+/** Antigravity: a placeholder until it has a drawn mark, an arch lifting off
+ *  with a point above it. Not Google's logo. */
+const ANTIGRAVITY_ARCH = "M4.5 19.5C7 14 9.2 8.8 12 8.8s5 5.2 7.5 10.7";
+
 /** Codex's knot: three rounded bars at sixty degrees, whose overlap leaves the
  *  six lobes and the hexagonal hole. Drawn as strokes rather than one outline
  *  because a stroke keeps its weight when the mark is scaled down. */
@@ -30,7 +34,7 @@ export function AgentLogo({
   /** Drawn square. Callers size it; the mark never picks its own. */
   size?: number;
 }) {
-  const name = agent === "claude" ? "Claude" : agent === "codex" ? "Codex" : "pi.dev";
+  const name = AGENT_NAME[agent];
   return (
     <svg
       className={`agent-logo is-${agent}`}
@@ -47,6 +51,11 @@ export function AgentLogo({
           {[0, 60, 120].map((deg) => (
             <rect key={deg} {...CODEX_BAR} transform={`rotate(${deg} 12 12)`} />
           ))}
+        </g>
+      ) : agent === "antigravity" ? (
+        <g fill="currentColor">
+          <path d={ANTIGRAVITY_ARCH} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+          <circle cx="12" cy="4" r="1.9" />
         </g>
       ) : (
         <path

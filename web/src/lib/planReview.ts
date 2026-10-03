@@ -7,7 +7,7 @@
 // not this plan's to order), and a cycle is not solved: whatever is left over
 // lands in one final stage flagged `blocked`, because as written it never
 // starts.
-import type { OrchestrationRun, OrchestrationTask } from "./orchestration";
+import type { OrchestrationRun, OrchestrationTask, WorkerSettings } from "./orchestration";
 
 export type PlanStage = { tasks: OrchestrationTask[]; blocked: boolean };
 
@@ -35,7 +35,7 @@ export function planNumbers(stages: PlanStage[]): Map<string, number> {
 }
 
 /** Who a task goes to: the registered agent, else the worker it asked for. */
-export function planOwner(task: OrchestrationTask): { agent?: "claude" | "codex"; label: string } {
+export function planOwner(task: OrchestrationTask): { agent?: WorkerSettings["agent"]; label: string } {
   if (task.assignee) return { agent: task.worker?.agent, label: task.assignee.name };
   if (task.worker) return { agent: task.worker.agent, label: task.worker.model ?? "" };
   return { label: "Chosen at dispatch" };

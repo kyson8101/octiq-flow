@@ -95,6 +95,7 @@
   background: var(--bg-0); color: var(--fg-1); font: inherit; font-size: 13px;
 }
 .team-form textarea { resize: vertical; }
+.team-field-note { color: var(--fg-3); font-size: 11px; line-height: 1.4; }
 
 /* The avatar: current face, the generated one beside it while it waits to be
    accepted, and the few actions that change it. */

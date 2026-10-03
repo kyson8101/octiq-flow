@@ -83,7 +83,7 @@ function resetIn(resetsAt?: number | null): string {
   return `resets in ${minutes}m`;
 }
 
-export function Usage() {
+export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
   const [data, setData] = useState<Cache>(loadCache);
   const [stale, setStale] = useState<{ claude: boolean; codex: boolean }>({
     claude: true,
@@ -211,6 +211,17 @@ export function Usage() {
           <div className="usage-pop" role="dialog" aria-label="Plan usage">
             <Detail name="Claude" provider={data.claude} stale={stale.claude} />
             <Detail name="Codex" provider={data.codex} stale={stale.codex} />
+            {/* Antigravity publishes no plan window OctiqFlow can read. Saying
+                so beats a bar that would have to be made up; its tokens per
+                turn still count wherever a chat's usage is shown. */}
+            {antigravity && (
+              <section className="usage-block">
+                <header className="usage-block-head">
+                  <span className="usage-block-name">Antigravity</span>
+                </header>
+                <div className="usage-empty">Antigravity does not report plan usage.</div>
+              </section>
+            )}
           </div>
         </>
       )}

@@ -3,7 +3,7 @@ import type { TaskAcceptance, TaskSize } from "./agentLevels";
 
 export type WorkspaceMode = "auto" | "worktree" | "direct";
 export type RecoveryPolicy = { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; fallbackModel?: string | null; stallAfterMs?: number; toolStallAfterMs?: number };
-export type WorkerSettings = { agent: "codex" | "claude"; access: string; model?: string; effort?: string; recovery?: RecoveryPolicy | null };
+export type WorkerSettings = { agent: "codex" | "claude" | "antigravity"; access: string; model?: string; effort?: string; recovery?: RecoveryPolicy | null };
 /** Omitting agent lets the main agent select workers individually. */
 export type WorkerDefaults = Omit<WorkerSettings, "agent"> & { agent?: WorkerSettings["agent"] };
 export type TaskWorkspace = {
@@ -182,7 +182,7 @@ export type OrchestrationAttempt = {
   taskId: string;
   number: number;
   workerChatKey: string;
-  agent: "claude" | "codex" | "pi";
+  agent: "claude" | "codex" | "pi" | "antigravity";
   model?: string;
   effort?: string;
   access: string;
@@ -315,7 +315,7 @@ export type PeerAsk = {
   attemptId: string;
   asker: { id: string; name: string };
   helper: { id: string; name: string };
-  helperAgent: "claude" | "codex" | "pi";
+  helperAgent: "claude" | "codex" | "pi" | "antigravity";
   helperModel: string;
   helperEffort?: string;
   question: string;

@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import "./AgentsSettings.css";
 import {
-  ACCESS, AGENT_NAME, EFFORTS,
+  ACCESS, AGENT_NAME, EFFORTS, providerFor,
   type AccessLevel, type Effort, type Provider,
 } from "../lib/agentProviders";
 import {
@@ -22,7 +22,8 @@ import { sharedProject } from "../lib/frontDesk";
 
 type ProjectRef = { id: string; name: string };
 
-const PROVIDERS: Provider[] = ["claude", "codex"];
+/** Pi is left out: it cannot carry OctiqFlow's tools, so it cannot report. */
+const PROVIDERS: Provider[] = ["claude", "codex", "antigravity"];
 
 function blank(projectId: string | null): TeamDraft {
   return { name: "", role: "", agent: "claude", model: "sonnet", effort: "medium", access: "auto", projectId, reportsTo: null, teamId: null };
@@ -692,6 +693,13 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
         <select value={draft.access} onChange={(event) => set({ access: event.target.value as AccessLevel })}>
           {access.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
         </select>
+        {/* A provider that cannot be asked (Antigravity) says what each level
+            refuses or runs unasked, since no card will. */}
+        {providerFor(draft.agent).accessNote && (
+          <small className="team-field-note">
+            {access.find((a) => a.id === draft.access)?.hint}
+          </small>
+        )}
       </label>
       <label>
         <span>Reports to</span>

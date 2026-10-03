@@ -185,7 +185,12 @@ export async function createFrontDesk(draft: { name?: string; agent: Provider; m
  *  provider's smallest model at its lowest effort. Routing reads a roster and
  *  writes a paragraph; it needs speed, not depth. */
 export function frontDeskDefaults(provider: Provider): { model: string; effort: Effort } {
-  const smallest: Record<Provider, string> = { claude: "haiku", codex: "gpt-5.6-luna", pi: "gpt-5.6-luna" };
+  const smallest: Record<Provider, string> = {
+    claude: "haiku",
+    codex: "gpt-5.6-luna",
+    pi: "gpt-5.6-luna",
+    antigravity: "gemini-3.8-flash-low",
+  };
   const efforts = effortSteps(provider);
   return { model: smallest[provider], effort: efforts[0]?.id ?? "low" };
 }
