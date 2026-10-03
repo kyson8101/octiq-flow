@@ -2429,9 +2429,20 @@ pub(crate) fn start_session(
     // What the provider reads from files rather than its command line:
     // Antigravity's plugin carrying OctiqFlow's MCP server and rules. A
     // launch that would have no way to report is refused, naming the file.
-    provider
+    let launch_warning = provider
         .prepare_launch(&launch)
         .map_err(|why| format!("could not start {}: {why}", provider.bin()))?;
+    if let Some(warning) = launch_warning {
+        emit_status(
+            agent,
+            ChatStatus {
+                key: key.clone(),
+                kind: "stderr".into(),
+                text: warning,
+                code: None,
+            },
+        );
+    }
     let process_cwd = if cwd.trim().is_empty() {
         // `home_dir` reads USERPROFILE too, so this does not land on "/" the
         // moment a Windows machine is asked for a chat with no folder.
@@ -3042,6 +3053,13 @@ pub(crate) fn start_session(
                         // A provider failure says it is the provider's, and
                         // which kind, before it is written down (`outcome`).
                         crate::outcome::annotate(stream_provider.kind(), &mut event);
+                        // A turn Antigravity ended by refusing a call says
+                        // which access level refused it (no card can ask).
+                        crate::agent_provider::mark_refusal_access(
+                            stream_provider.kind(),
+                            &mut event,
+                            access,
+                        );
                         // The agent has its ledger read already; the record and
                         // every tab get a note instead.
                         snapshot_reads.trim(&mut event, crate::record_trim::RECORD_MIN_BYTES);

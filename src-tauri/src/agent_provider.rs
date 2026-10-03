@@ -123,6 +123,15 @@ pub enum Access {
 }
 
 impl Access {
+    #[cfg(test)]
+    pub(crate) const ALL_FOR_TESTS: [Self; 5] = [
+        Self::Read,
+        Self::Manual,
+        Self::Edits,
+        Self::Auto,
+        Self::Full,
+    ];
+
     /// What the permission hook reads. This is deliberately semantic rather
     /// than a provider's native flag name.
     pub(crate) const fn as_env(self) -> &'static str {
@@ -301,9 +310,10 @@ pub trait AgentProvider: Send + Sync {
 
     /// Put in place what the CLI reads from files rather than from its command
     /// line, just before the line `build_command` made for this same request
-    /// is launched. An error refuses the launch, naming what to fix.
-    fn prepare_launch(&self, _request: &AgentCommand<'_>) -> Result<(), String> {
-        Ok(())
+    /// is launched. An error refuses the launch, naming what to fix; a
+    /// warning lets it start and is shown in the chat.
+    fn prepare_launch(&self, _request: &AgentCommand<'_>) -> Result<Option<String>, String> {
+        Ok(None)
     }
 
     /// Normalize a requested effort level for this provider.
@@ -1223,6 +1233,17 @@ fn write_antigravity_plugin(mcp: &Path, role: AntigravityRole) -> Result<(), Str
     Ok(())
 }
 
+/// Where the person's Antigravity settings are copied, beside the plugin
+/// folders, before OctiqFlow first changes them.
+const ANTIGRAVITY_SETTINGS_BACKUP: &str = "settings.json.before-octiqflow";
+
+/// What the chat is told when the allow rule could not be written.
+fn antigravity_rule_warning(settings: &str, why: &str) -> String {
+    format!(
+        "OctiqFlow could not add its allow rule to {settings}: {why}. Antigravity may refuse OctiqFlow's tools when it calls them through call_mcp_tool. Adding \"{ANTIGRAVITY_MCP_RULE}\" under permissions.allow there fixes it."
+    )
+}
+
 /// Antigravity's own user settings, where `ANTIGRAVITY_MCP_RULE` goes.
 fn antigravity_settings(home: &Path) -> std::path::PathBuf {
     home.join(".gemini")
@@ -1334,22 +1355,29 @@ impl AgentProvider for AntigravityProvider {
         cmd
     }
 
-    fn prepare_launch(&self, request: &AgentCommand<'_>) -> Result<(), String> {
+    fn prepare_launch(&self, request: &AgentCommand<'_>) -> Result<Option<String>, String> {
         let Some(mcp) = request.mcp_config else {
-            return Ok(());
+            return Ok(None);
         };
         write_antigravity_plugin(mcp, AntigravityRole::of(request))?;
-        // Best effort: without the rule a call the model makes by its own
-        // tool name still runs, and a refused one says so in the chat.
-        if let Some(home) = crate::paths::home_dir() {
-            if let Err(why) = crate::claude_allow::add_antigravity_allow_rule(
-                &antigravity_settings(&home),
-                ANTIGRAVITY_MCP_RULE,
-            ) {
-                eprintln!("antigravity: OctiqFlow's MCP allow rule was not added: {why}");
-            }
-        }
-        Ok(())
+        // Without the rule a call the model makes by its own tool name still
+        // runs, so the chat starts; it is told why the others may be refused.
+        let Some(home) = crate::paths::home_dir() else {
+            return Ok(Some(antigravity_rule_warning(
+                "Antigravity's settings",
+                "no home folder was found",
+            )));
+        };
+        let settings = antigravity_settings(&home);
+        let backup = antigravity_workspace(mcp, AntigravityRole::Chat)
+            .with_file_name(ANTIGRAVITY_SETTINGS_BACKUP);
+        Ok(crate::claude_allow::add_antigravity_allow_rule(
+            &settings,
+            ANTIGRAVITY_MCP_RULE,
+            &backup,
+        )
+        .err()
+        .map(|why| antigravity_rule_warning(&settings.to_string_lossy(), &why)))
     }
 
     fn user_message_payload(&self, text: &str, images: &[String]) -> Option<Value> {
@@ -1413,16 +1441,45 @@ impl AgentProvider for AntigravityProvider {
     }
 }
 
+/// Stamp the access level a process runs at on an Antigravity `result` that
+/// lists `denied_actions`, as `octiq_access`. Headless Antigravity refuses
+/// instead of asking, and the refusal ends the turn; the page says which
+/// level refused it and that raising it is the way on. Unset is Read, as for
+/// the launch itself.
+pub(crate) fn mark_refusal_access(agent: AgentKind, event: &mut Value, access: Option<Access>) {
+    if agent != AgentKind::Antigravity
+        || event.get("event").and_then(Value::as_str) != Some("result")
+        || !event
+            .pointer("/result/denied_actions")
+            .and_then(Value::as_array)
+            .is_some_and(|denied| !denied.is_empty())
+    {
+        return;
+    }
+    if let Some(object) = event.as_object_mut() {
+        object.insert(
+            "octiq_access".into(),
+            Value::String(access.unwrap_or(Access::Read).as_env().into()),
+        );
+    }
+}
+
 /// The access level as Antigravity's own flag. Headless Antigravity cannot
-/// ask, so whatever a mode would ask about is refused: plan mode refuses even
-/// a read-only shell command, and accept-edits (and the default
-/// request-review mode) every shell command. Only Full runs them.
+/// ask, so whatever a mode would ask about is refused, and the refusal ends
+/// the turn: plan mode refuses even a read-only shell command, and
+/// accept-edits (and the default request-review mode) every shell command.
+///
+/// So Auto, which has to be able to work, runs everything unasked, as Full
+/// does: Antigravity has no judged middle ground. Its `--sandbox` was tried
+/// for one (agy 1.2.16, 2026-10-03) and refuses writes inside the workspace
+/// itself and git's read of `~/.gitconfig`, while network and `/tmp` writes
+/// still pass; it guards nothing useful and breaks ordinary work.
 fn antigravity_access_flag(access: Access) -> &'static str {
     match access {
         Access::Read => " --mode plan",
         Access::Manual => "",
-        Access::Edits | Access::Auto => " --mode accept-edits",
-        Access::Full => " --dangerously-skip-permissions",
+        Access::Edits => " --mode accept-edits",
+        Access::Auto | Access::Full => " --dangerously-skip-permissions",
     }
 }
 
@@ -2440,12 +2497,16 @@ pub(crate) mod tests {
             "{manual}"
         );
         assert!(flags(Some(Access::Edits)).contains(" --mode accept-edits"));
-        assert!(flags(Some(Access::Auto)).contains(" --mode accept-edits"));
+        // Auto has no guarded form here (see `antigravity_access_flag`).
+        assert!(flags(Some(Access::Auto)).contains(" --dangerously-skip-permissions"));
         assert!(flags(Some(Access::Full)).contains(" --dangerously-skip-permissions"));
         // Unset is the most cautious, as `OCTIQ_ACCESS` is.
         assert!(flags(None).contains(" --mode plan"));
-        for access in [Access::Read, Access::Manual, Access::Edits, Access::Auto] {
+        for access in [Access::Read, Access::Manual, Access::Edits] {
             assert!(!flags(Some(access)).contains("--dangerously"), "{access:?}");
+        }
+        for access in Access::ALL_FOR_TESTS {
+            assert!(!flags(Some(access)).contains("--sandbox"), "{access:?}");
         }
     }
 
@@ -2707,5 +2768,26 @@ pub(crate) mod tests {
         assert!(finished);
         let _ = child.wait();
         std::fs::remove_dir_all(&project).ok();
+    }
+
+    #[test]
+    fn a_refused_antigravity_turn_names_the_access_that_refused_it() {
+        let events = agy_events(AGY_THREE_TURNS);
+        let mut results: Vec<Value> = events
+            .into_iter()
+            .filter(|e| e["event"] == "result")
+            .collect();
+        for result in &mut results {
+            mark_refusal_access(AgentKind::Antigravity, result, Some(Access::Edits));
+        }
+        assert!(results[0].get("octiq_access").is_none(), "nothing refused");
+        assert_eq!(results[1]["octiq_access"], json!("edits"));
+        let mut unset = results[1].clone();
+        mark_refusal_access(AgentKind::Antigravity, &mut unset, None);
+        assert_eq!(unset["octiq_access"], json!("read"));
+        // Another provider's events are left alone.
+        let mut claude = json!({ "event": "result", "result": { "denied_actions": [{}] } });
+        mark_refusal_access(AgentKind::Claude, &mut claude, Some(Access::Edits));
+        assert!(claude.get("octiq_access").is_none());
     }
 }

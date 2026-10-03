@@ -799,15 +799,21 @@ pub(crate) fn add_allow_rules(
             parent.display()
         ));
     }
-    merge_into(path, parent, expected, rules)
+    merge_into(path, parent, expected, rules, None)
 }
 
 /// Add OctiqFlow's one rule to Antigravity's user settings
 /// (`~/.gemini/antigravity-cli/settings.json`), the same way a Claude rule is
 /// written: every other key keeps its value and place, a symlink or a file
 /// that is not a JSON object is refused, and the write is atomic. Nothing is
-/// written when the rule is already there.
-pub(crate) fn add_antigravity_allow_rule(path: &Path, rule: &str) -> Result<Added, String> {
+/// written when the rule is already there. Before the file is first changed
+/// its text is copied to `backup`, which is never overwritten; no backup, no
+/// change.
+pub(crate) fn add_antigravity_allow_rule(
+    path: &Path,
+    rule: &str,
+    backup: &Path,
+) -> Result<Added, String> {
     let parent = path
         .parent()
         .filter(|p| p.file_name().and_then(|n| n.to_str()) == Some("antigravity-cli"))
@@ -819,17 +825,26 @@ pub(crate) fn add_antigravity_allow_rule(path: &Path, rule: &str) -> Result<Adde
         ));
     }
     let _guard = WRITES.lock().unwrap_or_else(|e| e.into_inner());
-    merge_into(path, parent, "settings.json", &[rule.to_string()])
+    merge_into(
+        path,
+        parent,
+        "settings.json",
+        &[rule.to_string()],
+        Some(backup),
+    )
 }
 
 /// The shared write: read the file at `path` (absent is empty), merge `rules`
-/// into it, and rename a temp file over it, keeping its permissions. The
-/// caller holds `WRITES`.
+/// into it, and rename a temp file over it, keeping its permissions. With a
+/// `backup`, the file's text is first copied there, once: a backup that
+/// already exists is the person's original and is kept. The caller holds
+/// `WRITES`.
 fn merge_into(
     path: &Path,
     parent: &Path,
     expected: &str,
     rules: &[String],
+    backup: Option<&Path>,
 ) -> Result<Added, String> {
     fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
     let real_parent = parent
@@ -861,6 +876,21 @@ fn merge_into(
         .map_err(|why| format!("{why} in {}. Nothing was written.", path.display()))?;
     if added.added.is_empty() {
         return Ok(added);
+    }
+    if let (Some(backup), Some(original)) = (backup, original.as_deref()) {
+        if !backup.exists() {
+            backup
+                .parent()
+                .map_or(Ok(()), fs::create_dir_all)
+                .and_then(|()| fs::write(backup, original))
+                .map_err(|e| {
+                    format!(
+                        "Cannot back {} up to {}: {e}. Nothing was written.",
+                        path.display(),
+                        backup.display()
+                    )
+                })?;
+        }
     }
     let temp = parent.join(format!(
         ".{expected}.octiq-{}.tmp",
@@ -1907,24 +1937,44 @@ mod tests {
             "{\n  \"colorScheme\": \"tokyo night\",\n  \"trustedWorkspaces\": [\n    \"/Users/me\"\n  ]\n}",
         )
         .unwrap();
+        let original = fs::read_to_string(&path).unwrap();
+        let backup = home
+            .join("octiqflow")
+            .join("settings.json.before-octiqflow");
         let rule = "mcp(octiqflow_octiq/*)";
-        let added = add_antigravity_allow_rule(&path, rule).unwrap();
+        let added = add_antigravity_allow_rule(&path, rule, &backup).unwrap();
         assert_eq!(added.added, vec![rule.to_string()]);
+        // The person's file as it was, kept before the first change.
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "{\n  \"colorScheme\": \"tokyo night\",\n  \"trustedWorkspaces\": [\n    \"/Users/me\"\n  ],\n  \"permissions\": {\n    \"allow\": [\n      \"mcp(octiqflow_octiq/*)\"\n    ]\n  }\n}"
         );
         // Again: nothing to write.
-        let again = add_antigravity_allow_rule(&path, rule).unwrap();
+        let again = add_antigravity_allow_rule(&path, rule, &backup).unwrap();
         assert!(again.added.is_empty() && again.present == vec![rule.to_string()]);
 
         // A missing file is made; a file that is not an object, a symlink,
-        // or any other path is refused and left alone.
+        // or any other path is refused and left alone. The first backup is
+        // never replaced by a later one.
         fs::remove_file(&path).unwrap();
-        add_antigravity_allow_rule(&path, rule).unwrap();
+        add_antigravity_allow_rule(&path, rule, &backup).unwrap();
         assert!(fs::read_to_string(&path).unwrap().contains(rule));
+        fs::write(&path, "{\"later\": 1}").unwrap();
+        add_antigravity_allow_rule(&path, rule, &backup).unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        // No backup, no change.
+        fs::write(&path, "{\"later\": 2}").unwrap();
+        let unbackable = home.join("a-file");
+        fs::write(&unbackable, "x").unwrap();
+        assert!(
+            add_antigravity_allow_rule(&path, rule, &unbackable.join("backup"))
+                .unwrap_err()
+                .contains("Nothing was written")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"later\": 2}");
         fs::write(&path, "[1]").unwrap();
-        assert!(add_antigravity_allow_rule(&path, rule).is_err());
+        assert!(add_antigravity_allow_rule(&path, rule, &backup).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "[1]");
         #[cfg(unix)]
         {
@@ -1932,11 +1982,11 @@ mod tests {
             fs::write(&real, "{}").unwrap();
             fs::remove_file(&path).unwrap();
             std::os::unix::fs::symlink(&real, &path).unwrap();
-            assert!(add_antigravity_allow_rule(&path, rule).is_err());
+            assert!(add_antigravity_allow_rule(&path, rule, &backup).is_err());
             assert_eq!(fs::read_to_string(&real).unwrap(), "{}");
         }
-        assert!(add_antigravity_allow_rule(&home.join("settings.json"), rule).is_err());
-        assert!(add_antigravity_allow_rule(&folder.join("other.json"), rule).is_err());
+        assert!(add_antigravity_allow_rule(&home.join("settings.json"), rule, &backup).is_err());
+        assert!(add_antigravity_allow_rule(&folder.join("other.json"), rule, &backup).is_err());
         fs::remove_dir_all(&home).ok();
     }
 }
