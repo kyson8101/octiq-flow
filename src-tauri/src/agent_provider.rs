@@ -545,7 +545,8 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__vault_read mcp__octiq__vault_write mcp__octiq__vault_patch \\
                      mcp__octiq__vault_move mcp__octiq__vault_archive mcp__octiq__vault_receipt \\
                      mcp__octiq__vault_agent_memory_read mcp__octiq__vault_agent_memory_append \\
-                     mcp__octiq__handover mcp__octiq__handover_ask mcp__octiq__handover_outcome",
+                     mcp__octiq__handover mcp__octiq__handover_ask mcp__octiq__handover_outcome \\
+                     mcp__octiq__agent_list mcp__octiq__agent_register mcp__octiq__agent_update",
                 ),
                 sh_quote(&format!(
                     "{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker_prompt}"
@@ -1407,6 +1408,11 @@ mod tests {
         // A handover only records a request the person then confirms on its
         // own card; a permission prompt in front of it would ask twice.
         assert!(claude.contains("mcp__octiq__handover"));
+        // The same for a change to the registered agents: the host puts it on
+        // its own one-off permission card (`team_tools`).
+        for tool in ["agent_list", "agent_register", "agent_update"] {
+            assert!(claude.contains(&format!("mcp__octiq__{tool}")), "{tool}");
+        }
         assert!(claude.contains("mcp__octiq__feedback_submit"));
         assert!(claude.contains("mcp__octiq__feedback_list"));
         assert!(instructions.contains("`feedback_submit`"));
@@ -1552,6 +1558,7 @@ mod tests {
         for absent in [
             "orchestration_run_create",
             "mcp__octiq__handover",
+            "mcp__octiq__agent_register",
             "vault_write",
             "--append-system-prompt",
             "--add-dir",

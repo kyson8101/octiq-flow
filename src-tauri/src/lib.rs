@@ -53,6 +53,7 @@ mod record_trim;
 mod safety_block;
 mod sandbox;
 mod team;
+mod team_tools;
 mod transcript;
 mod usage_limits;
 mod web;

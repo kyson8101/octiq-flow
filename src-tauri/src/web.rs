@@ -411,6 +411,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/orchestration", post(orchestration_handler))
         .route("/hook/task", post(task_handler))
         .route("/hook/feedback", post(feedback_handler))
+        .route("/hook/agents", post(agents_handler))
         .route("/hook/vault", post(vault_handler))
         .route("/hook/handover", post(handover_handler))
         .route("/hook/route", post(route_handler))
@@ -1481,6 +1482,77 @@ async fn feedback_handler(
     }
 }
 
+/// An agent reading the person's registered agents, or proposing to add or
+/// change one (`team_tools`). A change is put to the person on the permission
+/// card in the chat its capability proves, and saved only on their Allow; the
+/// roster file stays the host's to validate and write.
+async fn agents_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<TaskHook>,
+) -> Response {
+    let chat_key = match task_hook_caller(&ctx, &headers, &request) {
+        Ok(chat_key) => chat_key,
+        Err(refused) => return hook_refusal(refused),
+    };
+    match agents_hook(&ctx, &chat_key, &request.action, request.args).await {
+        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
+}
+
+async fn agents_hook(
+    ctx: &Ctx,
+    chat_key: &str,
+    action: &str,
+    args: Value,
+) -> Result<Value, String> {
+    use crate::team_tools::{Kind, Roster};
+    let kind = match action {
+        "list" => None,
+        "register" => Some(Kind::Register),
+        "update" => Some(Kind::Update),
+        _ => return Err("Unknown agents action.".into()),
+    };
+    let args = match args {
+        Value::Null => json!({}),
+        args => args,
+    };
+    let invalid = |error: serde_json::Error| format!("Those arguments are not valid: {error}");
+    let team = ctx.services.handovers.team.clone();
+    let roster = Roster::read(
+        &team,
+        crate::workspaces::list_workspaces_impl(&ctx.services.workspaces)?,
+    )?;
+    let Some(kind) = kind else {
+        return crate::team_tools::listing(&roster, serde_json::from_value(args).map_err(invalid)?);
+    };
+    // A worker settles its own attempt; who is on the team is not its call.
+    if ctx.services.orchestrations.active_task(chat_key)?.is_some() {
+        return Err("An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead.".into());
+    }
+    let proposal = serde_json::from_value(args).map_err(invalid)?;
+    let saved = crate::team_tools::propose(
+        &roster,
+        &team,
+        chat_key,
+        kind,
+        proposal,
+        crate::permission::ask,
+    )
+    .await?;
+    let mut value = crate::team_tools::saved_text(kind, &saved);
+    if let (Some(error), Some(object)) = (crate::team_tools::settle(&saved), value.as_object_mut())
+    {
+        object.insert("memoryError".into(), Value::String(error));
+    }
+    Ok(value)
+}
+
 /// A task hook's arguments, acting on `chat_key` whatever they say.
 fn task_hook_args(
     chat_key: &str,
@@ -2186,6 +2258,10 @@ mod tests {
                     "feedback",
                     json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
                 ),
+                (
+                    "agents",
+                    json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
+                ),
                 ("ask", json!({ "chatKey": chat, "questions": question })),
                 ("permission", json!({ "chatKey": chat, "toolName": "Bash" })),
                 (
@@ -2309,6 +2385,64 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_reads_the_roster_but_changes_nothing_the_person_did_not_approve() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let wiring = crate::handover::Wiring::scratch();
+        let team = wiring.team.clone();
+        crate::team::save(
+            &team,
+            crate::team::TeamDraft {
+                id: None,
+                name: "Potato".into(),
+                role: "Leads.".into(),
+                agent: crate::agent_chat::ChatAgent::Claude,
+                model: "opus".into(),
+                effort: None,
+                access: None,
+                project_id: None,
+                reports_to: None,
+                avatar: None,
+                team_id: None,
+            },
+        )
+        .unwrap();
+        let lead = chats.test_launch("chat:lead");
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        let (_ctx, base) = test_server_handing_over(cfg, chats.clone(), store, wiring).await;
+        let call = |action: &str, args: Value| json!({ "chatKey": "chat:lead", "action": action, "args": args });
+
+        let (status, answer) =
+            post_hook(&base, "agents", None, Some(&lead), call("list", json!({}))).await;
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["result"]["agents"][0]["name"], "Potato");
+
+        // The Settings form's rules answer before anyone is asked…
+        let clash = json!({ "name": "potato", "provider": "codex", "model": "gpt-5.5" });
+        let (status, answer) =
+            post_hook(&base, "agents", None, Some(&lead), call("register", clash)).await;
+        assert_eq!(status, 400);
+        assert_eq!(answer["error"], "Another agent is already called potato.");
+        // …and a valid change with nobody there to approve it saves nothing.
+        let nova = json!({ "name": "Nova", "provider": "codex", "model": "gpt-5.5" });
+        let (status, answer) =
+            post_hook(&base, "agents", None, Some(&lead), call("register", nova)).await;
+        assert_eq!(status, 400);
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("Nobody has OctiqFlow open to approve this"),
+            "{answer}"
+        );
+        assert_eq!(crate::team::list(&team, None, true).unwrap().len(), 1);
+        chats.test_end("chat:lead");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_front_desk_chat_may_only_route_and_only_a_front_desk_may() {
         let store = Arc::new(crate::orchestration::OrchestrationStore::default());
         let chats = Arc::new(crate::agent_chat::ChatManager::default());
@@ -2340,6 +2474,10 @@ mod tests {
             (
                 "feedback",
                 json!({ "chatKey": "chat:desk", "action": "submit", "args": {} }),
+            ),
+            (
+                "agents",
+                json!({ "chatKey": "chat:desk", "action": "register", "args": {} }),
             ),
             (
                 "handover",

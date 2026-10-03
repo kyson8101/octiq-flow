@@ -21,6 +21,13 @@ describe("askDetail", () => {
     expect(askDetail({ plan })).toEqual({ label: "plan", body: plan, limit: 8000 });
   });
 
+  it("shows a change to the registered agents whole", () => {
+    // The host words it (team_tools); a role can run to 2000 characters, and
+    // the person is approving every line of it.
+    const change = `Register a new agent, Nova.\n\nRole: ${"r".repeat(2000)}\nModel: gpt-5.5`;
+    expect(askDetail({ change })).toEqual({ label: "change", body: change, limit: 8000 });
+  });
+
   it("does not trim a plan to the length of a file preview", () => {
     // A preview is a sample and may stop early. A plan is the thing being
     // decided, and one cut off part-way cannot be judged at all.

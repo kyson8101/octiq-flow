@@ -65,7 +65,7 @@ impl Decision {
 }
 
 /// What the hook tells us, and what the UI needs to draw the question.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     /// Which chat asked — the key OctiqFlow gave the agent process.
@@ -83,6 +83,20 @@ pub struct Request {
     /// obeyed: it is only the fallback for a chat this server has no live
     /// record of. See `current_access`.
     pub access: Option<String>,
+    /// A question the HOST raises about one particular change (`team_tools`):
+    /// it is answered once, never with "Always", and an earlier "Always" does
+    /// not answer it. Set by the host only; a hook body cannot.
+    #[serde(
+        default,
+        skip_deserializing,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub once: bool,
+    /// How long the person has to answer when it is not `ANSWER_TIMEOUT`,
+    /// for a caller that cannot wait as long. Set by the host only, and drawn
+    /// on the card so its deadline is the real one.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub answer_within_secs: Option<u64>,
 }
 
 /// One line naming what is being asked for: the tool, and the path when it
@@ -238,6 +252,16 @@ fn is_env_assignment(word: &str) -> bool {
     }
 }
 
+/// The chat and signature an "Always" for this question is kept under, and
+/// looked up by. A one-off question has nothing to keep and nothing kept
+/// answers it.
+fn grant_key(request: &Request) -> Option<(String, String)> {
+    if request.once {
+        return None;
+    }
+    request.chat_key.clone().zip(signature(request))
+}
+
 /// Ask, and wait for an answer.
 pub async fn ask(request: Request) -> Answer {
     // Nothing is second-guessed here any more.
@@ -258,7 +282,7 @@ pub async fn ask(request: Request) -> Answer {
 
     // Already answered, with "Always", in this chat. This one IS an allow: it
     // is not an absence of opinion, it is a person's decision being kept.
-    let grant = request.chat_key.clone().zip(signature(&request));
+    let grant = grant_key(&request);
     if let Some((chat, sig)) = &grant {
         if with_remembered(|r| r.contains(&remembered_key(chat, sig))) {
             return Answer {
@@ -317,8 +341,14 @@ pub async fn ask(request: Request) -> Answer {
     // it away and left the agent waiting out the full timeout for an answer
     // nobody could give. Now the question survives the gap (`pending` hands it
     // back), and only a person who has actually gone releases it.
+    let within = asked
+        .request
+        .answer_within_secs
+        .map_or(ANSWER_TIMEOUT, |secs| {
+            Duration::from_secs(secs).min(ANSWER_TIMEOUT)
+        });
     let (decision, reason) = tokio::select! {
-        answered = tokio::time::timeout(ANSWER_TIMEOUT, rx) => match answered {
+        answered = tokio::time::timeout(within, rx) => match answered {
             Ok(Ok(decision)) => (
                 decision,
                 match decision {
@@ -382,10 +412,7 @@ mod tests {
             chat_key: None,
             session_id: None,
             tool_name: Some("Write".into()),
-            tool_input: None,
-            tool_use_id: None,
-            cwd: None,
-            access: None,
+            ..Request::default()
         })
         .await;
         assert_eq!(answer.decision, "abstain");
@@ -407,12 +434,9 @@ mod tests {
     fn asking_about(chat_key: Option<&str>, access: Option<&str>) -> Request {
         Request {
             chat_key: chat_key.map(str::to_string),
-            session_id: None,
             tool_name: Some("Bash".into()),
-            tool_input: None,
-            tool_use_id: None,
-            cwd: None,
             access: access.map(str::to_string),
+            ..Request::default()
         }
     }
 
@@ -449,6 +473,32 @@ mod tests {
         // not offer a choice that has already been made.
         assert!(decide(&id, Decision::Allow, false));
         assert!(!pending().iter().any(|a| a.id == id));
+    }
+
+    #[test]
+    fn a_one_off_question_is_neither_kept_nor_answered_by_always() {
+        let mut ask = asking_about(Some("chat:a"), None);
+        ask.tool_name = Some("mcp__octiq__agent_register".into());
+        assert!(
+            grant_key(&ask).is_some(),
+            "an ordinary tool question can be kept"
+        );
+        ask.once = true;
+        assert_eq!(grant_key(&ask), None);
+
+        // Neither field can come from a hook body: only the host asks once.
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "chatKey": "chat:a", "toolName": "Bash", "once": false, "answerWithinSecs": 1,
+        }))
+        .unwrap();
+        assert!(!parsed.once);
+        assert_eq!(parsed.answer_within_secs, None);
+        // And the card is told about both, so it draws no Always and the real
+        // deadline.
+        ask.answer_within_secs = Some(50);
+        let shown = serde_json::to_value(&ask).unwrap();
+        assert_eq!(shown["once"], true);
+        assert_eq!(shown["answerWithinSecs"], 50);
     }
 
     #[test]

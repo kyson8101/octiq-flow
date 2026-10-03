@@ -4145,6 +4145,7 @@ fn answer_codex_approval(
             .and_then(Value::as_str)
             .map(str::to_string),
         access: None,
+        ..Default::default()
     };
     let Some(rt) = rt else {
         write_codex_response(session, &request_id, json!({ "decision": "decline" }));
@@ -4393,6 +4394,7 @@ fn answer_permission(
         // Only the hook had a stale copy of the level to report. This arrives
         // from the live process, so there is nothing to fall back to.
         access: None,
+        ..Default::default()
     };
 
     let tool = ask.tool_name.clone().unwrap_or_default();

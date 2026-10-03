@@ -1404,14 +1404,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         "team_save" => {
             let saved = crate::team::save(&crate::team::default_path(), arg(&args, "agent")?)?;
-            // Its memory note, when a writable vault is connected. The agent
-            // is saved either way; the note is also made on first use.
-            let memory = crate::team::ensure_memory(
-                &crate::memory_vault::Vault::profile(),
-                "octiq:team",
-                &saved,
-            )
-            .err();
+            let memory = crate::team_tools::settle(&saved);
             let mut value = serde_json::to_value(&saved).map_err(|e| e.to_string())?;
             if let (Some(error), Some(object)) = (memory, value.as_object_mut()) {
                 object.insert("memoryError".into(), Value::String(error));

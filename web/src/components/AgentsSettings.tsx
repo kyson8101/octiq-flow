@@ -10,7 +10,7 @@ import {
 } from "../lib/agentProviders";
 import {
   createFrontDesk, deleteAgentTeam, deleteTeamAgent, frontDeskDefaults, frontDeskRefusal, joinableTeams, leadOnly,
-  loadAgentTeams, loadFrontDesk, loadHead, loadHome, loadTeam,
+  loadAgentTeams, loadFrontDesk, loadHead, loadHome, loadTeam, onTeamChanged,
   saveAgentTeam, saveFrontDesk, saveHead, saveHome, saveTeamAgent, teamModelLabel, teamModels,
   type AgentTeam, type AgentTeamDraft, type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
@@ -62,7 +62,11 @@ export function AgentsSettings({ on, onToggle, projects }: {
       })
       .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); })
       .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
+    // An agent registered or changed from a chat, once the person approved it.
+    const off = onTeamChanged(() => {
+      loadTeam(null, true).then((agents) => { if (alive) setTeam(agents); }).catch(() => {});
+    });
+    return () => { alive = false; off(); };
   }, []);
 
   // Only a global agent can be talked to from every project.

@@ -141,7 +141,7 @@ import { AgentsDashboard } from "./components/AgentsDashboard";
 import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import {
   agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadFrontDesk, loadHead, loadHome,
-  loadLeads, loadTeam, recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
+  loadLeads, loadTeam, onTeamChanged, recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
 import { FRONT_DESK_GREETING, currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText, newChatLead } from "./lib/frontDesk";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
@@ -1923,7 +1923,12 @@ export default function App() {
         setLeadRecordsState("ready");
       })
       .catch(() => { if (alive) setLeadRecordsState("error"); });
-    return () => { alive = false; };
+    // An agent a chat registered or changed, once the person approved it: the
+    // "Talk to" picker and every name on screen read the roster.
+    const off = onTeamChanged(() => {
+      loadTeam(null, true).then((everyone) => { if (alive) setRoster(everyone); }).catch(() => {});
+    });
+    return () => { alive = false; off(); };
   }, [agentsMode, appSettings, conn]);
   const coordinatorChatKeys = useMemo<ReadonlySet<string> | null>(
     () => leadRecordsState === "loading" ? null : new Set(leads.map((record) => record.chatKey)),

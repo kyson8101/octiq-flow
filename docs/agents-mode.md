@@ -285,6 +285,35 @@ which chats were handed a task and to whom (`leads`), and the configured head
 (`crossProject` for the head's conversation), `team_leads`, `team_head`,
 `team_head_set`.
 
+### Registering agents from a chat
+
+An agent can be asked to hire or adjust agents, through three MCP tools
+(`team_tools.rs`, `POST /hook/agents`):
+
+- `agent_list` reads the roster, the peer-help teams and the projects, with
+  their ids. It needs no approval.
+- `agent_register` and `agent_update` only **propose** a change. Projects,
+  managers and teams may be named by id or by name. An update keeps every
+  field it does not name, and `""` clears one that may be empty.
+
+The host turns a proposal into the draft the Settings form would send, and
+runs it through the same rules (`team::check`, the dry run of `team::save`). A
+proposal those rules refuse never reaches you. One that passes goes on the
+ordinary permission card in the chat that made it, worded as the change:
+every field of a new agent, or `field: before → after` for an existing one.
+That card is **one-off**: it has no Always, and an earlier Always does not
+answer it.
+
+Only Allow saves the change. An update is saved with `team::save_unchanged`,
+so an agent edited in Settings while the card was up is not overwritten. A
+decline, no answer, or nobody having OctiqFlow open saves nothing, and the
+agent is told which of these happened. The card stays up for three minutes in
+a Claude chat. In a Codex chat it stays up for 50 seconds, because Codex gives
+an MCP call about a minute; a longer wait could save a change the agent had
+already been told failed. An orchestration worker may list agents but not
+change them, and a front desk may do neither. Every save, from a chat or from
+Settings, sends `team-changed`, and every open page reads the roster again.
+
 ## Teams and peer help
 
 A **team** is a named group of agents who may ask each other questions while

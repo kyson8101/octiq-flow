@@ -82,6 +82,13 @@ export async function loadTeam(projectId: string | null, all = false): Promise<T
   return await bridge.invoke<TeamAgent[]>("team_list", { projectId, all });
 }
 
+/** The host saved an agent: one the person approved an agent's
+ *  `agent_register` / `agent_update` for, or one saved on another device.
+ *  Whatever holds the roster reads it again. Returns the unsubscribe. */
+export function onTeamChanged(listener: () => void): () => void {
+  return bridge.on("team-changed", () => listener());
+}
+
 export async function saveTeamAgent(agent: TeamDraft): Promise<TeamAgent> {
   // The host reads a missing team as "keep"; the form always says which.
   const teamId = agent.teamId === undefined ? undefined : agent.teamId ?? "";

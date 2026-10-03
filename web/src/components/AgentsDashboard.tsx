@@ -9,7 +9,7 @@ import "./AgentsDashboard.css";
 import "./ProjectsPage.css";
 import { WorkspaceHeader, useWorkspaceSlot } from "./WorkspaceHeader";
 import { AGENT_NAME } from "../lib/agentProviders";
-import { loadAgentTeams, loadLeads, loadTeam, teamModelLabel, type AgentTeam, type TeamAgent } from "../lib/agentsMode";
+import { loadAgentTeams, loadLeads, loadTeam, onTeamChanged, teamModelLabel, type AgentTeam, type TeamAgent } from "../lib/agentsMode";
 import {
   AGENT_STATE_LABELS, agentRoster, rosterSummary,
   type AgentActivity, type AgentRow, type ChatActivity, type LeadRecord,
@@ -101,7 +101,11 @@ export function AgentsDashboard({
         setError("");
       })
       .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); });
-    return () => { alive = false; };
+    // An agent registered or changed from a chat, once the person approved it.
+    const off = onTeamChanged(() => {
+      loadTeam(null, true).then((agents) => { if (alive) setTeam(agents); }).catch(() => {});
+    });
+    return () => { alive = false; off(); };
   }, [connected]);
 
   // Which lead conversations are mid-turn. A page that has just loaded has

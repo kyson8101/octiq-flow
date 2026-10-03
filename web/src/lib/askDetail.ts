@@ -30,6 +30,9 @@ export function askDetail(input: Record<string, unknown> | null | undefined): As
   };
 
   if (read("command")) return { label: "command", body: read("command"), limit: PREVIEW };
+  // A change to the registered agents, worded by the host (`team_tools`). Like
+  // a plan, it is the thing being decided, so it is shown whole.
+  if (read("change")) return { label: "change", body: read("change"), limit: WHOLE_PLAN };
   if (read("plan")) return { label: "plan", body: read("plan"), limit: WHOLE_PLAN };
   if (read("content")) return { label: "content", body: read("content"), limit: PREVIEW };
   // Present-but-empty counts here, where it does not above: an edit whose

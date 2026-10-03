@@ -27,7 +27,20 @@ export type Ask = {
   toolInput?: Record<string, unknown> | null;
   toolUseId?: string;
   cwd?: string;
+  /** A question the host raised about one change: answered once, never with
+   *  "Always" (a new or changed registered agent). */
+  once?: boolean;
+  /** Its deadline, when it is not the usual three minutes. */
+  answerWithinSecs?: number;
 };
+
+/** The line under the buttons: what holds the agent, and for how long. */
+export function askNote(ask: Ask): string {
+  const secs = ask.answerWithinSecs;
+  const within = secs && secs < 180 ? `${secs} seconds` : "three minutes";
+  const paused = `The agent is paused until you answer. No answer within ${within} counts as Deny.`;
+  return ask.once ? paused : `${paused} “Always” lasts until this chat is stopped.`;
+}
 
 /** The path a tool is about to touch, when it names one. */
 function target(ask: Ask): string | null {
@@ -121,33 +134,32 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
         >
           {sending === "deny" ? "Denying…" : "Deny"}
         </button>
-        <button
-          className="ask-btn"
-          type="button"
-          disabled={!!sending}
-          title={
-            ask.toolName?.toLowerCase() === "bash"
-              ? "Stop asking about this program for the rest of this chat"
-              : "Stop asking about this tool for the rest of this chat"
-          }
-          onClick={() => void answer("always")}
-        >
-          {sending === "always" ? "Allowing…" : "Always"}
-        </button>
+        {!ask.once && (
+          <button
+            className="ask-btn"
+            type="button"
+            disabled={!!sending}
+            title={
+              ask.toolName?.toLowerCase() === "bash"
+                ? "Stop asking about this program for the rest of this chat"
+                : "Stop asking about this tool for the rest of this chat"
+            }
+            onClick={() => void answer("always")}
+          >
+            {sending === "always" ? "Allowing…" : "Always"}
+          </button>
+        )}
         <button
           className="ask-btn is-primary"
           type="button"
           disabled={!!sending}
           onClick={() => void answer("allow")}
         >
-          {sending === "allow" ? "Allowing…" : "Allow once"}
+          {sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"}
         </button>
       </div>
 
-      <p className="ask-card-note">
-        The agent is paused until you answer. No answer within three minutes counts as Deny.
-        “Always” lasts until this chat is stopped.
-      </p>
+      <p className="ask-card-note">{askNote(ask)}</p>
     </div>
   );
 }

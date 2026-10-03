@@ -316,6 +316,40 @@ fn can_report_to(report_project: Option<&str>, manager_project: Option<&str>) ->
 }
 
 pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
+    save_checked(path, draft, None)
+}
+
+/// `save`, refused when the agent has changed since `expected` (its
+/// `updated_at` when the change was proposed). What an agent proposes through
+/// its MCP waits on the person, and what they approve is that change to that
+/// version of the agent — never a later one somebody else made meanwhile.
+pub fn save_unchanged(path: &Path, draft: TeamDraft, expected: i64) -> Result<TeamAgent, String> {
+    save_checked(path, draft, Some(expected))
+}
+
+/// What `save` would make of `draft`, without writing anything: every rule the
+/// Settings form is held to, run against the agents as they are now.
+pub fn check(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    apply(&mut stored, draft, None)
+}
+
+fn save_checked(path: &Path, draft: TeamDraft, expected: Option<i64>) -> Result<TeamAgent, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    let saved = apply(&mut stored, draft, expected)?;
+    write(path, &stored)?;
+    Ok(saved)
+}
+
+/// One agent added or changed in `stored`, every rule checked. The caller holds
+/// `LOCK` and decides whether the result is written.
+fn apply(
+    stored: &mut Stored,
+    draft: TeamDraft,
+    expected: Option<i64>,
+) -> Result<TeamAgent, String> {
     let name = clean(&draft.name, "name", 60, true)?;
     let role = clean(&draft.role, "role", 2000, false)?;
     if draft.agent == ChatAgent::Pi {
@@ -349,9 +383,20 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
         Some(team) => Some(Some(team.to_owned())),
     };
 
-    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
-    let mut stored = read(path)?;
     let id = draft.id.filter(|id| !id.is_empty());
+    if let (Some(me), Some(expected)) = (&id, expected) {
+        let current = stored
+            .agents
+            .iter()
+            .find(|a| &a.id == me)
+            .ok_or("That agent no longer exists.")?;
+        if current.updated_at != expected {
+            return Err(format!(
+                "{} was changed while this waited for approval, so nothing was saved. Read it again and propose the change again.",
+                current.name
+            ));
+        }
+    }
     let team_id = match team_choice {
         Some(choice) => choice,
         // Unchanged: whatever team it is on now, if that team still exists.
@@ -514,14 +559,12 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
         }
     };
     assign_memory_notes(&mut stored.agents);
-    let saved = stored
+    Ok(stored
         .agents
         .iter()
         .find(|a| a.id == saved.id)
         .cloned()
-        .unwrap_or(saved);
-    write(path, &stored)?;
-    Ok(saved)
+        .unwrap_or(saved))
 }
 
 /// Remove one agent. Its reports move up to its own manager, so the chart
