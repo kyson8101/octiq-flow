@@ -191,6 +191,22 @@ pub fn forget() {
     NOTED.with(|noted| noted.borrow_mut().take());
 }
 
+/// Run one command and read its refusal back with `classify`, leaving this
+/// (pooled) thread with no note however it ends: an `Ok` whose command
+/// swallowed a refusal, an `Err`, or a panic. The note before it is dropped
+/// too, so nothing earlier work left labels this command's error.
+pub fn noted<T>(run: impl FnOnce() -> Result<T, String>) -> Result<T, Refusal> {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            forget();
+        }
+    }
+    forget();
+    let _clear = Clear;
+    run().map_err(classify)
+}
+
 /// What a command's `error` was: the kind `refuse` noted for it on this
 /// thread, when the error still carries the words it was noted with (a caller
 /// may have put context around them), else OctiqFlow's `Other`.
@@ -503,6 +519,53 @@ mod tests {
             classify("stale".into()).outcome,
             Outcome::host(ReasonClass::Other)
         );
+    }
+
+    /// Whatever a hook's command does with a refusal, the thread it ran on is
+    /// left with no note: not after an `Ok` that swallowed one, an `Err`, or
+    /// a panic.
+    #[test]
+    fn a_hook_command_leaves_no_note_on_any_exit() {
+        let leftover = || NOTED.with(|noted| noted.borrow().clone());
+
+        // A refusal made and then swallowed: the command still succeeds.
+        let ok: Result<u8, Refusal> = noted(|| {
+            refuse(ReasonClass::ScopeRefused, "You work only in A.");
+            Ok(1)
+        });
+        assert_eq!(ok, Ok(1));
+        assert_eq!(leftover(), None);
+
+        // An Err is read back with its kind, and leaves nothing behind.
+        let err = noted::<()>(|| Err(refuse(ReasonClass::Validation, "bad argument 'x'")));
+        assert_eq!(
+            err.unwrap_err().outcome,
+            Outcome::host(ReasonClass::Validation)
+        );
+        assert_eq!(leftover(), None);
+
+        // An Err noted with other words keeps nothing for later either.
+        let err = noted::<()>(|| {
+            refuse(ReasonClass::ScopeRefused, "You work only in A.");
+            Err("The run is stopped.".into())
+        });
+        assert_eq!(err.unwrap_err().outcome, Outcome::host(ReasonClass::Other));
+        assert_eq!(leftover(), None);
+
+        // A panic unwinds through it and still clears the note.
+        let caught = std::panic::catch_unwind(|| {
+            let _ = noted::<()>(|| {
+                refuse(ReasonClass::Validation, "half done");
+                panic!("the command fell over");
+            });
+        });
+        assert!(caught.is_err());
+        assert_eq!(leftover(), None);
+
+        // A note earlier work left is dropped before the command runs.
+        refuse(ReasonClass::Validation, "stale");
+        let err = noted::<()>(|| Err("stale".into()));
+        assert_eq!(err.unwrap_err().outcome, Outcome::host(ReasonClass::Other));
     }
 
     fn claude(event: Value) -> Option<Outcome> {

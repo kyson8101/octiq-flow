@@ -437,6 +437,10 @@ export type Failure = {
   link?: string;
   /** True when the agent is out of quota rather than broken. */
   outOfCredit?: boolean;
+  /** Whose failure it was, as the host marked the provider's event. The
+   *  banner's words do not change; the origin is drawn on the "Agent stream"
+   *  row inside the activity card (`withStreamCard`). */
+  outcome?: ToolOutcome;
 };
 
 export const emptyChat = (): ChatState => ({
@@ -711,6 +715,9 @@ const turnOver = {
   // summary it owes: whatever the next turn brings, it is not that.
   compactingSince: undefined,
   awaitingSummary: undefined,
+  // An outcome held for a call that never drew a card belonged to this turn;
+  // the next turn reuses Codex's item ids, and must not inherit it.
+  pendingOutcomes: undefined,
 } as const;
 
 /** Two blocks say the same thing, so the second is a copy rather than news.
@@ -1237,34 +1244,17 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // Codex that sends only one is still covered.
   if (type === "error" || type === "turn.failed") {
     const message = asStr(e.message) || asStr(asObj(e.error).message);
-    const failure = describeFailure("codex", message);
-    const messages = state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m));
+    const outcome = readOutcome(e.octiq_outcome);
+    const failure: Failure = {
+      ...describeFailure("codex", message),
+      ...(outcome ? { outcome } : {}),
+    };
+    let messages = state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m));
     if (!failure.outOfCredit) {
       failure.inline = true;
       // Keep transport failures in the transcript, using the activity card UI.
       // They are not failures of whichever real tool happened to run last.
-      let last = messages.at(-1);
-      if (!last || last.role !== "assistant" || last.parent || last.speaker) {
-        last = { id: `m${messages.length}`, role: "assistant", blocks: [], streaming: false };
-        messages.push(last);
-      }
-      const blocks = [...last.blocks];
-      const previous = blocks.at(-1);
-      const id = `agent-error-${last.id}`;
-      const outcome = readOutcome(e.octiq_outcome);
-      const error: Block = {
-        kind: "tool", id, name: "Agent stream", argsJson: "", args: {},
-        result: message || failure.title, state: "error",
-        ...(outcome ? { outcome } : {}),
-      };
-      // Codex emits error and turn.failed for the same failure. Update the
-      // existing card instead of adding a second one during live use or replay.
-      if (previous?.kind === "tool" && previous.id === id) {
-        blocks[blocks.length - 1] = message ? error : previous;
-      } else {
-        blocks.push(error);
-      }
-      messages[messages.length - 1] = { ...last, blocks };
+      messages = withStreamCard(messages, "agent-error", message, message || failure.title, outcome);
     }
     return {
       ...state,
@@ -1273,6 +1263,21 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       stopping: false,
       failure,
       messages,
+    };
+  }
+
+  // Codex says it is retrying — "Reconnecting… 1/5" — and carries on. Nothing
+  // broke, so the turn goes on and no banner goes up; the host marked it as the
+  // provider's warning, and it is drawn as one row in the activity card. A
+  // warning the host did not mark (a record from before it did) is left out,
+  // as it always was.
+  if (type === "warning") {
+    const outcome = readOutcome(e.octiq_outcome);
+    if (!outcome) return state;
+    const message = asStr(e.message) || asStr(asObj(e.error).message);
+    return {
+      ...state,
+      messages: withStreamCard(state.messages, "agent-warning", message, message || "Warning", outcome),
     };
   }
 
@@ -1335,6 +1340,29 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
         messages: state.messages.map((m) =>
           m.id === id ? { ...m, streaming: false, blocks: m.blocks.map(stopIfRunning) } : m,
         ),
+      };
+    }
+    // The CLI's own stand-in reply for a request that failed — `error:
+    // "authentication_failed"` and the words "No access" — which the host
+    // marked as the provider's. It is not something the model said, so it is
+    // drawn as the "Agent stream" row that names whose failure it was, not as
+    // a reply. The banner reads as it always has (`describeFailure`); the
+    // `result` that follows says the same and keeps this row's origin.
+    const failedWith = asStr(e.error);
+    const standIn = !parent && !speaker && failedWith ? readOutcome(e.octiq_outcome) : undefined;
+    if (standIn && !state.stopping) {
+      const said =
+        asArr(msg.content)
+          .map((b) => (asStr(asObj(b).type) === "text" ? asStr(asObj(b).text) : ""))
+          .join("")
+          .trim() || failedWith;
+      const messages = state.messages.some((m) => m.id === id)
+        ? state.messages
+        : [...state.messages, { id: id || `m${state.messages.length}`, role: "assistant" as const, blocks: [], streaming: false }];
+      return {
+        ...state,
+        failure: { ...describeFailure("claude", said), outcome: standIn },
+        messages: withStreamCard(messages, "agent-error", said, said, standIn),
       };
     }
     const blocks: Block[] = [];
@@ -1676,6 +1704,19 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     const subtype = asStr(e.subtype);
     const failed =
       e.is_error === true && subtype !== "error_during_execution" && !state.stopping;
+    let messages = state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m));
+    let failure = state.failure;
+    if (failed) {
+      const said = asStr(e.result) || asStr(e.api_error_status) || subtype;
+      // The host's word on whose failure this was, or the one the CLI's own
+      // stand-in reply carried just before it (see the assistant branch).
+      const outcome = readOutcome(e.octiq_outcome) ?? streamCardOutcome(messages);
+      failure = { ...describeFailure("claude", said), ...(outcome ? { outcome } : {}) };
+      // The banner says what it always said; the origin goes on a row in the
+      // activity card. Only a failure the host marked gets one, so a record
+      // from before it did is drawn exactly as it was.
+      if (outcome) messages = withStreamCard(messages, "agent-error", said, said, outcome);
+    }
     return {
       ...state,
       ...turnOver,
@@ -1683,16 +1724,14 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       stopping: false,
       // The `/model` in this turn has been answered, one way or the other.
       modelAsked: undefined,
-      failure: failed
-        ? describeFailure("claude", asStr(e.result) || asStr(e.api_error_status) || subtype)
-        : state.failure,
+      failure,
       lastCostUsd: typeof e.total_cost_usd === "number" ? e.total_cost_usd : state.lastCostUsd,
       lastDurationMs: typeof e.duration_ms === "number" ? e.duration_ms : state.lastDurationMs,
       // contextTokens deliberately NOT taken from here: see the assistant
       // branch. Only the window comes from this event, and that is a constant
       // for the model rather than something summed over the turn.
       contextWindow: window,
-      messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+      messages,
     };
   }
 
@@ -1731,7 +1770,8 @@ function foldToolResults(state: ChatState, content: unknown[], envelope: Json): 
         : asArr(block.content)
             .map((p) => asStr(asObj(p).text))
             .join("");
-    const pending = next.pendingOutcomes?.[toolId];
+    const [pending, rest] = takePending(next, toolId);
+    next = rest;
     const outcome = isError ? (said ?? pending) : undefined;
     next = {
       ...next,
@@ -1755,6 +1795,55 @@ function foldToolResults(state: ChatState, content: unknown[], envelope: Json): 
   return next;
 }
 
+/** Put a failure or warning of the agent's stream itself — not of any tool —
+ *  on the last main-agent message, as one "Agent stream" row in the activity
+ *  card, where its origin is drawn. A repeat of the same row (Codex sends an
+ *  `error` and a `turn.failed` for one failure; a warning repeats as it
+ *  retries) updates it instead of adding another, live or replayed. */
+function withStreamCard(
+  messages: Message[],
+  prefix: "agent-error" | "agent-warning",
+  message: string,
+  result: string,
+  outcome: ToolOutcome | undefined,
+): Message[] {
+  const next = [...messages];
+  let last = next.at(-1);
+  if (!last || last.role !== "assistant" || last.parent || last.speaker) {
+    last = { id: `m${next.length}`, role: "assistant", blocks: [], streaming: false };
+    next.push(last);
+  }
+  const blocks = [...last.blocks];
+  const previous = blocks.at(-1);
+  const id = `${prefix}-${last.id}`;
+  const card: Block = {
+    kind: "tool", id, name: "Agent stream", argsJson: "", args: {},
+    result, state: "error",
+    ...(outcome ? { outcome } : {}),
+  };
+  if (previous?.kind === "tool" && previous.id === id) {
+    // A repeat with no words keeps the words it had, and takes an origin
+    // only if it had none.
+    blocks[blocks.length - 1] = message
+      ? { ...card, ...(!outcome && previous.outcome ? { outcome: previous.outcome } : {}) }
+      : previous.outcome || !outcome
+        ? previous
+        : { ...previous, outcome };
+  } else {
+    blocks.push(card);
+  }
+  next[next.length - 1] = { ...last, blocks };
+  return next;
+}
+
+/** The origin on the "Agent stream" error row the last message ends with, if
+ *  it does — the one a failure this same turn already put there. */
+function streamCardOutcome(messages: Message[]): ToolOutcome | undefined {
+  const last = messages.at(-1);
+  const block = last?.blocks.at(-1);
+  return block?.kind === "tool" && block.id === `agent-error-${last!.id}` ? block.outcome : undefined;
+}
+
 /** Does this card belong to call `id`? A Codex card's id is keyed by its
  *  seat (`codex:host:<item id>`); the host names the item alone. */
 function isCall(block: Block, id: string): block is Extract<Block, { kind: "tool" }> {
@@ -1762,23 +1851,44 @@ function isCall(block: Block, id: string): block is Extract<Block, { kind: "tool
 }
 
 /** Put the host's outcome on call `id`'s card, or hold it until the card is
- *  drawn. Only a call that failed, or has yet to answer, takes it: the
- *  outcome explains a failure and must never paint a success. */
+ *  drawn.
+ *
+ *  Only the NEWEST card with that id is a candidate, and only while it is
+ *  still the live one: running, or failed with no origin yet. A Codex item id
+ *  (`item_3`) comes round again every turn, so an older card sharing it is an
+ *  earlier call, and its outcome is history — never rewritten. When the newest
+ *  card is such a call, this one's card is not drawn yet (Codex can ask before
+ *  `item.started`), so the outcome waits for it (`takePending`). A success
+ *  never takes one: the outcome explains a failure. */
 function withOutcome(state: ChatState, id: string, outcome: ToolOutcome): ChatState {
-  let found = false;
-  const messages = state.messages.map((m) => {
-    if (!m.blocks.some((b) => isCall(b, id))) return m;
-    return {
-      ...m,
-      blocks: m.blocks.map((b) => {
-        if (!isCall(b, id)) return b;
-        found = true;
-        return b.state === "done" ? b : { ...b, outcome };
-      }),
-    };
-  });
-  if (found) return { ...state, messages };
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const m = state.messages[i];
+    let at = m.blocks.length - 1;
+    while (at >= 0 && !isCall(m.blocks[at], id)) at--;
+    if (at < 0) continue;
+    const card = m.blocks[at] as Extract<Block, { kind: "tool" }>;
+    // A failed card with no origin yet takes it only when the id is its own
+    // (Claude's `toolu_…` ids are never reused); a seat-keyed Codex card only
+    // while it runs, since its item id comes back next turn.
+    const live =
+      card.state === "running" || (card.id === id && card.state !== "done" && !card.outcome);
+    if (!live) break;
+    const blocks = [...m.blocks];
+    blocks[at] = { ...card, outcome };
+    const messages = [...state.messages];
+    messages[i] = { ...m, blocks };
+    return { ...state, messages };
+  }
   return { ...state, pendingOutcomes: { ...state.pendingOutcomes, [id]: outcome } };
+}
+
+/** The outcome waiting for call `id`, and the state without it: it belongs to
+ *  the one card drawn for it next, and to no other. */
+function takePending(state: ChatState, id: string): [ToolOutcome | undefined, ChatState] {
+  const outcome = state.pendingOutcomes?.[id];
+  if (!outcome) return [undefined, state];
+  const { [id]: _taken, ...rest } = state.pendingOutcomes!;
+  return [outcome, { ...state, pendingOutcomes: Object.keys(rest).length ? rest : undefined }];
 }
 
 /** The newest Skill call in the conversation, whichever message it is on. */
@@ -1994,28 +2104,40 @@ function foldCodex(
     .flatMap((m) => m.blocks)
     .filter((b) => b.kind === "tool" && b.id === key && b.state === "running").length > 0;
 
+  // The host's word on this call, when it came before the card did: Codex can
+  // ask for approval ahead of `item.started`. It is this card's and no other's.
+  const [pending, rest] = takePending(state, read.id);
+  state = rest;
+  // What the card says about whose failure it was. A success says nothing,
+  // whatever was held for it; a call still running keeps what is waiting for
+  // its failure.
+  const outcomeOf = (had: ToolOutcome | undefined): ToolOutcome | undefined =>
+    read.state === "done" ? undefined : (read.outcome ?? pending ?? had);
+
   if (open) {
     return {
       ...state,
       messages: state.messages.map((m) => ({
         ...m,
-        blocks: m.blocks.map((b) =>
-          b.kind === "tool" && b.id === key && b.state === "running"
-            ? {
-                ...b,
-                state: read.state,
-                args: read.args,
-                argsJson: JSON.stringify(read.args),
-                ...(read.result !== undefined ? { result: read.result } : {}),
-                ...(read.details !== undefined ? { details: read.details } : {}),
-                ...(read.outcome ? { outcome: read.outcome } : {}),
-              }
-            : b,
-        ),
+        blocks: m.blocks.map((b) => {
+          if (!(b.kind === "tool" && b.id === key && b.state === "running")) return b;
+          const { outcome: had, ...card } = b;
+          const outcome = outcomeOf(had);
+          return {
+            ...card,
+            state: read.state,
+            args: read.args,
+            argsJson: JSON.stringify(read.args),
+            ...(read.result !== undefined ? { result: read.result } : {}),
+            ...(read.details !== undefined ? { details: read.details } : {}),
+            ...(outcome ? { outcome } : {}),
+          };
+        }),
       })),
     };
   }
 
+  const outcome = outcomeOf(undefined);
   return withCodexCurrent(state, parent, speaker, (m) => ({
     ...m,
     blocks: [
@@ -2029,7 +2151,7 @@ function foldCodex(
         state: read.state,
         ...(read.result !== undefined ? { result: read.result } : {}),
         ...(read.details !== undefined ? { details: read.details } : {}),
-        ...(read.outcome ? { outcome: read.outcome } : {}),
+        ...(outcome ? { outcome } : {}),
       },
     ],
   }));

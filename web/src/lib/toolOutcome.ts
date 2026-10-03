@@ -99,7 +99,14 @@ export function originName(outcome: ToolOutcome): string {
 /** The badge on one failed call's row: "OctiqFlow · approval expired",
  *  "Codex · rate limit". */
 export function outcomeBadge(outcome: ToolOutcome): string {
-  return `${originName(outcome)} · ${REASON_WORDS[outcome.reasonClass]}`;
+  return `${originName(outcome)} · ${reasonWords(outcome)}`;
+}
+
+/** A warning with no more particular reason — Codex reconnecting — is a
+ *  "warning", not an "error". */
+function reasonWords(outcome: ToolOutcome): string {
+  const generic = outcome.reasonClass === "provider-error" || outcome.reasonClass === "other";
+  return generic && outcome.severity === "warning" ? "warning" : REASON_WORDS[outcome.reasonClass];
 }
 
 /** What a failure DID, as the collapsed line says it. A warning is never
@@ -120,7 +127,7 @@ function verb(outcome: ToolOutcome | undefined): string {
     case "rate-limit":
       return "rate-limited";
     default:
-      return "failed";
+      return outcome.severity === "warning" ? "warning" : "failed";
   }
 }
 
@@ -176,7 +183,8 @@ export function failureCounts(tools: Counted[]): FailureCount[] {
       counts.set(key, { key, count: 1, text: "", severity, ...(outcome ? { origin: outcome.origin } : {}) });
     }
     const entry = counts.get(key)!;
-    entry.text = `${entry.count} ${said}${who ? ` (${who})` : ""}`;
+    const word = said === "warning" && entry.count > 1 ? "warnings" : said;
+    entry.text = `${entry.count} ${word}${who ? ` (${who})` : ""}`;
   }
   return [...counts.values()];
 }

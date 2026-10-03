@@ -277,8 +277,7 @@ async fn run_hook_command(
     let services = ctx.services.clone();
     gated(git_read_slots(), &cmd.clone(), async move {
         tokio::task::spawn_blocking(move || {
-            crate::outcome::forget();
-            crate::dispatch::dispatch(&services, &cmd, args).map_err(crate::outcome::classify)
+            crate::outcome::noted(|| crate::dispatch::dispatch(&services, &cmd, args))
         })
         .await
         .map_err(|error| {

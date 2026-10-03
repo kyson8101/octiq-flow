@@ -203,6 +203,118 @@ describe("the reducer takes the outcome from the host, not from the words", () =
   });
 });
 
+// Review of 310502f: each case reproduced against that commit.
+describe("every annotated failure and warning keeps its origin", () => {
+  const claudeAuth: ToolOutcome = { origin: "provider", reasonClass: "auth", providerName: "Claude", severity: "error" };
+  const reconnecting: ToolOutcome = { origin: "provider", reasonClass: "provider-error", providerName: "Codex", severity: "warning" };
+  const command = (id: string, status: string, exit_code?: number) => ({
+    type: status === "in_progress" ? "item.started" : "item.completed",
+    item: { id, type: "command_execution", command: "make build", status, ...(exit_code === undefined ? {} : { exit_code }) },
+  });
+  const line = (id: string, outcome: ToolOutcome) => ({ type: "octiq_tool_outcome", tool_use_id: id, octiq_outcome: outcome });
+
+  it("a Claude result the host marked keeps its banner and names Claude on the stream row", () => {
+    const state = reduceChat(emptyChat(), {
+      type: "result", subtype: "success", is_error: true, api_error_status: 401, result: "No access",
+      octiq_outcome: claudeAuth,
+    });
+    // The banner reads exactly as it did.
+    expect(state.failure).toMatchObject({ title: "The agent stopped with an error", detail: "No access" });
+    expect(state.failure?.inline).toBeFalsy();
+    expect(state.failure?.outcome).toEqual(claudeAuth);
+    expect(tools(state)).toEqual([
+      expect.objectContaining({ name: "Agent stream", state: "error", result: "No access", outcome: claudeAuth }),
+    ]);
+    expect(outcomeBadge(tools(state)[0].outcome!)).toBe("Claude · sign-in");
+  });
+
+  it("a Claude stand-in reply the host marked is a stream row, not a reply, and its result adds no second row", () => {
+    let state = reduceChat(emptyChat(), {
+      type: "assistant",
+      error: "authentication_failed",
+      message: { id: "msg_1", role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No access" }] },
+      octiq_outcome: claudeAuth,
+    });
+    expect(state.messages.flatMap((m) => m.blocks).filter((b) => b.kind === "text")).toEqual([]);
+    expect(tools(state)).toEqual([
+      expect.objectContaining({ name: "Agent stream", result: "No access", outcome: claudeAuth }),
+    ]);
+    expect(state.failure).toMatchObject({ title: "The agent stopped with an error", detail: "No access", outcome: claudeAuth });
+
+    // The result that follows: same banner, same one row, origin kept even
+    // when the result itself carries none.
+    state = reduceChat(state, { type: "result", subtype: "success", is_error: true, result: "No access" });
+    expect(tools(state)).toHaveLength(1);
+    expect(state.failure).toMatchObject({ title: "The agent stopped with an error", detail: "No access", outcome: claudeAuth });
+
+    // A stand-in nobody marked (a record from before) stays the text it was.
+    const old = reduceChat(emptyChat(), {
+      type: "assistant",
+      error: "authentication_failed",
+      message: { id: "msg_2", role: "assistant", content: [{ type: "text", text: "No access" }] },
+    });
+    expect(old.messages[0].blocks).toEqual([{ kind: "text", text: "No access" }]);
+  });
+
+  it("a Codex warning the host marked is one amber row, and the turn goes on", () => {
+    let state = reduceChat({ ...emptyChat(), busy: true }, {
+      type: "warning", message: "Reconnecting 1/5", octiq_outcome: reconnecting,
+    });
+    expect(state).not.toEqual({ ...emptyChat(), busy: true });
+    expect(state.busy).toBe(true);
+    expect(state.failure).toBeUndefined();
+    state = reduceChat(state, { type: "warning", message: "Reconnecting 2/5", octiq_outcome: reconnecting });
+    expect(tools(state)).toEqual([
+      expect.objectContaining({ name: "Agent stream", state: "error", result: "Reconnecting 2/5", outcome: reconnecting }),
+    ]);
+    expect(outcomeBadge(reconnecting)).toBe("Codex · warning");
+    expect(failureCounts(tools(state))).toEqual([
+      { key: "provider:warning", count: 1, text: "1 warning (provider)", severity: "warning", origin: "provider" },
+    ]);
+
+    // An unmarked warning (a record from before) is left out, as it was.
+    expect(reduceChat(emptyChat(), { type: "warning", message: "Reconnecting 1/5" })).toEqual(emptyChat());
+  });
+
+  it("a Codex approval line that comes before item.started reaches that call and no earlier one", () => {
+    // Turn 1: declined on the card before Codex drew the call.
+    let state = reduceChat(emptyChat(), line("item_1", denied));
+    state = reduceChat(state, command("item_1", "in_progress"));
+    state = reduceChat(state, command("item_1", "failed", 1));
+    expect(tools(state)[0]).toMatchObject({ state: "error", outcome: denied });
+    expect(state.pendingOutcomes).toBeUndefined();
+    state = reduceChat(state, { type: "turn.completed", usage: {} });
+
+    // Turn 2 reuses the item id, and its card expires.
+    state = reduceChat(state, line("item_1", expired));
+    expect(tools(state)[0].outcome).toEqual(denied);
+    state = reduceChat(state, command("item_1", "in_progress"));
+    state = reduceChat(state, command("item_1", "failed", 1));
+    expect(tools(state).map((t) => t.outcome)).toEqual([denied, expired]);
+
+    // Turn 3: the line after item.started goes on the live call only.
+    state = reduceChat(state, { type: "turn.completed", usage: {} });
+    state = reduceChat(state, command("item_1", "in_progress"));
+    state = reduceChat(state, line("item_1", denied));
+    state = reduceChat(state, command("item_1", "failed", 1));
+    expect(tools(state).map((t) => t.outcome)).toEqual([denied, expired, denied]);
+  });
+
+  it("a Codex call that succeeds carries no outcome, and nothing held for it outlives the turn", () => {
+    let state = reduceChat(emptyChat(), line("item_4", expired));
+    state = reduceChat(state, command("item_4", "in_progress"));
+    state = reduceChat(state, command("item_4", "completed", 0));
+    expect(tools(state)[0].state).toBe("done");
+    expect(tools(state)[0]).not.toHaveProperty("outcome");
+
+    // A line for a call that never drew a card is dropped at the full stop.
+    state = reduceChat(state, line("item_9", expired));
+    expect(state.pendingOutcomes).toEqual({ item_9: expired });
+    state = reduceChat(state, { type: "turn.completed", usage: {} });
+    expect(state.pendingOutcomes).toBeUndefined();
+  });
+});
+
 describe("the General-chat report, replayed", () => {
   it("eight agent_update cards, seven unanswered: OctiqFlow's, never the provider's", () => {
     let state = emptyChat();
