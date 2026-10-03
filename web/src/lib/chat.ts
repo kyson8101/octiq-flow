@@ -2409,7 +2409,7 @@ function foldAntigravity(
     // Nobody could be asked, so Antigravity refused and ended the turn. Say
     // what it refused, at which level, and the way on: no card is coming.
     const why = antigravityRefusal(read.denied, read.access);
-    messages = withStreamCard(messages, "agent-warning", why, why, outcome);
+    messages = withStreamCard(markAntigravityRefused(messages, read.denied, outcome), "agent-warning", why, why, outcome);
   }
   return {
     ...state,
@@ -2424,6 +2424,44 @@ function foldAntigravity(
     messages,
     failure,
   };
+}
+
+/** A call Antigravity refused can come back as a step that simply finished
+ *  with nothing to show, or as a failed one: agy 1.2.16 reports it either
+ *  way. The turn's `result` says which kinds it refused, so this turn's
+ *  finished, silent calls of that kind are what was refused, and are shown
+ *  as failed rather than ticked. */
+function markAntigravityRefused(
+  messages: Message[],
+  denied: readonly string[],
+  outcome: ToolOutcome | undefined,
+): Message[] {
+  const refused = (name: string) =>
+    (denied.includes("command") && name === "run_command") ||
+    (denied.includes("mcp") && (name === "call_mcp_tool" || /^mcp_/.test(name)));
+  const next = [...messages];
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    const message = next[i];
+    if (message.role === "user") {
+      if (waitingForCodex(message)) continue;
+      break;
+    }
+    if (message.parent || message.speaker) continue;
+    next[i] = {
+      ...message,
+      blocks: message.blocks.map((block) =>
+        block.kind === "tool" && block.state === "done" && !block.result && refused(block.name)
+          ? {
+              ...block,
+              state: "error" as const,
+              result: "Antigravity refused this call: nobody could approve it at this access level.",
+              ...(outcome && !block.outcome ? { outcome } : {}),
+            }
+          : block,
+      ),
+    };
+  }
+  return next;
 }
 
 /** Why an Antigravity turn ended on a refusal, in the person's words. */

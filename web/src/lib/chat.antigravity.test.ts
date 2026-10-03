@@ -52,7 +52,7 @@ function asTheHostRecordsIt(stream: string, access: string, prompts: string[]): 
 }
 
 function fold(events: Json[], start: ChatState = emptyChat()): ChatState {
-  return events.reduce((state, event) => reduceChat(state, event, 1000), start);
+  return events.reduce<ChatState>((state, event) => reduceChat(state, event, 1000), start);
 }
 
 const tools = (messages: Message[]) =>
@@ -87,10 +87,16 @@ describe("Antigravity conversations (real agy 1.2.16 streams)", () => {
     const read = rows.find((b) => b.name === "view_file");
     expect(read).toMatchObject({ state: "done", result: "2 lines, 25 bytes" });
     expect(read?.args).toMatchObject({ AbsolutePath: expect.stringContaining("notes.txt") });
+    // agy reported the refused command as a step that finished silently; the
+    // turn's refusal is what says it was refused, so it is not ticked.
     expect(rows.find((b) => b.name === "run_command")).toMatchObject({
-      state: "done",
+      state: "error",
       args: { CommandLine: "git status" },
+      result: "Antigravity refused this call: nobody could approve it at this access level.",
+      outcome: { origin: "provider", providerName: "Antigravity" },
     });
+    // The file read before it, in an earlier turn, keeps its tick.
+    expect(read?.state).toBe("done");
 
     // The refusal is said where the turn ended, with the level and the way on.
     const refusal = rows.find((b) => b.id.startsWith("agent-warning-"));

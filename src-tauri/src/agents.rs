@@ -1017,4 +1017,19 @@ mod tests {
             .all(|m| m.supported_efforts.is_empty() && !m.is_default));
         assert!(parse_antigravity_models("Fetching available models...\n").is_empty());
     }
+
+    /// The real `agy models`, through the same probe and command the picker
+    /// uses. Needs agy installed and signed in for this HOME:
+    /// `cargo test --lib a_real_agy_model_catalog -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "runs the installed agy CLI"]
+    fn a_real_agy_model_catalog() {
+        let catalog = agent_models(AgentKind::Antigravity).expect("agy lists its models");
+        println!("{catalog:#?}");
+        assert_eq!(catalog.source, "provider");
+        assert!(catalog
+            .models
+            .iter()
+            .any(|m| m.model.starts_with("gemini-") && !m.display_name.is_empty()));
+    }
 }
