@@ -2,7 +2,7 @@
 
 An agent workflow orchestrator. octiq-flow is a headless Rust server plus a
 browser client that runs **real terminals in a web page** and lets you **drive
-interactive CLI agents (Claude Code, Codex, pi.dev) from UI buttons**.
+interactive CLI agents (Claude Code, Codex, pi.dev, Antigravity) from UI buttons**.
 
 Agents can also read another OctiqFlow conversation from a supplied browser URL
 through the bundled [`read_conversation` MCP tool](docs/conversation-mcp.md).
@@ -54,7 +54,10 @@ back out through `bus.rs` to every attached browser.
   JSON stream rather than a TUI, so the chat view can render tool calls as cards.
   Codex chats use one long-lived `codex app-server` process and its native
   JSON-RPC controls; set `OCTIQ_CODEX_TRANSPORT=exec` only as a compatibility
-  fallback for an older Codex installation.
+  fallback for an older Codex installation. Antigravity (`agy`) chats keep one
+  stream-json process per chat; it cannot ask for permission while it works,
+  so Plan and Accept edits refuse shell commands (the turn ends and the chat
+  says why) and Auto runs everything unguarded.
 - **Master orchestration.** Turn one chat into the coordinator for a durable run.
   The host—not agent prose—owns task, attempt, dependency, gate, and message
   state. Ready tasks can run concurrently in separate worktrees.
@@ -95,8 +98,8 @@ octiqflow install
 The matching native server and browser client are selected automatically; Rust
 and pnpm are not required. See [npm installation](docs/npm-installation.md) for
 supported platforms, service commands, and package details. Agent CLIs remain
-separate—install Claude Code, Codex, or pi.dev according to which agents you
-want OctiqFlow to drive.
+separate—install Claude Code, Codex, pi.dev, or Antigravity CLI (`agy`)
+according to which agents you want OctiqFlow to drive.
 
 ## Build from source
 

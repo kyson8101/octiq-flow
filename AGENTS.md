@@ -6,7 +6,7 @@ This file provides guidance to coding agents (Claude Code, Codex) when working w
 
 OctiqFlow is an **agent workflow orchestrator**: a headless Rust server plus a
 browser client that runs **real terminals in a web page** and lets you **drive
-interactive CLI agents (Claude Code, Codex, pi.dev) from UI buttons**. The core trick: a
+interactive CLI agents (Claude Code, Codex, pi.dev, Antigravity) from UI buttons**. The core trick: a
 UI action sends `pty_write` over the socket, Rust writes those bytes to a PTY's
 stdin, and the shell/agent reads them as if typed. PTY output streams back as
 `pty-output` events and renders in xterm.js.
@@ -163,10 +163,44 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   Unix, powershell on Windows; see `resolve_shell`) so `PATH` is fully
   populated — otherwise `claude` would not be found.
 - `agent_chat.rs` — agents run as a JSON stream (`claude -p`, `codex exec`)
-  rather than a TUI, for the chat view. All three providers are launched from
+  rather than a TUI, for the chat view. All four providers are launched from
   ONE place here, through a POSIX shell, because `build_command` returns a
   POSIX-quoted line; `proc::resolve_agent_shell` picks that shell (Git for
-  Windows' bash off Windows' own `PATH`).
+  Windows' bash off Windows' own `PATH`). Each provider's command line and
+  stream vocabulary live in `agent_provider.rs`, behind `provider_for`.
+- Antigravity CLI (`agy --input-format stream-json --output-format
+  stream-json`) keeps one process per chat like Claude: each turn is one NDJSON
+  line on stdin, and `--conversation <id>` resumes a conversation in a new
+  process. Its stdin takes no control message, so Stop ends the process and
+  the next message resumes it (`interrupt_ends_process`). Its events carry an
+  `event` field (`init` / `step_update` / `result`) no other provider writes;
+  `result.usage` totals the whole conversation, so usage is read per model call
+  off each `step_update` instead. Captured streams (agy 1.2.16) are
+  `web/src/lib/__fixtures__/antigravity-*.jsonl`, shared by both test suites.
+- **Antigravity cannot ask.** Headless, it refuses any call its mode would
+  ask about, the refusal ends the turn, and the `result` lists it in
+  `denied_actions`; nothing reaches the stream to put a card on. So Read is
+  `--mode plan` (refuses even `ls`), Edits is `--mode accept-edits` (refuses
+  every shell command), and Auto and Full are `--dangerously-skip-permissions`.
+  `--sandbox` was tried for Auto and refuses writes inside the project and
+  git's read of `~/.gitconfig`, so Auto is unguarded and the UI says so. A
+  refused turn is stamped `octiq_access` and the page says which level refused
+  it. PreToolUse hooks and workspace settings files cannot lift the refusal.
+- **What OctiqFlow writes for Antigravity.** Its MCP server and host rules
+  ride a plugin in a folder each launch adds with `--add-dir`:
+  `~/.octiqflow/mcp/antigravity/<chat|worker|front-desk>/.agents/plugins/octiqflow/`
+  (`mcp_config.json`, `rules/AGENTS.md`). The server inherits agy's
+  environment, so it knows its chat. Antigravity names it `octiqflow_octiq`.
+  One thing goes outside `~/.octiqflow`: the rule `mcp(octiqflow_octiq/*)` in
+  `permissions.allow` of `~/.gemini/antigravity-cli/settings.json`, because a
+  call through agy's generic `call_mcp_tool` is otherwise refused even in
+  accept-edits, and only that file can allow it. It names a server that exists
+  only in an OctiqFlow launch, so it allows nothing elsewhere. It is written
+  once, order-preserving, after copying the file to
+  `~/.octiqflow/mcp/antigravity/settings.json.before-octiqflow` (never
+  overwritten); a failure shows in the chat and the chat still starts. To
+  remove it, delete that one entry from `permissions.allow`; the next
+  Antigravity chat adds it again. No `command(...)` rule is ever written.
 - `workspaces.rs` — the "project" store (a project groups several folder paths).
 - `git.rs` — the **single** git-read backend (status summary, changed files,
   file diff). Read-only; shells out to `git`. Resolves each project path to its
@@ -201,6 +235,7 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | registered agents (agents mode) | `<profile dir>/team.json` | `team.rs` — see `docs/agents-mode.md` |
 | XP awards (agents mode) | `xp_awards` in `<profile dir>/orchestrations.json` | `orchestration/levels.rs` |
 | agent token usage | `<chats dir>/agent-usage.json` | `agent_usage.rs` |
+| Antigravity plugin, settings backup | `~/.octiqflow/mcp/antigravity/` | `agent_provider.rs` |
 
 `profile.rs` decides the profile dir; `profile_lock.rs` makes sure only one
 process owns a profile at a time (a second one refuses to start rather than
