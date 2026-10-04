@@ -56,9 +56,22 @@ pub struct TeamAgent {
     /// may work, or what it may touch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
+    /// Its standing instructions — runbooks, tool rules — that ride in every
+    /// brief it is launched with, after the shared policy and before its role
+    /// (`standing_brief`). Never shown where its role is listed to others.
+    /// Empty: none. Absent in files written before it existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub persistent_prompt: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+/// The longest role an agent may have.
+pub const ROLE_MAX: usize = 2000;
+/// The longest persistent prompt an agent may have.
+pub const PERSISTENT_PROMPT_MAX: usize = 8000;
+/// The longest shared agent policy.
+pub const AGENT_POLICY_MAX: usize = 4000;
 
 /// A named group of agents who may ask each other questions while they work
 /// (`orchestration::peer`). One team per agent. A team in a project holds
@@ -124,6 +137,10 @@ pub struct TeamDraft {
     /// team id puts it on that team.
     #[serde(default)]
     pub team_id: Option<String>,
+    /// Absent keeps the current persistent prompt, `""` clears it, any other
+    /// text replaces it.
+    #[serde(default)]
+    pub persistent_prompt: Option<String>,
 }
 
 /// A chat a task was handed to: the host needs it to know that a run the chat
@@ -173,6 +190,27 @@ struct Stored {
     /// front-desk chats hidden.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     front_desk_chats: Vec<FrontDeskChat>,
+    /// The person's shared rules for every registered agent, put ahead of
+    /// each one's own instructions in every brief (`standing_brief`). Empty:
+    /// none. Absent in files written before it existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    agent_policy: String,
+    /// When `agent_policy` last changed, so a proposed change is refused
+    /// against a newer one (`save_policy_unchanged`). 0: never set.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    agent_policy_updated_at: i64,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
+}
+
+/// The shared agent policy and when it last changed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPolicy {
+    pub text: String,
+    pub updated_at: i64,
 }
 
 /// A conversation started with the front desk. Hidden from every chat list,
@@ -372,7 +410,12 @@ fn apply(
     expected: Option<i64>,
 ) -> Result<TeamAgent, String> {
     let name = clean(&draft.name, "name", 60, true)?;
-    let role = clean(&draft.role, "role", 2000, false)?;
+    let role = clean(&draft.role, "role", ROLE_MAX, false)?;
+    let persistent_prompt = draft
+        .persistent_prompt
+        .as_deref()
+        .map(|text| clean(text, "persistent prompt", PERSISTENT_PROMPT_MAX, false))
+        .transpose()?;
     if draft.agent == ChatAgent::Pi {
         return Err("Choose Claude, Codex or Antigravity for a registered agent.".into());
     }
@@ -549,6 +592,8 @@ fn apply(
                 memory_note: existing.memory_note.clone(),
                 avatar: avatar.unwrap_or_else(|| existing.avatar.clone()),
                 team_id,
+                persistent_prompt: persistent_prompt
+                    .unwrap_or_else(|| existing.persistent_prompt.clone()),
                 created_at: existing.created_at,
                 updated_at: now,
             };
@@ -568,6 +613,7 @@ fn apply(
                 memory_note: None,
                 avatar: avatar.flatten(),
                 team_id,
+                persistent_prompt: persistent_prompt.unwrap_or_default(),
                 created_at: now,
                 updated_at: now,
             };
@@ -612,6 +658,85 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
         }
     }
     write(path, &stored)
+}
+
+/// The shared agent policy, empty when the person has written none.
+pub fn policy(path: &Path) -> Result<AgentPolicy, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let stored = read(path)?;
+    Ok(AgentPolicy {
+        text: stored.agent_policy,
+        updated_at: stored.agent_policy_updated_at,
+    })
+}
+
+/// The policy text as it would be saved, or why it would be refused.
+pub fn check_policy(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    if text.chars().count() > AGENT_POLICY_MAX {
+        return Err(format!(
+            "The agent policy is longer than {AGENT_POLICY_MAX} characters."
+        ));
+    }
+    Ok(text.to_owned())
+}
+
+/// Replace the shared agent policy; `""` clears it.
+pub fn set_policy(path: &Path, text: &str) -> Result<AgentPolicy, String> {
+    set_policy_checked(path, text, None)
+}
+
+/// `set_policy`, refused when the policy has changed since `expected` (its
+/// `updated_at` when the change was proposed), as `save_unchanged` is.
+pub fn set_policy_unchanged(path: &Path, text: &str, expected: i64) -> Result<AgentPolicy, String> {
+    set_policy_checked(path, text, Some(expected))
+}
+
+fn set_policy_checked(
+    path: &Path,
+    text: &str,
+    expected: Option<i64>,
+) -> Result<AgentPolicy, String> {
+    let text = check_policy(text)?;
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    if expected.is_some_and(|expected| expected != stored.agent_policy_updated_at) {
+        return Err("The agent policy was changed while this waited for approval, so nothing was saved. Read it again and propose the change again.".into());
+    }
+    // Never the same stamp twice, so a proposal made against one version can
+    // never be taken for the next, however quickly it follows.
+    stored.agent_policy_updated_at = now_ms().max(stored.agent_policy_updated_at + 1);
+    stored.agent_policy = text;
+    write(path, &stored)?;
+    Ok(AgentPolicy {
+        text: stored.agent_policy,
+        updated_at: stored.agent_policy_updated_at,
+    })
+}
+
+/// What every brief an agent is launched with carries ahead of its role: the
+/// person's shared policy, then the agent's own standing instructions. Each
+/// is left out when empty; the whole is `""` when both are, and otherwise
+/// ends in a blank line so the caller's role sentence follows on its own.
+///
+/// Only an agent's own launch reads this. Wherever the agent is LISTED to
+/// another — a roster, a routing brief, a destination list, a card — only its
+/// role is shown.
+pub fn standing_brief(policy: &str, agent: &TeamAgent) -> String {
+    let mut text = String::new();
+    let policy = policy.trim();
+    if !policy.is_empty() {
+        text.push_str("Shared agent policy (the person's rules for every agent):\n");
+        text.push_str(policy);
+        text.push_str("\n\n");
+    }
+    let standing = agent.persistent_prompt.trim();
+    if !standing.is_empty() {
+        text.push_str(&format!("Standing instructions for {}:\n", agent.name));
+        text.push_str(standing);
+        text.push_str("\n\n");
+    }
+    text
 }
 
 /// A global agent may join any team; a project agent only a global team or
@@ -963,6 +1088,7 @@ pub fn create_front_desk(path: &Path, draft: FrontDeskDraft) -> Result<TeamAgent
             reports_to: None,
             avatar: None,
             team_id: None,
+            persistent_prompt: None,
         },
     )?;
     set_front_desk(path, Some(&saved.id))?;
@@ -1270,6 +1396,48 @@ pub fn relabel_memory_header(head: &str, name: &str) -> Option<(String, String)>
     let old = lines[..=last].join("\n");
     let new = new_lines[..=last].join("\n");
     (old != new).then_some((old, new))
+}
+
+/// Who a worker is, for the brief of a task assigned to a registered agent:
+/// the shared policy, its standing instructions, then its role.
+pub fn worker_identity(policy: &str, agent: &TeamAgent) -> String {
+    let role = agent.role.trim();
+    let role = if role.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Your role: {}.",
+            role.replace('\n', " ").trim_end_matches('.')
+        )
+    };
+    format!(
+        "{}You are {}, the registered OctiqFlow agent this task is assigned to.{role}",
+        standing_brief(policy, agent),
+        agent.name
+    )
+}
+
+/// What an orchestration worker assigned to a registered agent is told about
+/// itself, after the task's own dispatch: who it is (`worker_identity`), its
+/// memory, and the teammates it may ask. `None` when the agent is gone.
+pub fn assignee_brief(
+    path: &Path,
+    assignee_id: &str,
+    project_id: &str,
+) -> Option<(TeamAgent, String)> {
+    let team = list(path, None, true).ok()?;
+    let me = team.iter().find(|a| a.id == assignee_id)?.clone();
+    let policy = policy(path).unwrap_or_default();
+    let mut text = worker_identity(&policy.text, &me);
+    text.push_str("\n\n");
+    text.push_str(&memory_brief(&me, &team));
+    // Who it may ask for help, and that they only answer.
+    let teams = teams(path).unwrap_or_default();
+    if let Some(peers) = peer_brief(&team, &teams, &me, project_id) {
+        text.push_str("\n\n");
+        text.push_str(&peers);
+    }
+    Some((me, text))
 }
 
 /// How an agent's memory is described in its brief.
@@ -1981,9 +2149,10 @@ fn front_desk_text(
         }
         None => String::new(),
     };
+    let standing = standing_brief(&stored.agent_policy, desk);
     format!(
         "{task}{BRIEF_MARK}Front desk: {name}\n\n\
-You are {name}, the person's front desk in OctiqFlow.{role} You never do the work yourself, never act for another agent, and have no tools but route_chat. Your one job is to find the registered agent who should handle what the person wants and open a new chat with them.\n\n\
+{standing}You are {name}, the person's front desk in OctiqFlow.{role} You never do the work yourself, never act for another agent, and have no tools but route_chat. Your one job is to find the registered agent who should handle what the person wants and open a new chat with them.\n\n\
 How to route:\n\
 - Pick the ONE agent below whose role and project fit the request best. When the person names an agent or a project, follow that if it is in the lists.\n\
 - If two or more agents fit and nothing in the request tells them apart, ask the person one short question that names the candidates, then end your turn. Do not guess.\n\
@@ -2163,14 +2332,16 @@ fn lead_brief(
             .map(|(_, name)| name.clone())
     };
     let reports = brief_reports(&team, &lead, projects);
+    // After the mark, so the person's bubble still shows only their words.
+    let standing = standing_brief(&policy(path)?.text, &lead);
     let head = if cross_project {
         format!(
-            "{task}{BRIEF_MARK}Lead: {name}\n\nYou are {name}, the person's lead across every OctiqFlow project.{role} The person brought you the request above. You lead it.",
+            "{task}{BRIEF_MARK}Lead: {name}\n\n{standing}You are {name}, the person's lead across every OctiqFlow project.{role} The person brought you the request above. You lead it.",
             name = lead.name
         )
     } else {
         format!(
-            "{task}{BRIEF_MARK}Lead: {name}\n\nYou are {name}, a registered agent in this OctiqFlow project.{role} The person handed you the task above. You lead it.",
+            "{task}{BRIEF_MARK}Lead: {name}\n\n{standing}You are {name}, a registered agent in this OctiqFlow project.{role} The person handed you the task above. You lead it.",
             name = lead.name
         )
     };
@@ -2317,6 +2488,7 @@ mod tests {
             reports_to: None,
             avatar: None,
             team_id: None,
+            persistent_prompt: None,
         }
     }
 
@@ -3498,5 +3670,314 @@ mod tests {
         let chats = front_desk_chats(&path);
         assert_eq!(chats[0].session_ids, vec!["sess-old"]);
         assert_eq!(chats[0].sessions.len(), 1);
+    }
+
+    const POLICY: &str = "Work in a git worktree. Never push without asking.";
+    const STANDING: &str = "Runbook: build with pnpm, then cargo.";
+
+    /// `draft`, carrying standing instructions.
+    fn standing(name: &str, project: Option<&str>, text: &str) -> TeamDraft {
+        TeamDraft {
+            persistent_prompt: Some(text.into()),
+            ..draft(name, project)
+        }
+    }
+
+    /// Where `needle` sits in `hay`, failing the test when it is absent.
+    fn at(hay: &str, needle: &str) -> usize {
+        hay.find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} missing from {hay}"))
+    }
+
+    /// The policy, then the standing instructions, then the role.
+    fn in_order(text: &str, role: &str) {
+        let policy = at(
+            text,
+            "Shared agent policy (the person's rules for every agent):",
+        );
+        let rules = at(text, POLICY);
+        let standing = at(text, "Standing instructions for ");
+        let runbook = at(text, STANDING);
+        let role = at(text, role);
+        assert!(
+            policy < rules && rules < standing && standing < runbook && runbook < role,
+            "{text}"
+        );
+    }
+
+    /// A team file written before either field existed reads as having
+    /// neither, and saving it again leaves them out rather than writing
+    /// empty values.
+    #[test]
+    fn a_team_file_without_the_policy_or_persistent_prompts_still_reads() {
+        let path = temp();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"agents":[{"id":"agent_old","name":"Old","role":"r","agent":"claude","model":"sonnet","access":"auto","createdAt":1,"updatedAt":1}]}"#,
+        )
+        .unwrap();
+        let old = agent_named(&path, "Old");
+        assert_eq!(old.persistent_prompt, "");
+        assert_eq!(policy(&path).unwrap(), AgentPolicy::default());
+        save(
+            &path,
+            TeamDraft {
+                id: Some(old.id.clone()),
+                ..draft("Old", None)
+            },
+        )
+        .unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("persistentPrompt"), "{raw}");
+        assert!(!raw.contains("agent_policy"), "{raw}");
+    }
+
+    #[test]
+    fn the_agent_policy_is_saved_trimmed_capped_and_cleared() {
+        let path = temp();
+        let saved = set_policy(&path, &format!("  {POLICY}\n")).unwrap();
+        assert_eq!(saved.text, POLICY);
+        assert!(saved.updated_at > 0);
+        assert_eq!(policy(&path).unwrap(), saved);
+        // Stored beside the agents, under its own key.
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"agent_policy\""), "{raw}");
+
+        assert!(set_policy(&path, &"x".repeat(AGENT_POLICY_MAX)).is_ok());
+        assert_eq!(
+            set_policy(&path, &"x".repeat(AGENT_POLICY_MAX + 1)).unwrap_err(),
+            "The agent policy is longer than 4000 characters."
+        );
+        assert_eq!(policy(&path).unwrap().text.len(), AGENT_POLICY_MAX);
+
+        let cleared = set_policy(&path, "").unwrap();
+        assert_eq!(cleared.text, "");
+        assert_eq!(policy(&path).unwrap().text, "");
+    }
+
+    /// What the person approved was a change to one version of the policy.
+    #[test]
+    fn a_policy_change_waits_on_the_version_it_was_proposed_against() {
+        let path = temp();
+        let first = set_policy(&path, "First").unwrap();
+        let second = set_policy_unchanged(&path, "Second", first.updated_at).unwrap();
+        assert!(second.updated_at > first.updated_at);
+        let stale = set_policy_unchanged(&path, "Third", first.updated_at).unwrap_err();
+        assert!(stale.contains("changed while this waited"), "{stale}");
+        assert_eq!(policy(&path).unwrap().text, "Second");
+    }
+
+    #[test]
+    fn a_persistent_prompt_is_capped_kept_when_absent_and_cleared_by_empty() {
+        let path = temp();
+        let long = "p".repeat(PERSISTENT_PROMPT_MAX);
+        let ada = save(&path, standing("Ada", None, &long)).unwrap();
+        assert_eq!(ada.persistent_prompt, long);
+        assert_eq!(
+            save(&path, standing("Bo", None, &format!("{long}p"))).unwrap_err(),
+            "The agent's persistent prompt is longer than 8000 characters."
+        );
+        // The role keeps its own, smaller cap.
+        let wordy = TeamDraft {
+            role: "r".repeat(ROLE_MAX + 1),
+            ..draft("Cy", None)
+        };
+        assert_eq!(
+            save(&path, wordy).unwrap_err(),
+            "The agent's role is longer than 2000 characters."
+        );
+        // An edit that does not mention it keeps it, as the avatar is kept.
+        let renamed = save(
+            &path,
+            TeamDraft {
+                id: Some(ada.id.clone()),
+                ..draft("Ada Lovelace", None)
+            },
+        )
+        .unwrap();
+        assert_eq!(renamed.persistent_prompt, long);
+        let replaced = save(
+            &path,
+            TeamDraft {
+                id: Some(ada.id.clone()),
+                ..standing("Ada Lovelace", None, &format!("  {STANDING} "))
+            },
+        )
+        .unwrap();
+        assert_eq!(replaced.persistent_prompt, STANDING);
+        let cleared = save(
+            &path,
+            TeamDraft {
+                id: Some(ada.id.clone()),
+                ..standing("Ada Lovelace", None, "")
+            },
+        )
+        .unwrap();
+        assert_eq!(cleared.persistent_prompt, "");
+        // It survives a fresh read of the file.
+        save(
+            &path,
+            TeamDraft {
+                id: Some(ada.id.clone()),
+                ..standing("Ada Lovelace", None, STANDING)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            agent_named(&path, "Ada Lovelace").persistent_prompt,
+            STANDING
+        );
+    }
+
+    #[test]
+    fn the_standing_brief_leaves_out_what_is_empty() {
+        let path = temp();
+        let plain = save(&path, draft("Plain", None)).unwrap();
+        assert_eq!(standing_brief("", &plain), "");
+        assert_eq!(standing_brief("  \n", &plain), "");
+        let only_policy = standing_brief(POLICY, &plain);
+        assert!(only_policy.contains(POLICY));
+        assert!(!only_policy.contains("Standing instructions"));
+        assert!(only_policy.ends_with("\n\n"));
+        let ruled = save(&path, standing("Ruled", None, STANDING)).unwrap();
+        let only_standing = standing_brief("", &ruled);
+        assert!(!only_standing.contains("Shared agent policy"));
+        assert!(only_standing.starts_with("Standing instructions for Ruled:\n"));
+        // A worker with neither is told only who it is.
+        assert_eq!(
+            worker_identity("", &plain),
+            "You are Plain, the registered OctiqFlow agent this task is assigned to. Your role: builds things."
+        );
+    }
+
+    /// A conversation the person starts, a handover and a front-desk route
+    /// all brief the agent the same way: policy, standing instructions, role.
+    #[test]
+    fn every_lead_brief_carries_the_policy_then_standing_instructions_then_the_role() {
+        let path = temp();
+        set_policy(&path, POLICY).unwrap();
+        let lead = save(&path, standing("Lead", None, STANDING)).unwrap();
+        let briefs = [
+            brief(&path, "chat:direct", "p1", &lead.id, "Fix it", false, &[]).unwrap(),
+            handover_brief(&path, "chat:handed", "p1", &lead.id, "Fix it", &[]).unwrap(),
+            route_brief(&path, "chat:routed", "p1", &lead.id, "Fix it", false, &[]).unwrap(),
+        ];
+        for text in briefs {
+            let (person, host) = text.split_once(BRIEF_MARK).unwrap();
+            // The person's bubble is still only their words.
+            assert_eq!(person, "Fix it");
+            assert!(
+                host.starts_with("Lead: Lead\n\nShared agent policy"),
+                "{host}"
+            );
+            in_order(host, "Your role: builds things.");
+        }
+        // Without either, the brief is what it always was.
+        set_policy(&path, "").unwrap();
+        let plain = save(&path, draft("Plain", None)).unwrap();
+        let text = brief(&path, "chat:plain", "p1", &plain.id, "Fix it", false, &[]).unwrap();
+        assert!(text.contains(&format!(
+            "{BRIEF_MARK}Lead: Plain\n\nYou are Plain, a registered agent"
+        )));
+        assert!(!text.contains("Shared agent policy"));
+        assert!(!text.contains("Standing instructions"));
+    }
+
+    #[test]
+    fn the_front_desk_is_briefed_with_the_policy_and_lists_roles_only() {
+        let path = temp();
+        set_policy(&path, POLICY).unwrap();
+        let worker = save(&path, standing("Vesper", None, "SECRET-RUNBOOK")).unwrap();
+        let desk = create_front_desk(&path, FrontDeskDraft::default()).unwrap();
+        save(
+            &path,
+            TeamDraft {
+                id: Some(desk.id.clone()),
+                role: FRONT_DESK_ROLE.into(),
+                ..standing(&desk.name, None, STANDING)
+            },
+        )
+        .unwrap();
+        let text = brief(&path, "chat:desk", "p1", &desk.id, "Help", false, &[]).unwrap();
+        let (_, host) = text.split_once(BRIEF_MARK).unwrap();
+        in_order(host, "Your role: Listens to what the person wants");
+        // The roster carries each agent's role, never its standing rules.
+        assert!(host.contains(&format!("id `{}` · Vesper — builds things", worker.id)));
+        assert!(!host.contains("SECRET-RUNBOOK"), "{host}");
+    }
+
+    /// An orchestration worker is told who it is after the task's dispatch:
+    /// the policy, its standing instructions and its role, then its memory.
+    #[test]
+    fn a_worker_brief_carries_the_policy_standing_instructions_and_role() {
+        let path = temp();
+        set_policy(&path, POLICY).unwrap();
+        let ada = save(&path, standing("Ada", None, STANDING)).unwrap();
+        let (me, text) = assignee_brief(&path, &ada.id, "p1").unwrap();
+        assert_eq!(me.id, ada.id);
+        in_order(&text, "You are Ada, the registered OctiqFlow agent");
+        assert!(
+            at(&text, "Your role: builds things.") < at(&text, "vault_agent_memory_read"),
+            "{text}"
+        );
+        assert!(assignee_brief(&path, "agent_gone", "p1").is_none());
+    }
+
+    /// Wherever an agent is listed to ANOTHER agent, only its role shows.
+    #[test]
+    fn rosters_list_the_role_and_never_the_persistent_prompt() {
+        let path = temp();
+        set_policy(&path, POLICY).unwrap();
+        let lead = save(&path, draft("Lead", None)).unwrap();
+        let web = save_team(&path, team_draft("Web", None)).unwrap();
+        let manager = save(
+            &path,
+            TeamDraft {
+                team_id: Some(web.id.clone()),
+                ..under("Mid", None, &lead)
+            },
+        )
+        .unwrap();
+        let hidden = "HIDDEN-STANDING-RULES";
+        save(
+            &path,
+            TeamDraft {
+                persistent_prompt: Some(hidden.into()),
+                team_id: Some(web.id.clone()),
+                ..under("Report", None, &manager)
+            },
+        )
+        .unwrap();
+        save(
+            &path,
+            TeamDraft {
+                persistent_prompt: Some(hidden.into()),
+                ..under("Other", None, &lead)
+            },
+        )
+        .unwrap();
+        // The lead's own brief lists its reports.
+        let lead_text = brief(&path, "chat:lead", "p1", &lead.id, "Plan it", false, &[]).unwrap();
+        assert!(lead_text.contains("Other — builds things"), "{lead_text}");
+        // A later turn's roster.
+        let later = refresh_turn_brief(&path, "chat:lead", "More".into(), &[]).unwrap();
+        assert!(later.contains("Other — builds things"), "{later}");
+        // A second-level manager's roster.
+        let split = manager_brief(&path, "p1", &manager.id, "task_1", "run_1")
+            .unwrap()
+            .unwrap();
+        assert!(split.contains("Report — builds things"), "{split}");
+        // A worker's peer roster.
+        let team = list(&path, None, true).unwrap();
+        let teams = teams(&path).unwrap();
+        let mid = team.iter().find(|a| a.id == manager.id).unwrap();
+        let peers = peer_brief(&team, &teams, mid, "p1").unwrap();
+        assert!(peers.contains("Report — builds things"), "{peers}");
+        for text in [&lead_text, &later, &split, &peers] {
+            assert!(!text.contains(hidden), "{text}");
+        }
+        // The policy is the lead's own, never repeated per roster line.
+        assert_eq!(lead_text.matches(POLICY).count(), 1, "{lead_text}");
     }
 }

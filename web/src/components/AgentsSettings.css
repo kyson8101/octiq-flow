@@ -96,6 +96,22 @@
 }
 .team-form textarea { resize: vertical; }
 .team-field-note { color: var(--fg-3); font-size: 11px; line-height: 1.4; }
+/* A field's label with its character count at the far end. */
+.team-field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.team-field-count { flex: 0 0 auto; color: var(--fg-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.team-field-count.is-over { color: var(--danger); }
+
+/* The shared agent policy, above the roster it applies to. */
+.agent-policy { display: grid; gap: 8px; margin: 18px 0 6px; min-width: 0; }
+.agent-policy h3 { margin: 0; }
+.agent-policy .settings-note { margin: 0; }
+.agent-policy-text {
+  width: 100%; min-width: 0; padding: 8px 10px; resize: vertical;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-0); color: var(--fg-1); font: inherit; font-size: 13px; line-height: 1.45;
+}
+.agent-policy-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.agent-policy-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* The avatar: current face, the generated one beside it while it waits to be
    accepted, and the few actions that change it. */

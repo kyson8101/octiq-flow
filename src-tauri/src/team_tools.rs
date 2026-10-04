@@ -1,5 +1,5 @@
 //! What an agent may do to the person's registered agents through its MCP:
-//! `agent_list`, `agent_register` and `agent_update`.
+//! `agent_list`, `agent_register`, `agent_update` and `agent_policy_update`.
 //!
 //! Reading the roster is free. A change is only ever PROPOSED by the agent.
 //! The host builds the whole draft itself, runs it through every rule the
@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use crate::agent_chat::{Access, ChatAgent};
 use crate::outcome::{ReasonClass, Refusal};
 use crate::permission::Answer;
-use crate::team::{AgentTeam, TeamAgent, TeamDraft};
+use crate::team::{AgentPolicy, AgentTeam, TeamAgent, TeamDraft};
 use crate::workspaces::Workspace;
 
 /// The shortest and longest an agent may ask the person's card to stay up.
@@ -67,8 +67,21 @@ pub struct Proposal {
     /// Its peer-help team, by id or name; `""` takes it off its team.
     #[serde(default)]
     pub team: Option<String>,
+    /// Its standing instructions; `""` clears them.
+    #[serde(default)]
+    pub persistent_prompt: Option<String>,
     /// How long the person's card may stay up, in seconds. The MCP sets it
     /// from what its provider will wait for a tool call; the host clamps it.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+/// `agent_policy_update`'s arguments: the whole new policy, `""` to clear it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PolicyProposal {
+    pub policy: String,
+    /// As `Proposal::wait_seconds`.
     #[serde(default)]
     pub wait_seconds: Option<u64>,
 }
@@ -97,6 +110,7 @@ pub struct Roster {
     pub projects: Vec<Workspace>,
     pub head: Option<String>,
     pub front_desk: Option<String>,
+    pub policy: AgentPolicy,
 }
 
 impl Roster {
@@ -107,6 +121,7 @@ impl Roster {
             projects,
             head: crate::team::head(team)?.map(|agent| agent.id),
             front_desk: crate::team::front_desk(team)?.map(|agent| agent.id),
+            policy: crate::team::policy(team)?,
         })
     }
 
@@ -201,6 +216,7 @@ fn public(agent: &TeamAgent) -> Value {
         "id": agent.id,
         "name": agent.name,
         "role": agent.role,
+        "persistentPrompt": agent.persistent_prompt,
         "provider": agent.agent,
         "model": agent.model,
         "effort": agent.effort,
@@ -233,6 +249,7 @@ pub fn listing(roster: &Roster, args: ListArgs) -> Result<Value, String> {
         })).collect::<Vec<_>>(),
         "head": roster.head,
         "frontDesk": roster.front_desk,
+        "agentPolicy": roster.policy.text,
     }))
 }
 
@@ -287,6 +304,7 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                     Some(spec) => Some(team_of(spec)?.unwrap_or_default()),
                     None => None,
                 },
+                persistent_prompt: p.persistent_prompt.clone(),
             };
             Ok(Draft {
                 draft,
@@ -308,7 +326,8 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                 && p.access.is_none()
                 && p.project.is_none()
                 && p.reports_to.is_none()
-                && p.team.is_none();
+                && p.team.is_none()
+                && p.persistent_prompt.is_none();
             if nothing {
                 return Err(format!("Say what to change about {}.", current.name));
             }
@@ -345,6 +364,8 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                     Some(spec) => Some(team_of(spec)?.unwrap_or_default()),
                     None => None,
                 },
+                // Absent keeps it, as in `team::save`.
+                persistent_prompt: p.persistent_prompt.clone(),
             };
             Ok(Draft {
                 draft,
@@ -390,9 +411,11 @@ fn fields(roster: &Roster, agent: &TeamAgent) -> Vec<(&'static str, String)> {
 }
 
 /// The change in words, for the card: every field of a new agent, and only
-/// what moves on an existing one.
+/// what moves on an existing one. The persistent prompt is never listed with
+/// the other fields, and appears only when this change sets or clears it:
+/// the person approves exactly the text that would be saved.
 pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
-    match &change.before {
+    let mut text = match &change.before {
         None => {
             let mut text = format!("Register a new agent, {}.\n", after.name);
             for (label, value) in fields(roster, after) {
@@ -412,7 +435,40 @@ pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
             }
             text
         }
+    };
+    let was = change
+        .before
+        .as_ref()
+        .map_or("", |before| before.persistent_prompt.as_str());
+    if was != after.persistent_prompt {
+        if after.persistent_prompt.is_empty() {
+            text.push_str("\nPersistent prompt: cleared");
+        } else {
+            text.push_str(&format!(
+                "\n\nPersistent prompt ({} characters{}):\n{}",
+                after.persistent_prompt.chars().count(),
+                if was.is_empty() {
+                    ""
+                } else {
+                    ", replaces the current one"
+                },
+                after.persistent_prompt
+            ));
+        }
     }
+    text
+}
+
+/// The policy change in words, for the card: the whole text it would become.
+pub fn describe_policy(before: &AgentPolicy, after: &str) -> String {
+    if after.is_empty() {
+        return "Clear the shared agent policy that every agent's brief starts with.".into();
+    }
+    format!(
+        "{} the shared agent policy that every agent's brief starts with.\n\nNew policy ({} characters):\n{after}",
+        if before.text.is_empty() { "Set" } else { "Replace" },
+        after.chars().count()
+    )
 }
 
 /// How the person answered, as the agent reads it. `Ok` only on an Allow.
@@ -441,6 +497,16 @@ pub fn wait_for(requested: Option<u64>) -> Duration {
         .map(Duration::from_secs)
         .unwrap_or(crate::permission::ANSWER_TIMEOUT)
         .clamp(WAIT_MIN, crate::permission::ANSWER_TIMEOUT)
+}
+
+/// What a saved policy answers with.
+pub fn policy_saved_text(policy: &AgentPolicy) -> Value {
+    let said = if policy.text.is_empty() {
+        "The person approved it: the shared agent policy is cleared."
+    } else {
+        "The person approved it: the shared agent policy is saved."
+    };
+    json!({ "status": "saved", "text": said, "agentPolicy": policy.text })
 }
 
 /// What a saved change answers with: the agent as `agent_list` shows it.
@@ -503,6 +569,37 @@ where
     .map_err(Refusal::from)
 }
 
+/// Propose a new shared agent policy, put it to the person, and save it only
+/// on their Allow, against the policy as it was when proposed.
+pub async fn propose_policy<A, F>(
+    roster: &Roster,
+    team: &Path,
+    chat_key: &str,
+    proposal: PolicyProposal,
+    ask: A,
+) -> Result<AgentPolicy, Refusal>
+where
+    A: FnOnce(crate::permission::Request) -> F,
+    F: Future<Output = Answer>,
+{
+    let invalid = |error: String| Refusal::new(ReasonClass::Validation, error);
+    let text = crate::team::check_policy(&proposal.policy).map_err(invalid)?;
+    if text == roster.policy.text {
+        return Err(invalid("That is already the shared agent policy.".into()));
+    }
+    let wait = wait_for(proposal.wait_seconds);
+    let request = crate::permission::Request {
+        chat_key: Some(chat_key.to_string()),
+        tool_name: Some("mcp__octiq__agent_policy_update".into()),
+        tool_input: Some(json!({ "change": describe_policy(&roster.policy, &text) })),
+        once: true,
+        answer_within_secs: Some(wait.as_secs()),
+        ..Default::default()
+    };
+    approved(&ask(request).await, wait)?;
+    crate::team::set_policy_unchanged(team, &text, roster.policy.updated_at).map_err(Refusal::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +631,7 @@ mod tests {
                 reports_to: None,
                 avatar: None,
                 team_id: None,
+                persistent_prompt: None,
             },
         )
         .unwrap()
@@ -871,6 +969,7 @@ mod tests {
                     reports_to: None,
                     avatar: None,
                     team_id: None,
+                    persistent_prompt: None,
                 },
             )
             .unwrap();
@@ -955,5 +1054,270 @@ mod tests {
         let parsed: Result<Proposal, _> =
             serde_json::from_value(json!({ "name": "Nova", "avatar": "data:x" }));
         assert!(parsed.is_err());
+        let parsed: Result<PolicyProposal, _> =
+            serde_json::from_value(json!({ "policy": "x", "agent": "Nova" }));
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn the_listing_carries_the_policy_and_each_persistent_prompt() {
+        let (_dir, team) = temp_team();
+        let potato = register(&team, "Potato", None);
+        crate::team::set_policy(&team, "Use worktrees.").unwrap();
+        crate::team::save(
+            &team,
+            TeamDraft {
+                id: Some(potato.id.clone()),
+                persistent_prompt: Some("Build first.".into()),
+                ..redraft(&potato)
+            },
+        )
+        .unwrap();
+        let all = listing(&roster(&team), ListArgs::default()).unwrap();
+        assert_eq!(all["agentPolicy"], "Use worktrees.");
+        assert_eq!(all["agents"][0]["persistentPrompt"], "Build first.");
+        assert_eq!(all["agents"][0]["role"], "Writes code.");
+    }
+
+    /// The draft the Settings form would send for `agent` unchanged.
+    pub(super) fn redraft(agent: &TeamAgent) -> TeamDraft {
+        TeamDraft {
+            id: Some(agent.id.clone()),
+            name: agent.name.clone(),
+            role: agent.role.clone(),
+            agent: agent.agent,
+            model: agent.model.clone(),
+            effort: agent.effort.clone(),
+            access: Some(agent.access),
+            project_id: agent.project_id.clone(),
+            reports_to: agent.reports_to.clone(),
+            avatar: None,
+            team_id: None,
+            persistent_prompt: None,
+        }
+    }
+
+    /// The card lists the role with the other fields and never the persistent
+    /// prompt, unless this change sets or clears it: then the whole text, and
+    /// how long it is.
+    #[tokio::test]
+    async fn the_card_shows_a_persistent_prompt_only_when_it_changes() {
+        let (_dir, team) = temp_team();
+        let potato = register(&team, "Potato", None);
+        let hidden = "SECRET-RUNBOOK ".repeat(500);
+        crate::team::save(
+            &team,
+            TeamDraft {
+                persistent_prompt: Some(hidden.clone()),
+                ..redraft(&potato)
+            },
+        )
+        .unwrap();
+
+        // A change to the role alone: the prompt stays off the card.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Potato".into()),
+                role: Some("Leads.".into()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        let card = shown.lock().unwrap().pop().unwrap().tool_input.unwrap()["change"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(card.contains("Role: Writes code. → Leads."), "{card}");
+        assert!(!card.contains("SECRET-RUNBOOK"), "{card}");
+        assert!(!card.contains("Persistent prompt"), "{card}");
+        assert_eq!(stored(&team)[0].persistent_prompt, hidden.trim());
+
+        // A change to the prompt: the whole new text, with its length.
+        let runbook = "x".repeat(crate::team::PERSISTENT_PROMPT_MAX);
+        let (shown, allow) = asker("allow", "you allowed it");
+        let saved = propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Potato".into()),
+                persistent_prompt: Some(runbook.clone()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.persistent_prompt, runbook, "never cut");
+        let card = shown.lock().unwrap().pop().unwrap().tool_input.unwrap()["change"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            card.ends_with(&format!(
+                "Persistent prompt (8000 characters, replaces the current one):\n{runbook}"
+            )),
+            "{card}"
+        );
+        assert!(
+            !card.contains("SECRET-RUNBOOK"),
+            "only the new text: {card}"
+        );
+
+        // Clearing it says so.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Potato".into()),
+                persistent_prompt: Some(String::new()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        let card = shown.lock().unwrap().pop().unwrap().tool_input.unwrap()["change"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(card.ends_with("Persistent prompt: cleared"), "{card}");
+        assert_eq!(stored(&team)[0].persistent_prompt, "");
+
+        // Too long is refused before anyone is asked.
+        let (shown, allow) = asker("allow", "you allowed it");
+        let refused = propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Potato".into()),
+                persistent_prompt: Some(format!("{runbook}x")),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused.message.contains("longer than 8000"),
+            "{}",
+            refused.message
+        );
+        assert!(shown.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_policy_is_saved_only_on_the_persons_allow_against_the_version_shown() {
+        let (_dir, team) = temp_team();
+        let proposal = |text: &str| PolicyProposal {
+            policy: text.into(),
+            wait_seconds: Some(50),
+        };
+
+        let (shown, deny) = asker("deny", "you denied it");
+        let refused = propose_policy(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            proposal("Use worktrees."),
+            deny,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.outcome,
+            crate::outcome::Outcome::host(ReasonClass::ApprovalDenied)
+        );
+        assert_eq!(crate::team::policy(&team).unwrap().text, "");
+        let card = shown.lock().unwrap().pop().unwrap();
+        assert_eq!(
+            card.tool_name.as_deref(),
+            Some("mcp__octiq__agent_policy_update")
+        );
+        assert!(card.once);
+        assert_eq!(card.answer_within_secs, Some(50));
+        assert_eq!(
+            card.tool_input.unwrap()["change"],
+            "Set the shared agent policy that every agent's brief starts with.\n\nNew policy (14 characters):\nUse worktrees."
+        );
+
+        let (_, allow) = asker("allow", "you allowed it");
+        let saved = propose_policy(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            proposal(" Use worktrees. "),
+            allow,
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.text, "Use worktrees.");
+        assert_eq!(
+            policy_saved_text(&saved)["status"],
+            "saved",
+            "only saved means written"
+        );
+
+        // Proposed against one version, approved after another was saved.
+        let before = roster(&team);
+        crate::team::set_policy(&team, "Edited in Settings.").unwrap();
+        let (_, allow) = asker("allow", "you allowed it");
+        let stale = propose_policy(&before, &team, "chat:lead", proposal("Mine."), allow)
+            .await
+            .unwrap_err();
+        assert!(
+            stale.message.contains("changed while this waited"),
+            "{}",
+            stale.message
+        );
+        assert_eq!(
+            crate::team::policy(&team).unwrap().text,
+            "Edited in Settings."
+        );
+
+        // Clearing, and the refusals that never reach the person.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose_policy(&roster(&team), &team, "chat:lead", proposal(""), allow)
+            .await
+            .unwrap();
+        assert_eq!(
+            shown.lock().unwrap().pop().unwrap().tool_input.unwrap()["change"],
+            "Clear the shared agent policy that every agent's brief starts with."
+        );
+        assert_eq!(crate::team::policy(&team).unwrap().text, "");
+        let (shown, allow) = asker("allow", "you allowed it");
+        let same = propose_policy(&roster(&team), &team, "chat:lead", proposal(""), allow)
+            .await
+            .unwrap_err();
+        assert!(same.message.contains("already"), "{}", same.message);
+        let (_, allow) = asker("allow", "you allowed it");
+        let long = propose_policy(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            proposal(&"p".repeat(crate::team::AGENT_POLICY_MAX + 1)),
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            long.message.contains("longer than 4000"),
+            "{}",
+            long.message
+        );
+        assert!(shown.lock().unwrap().is_empty());
     }
 }

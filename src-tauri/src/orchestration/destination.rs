@@ -438,6 +438,7 @@ mod tests {
             team_id: None,
             created_at: 0,
             updated_at: 0,
+            persistent_prompt: String::new(),
         }
     }
 
@@ -733,5 +734,21 @@ mod tests {
         let scoped = directory(&w.team, &w.projects, Some("lee"));
         assert_eq!(scoped["projects"].as_array().unwrap().len(), 1);
         assert_eq!(names(&scoped["projects"][0]), ["Kim"]);
+    }
+
+    /// A lead choosing whom to send work to reads roles, never another
+    /// agent's standing instructions.
+    #[test]
+    fn directory_shows_a_reports_role_and_never_its_persistent_prompt() {
+        let mut w = world();
+        for agent in &mut w.team {
+            agent.role = format!("{} role", agent.name);
+            agent.persistent_prompt = "HIDDEN-STANDING-RULES".into();
+        }
+        let all = directory(&w.team, &w.projects, Some("ryan"));
+        assert_eq!(all["projects"][0]["reports"][0]["role"], "Maya role");
+        let text = all.to_string();
+        assert!(!text.contains("HIDDEN-STANDING-RULES"), "{text}");
+        assert!(!text.contains("persistentPrompt"), "{text}");
     }
 }

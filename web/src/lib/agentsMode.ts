@@ -44,9 +44,29 @@ export type TeamAgent = {
   avatar?: string;
   /** The peer-help team it is on (`AgentTeam`); absent when on none. */
   teamId?: string;
+  /** Its standing instructions (runbooks, tool rules), sent in every brief it
+   *  is launched with, after the agent policy and before its role. Never shown
+   *  where it is listed to others. Absent when it has none. */
+  persistentPrompt?: string;
   createdAt: number;
   updatedAt: number;
 };
+
+/** The longest role, persistent prompt and agent policy the host keeps
+ *  (team.rs `ROLE_MAX`, `PERSISTENT_PROMPT_MAX`, `AGENT_POLICY_MAX`). */
+export const ROLE_MAX = 2000;
+export const PERSISTENT_PROMPT_MAX = 8000;
+export const AGENT_POLICY_MAX = 4000;
+
+/** How long a text is the way the host measures it: in characters, not the
+ *  UTF-16 units `length` counts, and without the space it trims off. */
+export function charCount(text: string): number {
+  return [...text.trim()].length;
+}
+
+/** The shared agent policy (team.rs `AgentPolicy`): the person's rules for
+ *  every registered agent, put ahead of each one's own brief. */
+export type AgentPolicy = { text: string; updatedAt: number };
 
 /** A peer-help team (team.rs `AgentTeam`): agents on one may ask each other
  *  questions while they work. Beside the org chart, never part of it. */
@@ -75,6 +95,8 @@ export type TeamDraft = {
   avatar?: string;
   /** Absent keeps the team, "" or null takes it off, an id puts it on one. */
   teamId?: string | null;
+  /** Absent keeps it, "" clears it, any other text replaces it. */
+  persistentPrompt?: string;
 };
 
 /** Global agents plus the project's own; every agent with `all`. */
@@ -82,8 +104,9 @@ export async function loadTeam(projectId: string | null, all = false): Promise<T
   return await bridge.invoke<TeamAgent[]>("team_list", { projectId, all });
 }
 
-/** The host saved an agent: one the person approved an agent's
- *  `agent_register` / `agent_update` for, or one saved on another device.
+/** The host saved an agent or the agent policy: one the person approved an
+ *  agent's `agent_register` / `agent_update` / `agent_policy_update` for, or
+ *  one saved on another device.
  *  Whatever holds the roster reads it again. Returns the unsubscribe. */
 export function onTeamChanged(listener: () => void): () => void {
   return bridge.on("team-changed", () => listener());
@@ -93,6 +116,20 @@ export async function saveTeamAgent(agent: TeamDraft): Promise<TeamAgent> {
   // The host reads a missing team as "keep"; the form always says which.
   const teamId = agent.teamId === undefined ? undefined : agent.teamId ?? "";
   return await bridge.invoke<TeamAgent>("team_save", { agent: { ...agent, teamId } });
+}
+
+/** The shared agent policy. An older backend has none: then it is empty. */
+export async function loadAgentPolicy(): Promise<AgentPolicy> {
+  try {
+    return (await bridge.invoke<AgentPolicy>("team_policy", {})) ?? { text: "", updatedAt: 0 };
+  } catch {
+    return { text: "", updatedAt: 0 };
+  }
+}
+
+/** Replace the shared agent policy; "" clears it. */
+export async function saveAgentPolicy(text: string): Promise<AgentPolicy> {
+  return await bridge.invoke<AgentPolicy>("team_policy_set", { text });
 }
 
 export async function loadAgentTeams(): Promise<AgentTeam[]> {

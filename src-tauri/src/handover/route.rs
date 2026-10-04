@@ -658,6 +658,7 @@ mod tests {
             reports_to: agent.reports_to.clone(),
             avatar: None,
             team_id: None,
+            persistent_prompt: None,
         }
     }
 

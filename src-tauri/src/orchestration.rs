@@ -2608,22 +2608,16 @@ impl OrchestrationStore {
         // Agents mode: every assigned agent has its own memory.
         if let Some(assignee) = &task.assignee {
             let path = crate::team::default_path();
-            if let Ok(team) = crate::team::list(&path, None, true) {
-                if let Some(me) = team.iter().find(|a| a.id == assignee.id) {
-                    let _ = crate::team::ensure_memory(
-                        &crate::memory_vault::Vault::profile(),
-                        &reserved.worker_chat_key,
-                        me,
-                    );
-                    prompt.push_str("\n\n");
-                    prompt.push_str(&crate::team::memory_brief(me, &team));
-                    // Who it may ask for help, and that they only answer.
-                    let teams = crate::team::teams(&path).unwrap_or_default();
-                    if let Some(peers) = crate::team::peer_brief(&team, &teams, me, &workspace.id) {
-                        prompt.push_str("\n\n");
-                        prompt.push_str(&peers);
-                    }
-                }
+            if let Some((me, brief)) =
+                crate::team::assignee_brief(&path, &assignee.id, &workspace.id)
+            {
+                let _ = crate::team::ensure_memory(
+                    &crate::memory_vault::Vault::profile(),
+                    &reserved.worker_chat_key,
+                    &me,
+                );
+                prompt.push_str("\n\n");
+                prompt.push_str(&brief);
             }
         }
         // Agents mode: a second-level assignee that manages agents may split.

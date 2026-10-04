@@ -25,7 +25,19 @@ describe("askDetail", () => {
     // The host words it (team_tools); a role can run to 2000 characters, and
     // the person is approving every line of it.
     const change = `Register a new agent, Nova.\n\nRole: ${"r".repeat(2000)}\nModel: gpt-5.5`;
-    expect(askDetail({ change })).toEqual({ label: "change", body: change, limit: 8000 });
+    expect(askDetail({ change })).toEqual({ label: "change", body: change, limit: 16000 });
+  });
+
+  it("never cuts the longest change the host can word", () => {
+    // A role moving between two 2000-character texts, plus a whole new
+    // 8000-character persistent prompt: the person approves all of it.
+    const change = [
+      "Change the agent Nova.",
+      `Role: ${"a".repeat(2000)} → ${"b".repeat(2000)}`,
+      `Persistent prompt (8000 characters, replaces the current one):\n${"p".repeat(8000)}`,
+    ].join("\n");
+    const d = askDetail({ change });
+    expect(d && d.body.slice(0, d.limit)).toBe(change);
   });
 
   it("does not trim a plan to the length of a file preview", () => {

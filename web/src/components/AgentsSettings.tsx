@@ -2,16 +2,17 @@
 // agents — each a name, a role, and the provider/model/effort/access it runs
 // on, either global or belonging to one project — and the peer-help teams they
 // sit on, which group agents sideways and never change the org chart.
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import "./AgentsSettings.css";
 import {
   ACCESS, AGENT_NAME, EFFORTS, providerFor,
   type AccessLevel, type Effort, type Provider,
 } from "../lib/agentProviders";
 import {
+  AGENT_POLICY_MAX, PERSISTENT_PROMPT_MAX, ROLE_MAX, charCount,
   createFrontDesk, deleteAgentTeam, deleteTeamAgent, frontDeskDefaults, frontDeskRefusal, joinableTeams, leadOnly,
-  loadAgentTeams, loadFrontDesk, loadHead, loadHome, loadTeam, onTeamChanged,
-  saveAgentTeam, saveFrontDesk, saveHead, saveHome, saveTeamAgent, teamModelLabel, teamModels,
+  loadAgentPolicy, loadAgentTeams, loadFrontDesk, loadHead, loadHome, loadTeam, onTeamChanged,
+  saveAgentPolicy, saveAgentTeam, saveFrontDesk, saveHead, saveHome, saveTeamAgent, teamModelLabel, teamModels,
   type AgentTeam, type AgentTeamDraft, type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
 import { orgChart, teamBadge } from "../lib/agentsDashboard";
@@ -45,27 +46,41 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const [teamDraft, setTeamDraft] = useState<AgentTeamDraft | null>(null);
   const [deskId, setDeskId] = useState<string | null>(null);
   const [deskBusy, setDeskBusy] = useState(false);
+  // The saved policy, and what is in its box: they differ until Save.
+  const [policy, setPolicy] = useState("");
+  const [policyText, setPolicyText] = useState("");
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const policyRef = useRef(policy);
+  policyRef.current = policy;
 
   useEffect(() => {
     let alive = true;
     // An older backend has no teams or front desk: those sections show none.
     Promise.all([
       loadTeam(null, true), loadHead(), loadHome().catch(() => null), loadAgentTeams().catch(() => []),
-      loadFrontDesk().catch(() => null),
+      loadFrontDesk().catch(() => null), loadAgentPolicy(),
     ])
-      .then(([agents, head, home, groups, desk]) => {
+      .then(([agents, head, home, groups, desk, shared]) => {
         if (!alive) return;
         setTeam(agents);
         setHeadId(head?.id ?? null);
         setHomeId(home);
         setTeams(groups);
         setDeskId(desk?.id ?? null);
+        setPolicy(shared.text);
+        setPolicyText(shared.text);
       })
       .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); })
       .finally(() => { if (alive) setLoading(false); });
-    // An agent registered or changed from a chat, once the person approved it.
+    // An agent or the policy changed from a chat, once the person approved it.
     const off = onTeamChanged(() => {
       loadTeam(null, true).then((agents) => { if (alive) setTeam(agents); }).catch(() => {});
+      loadAgentPolicy().then((shared) => {
+        if (!alive) return;
+        // Text being typed is kept; an untouched box follows the new policy.
+        setPolicyText((typed) => (typed === policyRef.current ? shared.text : typed));
+        setPolicy(shared.text);
+      }).catch(() => {});
     });
     return () => { alive = false; off(); };
   }, []);
@@ -111,6 +126,20 @@ export function AgentsSettings({ on, onToggle, projects }: {
     });
     setTeam(await loadTeam(null, true));
   });
+
+  const writePolicy = async (text: string) => {
+    setError("");
+    setPolicyBusy(true);
+    try {
+      const saved = await saveAgentPolicy(text);
+      setPolicy(saved.text);
+      setPolicyText(saved.text);
+    } catch (reason) {
+      setError(String((reason as Error).message ?? reason));
+    } finally {
+      setPolicyBusy(false);
+    }
+  };
 
   const pickHome = async (id: string | null) => {
     setError("");
@@ -297,6 +326,16 @@ export function AgentsSettings({ on, onToggle, projects }: {
         </select>
       </div>
 
+      <AgentPolicyBlock
+        saved={policy}
+        text={policyText}
+        loading={loading}
+        busy={policyBusy}
+        onChange={setPolicyText}
+        onSave={() => void writePolicy(policyText)}
+        onClear={() => void writePolicy("")}
+      />
+
       <div className="team-head">
         <h3>Registered agents</h3>
         <button className="settings-primary" type="button" onClick={() => setDraft(blank(null))} disabled={!!draft && !draft.id}>
@@ -425,6 +464,65 @@ export function RecipientPicker({ agents, selectedId, projectName, onPick, onMan
         </p>
       )}
     </div>
+  );
+}
+
+/** "1,234 / 8,000", the way the host counts. Over the cap it says so, and the
+ *  host refuses the save. */
+export function CharCounter({ text, max }: { text: string; max: number }) {
+  const count = charCount(text);
+  const over = count > max;
+  return (
+    <small className={`team-field-count${over ? " is-over" : ""}`}>
+      {count.toLocaleString("en-US")} / {max.toLocaleString("en-US")}
+      {over ? " · too long" : ""}
+    </small>
+  );
+}
+
+/** Settings → Agents: the person's shared rules for every registered agent,
+ *  put ahead of each one's own standing instructions and role in every brief
+ *  it is launched with. Above the roster, because it applies to all of it. */
+export function AgentPolicyBlock({ saved, text, loading, busy, onChange, onSave, onClear }: {
+  saved: string;
+  text: string;
+  loading: boolean;
+  busy: boolean;
+  onChange: (text: string) => void;
+  onSave: () => void;
+  onClear: () => void;
+}) {
+  const changed = text.trim() !== saved.trim();
+  const over = charCount(text) > AGENT_POLICY_MAX;
+  return (
+    <form className="agent-policy" aria-labelledby="agent-policy-title"
+      onSubmit={(event) => { event.preventDefault(); if (changed && !over) onSave(); }}>
+      <div className="team-field-head">
+        <h3 id="agent-policy-title">Agent policy</h3>
+        <CharCounter text={text} max={AGENT_POLICY_MAX} />
+      </div>
+      <p className="settings-note" id="agent-policy-hint">
+        Shared rules for every agent. Prepended to every agent's brief, ahead of its persistent prompt and role, so rules everyone follows need not be copied into each role. Applies to new chats and tasks.
+      </p>
+      <textarea
+        className="agent-policy-text"
+        aria-labelledby="agent-policy-title"
+        aria-describedby="agent-policy-hint"
+        value={text}
+        maxLength={AGENT_POLICY_MAX}
+        rows={5}
+        disabled={loading || busy}
+        placeholder="e.g. Work in a git worktree. Never push or release without asking."
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <div className="agent-policy-actions">
+        <button className="vault-button" type="button" disabled={loading || busy || !saved}
+          onClick={onClear}>Clear</button>
+        <button className="settings-primary" type="submit" disabled={loading || busy || !changed || over}>
+          {busy ? "Saving…" : "Save policy"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -676,9 +774,22 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
       />
       <label className="team-form-wide">
         <span>Role</span>
-        <textarea value={draft.role} maxLength={2000} rows={3}
+        <textarea value={draft.role} maxLength={ROLE_MAX} rows={3}
           placeholder="What this agent is good at, and what it should take on"
           onChange={(event) => set({ role: event.target.value })} />
+      </label>
+      <label className="team-form-wide">
+        <span className="team-field-head">
+          <span>Persistent prompt</span>
+          <CharCounter text={draft.persistentPrompt ?? ""} max={PERSISTENT_PROMPT_MAX} />
+        </span>
+        <textarea value={draft.persistentPrompt ?? ""} maxLength={PERSISTENT_PROMPT_MAX} rows={4}
+          aria-describedby="team-persistent-prompt-hint"
+          placeholder="Runbooks, tool rules, how this agent builds and checks its work"
+          onChange={(event) => set({ persistentPrompt: event.target.value })} />
+        <small className="team-field-note" id="team-persistent-prompt-hint">
+          This agent's standing instructions. Sent ahead of its role in every brief it starts with, after the agent policy; never shown in the roster or to other agents. Applies to new chats and tasks.
+        </small>
       </label>
       <ModelFields
         agent={draft.agent}
