@@ -304,6 +304,10 @@ export type OrchestrationSnapshot = {
   /** Questions workers asked teammates, oldest first. Absent from servers
    *  older than peer help. */
   peerAsks?: PeerAsk[];
+  /** Finished runs whose task specs and results, attempt summaries and
+   *  message and notification bodies this read left out (`brief.rs`). The
+   *  feed fills them in for a run the panel shows (`orchestrationFeed.detail`). */
+  briefRuns?: string[];
 };
 
 /** One worker's question to a teammate and the answer (orchestration/peer.rs).

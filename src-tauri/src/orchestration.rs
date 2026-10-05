@@ -27,6 +27,7 @@ pub mod agent_view;
 mod archive;
 pub mod automation;
 pub mod bridge;
+pub mod brief;
 pub mod consent;
 pub mod destination;
 pub mod environments;

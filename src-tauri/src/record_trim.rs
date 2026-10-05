@@ -202,6 +202,333 @@ fn holds_long_results(path: &Path) -> std::io::Result<bool> {
     Ok(false)
 }
 
+// ---------------------------------------------------------------------------
+// Pictures and finished streams
+// ---------------------------------------------------------------------------
+//
+// Two more things a record carried that it does not need, measured on a
+// 108 MB record: 70 MB of pictures a tool returned (a screenshot is recorded
+// twice, as the result's `image` block and again as `tool_use_result.file`),
+// and 16 MB of `content_block_delta` lines, one per few characters streamed,
+// each in a 250-byte envelope. The page draws a tool result's text only, so
+// the pictures go as they are recorded. The pieces are merged, later, by
+// `compact_record`: once a message has stopped, the first line of each of its
+// blocks carries the whole of that block's text and the rest are emptied.
+// The page appends pieces as they come, so one piece holding them all draws
+// the same thing — not the message's `assistant` copy, whose tool input the
+// CLI has already rewritten (a leading `cd <dir> &&` is gone from it).
+
+/// An emptied stream piece. The line stays, because its position is its seq,
+/// and names the line its text was merged `into`: a page whose copy of the
+/// chat ends between the two holds only part of that text, and catches up by
+/// reading the chat afresh instead (web `loadChat`).
+pub fn compacted_line(into: u64) -> String {
+    format!(r#"{{"type":"octiq_compacted","into":{into}}}"#)
+}
+
+/// The field a `content_block_delta` of each kind carries its text in.
+fn piece_field(kind: &str) -> Option<&'static str> {
+    match kind {
+        "text_delta" => Some("text"),
+        "thinking_delta" => Some("thinking"),
+        "input_json_delta" => Some("partial_json"),
+        "signature_delta" => Some("signature"),
+        _ => None,
+    }
+}
+/// Remembers how long each record was when it was last compacted, so a start
+/// only reads the records that grew since.
+const COMPACTED_SIZES: &str = ".compacted-sizes-v1.json";
+
+/// Empty the picture data in a tool's result. True when `event` changed.
+pub fn strip_pictures(event: &mut Value) -> bool {
+    if event.get("type").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    let mut stripped = false;
+    let results = event
+        .pointer_mut("/message/content")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"));
+    for result in results {
+        let parts = result
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("image"));
+        for part in parts {
+            if let Some(source) = part.get_mut("source") {
+                stripped |= empty(source, "data");
+            }
+        }
+    }
+    // Claude's own copy of what the tool returned, read back by nothing but a
+    // file diff, which a picture never has.
+    for copy in ["tool_use_result", "toolUseResult"] {
+        if let Some(file) = event.pointer_mut(&format!("/{copy}/file")) {
+            stripped |= empty(file, "base64");
+        }
+    }
+    stripped
+}
+
+fn empty(holder: &mut Value, field: &str) -> bool {
+    let size = match holder.get(field).and_then(Value::as_str) {
+        Some(data) if !data.is_empty() => data.len(),
+        _ => return false,
+    };
+    holder[field] = Value::String(String::new());
+    holder["octiq_left_out"] = Value::String(format!(
+        "picture left out of the chat record ({})",
+        human(size)
+    ));
+    true
+}
+
+/// Who is writing a streamed message: the host, a subagent, or a seat.
+fn writer(event: &Value) -> String {
+    format!("{}|{}", event["parent_tool_use_id"], event["octiq_speaker"])
+}
+
+fn digest(line: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    line.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// One block's stream pieces: the first piece, the lines they are on, and
+/// their text joined.
+struct Pieces {
+    first: Value,
+    field: &'static str,
+    lines: Vec<(u64, u64)>,
+    text: String,
+}
+
+/// Drop a record's pictures, and merge the stream pieces of every message
+/// that has stopped into one line per block. Bytes freed, or `None` when
+/// nothing in it could go.
+///
+/// The record is read once without the append lock to find what changes, so
+/// the lock is held only to copy the file. A line that is no longer what that
+/// read saw is left as it is.
+pub fn compact_record(path: &Path) -> std::io::Result<Option<u64>> {
+    use std::collections::HashMap;
+    use std::io::BufRead;
+    // Records are written compactly by `serde_json`, and a quote inside a
+    // string is escaped, so these spellings can only be the events' own.
+    const NEEDLES: [&[u8]; 5] = [
+        br#""type":"message_start""#,
+        br#""type":"message_stop""#,
+        br#""type":"content_block_delta""#,
+        br#""type":"base64""#,
+        br#""base64":""#,
+    ];
+    let needles = NEEDLES.map(memchr::memmem::Finder::new);
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut line = Vec::new();
+    let mut seq = 0u64;
+    let mut stopped: HashSet<String> = HashSet::new();
+    let mut writing: HashMap<String, String> = HashMap::new();
+    // By message id, then block index and kind of piece.
+    let mut blocks: HashMap<(String, i64, &'static str), Pieces> = HashMap::new();
+    let mut edits: HashMap<u64, (u64, String)> = HashMap::new();
+    while reader.read_until(b'\n', &mut line)? > 0 {
+        seq += 1;
+        let body = line.strip_suffix(b"\n").unwrap_or(&line);
+        if needles.iter().any(|needle| needle.find(body).is_some()) {
+            if let Ok(mut event) = serde_json::from_slice::<Value>(body) {
+                match event["type"].as_str().unwrap_or_default() {
+                    "stream_event" => match event["event"]["type"].as_str().unwrap_or_default() {
+                        "message_start" => {
+                            let id = event["event"]["message"]["id"].as_str().unwrap_or_default();
+                            writing.insert(writer(&event), id.to_string());
+                        }
+                        "message_stop" => {
+                            if let Some(id) = writing.get(&writer(&event)) {
+                                stopped.insert(id.clone());
+                            }
+                        }
+                        "content_block_delta" => {
+                            let delta = &event["event"]["delta"];
+                            let field = piece_field(delta["type"].as_str().unwrap_or_default());
+                            let piece = field.and_then(|field| delta[field].as_str());
+                            if let (Some(id), Some(field), Some(piece)) =
+                                (writing.get(&writer(&event)), field, piece)
+                            {
+                                let index = event["event"]["index"].as_i64().unwrap_or(-1);
+                                let piece = piece.to_string();
+                                let sum = digest(body);
+                                let block = blocks
+                                    .entry((id.clone(), index, field))
+                                    .or_insert_with(|| Pieces {
+                                        first: event,
+                                        field,
+                                        lines: Vec::new(),
+                                        text: String::new(),
+                                    });
+                                block.lines.push((seq, sum));
+                                block.text.push_str(&piece);
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {
+                        if strip_pictures(&mut event) {
+                            if let Ok(text) = serde_json::to_string(&event) {
+                                edits.insert(seq, (digest(body), text));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        line.clear();
+    }
+    // Only a stopped message: an open one is still having pieces added. A
+    // block's lines change together or not at all, so each line notes which
+    // block it is in.
+    let mut merged_blocks: HashMap<u64, usize> = HashMap::new();
+    for (number, ((id, _, _), mut block)) in blocks.into_iter().enumerate() {
+        if !stopped.contains(&id) || block.lines.len() < 2 {
+            continue;
+        }
+        block.first["event"]["delta"][block.field] = Value::String(block.text);
+        let Ok(merged) = serde_json::to_string(&block.first) else {
+            continue;
+        };
+        let into = block.lines[0].0;
+        for (at, (seq, sum)) in block.lines.into_iter().enumerate() {
+            let text = if at == 0 {
+                merged.clone()
+            } else {
+                compacted_line(into)
+            };
+            edits.insert(seq, (sum, text));
+            merged_blocks.insert(seq, number);
+        }
+    }
+    if edits.is_empty() {
+        return Ok(None);
+    }
+    let before = std::fs::metadata(path)?.len();
+    let mut skipped: HashSet<usize> = HashSet::new();
+    let changed = crate::transcript::rewrite_numbered(path, |seq, body| {
+        let (sum, text) = edits.remove(&seq)?;
+        let block = merged_blocks.get(&seq);
+        if block.is_some_and(|block| skipped.contains(block)) {
+            return None;
+        }
+        if digest(body) != sum {
+            // Changed since it was read; a block's first line comes first, so
+            // the rest of it is left too.
+            skipped.extend(block);
+            return None;
+        }
+        Some(text)
+    })?;
+    let after = std::fs::metadata(path)?.len();
+    Ok(changed.then(|| before.saturating_sub(after)))
+}
+
+/// Compact one chat's record, e.g. once its process has gone idle.
+pub fn compact_chat(key: &str) {
+    let Some(path) = crate::transcript::path_for(key) else {
+        return;
+    };
+    if let Err(error) = compact_record(&path) {
+        eprintln!("[records] could not compact {}: {error}", path.display());
+    }
+    remember_size(&path);
+}
+
+static SIZES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn sizes_path() -> Option<std::path::PathBuf> {
+    Some(crate::transcript::chats_dir()?.join(COMPACTED_SIZES))
+}
+
+fn read_sizes() -> std::collections::HashMap<String, u64> {
+    sizes_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn write_sizes(sizes: &std::collections::HashMap<String, u64>) {
+    if let (Some(path), Ok(text)) = (sizes_path(), serde_json::to_string(sizes)) {
+        let temp = path.with_extension("json.tmp");
+        if std::fs::write(&temp, text).is_ok() {
+            let _ = std::fs::rename(&temp, &path);
+        }
+    }
+}
+
+fn remember_size(path: &Path) {
+    let (Some(name), Ok(meta)) = (
+        path.file_name().and_then(|name| name.to_str()),
+        std::fs::metadata(path),
+    ) else {
+        return;
+    };
+    let _held = SIZES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut sizes = read_sizes();
+    sizes.insert(name.to_string(), meta.len());
+    write_sizes(&sizes);
+}
+
+/// Compact every record that grew since it was last compacted. On its own
+/// thread at startup; each record takes the append lock only while it is
+/// copied, and a pause between records leaves the lock to live chats.
+pub fn compact_records() {
+    let Some(dir) = crate::transcript::chats_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let known = {
+        let _held = SIZES.lock().unwrap_or_else(|e| e.into_inner());
+        read_sizes()
+    };
+    let (mut records, mut freed) = (0, 0);
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if path.extension().is_none_or(|ext| ext != "jsonl") {
+            continue;
+        }
+        let size = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+        if known.get(name) == Some(&size) {
+            continue;
+        }
+        match compact_record(&path) {
+            Ok(Some(bytes)) => {
+                records += 1;
+                freed += bytes;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("[records] could not compact {}: {error}", path.display());
+                continue;
+            }
+        }
+        remember_size(&path);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if records > 0 {
+        eprintln!(
+            "[records] left pictures and finished stream pieces out of {records} chat records, {} freed",
+            human(freed as usize)
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +623,140 @@ mod tests {
         assert!(!text.ends_with('\n'));
 
         assert_eq!(prune_record(&path).unwrap(), None);
+    }
+
+    fn screenshot(size: usize) -> Value {
+        let data = "A".repeat(size);
+        json!({"type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_shot", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
+                {"type": "text", "text": "the page"},
+            ]}]},
+            "tool_use_result": {"type": "image", "file": {"base64": data, "type": "image/png"}}})
+    }
+
+    #[test]
+    fn a_picture_a_tool_returned_is_left_out_and_its_words_stay() {
+        let mut event = screenshot(600_000);
+        assert!(strip_pictures(&mut event));
+        let text = event.to_string();
+        assert!(text.len() < 1_000, "{text}");
+        assert_eq!(
+            event["message"]["content"][0]["content"][1]["text"],
+            "the page"
+        );
+        assert!(event["tool_use_result"]["file"]["octiq_left_out"]
+            .as_str()
+            .unwrap()
+            .contains("586 KB"));
+        // Already empty, a typed message, an assistant event: nothing to do.
+        assert!(!strip_pictures(&mut event));
+        let mut typed = json!({"type": "user", "message": {"content": [
+            {"type": "image", "source": {"type": "base64", "data": "AAAA"}}]}});
+        assert!(!strip_pictures(&mut typed));
+    }
+
+    /// Compact copies of real records, with timings:
+    /// `OCTIQ_COMPACT_CHECK=<record>=<copy>:… cargo test -- --ignored real_records_compact`
+    #[test]
+    #[ignore]
+    fn real_records_compact() {
+        let Ok(pairs) = std::env::var("OCTIQ_COMPACT_CHECK") else {
+            return;
+        };
+        for pair in pairs.split(':') {
+            let (from, to) = pair.split_once('=').unwrap();
+            std::fs::copy(from, to).unwrap();
+            let before = std::fs::metadata(to).unwrap().len();
+            let started = std::time::Instant::now();
+            let freed = compact_record(Path::new(to)).unwrap().unwrap_or(0);
+            eprintln!(
+                "{from}: {} → {} in {:?}",
+                human(before as usize),
+                human((before - freed) as usize),
+                started.elapsed()
+            );
+            let lines = |path: &str| {
+                std::fs::read(path)
+                    .unwrap()
+                    .iter()
+                    .filter(|&&b| b == b'\n')
+                    .count()
+            };
+            assert_eq!(lines(from), lines(to));
+        }
+    }
+
+    fn stream(writer: Option<&str>, kind: &str, extra: Value) -> String {
+        let mut event = json!({"type": "stream_event", "event": {"type": kind}});
+        if let Some(parent) = writer {
+            event["parent_tool_use_id"] = json!(parent);
+        }
+        if let (Some(event), Some(extra)) = (event["event"].as_object_mut(), extra.as_object()) {
+            event.extend(extra.clone());
+        }
+        event.to_string()
+    }
+
+    #[test]
+    fn compacting_merges_the_pieces_of_a_stopped_message_only() {
+        let dir = crate::test_dir::TestDir::new("record-compact");
+        let path = dir.join("chat_long.jsonl");
+        let delta = |writer, index: u64, kind: &str, field: &str, piece: &str| {
+            let mut delta = json!({"type": kind});
+            delta[field] = json!(piece);
+            stream(
+                writer,
+                "content_block_delta",
+                json!({"index": index, "delta": delta}),
+            )
+        };
+        let lines = [
+            stream(
+                None,
+                "message_start",
+                json!({"message": {"id": "msg_done"}}),
+            ),
+            delta(None, 0, "text_delta", "text", "hel"),
+            // A subagent writing at the same time, whose message never ends.
+            stream(
+                Some("toolu_task"),
+                "message_start",
+                json!({"message": {"id": "msg_open"}}),
+            ),
+            delta(Some("toolu_task"), 0, "text_delta", "text", "a"),
+            delta(Some("toolu_task"), 0, "text_delta", "text", "b"),
+            delta(None, 0, "text_delta", "text", "lo"),
+            delta(
+                None,
+                1,
+                "input_json_delta",
+                "partial_json",
+                "{\"command\": \"cd x && ls\"",
+            ),
+            delta(None, 1, "input_json_delta", "partial_json", "}"),
+            stream(None, "message_stop", json!({})),
+            screenshot(300_000).to_string(),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let freed = compact_record(&path).unwrap().unwrap();
+        assert!(freed > 590_000, "{freed}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let after: Vec<&str> = text.lines().collect();
+        assert_eq!(after.len(), lines.len(), "every line keeps its place");
+        let piece = |at: usize, field: &str| {
+            serde_json::from_str::<Value>(after[at]).unwrap()["event"]["delta"][field].clone()
+        };
+        assert_eq!(piece(1, "text"), "hello");
+        assert_eq!(piece(6, "partial_json"), "{\"command\": \"cd x && ls\"}");
+        for at in [5, 7] {
+            assert_eq!(after[at], compacted_line(if at == 5 { 2 } else { 7 }));
+        }
+        for at in [0, 2, 3, 4, 8] {
+            assert_eq!(after[at], lines[at], "line {at}");
+        }
+        assert!(after[9].len() < 1_000 && after[9].contains("the page"));
+        assert_eq!(compact_record(&path).unwrap(), None);
     }
 }

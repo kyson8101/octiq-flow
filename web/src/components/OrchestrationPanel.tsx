@@ -791,6 +791,12 @@ function RunDetail({
       {archivedWorker ? "Restore worker" : "Archive worker"}
     </button>;
   };
+  // A finished run's specs, results and bodies are left out of the tab's
+  // whole-ledger read; showing the run is when they are asked for.
+  const brief = snapshot.briefRuns?.includes(run.id) ?? false;
+  useEffect(() => {
+    if (brief) orchestrationFeed.detail(run.id);
+  }, [brief, run.id]);
   const active = TASK_FILTERS.find((option) => option.key === filter) ?? TASK_FILTERS[0];
   const visible = sortTasksByActivity(
     tasks.filter((task) => active.match(task, attempts.find((attempt) => attempt.id === task.activeAttemptId))),

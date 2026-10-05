@@ -240,6 +240,7 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | registered agents (agents mode) | `<profile dir>/team.json` | `team.rs` — see `docs/agents-mode.md` |
 | XP awards (agents mode) | `xp_awards` in `<profile dir>/orchestrations.json` | `orchestration/levels.rs` |
 | agent token usage | `<chats dir>/agent-usage.json` | `agent_usage.rs` |
+| chat record compaction (size when last compacted) | `<chats dir>/.compacted-sizes-v1.json` | `record_trim.rs` |
 | Antigravity plugin, settings backup | `~/.octiqflow/mcp/antigravity/` | `agent_provider.rs` |
 
 `profile.rs` decides the profile dir; `profile_lock.rs` makes sure only one

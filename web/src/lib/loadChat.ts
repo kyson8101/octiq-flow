@@ -13,6 +13,15 @@ function keepPending(next: ChatState, current: ChatState): ChatState {
   return pending.length ? { ...next, busy: next.busy || current.busy, messages: [...next.messages, ...pending] } : next;
 }
 
+/** Whether the events after `from` empty stream pieces whose text was merged
+ *  into a line at or before `from` (`record_trim::compact_record`). */
+function splitsMergedText(after: Frame[], from: number): boolean {
+  return after.some(({ event }) => {
+    const e = event as { type?: unknown; into?: unknown } | null;
+    return e?.type === "octiq_compacted" && typeof e.into === "number" && e.into <= from;
+  });
+}
+
 /** Keep restoring readable words independent of the network. Live events stay
  * in CatchUp until the checkpoint and its missing tail can commit together. */
 export type ChatLoadOptions = {
@@ -40,8 +49,21 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
     }
   }
   if (cancelled()) return;
-  const from = catchUp.begin(key, storedSeq);
+  let from = catchUp.begin(key, storedSeq);
   const before = getState();
+  let missing: Frame[] | undefined;
+  if (from > 0) {
+    missing = await request(from);
+    if (cancelled()) return;
+    if (options.requestPage && splitsMergedText(missing, from)) {
+      // The record was compacted after this copy was made, and the copy ends
+      // inside a stream whose text now sits whole on a line it already has.
+      // What follows would leave that text cut short, so read it afresh.
+      catchUp.forget(key);
+      from = catchUp.begin(key, 0);
+      missing = undefined;
+    }
+  }
   let page: ChatPage | undefined;
   if (from === 0 && options.requestPage) {
     try { page = await options.requestPage(null); }
@@ -51,7 +73,7 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
       if (!String(error).includes("not available on this backend")) throw error;
     }
   }
-  const run = page?.events ?? await request(from);
+  const run = page?.events ?? missing ?? await request(from);
   if (cancelled()) return;
   // Imported sessions may have a local transcript before the server has any
   // events for this key. An empty answer must not erase those messages.

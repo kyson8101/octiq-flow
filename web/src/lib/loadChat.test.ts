@@ -67,6 +67,26 @@ it("keeps an imported transcript when the server has no events for it yet", asyn
   expect(options.getState().messages).toEqual(imported.messages);
 });
 
+it("reads a chat afresh when its record was compacted inside the stream a saved copy ends in", async () => {
+  const stream = (seq: number, event: Record<string, unknown>): Frame => ({ seq, event: { type: "stream_event", event } });
+  const piece = (seq: number, text: string) => stream(seq, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });
+  const start = stream(1, { type: "message_start", message: { id: "m1" } });
+  const stop = stream(4, { type: "message_stop" });
+  // Saved while the reply was arriving: "hel" of "hello".
+  const saved = await replayChat(emptyChat(), [start, piece(2, "hel")], 0, () => false);
+  await saveChatCheckpoint({ id: "a", seq: 2, state: saved, updatedAt: 1 });
+  // Since then the record merged the pieces into line 2 and emptied line 3.
+  const compacted = [start, piece(2, "hello"), { seq: 3, event: { type: "octiq_compacted", into: 2 } }, stop];
+  const options = setup();
+  const request = vi.fn(async (after: number) => compacted.filter((f) => f.seq > after));
+  const requestPage = vi.fn(async () => ({ events: compacted, context: [], before: null }));
+  await loadChat({ ...options, history: new ChatHistory(), request, requestPage });
+  expect(request).toHaveBeenCalledExactlyOnceWith(2);
+  expect(requestPage).toHaveBeenCalledExactlyOnceWith(null);
+  expect(options.getState().messages.map((m) => m.blocks)).toEqual([[{ kind: "text", text: "hello" }]]);
+  expect(options.catchUp.mark("chat:a")).toBe(4);
+});
+
 it("downloads only the recent page and never caches it as a complete conversation", async () => {
   const options = setup();
   const history = new ChatHistory();

@@ -3041,6 +3041,8 @@ pub(crate) fn start_session(
                         // The agent has its ledger read already; the record and
                         // every tab get a note instead.
                         snapshot_reads.trim(&mut event, crate::record_trim::RECORD_MIN_BYTES);
+                        // Nor does the page draw a picture a tool returned.
+                        crate::record_trim::strip_pictures(&mut event);
                         let notification_receipt = event
                             .get("octiq_orchestration_notification_id")
                             .and_then(Value::as_str)
@@ -4884,6 +4886,8 @@ pub fn start_idle_reaper(manager: Arc<ChatManager>) {
         thread::sleep(IDLE_SWEEP);
         for key in sweep_still_chats(&manager, timeout) {
             println!("[chat] {key} ended after {}m still", timeout.as_secs() / 60);
+            // Every message in it has stopped, so its stream pieces can go.
+            crate::record_trim::compact_chat(&key);
         }
     });
 }
