@@ -17,8 +17,9 @@ import { AgentsSettings } from "./AgentsSettings";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
 import { SandboxSettings } from "./SandboxSettings";
+import { PreferencesSettings } from "./PreferencesSettings";
 
-export type SettingsSection = "projects" | "agents" | "notifications" | "appearance" | "memory" | "sandbox";
+export type SettingsSection = "projects" | "preferences" | "agents" | "notifications" | "appearance" | "memory" | "sandbox";
 
 const projectNameCollator = new Intl.Collator(undefined, {
   numeric: true,
@@ -145,6 +146,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                 active={section === "projects"}
                 onPick={setSection}
               />
+              <SettingsNavButton section="preferences" label="Personal preferences" detail="In every chat's system prompt" active={section === "preferences"} onPick={setSection} />
               {onAgentsMode && (
                 <SettingsNavButton
                   section="agents"
@@ -189,6 +191,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
           </nav>
 
           <div className="settings-content">
+            {section === "preferences" && <PreferencesSettings />}
             {section === "sandbox" && <SandboxSettings />}
             {section === "memory" && <MemoryVaultSettings />}
             {section === "agents" && onAgentsMode && (
@@ -376,6 +379,9 @@ function SettingsIcon({ section }: { section: SettingsSection }) {
   }
   if (section === "sandbox") {
     return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4 7.5 8 4.5 8-4.5" /><path d="M12 12v9" /></svg>;
+  }
+  if (section === "preferences") {
+    return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7" /></svg>;
   }
   if (section === "notifications") {
     return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>;

@@ -1601,6 +1601,7 @@ fn build_command_with_context(
         orchestration_worker: false,
         front_desk: false,
         codex_user_mcp: &[],
+        preferences: None,
     })
 }
 
@@ -2388,6 +2389,9 @@ pub(crate) fn start_session(
     } else {
         Cow::Borrowed(prompt.as_str())
     };
+    // Read at every process start, so a change in Settings reaches a chat
+    // the next time it starts or is resumed.
+    let preferences = crate::personal_preferences::launch_prompt();
     let launch = AgentCommand {
         model: model.as_deref(),
         access,
@@ -2402,6 +2406,7 @@ pub(crate) fn start_session(
         orchestration_worker,
         front_desk,
         codex_user_mcp: &codex_user_mcp,
+        preferences: preferences.as_deref(),
     };
     let line = provider.build_command(&launch);
     // What the provider reads from files rather than its command line:
@@ -2449,7 +2454,7 @@ pub(crate) fn start_session(
         .and_then(|requested| provider.effort(requested))
         .map(str::to_string);
     let codex_instructions = transport.is_app_server().then(|| {
-        if front_desk {
+        let instructions = if front_desk {
             crate::agent_provider::codex_front_desk_instructions(
                 selected_model.as_deref(),
                 selected_effort.as_deref(),
@@ -2464,7 +2469,8 @@ pub(crate) fn start_session(
                 true,
                 orchestration_worker,
             )
-        }
+        };
+        crate::agent_provider::with_preferences(&instructions, preferences.as_deref())
     });
 
     // Login shell, for PATH — see the module docs. Windows has no login shell,

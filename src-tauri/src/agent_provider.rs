@@ -169,6 +169,19 @@ pub struct AgentCommand<'a> {
     /// The person's own Codex MCP servers, which a Codex front desk turns
     /// off one by one (`codex_front_desk_mcp_servers`). Empty otherwise.
     pub codex_user_mcp: &'a [CodexMcpServer],
+    /// The person's personal preferences from Settings, already worded for a
+    /// system prompt (`personal_preferences::prompt`). Every provider ends
+    /// its system prompt with them, front desk and workers included.
+    pub preferences: Option<&'a str>,
+}
+
+/// `prompt` followed by the person's preferences, when there are any.
+pub(crate) fn with_preferences(prompt: &str, preferences: Option<&str>) -> String {
+    match preferences.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(preferences) if prompt.trim().is_empty() => preferences.to_owned(),
+        Some(preferences) => format!("{}\n\n{preferences}", prompt.trim_end()),
+        None => prompt.to_owned(),
+    }
 }
 
 /// One MCP server from the person's own Codex configuration, as
@@ -552,7 +565,7 @@ impl AgentProvider for ClaudeProvider {
                 cmd.push_str(&format!(
                     " --mcp-config {} --allowedTools mcp__octiq__route_chat --system-prompt {}",
                     sh_quote(&mcp.to_string_lossy()),
-                    sh_quote(FRONT_DESK_PROMPT),
+                    sh_quote(&with_preferences(FRONT_DESK_PROMPT, request.preferences)),
                 ));
             }
             cmd.push_str(" --strict-mcp-config --disable-slash-commands --setting-sources ''");
@@ -582,9 +595,18 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__agent_list mcp__octiq__agent_register mcp__octiq__agent_update \\
                      mcp__octiq__agent_policy_update",
                 ),
-                sh_quote(&format!(
-                    "{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker_prompt}"
+                sh_quote(&with_preferences(
+                    &format!(
+                        "{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker_prompt}"
+                    ),
+                    request.preferences,
                 )),
+            ));
+        } else if let Some(preferences) = request.preferences {
+            // No host tools to describe, but the person's words still apply.
+            cmd.push_str(&format!(
+                " --append-system-prompt {}",
+                sh_quote(preferences)
             ));
         }
         // No other allow rule is ever added here. A rule lasts as long as the
@@ -812,6 +834,7 @@ fn codex_exec_command(request: &AgentCommand<'_>, provider: &CodexProvider) -> S
             request.orchestration_worker,
         )
     };
+    let instructions = with_preferences(&instructions, request.preferences);
     let host_instructions = format!("developer_instructions={}", toml_string(&instructions));
     cmd.push_str(&format!(" -c {}", sh_quote(&host_instructions)));
     append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
@@ -1068,6 +1091,12 @@ impl AgentProvider for PiProvider {
             Access::Read => cmd.push_str(" --tools read,grep,find,ls"),
             _ => cmd.push_str(" --tools read,bash,edit,write,grep,find,ls"),
         }
+        if let Some(preferences) = request.preferences {
+            cmd.push_str(&format!(
+                " --append-system-prompt {}",
+                sh_quote(preferences)
+            ));
+        }
 
         cmd.push_str(" --");
         for path in request.images {
@@ -1242,7 +1271,11 @@ fn antigravity_rules(role: AntigravityRole) -> String {
 }
 
 /// The plugin's three files, by path relative to its workspace folder.
-fn antigravity_plugin_files(script: &Path, role: AntigravityRole) -> Vec<(String, Vec<u8>)> {
+fn antigravity_plugin_files(
+    script: &Path,
+    role: AntigravityRole,
+    preferences: Option<&str>,
+) -> Vec<(String, Vec<u8>)> {
     let plugin = format!(".agents/plugins/{ANTIGRAVITY_PLUGIN}");
     let manifest = json!({ "name": ANTIGRAVITY_PLUGIN });
     // The server inherits the agent's environment, OCTIQ_* included, which is
@@ -1266,17 +1299,33 @@ fn antigravity_plugin_files(script: &Path, role: AntigravityRole) -> Vec<(String
         ),
         (
             format!("{plugin}/rules/AGENTS.md"),
-            antigravity_rules(role).into_bytes(),
+            antigravity_rules_with(role, preferences).into_bytes(),
         ),
     ]
 }
 
+/// The rules file with the person's preferences at its end, when they have
+/// any. Antigravity reads it when it starts, like a system prompt.
+fn antigravity_rules_with(role: AntigravityRole, preferences: Option<&str>) -> String {
+    let rules = with_preferences(&antigravity_rules(role), preferences);
+    if rules.ends_with('\n') {
+        rules
+    } else {
+        rules + "\n"
+    }
+}
+
 /// Write the plugin a launch adds, rewriting only a file that changed: every
-/// launch wants the same files. A failure names the path.
-fn write_antigravity_plugin(mcp: &Path, role: AntigravityRole) -> Result<(), String> {
+/// launch with the same preferences wants the same files. A failure names
+/// the path.
+fn write_antigravity_plugin(
+    mcp: &Path,
+    role: AntigravityRole,
+    preferences: Option<&str>,
+) -> Result<(), String> {
     let root = antigravity_workspace(mcp, role);
     let script = mcp.with_file_name("octiq-ask.cjs");
-    for (relative, body) in antigravity_plugin_files(&script, role) {
+    for (relative, body) in antigravity_plugin_files(&script, role, preferences) {
         let path = root.join(&relative);
         if std::fs::read(&path).ok().as_deref() == Some(body.as_slice()) {
             continue;
@@ -1415,7 +1464,7 @@ impl AgentProvider for AntigravityProvider {
         let Some(mcp) = request.mcp_config else {
             return Ok(None);
         };
-        write_antigravity_plugin(mcp, AntigravityRole::of(request))?;
+        write_antigravity_plugin(mcp, AntigravityRole::of(request), request.preferences)?;
         // Without the rule a call the model makes by its own tool name still
         // runs, so the chat starts; it is told why the others may be refused.
         let Some(home) = crate::paths::home_dir() else {
@@ -1819,6 +1868,7 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk: false,
             codex_user_mcp: &[],
+            preferences: None,
         })
     }
 
@@ -2044,6 +2094,7 @@ pub(crate) mod tests {
             orchestration_worker: true,
             front_desk: false,
             codex_user_mcp: &[],
+            preferences: None,
         });
         assert!(claude.contains("orchestration_gate_create"));
         assert!(claude.contains("orchestration_worker_report"));
@@ -2066,6 +2117,7 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk: true,
             codex_user_mcp: &[],
+            preferences: None,
         });
         assert!(line.contains(" --tools ''"), "no built-in tool: {line}");
         assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
@@ -2105,6 +2157,7 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk,
             codex_user_mcp: servers,
+            preferences: None,
         }
     }
 
@@ -2292,6 +2345,7 @@ pub(crate) mod tests {
             orchestration_worker: true,
             front_desk: false,
             codex_user_mcp: &[],
+            preferences: None,
         });
         // Quoted for the shell, so look for a stretch without apostrophes.
         let tail = guidance
@@ -2321,6 +2375,7 @@ pub(crate) mod tests {
             orchestration_worker: true,
             front_desk: false,
             codex_user_mcp: &[],
+            preferences: None,
         });
         let shell = crate::proc::resolve_agent_shell(
             std::env::var("SHELL").ok(),
@@ -2368,6 +2423,7 @@ pub(crate) mod tests {
                     orchestration_worker: worker,
                     front_desk: false,
                     codex_user_mcp: &[],
+                    preferences: None,
                 });
                 assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
                 let rules = line
@@ -2429,6 +2485,7 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk: false,
             codex_user_mcp: &[],
+            preferences: None,
         });
 
         assert!(pi.starts_with("pi --mode json --provider openai-codex"));
@@ -2492,6 +2549,96 @@ pub(crate) mod tests {
         );
     }
 
+    /// The person's preferences end every provider's system prompt — the
+    /// front desk's and a clean chat's too — and nothing changes without them.
+    #[test]
+    fn every_provider_carries_the_persons_preferences() {
+        let words = crate::personal_preferences::prompt("Reply in Malay.").unwrap();
+        let prefs = Some(words.as_str());
+        let quoted = sh_quote(&words);
+        let claude = |front_desk: bool, mcp: Option<&'static Path>, preferences| {
+            provider_for(AgentKind::Claude).build_command(&AgentCommand {
+                mcp_config: mcp,
+                front_desk,
+                preferences,
+                ..codex_request(false, &[])
+            })
+        };
+        let mcp = Some(Path::new("octiq-ask.json"));
+
+        let chat = claude(false, mcp, prefs);
+        assert_eq!(chat.matches("--append-system-prompt").count(), 1, "{chat}");
+        assert!(chat.contains("Reply in Malay."), "{chat}");
+        // After the host's own rules, so the person has the last word.
+        assert!(chat.find("Docspace may contain").unwrap() < chat.find("Reply in Malay.").unwrap());
+        assert!(!claude(false, mcp, None).contains("personal preferences"));
+
+        let desk = claude(true, mcp, prefs);
+        let system = desk.split("--system-prompt ").nth(1).unwrap();
+        assert!(
+            system.contains("You are an OctiqFlow front desk."),
+            "{desk}"
+        );
+        assert!(system.contains("Reply in Malay."), "{desk}");
+
+        // No OctiqFlow MCP at all: the preferences still go in, on their own.
+        let bare = claude(false, None, prefs);
+        assert!(
+            bare.contains(&format!("--append-system-prompt {quoted}")),
+            "{bare}"
+        );
+
+        let pi = provider_for(AgentKind::Pi).build_command(&AgentCommand {
+            preferences: prefs,
+            ..codex_request(false, &[])
+        });
+        // An option, so before the `--` that starts the prompt.
+        let flag = pi
+            .find(&format!("--append-system-prompt {quoted}"))
+            .unwrap();
+        assert!(flag < pi.find(" -- ").unwrap(), "{pi}");
+
+        let exec = codex_exec_command(
+            &AgentCommand {
+                preferences: prefs,
+                ..codex_request(false, &[])
+            },
+            &CODEX,
+        );
+        assert!(exec.contains("developer_instructions="), "{exec}");
+        assert!(exec.contains("Reply in Malay."), "{exec}");
+        let desk_exec = codex_exec_command(
+            &AgentCommand {
+                preferences: prefs,
+                ..codex_request(true, &[])
+            },
+            &CODEX,
+        );
+        assert!(desk_exec.contains("Reply in Malay."), "{desk_exec}");
+
+        for role in [
+            AntigravityRole::Chat(Access::Edits),
+            AntigravityRole::Worker(Access::Auto),
+            AntigravityRole::FrontDesk,
+        ] {
+            let rules = antigravity_rules_with(role, prefs);
+            assert!(rules.ends_with("Reply in Malay.\n"), "{rules}");
+            assert!(rules.starts_with(&antigravity_rules(role).trim_end().to_string()));
+            let plain = antigravity_rules_with(role, None);
+            assert!(plain.ends_with('\n') && !plain.contains("Reply in Malay."));
+        }
+        assert_eq!(
+            antigravity_rules_with(AntigravityRole::Chat(Access::Edits), None),
+            antigravity_rules(AntigravityRole::Chat(Access::Edits)),
+            "without preferences the plugin file is unchanged, so nothing is rewritten"
+        );
+
+        assert_eq!(with_preferences("host", None), "host");
+        assert_eq!(with_preferences("host\n\n", Some("  ")), "host\n\n");
+        assert_eq!(with_preferences("host\n", Some("mine")), "host\n\nmine");
+        assert_eq!(with_preferences("", Some("mine")), "mine");
+    }
+
     fn agy_request<'a>(access: Option<Access>, mcp: Option<&'a Path>) -> AgentCommand<'a> {
         AgentCommand {
             model: Some("gemini-3.8-flash-high"),
@@ -2507,6 +2654,7 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk: false,
             codex_user_mcp: &[],
+            preferences: None,
         }
     }
 
@@ -2650,6 +2798,7 @@ pub(crate) mod tests {
         let files = antigravity_plugin_files(
             Path::new("/home/me/.octiqflow/mcp/octiq-ask.cjs"),
             AntigravityRole::Worker(Access::Auto),
+            None,
         );
         let file = |name: &str| {
             files
@@ -2688,7 +2837,7 @@ pub(crate) mod tests {
         let root = crate::test_dir::TestDir::new("agy");
         let mcp = root.join("mcp").join("octiq-ask.json");
         std::fs::create_dir_all(mcp.parent().unwrap()).unwrap();
-        write_antigravity_plugin(&mcp, AntigravityRole::Chat(Access::Edits)).unwrap();
+        write_antigravity_plugin(&mcp, AntigravityRole::Chat(Access::Edits), None).unwrap();
         let manifest =
             root.join("mcp/antigravity/chat-edits/.agents/plugins/octiqflow/mcp_config.json");
         let written: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
@@ -2699,7 +2848,7 @@ pub(crate) mod tests {
         // Unchanged content is not rewritten.
         let before = std::fs::metadata(&manifest).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        write_antigravity_plugin(&mcp, AntigravityRole::Chat(Access::Edits)).unwrap();
+        write_antigravity_plugin(&mcp, AntigravityRole::Chat(Access::Edits), None).unwrap();
         assert_eq!(
             std::fs::metadata(&manifest).unwrap().modified().unwrap(),
             before
@@ -2709,8 +2858,8 @@ pub(crate) mod tests {
         let blocked = root.join("blocked").join("octiq-ask.json");
         std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
         std::fs::write(root.join("blocked").join("antigravity"), "a file").unwrap();
-        let why =
-            write_antigravity_plugin(&blocked, AntigravityRole::Chat(Access::Edits)).unwrap_err();
+        let why = write_antigravity_plugin(&blocked, AntigravityRole::Chat(Access::Edits), None)
+            .unwrap_err();
         assert!(
             why.starts_with("OctiqFlow's Antigravity plugin could not be written to ")
                 && why.contains("antigravity/chat-edits/.agents/plugins/octiqflow/plugin.json"),

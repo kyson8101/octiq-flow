@@ -325,6 +325,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "action")?,
             arg(&args, "args")?,
         ),
+        // Browser-only: no agent hook reaches this table.
+        "personal_preferences" => to_value(crate::personal_preferences::load(
+            &crate::personal_preferences::default_path(),
+        )),
+        "personal_preferences_set" => to_value(crate::personal_preferences::save(
+            &crate::personal_preferences::default_path(),
+            &arg::<Option<String>>(&args, "text")?.unwrap_or_default(),
+        )),
         "memory_vault_settings" => to_value(crate::memory_vault::Vault::profile().settings()),
         "memory_vault_configure" => {
             to_value(crate::memory_vault::Vault::profile().configure(arg(&args, "config")?))

@@ -47,6 +47,7 @@ mod proc;
 mod profile;
 mod profile_lock;
 mod pty;
+mod personal_preferences;
 mod push;
 mod question;
 mod question_store;

@@ -234,6 +234,7 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | --- | --- | --- |
 | workspaces | profile dir (JSON) | `workspaces.rs` |
 | server config (port, bind, token, Access) | `<profile dir>/web.json` | `web.rs` |
+| personal preferences (end every chat's system prompt) | `<profile dir>/preferences.json` | `personal_preferences.rs` |
 | chat transcripts | profile dir | `chat_index.rs`, `transcript.rs` |
 | agent diagnostics | `~/.octiqflow/logs/agent-diagnostics.jsonl` (one rotated predecessor) | `diagnostics.rs` |
 | chat task status | `<chats dir>/task-status.json` | `chat_task.rs` |

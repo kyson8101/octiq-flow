@@ -53,6 +53,8 @@ describe("Settings", () => {
     expect(out).toContain("Appearance</span>");
     expect(out).toContain("Memory Vault</span>");
     expect(out).toContain("Shared agent knowledge");
+    expect(out).toContain("Personal preferences</span>");
+    expect(out).toContain("In every chat&#x27;s system prompt");
     expect(out).toContain("<small>Dark</small>");
     // A section owns its content instead of mounting every setting in one scroller.
     expect(out).not.toContain("Candyland");

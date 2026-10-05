@@ -3023,6 +3023,8 @@ mod tests {
         // An agent only proposes these, on a card (`team_tools`).
         "team_save",
         "team_policy_set",
+        // Every chat's system prompt carries these; only Settings writes them.
+        "personal_preferences_set",
         // What makes a chat a front desk (hidden, route-only) is the
         // person's: the brief that records it and who the front desk is.
         "team_brief",
