@@ -80,7 +80,13 @@ pub async fn run_headless() {
     agent_chat::start_deleted_chat_reaper();
     // Once per profile, off the startup path: old records lose the snapshot
     // reads they were recorded with (see record_trim.rs).
-    std::thread::spawn(record_trim::prune_old_records);
+    // And on every start, once things have settled: records that grew since
+    // they were last compacted lose pictures and finished stream pieces.
+    std::thread::spawn(|| {
+        record_trim::prune_old_records();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        record_trim::compact_records();
+    });
 
     // Before anything can start a chat: the orchestration scheduler starts
     // workers from a plain thread, and their permission questions are waited

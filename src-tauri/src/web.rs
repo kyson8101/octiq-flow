@@ -76,7 +76,7 @@
 //! Nothing here claims otherwise; only OS-level isolation closes that.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
@@ -472,7 +472,7 @@ fn v2_root() -> Option<PathBuf> {
 
 /// Serve one file of the client. Any unknown path falls back to its
 /// index.html, the usual single-page-app rule.
-fn serve_v2(rel: &str) -> Response {
+fn serve_v2(rel: &str, accepts: &str) -> Response {
     let Some(root) = v2_root() else {
         return (
             StatusCode::NOT_FOUND,
@@ -512,15 +512,73 @@ fn serve_v2(rel: &str) -> Response {
         _ => "application/octet-stream",
     };
 
-    match std::fs::read(&file) {
-        Ok(bytes) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, mime)
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::from(bytes))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+    // Vite names everything under `assets/` by a hash of its content, so a
+    // file there never changes: a browser keeps it, and a new build is new
+    // names in a fresh `index.html`, which is never kept. The page stays
+    // `no-store` so a deploy reaches the next reload.
+    let hashed = file.starts_with(root.join("assets"));
+    let (body, encoding) = if hashed {
+        precompressed(&file, accepts)
+    } else {
+        (file.clone(), None)
+    };
+    match std::fs::read(&body) {
+        Ok(bytes) => {
+            let mut response = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, mime);
+            if hashed {
+                response = response
+                    .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                    .header(header::VARY, "Accept-Encoding");
+            } else {
+                response = response.header(header::CACHE_CONTROL, "no-store");
+            }
+            if let Some(encoding) = encoding {
+                response = response.header(header::CONTENT_ENCODING, encoding);
+            }
+            response
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+/// The `.br` or `.gz` the build wrote beside `file` (vite.config.ts
+/// `precompress`), when the browser takes that encoding; otherwise `file`.
+fn precompressed(file: &Path, accepts: &str) -> (PathBuf, Option<&'static str>) {
+    for (encoding, extension) in [("br", "br"), ("gzip", "gz")] {
+        if !accepts_encoding(accepts, encoding) {
+            continue;
+        }
+        let mut name = file.as_os_str().to_owned();
+        name.push(".");
+        name.push(extension);
+        let candidate = PathBuf::from(name);
+        if candidate.is_file() {
+            return (candidate, Some(encoding));
+        }
+    }
+    (file.to_path_buf(), None)
+}
+
+/// Whether an `Accept-Encoding` header takes `encoding`. `q=0` refuses it.
+fn accepts_encoding(header: &str, encoding: &str) -> bool {
+    header.split(',').any(|part| {
+        let mut params = part.split(';');
+        let named = params
+            .next()
+            .is_some_and(|token| token.trim().eq_ignore_ascii_case(encoding));
+        named
+            && !params.any(|param| {
+                param
+                    .trim()
+                    .strip_prefix("q=")
+                    .and_then(|q| q.trim().parse::<f32>().ok())
+                    .is_some_and(|q| q <= 0.0)
+            })
+    })
 }
 
 /// Where a request for the old `/v2` address belongs, if it is one.
@@ -550,7 +608,11 @@ fn legacy_root_redirect(raw: &str, query: Option<&str>) -> Option<String> {
 ///
 /// The client is read from `web/dist` on disk, so a build reaches the browser on
 /// the next reload with no restart.
-async fn asset_handler(AxumState(_ctx): AxumState<Ctx>, uri: Uri) -> Response {
+async fn asset_handler(
+    AxumState(_ctx): AxumState<Ctx>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let raw = uri.path().trim_start_matches('/');
 
     if let Some(target) = legacy_root_redirect(raw, uri.query()) {
@@ -565,7 +627,11 @@ async fn asset_handler(AxumState(_ctx): AxumState<Ctx>, uri: Uri) -> Response {
     // in the URL's HASH (`#/p/…/c/…`), so every path that reaches here is
     // either an asset or a page, and `serve_v2` answers both.
     if v2_root().is_some() {
-        return serve_v2(raw);
+        let accepts = headers
+            .get(header::ACCEPT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        return serve_v2(raw, accepts);
     }
 
     // The client is read off disk (`web/dist`). Nothing is embedded in this
@@ -1735,6 +1801,34 @@ async fn client(ctx: Ctx, socket: WebSocket) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_encoding_is_taken_unless_refused() {
+        assert!(accepts_encoding("gzip, deflate, br, zstd", "br"));
+        assert!(accepts_encoding("gzip;q=0.8, BR;q=1", "br"));
+        assert!(!accepts_encoding("gzip, br;q=0", "br"));
+        assert!(!accepts_encoding("gzip", "br"));
+        assert!(!accepts_encoding("", "gzip"));
+        assert!(!accepts_encoding("x-gzip", "gzip"));
+    }
+
+    #[test]
+    fn a_precompressed_copy_is_sent_only_to_a_browser_that_takes_it() {
+        let dir = crate::test_dir::TestDir::new("precompressed");
+        let file = dir.join("index-abc.js");
+        std::fs::write(&file, "x").unwrap();
+        std::fs::write(dir.join("index-abc.js.gz"), "g").unwrap();
+        assert_eq!(
+            precompressed(&file, "gzip, br"),
+            (dir.join("index-abc.js.gz"), Some("gzip"))
+        );
+        std::fs::write(dir.join("index-abc.js.br"), "b").unwrap();
+        assert_eq!(
+            precompressed(&file, "gzip, br"),
+            (dir.join("index-abc.js.br"), Some("br"))
+        );
+        assert_eq!(precompressed(&file, "identity"), (file.clone(), None));
+    }
 
     /// With every git slot taken, a git read waits and anything else does not.
     #[tokio::test]

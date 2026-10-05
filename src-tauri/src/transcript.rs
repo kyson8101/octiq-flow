@@ -19,7 +19,7 @@
 //! and a reader only ever wants "everything after N". A line-per-event file
 //! does that with no index, survives a crash mid-write (a torn last line is
 //! dropped on read), and can be read with `tail` when something looks wrong.
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -262,6 +262,130 @@ pub fn page(key: &str, before: Option<u64>) -> Result<Page, String> {
     page_with_budget(key, before, 256 * 1024, 3)
 }
 
+/// Where each line of a record starts, found without reading what it says.
+///
+/// A line's position is its `seq`, so a page read from the end still has to
+/// know how many lines come before it. Finding the newlines is a memchr over
+/// the bytes; parsing every line as JSON to the same end is what made opening
+/// a 100 MB chat take seconds.
+struct LineIndex {
+    /// Byte offset of each line; `starts[i]` is the line with `seq = i + 1`.
+    starts: Vec<u64>,
+    /// Where the indexed bytes end.
+    end: u64,
+    /// Lines that might be page context, ascending: `thread.started`, then
+    /// `system` `init`. A byte match only: each is parsed before it is used.
+    /// Records are written compactly by `serde_json`, and inside a string the
+    /// quotes would be escaped, so these spellings are the events themselves.
+    context: [Vec<u64>; 2],
+}
+
+const CONTEXT_NEEDLES: [&[u8]; 2] = [br#""type":"thread.started""#, br#""subtype":"init""#];
+
+impl LineIndex {
+    /// Index at most `limit` lines of `file`.
+    fn scan(file: &File, limit: u64) -> std::io::Result<Self> {
+        let needles = CONTEXT_NEEDLES.map(memchr::memmem::Finder::new);
+        let mut reader = BufReader::with_capacity(1 << 20, file);
+        let mut index = LineIndex {
+            starts: Vec::new(),
+            end: 0,
+            context: [Vec::new(), Vec::new()],
+        };
+        let mut line = Vec::new();
+        while (index.starts.len() as u64) < limit {
+            line.clear();
+            let read = reader.read_until(b'\n', &mut line)?;
+            if read == 0 {
+                break;
+            }
+            index.starts.push(index.end);
+            for (needle, seqs) in needles.iter().zip(&mut index.context) {
+                if needle.find(&line).is_some() {
+                    seqs.push(index.starts.len() as u64);
+                }
+            }
+            index.end += read as u64;
+        }
+        Ok(index)
+    }
+
+    /// Line `seq`, parsed, with its length as `lines()` would have counted it.
+    /// `None` for a line that is not a JSON value (a torn last line).
+    fn read(&self, file: &File, seq: u64) -> std::io::Result<Option<(Value, usize)>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let at = (seq - 1) as usize;
+        let start = self.starts[at];
+        let end = self.starts.get(at + 1).copied().unwrap_or(self.end);
+        let mut bytes = vec![0; (end - start) as usize];
+        let mut file = file;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut bytes)?;
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+        }
+        Ok(serde_json::from_slice(&bytes)
+            .ok()
+            .map(|event| (event, bytes.len())))
+    }
+}
+
+/// Whether an event is the host's own, rather than a subagent's or a seat's.
+fn host_event(event: &Value) -> bool {
+    event["parent_tool_use_id"].is_null() && event["octiq_speaker"].is_null()
+}
+
+/// What a host event does to "is a reply in progress": `Some(true)` starts
+/// one, `Some(false)` ends it.
+fn host_busy(event: &Value) -> Option<bool> {
+    match event["type"].as_str().unwrap_or_default() {
+        "assistant" | "turn.started" => Some(true),
+        "stream_event" if event["event"]["type"] == "message_start" => Some(true),
+        "result" | "turn.completed" | "turn.failed" => Some(false),
+        _ => None,
+    }
+}
+
+/// The page being gathered from the end: `seen[..to]`, newest first, holding
+/// `turns` whole turns of `bytes` bytes.
+struct Window {
+    turns: usize,
+    to: usize,
+    bytes: usize,
+    max_turns: usize,
+    budget: usize,
+}
+
+impl Window {
+    /// Add the turn reaching back to `seen[start]` if it fits; the newest turn
+    /// always does. False once nothing older can be added.
+    fn take(&mut self, start: usize, sums: &[usize]) -> bool {
+        if start < self.to {
+            return true; // an empty turn
+        }
+        let bytes = sums[start + 1] - sums[self.to];
+        if self.turns > 0 && (self.turns + 1 > self.max_turns || self.bytes + bytes > self.budget) {
+            return false;
+        }
+        self.turns += 1;
+        self.bytes += bytes;
+        self.to = start + 1;
+        self.turns != self.max_turns
+    }
+}
+
+/// The page `page_forward` reads, found from the END of the record.
+///
+/// Turns are split at an idle host's prompt; the page is the longest run of
+/// whole turns from the end that fits `turns` and `budget`, and at least the
+/// last turn however large. Walking backwards, a prompt is a split only once
+/// the event before it says the host was idle — so a prompt waits in
+/// `pending` until the nearest earlier `result` (a split) or reply start (not
+/// one) is reached. Everything older than the page is never parsed, apart
+/// from the newest context event of each kind.
 fn page_with_budget(
     key: &str,
     before: Option<u64>,
@@ -280,6 +404,129 @@ fn page_with_budget(
         }
         Err(e) => return Err(e.to_string()),
     };
+    let limit = before.map_or(u64::MAX, |cursor| cursor.saturating_sub(1));
+    let index = LineIndex::scan(&file, limit).map_err(|e| e.to_string())?;
+    let read = |seq| index.read(&file, seq).map_err(|e| e.to_string());
+
+    // Newest first; `sums[i]` is the byte total of `seen[..i]`.
+    let mut seen: Vec<Recorded> = Vec::new();
+    let mut sums: Vec<usize> = vec![0];
+    let mut pending: Vec<usize> = Vec::new();
+    let mut page = Window {
+        turns: 0,
+        to: 0,
+        bytes: 0,
+        max_turns: turns,
+        budget,
+    };
+
+    let mut open = true;
+    for seq in (1..=index.starts.len() as u64).rev() {
+        let Some((event, bytes)) = read(seq)? else {
+            continue;
+        };
+        let at = seen.len();
+        let host = host_event(&event);
+        let prompt = host && page_prompt(&event);
+        let busy = if host { host_busy(&event) } else { None };
+        sums.push(sums[at] + bytes);
+        seen.push(Recorded { seq, event });
+        if prompt {
+            pending.push(at);
+        }
+        match busy {
+            // The host was idle before these prompts: each starts a turn.
+            Some(false) => {
+                for start in std::mem::take(&mut pending) {
+                    open = page.take(start, &sums);
+                    if !open {
+                        break;
+                    }
+                }
+            }
+            // Queued behind a reply: they belong to the turn before them.
+            Some(true) => pending.clear(),
+            None => {}
+        }
+        if !open {
+            break;
+        }
+        // The next turn is at least everything back to its newest possible
+        // start; once that cannot fit, nothing older can.
+        if page.turns > 0 {
+            let reach = pending.first().copied().unwrap_or(at);
+            if page.bytes + sums[reach + 1] - sums[page.to] > budget {
+                open = false;
+                break;
+            }
+        }
+    }
+    if open && !seen.is_empty() {
+        // The start of the record: nothing was replying before its first event.
+        for start in std::mem::take(&mut pending)
+            .into_iter()
+            .chain([seen.len() - 1])
+        {
+            if !page.take(start, &sums) {
+                break;
+            }
+        }
+    }
+    seen.truncate(page.to);
+    seen.reverse();
+    let events = seen;
+
+    // The newest of each kind of context event older than the page.
+    let first = events.first().map_or(0, |record| record.seq);
+    let mut context: Vec<Recorded> = Vec::new();
+    for (kind, seqs) in index.context.iter().enumerate() {
+        for &seq in seqs.iter().rev().filter(|&&seq| seq < first) {
+            let Some((event, _)) = read(seq)? else {
+                continue;
+            };
+            let wanted = match kind {
+                0 => event["type"] == "thread.started",
+                _ => event["type"] == "system" && event["subtype"] == "init",
+            };
+            if wanted && host_event(&event) {
+                context.push(Recorded { seq, event });
+                break;
+            }
+        }
+    }
+    context.sort_by_key(|record| record.seq);
+    let before = events
+        .first()
+        .and_then(|record| (record.seq > 1).then_some(record.seq));
+    Ok(Page {
+        events,
+        context,
+        before,
+    })
+}
+
+/// The page read the simple way, front to back with every line parsed: the
+/// definition `page_with_budget` is checked against.
+#[cfg(test)]
+fn page_forward(
+    key: &str,
+    before: Option<u64>,
+    budget: usize,
+    turns: usize,
+) -> Result<Page, String> {
+    let path = path_for(key).ok_or("invalid chat key")?;
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Page {
+                events: vec![],
+                context: vec![],
+                before: None,
+            });
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    use std::collections::VecDeque;
     let mut chunks: VecDeque<(Vec<Recorded>, usize)> = VecDeque::from([(vec![], 0)]);
     let mut bytes = 0;
     let mut busy = false;
@@ -362,6 +609,18 @@ pub(crate) fn rewrite_lines(
     path: &Path,
     mut edit: impl FnMut(&str) -> Option<String>,
 ) -> std::io::Result<bool> {
+    rewrite_numbered(path, |_, line| {
+        std::str::from_utf8(line).ok().and_then(&mut edit)
+    })
+}
+
+/// `rewrite_lines`, handing `edit` each line's `seq` and its bytes as they
+/// are, so a change worked out earlier without the lock can be applied by
+/// position.
+pub(crate) fn rewrite_numbered(
+    path: &Path,
+    mut edit: impl FnMut(u64, &[u8]) -> Option<String>,
+) -> std::io::Result<bool> {
     let _appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     let temp = path.with_extension("jsonl.rewrite");
     let written = (|| {
@@ -369,10 +628,12 @@ pub(crate) fn rewrite_lines(
         let mut out = BufWriter::new(File::create(&temp)?);
         let mut changed = false;
         let mut line = Vec::new();
+        let mut seq = 0;
         while reader.read_until(b'\n', &mut line)? > 0 {
+            seq += 1;
             let ended = line.last() == Some(&b'\n');
             let body = &line[..line.len() - usize::from(ended)];
-            match std::str::from_utf8(body).ok().and_then(&mut edit) {
+            match edit(seq, body) {
                 Some(text) if !text.contains('\n') => {
                     out.write_all(text.as_bytes())?;
                     if ended {
@@ -444,6 +705,127 @@ mod tests {
         sequences.sort_unstable();
         assert_eq!(sequences, (1..=37).collect::<Vec<_>>());
         forget(&key);
+    }
+
+    /// Reading from the end finds exactly the page reading every line from the
+    /// front does, over records shaped like real ones: queued prompts inside a
+    /// reply, subagent and seat events, torn lines, context of both kinds.
+    #[test]
+    fn a_page_read_from_the_end_is_the_page_read_from_the_front() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut roll = move |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n
+        };
+        for round in 0..300 {
+            let key = unique_key("page-equivalence");
+            let path = path_for(&key).unwrap();
+            let mut text = String::new();
+            for _ in 0..roll(60) {
+                let event = match roll(16) {
+                    0 => {
+                        json!({"type":"system","subtype":"init","session_id":format!("s{}", roll(9))})
+                    }
+                    1 => json!({"type":"thread.started","thread_id":format!("t{}", roll(9))}),
+                    2 | 3 => {
+                        json!({"type":"user","message":{"content":"x".repeat(roll(40) as usize)}})
+                    }
+                    4 => {
+                        json!({"type":"user","message":{"content":[{"type":"tool_result","content":"r"}]}})
+                    }
+                    5 => json!({"type":"user","octiq_append_to":"u","message":{"content":"more"}}),
+                    6 => json!({"type":"assistant","message":{"content":[]}}),
+                    7 => json!({"type":"stream_event","event":{"type":"message_start"}}),
+                    8 => {
+                        json!({"type":"stream_event","event":{"type":"content_block_delta","text":"y".repeat(roll(30) as usize)}})
+                    }
+                    9 | 10 => json!({"type":"result"}),
+                    11 => json!({"type":"turn.started"}),
+                    12 => json!({"type":"turn.completed"}),
+                    13 => json!({"type":"result","parent_tool_use_id":"p"}),
+                    14 => {
+                        json!({"type":"user","octiq_speaker":{"id":"a"},"message":{"content":"seat"}})
+                    }
+                    _ => {
+                        text.push_str("{\"torn\": \n");
+                        continue;
+                    }
+                };
+                text.push_str(&event.to_string());
+                text.push('\n');
+            }
+            if roll(4) == 0 {
+                text.push_str("{\"half");
+            }
+            fs::write(&path, &text).unwrap();
+            let lines = text.lines().count() as u64;
+            for _ in 0..6 {
+                let budget = [1, 40, 120, 400, usize::MAX][roll(5) as usize];
+                let turns = roll(5) as usize;
+                let before = (roll(3) > 0).then(|| roll(lines + 2) + 1);
+                let found = page_with_budget(&key, before, budget, turns).unwrap();
+                let expected = page_forward(&key, before, budget, turns).unwrap();
+                let shape = |page: &Page| {
+                    (
+                        page.events
+                            .iter()
+                            .map(|e| (e.seq, e.event.clone()))
+                            .collect::<Vec<_>>(),
+                        page.context
+                            .iter()
+                            .map(|e| (e.seq, e.event.clone()))
+                            .collect::<Vec<_>>(),
+                        page.before,
+                    )
+                };
+                assert_eq!(
+                    shape(&found),
+                    shape(&expected),
+                    "round {round}, before {before:?}, budget {budget}, turns {turns}:\n{text}"
+                );
+            }
+            forget(&key);
+        }
+    }
+
+    /// The same check over real records, with timings:
+    /// `OCTIQ_PAGE_CHECK=<a.jsonl>:<b.jsonl> cargo test --release -- --ignored real_records`
+    #[test]
+    #[ignore]
+    fn real_records_page_the_same_from_either_end() {
+        let Ok(files) = std::env::var("OCTIQ_PAGE_CHECK") else {
+            return;
+        };
+        for file in files.split(':') {
+            let key = unique_key("page-real");
+            fs::copy(file, path_for(&key).unwrap()).unwrap();
+            let mut cursor = None;
+            for _ in 0..3 {
+                let started = std::time::Instant::now();
+                let found = page(&key, cursor).unwrap();
+                let fast = started.elapsed();
+                let started = std::time::Instant::now();
+                let expected = page_forward(&key, cursor, 256 * 1024, 3).unwrap();
+                let slow = started.elapsed();
+                eprintln!("{file} before {cursor:?}: {fast:?} from the end, {slow:?} from the front, {} events", found.events.len());
+                let seqs = |p: &Page| {
+                    p.events
+                        .iter()
+                        .chain(&p.context)
+                        .map(|e| e.seq)
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(seqs(&found), seqs(&expected));
+                assert_eq!(found.before, expected.before);
+                cursor = found.before;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            forget(&key);
+        }
     }
 
     #[test]

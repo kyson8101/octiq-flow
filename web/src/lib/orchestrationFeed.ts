@@ -50,8 +50,70 @@ export function withExecution(snapshot: OrchestrationSnapshot, update: Execution
   };
 }
 
+/** The long text a brief read leaves out of a finished run, by list. */
+const LEFT_OUT = {
+  tasks: ["spec", "result"],
+  attempts: ["summary"],
+  messages: ["body"],
+  notifications: ["body"],
+} as const;
+type Listed = keyof typeof LEFT_OUT;
+
+/** A brief snapshot with the text of runs read whole put back. `texts` holds
+ *  each such run's text keyed `list:id:field` (`textsOf`). Only what the brief
+ *  read emptied is filled: everything else it says is newer. */
+export function withTexts(snapshot: OrchestrationSnapshot, texts: ReadonlyMap<string, ReadonlyMap<string, string>>): OrchestrationSnapshot {
+  if (!texts.size || !snapshot.briefRuns?.length) return snapshot;
+  const brief = new Set(snapshot.briefRuns);
+  const fill = <T extends { id: string; runId: string }>(list: Listed, items: T[] | undefined): T[] | undefined => items?.map((item) => {
+    const run = brief.has(item.runId) ? texts.get(item.runId) : undefined;
+    if (!run) return item;
+    let next = item;
+    for (const field of LEFT_OUT[list]) {
+      const text = run.get(`${list}:${item.id}:${field}`);
+      const held = (item as Record<string, unknown>)[field];
+      if (text !== undefined && !held) next = { ...next, [field]: text };
+    }
+    return next;
+  });
+  return {
+    ...snapshot,
+    tasks: fill("tasks", snapshot.tasks)!,
+    attempts: fill("attempts", snapshot.attempts)!,
+    messages: fill("messages", snapshot.messages)!,
+    notifications: fill("notifications", snapshot.notifications),
+  };
+}
+
+/** The text of one run read whole, keyed as `withTexts` reads it. */
+export function textsOf(run: OrchestrationSnapshot): Map<string, string> {
+  const texts = new Map<string, string>();
+  for (const list of Object.keys(LEFT_OUT) as Listed[]) {
+    for (const item of (run[list] ?? []) as unknown as Record<string, unknown>[]) {
+      for (const field of LEFT_OUT[list]) {
+        const text = item[field];
+        if (typeof text === "string" && text) texts.set(`${list}:${String(item.id)}:${field}`, text);
+      }
+    }
+  }
+  return texts;
+}
+
 export function createOrchestrationFeed() {
   let state: OrchestrationFeedState = { snapshot: null, error: null };
+  /** Text of finished runs the panel has shown, by run, put back after every
+   *  read. A run that is active again reads whole, and its kept text goes:
+   *  when it finishes again, its text is asked for again. */
+  const texts = new Map<string, Map<string, string>>();
+  const detailed = new Set<string>();
+  const forgetActive = (snapshot: OrchestrationSnapshot) => {
+    const brief = new Set(snapshot.briefRuns ?? []);
+    for (const runId of [...detailed]) {
+      if (brief.has(runId)) continue;
+      detailed.delete(runId);
+      texts.delete(runId);
+    }
+  };
   const listeners = new Set<() => void>();
   let detach: (() => void) | null = null;
 
@@ -97,9 +159,11 @@ export function createOrchestrationFeed() {
     reading = true;
     sinceRead = [];
     lastRead = Date.now();
-    bridge.invoke<OrchestrationSnapshot>("orchestration_snapshot").then(
+    bridge.invoke<OrchestrationSnapshot>("orchestration_snapshot", { brief: true }).then(
       (result) => {
-        let next = result ?? EMPTY_ORCHESTRATION;
+        const read = result ?? EMPTY_ORCHESTRATION;
+        forgetActive(read);
+        let next = withTexts(read, texts);
         for (const change of sinceRead) next = change(next);
         state = { snapshot: next, error: null };
         notify(true);
@@ -170,7 +234,9 @@ export function createOrchestrationFeed() {
       schedule();
     };
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
-    void ask(true);
+    // Not yet connected: the open above asks. Asking here too sent a second
+    // whole-ledger read straight after the first on every page load.
+    if (bridge.state === "open") void ask(true);
     return () => {
       offChanged();
       offReport();
@@ -195,6 +261,18 @@ export function createOrchestrationFeed() {
     },
     /** Read the ledger now, e.g. after a person's action. Rejects if it fails. */
     refresh: () => ask(true),
+    /** Fill in the text a brief read left out of one finished run, once. */
+    detail(runId: string) {
+      if (detailed.has(runId)) return;
+      detailed.add(runId);
+      bridge.invoke<OrchestrationSnapshot>("orchestration_snapshot", { runId }).then(
+        (run) => {
+          texts.set(runId, textsOf(run ?? EMPTY_ORCHESTRATION));
+          patch((snapshot) => withTexts(snapshot, texts));
+        },
+        () => detailed.delete(runId),
+      );
+    },
     patch,
   };
 }

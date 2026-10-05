@@ -892,7 +892,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             // tab, so it gets the compact view; the browser, which names no
             // actor, keeps the whole store.
             let Some(actor) = arg::<Option<String>>(&args, "actorChatKey")? else {
-                return to_value(snapshot);
+                // The tab's whole-ledger read can leave finished runs' long
+                // text out; its run panel asks for one run whole (`brief.rs`).
+                let brief = arg::<Option<bool>>(&args, "brief")?.unwrap_or(false);
+                let mut view = to_value(snapshot)?;
+                if brief && run_id.is_none() {
+                    crate::orchestration::brief::brief(&mut view);
+                }
+                return Ok(view);
             };
             let task_id: Option<String> = arg(&args, "taskId")?;
             let message_limit: Option<usize> = arg(&args, "messageLimit")?;

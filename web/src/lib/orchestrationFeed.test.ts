@@ -2,17 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mock = vi.hoisted(() => ({
   handlers: new Map<string, (payload: unknown) => void>(),
-  reads: [] as Array<{ resolve: (value: unknown) => void; reject: (problem: unknown) => void }>,
+  reads: [] as Array<{ resolve: (value: unknown) => void; reject: (problem: unknown) => void; args?: Record<string, unknown> }>,
+  bridge: { state: "open" as string, onState: null as null | ((state: string) => void) },
 }));
 
 vi.mock("./bridge", () => ({
   bridge: {
-    invoke: () => new Promise((resolve, reject) => mock.reads.push({ resolve, reject })),
+    get state() { return mock.bridge.state; },
+    invoke: (_cmd: string, args?: Record<string, unknown>) =>
+      new Promise((resolve, reject) => mock.reads.push({ resolve, reject, args })),
     on: (event: string, fn: (payload: unknown) => void) => {
       mock.handlers.set(event, fn);
       return () => mock.handlers.delete(event);
     },
-    onState: () => () => {},
+    onState: (fn: (state: string) => void) => {
+      mock.bridge.onState = fn;
+      return () => { mock.bridge.onState = null; };
+    },
   },
 }));
 
@@ -36,10 +42,65 @@ beforeEach(() => {
   vi.useFakeTimers();
   mock.handlers.clear();
   mock.reads.length = 0;
+  mock.bridge.state = "open";
 });
 afterEach(() => vi.useRealTimers());
 
 describe("orchestration feed", () => {
+  it("reads the ledger once on a page load, when the socket opens", async () => {
+    mock.bridge.state = "connecting";
+    const feed = createOrchestrationFeed();
+    const off = feed.subscribe(() => {});
+    expect(mock.reads).toHaveLength(0);
+    mock.bridge.state = "open";
+    mock.bridge.onState!("open");
+    expect(mock.reads).toHaveLength(1);
+    expect(mock.reads[0].args).toEqual({ brief: true });
+    mock.reads[0].resolve(ledger());
+    await vi.advanceTimersByTimeAsync(READ_GAP_MS * 3);
+    expect(mock.reads).toHaveLength(1);
+    off();
+  });
+
+  it("fills in a finished run's text once the panel asks, until the run is active again", async () => {
+    const brief = (status: string, result: string) => ({
+      ...ledger(),
+      runs: [{ id: "r1", status }],
+      tasks: [{ id: "t1", runId: "r1", spec: "", result }],
+      briefRuns: status === "completed" ? ["r1"] : [],
+    }) as unknown as OrchestrationSnapshot;
+    const task = (feed: ReturnType<typeof createOrchestrationFeed>) => feed.getState().snapshot?.tasks[0];
+    const feed = createOrchestrationFeed();
+    const off = feed.subscribe(() => {});
+    mock.reads[0].resolve(brief("completed", ""));
+    await vi.advanceTimersByTimeAsync(0);
+    feed.detail("r1");
+    feed.detail("r1");
+    expect(mock.reads).toHaveLength(2);
+    expect(mock.reads[1].args).toEqual({ runId: "r1" });
+    mock.reads[1].resolve({ ...brief("completed", "shipped"), tasks: [{ id: "t1", runId: "r1", spec: "Do it", result: "shipped" }] });
+    await vi.advanceTimersByTimeAsync(NOTIFY_MS);
+    expect(task(feed)).toMatchObject({ spec: "Do it", result: "shipped" });
+
+    // A later brief read keeps it filled in.
+    void feed.refresh();
+    mock.reads[2].resolve(brief("completed", ""));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(task(feed)).toMatchObject({ spec: "Do it", result: "shipped" });
+
+    // Reopened, then finished again: the old text is not put back.
+    void feed.refresh();
+    mock.reads[3].resolve({ ...brief("running", "new"), tasks: [{ id: "t1", runId: "r1", spec: "Again", result: null }] });
+    await vi.advanceTimersByTimeAsync(0);
+    void feed.refresh();
+    mock.reads[4].resolve(brief("completed", ""));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(task(feed)).toMatchObject({ spec: "", result: "" });
+    feed.detail("r1");
+    expect(mock.reads).toHaveLength(6);
+    off();
+  });
+
   it("refreshes decision viability after a native safety card closes", async () => {
     const feed = createOrchestrationFeed();
     const off = feed.subscribe(() => {});
