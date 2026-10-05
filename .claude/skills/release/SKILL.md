@@ -21,6 +21,17 @@ description: >-
 
 # Release
 
+## Contents
+
+- What OctiqFlow is now
+- Step 1 — Commit
+- Step 2 — Push
+- Step 3 — Test
+- Step 4 — Build both halves
+- Step 5 — Restart the service (ASK FIRST)
+- Step 6 — Verify, then print the URL
+- Rules
+
 Deploy OctiqFlow end to end: **commit → push → test → build → restart the
 service → print the URL**.
 
@@ -50,13 +61,18 @@ not have, which fails as an unknown command. Always do both.
 Run every command from the repo root: `/Users/kyson/03-projects/octiq-flow`.
 Run the steps in order. Stop and report if any step fails.
 
+Requires `cargo`, `pnpm` and `node` on PATH (`cargo --version && pnpm --version
+&& node --version`). Anything missing -> stop and report; install nothing here.
+
 ## Step 1 — Commit
 
 1. Run `git status --short` to see the working-tree changes.
 2. If there is **nothing to commit**, say so in one line and continue to Step 2.
    "always commit" means "always run the sequence", not "create an empty commit".
 3. Otherwise:
-   - Stage everything: `git add -A`.
+   - Stage by explicit path: `git add <path> <path> …` for every path that
+     `git status --short` listed. Never `git add -A` or `git add .`; the
+     git-safety hook rejects both.
    - Read the staged diff (`git diff --cached --stat` and, for anything
      non-obvious, the full diff) so the message describes what actually changed.
    - Commit to the **current branch** with a **conventional-commit** message

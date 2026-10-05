@@ -14,6 +14,15 @@ description: >-
 
 # OctiqFlow Canvas
 
+## Contents
+
+- Where the canvas lives
+- How to use it
+- The fixed template — classes you can use
+- Format rules
+- Example — a living decision canvas
+- Escape hatch — a fully custom page
+
 OctiqFlow can render an HTML document in a pane **beside this terminal** and
 refresh it live whenever the file changes on disk. This skill lets you drive
 that pane: you write a file, OctiqFlow shows it; you update the file as the
