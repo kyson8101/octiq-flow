@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
 import {
-  conversationColorProjectId, conversationProjectInfo, projectConversationCounts, projectConversations,
+  conversationColorProjectId, conversationProjectInfo, crossProjectChatKeys, projectConversationCounts,
+  projectConversations,
 } from "./conversationProjects";
 import type { Conversation } from "./store";
 
@@ -74,6 +75,32 @@ describe("conversationProjectInfo", () => {
     expect(conversationProjectInfo(chat("plain", "alpha"), snapshot([], []), coordinators)).toMatchObject({
       status: "home", homeProjectId: "alpha", taskCount: 0,
     });
+  });
+});
+
+describe("crossProjectChatKeys", () => {
+  const lead = (chatKey: string, leadId: string, crossProject?: boolean) => ({ chatKey, leadId, crossProject });
+
+  it("counts only the head's cross-project conversations as coordinators", () => {
+    const leads = [
+      lead("chat:cto", "head", true),
+      lead("chat:old-cto", "head"),
+      lead("chat:routed", "dev"),
+      lead("chat:past-head", "former-head", true),
+    ];
+    expect([...crossProjectChatKeys(leads, "head")]).toEqual(["chat:cto", "chat:old-cto", "chat:past-head"]);
+    expect([...crossProjectChatKeys(leads, null)]).toEqual(["chat:cto", "chat:past-head"]);
+  });
+
+  it("keeps a project agent's chat with no runs in its own project, not a discussion", () => {
+    const coordinators = crossProjectChatKeys([lead("chat:cto", "head", true), lead("chat:routed", "dev")], "head");
+    expect(conversationProjectInfo(chat("routed", "octiq-flow"), snapshot([], []), coordinators)).toMatchObject({
+      status: "home", homeProjectId: "octiq-flow",
+    });
+    expect(conversationProjectInfo(chat("cto"), snapshot([], []), coordinators).status).toBe("discussion");
+    // Once it hands out tasks, its runs make it a coordinator either way.
+    expect(conversationProjectInfo(chat("routed", "octiq-flow"), snapshot([run("r", "routed")], [task("t", "r", "beta")]), coordinators))
+      .toMatchObject({ status: "projects", destinations: [{ projectId: "beta" }] });
   });
 });
 

@@ -140,6 +140,7 @@ import { RecipientPicker } from "./components/AgentsSettings";
 import { AgentWelcome } from "./components/AgentRole";
 import { AgentsDashboard } from "./components/AgentsDashboard";
 import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
+import { crossProjectChatKeys } from "./lib/conversationProjects";
 import {
   agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadFrontDesk, loadHead, loadHome,
   loadLeads, loadTeam, loadUnfinishedDeskChats, onTeamChanged, recallAgentsMode, rememberAgentsMode, taskBrief,
@@ -1938,8 +1939,8 @@ export default function App() {
     return () => { alive = false; off(); };
   }, [agentsMode, appSettings, conn]);
   const coordinatorChatKeys = useMemo<ReadonlySet<string> | null>(
-    () => leadRecordsState === "loading" ? null : new Set(leads.map((record) => record.chatKey)),
-    [leadRecordsState, leads],
+    () => leadRecordsState === "loading" ? null : crossProjectChatKeys(leads, head?.id),
+    [leadRecordsState, leads, head?.id],
   );
   const projectContextUnavailable = (!orchestrationState.snapshot && !!orchestrationState.error)
     || leadRecordsState === "error";

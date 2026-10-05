@@ -1,5 +1,23 @@
+import type { LeadRecord } from "./agentsDashboard";
 import type { OrchestrationSnapshot, TaskDestination } from "./orchestration";
 import type { Conversation } from "./store";
+
+/**
+ * The chats whose own project is only their conversation home: the head's
+ * cross-project conversations. Every agents-mode chat has a lead record, but
+ * a project agent's chat works in the project it was opened in, so it keeps
+ * that label until it hands out tasks. Counting every lead record here put
+ * "Discussion" on each project-agent chat that never made a run. A head chat
+ * recorded before `crossProject` existed is known by its agent.
+ */
+export function crossProjectChatKeys(
+  leads: readonly Pick<LeadRecord, "chatKey" | "leadId" | "crossProject">[],
+  headId: string | null | undefined,
+): Set<string> {
+  return new Set(leads
+    .filter((record) => record.crossProject || (!!headId && record.leadId === headId))
+    .map((record) => record.chatKey));
+}
 
 export type ConversationProjectInfo = {
   status: "projects" | "discussion" | "unknown" | "loading" | "home";
