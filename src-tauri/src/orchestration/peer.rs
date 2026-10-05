@@ -232,6 +232,7 @@ pub fn context_paths(cwd: &str, paths: &[String]) -> Result<Vec<String>, String>
 /// What the teammate is told. The question is quoted as the asker's words;
 /// the rules around it are the host's.
 pub fn helper_prompt(
+    policy: &str,
     helper: &TeamAgent,
     asker: &str,
     task_title: &str,
@@ -255,8 +256,11 @@ pub fn helper_prompt(
                 .join("\n")
         )
     };
+    // The shared policy and the helper's standing instructions come first,
+    // as in every brief the helper is launched with.
+    let standing = crate::team::standing_brief(policy, helper);
     format!(
-        "You are {name}, a registered OctiqFlow agent.{role} Your teammate {asker} is working on the task \"{task_title}\" and asks you the question below.\n\n\
+        "{standing}You are {name}, a registered OctiqFlow agent.{role} Your teammate {asker} is working on the task \"{task_title}\" and asks you the question below.\n\n\
 You are a peer answering a question, not doing the work. The current directory is {asker}'s workspace and you may only read it: do not edit files or run anything that changes state. You have no orchestration tools and cannot ask anyone else. Answer directly and concisely, in under {limit} characters. If what you can read does not settle it, say so and say what would.{paths}\n\n\
 {asker}'s question:\n{question}",
         name = helper.name,
@@ -644,6 +648,7 @@ impl OrchestrationStore {
         question: PeerQuestion,
         agents: &[TeamAgent],
         teams: &[AgentTeam],
+        policy: &str,
         run: impl FnOnce(&HelperTurn) -> Result<HelperAnswer, String>,
     ) -> Result<PeerReply, String> {
         let text = question.question.trim().to_owned();
@@ -724,7 +729,7 @@ impl OrchestrationStore {
                 model: helper.model.clone(),
                 effort: helper.effort.clone(),
                 cwd: attempt.cwd.clone(),
-                prompt: helper_prompt(helper, &asker.name, &task.title, &text, &paths),
+                prompt: helper_prompt(policy, helper, &asker.name, &task.title, &text, &paths),
             };
             data.peer_asks.insert(ask.id.clone(), ask.clone());
             Ok((ask, turn, asked + 1))
@@ -791,6 +796,7 @@ mod tests {
             team_id: team.map(Into::into),
             created_at: 0,
             updated_at: 0,
+            persistent_prompt: String::new(),
         }
     }
 
@@ -1025,6 +1031,7 @@ mod tests {
                 ask("bo", "  Which lock guards the ledger?  "),
                 &agents,
                 &teams,
+                "",
                 |turn| {
                     seen = Some(turn.clone());
                     answered("The store's inner mutex.")
@@ -1085,6 +1092,7 @@ mod tests {
                 ask("fa", "Q?"),
                 &agents,
                 &teams,
+                "",
                 |_| Err("Not logged in".into()),
             )
             .unwrap_err();
@@ -1098,6 +1106,7 @@ mod tests {
                 ask("fa", "Q?"),
                 &agents,
                 &teams,
+                "",
                 |_| answered(&long),
             )
             .unwrap();
@@ -1110,6 +1119,7 @@ mod tests {
                     ask("fa", "Q?"),
                     &agents,
                     &teams,
+                    "",
                     |_| answered("ok"),
                 )
                 .unwrap();
@@ -1121,6 +1131,7 @@ mod tests {
                 ask("fa", "Q?"),
                 &agents,
                 &teams,
+                "",
                 |_| {
                     called = true;
                     answered("no")
@@ -1140,7 +1151,7 @@ mod tests {
         let refuse = |actor: &str, question: PeerQuestion| {
             let mut called = false;
             let err = store
-                .peer_ask(actor, question, &agents, &teams, |_| {
+                .peer_ask(actor, question, &agents, &teams, "", |_| {
                     called = true;
                     answered("no")
                 })
@@ -1181,6 +1192,7 @@ mod tests {
                 ask("bo", "Q?"),
                 &agents,
                 &teams,
+                "",
                 |_| answered("no"),
             )
             .unwrap_err();
@@ -1201,6 +1213,7 @@ mod tests {
             ask("fa", "Q?"),
             &agents,
             &teams,
+            "",
             |_| {
                 let reloaded = OrchestrationStore::load(path.clone());
                 let asks = reloaded.snapshot(None).unwrap().peer_asks;
@@ -1496,6 +1509,7 @@ mod tests {
     fn the_prompt_quotes_the_question_under_the_hosts_rules() {
         let (agents, _) = roster();
         let prompt = helper_prompt(
+            "",
             &agents[1],
             "ADA",
             "Fix login",
@@ -1508,6 +1522,30 @@ mod tests {
         assert!(prompt.contains("cannot ask anyone else"));
         assert!(prompt.contains("- src/a.rs"));
         assert!(prompt.ends_with("ADA's question:\nWhy does it 401?"));
+    }
+
+    /// A teammate answers as itself: the shared policy, its standing
+    /// instructions, then its role, ahead of the host's peer rules.
+    #[test]
+    fn a_teammate_answers_under_the_policy_and_its_standing_instructions() {
+        let (agents, _) = roster();
+        let mut bo = agents[1].clone();
+        bo.persistent_prompt = "Check the auth middleware first.".into();
+        let prompt = helper_prompt(
+            "Never push.",
+            &bo,
+            "ADA",
+            "Fix login",
+            "Why does it 401?",
+            &[],
+        );
+        let policy = prompt.find("Never push.").unwrap();
+        let standing = prompt.find("Check the auth middleware first.").unwrap();
+        let role = prompt
+            .find("You are BO, a registered OctiqFlow agent. Your role: bo role.")
+            .unwrap();
+        assert!(prompt.starts_with("Shared agent policy"), "{prompt}");
+        assert!(policy < standing && standing < role, "{prompt}");
     }
 
     #[test]

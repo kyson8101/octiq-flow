@@ -1432,6 +1432,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             }
             Ok(value)
         }
+        // The shared agent policy every registered agent's brief starts with.
+        // Browser-only, like the rest of the team store.
+        "team_policy" => to_value(crate::team::policy(&crate::team::default_path())),
+        "team_policy_set" => {
+            let saved = crate::team::set_policy(
+                &crate::team::default_path(),
+                &arg::<Option<String>>(&args, "text")?.unwrap_or_default(),
+            )?;
+            crate::bus::emit("team-changed", serde_json::json!({ "policy": true }));
+            to_value(Ok::<_, String>(saved))
+        }
         "team_delete" => unit(crate::team::delete(
             &crate::team::default_path(),
             &arg::<String>(&args, "id")?,
@@ -1571,6 +1582,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let path = crate::team::default_path();
             let agents = crate::team::list(&path, None, true)?;
             let teams = crate::team::teams(&path)?;
+            let policy = crate::team::policy(&path)?;
             to_value(svc.orchestrations.peer_ask(
                 &arg::<String>(&args, "actorChatKey")?,
                 crate::orchestration::peer::PeerQuestion {
@@ -1581,6 +1593,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 },
                 &agents,
                 &teams,
+                &policy.text,
                 crate::orchestration::peer::run_helper,
             ))
         }

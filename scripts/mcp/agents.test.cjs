@@ -28,7 +28,7 @@ const agentTools = result => result.tools.filter(tool => tool.name.startsWith("a
 test("agent tools are offered to both providers, list-only for a worker, none outside a chat", async () => {
   for (const flags of [[], ["--disable-ask-user"]]) {
     const listed = await call({ OCTIQ_CHAT_KEY: "chat:lead" }, "tools/list", {}, flags);
-    assert.deepEqual(agentTools(listed), ["agent_list", "agent_register", "agent_update"]);
+    assert.deepEqual(agentTools(listed), ["agent_list", "agent_register", "agent_update", "agent_policy_update"]);
     for (const tool of listed.tools.filter(tool => tool.name.startsWith("agent_"))) {
       assert.equal(tool.inputSchema.additionalProperties, false);
       // Identity and the card's deadline are never the agent's to say.
@@ -38,6 +38,14 @@ test("agent tools are offered to both providers, list-only for a worker, none ou
     assert.deepEqual(register.inputSchema.required, ["name", "provider", "model"]);
     assert.equal(register.annotations.readOnlyHint, false);
     assert.match(register.description, /approves or declines it on a card/);
+    // The standing instructions are proposed like any other field.
+    assert.equal(register.inputSchema.properties.persistentPrompt.maxLength, 8000);
+    const policy = listed.tools.find(tool => tool.name === "agent_policy_update");
+    assert.deepEqual(policy.inputSchema.required, ["policy"]);
+    assert.deepEqual(Object.keys(policy.inputSchema.properties), ["policy"]);
+    assert.equal(policy.inputSchema.properties.policy.maxLength, 4000);
+    assert.equal(policy.annotations.readOnlyHint, false);
+    assert.match(policy.description, /approves or declines it on a card/);
   }
   const worker = await call({ OCTIQ_CHAT_KEY: "chat:orch-w", OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, "tools/list", {});
   assert.deepEqual(agentTools(worker), ["agent_list"]);
@@ -70,6 +78,12 @@ test("agent calls go to /hook/agents with only documented fields and the provide
   await call(env, "tools/call", { name: "agent_update", arguments: { agent: "Nova", role: "Leads." } }, ["--disable-ask-user"]);
   assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "update", args: { agent: "Nova", role: "Leads.", waitSeconds: 50 } });
 
+  await call(env, "tools/call", { name: "agent_update", arguments: { agent: "Nova", persistentPrompt: "Run the build first." } });
+  assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "update", args: { agent: "Nova", persistentPrompt: "Run the build first.", waitSeconds: 180 } });
+
+  await call(env, "tools/call", { name: "agent_policy_update", arguments: { policy: "Use worktrees.", agent: "Nova" } });
+  assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "policy_update", args: { policy: "Use worktrees.", waitSeconds: 180 } });
+
   await call(env, "tools/call", { name: "agent_list", arguments: { project: "Starfall" } });
   assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "list", args: { project: "Starfall" } });
 
@@ -97,5 +111,7 @@ test("agent calls go to /hook/agents with only documented fields and the provide
   const worker = await call({ ...env, OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, "tools/call", { name: "agent_register", arguments: args });
   assert.equal(worker.isError, true);
   assert.equal(worker._meta["octiq/outcome"].reasonClass, "validation");
+  const workerPolicy = await call({ ...env, OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, "tools/call", { name: "agent_policy_update", arguments: { policy: "x" } });
+  assert.equal(workerPolicy.isError, true);
   assert.equal(requests.length, count);
 });

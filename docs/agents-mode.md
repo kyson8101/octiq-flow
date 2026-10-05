@@ -292,18 +292,50 @@ Stored in `<profile dir>/team.json` (`team.rs`), together with a record of
 which chats were handed a task and to whom (`leads`), and the configured head
 (`head`). Commands: `team_list`, `team_save`, `team_delete`, `team_brief`
 (`crossProject` for the head's conversation), `team_leads`, `team_head`,
-`team_head_set`.
+`team_head_set`, `team_policy`, `team_policy_set`.
+
+### Agent policy and persistent prompts
+
+The **role** (2000 characters) says who an agent is and what it covers: it is
+what other agents and the front desk read when they choose whom to ask. Two
+more texts carry the rules an agent works BY, and only the agent itself reads
+them:
+
+- The **agent policy** (Settings → Agents, 4000 characters, `agent_policy` in
+  `team.json`) is the person's shared rules for every registered agent.
+- Each agent's **persistent prompt** (the agent form, 8000 characters,
+  `persistentPrompt` on the agent) holds its standing instructions: runbooks,
+  tool rules, build flows.
+
+`team::standing_brief` puts them, in that order and each only when non-empty,
+ahead of the agent's role in every brief it is launched with: a conversation
+the person starts (`lead_brief`), a handover and a front-desk route (the same
+brief), the front desk's own brief, an orchestration worker
+(`team::assignee_brief`, after the task's dispatch and before its memory) and
+a peer-help answer (`peer::helper_prompt`). Wherever an agent is LISTED to
+another (a lead's roster, the front desk's roster, a peer roster,
+`orchestration_destinations`, a route card) only its role is shown. An edit
+reaches new chats and new attempts; a chat already running keeps the brief it
+started with.
 
 ### Registering agents from a chat
 
-An agent can be asked to hire or adjust agents, through three MCP tools
+An agent can be asked to hire or adjust agents, through four MCP tools
 (`team_tools.rs`, `POST /hook/agents`):
 
 - `agent_list` reads the roster, the peer-help teams and the projects, with
-  their ids. It needs no approval.
+  their ids, each agent's `persistentPrompt`, and the `agentPolicy`. It needs
+  no approval.
 - `agent_register` and `agent_update` only **propose** a change. Projects,
   managers and teams may be named by id or by name. An update keeps every
   field it does not name, and `""` clears one that may be empty.
+- `agent_policy_update` only **proposes** a whole new agent policy (`""`
+  clears it), on the same card. It is saved with `team::set_policy_unchanged`,
+  so a policy edited meanwhile is not overwritten.
+
+The card lists an agent's role with its other fields, never its persistent
+prompt, except when the proposal itself sets or clears it: then the card shows
+the exact text that would be saved.
 
 The host turns a proposal into the draft the Settings form would send, and
 runs it through the same rules (`team::check`, the dry run of `team::save`). A

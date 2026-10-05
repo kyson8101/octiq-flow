@@ -20,6 +20,12 @@ const PREVIEW = 1200;
  *  the part you were not shown. High enough to hold a real one whole. */
 const WHOLE_PLAN = 8000;
 
+/** A change to the registered agents is shown whole too, and the host's
+ *  longest one is longer than a plan: an agent's 8000-character persistent
+ *  prompt beside its role moving from one 2000-character text to another
+ *  (`team_tools::describe`). Room for that, with its labels, and no cut. */
+export const WHOLE_CHANGE = 16000;
+
 export function askDetail(input: Record<string, unknown> | null | undefined): AskDetail | null {
   const bag = input ?? {};
   const read = (key: string): string => {
@@ -32,7 +38,7 @@ export function askDetail(input: Record<string, unknown> | null | undefined): As
   if (read("command")) return { label: "command", body: read("command"), limit: PREVIEW };
   // A change to the registered agents, worded by the host (`team_tools`). Like
   // a plan, it is the thing being decided, so it is shown whole.
-  if (read("change")) return { label: "change", body: read("change"), limit: WHOLE_PLAN };
+  if (read("change")) return { label: "change", body: read("change"), limit: WHOLE_CHANGE };
   if (read("plan")) return { label: "plan", body: read("plan"), limit: WHOLE_PLAN };
   if (read("content")) return { label: "content", body: read("content"), limit: PREVIEW };
   // Present-but-empty counts here, where it does not above: an edit whose

@@ -1398,6 +1398,7 @@ mod tests {
                     reports_to: None,
                     avatar: None,
                     team_id: None,
+                    persistent_prompt: None,
                 },
             )
             .unwrap()

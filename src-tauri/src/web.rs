@@ -1585,7 +1585,7 @@ async fn agents_hook(
     use crate::outcome::{ReasonClass, Refusal};
     use crate::team_tools::{Kind, Roster};
     let kind = match action {
-        "list" => None,
+        "list" | "policy_update" => None,
         "register" => Some(Kind::Register),
         "update" => Some(Kind::Update),
         _ => {
@@ -1610,16 +1610,28 @@ async fn agents_hook(
         &team,
         crate::workspaces::list_workspaces_impl(&ctx.services.workspaces)?,
     )?;
-    let Some(kind) = kind else {
+    if action == "list" {
         return Ok(crate::team_tools::listing(
             &roster,
             serde_json::from_value(args).map_err(invalid)?,
         )?);
-    };
+    }
     // A worker settles its own attempt; who is on the team is not its call.
     if ctx.services.orchestrations.active_task(chat_key)?.is_some() {
         return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead."));
     }
+    let Some(kind) = kind else {
+        let saved = crate::team_tools::propose_policy(
+            &roster,
+            &team,
+            chat_key,
+            serde_json::from_value(args).map_err(invalid)?,
+            crate::permission::ask,
+        )
+        .await?;
+        crate::bus::emit("team-changed", json!({ "policy": true }));
+        return Ok(crate::team_tools::policy_saved_text(&saved));
+    };
     let proposal = serde_json::from_value(args).map_err(invalid)?;
     let saved = crate::team_tools::propose(
         &roster,
@@ -2510,6 +2522,7 @@ mod tests {
                 reports_to: None,
                 avatar: None,
                 team_id: None,
+                persistent_prompt: None,
             },
         )
         .unwrap();
@@ -3007,6 +3020,9 @@ mod tests {
         "orchestration_bridge_close",
         "orchestration_task_access",
         "team_head_set",
+        // An agent only proposes these, on a card (`team_tools`).
+        "team_save",
+        "team_policy_set",
         // What makes a chat a front desk (hidden, route-only) is the
         // person's: the brief that records it and who the front desk is.
         "team_brief",
@@ -3089,6 +3105,7 @@ mod tests {
             team_id: None,
             created_at: 0,
             updated_at: 0,
+            persistent_prompt: String::new(),
         }
     }
 
