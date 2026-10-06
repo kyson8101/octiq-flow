@@ -190,8 +190,10 @@ impl OrchestrationStore {
 }
 
 pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
-    if matches!(run.status, RunStatus::Stopped | RunStatus::Completed)
-        || run.awaiting_plan_approval()
+    if matches!(
+        run.status,
+        RunStatus::Stopped | RunStatus::Completed | RunStatus::Closed
+    ) || run.awaiting_plan_approval()
     {
         return Vec::new();
     }
@@ -215,6 +217,7 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
                     }))
         })
         .count();
+    let mut writing = mission_writers(snapshot, run);
     snapshot
         .tasks
         .iter()
@@ -228,8 +231,48 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
                     .as_ref()
                     .is_none_or(|d| d.agent.is_some())
         })
+        .filter(|t| mission_writer_free(run, t, &mut writing))
         .take(usize::from(run.max_concurrent).saturating_sub(active))
         .cloned()
+        .collect()
+}
+
+/// A mission shares one worktree per repository, so at most one writer works
+/// in each at a time. A second writer started anyway would only be refused at
+/// launch, and that refusal settles its attempt as failed; it waits here
+/// instead. Readers share the checkout freely. `writing` carries the roots a
+/// writer holds, including one this wave just picked.
+fn mission_writer_free(run: &Run, task: &Task, writing: &mut BTreeSet<String>) -> bool {
+    if run.workspace_mode != crate::git_ops::workflow::WorkspaceMode::Mission {
+        return true;
+    }
+    let access = task
+        .worker
+        .as_ref()
+        .map(|w| w.access)
+        .or_else(|| run.worker_defaults.as_ref().map(|d| d.access));
+    if access == Some(Access::Read) {
+        return true;
+    }
+    let root = super::workspaces::task_root(run, task.destination.as_ref()).to_string();
+    writing.insert(root)
+}
+
+/// The repositories a mission's unsettled writers are working in.
+fn mission_writers(snapshot: &Snapshot, run: &Run) -> BTreeSet<String> {
+    snapshot
+        .attempts
+        .iter()
+        .filter(|a| a.access != Access::Read)
+        .filter(|a| {
+            matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running)
+                || (a.status == AttemptStatus::Blocked
+                    && snapshot.gates.iter().any(|g| {
+                        g.status == GateStatus::Open && g.task_id.as_deref() == Some(&a.task_id)
+                    }))
+        })
+        .filter_map(|a| snapshot.tasks.iter().find(|t| t.id == a.task_id))
+        .map(|t| super::workspaces::task_root(run, t.destination.as_ref()).to_string())
         .collect()
 }
 

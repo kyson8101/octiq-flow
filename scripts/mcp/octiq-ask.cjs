@@ -1719,7 +1719,7 @@ const ORCHESTRATION_RUN_CREATE = {
     properties: {
       objective: { type: "string", description: "The complete outcome the run must deliver." },
       maxConcurrent: { type: "integer", minimum: 1, maximum: 32, description: "Maximum simultaneous workers. Defaults to 4; direct mode uses 1." },
-      workspaceMode: { type: "string", enum: ["auto", "worktree", "direct"], description: "Auto isolates writers, worktree isolates every task, direct edits the current checkout. Retries retain their task workspace." },
+      workspaceMode: { type: "string", enum: ["mission", "auto", "worktree", "direct"], description: "Mission (the default) gives the run one worktree per repository on feature/mission-<run>, shared by its tasks one writer at a time, so follow-ups land on the same branch; it stays open until the person closes it. Auto isolates writers, worktree isolates every task, direct edits the current checkout. Retries retain their task workspace." },
       workerDefaults: WORKER_DEFAULTS_SCHEMA,
     },
     required: ["objective"],
@@ -2036,6 +2036,8 @@ const WORKSPACE_TOOLS = [
     inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
   { name: "orchestration_workspace_refresh", description: "Refresh Git and remote delivery evidence for a task: exact commit, dirty state, push, PR/review, and merge. Requires GitHub CLI for PR evidence. Worker completion alone is not delivery.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
+  { name: "orchestration_mission_refresh", description: "Ask Git where each of a mission's worktrees stands: merged into its base branch (by PR, or already in the remote base), and released by the project's release check. Records it on the run. Closing a mission is the person's, from the run panel; never claim one is merged or released from anything but this.",
+    inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
   { name: "orchestration_task_reopen", description: "Reopen a completed task for review fixes in its retained workspace. The next attempt gets a new ID. Merged, cleaned, abandoned workspaces and already-started dependants prevent reopening.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, spec: { type: "string" } }, required: ["taskId", "spec"] } },
   { name: "orchestration_task_accept", description: "Agents mode: accept a report's completed task after you have checked its result against the task's acceptance criteria. This is what pays the assignee the task's XP, once per task. Only the run's lead, or the manager who split a subtask, may accept; never your own task. Pass the completed attempt you reviewed; if it is no longer the current one, review again. A worker saying it finished is not acceptance.",

@@ -15,6 +15,18 @@ pub enum WorkspaceMode {
     Auto,
     Worktree,
     Direct,
+    /// One worktree per repository for the whole mission, on
+    /// `feature/mission-<run>`, shared by its tasks one writer at a time.
+    /// Follow-up work lands on the same branch; closing the mission is what
+    /// removes it.
+    Mission,
+}
+
+impl WorkspaceMode {
+    /// A managed linked worktree this workflow created and may remove.
+    pub fn is_worktree(self) -> bool {
+        matches!(self, WorkspaceMode::Worktree | WorkspaceMode::Mission)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -102,14 +114,17 @@ pub fn plan(
     let checkout = checkout_identity(&cwd)?;
     let is_repo = git(&checkout, &["rev-parse", "--git-common-dir"]).is_ok();
     if !is_repo {
-        if mode != WorkspaceMode::Direct {
+        // A mission in a folder with no Git history has nothing to branch:
+        // it works in the folder, like Current checkout, rather than failing
+        // every task it plans.
+        if !matches!(mode, WorkspaceMode::Direct | WorkspaceMode::Mission) {
             return Err(
                 "Worktree mode requires a Git repository. Select Current checkout for this folder."
                     .into(),
             );
         }
         return Ok(WorkspacePlan {
-            mode,
+            mode: WorkspaceMode::Direct,
             cwd: cwd.clone(),
             checkout_root: checkout.clone(),
             repository_root: checkout,
@@ -159,11 +174,20 @@ pub fn plan(
     let base = if base.is_empty() { &current } else { base };
     ensure_local_branch(&checkout, base)?;
     let base_sha = git(&checkout, &["rev-parse", &format!("refs/heads/{base}")])?;
-    let id = task_id.strip_prefix("task_").unwrap_or(task_id);
+    // A mission's workspace is keyed by its run, so every task in it plans the
+    // same branch and path; a task's own by the task.
+    let mission = mode == WorkspaceMode::Mission;
+    let id = task_id
+        .strip_prefix(if mission { "run_" } else { "task_" })
+        .unwrap_or(task_id);
     if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
         return Err("Invalid task ID for a workspace.".into());
     }
-    let branch = format!("feature/octiq-{id}");
+    let branch = if mission {
+        format!("feature/mission-{id}")
+    } else {
+        format!("feature/octiq-{id}")
+    };
     let mut target = primary
         .parent()
         .ok_or("Repository has no parent directory.")?
@@ -180,7 +204,11 @@ pub fn plan(
         .strip_prefix(&checkout)
         .map_err(|e| e.to_string())?;
     Ok(WorkspacePlan {
-        mode: WorkspaceMode::Worktree,
+        mode: if mission {
+            WorkspaceMode::Mission
+        } else {
+            WorkspaceMode::Worktree
+        },
         cwd: target.join(relative).to_string_lossy().into_owned(),
         checkout_root: target.to_string_lossy().into_owned(),
         repository_root: primary.to_string_lossy().into_owned(),
@@ -200,6 +228,11 @@ pub fn plan(
 /// workspace, anything already there belongs to someone else.
 pub fn occupied(plan: &WorkspacePlan) -> Option<String> {
     if !plan.managed {
+        return None;
+    }
+    // A mission's later tasks find its worktree already there, made by this
+    // workflow for this path — that is the point of it, not a collision.
+    if plan.mode == WorkspaceMode::Mission && owned_here(plan) {
         return None;
     }
     let branch = git(
@@ -222,6 +255,20 @@ pub fn occupied(plan: &WorkspacePlan) -> Option<String> {
             plan.branch, plan.checkout_root
         )),
     }
+}
+
+/// The plan's branch exists and records this very path as its owner — the
+/// mark `provision` leaves, and nothing else writes.
+fn owned_here(plan: &WorkspacePlan) -> bool {
+    git(
+        &plan.repository_root,
+        &[
+            "config",
+            "--get",
+            &format!("branch.{}.octiqWorkspace", plan.branch),
+        ],
+    )
+    .is_ok_and(|owner| owner == plan.checkout_root)
 }
 
 /// A persisted plan is written before this runs. Retrying uses the SAME branch
@@ -435,8 +482,73 @@ pub fn inspect(plan: &WorkspacePlan, check_remote: bool) -> Result<DeliveryEvide
     Ok(result)
 }
 
+/// Whether `head` is already in the base branch on its remote, read without
+/// the mission branch ever having been pushed: a lead who fast-forwards the
+/// base locally and pushes it leaves exactly this behind, and no PR. The
+/// remote is the base branch's own, else `origin`. Asks the remote; never
+/// fetches. `None` when the remote could not be asked, or the tip it names is
+/// not here to compare against.
+pub fn merged_into_remote_base(plan: &WorkspacePlan, head: &str) -> Option<bool> {
+    if !plan.is_repo || plan.base_branch.is_empty() || head.is_empty() {
+        return None;
+    }
+    let remote = git(
+        &plan.repository_root,
+        &[
+            "config",
+            "--get",
+            &format!("branch.{}.remote", plan.base_branch),
+        ],
+    )
+    .ok()
+    .filter(|r| r != "." && !r.starts_with('-'))
+    .unwrap_or_else(|| "origin".into());
+    let tip = git(
+        &plan.repository_root,
+        &[
+            "ls-remote",
+            "--exit-code",
+            &remote,
+            &format!("refs/heads/{}", plan.base_branch),
+        ],
+    )
+    .ok()?;
+    let sha = tip.split_whitespace().next()?.to_string();
+    git(
+        &plan.repository_root,
+        &["cat-file", "-e", &format!("{sha}^{{commit}}")],
+    )
+    .ok()?;
+    Some(
+        git(
+            &plan.repository_root,
+            &["merge-base", "--is-ancestor", head, &sha],
+        )
+        .is_ok(),
+    )
+}
+
+/// Delete a closed mission's LOCAL branch, with `-d`: Git itself refuses one
+/// that is not merged, so this can never lose a commit. The remote branch is
+/// never touched. `Ok(false)` when Git kept it — a squash merge, say — which
+/// is reported, not forced.
+pub fn delete_merged_branch(plan: &WorkspacePlan) -> Result<bool, String> {
+    if !plan.managed || plan.mode != WorkspaceMode::Mission || !owned_here(plan) {
+        return Ok(false);
+    }
+    if Path::new(&plan.checkout_root).exists() {
+        return Err("Remove the mission's worktree before its branch.".into());
+    }
+    Ok(run_git_mut(
+        &plan.repository_root,
+        &["branch", "-d", &plan.branch],
+        false,
+    )
+    .is_ok())
+}
+
 pub fn cleanup(plan: &WorkspacePlan, expected_head: &str) -> Result<(), String> {
-    if !plan.managed || plan.mode != WorkspaceMode::Worktree {
+    if !plan.managed || !plan.mode.is_worktree() {
         return Err(
             "Current checkout and adopted workspaces are never removed automatically.".into(),
         );
@@ -578,6 +690,17 @@ pub(crate) mod tests {
             self.git(&["remote", "add", "origin", &remote.to_string_lossy()]);
             self.git(&["push", "-u", "origin", "main"]);
         }
+    }
+    pub(crate) fn push_branch(cwd: &str, branch: &str) {
+        git(cwd, &["push", "-u", "origin", branch]).unwrap();
+    }
+    #[test]
+    fn a_mission_in_a_folder_without_git_works_in_place() {
+        let dir = crate::test_dir::TestDir::new("workflow-plain").canonicalized();
+        let root = dir.to_string_lossy().into_owned();
+        let p = plan(&root, "", "run_abc", WorkspaceMode::Mission).unwrap();
+        assert_eq!(p.mode, WorkspaceMode::Direct);
+        assert!(!p.managed && p.branch.is_empty());
     }
     #[test]
     fn stable_allocation_preserves_primary_and_disables_inherited_tracking() {

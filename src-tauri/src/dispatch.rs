@@ -980,8 +980,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 workspace_id,
                 root_path,
                 arg(&args, "maxConcurrent")?,
+                // Code-changing work is a mission unless the caller says
+                // otherwise: one worktree per repository, open until closed.
                 arg::<Option<crate::git_ops::workflow::WorkspaceMode>>(&args, "workspaceMode")?
-                    .unwrap_or_default(),
+                    .unwrap_or(crate::git_ops::workflow::WorkspaceMode::Mission),
             )?;
             let run = if let Some(defaults) = defaults {
                 svc.orchestrations
@@ -1534,6 +1536,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "runId")?,
             arg(&args, "archived")?,
+        )),
+        // The person's, like workspace cleanup: absent from the agents' hook.
+        "orchestration_mission_refresh" => to_value(svc.orchestrations.refresh_mission(
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+        )),
+        "orchestration_mission_close" => to_value(svc.orchestrations.close_mission(
+            &svc.chats,
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+            arg::<Option<bool>>(&args, "abandon")?.unwrap_or(false),
         )),
         "orchestration_workspace_cleanup" => to_value(svc.orchestrations.cleanup_workspace(
             &svc.chats,
