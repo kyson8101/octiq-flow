@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { bridge } from "../lib/bridge";
 import { useDockWidth } from "../lib/dockWidth";
-import { previewSlots, type ImagePreview } from "../lib/imagePreview";
+import { previewBlob, previewObjectUrl, previewSlots, readyObjectUrl, type ImagePreview } from "../lib/imagePreview";
 import { recall, remember } from "../lib/remember";
 import { Viewer } from "./Viewer";
 import "./ImagePreviewPanel.css";
@@ -15,17 +15,14 @@ export function PreviewButton({ count, open, onClick }: { count: number; open: b
 }
 
 function Picture({ image, className }: { image: ImagePreview; className?: string }) {
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(() => readyObjectUrl(image.path));
   const [error, setError] = useState(false);
   useEffect(() => {
     let alive = true;
-    let made = "";
-    setUrl(""); setError(false);
-    bridge.fetchFile(image.path).then(blob => {
-      if (!alive) return;
-      made = URL.createObjectURL(blob); setUrl(made);
-    }).catch(() => alive && setError(true));
-    return () => { alive = false; if (made) URL.revokeObjectURL(made); };
+    setUrl(readyObjectUrl(image.path)); setError(false);
+    // The cache owns the object URL; it is revoked on eviction, not unmount.
+    previewObjectUrl(image.path).then(made => alive && setUrl(made)).catch(() => alive && setError(true));
+    return () => { alive = false; };
   }, [image.path]);
   if (error) return <span role="status">Image unavailable</span>;
   return url ? <img className={className} src={url} alt={image.title} draggable={false} onError={() => setError(true)} /> : <span className="preview-loading">Loading…</span>;
@@ -41,7 +38,7 @@ function HtmlPreview({ document }: { document: ImagePreview }) {
   useEffect(() => {
     let alive = true;
     setHtml(null); setError("");
-    bridge.fetchFile(document.path).then(blob => blob.text()).then(text => alive && setHtml(text))
+    previewBlob(document.path).then(blob => blob.text()).then(text => alive && setHtml(text))
       .catch(() => alive && setError("Document unavailable"));
     return () => { alive = false; };
   }, [document.path]);

@@ -20,6 +20,50 @@ export function previewSlots(images: ImagePreview[]): PreviewSlot[] {
     .map(({ slot, versions }) => ({ slot, versions }));
 }
 
+/** Snapshots are immutable — a new version is a new file named by its id — so
+ *  a fetched one is good forever. Without this every panel open, chat switch
+ *  and thumbnail re-downloaded every full-size image. Bounded by bytes; the
+ *  least recently used go first. */
+const FILE_CACHE_BYTES = 96 * 1024 * 1024;
+type CachedFile = { blob: Promise<Blob>; size: number; url?: string };
+const files = new Map<string, CachedFile>();
+
+function evict() {
+  let total = 0;
+  for (const entry of files.values()) total += entry.size;
+  for (const [path, entry] of files) {
+    if (total <= FILE_CACHE_BYTES || files.size <= 1) break;
+    files.delete(path);
+    total -= entry.size;
+    if (entry.url) URL.revokeObjectURL(entry.url);
+  }
+}
+
+function cachedFile(path: string): CachedFile {
+  let entry = files.get(path);
+  if (entry) { files.delete(path); files.set(path, entry); return entry; }
+  const fresh: CachedFile = { size: 0, blob: bridge.fetchFile(path) };
+  fresh.blob.then(blob => { fresh.size = blob.size; evict(); }, () => files.delete(path));
+  files.set(path, fresh);
+  return fresh;
+}
+
+export const previewBlob = (path: string): Promise<Blob> => cachedFile(path).blob;
+
+export async function previewObjectUrl(path: string): Promise<string> {
+  const entry = cachedFile(path);
+  const blob = await entry.blob;
+  entry.url ??= URL.createObjectURL(blob);
+  return entry.url;
+}
+
+/** The URL already made for `path`, so a remount paints in the first frame. */
+export const readyObjectUrl = (path: string): string => files.get(path)?.url ?? "";
+
+/** The last list each chat returned, so coming back to a chat shows its
+ *  previews at once while the refresh runs behind them. */
+const lists = new Map<string, ImagePreview[]>();
+
 const preferenceKey = (key: string) => `octiq.preview.${key}.open`;
 type State = { key: string; images: ImagePreview[]; error: string; open: boolean };
 export function useImagePreviews(key: string, busy: boolean) {
@@ -35,6 +79,7 @@ export function useImagePreviews(key: string, busy: boolean) {
       try {
         const images = await bridge.invoke<ImagePreview[]>("image_preview_list", { key });
         if (!alive) return;
+        lists.set(key, images);
         const pref = recall(preferenceKey(key));
         const first = pref === null && images.length > 0 && !openedOnce.current.has(key);
         if (first) {
@@ -55,7 +100,8 @@ export function useImagePreviews(key: string, busy: boolean) {
     document.addEventListener("visibilitychange", refresh);
     return () => { alive = false; clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
   }, [key, busy]);
-  const current = state.key === key ? state : { key, images: [], error: "", open: false };
+  const current = state.key === key ? state
+    : { key, images: lists.get(key) ?? [], error: "", open: !!key && recall(preferenceKey(key)) === "1" };
   function setOpen(open: boolean) {
     openedOnce.current.add(key);
     remember(preferenceKey(key), open ? "1" : "0");

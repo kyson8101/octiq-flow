@@ -1,7 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
-import { previewSlots, type ImagePreview } from "./imagePreview";
+import { previewBlob, previewSlots, type ImagePreview } from "./imagePreview";
 
-vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
+const fetchFile = vi.hoisted(() => vi.fn(async (path: string) => new Blob([path])));
+vi.mock("./bridge", () => ({ bridge: { invoke: async () => [], fetchFile } }));
+
+describe("previewBlob", () => {
+  it("downloads an immutable snapshot once, however often it is shown", async () => {
+    const first = await previewBlob("/p/once.png");
+    const again = await previewBlob("/p/once.png");
+    expect(again).toBe(first);
+    expect(fetchFile.mock.calls.filter(([path]) => path === "/p/once.png")).toHaveLength(1);
+  });
+
+  it("evicts the least recently used once over its byte budget", async () => {
+    const big = 60 * 1024 * 1024;
+    fetchFile.mockImplementation(async () => ({ size: big }) as Blob);
+    await previewBlob("/p/a.png");
+    await previewBlob("/p/b.png");
+    await previewBlob("/p/a.png");
+    const before = fetchFile.mock.calls.length;
+    await previewBlob("/p/b.png");
+    expect(fetchFile.mock.calls.length).toBe(before + 1);
+  });
+});
 
 const image = (id: string, slot: string, createdAt: number): ImagePreview =>
   ({ id, slot, title: slot, path: `/${id}.png`, createdAt });
