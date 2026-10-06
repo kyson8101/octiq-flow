@@ -124,6 +124,49 @@ function patchDiff(path: string, d: Json): FileDiff | null {
   return count({ path, kind: created ? "create" : "edit", rows, numbered: true });
 }
 
+/** The absolute paths a Codex `file_change` names. Its `changes` carry a path
+ *  and a kind (`add` / `update` / `delete`) and no content, so these are the
+ *  files to ask git about. A relative path has no folder to resolve against
+ *  here and is left out rather than guessed at. */
+export function changedPaths(name: string, args: unknown): string[] {
+  if ((name || "").toLowerCase() !== "file_change") return [];
+  const changes = obj(args).changes;
+  if (!Array.isArray(changes)) return [];
+  const paths = changes.map((c) => str(obj(c).path)).filter((p) => /^(\/|[A-Za-z]:[\\/])/.test(p));
+  return [...new Set(paths)];
+}
+
+/** `git diff` text, drawn the same way as the agent's own patch. For a change
+ *  whose stream carries no content — Codex's `file_change` names the files and
+ *  nothing else — so the only record of it is what git sees in the file now. */
+export function unifiedDiff(path: string, text: string): FileDiff {
+  const rows: DiffRow[] = [];
+  const created = /^(new file mode|--- \/dev\/null)/m.test(text);
+  let o = 0;
+  let n = 0;
+  let prevEnd = 0;
+  let inHunk = false;
+  for (const line of text.split("\n")) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunk) {
+      o = Number(hunk[1]) || 1;
+      n = Number(hunk[2]) || 1;
+      if (rows.length) rows.push({ kind: "gap", text: gapText(n - prevEnd) });
+      inHunk = true;
+      continue;
+    }
+    // Headers (`diff --git`, `index`, `---`, `+++`) only come before a hunk.
+    if (!inHunk || line.startsWith("\\")) continue;
+    if (line.startsWith("diff --git")) { inHunk = false; continue; }
+    const body = line.slice(1);
+    if (line.startsWith("+")) rows.push({ kind: "add", new: n++, text: body });
+    else if (line.startsWith("-")) rows.push({ kind: "del", old: o++, text: body });
+    else if (line.startsWith(" ")) rows.push({ kind: "ctx", old: o++, new: n++, text: body });
+    prevEnd = n;
+  }
+  return count({ path, kind: created ? "create" : "edit", rows, numbered: true });
+}
+
 function gapText(skipped: number): string {
   if (skipped <= 0) return "⋯";
   return `⋯ ${skipped} unchanged line${skipped === 1 ? "" : "s"}`;

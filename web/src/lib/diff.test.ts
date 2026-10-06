@@ -16,7 +16,7 @@
 import { describe, expect, it } from "vitest";
 
 import editStream from "./__fixtures__/file-edits.jsonl?raw";
-import { fileDiff, lineDiff } from "./diff";
+import { changedPaths, fileDiff, lineDiff, unifiedDiff } from "./diff";
 
 /** The result of an Edit that changed `beta` to `BETA` in a four-line file. */
 const EDIT_RESULT = {
@@ -222,5 +222,47 @@ describe("lineDiff", () => {
   it("handles an empty side", () => {
     expect(lineDiff([], ["a"]).map((r) => r.kind)).toEqual(["add"]);
     expect(lineDiff(["a"], []).map((r) => r.kind)).toEqual(["del"]);
+  });
+});
+
+describe("a change read back from git", () => {
+  // Verbatim `git diff HEAD -M -- f.txt` output.
+  const text = [
+    "diff --git a/f.txt b/f.txt",
+    "index de98044..a7bc997 100644",
+    "--- a/f.txt",
+    "+++ b/f.txt",
+    "@@ -1,3 +1,4 @@",
+    " a",
+    "-b",
+    "+B",
+    " c",
+    "+d",
+    "",
+  ].join("\n");
+
+  it("numbers each line against its own side and skips the headers", () => {
+    const diff = unifiedDiff("/repo/f.txt", text);
+    expect(diff.kind).toBe("edit");
+    expect(diff.numbered).toBe(true);
+    expect(diff.rows).toEqual([
+      { kind: "ctx", old: 1, new: 1, text: "a" },
+      { kind: "del", old: 2, text: "b" },
+      { kind: "add", new: 2, text: "B" },
+      { kind: "ctx", old: 3, new: 3, text: "c" },
+      { kind: "add", new: 4, text: "d" },
+    ]);
+    expect([diff.added, diff.removed]).toEqual([2, 1]);
+  });
+
+  it("calls a file git has no HEAD side for a new file", () => {
+    expect(unifiedDiff("/repo/n.txt", "--- /dev/null\n+++ b/n.txt\n@@ -0,0 +1 @@\n+hi\n").kind).toBe("create");
+  });
+
+  it("asks git only about a Codex change's absolute paths, once each", () => {
+    const args = { changes: [{ path: "/repo/a.ts", kind: "update" }, { path: "/repo/a.ts", kind: "update" },
+      { path: "rel/b.ts", kind: "add" }, { path: "C:\\repo\\c.ts", kind: "add" }] };
+    expect(changedPaths("file_change", args)).toEqual(["/repo/a.ts", "C:\\repo\\c.ts"]);
+    expect(changedPaths("Edit", args)).toEqual([]);
   });
 });

@@ -34,6 +34,20 @@ export function isImage(path: string): boolean {
   return IMAGE_EXT.has(fileExt(path));
 }
 
+/** Played by the browser's own player. The same extensions the backend's
+ *  `/file` route gives a playable type to; anything else would arrive as
+ *  `octet-stream` and the player would refuse it. */
+const VIDEO_EXT = new Set(["mp4", "m4v", "mov", "webm", "ogv"]);
+const AUDIO_EXT = new Set(["mp3", "m4a", "aac", "wav", "ogg", "oga", "opus", "flac"]);
+
+export function isVideo(path: string): boolean {
+  return VIDEO_EXT.has(fileExt(path));
+}
+
+export function isAudio(path: string): boolean {
+  return AUDIO_EXT.has(fileExt(path));
+}
+
 export function isPdf(path: string): boolean {
   return fileExt(path) === "pdf";
 }

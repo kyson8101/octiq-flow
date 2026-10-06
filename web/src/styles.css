@@ -2763,6 +2763,99 @@ body {
   animation: pulse 1.2s ease-in-out infinite;
 }
 
+/* Video, audio, PDF and HTML the reply named — see components/ProseMedia.
+   Spans for the same reason as `.prose-shot`: they sit inside a paragraph. */
+.prose-media {
+  display: block;
+  margin: 8px 0 4px;
+  max-width: min(100%, 520px);
+}
+
+.prose-media video {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: #000;
+}
+
+.prose-media audio {
+  display: block;
+  width: 100%;
+  height: 40px;
+}
+
+.prose-media iframe {
+  display: block;
+  width: 100%;
+  height: 360px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: #fff;
+}
+
+.prose-media-wait {
+  display: block;
+  height: 110px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.prose-media.is-audio .prose-media-wait { height: 40px; }
+
+.prose-page-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  line-height: 1.3;
+}
+
+.prose-page-icon {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.prose-page-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+.prose-page-card button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 160ms ease-out, color 160ms ease-out;
+}
+
+.prose-page-card button:hover { background: var(--bg-2); color: var(--fg-0); }
+.prose-page-card button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.prose-page-stage { display: block; margin-top: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .prose-media-wait { animation: none; }
+}
+
 /* A Codex `visualize` content reference, reduced to the one useful thing in
    chat: a clean link to the document, without its protocol delimiters or JSON. */
 .visualization-link {

@@ -18,11 +18,12 @@ import type React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Block } from "../lib/chat";
-import { fileDiff } from "../lib/diff";
+import { changedPaths, fileDiff } from "../lib/diff";
 import { parseSkillBrief } from "../lib/skillRun";
 import { askAnswer } from "../lib/askAnswer";
 import { commandTool, toolDetail, toolLook } from "../lib/toolKind";
 import { DiffStat, DiffView } from "./DiffView";
+import { GitChangeDiff } from "./GitChangeDiff";
 import { baseOf, dirOf } from "../lib/folderHead";
 import { ToolIcon, ToolState } from "./ToolIcon";
 import { useStillRunning } from "./Background";
@@ -122,6 +123,7 @@ export function ToolCard({
   //
   // Read here rather than further down because the open state below needs it.
   const diff = fileDiff(tool.name, tool.args, tool.details);
+  const gitPaths = diff || tool.state === "running" ? [] : changedPaths(tool.name, tool.args);
   // A card holding a change opens itself. What the agent CHANGED is the one
   // thing on a turn worth reading without having to ask for it, and a diff
   // behind a fold is a diff nobody reads — the group only says a file changed.
@@ -341,9 +343,20 @@ export function ToolCard({
                 </div>
               </>
             )}
+            {/* Codex names the files it changed and nothing more; git is
+              asked what is in them now. See GitChangeDiff. */}
+            {gitPaths.map((path) => (
+              <div key={path}>
+                <div className="tool-label">
+                  {gitPaths.length > 1 ? path.split(/[\\/]/).pop() : "changes"}
+                  <span className="tool-note">uncommitted, against HEAD</span>
+                </div>
+                <GitChangeDiff path={path} />
+              </div>
+            ))}
             {/* The arguments of a file edit ARE the diff above, said twice as
               long, so they go only when there is no diff to say it better. */}
-            {!diff && !brief && argsText(tool) && (
+            {!diff && !gitPaths.length && !brief && argsText(tool) && (
               <>
                 <div className="tool-label">arguments</div>
                 <pre className="tool-pre">{argsText(tool)}</pre>

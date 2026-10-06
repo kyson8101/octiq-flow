@@ -882,28 +882,51 @@ fn serve_file(ctx: &Ctx, q: FileQuery, headers: &axum::http::HeaderMap) -> Respo
     if !path.is_absolute() || !path.is_file() {
         return (StatusCode::NOT_FOUND, "not a file").into_response();
     }
-    // Bounded so a stray click on a multi-gigabyte log cannot pull it into a
-    // phone's memory.
-    match std::fs::metadata(&path) {
-        Ok(meta) if meta.len() > 32 * 1024 * 1024 => {
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "file is too large to preview",
-            )
-                .into_response();
-        }
+    let len = match std::fs::metadata(&path) {
+        Ok(meta) => meta.len(),
         Err(_) => return (StatusCode::NOT_FOUND, "not a file").into_response(),
-        _ => {}
-    }
-
+    };
     let mime = file_mime(&path);
     let html = matches!(mime, "text/html; charset=utf-8");
+
+    // Audio and video are played where the chat names them, and a player asks
+    // for byte ranges: Safari will not play a file served without them, and
+    // seeking needs them everywhere. A range is read on its own, so a long
+    // recording streams in slices instead of meeting the whole-file cap below.
+    let media = mime.starts_with("video/") || mime.starts_with("audio/");
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .filter(|_| media)
+        .map(|v| byte_range(v, len));
+    match range {
+        Some(Some((start, end))) => return serve_range(&path, mime, start, end, len),
+        Some(None) => {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+                .body(Body::empty())
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+        None => {}
+    }
+
+    // Bounded so a stray click on a multi-gigabyte log cannot pull it into a
+    // phone's memory.
+    if len > 32 * 1024 * 1024 {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "file is too large to preview",
+        )
+            .into_response();
+    }
 
     match std::fs::read(&path) {
         Ok(bytes) => {
             let mut response = Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime)
+                .header(header::ACCEPT_RANGES, if media { "bytes" } else { "none" })
                 .header(header::CACHE_CONTROL, "no-store")
                 .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
             // This is agent-authored HTML served beside an endpoint that can
@@ -918,6 +941,65 @@ fn serve_file(ctx: &Ctx, q: FileQuery, headers: &axum::http::HeaderMap) -> Respo
                 .body(Body::from(bytes))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
+        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
+}
+
+/// The most one ranged read hands back. A player asking for `bytes=0-` wants
+/// "from here on", and takes a shorter answer and asks again.
+const RANGE_SLICE: u64 = 8 * 1024 * 1024;
+
+/// One `bytes=` range against a file `len` long, as inclusive offsets, cut to
+/// `RANGE_SLICE`. `None` when it cannot be satisfied — including a list of
+/// several ranges, which no media element sends.
+fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
+    let spec = header.trim().strip_prefix("bytes=")?;
+    if spec.contains(',') || len == 0 {
+        return None;
+    }
+    let (from, to) = spec.split_once('-')?;
+    let (from, to) = (from.trim(), to.trim());
+    let (start, end) = if from.is_empty() {
+        // `bytes=-N`: the last N bytes.
+        let n: u64 = to.parse().ok().filter(|n| *n > 0)?;
+        (len.saturating_sub(n), len - 1)
+    } else {
+        let start: u64 = from.parse().ok()?;
+        let end = if to.is_empty() {
+            len - 1
+        } else {
+            to.parse::<u64>().ok()?.min(len - 1)
+        };
+        (start, end)
+    };
+    if start >= len || start > end {
+        return None;
+    }
+    Some((start, end.min(start + RANGE_SLICE - 1)))
+}
+
+fn serve_range(path: &Path, mime: &str, start: u64, end: u64, len: u64) -> Response {
+    use std::io::{Read, Seek, SeekFrom};
+    let read = || -> std::io::Result<Vec<u8>> {
+        let mut file = std::fs::File::open(path)?;
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::with_capacity((end - start + 1) as usize);
+        file.take(end - start + 1).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    };
+    match read() {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_TYPE, mime)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(
+                header::CONTENT_RANGE,
+                format!("bytes {start}-{}/{len}", start + bytes.len() as u64 - 1),
+            )
+            .header(header::CACHE_CONTROL, "no-store")
+            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
 }
@@ -941,6 +1023,12 @@ fn file_mime(path: &std::path::Path) -> &'static str {
         Some("mov") => "video/quicktime",
         Some("webm") => "video/webm",
         Some("ogv") => "video/ogg",
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("wav") => "audio/wav",
+        Some("ogg") | Some("oga") | Some("opus") => "audio/ogg",
+        Some("flac") => "audio/flac",
         Some("pdf") => "application/pdf",
         Some("html") | Some("htm") => "text/html; charset=utf-8",
         _ => "application/octet-stream",
@@ -2058,6 +2146,50 @@ mod tests {
         ] {
             assert_eq!(file_mime(std::path::Path::new(name)), expected);
         }
+    }
+
+    #[test]
+    fn audio_files_are_served_with_playable_content_types() {
+        for (name, expected) in [
+            ("take.mp3", "audio/mpeg"),
+            ("take.M4A", "audio/mp4"),
+            ("take.wav", "audio/wav"),
+            ("take.ogg", "audio/ogg"),
+            ("take.flac", "audio/flac"),
+        ] {
+            assert_eq!(file_mime(std::path::Path::new(name)), expected);
+        }
+    }
+
+    #[test]
+    fn a_media_range_is_read_as_inclusive_offsets_and_sliced() {
+        assert_eq!(byte_range("bytes=0-1", 100), Some((0, 1)));
+        assert_eq!(byte_range("bytes=10-", 100), Some((10, 99)));
+        assert_eq!(byte_range("bytes=90-500", 100), Some((90, 99)));
+        assert_eq!(byte_range("bytes=-10", 100), Some((90, 99)));
+        // A player asking for "everything from here" gets one slice.
+        let big = RANGE_SLICE * 4;
+        assert_eq!(byte_range("bytes=0-", big), Some((0, RANGE_SLICE - 1)));
+        for unsatisfiable in [
+            "bytes=100-",
+            "bytes=5-2",
+            "bytes=0-1,4-5",
+            "items=0-1",
+            "bytes=-0",
+            "bytes=a-b",
+        ] {
+            assert_eq!(byte_range(unsatisfiable, 100), None, "{unsatisfiable}");
+        }
+        assert_eq!(byte_range("bytes=0-", 0), None);
+    }
+
+    #[test]
+    fn a_ranged_read_returns_exactly_that_slice() {
+        let file = crate::test_dir::TestPath::new("range", "range.mp3");
+        std::fs::write(&*file, b"0123456789").unwrap();
+        let response = serve_range(&file, "audio/mpeg", 2, 5, 10);
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 2-5/10");
     }
 
     #[test]

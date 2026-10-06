@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { bridge } from "../lib/bridge";
 import { useDockWidth } from "../lib/dockWidth";
+import { HTML_SANDBOX } from "../lib/htmlSandbox";
 import { previewBlob, previewObjectUrl, previewSlots, readyObjectUrl, type ImagePreview } from "../lib/imagePreview";
 import { recall, remember } from "../lib/remember";
 import { Viewer } from "./Viewer";
@@ -27,10 +28,6 @@ function Picture({ image, className }: { image: ImagePreview; className?: string
   if (error) return <span role="status">Image unavailable</span>;
   return url ? <img className={className} src={url} alt={image.title} draggable={false} onError={() => setError(true)} /> : <span className="preview-loading">Loading…</span>;
 }
-
-// Same grants as the backend's HTML_FILE_CSP. Never add allow-same-origin: a
-// srcdoc frame would then share this page's origin, token and localStorage.
-const HTML_SANDBOX = "allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads";
 
 function HtmlPreview({ document }: { document: ImagePreview }) {
   const [html, setHtml] = useState<string | null>(null);

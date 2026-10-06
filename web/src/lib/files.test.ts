@@ -8,7 +8,7 @@
 // depend on the machine's timezone.
 import { describe, expect, it } from "vitest";
 
-import { fileExt, fileTypes, formatModified, isHtml, modifiedTitle, typeLabel } from "./files";
+import { fileExt, fileTypes, formatModified, isAudio, isHtml, isVideo, modifiedTitle, typeLabel } from "./files";
 
 describe("fileExt", () => {
   it("takes the extension from the NAME, not the path", () => {
@@ -93,3 +93,11 @@ describe("formatModified", () => {
   });
 });
 
+
+describe("media the chat can play", () => {
+  it("knows video and audio by the extensions /file gives a playable type", () => {
+    expect(["a.mp4", "a.MOV", "a.webm"].every(isVideo)).toBe(true);
+    expect(["a.mp3", "a.M4A", "a.wav", "a.flac", "a.ogg"].every(isAudio)).toBe(true);
+    expect(isVideo("a.mp3") || isAudio("a.mp4") || isVideo("a.mkv")).toBe(false);
+  });
+});

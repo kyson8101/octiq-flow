@@ -13,8 +13,9 @@
 // When it is not, the word turns into a link a moment later, which is the one
 // place this shows its working.
 import { createContext, useContext, useEffect, useSyncExternalStore } from "react";
-import { baseName, isImage } from "../lib/files";
+import { baseName, isAudio, isHtml, isImage, isPdf, isVideo } from "../lib/files";
 import { askPaths, knownPath, subscribePaths } from "../lib/pathStore";
+import { ProsePage, ProsePdf, ProsePlayer } from "./ProseMedia";
 import { ProseShot } from "./ProseShot";
 import { ConversationFileActions } from "./ConversationFileActions";
 
@@ -52,6 +53,12 @@ export function ProsePath({
   if (!path || !target) return code ? <code>{children}</code> : <>{children}</>;
 
   const picture = isImage(target);
+  const shown = picture ? <ProseShot path={target} />
+    : isVideo(target) ? <ProsePlayer path={target} kind="video" />
+      : isAudio(target) ? <ProsePlayer path={target} kind="audio" />
+        : isPdf(target) ? <ProsePdf path={target} />
+          : isHtml(target) ? <ProsePage path={target} />
+            : null;
 
   const link = (
     <ConversationFileActions path={target} code={!!code}>
@@ -64,13 +71,14 @@ export function ProsePath({
     </ConversationFileActions>
   );
 
-  // A picture also SHOWS itself. The name stays a link and keeps its place in
-  // the sentence; the picture goes under it — see components/ProseShot.
-  if (!picture) return link;
+  // A picture also SHOWS itself, and so do media, PDFs and pages. The name
+  // stays a link and keeps its place in the sentence; the file goes under it —
+  // see components/ProseShot and components/ProseMedia.
+  if (!shown) return link;
   return (
     <>
       {link}
-      <ProseShot path={target} />
+      {shown}
     </>
   );
 }

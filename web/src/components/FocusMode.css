@@ -285,7 +285,7 @@ html[data-zen-transition="options"]::view-transition-new(*) { animation: zen-arr
 
 .app.focus-mode .tool-expand { box-shadow: none; }
 
-.app.focus-mode :is(.roll.is-fresh, .dots, .prose-shot-wait, .compacted-line.is-running),
+.app.focus-mode :is(.roll.is-fresh, .dots, .prose-shot-wait, .prose-media-wait, .compacted-line.is-running),
 .app.focus-mode .prose.is-typing > :last-child::after {
   animation: none;
 }
