@@ -4523,6 +4523,18 @@ pub fn chat_set_access_impl(
     key: String,
     access: Access,
 ) -> Result<(), String> {
+    // A front desk's access is fixed at launch (read-only, `dontAsk` on
+    // Claude), and every relaunch forces it again. A live switch would only
+    // move it into another mode, so the change is accepted and not applied.
+    // Not an error: the client answers an error with a restart.
+    if manager
+        .front_desks
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(&key)
+    {
+        return Ok(());
+    }
     if let Some(start) = manager.start_context(&key) {
         for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
             manager

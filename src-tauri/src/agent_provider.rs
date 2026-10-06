@@ -534,7 +534,13 @@ impl AgentProvider for ClaudeProvider {
         if let Some(model) = request.model.and_then(safe_model) {
             cmd.push_str(&format!(" --model {}", sh_quote(&model)));
         }
-        if let Some(access) = request.access {
+        if request.front_desk {
+            // A front desk's mode never comes from its access. `dontAsk` runs
+            // what the allow rules name (`route_chat`, below) and refuses the
+            // rest without a card. `plan` would ask about `route_chat` before
+            // the allow rule is read, and Full must never reach a front desk.
+            cmd.push_str(" --permission-mode dontAsk");
+        } else if let Some(access) = request.access {
             // Claude refuses a live switch TO `bypassPermissions` unless the
             // process itself was launched in bypass mode. Starting Full this
             // way makes the requested level real, and a later switch up is
@@ -2120,6 +2126,9 @@ pub(crate) mod tests {
             preferences: None,
         });
         assert!(line.contains(" --tools ''"), "no built-in tool: {line}");
+        assert!(line.contains(" --permission-mode dontAsk"), "{line}");
+        assert_eq!(line.matches("--permission-mode").count(), 1, "{line}");
+        assert!(!line.contains("--dangerously-skip-permissions"), "{line}");
         assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
         assert!(
             line.contains("--allowedTools mcp__octiq__route_chat --system-prompt"),

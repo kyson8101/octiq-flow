@@ -1304,6 +1304,10 @@ const ROUTE_CHAT = {
     required: ["agent", "brief", "requestId"],
     additionalProperties: false,
   },
+  // Read-only from the agent's side: it only shows a card, and nothing is
+  // created until the person confirms. It must say so, or Claude's plan mode
+  // (a front desk runs read-only) asks before the --allowedTools rule is read.
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 };
 
 const HANDOVER_ASK = {

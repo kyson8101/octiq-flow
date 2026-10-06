@@ -58,6 +58,8 @@ test("a front desk is offered route_chat and nothing else; other chats are not o
   assert.deepEqual(tool.inputSchema.required, ["agent", "brief", "requestId"]);
   assert.ok(!("model" in tool.inputSchema.properties) && !("access" in tool.inputSchema.properties));
   assert.match(tool.description, /nothing is created unless THEY confirm/);
+  // Without it Claude's plan mode asks before the allow rule is consulted.
+  assert.equal(tool.annotations?.readOnlyHint, true, "route_chat is read-only");
 
   const init = await mcp({ OCTIQ_CHAT_KEY: "chat:desk", OCTIQ_FRONT_DESK: "1" }, "initialize", {});
   assert.match(init.result.instructions, /You are a front desk/);

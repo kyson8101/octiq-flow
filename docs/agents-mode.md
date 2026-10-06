@@ -111,7 +111,9 @@ designated, the page is the plain picker above.
   unfinished. Only the designated front desk's own chats are offered. After
   the next start removes the transcript, nothing is offered for it.
 - **It only routes.** Every launch runs read-only and lite. On Claude it has
-  no built-in tools, only `mcp__octiq__route_chat`, and its own system prompt.
+  no built-in tools, only `mcp__octiq__route_chat`, and its own system prompt,
+  in permission mode `dontAsk` (never `plan`, which asks about a tool the
+  allow rules name; never Full). A live access change on it is ignored.
   Its MCP offers nothing else. Every other agent hook refuses it by identity
   (`web::not_front_desk`). Codex has no single tool switch, so a Codex front
   desk is launched with every feature that brings a tool turned off (shell,
