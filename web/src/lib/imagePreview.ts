@@ -4,13 +4,20 @@ import { recall, remember } from "./remember";
 
 export type ImagePreview = { id: string; kind?: "image" | "html"; slot: string; title: string; path: string; createdAt: number };
 export type PreviewSlot = { slot: string; versions: ImagePreview[] };
+/** Slots newest first, by each slot's latest version; versions stay oldest →
+ *  newest. The backend lists images oldest first, so a tie on `createdAt`
+ *  goes to the slot whose latest version came later in that list. */
 export function previewSlots(images: ImagePreview[]): PreviewSlot[] {
-  const slots = new Map<string, PreviewSlot>();
-  for (const image of images) {
-    if (!slots.has(image.slot)) slots.set(image.slot, { slot: image.slot, versions: [] });
-    slots.get(image.slot)!.versions.push(image);
-  }
-  return [...slots.values()];
+  const slots = new Map<string, PreviewSlot & { last: number }>();
+  images.forEach((image, i) => {
+    if (!slots.has(image.slot)) slots.set(image.slot, { slot: image.slot, versions: [], last: i });
+    const slot = slots.get(image.slot)!;
+    slot.versions.push(image);
+    slot.last = i;
+  });
+  return [...slots.values()]
+    .sort((a, b) => (b.versions.at(-1)!.createdAt - a.versions.at(-1)!.createdAt) || b.last - a.last)
+    .map(({ slot, versions }) => ({ slot, versions }));
 }
 
 const preferenceKey = (key: string) => `octiq.preview.${key}.open`;
