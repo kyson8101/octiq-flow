@@ -910,12 +910,11 @@
 /* Embedded runs share the chat navigation instead of covering the application. */
 .orch-embedded { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; background: var(--bg-0); }
 .orch-embedded .orch-layout { width: 100%; flex-direction: column; }
-.orch-embedded .orch-runs { width: 100%; flex: 0 0 auto; padding: 6px 12px; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; gap: 10px; align-items: center; }
-.orch-embedded .orch-new { flex: 0 0 auto; min-height: 30px; padding: 0 10px; border-style: solid; border-color: var(--border); font-size: 12px; font-weight: 550; }
-.orch-embedded .orch-new:disabled { opacity: .45; }
-.orch-embedded .orch-new:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.orch-embedded .orch-run-list { display: flex; gap: 4px; flex: 1; margin: 0; overflow-x: auto; }
-.orch-embedded .orch-run-pick { width: 220px; min-width: 160px; min-height: 34px; align-items: center; padding: 5px 9px; }
+/* Wraps rather than squeezes: in a narrow column the toolbar drops under the
+   picks instead of crushing them into a scroller one pill wide. */
+.orch-embedded .orch-runs { width: 100%; flex: 0 0 auto; padding: 6px 12px; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.orch-embedded .orch-run-list { display: flex; gap: 4px; flex: 1 1 240px; min-width: 0; margin: 0; overflow-x: auto; scrollbar-width: thin; }
+.orch-embedded .orch-run-pick { flex: 0 0 auto; width: 220px; min-height: 34px; align-items: center; padding: 5px 9px; }
 .orch-embedded .orch-run-pick > .orch-status { margin-top: 0; }
 .orch-embedded .orch-run-copy { flex-direction: row; align-items: baseline; gap: 8px; }
 .orch-embedded .orch-run-copy > span { flex: 1 1 auto; min-width: 0; -webkit-line-clamp: 1; }
@@ -1027,8 +1026,7 @@
   .orch-task-filters button,
   .orch-settings-toggle,
   .orch-tool,
-  .orch-tabs [role="tab"],
-  .orch-embedded .orch-new { min-height: 40px; }
+  .orch-tabs [role="tab"] { min-height: 40px; }
   .orch-attention,
   .orch-run-restore { min-height: 32px; }
   .orch-stop-confirm button { min-height: 40px; }

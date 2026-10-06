@@ -384,20 +384,21 @@ export function OrchestrationPanel({
     </button>}
   </div> : null;
 
-  const newRunButton = allowManualRun ? (
+  // Inside a chat the main agent opens runs itself (orchestration_run_create),
+  // so the strip offers no button for it; the empty-state form stays.
+  const newRunButton = allowManualRun && !embedded ? (
     <button
       className={`orch-new${creating ? " is-on" : ""}`}
       type="button"
-      disabled={readOnly || busy || (embedded && runs.some(isActiveRun))}
-      title={embedded && runs.some(isActiveRun) ? "Finish or stop the active run first" : undefined}
+      disabled={readOnly || busy}
       onClick={() => { setCreating(true); setConfirmStop(null); setShowArchived(false); }}
     >
       <PlusIcon />
-      {embedded ? "New run" : "Start a run"}
+      Start a run
     </button>
   ) : null;
 
-  const showNav = !accordionMode && (!embedded || runs.length > 1 || (creating && runs.length > 0) || (allowManualRun && runs.length > 0));
+  const showNav = !accordionMode && (!embedded || runs.length > 1 || (creating && runs.length > 0));
 
   const runDetail = (run: OrchestrationRun) => {
     const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);

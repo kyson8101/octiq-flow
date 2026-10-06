@@ -506,12 +506,14 @@ describe("embedded chat runs", () => {
     if (planning) expect(html).toMatch(/<\/button><button type="button" class="orch-attention" data-tone="decision" aria-label="2 decisions waiting. Show"/);
   });
 
-  it("keeps manual New run in regular coding mode and run settings one click away, shut", () => {
+  it("leaves opening a run to the main agent and keeps run settings one click away, shut", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
     expect(html).toContain("<span>Main agent chat</span>");
-    expect(html).toContain("New run");
+    // The agent opens runs (orchestration_run_create); one run needs no picker.
+    expect(html).not.toContain("New run");
+    expect(html).not.toContain("orch-run-list");
     const toggle = html.match(/<button type="button" class="orch-settings-toggle" aria-expanded="false" aria-controls="([^"]+)"/);
     expect(toggle).not.toBeNull();
     const region = html.slice(html.indexOf(`id="${toggle![1]}"`));
@@ -568,11 +570,11 @@ describe("embedded chat runs", () => {
     expect(html).not.toContain('aria-modal="true"');
     expect(html).not.toContain('class="panel-scrim"');
   });
-  it("keeps manual creation discoverable in regular mode and uses goal accordions in agents mode", () => {
+  it("picks between runs only when there are several, and uses goal accordions in agents mode", () => {
     const one = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(one).toContain("New run");
-    expect(one).toContain("orch-run-list");
+    expect(one).not.toContain("New run");
+    expect(one).not.toContain("orch-run-list");
 
     const two = {
       ...snapshot,
