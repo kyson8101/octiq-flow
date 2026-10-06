@@ -91,6 +91,22 @@ designated, the page is the plain picker above.
   folder of the route's own, which the new chat may read. A file that could
   not be given is named on the card. A newer proposal replaces a pending one.
   Cancel leaves no record and no file.
+- **A discussion is not work.** When the person wants to talk something
+  through rather than have it done, the front desk passes `purpose:
+  "discuss"`. The route then opens at **read-only** access, whatever the
+  agent's registered level, in the same place, and its first message says it
+  is a discussion. A read-only chat asks for no writer, so an orchestration
+  worker writing in the project (`require_workspace_access`) does not keep it
+  from opening. Writing is still refused: switching that chat's access later
+  meets the same check, and a project registered as a plain folder that holds
+  a worker's worktree refuses every chat that could write there. A work route
+  whose start a writer refused offers **Discuss only (read-only)** beside Try
+  again and Give up (`handover_discuss`, socket-only), but only while the
+  host has made sure no chat started (`abandonable`), since a started chat
+  keeps the settings it started with. A conversation started straight with
+  an agent, or any other chat, gets the same way out: a message the writer
+  refused offers **Discuss read-only** on its bubble (`lib/writerConflict`),
+  which sends it again at read-only access in the same conversation.
 - The host checks scope at the proposal and again at confirm, and refuses a
   route to the front desk itself or from any chat that is not a front-desk
   chat.

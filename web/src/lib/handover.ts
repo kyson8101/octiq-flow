@@ -9,8 +9,9 @@ import type { Message } from "./chat";
  *  retry. It may exist already, so it can no longer be declined.
  *  `abandoned`: its chat could not start, and the person gave up on it. */
 export type HandoverStatus = "pending" | "starting" | "confirmed" | "declined" | "abandoned";
-/** What the person can do on a card. */
-export type HandoverAction = "confirm" | "decline" | "abandon";
+/** What the person can do on a card. `discuss`: open a route that could not
+ *  start as a read-only discussion instead (`handover_discuss`). */
+export type HandoverAction = "confirm" | "decline" | "abandon" | "discuss";
 export type HandoverNotice = "pending" | "tool" | "delivered" | "failed";
 
 export type HandoverParty = { agentId?: string; name: string };
@@ -74,6 +75,9 @@ export type RouteDetail = {
   unreadable?: { path: string; problem: string }[];
   /** A route to the head: its conversation spans every project. */
   crossProject?: boolean;
+  /** A discussion: the chat opens read-only, so no writer in the project
+   *  keeps it from opening. */
+  discuss?: boolean;
 };
 
 export type Handover = {
@@ -298,15 +302,25 @@ export function routeHeadline(handover: Handover): string {
   if (handover.status === "starting") {
     return handover.error ? `${handover.to.name}'s chat did not start` : `Opening a chat with ${handover.to.name}…`;
   }
-  return `Open a chat with ${handover.to.name}?`;
+  return handover.route?.discuss ? `Discuss with ${handover.to.name}?` : `Open a chat with ${handover.to.name}?`;
 }
 
 /** Where a routed chat works, in a few words. */
 export function routePlaceLine(handover: Handover): string {
   const project = handover.destination.projectName;
-  if (handover.route?.crossProject) return `${project} · plans across every project`;
-  if (handover.workspace.mode === "worktree") return `${project} · new worktree`;
-  return project;
+  const place = handover.route?.crossProject
+    ? `${project} · plans across every project`
+    : handover.workspace.mode === "worktree" ? `${project} · new worktree` : project;
+  return handover.route?.discuss ? `${place} · discussion, read-only` : place;
+}
+
+/** Whether a route whose chat could not start may be opened as a read-only
+ *  discussion instead: the host made sure no chat started (`abandonable`),
+ *  and it is not one already. A writer elsewhere in the project then no
+ *  longer stands in its way. */
+export function canDiscussInstead(handover: Handover): boolean {
+  return isRoute(handover) && handover.status === "starting" && !!handover.error
+    && !!handover.abandonable && !handover.route?.discuss;
 }
 
 /** The headline of a card, from where it is drawn. */

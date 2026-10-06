@@ -163,6 +163,10 @@ pub(crate) struct FakeHost {
     pub(crate) saved: StdMutex<Vec<crate::chat_index::ChatMeta>>,
     pub(crate) worktrees: StdMutex<usize>,
     pub(crate) fail_start: StdMutex<bool>,
+    /// An orchestration writer works in the project: a start that could
+    /// write is refused the way `require_workspace_access` refuses it, and a
+    /// read-only one is not.
+    pub(crate) writer_busy: StdMutex<bool>,
     /// Checkouts another writer holds.
     pub(crate) taken: StdMutex<Vec<String>>,
     /// Chats with a turn in flight.
@@ -241,6 +245,9 @@ impl Host for FakeHost {
     fn start(&self, start: Start) -> Result<(), String> {
         if *self.fail_start.lock().unwrap() {
             return Err("CLI unavailable".into());
+        }
+        if *self.writer_busy.lock().unwrap() && start.access != Access::Read {
+            return Err("This checkout has an active writer for task Storyboard. Wait or use a separate worktree.".into());
         }
         self.starts.lock().unwrap().push(start);
         if let Some(store) = self.break_store.lock().unwrap().take() {

@@ -198,6 +198,7 @@ import {
   type ChatQueueState,
 } from "./lib/recovery";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
+import { canDiscussUnsent, DISCUSS_NOTICE } from "./lib/writerConflict";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
 import {
@@ -3330,8 +3331,11 @@ export default function App() {
     async (
       text: string,
       attachments: Attachment[] = [],
-      { safetyBlock }: { safetyBlock?: string } = {},
+      { safetyBlock, access: accessOverride }: { safetyBlock?: string; access?: AccessLevel } = {},
     ): Promise<boolean> => {
+      // A retry the person chose to open read-only (`discussUnsent`) narrows
+      // this one send; the composer's level is left as it is.
+      const sendAccess = accessOverride ?? access;
       if (workerChat) return false;
       // Agents mode: the first message of a new conversation goes to the agent
       // it is with, with the brief behind it. What the person typed still
@@ -3488,7 +3492,7 @@ export default function App() {
       meta.current[id] = {
         projectId: targetProject.id,
         modelId: choice.id,
-        access,
+        access: sendAccess,
       };
       // The same files the agent is given, kept on the bubble so the message
       // shows what was sent with it. The object URLs are dropped: they are this
@@ -3599,7 +3603,7 @@ export default function App() {
           cwd: preparationError ? held?.cwd : launchCwd,
           messages: chatsRef.current[id]?.messages ?? held?.messages ?? [],
           modelId: choice.id,
-          permission: access,
+          permission: sendAccess,
           createdAt: held?.createdAt ?? startedAt,
           updatedAt: startedAt,
           pinned: held?.pinned ?? false,
@@ -3688,7 +3692,7 @@ export default function App() {
             env: targetProject.env ?? {},
             agent: choice.agent,
             model: choice.flag || null,
-            access,
+            access: sendAccess,
             effort,
             lite,
             images,
@@ -3929,6 +3933,38 @@ export default function App() {
         patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
       );
   }, [conversationId, patch]);
+
+  /** Send a message a writer kept from the agent again, read-only: the
+   *  person chose to discuss rather than wait. Only ever narrows this chat's
+   *  access; the host still refuses any later switch back to writing while
+   *  the writer is there. */
+  const discussUnsent = useCallback(async (turnId: string) => {
+    if (!conversationId) return;
+    const id = conversationId;
+    const message = chatsRef.current[id]?.messages.find((m) => m.turnId === turnId);
+    if (!message || !canDiscussUnsent(message)) return;
+    const words = reclaimedMessage(message);
+    try {
+      // A running chat keeps the level it started with until it is told.
+      if (runningRef.current.has(id)) await bridge.invoke("chat_set_access", { key: keyFor(id), access: "read" });
+    } catch (err) {
+      patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
+      return;
+    }
+    setAccess("read");
+    if (meta.current[id]) meta.current[id].access = "read";
+    // It never reached the agent; the retry is its own bubble.
+    patch(id, (s) => ({
+      ...s,
+      messages: s.messages.filter((m) => m.turnId !== turnId),
+      notices: [...s.notices, DISCUSS_NOTICE],
+    }));
+    // A first message keeps its brief, so its file list is still in the
+    // words; naming the files again would list them twice.
+    const files = words.text.includes("\n\nFiles to look at:\n")
+      ? words.attachments.filter((a) => a.isImage) : words.attachments;
+    await send(words.text, files, { access: "read" });
+  }, [conversationId, patch, send]);
 
   /** Tell a running Claude session to change effort, using the same slash
    *  command you would type yourself (`/effort high`).
@@ -5070,6 +5106,7 @@ export default function App() {
                       onStartQueued={!workerChat && conn === "open" ? startQueued : undefined}
                       onRestoreUnsent={workerChat ? undefined : restoreUnsent}
                       onDismissUnsent={workerChat ? undefined : dismissUnsent}
+                      onDiscussUnsent={workerChat || conn !== "open" ? undefined : discussUnsent}
                       // How the `/config` panel changes a setting: the very
                       // line you would have typed, sent the way you would have
                       // sent it — so the CLI's own answer lands under it and

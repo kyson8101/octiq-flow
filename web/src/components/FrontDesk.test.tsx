@@ -11,7 +11,7 @@ import { ContinueDesk } from "./ContinueDesk";
 import { FRONT_DESK_GREETING } from "../lib/frontDesk";
 import { handover } from "../lib/handover.fixture";
 import {
-  handoverPlaces, handoversFor, isRoute, mergeHandover, routeHeadline, routePlaceLine, type Handover,
+  canDiscussInstead, handoverPlaces, handoversFor, isRoute, mergeHandover, routeHeadline, routePlaceLine, type Handover,
 } from "../lib/handover";
 import { pendingActions } from "../lib/pendingActions";
 import type { TeamAgent } from "../lib/agentsMode";
@@ -70,6 +70,36 @@ describe("the front desk's confirm card", () => {
     expect(tail).toContain("Try again");
     expect(tail).toContain("Give up");
     expect(tail).not.toContain(">Cancel<");
+  });
+
+  it("offers a read-only discussion when a writer kept the chat from opening", () => {
+    const writer = "This checkout has an active writer for task Storyboard. Wait or use a separate worktree.";
+    const stuck = route({ status: "starting", targetChatKey: "chat:new", error: writer, abandonable: true });
+    expect(canDiscussInstead(stuck)).toBe(true);
+    const { tail } = cards([stuck], "chat:desk");
+    expect(tail).toContain(writer);
+    expect(tail).toContain("No chat was opened. Try again, open it read-only to discuss, or give up.");
+    expect(tail).toContain("Discuss only (read-only)");
+    expect(tail).toContain("Try again");
+    expect(tail).toContain("Give up");
+    // Not when the chat may exist, nor for a discussion that already failed.
+    expect(canDiscussInstead(route({ status: "starting", error: writer, abandonable: false }))).toBe(false);
+    const talking = route({ status: "starting", error: "CLI unavailable", abandonable: true, route: { message: "x", discuss: true } });
+    expect(canDiscussInstead(talking)).toBe(false);
+    expect(cards([talking], "chat:desk").tail).not.toContain("Discuss only");
+    expect(canDiscussInstead(route({ status: "pending" }))).toBe(false);
+  });
+
+  it("asks to discuss, read-only, when the front desk proposes a discussion", () => {
+    const talk = route({
+      settings: { agent: "claude", model: "opus", effort: "high", access: "read" },
+      route: { message: "Brainstorm the series.", discuss: true },
+    });
+    const { tail } = cards([talk], "chat:desk");
+    expect(tail).toContain("Discuss with Vesper?");
+    expect(tail).toContain("starfall-novel · new worktree · discussion, read-only");
+    expect(tail).toContain("Discuss with Vesper<");
+    expect(tail).not.toContain("Discuss only (read-only)");
   });
 
   it("leaves nothing behind once confirmed or cancelled, in either chat", () => {
