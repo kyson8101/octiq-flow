@@ -11,7 +11,8 @@ The Orchestrator's **Workspace mode** applies to a run:
 
 | Mode | First attempt | Subsequent attempts |
 | --- | --- | --- |
-| Auto (default) | Isolated worktree for a writer; current checkout for read-only access | Reuse the persisted workspace |
+| Mission (default for new runs) | The mission's one worktree per repository, `feature/mission-<run>`, shared by its tasks | The same worktree, for every later task too |
+| Auto | Isolated worktree for a writer; current checkout for read-only access | Reuse the persisted workspace |
 | New worktree | Isolate every task on its own branch | Reuse the persisted workspace |
 | Current checkout | Use the selected folder and its actual branch; one worker at a time | Reuse that folder and branch |
 
@@ -27,6 +28,43 @@ choose Current checkout on the run explicitly.
 The product uses Git directly; it does not depend on a person's installed `wt`
 script. Local development of OctiqFlow still follows the repository's `wt`
 workflow and branch confirmation rules.
+
+## Missions
+
+A run created without a workspace mode is a **mission** (`orchestration/mission.rs`).
+It differs from the per-task modes in three ways:
+
+- **One worktree per repository.** Every task plans `feature/mission-<run-id>`
+  at `.worktrees/<repo>/feature/mission-<run-id>`; the first launch creates it
+  and later tasks find it already there (a branch owned by that path is not a
+  conflict). A follow-up after a merge lands on the same branch while the
+  worktree exists. A folder with no Git history works in place.
+- **One writer at a time.** The scheduler starts at most one writing task per
+  mission repository and holds the next until it settles; a manual start is
+  refused before an attempt exists, so the task stays ready instead of failing.
+  Readers share the worktree freely. Per-task cleanup is refused: the
+  worktree belongs to the mission.
+- **Open until closed.** The status board (Draft → Approved → In progress →
+  In review → Ready to merge → Merged → Released → Closed) is drawn from the
+  tasks for the first half and from git for the second.
+  `orchestration_mission_refresh` (person or lead) records, per repository,
+  whether the head is merged — a matching merged PR, or already an ancestor of
+  the base branch's remote tip, which covers a lead who fast-forwards the base
+  and pushes it — and, once merged, the project's release check
+  (`chat_task::release_status`).
+
+`orchestration_mission_close` is the person's only, like task cleanup: absent
+from MCP discovery and the hook allowlist. It requires every worker settled
+and no open decision, then per mission worktree:
+
+| Ending | Requires | Removes |
+| --- | --- | --- |
+| Close | every task finished, a clean tree, the merge verified | the worktree (no `--force`), then the local branch with `git branch -d`, which Git refuses if anything is unmerged |
+| Abandon | a clean tree; any unmerged commits pushed | the worktree; the branch is kept and open tasks are cancelled |
+
+The remote branch is never touched. The run becomes `closed` (with
+`abandoned` for the second ending), refuses new tasks, and keeps its record.
+A run that still has Worktree-mode task worktrees must clean those up first.
 
 ## State and ownership
 

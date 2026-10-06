@@ -40,9 +40,9 @@ describe("run bridges", () => {
     const scope = bridgeScope(a, b).join("\n");
     expect(scope).toContain("One way: the main agent of “Objective run_a” may send notes to the main agent of “Objective run_b”");
     expect(scope).toContain("50 notes of 4,000 characters");
-    expect(scope).toContain("No worker of either run");
+    expect(scope).toContain("No worker of either mission");
     expect(scope).toContain("nothing forwards them");
     expect(scope).toContain("grant nothing");
-    expect(scope).toContain("when either run is archived");
+    expect(scope).toContain("when either mission is archived");
   });
 });

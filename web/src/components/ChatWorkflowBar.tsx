@@ -45,12 +45,12 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
       <BackIcon />
     </button>}
     {onOpenBeside && <OpenBesideButton className="is-bar" title={besideTitle} onClick={onOpenBeside} />}
-    <RunTitle text={run?.objective ?? "New run"} />
+    <RunTitle text={run?.objective ?? "New mission"} />
     {readOnly && <ReadOnlyBadge className="workflow-read-only" />}
   </>;
   const nav = views ? <nav className="chat-workflow-bar" aria-label="Chat workflow">
     <div className="chat-workflow-views" role="group" aria-label="Conversation view">
-      <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>{unified ? "Tasks" : "Run"}{planPending ? " (plan awaiting approval)" : ""}</button>
+      <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>{unified ? "Tasks" : "Mission"}{planPending ? " (plan awaiting approval)" : ""}</button>
       <button type="button" aria-pressed={view === "chat"} onClick={() => onView("chat")}>Chat</button>
     </div>
   </nav> : null;

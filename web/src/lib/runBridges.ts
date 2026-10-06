@@ -40,8 +40,8 @@ export function bridgeScope(from: Pick<OrchestrationRun, "objective">, to: Pick<
   return [
     `One way: the main agent of “${from.objective}” may send notes to the main agent of “${to.objective}”. Replies need a bridge the other way.`,
     `Up to ${BRIDGE_NOTES_MAX} notes of ${BRIDGE_NOTE_MAX.toLocaleString("en-US")} characters, each delivered once and marked as quoted data from the other run, not as instructions.`,
-    "No worker of either run sends, sees or receives them, and nothing forwards them further.",
-    "They grant nothing: no access to the other run, no approvals, reports or acceptance, no permissions.",
-    "It ends when you close it, when either run is archived, or if either run moves to another main agent.",
+    "No worker of either mission sends, sees or receives them, and nothing forwards them further.",
+    "They grant nothing: no access to the other mission, no approvals, reports or acceptance, no permissions.",
+    "It ends when you close it, when either mission is archived, or if either mission moves to another main agent.",
   ];
 }

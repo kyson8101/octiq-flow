@@ -312,7 +312,7 @@ describe("OrchestrationPanel", () => {
       />,
     );
 
-    expect(html).toContain("Start master run");
+    expect(html).toContain("Start mission");
     expect(html).toContain("This chat becomes the master.");
     expect(html).toContain("Workspace mode");
     expect(html).toContain("Current checkout");
@@ -512,12 +512,12 @@ describe("embedded chat runs", () => {
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
     expect(html).toContain("<span>Main agent chat</span>");
     // The agent opens runs (orchestration_run_create); one run needs no picker.
-    expect(html).not.toContain("New run");
+    expect(html).not.toContain("New mission");
     expect(html).not.toContain("orch-run-list");
     const toggle = html.match(/<button type="button" class="orch-settings-toggle" aria-expanded="false" aria-controls="([^"]+)"/);
     expect(toggle).not.toBeNull();
     const region = html.slice(html.indexOf(`id="${toggle![1]}"`));
-    expect(html).toContain(`class="orch-run-settings" id="${toggle![1]}" role="region" aria-label="Run settings" hidden=""`);
+    expect(html).toContain(`class="orch-run-settings" id="${toggle![1]}" role="region" aria-label="Mission settings" hidden=""`);
     // The controls moved with the configuration; they are shut, not gone.
     expect(region.slice(0, region.indexOf('role="tabpanel"'))).toContain(">Stop<");
     expect(html).not.toContain("Pause automatic dispatch");
@@ -564,7 +564,7 @@ describe("embedded chat runs", () => {
   it("scopes the ledger to the current chat and keeps the surrounding app visible", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:other"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(html).toContain('aria-label="Runs for this chat"');
+    expect(html).toContain('aria-label="Missions for this chat"');
     expect(html).not.toContain("Ship orchestration");
     expect(html).not.toContain("Build the host ledger");
     expect(html).not.toContain('aria-modal="true"');
@@ -573,7 +573,7 @@ describe("embedded chat runs", () => {
   it("picks between runs only when there are several, and uses goal accordions in agents mode", () => {
     const one = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(one).not.toContain("New run");
+    expect(one).not.toContain("New mission");
     expect(one).not.toContain("orch-run-list");
 
     const two = {
@@ -588,7 +588,7 @@ describe("embedded chat runs", () => {
     const agents = renderToStaticMarkup(<OrchestrationPanel embedded allowManualRun={false}
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={two} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(agents).not.toContain("New run");
+    expect(agents).not.toContain("New mission");
     expect(agents).not.toContain("orch-run-list");
     expect(agents.match(/<section class="orch-run-accordion/g)).toHaveLength(2);
     expect(agents).toContain("Second outcome");
@@ -604,10 +604,10 @@ describe("embedded chat runs", () => {
     const second = html.slice(html.indexOf("Second goal"));
     expect(second).toContain("Approval needed");
     expect(second).toContain('id="orch-goal-run_2" hidden=""');
-    expect(html).toContain('aria-label="Run options"');
+    expect(html).toContain('aria-label="Mission options"');
     expect(html).not.toContain(">Settings</span>");
-    const options = html.slice(html.indexOf('aria-label="Run options"'));
-    expect(options).not.toContain('aria-label="Run settings"');
+    const options = html.slice(html.indexOf('aria-label="Mission options"'));
+    expect(options).not.toContain('aria-label="Mission settings"');
     expect(options).not.toContain("<dt>Folder</dt>");
   });
 
@@ -661,7 +661,7 @@ describe("compact run panel", () => {
       state: "pending" as const, attempts: 1, coalesced: 0, createdAt: 1, updatedAt: 2 };
     const message = { id: "m", runId: "run_1", fromChatKey: "chat:worker", toChatKey: "chat:master", kind: "status", subject: "Started", body: "On it", createdAt: 1 };
     const html = agents({ ...snapshot, notifications: [note], messages: [message] } as OrchestrationSnapshot);
-    expect(html).toContain('role="tablist" aria-label="Run details"');
+    expect(html).toContain('role="tablist" aria-label="Mission details"');
     expect(html).toMatch(/role="tab" id="[^"]+-tasks" aria-selected="true"[^>]+tabindex="0" aria-label="Tasks, 1"/);
     expect(html).toMatch(/role="tab" id="[^"]+-notifications" aria-selected="false"[^>]+tabindex="-1" aria-label="Notifications, 1, 1 awaiting receipt"/);
     expect(html).toContain('aria-label="Coordination log, 1 message"');
@@ -724,8 +724,45 @@ describe("compact run panel", () => {
   it("offers to archive a finished run behind a confirmation, never by default", () => {
     const done = { ...snapshot, runs: [{ ...snapshot.runs[0], status: "stopped" as const }], gates: [] };
     const html = agents(done);
-    expect(html).toContain(">Archive run</button>");
+    expect(html).toContain(">Archive mission</button>");
     expect(html).not.toContain(">Stop</button>");
     expect(html).not.toContain('type="checkbox"');
+  });
+
+  it("shows a mission's stage, and offers Close and Abandon only once its work has settled", () => {
+    const task = { ...snapshot.tasks[0], status: "completed" as const, activeAttemptId: undefined };
+    const attempt = { ...snapshot.attempts[0], status: "completed" as const };
+    const mission = (status: "running" | "completed" | "closed", extra = {}) => ({
+      ...snapshot, gates: [], tasks: [task], attempts: [attempt],
+      runs: [{ ...snapshot.runs[0], status, workspaceMode: "mission" as const, ...extra }],
+    });
+    const done = agents(mission("completed"));
+    expect(done).toContain('aria-label="Mission: Ready to merge"');
+    expect(done).toContain('aria-current="step"');
+    expect(done).toContain(">Check merge</button>");
+    expect(done).toContain(">Close mission</button>");
+    expect(done).toContain(">Abandon</button>");
+
+    const merged = agents(mission("completed", { missionDelivery: [{
+      repositoryRoot: "/repo", checkoutRoot: "/w", branch: "feature/mission-1", baseBranch: "develop",
+      evidence: { headSha: "abc", dirty: false, hasCommits: true, pushed: false, merged: false, checkedAt: 1, notes: [] },
+      merged: true, released: null,
+    }] }));
+    expect(merged).toContain('aria-label="Mission: Merged"');
+    expect(merged).toContain("merged · release unverified");
+
+    // Still working: nothing to close yet.
+    const working = agents(mission("running"));
+    expect(working).not.toContain(">Close mission</button>");
+
+    const closed = agents(mission("closed", { closedAt: 3, abandoned: true }));
+    expect(closed).toContain('aria-label="Mission: Abandoned"');
+    expect(closed).not.toContain(">Check merge</button>");
+    expect(closed).not.toContain(">Close mission</button>");
+  });
+
+  it("draws no mission board for a run from before missions", () => {
+    const done = { ...snapshot, runs: [{ ...snapshot.runs[0], status: "stopped" as const }], gates: [] };
+    expect(agents(done)).not.toContain("mission-track");
   });
 });

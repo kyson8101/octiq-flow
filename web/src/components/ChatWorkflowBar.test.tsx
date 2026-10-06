@@ -57,7 +57,7 @@ describe("ChatWorkflowBar", () => {
     const snapshot = { ...EMPTY_ORCHESTRATION, runs: [{ id: "run", coordinatorChatKey: "chat:main", objective: "Fix", status: "running" as const, workspaceId: "project", rootPath: "/repo", createdAt: 1, updatedAt: 1, maxConcurrent: 2 }] };
     const html = renderToStaticMarkup(<ChatWorkflowBar snapshot={snapshot} orchestrated={false} view="run" pendingApprovals={2} onView={() => {}} />);
     expect(html).not.toContain("<select");
-    expect(html).toContain('aria-pressed="true">Run');
+    expect(html).toContain('aria-pressed="true">Mission');
     expect(html).not.toContain("2 awaiting approval");
     expect(html).not.toContain("Open Run to pause dispatch or stop");
   });

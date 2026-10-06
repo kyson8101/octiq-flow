@@ -71,7 +71,7 @@ describe("chat plans", () => {
       status: "approved", requestedAt: 1, revision: 6,
       consent: { via: "button", revision: 6, at: 2, surface: "panel", shownMs: 9000 },
     })]), "chat:lead");
-    expect(approvalLabel(panel)).toBe("Approved in the run panel · revision 6");
+    expect(approvalLabel(panel)).toBe("Approved in the mission panel · revision 6");
   });
 
   it("says a chat reply approves only a plan already on screen", () => {

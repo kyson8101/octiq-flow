@@ -4514,7 +4514,11 @@ fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     let workspace = task.workspace.as_ref().map(|w| format!(
         "\n\nAssigned workspace: {}\nBranch: {}\nMode: {:?}\nBase SHA: {}\nExisting changes to preserve:\n{}\nThe host owns this workspace lifecycle. Do not switch branches, create replacement worktrees, or remove this directory. Stop all source changes after reporting. Use orchestration validation workspaces for isolated commit checks.",
         w.plan.cwd, w.plan.branch, w.plan.mode, w.plan.base_sha, w.plan.initial_status
-    )).unwrap_or_default();
+    ) + if w.plan.mode == WorkspaceMode::Mission {
+        "\nThis is the mission's shared worktree: earlier tasks' work is already on this branch, and later tasks continue from what you leave. Commit your finished work here before reporting."
+    } else {
+        ""
+    }).unwrap_or_default();
     let kind = if task.kind.requires_verdict() {
         format!(
             "\n\nThis is a {} task: the host refuses a completed report without a verdict. Settle it as completed with verdict pass or fail; only pass releases the tasks that depend on it. If you could not finish checking, report failed or blocked instead.",

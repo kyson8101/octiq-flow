@@ -408,7 +408,10 @@ other retired palette back to Dark.
 ## Orchestrated task workspaces
 
 See [the task workspace lifecycle](docs/subagent-worktree-lifecycle.md) for the
-host-owned policy. A worker settling, code being pushed, a PR being merged, and
+host-owned policy. New runs are **missions** by default: one worktree per
+repository shared by the run's tasks one writer at a time, a status board whose
+Merged/Released steps come from git only, and a Close/Abandon that only the
+person can trigger (`orchestration/mission.rs`). A worker settling, code being pushed, a PR being merged, and
 a workspace being eligible for cleanup are separate states. Retry and review
 fixes reuse the task's persisted workspace with a new attempt ID. Current
 checkout mode never deletes a directory. The main chat coordinates while a
