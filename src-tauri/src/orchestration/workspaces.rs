@@ -66,6 +66,22 @@ pub(super) fn first_mode(run_mode: WorkspaceMode, access: Access) -> WorkspaceMo
     }
 }
 
+/// Auto picks a worktree only where there is Git to make one from. A folder
+/// with no Git history — a plain parent folder registered as a review
+/// destination, say — is worked in directly, as a mission does, instead of
+/// planning a worktree that fails once the plan is approved (feedback
+/// b17ade5a).
+fn auto_mode_for(mode: WorkspaceMode, run_mode: WorkspaceMode, root: &str) -> WorkspaceMode {
+    if run_mode == WorkspaceMode::Auto
+        && mode == WorkspaceMode::Worktree
+        && !workflow::has_git(root)
+    {
+        WorkspaceMode::Direct
+    } else {
+        mode
+    }
+}
+
 /// What a workspace is keyed by: the run for a mission, whose tasks all share
 /// one worktree per repository, else the task.
 pub(super) fn workspace_key<'a>(run: &'a Run, task_id: &'a str, mode: WorkspaceMode) -> &'a str {
@@ -91,7 +107,11 @@ pub(super) fn propose(
     let chosen = worker
         .map(|w| w.access)
         .or_else(|| run.worker_defaults.as_ref().map(|d| d.access));
-    let mode = first_mode(run.workspace_mode, chosen.unwrap_or(Access::Auto));
+    let mode = auto_mode_for(
+        first_mode(run.workspace_mode, chosen.unwrap_or(Access::Auto)),
+        run.workspace_mode,
+        task_root(run, destination),
+    );
     let provisional = chosen.is_none() && run.workspace_mode == WorkspaceMode::Auto;
     let proposed_at = now_ms();
     match workflow::plan(
@@ -329,6 +349,7 @@ impl OrchestrationStore {
             // A routed task starts from its destination repository; one
             // without a destination from the run's root, as it always has.
             let root = task_root(run, task.destination.as_ref());
+            let mode = auto_mode_for(mode, run.workspace_mode, root);
             // What the person approved is what gets allocated. A task from
             // before proposals, or one whose proposal failed, plans now.
             match task
@@ -891,6 +912,39 @@ mod tests {
             .unwrap();
         let task = super::super::tests::task(&store, &run, vec![]);
         (store, run, task)
+    }
+    /// Feedback b17ade5a: an Auto run over a folder with no Git history plans
+    /// the folder itself, rather than a worktree that fails after approval.
+    #[test]
+    fn auto_over_a_folder_without_git_plans_the_folder() {
+        let dir = crate::test_dir::TestDir::new("auto-plain").canonicalized();
+        let root = dir.to_string_lossy().into_owned();
+        let store = OrchestrationStore::default();
+        let run = store
+            .create_run_with_mode(
+                "chat:master".into(),
+                "Review".into(),
+                "project".into(),
+                root.clone(),
+                Some(2),
+                WorkspaceMode::Auto,
+            )
+            .unwrap();
+        let proposal = propose(&run, "task_review", None, None);
+        assert!(proposal.error.is_none(), "{:?}", proposal.error);
+        let plan = proposal.plan.unwrap();
+        assert_eq!(plan.mode, WorkspaceMode::Direct);
+        assert_eq!(plan.cwd, root);
+        // Where there is Git, Auto still isolates a writer.
+        let repo = Repo::new();
+        assert_eq!(
+            auto_mode_for(WorkspaceMode::Worktree, WorkspaceMode::Auto, &repo.root),
+            WorkspaceMode::Worktree
+        );
+        assert_eq!(
+            auto_mode_for(WorkspaceMode::Worktree, WorkspaceMode::Worktree, &root),
+            WorkspaceMode::Worktree
+        );
     }
     fn prepare(store: &OrchestrationStore, task: &Task, access: Access) -> Result<Attempt, String> {
         let launch = WorkerLaunch {

@@ -108,6 +108,12 @@ pub fn held_checkout(path: &str) -> String {
     checkout_identity(path).unwrap_or_else(|_| path.to_string())
 }
 
+/// Whether `root` is inside a Git repository, the same test `plan` makes.
+pub fn has_git(root: &str) -> bool {
+    checkout_identity(root)
+        .is_ok_and(|checkout| git(&checkout, &["rev-parse", "--git-common-dir"]).is_ok())
+}
+
 pub fn overlaps(a: &str, b: &str) -> bool {
     Path::new(a).starts_with(b) || Path::new(b).starts_with(a)
 }
