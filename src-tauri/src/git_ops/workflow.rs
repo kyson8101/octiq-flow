@@ -360,6 +360,19 @@ pub fn provision(plan: &WorkspacePlan) -> Result<(), String> {
 }
 
 pub fn verify(plan: &WorkspacePlan) -> Result<(), String> {
+    verify_checkout(plan)?;
+    if plan.is_repo && current_branch(&plan.cwd)? != plan.branch {
+        return Err(
+            "The assigned workspace branch changed. Restore its branch before continuing.".into(),
+        );
+    }
+    Ok(())
+}
+
+/// `verify` short of the branch: the folder is still this task's checkout of
+/// this repository, whatever it has checked out. A reviewer told to detach at
+/// the exact head it reviews is still in its own workspace.
+fn verify_checkout(plan: &WorkspacePlan) -> Result<(), String> {
     if !Path::new(&plan.cwd).is_dir() {
         return Err(format!(
             "The assigned workspace is missing: {}. Restore it before retrying.",
@@ -372,12 +385,6 @@ pub fn verify(plan: &WorkspacePlan) -> Result<(), String> {
         );
     }
     if plan.is_repo {
-        if current_branch(&plan.cwd)? != plan.branch {
-            return Err(
-                "The assigned workspace branch changed. Restore its branch before continuing."
-                    .into(),
-            );
-        }
         let primary = primary_checkout_root(&plan.cwd)?
             .canonical()
             .map_err(|e| e.to_string())?;
@@ -481,30 +488,23 @@ pub fn inspect(plan: &WorkspacePlan, check_remote: bool) -> Result<DeliveryEvide
                 }
             }
         }
-        // For repositories without a PR, verify both remote base and branch.
-        // Never use `git branch -d` or the branch's upstream as a merge gate.
-        if result.pull_request.is_none() && result.pushed && plan.branch != plan.base_branch {
-            if let Ok(remote) = git(
-                &plan.cwd,
-                &["config", "--get", &format!("branch.{}.remote", plan.branch)],
-            ) {
-                if let Ok(tip) = git(
-                    &plan.cwd,
-                    &[
-                        "ls-remote",
-                        "--exit-code",
-                        &remote,
-                        &format!("refs/heads/{}", plan.base_branch),
-                    ],
-                ) {
-                    if let Some(sha) = tip.split_whitespace().next() {
-                        result.merged = git(
-                            &plan.cwd,
-                            &["merge-base", "--is-ancestor", &result.head_sha, sha],
-                        )
-                        .is_ok();
-                    }
+        // Without a PR, the exact HEAD must be in the base branch's tip on its
+        // remote. Never use `git branch -d` or the branch's upstream as a
+        // merge gate. The task branch need not have been pushed: a lead who
+        // fast-forwards the base and pushes that leaves no other trace, and
+        // asking for the branch too hid cleanup for every such task
+        // (feedback 1becac39, 9b1e8978).
+        if result.pull_request.is_none() && plan.branch != plan.base_branch {
+            match merged_into_remote_base(plan, &result.head_sha) {
+                Some(merged) => {
+                    result.merged = merged;
+                    // In the remote base, the commit is published.
+                    result.pushed |= merged;
                 }
+                None => result.notes.push(format!(
+                    "Could not compare this commit with {} on its remote; merge is unverified.",
+                    plan.base_branch
+                )),
             }
         }
     }
@@ -605,7 +605,9 @@ pub fn validation_worktree(
     commits: &[String],
     target: &Path,
 ) -> Result<(), String> {
-    verify(plan)?;
+    // Built from the repository at exact commits, so what the task checkout
+    // has checked out does not matter (feedback ef927bf0 / 6b1d8eba).
+    verify_checkout(plan)?;
     let exact = |sha: &str| -> Result<String, String> {
         if sha.len() < 7 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("Validation requires exact commit SHAs.".into());
@@ -864,6 +866,47 @@ pub(crate) mod tests {
             head,
             "cleanup retains the branch"
         );
+    }
+
+    /// Feedback ef927bf0 / 6b1d8eba: a reviewer detached at the exact head it
+    /// reviews can still have a validation checkout made, and its own tree is
+    /// left where it was. Dispatch still insists on the branch.
+    #[test]
+    fn a_detached_review_checkout_still_gets_a_validation_checkout() {
+        let repo = Repo::new();
+        let p = plan(&repo.root, "main", "task_detached", WorkspaceMode::Worktree).unwrap();
+        provision(&p).unwrap();
+        let head = repo.commit(&p.cwd, "feature.txt", "feature\n");
+        git(&p.cwd, &["checkout", "--detach", &head]).unwrap();
+        assert!(verify(&p).is_err(), "a writer still needs its branch");
+        let target = repo.dir.join("validation-detached");
+        validation_worktree(&p, &p.base_sha, &[head.clone()], &target).unwrap();
+        assert!(target.join("feature.txt").exists());
+        assert_eq!(git(&p.cwd, &["rev-parse", "HEAD"]).unwrap(), head);
+        assert!(git(&p.cwd, &["branch", "--show-current"])
+            .unwrap()
+            .is_empty());
+        remove_validation(&p, &target.to_string_lossy()).unwrap();
+    }
+
+    /// Feedback 1becac39 / 9b1e8978: the lead fast-forwards the base and
+    /// pushes that; the task branch itself never reaches the remote.
+    #[test]
+    fn a_head_in_the_remote_base_is_merged_without_its_branch_pushed() {
+        let repo = Repo::new();
+        repo.remote();
+        let p = plan(&repo.root, "main", "task_unpushed", WorkspaceMode::Worktree).unwrap();
+        provision(&p).unwrap();
+        let head = repo.commit(&p.cwd, "feature.txt", "feature\n");
+        let before = inspect(&p, true).unwrap();
+        assert!(!before.merged && !before.pushed, "{:?}", before.notes);
+        repo.git(&["merge", "--ff-only", &p.branch]);
+        repo.git(&["push"]);
+        let after = inspect(&p, true).unwrap();
+        assert!(after.merged, "{:?}", after.notes);
+        assert!(after.pushed, "in the remote base, it is published");
+        cleanup(&p, &head).unwrap();
+        assert!(!Path::new(&p.cwd).exists());
     }
 
     #[test]

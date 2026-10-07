@@ -565,8 +565,27 @@ impl OrchestrationStore {
             Ok(())
         })?;
         let result = workflow::validation_worktree(&ws.plan, base_sha, &commits, &target);
+        if let Err(error) = result {
+            // Recorded before creation so a crash cannot orphan the folder.
+            // When nothing was made, there is nothing to retain or point at.
+            if !target.exists() {
+                self.mutate(|data| {
+                    if let Some(ws) = data
+                        .tasks
+                        .get_mut(task_id)
+                        .and_then(|t| t.workspace.as_mut())
+                    {
+                        ws.validation_paths.retain(|p| p != &path);
+                    }
+                    Ok(())
+                })?;
+                return Err(error);
+            }
+            announce(&task.run_id, "validation_created");
+            return Err(format!("{error} Validation allocation retained at {path}; inspect or remove it through orchestration_validation_remove."));
+        }
         announce(&task.run_id, "validation_created");
-        result.map(|_| path.clone()).map_err(|e| format!("{e} Validation allocation retained at {path}; inspect or remove it through orchestration_validation_remove."))
+        Ok(path)
     }
 
     pub fn remove_validation(
