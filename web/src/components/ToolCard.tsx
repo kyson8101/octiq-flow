@@ -13,7 +13,7 @@
 // A subagent's card is the exception. What it ran is another agent, and that
 // agent's whole transcript hangs off this one card, so there is something to
 // watch rather than something to check.
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import type React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -22,7 +22,9 @@ import { changedPaths, fileDiff } from "../lib/diff";
 import { parseSkillBrief } from "../lib/skillRun";
 import { askAnswer } from "../lib/askAnswer";
 import { commandTool, toolDetail, toolLook, toolPicture } from "../lib/toolKind";
-import { ProseShot } from "./ProseShot";
+// Loaded only by a card that has a picture: ProseShot reaches the live socket
+// (`bridge`), which every other card, and every test of one, can do without.
+const ProseShot = lazy(() => import("./ProseShot").then((m) => ({ default: m.ProseShot })));
 import { DiffStat, DiffView } from "./DiffView";
 import { GitChangeDiff } from "./GitChangeDiff";
 import { baseOf, dirOf } from "../lib/folderHead";
@@ -268,7 +270,9 @@ export function ToolCard({
           is shown, not folded away. */}
       {picture && (
         <div className="tool-picture">
-          <ProseShot path={picture} />
+          <Suspense fallback={null}>
+            <ProseShot path={picture} />
+          </Suspense>
         </div>
       )}
 
