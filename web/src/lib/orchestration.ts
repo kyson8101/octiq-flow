@@ -194,9 +194,18 @@ export type OrchestrationTask = {
   environment?: "none" | "sandbox";
   /** Every change of hands before the work finished, oldest first. */
   handoffs?: { from?: { id: string; name: string }; to: { id: string; name: string }; reason: string; at: number }[];
+  /** The task the coordinator created to replace this blocked or failed one. */
+  supersededBy?: string;
   createdAt: number;
   updatedAt: number;
 };
+
+/** Blocked or failed and not replaced: something someone still has to deal
+ *  with. A task the coordinator replaced keeps its history but is owed
+ *  nothing, so it never counts as blocked (feedback 6b0870f9). */
+export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy">): boolean {
+  return (task.status === "blocked" || task.status === "failed") && !task.supersededBy;
+}
 
 export type OrchestrationAttempt = {
   id: string;

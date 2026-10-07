@@ -39,7 +39,7 @@ import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 
 import {
-  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -671,7 +671,7 @@ type TaskFilter = "all" | "working" | "blocked" | "done";
 const TASK_FILTERS: { key: TaskFilter; label: string; match: (task: OrchestrationTask, attempt?: OrchestrationAttempt) => boolean }[] = [
   { key: "all", label: "All", match: () => true },
   { key: "working", label: "Working", match: (task, attempt) => task.status === "running" && (!attempt?.execution || attemptIsExecuting(attempt)) },
-  { key: "blocked", label: "Blocked", match: (task, attempt) => task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt) },
+  { key: "blocked", label: "Blocked", match: (task, attempt) => isStuck(task) || (!task.supersededBy && executionNeedsAttention(attempt)) },
   { key: "done", label: "Done", match: (task) => task.status === "completed" },
 ];
 
@@ -1233,7 +1233,7 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
     && !gateBlockedTasks.has(task.id);
   // What the run's attention count pointed at; a decision names its own task.
   const owed = !gateBlockedTasks.has(task.id)
-    && (task.status === "blocked" || task.status === "failed" || task.verdict === "fail" || executionNeedsAttention(attempt));
+    && !task.supersededBy && (isStuck(task) || task.verdict === "fail" || executionNeedsAttention(attempt));
   // Cards this task is holding for the person; answered in the main chat or
   // in this panel, never on the row.
   const pending = usePendingActions().forTask(task.id);

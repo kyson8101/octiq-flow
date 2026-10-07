@@ -39,7 +39,7 @@ export function isMission(run: Pick<OrchestrationRun, "workspaceMode">): boolean
 
 export function missionState(run: OrchestrationRun, tasks: readonly OrchestrationTask[]): MissionState {
   const abandoned = !!run.abandoned;
-  const blocked = run.status === "waiting" || tasks.some((task) => task.status === "blocked");
+  const blocked = run.status === "waiting" || tasks.some((task) => task.status === "blocked" && !task.supersededBy);
   const state = (stage: MissionStage): MissionState => ({ stage, blocked: blocked && stage !== "closed", abandoned });
   if (run.status === "closed") return state("closed");
 

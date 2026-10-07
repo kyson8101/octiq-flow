@@ -415,6 +415,11 @@ pub struct Task {
     /// who had it, who took it, why, and when. See `reassign_task`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs: Vec<TaskHandoff>,
+    /// The task the coordinator created to replace this one after it was
+    /// blocked or failed. Its history stays; it is no longer owed anything,
+    /// so it stops counting as blocked (feedback 6b0870f9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1727,6 +1732,37 @@ impl OrchestrationStore {
         )
     }
 
+    /// Whether `old` may be replaced: a task of this coordinator's run that
+    /// was blocked or failed, has no worker on it, and was not replaced yet.
+    /// Asked before the replacement is created, so a refusal creates nothing.
+    pub fn check_supersede(
+        &self,
+        actor_chat_key: &str,
+        run_id: &str,
+        old: &str,
+    ) -> Result<(), String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        supersedable(&inner.data, actor_chat_key, run_id, old)
+    }
+
+    /// Record that `new` replaces `old` (see `check_supersede`).
+    pub fn supersede(&self, actor_chat_key: &str, old: &str, new: &str) -> Result<Task, String> {
+        let task = self.mutate(|data| {
+            let replacement = data
+                .tasks
+                .get(new)
+                .ok_or("The replacing task does not exist.")?;
+            let run_id = replacement.run_id.clone();
+            supersedable(data, actor_chat_key, &run_id, old)?;
+            let task = data.tasks.get_mut(old).expect("checked above");
+            task.superseded_by = Some(new.to_string());
+            task.updated_at = now_ms();
+            Ok(task.clone())
+        })?;
+        announce(&task.run_id, "task_superseded");
+        Ok(task)
+    }
+
     /// `create_carded_task` with the task's runtime prerequisite, which goes
     /// in with the task in the same write, like its card and size.
     #[allow(clippy::too_many_arguments)]
@@ -1852,6 +1888,7 @@ impl OrchestrationStore {
                 kind,
                 verdict: None,
                 handoffs: Vec::new(),
+                superseded_by: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -3766,6 +3803,37 @@ fn root_allowed(workspace: &Workspace, chat_cwd: Option<&str>, root: &str) -> bo
             .any(|repo| root.starts_with(repo))
 }
 
+fn supersedable(
+    data: &Stored,
+    actor_chat_key: &str,
+    run_id: &str,
+    old: &str,
+) -> Result<(), String> {
+    coordinator(data, run_id, actor_chat_key)?;
+    let task = data
+        .tasks
+        .get(old)
+        .ok_or("The task to replace does not exist.")?;
+    if task.run_id != run_id {
+        return Err("A task can only replace one in its own run.".into());
+    }
+    if task.superseded_by.is_some() {
+        return Err("That task was already replaced.".into());
+    }
+    if !matches!(task.status, TaskStatus::Blocked | TaskStatus::Failed) {
+        return Err("Only a blocked or failed task can be replaced.".into());
+    }
+    if task
+        .active_attempt_id
+        .as_ref()
+        .and_then(|id| data.attempts.get(id))
+        .is_some_and(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running))
+    {
+        return Err("That task still has a worker on it. Stop it first.".into());
+    }
+    Ok(())
+}
+
 fn coordinator<'a>(
     data: &'a Stored,
     run_id: &str,
@@ -4694,6 +4762,43 @@ pub(crate) mod tests {
                 None,
             )
             .unwrap()
+    }
+
+    /// Feedback 6b0870f9: only the coordinator replaces a blocked or failed
+    /// task of its own run, once, and never one a worker is still on.
+    #[test]
+    fn a_blocked_task_is_replaced_once_by_its_coordinator() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        let old = attempt.task_id.clone();
+        let refused = store
+            .check_supersede("chat:master", &run.id, &old)
+            .unwrap_err();
+        assert!(refused.contains("blocked or failed"), "{refused}");
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "Review failed".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        assert!(store.check_supersede("chat:other", &run.id, &old).is_err());
+        store.check_supersede("chat:master", &run.id, &old).unwrap();
+        let new = task(&store, &run, Vec::new());
+        let replaced = store.supersede("chat:master", &old, &new.id).unwrap();
+        assert_eq!(replaced.superseded_by.as_deref(), Some(new.id.as_str()));
+        assert_eq!(replaced.status, TaskStatus::Blocked, "its history stays");
+        let again = store.supersede("chat:master", &old, &new.id).unwrap_err();
+        assert!(again.contains("already replaced"), "{again}");
+        assert!(store
+            .check_supersede("chat:master", &run.id, &new.id)
+            .is_err());
     }
 
     /// A read-only review whose worker's turn ended without a report, so the

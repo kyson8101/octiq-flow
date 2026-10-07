@@ -34,6 +34,14 @@ describe("run attention", () => {
     expect(attentionLabel(attention, true)).toBe("2 to decide");
   });
 
+  it("owes nothing for a blocked task the coordinator replaced (feedback 6b0870f9)", () => {
+    const a = run("a", "chat:main");
+    const tasks = [task("old-review", "blocked", { supersededBy: "new-review" }), task("new-review", "pending")];
+    expect(runAttention(a, tasks, [], [])).toEqual({ decisions: 0, blocked: 0, total: 0 });
+    expect(attentionLabel(runAttention(a, tasks, [], []), false)).toBeNull();
+    expect(runAttention(a, [task("old-review", "blocked")], [], []).blocked).toBe(1);
+  });
+
   it("names a stalled worker as blocked, and says nothing when nothing is owed", () => {
     const a = run("a", "chat:main");
     const attempt = { id: "at", runId: "a", taskId: "t", execution: { state: "stalled", retryCount: 0 } } as OrchestrationAttempt;

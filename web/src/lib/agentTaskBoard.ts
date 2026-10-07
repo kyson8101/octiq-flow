@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ExecutionState, OrchestrationAttempt, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
+import { isStuck, type ExecutionState, type OrchestrationAttempt, type OrchestrationSnapshot, type OrchestrationTask } from "./orchestration";
 import type { TaskReport } from "./chatTask";
 
 export function taskAttempts(snapshot: OrchestrationSnapshot, task: OrchestrationTask): OrchestrationAttempt[] {
@@ -100,6 +100,8 @@ export function taskStateLabel(
 ): string {
   // A settled check's answer outranks how its worker's process ended:
   // "Completed" alone is exactly the word that hid a failed review.
+  // Its history stays readable on the row; the word says nothing is owed.
+  if (task.supersededBy) return `${TASK_LABELS[task.status]} · replaced`;
   if (task.status === "completed" && (task.verdict === "fail" || (task.kind && task.kind !== "work"))) {
     return task.verdict === "fail" ? "Done · check failed" : task.verdict === "pass" ? "Done · passed" : "Done · no verdict";
   }
@@ -175,7 +177,7 @@ export function boardCounts(tasks: OrchestrationTask[], snapshot?: Orchestration
     done, total: tasks.length, percent: tasks.length ? Math.round(done / tasks.length * 100) : 0,
     todo: tasks.filter((task) => task.status === "pending" || task.status === "ready").length,
     running: tasks.filter((task) => task.status === "running" && (!attemptFor(task)?.execution || attemptIsExecuting(attemptFor(task)!))).length,
-    blocked: tasks.filter((task) => task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attemptFor(task))).length,
+    blocked: tasks.filter((task) => isStuck(task) || (!task.supersededBy && executionNeedsAttention(attemptFor(task)))).length,
     cancelled: tasks.filter((task) => task.status === "cancelled").length,
   };
 }

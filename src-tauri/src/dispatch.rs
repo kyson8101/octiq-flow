@@ -1096,25 +1096,32 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "repository")?,
                 arg(&args, "worker")?,
             )?;
-            to_value(
-                svc.orchestrations.create_task_full(
-                    &actor,
-                    run_id,
-                    arg(&args, "title")?,
-                    arg(&args, "spec")?,
-                    list_arg(&args, "dependsOn")?,
-                    parent,
-                    worker,
-                    assignee,
-                    destination,
-                    card,
-                    arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
-                        .unwrap_or_default(),
-                    arg(&args, "size")?,
-                    arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?
-                        .unwrap_or_default(),
-                ),
-            )
+            // A replacement for a blocked or failed task (feedback 6b0870f9).
+            // Checked first, so a refusal creates no task.
+            let supersedes: Option<String> = arg(&args, "supersedes")?;
+            if let Some(old) = &supersedes {
+                svc.orchestrations.check_supersede(&actor, &run_id, old)?;
+            }
+            let created = svc.orchestrations.create_task_full(
+                &actor,
+                run_id,
+                arg(&args, "title")?,
+                arg(&args, "spec")?,
+                list_arg(&args, "dependsOn")?,
+                parent,
+                worker,
+                assignee,
+                destination,
+                card,
+                arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
+                    .unwrap_or_default(),
+                arg(&args, "size")?,
+                arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?.unwrap_or_default(),
+            );
+            if let (Ok(task), Some(old)) = (&created, &supersedes) {
+                svc.orchestrations.supersede(&actor, old, &task.id)?;
+            }
+            to_value(created)
         }
         // A lead changes or withdraws a task of a plan the person has not
         // approved yet. Owner and destination go through the same routing as

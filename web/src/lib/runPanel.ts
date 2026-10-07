@@ -1,6 +1,6 @@
 import { executionNeedsAttention } from "./agentTaskBoard";
-import type {
-  OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationTask,
+import {
+  isStuck, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationTask,
 } from "./orchestration";
 
 /** The run panel's three views of one run. Decisions and plan approval are
@@ -43,7 +43,7 @@ export function runAttention(
   const plan = run.planApproval?.status === "pending" && ["planning", "running", "waiting"].includes(run.status) ? 1 : 0;
   // A stopped run cannot retry anything, so its failures are history, not owed.
   const blocked = run.status === "stopped" ? 0 : tasks.filter((task) => task.runId === run.id && !gated.has(task.id)
-    && (task.status === "blocked" || task.status === "failed"
+    && (isStuck(task)
       || executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId)))).length;
   const decisions = open.length + plan;
   return { decisions, blocked, total: decisions + blocked };
@@ -85,7 +85,8 @@ function personState(
 ): PersonState {
   if (task.status === "completed") return "done";
   if (task.status === "cancelled") return "stopped";
-  if (gated || task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt)) return "blocked";
+  if (task.supersededBy) return "done";
+  if (gated || isStuck(task) || executionNeedsAttention(attempt)) return "blocked";
   const executing = !!attempt && (attempt.execution
     ? ["executing", "waiting_tool"].includes(attempt.execution.state)
     : attempt.status === "running");

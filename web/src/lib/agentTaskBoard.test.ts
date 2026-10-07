@@ -18,6 +18,11 @@ describe("a task row's state word (feedback ee0a43b0)", () => {
     expect(taskStateLabel(task, attempt, [])).toBe("Waiting for a tool");
   });
 
+  it("says a replaced task was replaced, keeping how it ended (feedback 6b0870f9)", () => {
+    const replaced = { ...task, status: "blocked", supersededBy: "t2" } as OrchestrationTask;
+    expect(taskStateLabel(replaced, { ...attempt, status: "blocked" } as OrchestrationAttempt)).toBe("Blocked · replaced");
+  });
+
   it("never calls a finished check that failed plain Done", () => {
     const done = { ...task, status: "completed", activeAttemptId: undefined } as OrchestrationTask;
     expect(taskStateLabel(done, undefined)).toBe("Done");
