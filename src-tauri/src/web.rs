@@ -1553,14 +1553,70 @@ async fn orchestration_handler(
         Value::Object(args) => args,
         _ => return invalid("Orchestration arguments must be an object."),
     };
-    args.insert("actorChatKey".into(), Value::String(actor));
+    args.insert("actorChatKey".into(), Value::String(actor.clone()));
     if command == "orchestration_run_create" {
         args.insert("withBrief".into(), Value::Bool(true));
     }
+    // A worker may not settle past an instruction it has not read: the first
+    // report hands the instruction over instead, and the next one settles.
+    if command == "orchestration_worker_report" {
+        let waiting = waiting_messages(&ctx, &actor);
+        if !waiting.is_null() {
+            return hook_failed(
+                StatusCode::CONFLICT,
+                crate::outcome::Refusal::new(
+                    crate::outcome::ReasonClass::Validation,
+                    format!(
+                        "Not reported yet: your coordinator sent you messages you have not seen. \
+                         Read them, act on them, then report again.\n{waiting}"
+                    ),
+                ),
+            );
+        }
+    }
     match run_hook_command(&ctx, command.into(), Value::Object(args)).await {
-        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Ok(result) => axum::Json(json!({ "result": with_waiting_messages(&ctx, &actor, result) }))
+            .into_response(),
         Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
+}
+
+/// What a working worker's coordinator sent it that no turn boundary has
+/// carried yet (see `take_for_working_worker`), or `Null` when nothing waits.
+fn waiting_messages(ctx: &Ctx, chat_key: &str) -> Value {
+    let taken = ctx
+        .services
+        .orchestrations
+        .take_for_working_worker(chat_key)
+        .unwrap_or_else(|error| {
+            eprintln!("orchestration: cannot hand a worker its messages: {error}");
+            Vec::new()
+        });
+    if taken.is_empty() {
+        return Value::Null;
+    }
+    json!({
+        "notice": "Your coordinator sent these while you were working. They are not shown anywhere else. Read them now and follow them before your next step; they may change what you are doing.",
+        "messages": taken.iter().map(|n| json!({
+            "id": n.id,
+            "kind": n.kind,
+            "sentAt": n.created_at,
+            "body": n.body,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// `result` with anything waiting for the calling worker attached. A result
+/// that is not an object is left as it is and its messages stay pending.
+fn with_waiting_messages(ctx: &Ctx, chat_key: &str, result: Value) -> Value {
+    let Value::Object(mut fields) = result else {
+        return result;
+    };
+    let waiting = waiting_messages(ctx, chat_key);
+    if !waiting.is_null() {
+        fields.insert("coordinatorMessages".into(), waiting);
+    }
+    Value::Object(fields)
 }
 
 /// What an agent may say about its own task, and nothing else.
@@ -1793,7 +1849,10 @@ async fn task_handler(
         }
     };
     match run_hook_command(&ctx, command.into(), Value::Object(args)).await {
-        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Ok(result) => {
+            axum::Json(json!({ "result": with_waiting_messages(&ctx, &chat_key, result) }))
+                .into_response()
+        }
         Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
@@ -3493,6 +3552,79 @@ mod tests {
 
     fn error(answer: &Value) -> &str {
         answer["error"].as_str().unwrap_or_default()
+    }
+
+    /// Feedback 67d07562 / 025ab9e0: an instruction sent to a worker in the
+    /// middle of its turn rides the answer to its next host call, and its
+    /// report is turned back once so it cannot settle without reading it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_working_worker_reads_its_coordinators_message_before_it_can_settle() {
+        use crate::orchestration::OrchestrationStore;
+        let store = Arc::new(OrchestrationStore::default());
+        let run = crate::orchestration::tests::run(&store);
+        let attempt = crate::orchestration::tests::running_worker(&store, &run);
+        let mut chats = crate::agent_chat::ChatManager::default();
+        chats.orchestrations = store.clone();
+        let chats = Arc::new(chats);
+        let worker = attempt.worker_chat_key.clone();
+        let cap = chats.test_launch(&worker);
+        let (_ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let send = |body: &str| {
+            store
+                .record_message(
+                    &run.coordinator_chat_key,
+                    run.id.clone(),
+                    attempt.id.clone(),
+                    "instruction".into(),
+                    "Change".into(),
+                    body.into(),
+                )
+                .unwrap();
+        };
+        let snapshot =
+            json!({ "chatKey": worker, "action": "snapshot", "args": { "runId": run.id } });
+        let report = json!({ "chatKey": worker, "action": "worker_report", "args": {
+            "attemptId": attempt.id, "outcome": "completed", "summary": "done",
+            "filesModified": [], "verdict": null } });
+
+        // Nothing waiting: the answer is the plain result.
+        let (status, answer) = hook(&base, Some(&cap), snapshot.clone()).await;
+        assert_eq!(status, 200, "{answer}");
+        assert!(
+            answer["result"].get("coordinatorMessages").is_none(),
+            "{answer}"
+        );
+
+        send("Use release/1.8.2 as the base.");
+        let (status, answer) = hook(&base, Some(&cap), snapshot.clone()).await;
+        assert_eq!(status, 200, "{answer}");
+        let carried = answer["result"]["coordinatorMessages"].to_string();
+        assert!(carried.contains("release/1.8.2"), "{answer}");
+        let (_, answer) = hook(&base, Some(&cap), snapshot.clone()).await;
+        assert!(
+            answer["result"].get("coordinatorMessages").is_none(),
+            "only once: {answer}"
+        );
+
+        send("Swap the OCR library.");
+        let (status, answer) = hook(&base, Some(&cap), report.clone()).await;
+        assert_eq!(status, 409, "{answer}");
+        assert!(error(&answer).contains("Swap the OCR library"), "{answer}");
+        let task = |store: &OrchestrationStore| {
+            store
+                .snapshot(Some(&run.id))
+                .unwrap()
+                .tasks
+                .into_iter()
+                .find(|t| t.id == attempt.task_id)
+                .unwrap()
+                .status
+        };
+        assert_eq!(task(&store), crate::orchestration::TaskStatus::Running);
+        let (status, answer) = hook(&base, Some(&cap), report).await;
+        assert_eq!(status, 200, "read, so it settles: {answer}");
+        assert_ne!(task(&store), crate::orchestration::TaskStatus::Running);
+        chats.test_end(&worker);
     }
 
     /// A read-only worker's proposed report is settled only by its run's

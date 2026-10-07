@@ -1948,6 +1948,8 @@ const ORCHESTRATION_MESSAGE_SEND = {
   description:
     "Send a durable, structured message within one run. Use to: coordinator for the master, " +
     "or an active attempt ID for a worker. Settled attempts cannot resume: start a retry first. " +
+    "A worker in the middle of a turn gets it in the answer to its next call to OctiqFlow " +
+    "(task_status, an orchestration tool or its report), and cannot report before reading it. " +
     "This is coordination, not task completion.",
   inputSchema: {
     type: "object",

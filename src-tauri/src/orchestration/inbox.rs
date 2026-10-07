@@ -259,6 +259,66 @@ impl OrchestrationStore {
             Ok(Some(n.clone()))
         })
     }
+    /// Everything waiting for a worker, handed over in the answer to its own
+    /// call to the host, and acknowledged by that answer.
+    ///
+    /// Feedback 67d07562 / 025ab9e0: `deliver_pending` writes to a chat only
+    /// between turns, and a worker's whole attempt is usually ONE turn, so a
+    /// coordinator's instruction sat pending until the attempt had settled
+    /// without it. A worker calls the host as it goes (task_status, its
+    /// orchestration tools, its report), and each call is a moment it is
+    /// reading. Only an active attempt's own worker chat is served — `valid`
+    /// already says so — and a notice mid-write to its stdin is left alone.
+    pub(crate) fn take_for_working_worker(&self, key: &str) -> Result<Vec<Notification>, String> {
+        // Asked on every call any chat makes: look before writing the ledger.
+        let waiting = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            inner
+                .data
+                .notifications
+                .values()
+                .any(|n| n.target_chat_key == key && n.state == DeliveryState::Pending)
+        };
+        if !waiting {
+            return Ok(Vec::new());
+        }
+        let taken = self.mutate(|data| {
+            let now = now_ms();
+            let mut ids: Vec<_> = data
+                .notifications
+                .values()
+                .filter(|n| {
+                    n.target_chat_key == key
+                        && n.state == DeliveryState::Pending
+                        && data
+                            .runs
+                            .get(&n.run_id)
+                            .is_some_and(|r| r.coordinator_chat_key != key)
+                        && valid(data, n)
+                })
+                .map(|n| (n.created_at, n.id.clone()))
+                .collect();
+            ids.sort();
+            let mut taken = Vec::new();
+            for (_, id) in ids {
+                let n = data.notifications.get_mut(&id).unwrap();
+                n.state = DeliveryState::Acknowledged;
+                n.attempts = n.attempts.saturating_add(1);
+                n.last_error = None;
+                n.updated_at = now;
+                taken.push(n.clone());
+            }
+            Ok(taken)
+        })?;
+        for run in taken
+            .iter()
+            .map(|n| n.run_id.clone())
+            .collect::<BTreeSet<_>>()
+        {
+            announce(&run, "notification_acknowledged");
+        }
+        Ok(taken)
+    }
     pub(crate) fn acknowledge_notification(&self, key: &str, id: &str) -> Result<(), String> {
         let run_id = self.mutate(|data| {
             let n = data
@@ -407,6 +467,60 @@ mod tests {
             .iter()
             .any(|n| n.kind == "progress" && n.state == DeliveryState::Cancelled));
     }
+    /// Feedback 67d07562 / 025ab9e0: a working worker gets its coordinator's
+    /// instruction in the answer to its next host call, exactly once, and no
+    /// other chat can take it.
+    #[test]
+    fn a_working_worker_takes_its_instructions_once() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        assert!(store
+            .take_for_working_worker(&worker.worker_chat_key)
+            .unwrap()
+            .is_empty());
+        store
+            .record_message(
+                &run.coordinator_chat_key,
+                run.id.clone(),
+                worker.id.clone(),
+                "instruction".into(),
+                "Base".into(),
+                "Rebase onto release/1.8.2.".into(),
+            )
+            .unwrap();
+        assert!(store
+            .take_for_working_worker(&run.coordinator_chat_key)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .take_for_working_worker("chat:someone-else")
+            .unwrap()
+            .is_empty());
+        let taken = store
+            .take_for_working_worker(&worker.worker_chat_key)
+            .unwrap();
+        assert_eq!(taken.len(), 1);
+        assert!(taken[0].body.contains("release/1.8.2"), "{}", taken[0].body);
+        let note = store
+            .snapshot(None)
+            .unwrap()
+            .notifications
+            .into_iter()
+            .find(|n| n.id == taken[0].id)
+            .unwrap();
+        assert_eq!(note.state, DeliveryState::Acknowledged);
+        assert!(store
+            .due_notifications(i64::MAX)
+            .unwrap()
+            .iter()
+            .all(|n| n.id != note.id));
+        assert!(store
+            .take_for_working_worker(&worker.worker_chat_key)
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn receipt_is_target_bound_idempotent_and_accepts_a_late_retry_receipt() {
         let store = OrchestrationStore::default();

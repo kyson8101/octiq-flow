@@ -378,7 +378,7 @@ impl OrchestrationStore {
                 }
             }
             for other in data.attempts.values().filter(|a| a.id != attempt.id && !a.cwd.is_empty() && attempt_is_unsettled(data, a)) {
-                if writable && other.access != Access::Read && workflow::overlaps(&workflow::checkout_identity(&other.cwd)?, &plan.checkout_root) {
+                if writable && other.access != Access::Read && workflow::overlaps(&workflow::held_checkout(&other.cwd), &plan.checkout_root) {
                     return Err(format!("This checkout is already leased to task {}.", other.task_id));
                 }
             }
@@ -403,6 +403,7 @@ impl OrchestrationStore {
             &attempt.worker_chat_key,
             &run.coordinator_chat_key,
             writable,
+            plan.managed && plan.mode.is_worktree(),
         )?;
         if saved
             .as_ref()
@@ -692,7 +693,7 @@ impl OrchestrationStore {
                 return Err("Resolve the open decision before cleanup.".into());
             }
             for other in data.attempts.values().filter(|a| a.task_id != task_id && attempt_is_unsettled(data, a) && !a.cwd.is_empty()) {
-                if workflow::overlaps(&workflow::checkout_identity(&other.cwd)?, &ws.plan.checkout_root) {
+                if workflow::overlaps(&workflow::held_checkout(&other.cwd), &ws.plan.checkout_root) {
                     return Err("Another task is still using this checkout.".into());
                 }
             }

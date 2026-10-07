@@ -298,6 +298,10 @@ pub struct PermissionRequest<'a> {
 #[derive(Default)]
 pub struct AgentEvent<'a> {
     pub session_id: Option<&'a str>,
+    /// The agent opened a turn. Usually one the host started by writing to
+    /// it, but Claude also opens one of its own when background work it
+    /// left running finishes after its full stop.
+    pub turn_opened: bool,
     pub turn_finished: bool,
     /// Text that must be carried until a later full-stop event.
     pub spoken_text: Option<&'a str>,
@@ -695,6 +699,9 @@ impl AgentProvider for ClaudeProvider {
 
         if kind == Some("system") && event.get("subtype").and_then(Value::as_str) == Some("init") {
             observed.session_id = event.get("session_id").and_then(Value::as_str);
+            // Claude announces every turn with `init`, including the one it
+            // starts by itself after `task_notification`.
+            observed.turn_opened = true;
         }
         if kind == Some("result") {
             observed.turn_finished = true;
@@ -2504,6 +2511,24 @@ pub(crate) mod tests {
         assert!(pi.contains("--tools read,grep,find,ls"));
         assert!(!pi.contains("bash,edit,write"));
         assert!(pi.ends_with("'@/tmp/screen shot.png' 'inspect it'"));
+    }
+
+    /// Feedback 5fd9b781 / 4c7f5647: the turn Claude opens by itself after a
+    /// background `task_notification` is announced by `init`, as every turn is.
+    #[test]
+    fn claude_init_opens_a_turn_and_nothing_else_does() {
+        let claude = provider_for(AgentKind::Claude);
+        let init = json!({ "type": "system", "subtype": "init", "session_id": "s-1" });
+        let opened = claude.observe_event(&init);
+        assert!(opened.turn_opened);
+        assert_eq!(opened.session_id, Some("s-1"));
+        for other in [
+            json!({ "type": "system", "subtype": "task_notification", "task_id": "b1" }),
+            json!({ "type": "system", "subtype": "status" }),
+            json!({ "type": "result", "result": "done" }),
+        ] {
+            assert!(!claude.observe_event(&other).turn_opened, "{other}");
+        }
     }
 
     #[test]

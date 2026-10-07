@@ -85,9 +85,10 @@ fn git(root: &str, args: &[&str]) -> Result<String, String> {
 }
 
 pub fn checkout_identity(path: &str) -> Result<String, String> {
+    let shown = path;
     let path = Path::new(path)
         .canonical()
-        .map_err(|e| format!("Workspace does not exist: {e}"))?;
+        .map_err(|e| format!("Workspace does not exist: {shown}: {e}"))?;
     let path = path.to_string_lossy().into_owned();
     let root = git(&path, &["rev-parse", "--show-toplevel"]).unwrap_or(path);
     Path::new(&root)
@@ -96,8 +97,36 @@ pub fn checkout_identity(path: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The checkout ANOTHER chat or attempt holds, for an overlap check only.
+///
+/// Feedback dda0bd59 / ed5ab9e3: a directory deleted under a live chat, or a
+/// stale attempt's removed worktree, made `checkout_identity` fail, and its
+/// `?` refused every dispatch in every run with a path-less ENOENT. A path
+/// that is gone holds nothing, so it is compared as written: it still clashes
+/// with a checkout it literally names, and with nothing else.
+pub fn held_checkout(path: &str) -> String {
+    checkout_identity(path).unwrap_or_else(|_| path.to_string())
+}
+
 pub fn overlaps(a: &str, b: &str) -> bool {
     Path::new(a).starts_with(b) || Path::new(b).starts_with(a)
+}
+
+/// Whether another chat working in `other` (a [`held_checkout`]) shares a
+/// writer's `checkout`.
+///
+/// A managed worktree is a folder nobody else was given, so only a chat that
+/// works INSIDE it shares it. A chat in a folder above it — a project that
+/// lists the plain folder its repositories sit in, say — was not handed this
+/// worktree, and counting it refused every worktree under that folder with
+/// "already using this checkout" (feedback 63e319a4). Every other checkout
+/// keeps the strict rule both ways.
+pub fn shares_checkout(checkout: &str, other: &str, managed_worktree: bool) -> bool {
+    if managed_worktree {
+        Path::new(other).starts_with(checkout)
+    } else {
+        overlaps(checkout, other)
+    }
 }
 
 pub fn plan(
@@ -765,6 +794,36 @@ pub(crate) mod tests {
             checkout_identity(&format!("{}/nested", repo.root)).unwrap(),
             repo.root
         );
+    }
+
+    /// Feedback dda0bd59 / ed5ab9e3: someone else's vanished folder is not an
+    /// error for this dispatch. It still clashes with what it literally names.
+    #[test]
+    fn a_vanished_folder_holds_only_the_path_it_names() {
+        let repo = Repo::new();
+        let gone = repo.dir.join("removed-worktree");
+        let gone = gone.to_string_lossy();
+        let error = checkout_identity(&gone).unwrap_err();
+        assert!(error.contains(gone.as_ref()), "{error}");
+        assert_eq!(held_checkout(&gone), gone);
+        assert!(!overlaps(&held_checkout(&gone), &repo.root));
+        assert!(overlaps(&held_checkout(&gone), &format!("{gone}/sub")));
+        assert_eq!(held_checkout(&repo.root), repo.root);
+    }
+
+    /// Feedback 63e319a4: a chat in the plain folder above a repository does
+    /// not hold a managed worktree, but does hold an ordinary checkout.
+    #[test]
+    fn only_a_chat_inside_a_managed_worktree_shares_it() {
+        let parent = "/work/Starfall";
+        let worktree = "/work/Starfall/.worktrees/novel/feature/octiq-x";
+        assert!(!shares_checkout(worktree, parent, true));
+        assert!(shares_checkout(worktree, worktree, true));
+        assert!(shares_checkout(worktree, &format!("{worktree}/web"), true));
+        assert!(!shares_checkout(worktree, "/work/Starfall/novel", true));
+        let primary = "/work/Starfall/novel";
+        assert!(shares_checkout(primary, parent, false));
+        assert!(shares_checkout(primary, &format!("{primary}/web"), false));
     }
 
     #[test]

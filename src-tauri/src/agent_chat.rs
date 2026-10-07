@@ -1165,7 +1165,7 @@ impl ChatManager {
             for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
                 if crate::git_ops::workflow::overlaps(
                     checkout,
-                    &crate::git_ops::workflow::checkout_identity(path)?,
+                    &crate::git_ops::workflow::held_checkout(path),
                 ) {
                     return Err(format!("Chat {key} is still using this checkout."));
                 }
@@ -1182,6 +1182,7 @@ impl ChatManager {
         worker: &str,
         coordinator: &str,
         writable: bool,
+        managed_worktree: bool,
     ) -> Result<(), String> {
         if !writable {
             return Ok(());
@@ -1199,9 +1200,13 @@ impl ChatManager {
             // turn's permissions yet. Conservatively wait for other live
             // processes instead of treating their next-turn setting as proof.
             for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
-                let other = crate::git_ops::workflow::checkout_identity(path)?;
-                if crate::git_ops::workflow::overlaps(checkout, &other) {
-                    return Err(format!("Chat {key} is already using this checkout. Stop it or choose Worktree mode."));
+                let other = crate::git_ops::workflow::held_checkout(path);
+                if crate::git_ops::workflow::shares_checkout(checkout, &other, managed_worktree) {
+                    return Err(if managed_worktree {
+                        format!("Chat {key} is working inside this worktree ({other}). Stop it before starting another writer here.")
+                    } else {
+                        format!("Chat {key} is already using this checkout ({other}). Stop it or choose Worktree mode.")
+                    });
                 }
             }
         }
@@ -2853,11 +2858,21 @@ pub(crate) fn start_session(
                             .flatten()
                             .or(blocked_quota_reset);
                         let observed = stream_provider.observe_event(&event);
-                        if let Ok(session) = asking.lock() {
+                        if let Ok(mut session) = asking.lock() {
                             if let Err(error) =
                                 reading.background.observe(&key, &session.launch_id, &event)
                             {
                                 eprintln!("chat: cannot record background work: {error}");
+                            }
+                            // A turn nobody wrote for: Claude woke itself when
+                            // its background work finished. Until this, the
+                            // session read idle through the whole turn, so
+                            // ask_user refused it as "turn has already ended"
+                            // (feedback 5fd9b781) and the idle sweeper, whose
+                            // clock had run since the previous full stop,
+                            // ended the worker mid-report (feedback 4c7f5647).
+                            if observed.turn_opened && !session.busy {
+                                session.turn_started();
                             }
                         }
                         if stream_provider.kind() == ChatAgent::Claude {

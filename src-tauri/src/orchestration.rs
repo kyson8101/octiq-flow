@@ -4750,7 +4750,7 @@ pub(crate) mod tests {
         (review, after, attempt, proposal)
     }
 
-    pub(super) fn running_worker(store: &OrchestrationStore, run: &Run) -> Attempt {
+    pub(crate) fn running_worker(store: &OrchestrationStore, run: &Run) -> Attempt {
         let task = task(store, run, Vec::new());
         let (_, _, attempt, _) = store
             .reserve_attempt(
