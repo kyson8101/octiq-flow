@@ -1506,6 +1506,33 @@ mod tests {
             .unwrap_err()
             .contains("Current checkout"));
     }
+    /// A project registered as a plain folder that holds a repository and
+    /// its `.worktrees` (the Starfall layout): a running writer in one of
+    /// those worktrees is inside the folder, so a chat that could write
+    /// there is refused, and a read-only chat (a discussion) is not.
+    #[test]
+    fn a_folder_holding_a_writers_worktree_refuses_writers_and_admits_readers() {
+        let repo = Repo::new();
+        let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let writer = prepare(&store, &task, Access::Auto).unwrap();
+        let folder = repo.dir.to_string_lossy().into_owned();
+        assert!(
+            Path::new(&writer.cwd).starts_with(&folder),
+            "{} is not inside {folder}",
+            writer.cwd
+        );
+        assert!(store
+            .require_workspace_access("chat:talk", &folder, true)
+            .unwrap_err()
+            .contains("active writer"));
+        assert!(store
+            .require_workspace_access("chat:talk", &folder, false)
+            .is_ok());
+        // The repository beside the worktree is not that writer's checkout.
+        assert!(store
+            .require_workspace_access("chat:talk", &repo.root, true)
+            .is_ok());
+    }
     #[test]
     fn independent_worktrees_can_write_in_parallel_and_auto_readers_reuse_root() {
         let repo = Repo::new();

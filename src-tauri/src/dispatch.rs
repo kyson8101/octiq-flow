@@ -1350,6 +1350,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "id")?,
             crate::handover::Decision::Abandon,
         )),
+        "handover_discuss" => to_value(crate::handover::decide(
+            svc,
+            &arg::<String>(&args, "id")?,
+            crate::handover::Decision::Discuss,
+        )),
         // Front-desk chats the person left before they routed anywhere, for
         // the way back on the new-chat screen. No list shows them otherwise.
         "front_desk_unfinished" => to_value(crate::handover::route::unfinished_desks(

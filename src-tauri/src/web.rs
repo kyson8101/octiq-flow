@@ -2626,7 +2626,12 @@ mod tests {
         );
         // And no hook names the person's decision: there is no action to
         // pass, and the orchestration whitelist has neither command.
-        for command in ["handover_confirm", "handover_decline", "handover_abandon"] {
+        for command in [
+            "handover_confirm",
+            "handover_decline",
+            "handover_abandon",
+            "handover_discuss",
+        ] {
             assert_eq!(orchestration_hook_command(command), None);
             assert!(!ORCHESTRATION_HOOK_ACTIONS
                 .iter()
@@ -3168,6 +3173,7 @@ mod tests {
         "handover_confirm",
         "handover_decline",
         "handover_abandon",
+        "handover_discuss",
     ];
 
     #[test]

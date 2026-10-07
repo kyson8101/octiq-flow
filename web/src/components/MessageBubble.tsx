@@ -4,13 +4,15 @@ import "./MessageBubble.css";
 
 /** One visible delivery row on every screen size. Its height is retained when
  * the queue controls become a delivery receipt, so pickup doesn't move prose. */
-export function MessageBubble({ user, message, onStart, onCancel, onRestore, onDismiss, footer, children }: {
+export function MessageBubble({ user, message, onStart, onCancel, onRestore, onDismiss, onDiscuss, footer, children }: {
   user: boolean;
   message: Message;
   onStart?: () => void;
   onCancel?: () => void;
   onRestore?: () => void;
   onDismiss?: () => void;
+  /** Send it again read-only: a writer in the project refused it. */
+  onDiscuss?: () => void;
   footer?: ReactNode;
   children: ReactNode;
 }) {
@@ -33,7 +35,7 @@ export function MessageBubble({ user, message, onStart, onCancel, onRestore, onD
     : delivery === "unknown" ? "Delivery could not be confirmed. Check the conversation before sending again."
     : undefined;
   return (
-    <div className="message-bubble" data-noswipe={onStart || onCancel || onRestore || onDismiss ? "" : undefined}>
+    <div className="message-bubble" data-noswipe={onStart || onCancel || onRestore || onDismiss || onDiscuss ? "" : undefined}>
       {body}
       {(label || footer) && (
         <div className="message-delivery" data-delivery={delivery} aria-busy={pending}>
@@ -47,6 +49,9 @@ export function MessageBubble({ user, message, onStart, onCancel, onRestore, onD
               aria-label="Take this queued message back to edit" onClick={onCancel}>Edit</button>}
             {onRestore && <button type="button" onClick={onRestore}>Restore to composer</button>}
             {onDismiss && <button type="button" onClick={onDismiss}>Dismiss</button>}
+            {onDiscuss && <button type="button"
+              title="Another task is writing in this project. Send this again with the agent read-only, to discuss."
+              onClick={onDiscuss}>Discuss read-only</button>}
             {footer}
           </div>
         </div>

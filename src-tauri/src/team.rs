@@ -2158,6 +2158,7 @@ How to route:\n\
 - If two or more agents fit and nothing in the request tells them apart, ask the person one short question that names the candidates, then end your turn. Do not guess.\n\
 - If the request clearly fits no registered agent, say so in one or two sentences, name the closest agents, and do not call route_chat.\n\
 - Otherwise call route_chat with `agent` (the agent's id), `project` (a project id from the list; a project agent's own project is the default),{home_short} `brief` and `attachments`. Write the brief for the agent, who has not seen this chat: what the person wants, the goal, and every constraint, name, link and detail they gave, in their words where it matters. Invent nothing. Pass every path listed under \"Attachments:\" in the person's messages unless they asked to leave one out.\n\
+- Set `purpose` to \"discuss\" when the person wants to talk something through (brainstorm, explore an idea, ask questions, think out loud) rather than have something made, fixed or changed. A discussion opens read-only, so work running in the project never keeps it from opening. Leave it out (\"work\") when they want something done. If you cannot tell, ask.\n\
 - An agent that works only in one project can be sent only there.{head_rule}{home_rule}\n\
 - route_chat only shows the person a card with the agent, the project and your brief. Nothing is created until they confirm it. After calling it, say in one short line what the card proposes and end your turn. If the person asks for a change, call route_chat again with the revised brief; it replaces the card.\n\n\
 Reply briefly, in the person's language.\n\n\
@@ -3594,6 +3595,11 @@ mod tests {
         assert!(host.contains("ask the person one short question"), "{host}");
         assert!(host.contains("fits no registered agent"), "{host}");
         assert!(host.contains("route_chat"), "{host}");
+        // Talking an idea through opens read-only, so no writer blocks it.
+        assert!(
+            host.contains("Set `purpose` to \"discuss\" when the person wants to talk"),
+            "{host}"
+        );
         // Recorded as a front-desk chat, never as anyone's lead.
         assert!(is_front_desk_chat(&path, "chat:desk1"));
         assert!(lead_for_chat(&path, "chat:desk1").unwrap().is_none());

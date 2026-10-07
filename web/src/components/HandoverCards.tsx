@@ -9,7 +9,7 @@
 // a disclosure, like every other piece of agent prose.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
-  askBackSummary, chatIdOf, handoverHeadline, isRoute, latestOutcome, noticeLine, outcomeText, placeLine,
+  askBackSummary, canDiscussInstead, chatIdOf, handoverHeadline, isRoute, latestOutcome, noticeLine, outcomeText, placeLine,
   routeHeadline, routePlaceLine, settingsLine, waitsOnPerson,
   type Handover, type HandoverAction, type HandoverAsk, type handoverLayout,
 } from "../lib/handover";
@@ -205,6 +205,7 @@ export function RouteCard({ handover, onDecide }: {
   const files = route?.attachments ?? [];
   const unreadable = route?.unreadable ?? [];
   const failed = error ?? handover.error;
+  const discussInstead = canDiscussInstead(handover);
   return (
     <section
       className={`handover-card route-card is-${handover.status}`}
@@ -251,7 +252,7 @@ export function RouteCard({ handover, onDecide }: {
             {busy === "decline" ? "Cancelling…" : "Cancel"}
           </button>
           <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
-            {busy === "confirm" ? "Opening…" : `Open chat with ${handover.to.name}`}
+            {busy === "confirm" ? "Opening…" : route?.discuss ? `Discuss with ${handover.to.name}` : `Open chat with ${handover.to.name}`}
           </button>
         </footer>
       )}
@@ -260,13 +261,20 @@ export function RouteCard({ handover, onDecide }: {
           <span className="handover-hint">
             {!handover.error
               ? "Opening the chat."
-              : handover.abandonable
-                ? "No chat was opened. Try again, or give up."
-                : "Its chat may already have started, so it can only be tried again."}
+              : discussInstead
+                ? "No chat was opened. Try again, open it read-only to discuss, or give up."
+                : handover.abandonable
+                  ? "No chat was opened. Try again, or give up."
+                  : "Its chat may already have started, so it can only be tried again."}
           </span>
           {handover.error && handover.abandonable && (
             <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")}>
               {busy === "abandon" ? "Giving up…" : "Give up"}
+            </button>
+          )}
+          {discussInstead && (
+            <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("discuss")}>
+              {busy === "discuss" ? "Opening…" : "Discuss only (read-only)"}
             </button>
           )}
           {handover.error && (

@@ -121,3 +121,25 @@ test("route_chat sends only the documented fields to /hook/route, as this chat",
     fake.close();
   }
 });
+
+test("route_chat passes a discussion on, and nothing else under purpose", async () => {
+  const fake = await host({ result: { id: "handover_1", text: "The person now sees a card." } });
+  try {
+    const env = { OCTIQ_CHAT_KEY: "chat:desk", OCTIQ_FRONT_DESK: "1", OCTIQ_HOOK_PORT: String(fake.port), OCTIQ_CHAT_CAPABILITY: "cap" };
+    const tools = await mcp(env, "tools/list", {});
+    assert.deepEqual(tools.result.tools[0].inputSchema.properties.purpose.enum, ["work", "discuss"]);
+    const call = (purpose, requestId) => mcp(env, "tools/call", {
+      name: "route_chat",
+      arguments: { agent: "agent_star", brief: "Brainstorm the next short series.", purpose, requestId },
+    });
+    await call("discuss", "r1");
+    await call("full", "r2");
+    await call("work", "r3");
+    assert.equal(fake.seen.length, 3);
+    assert.equal(fake.seen[0].body.args.purpose, "discuss");
+    assert.equal(fake.seen[1].body.args.purpose, undefined, "an unknown purpose is work");
+    assert.equal(fake.seen[2].body.args.purpose, undefined);
+  } finally {
+    fake.close();
+  }
+});

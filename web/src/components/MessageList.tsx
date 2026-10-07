@@ -44,6 +44,7 @@ import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { RollingText } from "./RollingNumber";
 import { MessageBubble } from "./MessageBubble";
+import { canDiscussUnsent } from "../lib/writerConflict";
 import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
 import {
@@ -772,6 +773,7 @@ function TurnView({
   onStartQueued,
   onRestoreUnsent,
   onDismissUnsent,
+  onDiscussUnsent,
 }: {
   messages: Message[];
   kids: Kids;
@@ -783,6 +785,7 @@ function TurnView({
   onStartQueued?: (turnId: string) => void;
   onRestoreUnsent?: (turnId: string) => void;
   onDismissUnsent?: (turnId: string) => void;
+  onDiscussUnsent?: (turnId: string) => void;
   /** What to call the host — the provider this conversation is running, in its
    *  own name. See the same prop on `MessageList`. */
   hostName?: string;
@@ -937,6 +940,7 @@ function TurnView({
       <MessageBubble user={role === "user"} message={message} onStart={start} onCancel={cancel}
         onRestore={(unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
         onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
+        onDiscuss={role === "user" && onDiscussUnsent && canDiscussUnsent(message) ? () => onDiscussUnsent(message.turnId!) : undefined}
         footer={role === "user" && answer ? <CopyAnswer text={answer} what="message" /> : undefined}>
 
         {/* Above the words, the way they sit above the box while you attach
@@ -1249,6 +1253,7 @@ const MessageListBody = function MessageList({
   onStartQueued,
   onRestoreUnsent,
   onDismissUnsent,
+  onDiscussUnsent,
   hasEarlier = false,
   loadingEarlier = false,
   earlierError,
@@ -1306,6 +1311,9 @@ const MessageListBody = function MessageList({
   onRestoreUnsent?: (turnId: string) => void;
   /** Remove a prompt the backend no longer holds from the durable transcript. */
   onDismissUnsent?: (turnId: string) => void;
+  /** Send a prompt a writer kept from the agent again, read-only, to discuss
+   *  (`lib/writerConflict`). */
+  onDiscussUnsent?: (turnId: string) => void;
   /** Send a line to the agent as though it had been typed — how the `/config`
    *  panel changes a setting. Absent where there is no chat to send into (the
    *  agent rail's read-only transcript), and the panel then only reads. */
@@ -1818,6 +1826,7 @@ const MessageListBody = function MessageList({
               onStartQueued={onStartQueued}
               onRestoreUnsent={onRestoreUnsent}
               onDismissUnsent={onDismissUnsent}
+              onDiscussUnsent={onDiscussUnsent}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once

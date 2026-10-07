@@ -1294,6 +1294,15 @@ const ROUTE_CHAT = {
           "Paths listed under \"Attachments:\" in the person's messages that " +
           "the agent should get. The host copies them where the new chat can open them.",
       },
+      purpose: {
+        type: "string",
+        enum: ["work", "discuss"],
+        description:
+          "\"discuss\" when the person wants to talk something through (brainstorm, " +
+          "explore an idea, ask questions) rather than have something done: the chat " +
+          "opens read-only, so work running in the project never blocks it. " +
+          "\"work\", the default, opens it on the agent's registered settings.",
+      },
       requestId: {
         type: "string",
         minLength: 1,
@@ -1389,6 +1398,8 @@ function callRoute(args = {}) {
     attachments: Array.isArray(args.attachments)
       ? args.attachments.filter((item) => typeof item === "string")
       : [],
+    // Only the one value that changes anything; any other word is work.
+    ...(args.purpose === "discuss" ? { purpose: "discuss" } : {}),
     requestId: text(args.requestId),
   };
   return new Promise((resolve, reject) => {
