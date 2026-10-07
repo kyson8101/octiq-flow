@@ -157,6 +157,24 @@ impl Store {
                 .unwrap_or(true)
     }
 
+    /// This chat's background work still running, as `(id, description)`,
+    /// in a stable order.
+    pub fn running(&self, chat: &str) -> Vec<(String, String)> {
+        let mut running: Vec<_> = self
+            .tasks
+            .lock()
+            .map(|tasks| {
+                tasks
+                    .values()
+                    .filter(|t| t.chat_key == chat && t.status == "running")
+                    .map(|t| (t.id.clone(), t.description.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        running.sort();
+        running
+    }
+
     pub fn interrupt(&self, chat: &str, launch: &str, reason: &str) -> Result<(), String> {
         let affected = {
             let mut tasks = self.tasks.lock().map_err(|e| e.to_string())?;

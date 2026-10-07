@@ -1123,6 +1123,11 @@ impl ChatManager {
             .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
     }
 
+    /// The background work this chat's agent left running, `(id, description)`.
+    pub(crate) fn running_background(&self, key: &str) -> Vec<(String, String)> {
+        self.background.running(key)
+    }
+
     pub(crate) fn has_process(&self, key: &str) -> bool {
         self.sessions
             .lock()
