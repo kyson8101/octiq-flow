@@ -39,7 +39,7 @@ export function RunBridges({ run, snapshot, busy, readOnly, onBridge }: {
 
   return (
     <section className="orch-bridges" aria-labelledby={headingId}>
-      <h4 id={headingId}>Bridges to other runs</h4>
+      <h4 id={headingId}>Bridges to other missions</h4>
       {(outgoing.length > 0 || incoming.length > 0) && <ul>
         {outgoing.map((bridge) => row(bridge, "out"))}
         {incoming.map((bridge) => row(bridge, "in"))}
@@ -47,9 +47,9 @@ export function RunBridges({ run, snapshot, busy, readOnly, onBridge }: {
       {targets.length > 0 && (choosing ? (
         <div className="orch-bridge-open" role="group" aria-labelledby={headingId}
           onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancel(); } }}>
-          <label htmlFor={selectId}>Let this run's main agent send notes to</label>
+          <label htmlFor={selectId}>Let this mission's main agent send notes to</label>
           <select id={selectId} value={targetId} autoFocus onChange={(event) => setTargetId(event.target.value)}>
-            <option value="">Choose a run</option>
+            <option value="">Choose a mission</option>
             {targets.map((other) => <option key={other.id} value={other.id}>{other.objective}</option>)}
           </select>
           {target && <ul className="orch-bridge-scope" aria-label="What this bridge allows">
@@ -70,7 +70,7 @@ export function RunBridges({ run, snapshot, busy, readOnly, onBridge }: {
         </div>
       ) : (
         <button type="button" className="orch-quiet" disabled={busy} onClick={() => setChoosing(true)}>
-          Let this run's main agent send notes to another run…
+          Let this mission's main agent send notes to another mission…
         </button>
       ))}
     </section>

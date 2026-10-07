@@ -35,6 +35,7 @@ pub mod execution;
 pub mod inbox;
 pub mod levels;
 pub mod lifecycle;
+pub mod mission;
 pub mod peer;
 #[cfg(test)]
 mod reporting_tests;
@@ -58,6 +59,9 @@ pub enum RunStatus {
     Completed,
     Failed,
     Stopped,
+    /// A mission the person closed: its worktrees are gone, its record stays,
+    /// and new work starts a new mission. `Run::abandoned` says which ending.
+    Closed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +129,16 @@ pub struct Run {
     /// archived; everything it recorded stays, and restoring clears this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<i64>,
+    /// When the person closed this mission. See `mission.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<i64>,
+    /// Closed without its work merged. The branch is kept.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abandoned: bool,
+    /// What git last said about each of the mission's worktrees: merged,
+    /// released. Read on request (`refresh_mission`), never inferred.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mission_delivery: Vec<mission::MissionDelivery>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1264,6 +1278,9 @@ impl OrchestrationStore {
             updated_at: now,
             stopped_reason: None,
             archived_at: None,
+            closed_at: None,
+            abandoned: false,
+            mission_delivery: Vec::new(),
         };
         let created = run.clone();
         self.mutate(|data| {
@@ -1772,6 +1789,9 @@ impl OrchestrationStore {
             };
             if run.archived_at.is_some() {
                 return Err("This run is archived. Restore it before adding work.".into());
+            }
+            if run.status == RunStatus::Closed {
+                return Err("This mission is closed. Start a new mission for new work.".into());
             }
             if worker.is_none() && run.worker_defaults.as_ref().is_some_and(|d| d.agent.is_none()) {
                 return Err("Choose a suitable worker for this task: provide worker.agent, worker.model, worker.access, and optional worker.effort.".into());
@@ -2298,7 +2318,10 @@ impl OrchestrationStore {
                     return Err("This recovery was superseded or is not due.".into());
                 }
             }
-            if matches!(run.status, RunStatus::Completed | RunStatus::Stopped) {
+            if matches!(
+                run.status,
+                RunStatus::Completed | RunStatus::Stopped | RunStatus::Closed
+            ) {
                 return Err("This run no longer accepts workers.".into());
             }
             if task.status == TaskStatus::Completed || task.status == TaskStatus::Cancelled {
@@ -2345,6 +2368,26 @@ impl OrchestrationStore {
                     "Run {} already has its {} allowed workers active.",
                     run.id, run.max_concurrent
                 ));
+            }
+            // A mission's writers take turns in its one worktree. Refused here,
+            // before an attempt exists, the task stays ready for its turn;
+            // refused at launch it would settle as failed.
+            if run.workspace_mode == WorkspaceMode::Mission && launch.access != Access::Read {
+                let root = workspaces::task_root(&run, task.destination.as_ref());
+                let busy = data.attempts.values().find(|a| {
+                    a.run_id == run.id
+                        && a.access != Access::Read
+                        && attempt_is_unsettled(data, a)
+                        && data.tasks.get(&a.task_id).is_some_and(|t| {
+                            workspaces::task_root(&run, t.destination.as_ref()) == root
+                        })
+                });
+                if let Some(busy) = busy {
+                    let title = data.tasks.get(&busy.task_id).map_or("", |t| t.title.as_str());
+                    return Err(format!(
+                        "\"{title}\" is writing in this mission's worktree. This task can start when it finishes."
+                    ));
+                }
             }
 
             let number = data
@@ -3756,7 +3799,7 @@ fn depends_on_transitively(data: &Stored, from: &str, target: &str) -> bool {
 fn run_has_ended(run: &Run) -> bool {
     matches!(
         run.status,
-        RunStatus::Stopped | RunStatus::Completed | RunStatus::Failed
+        RunStatus::Stopped | RunStatus::Completed | RunStatus::Failed | RunStatus::Closed
     )
 }
 
@@ -4343,7 +4386,7 @@ fn recompute_run(data: &mut Stored, run_id: &str) {
         RunStatus::Stopped
     };
     if let Some(run) = data.runs.get_mut(run_id) {
-        if run.status != RunStatus::Stopped {
+        if !matches!(run.status, RunStatus::Stopped | RunStatus::Closed) {
             run.status = status;
             run.updated_at = now_ms();
         }
@@ -4471,7 +4514,11 @@ fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     let workspace = task.workspace.as_ref().map(|w| format!(
         "\n\nAssigned workspace: {}\nBranch: {}\nMode: {:?}\nBase SHA: {}\nExisting changes to preserve:\n{}\nThe host owns this workspace lifecycle. Do not switch branches, create replacement worktrees, or remove this directory. Stop all source changes after reporting. Use orchestration validation workspaces for isolated commit checks.",
         w.plan.cwd, w.plan.branch, w.plan.mode, w.plan.base_sha, w.plan.initial_status
-    )).unwrap_or_default();
+    ) + if w.plan.mode == WorkspaceMode::Mission {
+        "\nThis is the mission's shared worktree: earlier tasks' work is already on this branch, and later tasks continue from what you leave. Commit your finished work here before reporting."
+    } else {
+        ""
+    }).unwrap_or_default();
     let kind = if task.kind.requires_verdict() {
         format!(
             "\n\nThis is a {} task: the host refuses a completed report without a verdict. Settle it as completed with verdict pass or fail; only pass releases the tasks that depend on it. If you could not finish checking, report failed or blocked instead.",

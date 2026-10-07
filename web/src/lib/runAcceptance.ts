@@ -168,7 +168,7 @@ export function runStages(
     ? { key: "acceptance", label: "Acceptance", value: "Failing", tone: "warn", note: "A check, review or acceptance task found problems; its dependants wait." }
     : checks.total && !checks.awaiting && !checks.noVerdict
       ? { key: "acceptance", label: "Acceptance", value: "Every planned check passed", tone: "ok", note: "What the planned checks covered passed. It is not a record that the product was accepted." }
-      : { key: "acceptance", label: "Acceptance", value: "Unverified", tone: "quiet", note: checks.total ? "Checks are still outstanding." : "No check, review or acceptance task in this run. Task completion is not acceptance." };
+      : { key: "acceptance", label: "Acceptance", value: "Unverified", tone: "quiet", note: checks.total ? "Checks are still outstanding." : "No check, review or acceptance task in this mission. Task completion is not acceptance." };
 
   return [
     { key: "tasks", label: "Tasks settled", value: `${settled} of ${live.length}`, tone: "quiet", note: "How much of the plan has finished. Not how much of it works." },
@@ -190,7 +190,7 @@ export function runStages(
       tone: envCounts.get("stale") || envCounts.get("unhealthy") || envCounts.get("error") ? "warn" : envs.length && envCounts.get("ready") === envs.length ? "ok" : "quiet",
       note: "Test environments on this host. Ready means its readiness check passed; it is not a deployment.",
     },
-    { key: "deployed", label: "Deployed runtime", value: "Not tracked", tone: "quiet", note: "OctiqFlow does not record deployments per run. Check the release evidence separately." },
+    { key: "deployed", label: "Deployed runtime", value: "Not tracked", tone: "quiet", note: "OctiqFlow does not record deployments per mission. Check the release evidence separately." },
     acceptance,
   ];
 }

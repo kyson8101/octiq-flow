@@ -2155,7 +2155,7 @@ export default function App() {
    *  creates a chat or a run: both must already be here. */
   const openBeside = (taskChatKey: string) => {
     const pair = besideFor(orchestrationState.snapshot, taskChatKey);
-    if (!pair) throw new Error("This task's main chat is not known yet. Wait for the run to load and try again.");
+    if (!pair) throw new Error("This task's main chat is not known yet. Wait for the mission to load and try again.");
     const main = conversationsRef.current.find((item) => item.id === pair.main);
     if (!main) throw new Error("The main chat for this task is not available in this browser yet.");
     if (!conversationsRef.current.some((item) => item.id === pair.task)) throw new Error("This task's chat is not available yet.");
@@ -4323,7 +4323,7 @@ export default function App() {
   );
 
   const ensureCoordinator = async (objective: string): Promise<string> => {
-    if (!project) throw new Error("Choose a project before starting a run.");
+    if (!project) throw new Error("Choose a project before starting a mission.");
     if (workerChat) throw new Error("Start runs from the main chat.");
     if (choice.agent === "pi") throw new Error("Choose Codex, Claude or Antigravity as the main agent.");
     const id = conversationId ?? crypto.randomUUID();

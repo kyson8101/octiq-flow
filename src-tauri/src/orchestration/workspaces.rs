@@ -66,6 +66,16 @@ pub(super) fn first_mode(run_mode: WorkspaceMode, access: Access) -> WorkspaceMo
     }
 }
 
+/// What a workspace is keyed by: the run for a mission, whose tasks all share
+/// one worktree per repository, else the task.
+pub(super) fn workspace_key<'a>(run: &'a Run, task_id: &'a str, mode: WorkspaceMode) -> &'a str {
+    if mode == WorkspaceMode::Mission {
+        &run.id
+    } else {
+        task_id
+    }
+}
+
 /// Where a task's first attempt starts: its destination, or the run's root.
 pub(super) fn task_root<'a>(run: &'a Run, destination: Option<&'a TaskDestination>) -> &'a str {
     destination.map_or(run.root_path.as_str(), |d| d.repository.as_str())
@@ -84,7 +94,12 @@ pub(super) fn propose(
     let mode = first_mode(run.workspace_mode, chosen.unwrap_or(Access::Auto));
     let provisional = chosen.is_none() && run.workspace_mode == WorkspaceMode::Auto;
     let proposed_at = now_ms();
-    match workflow::plan(task_root(run, destination), "", task_id, mode) {
+    match workflow::plan(
+        task_root(run, destination),
+        "",
+        workspace_key(run, task_id, mode),
+        mode,
+    ) {
         Ok(plan) => {
             let conflict = workflow::occupied(&plan);
             WorkspaceProposal {
@@ -110,6 +125,7 @@ pub(super) fn propose(
 fn mode_words(mode: WorkspaceMode) -> &'static str {
     match mode {
         WorkspaceMode::Direct => "the current checkout",
+        WorkspaceMode::Mission => "the mission's worktree",
         _ => "a new worktree",
     }
 }
@@ -134,7 +150,9 @@ fn approved_plan(
             approved.base_branch, launch.base_branch
         ));
     }
-    if mode != approved.mode {
+    // A mission in a folder with no Git plans as that folder (`workflow::plan`).
+    let in_place = mode == WorkspaceMode::Mission && !approved.is_repo;
+    if mode != approved.mode && !in_place {
         return Err(format!(
             "The approved plan uses {}, but this launch would use {}. Launch with the planned access, or create a new task.",
             mode_words(approved.mode),
@@ -318,10 +336,20 @@ impl OrchestrationStore {
                 .as_ref()
                 .and_then(|p| Some((p, p.plan.as_ref()?)))
             {
-                Some((proposal, approved)) => {
-                    approved_plan(proposal, approved, root, launch, &task.id, mode)?
-                }
-                None => workflow::plan(root, &launch.base_branch, &task.id, mode)?,
+                Some((proposal, approved)) => approved_plan(
+                    proposal,
+                    approved,
+                    root,
+                    launch,
+                    workspace_key(run, &task.id, mode),
+                    mode,
+                )?,
+                None => workflow::plan(
+                    root,
+                    &launch.base_branch,
+                    workspace_key(run, &task.id, mode),
+                    mode,
+                )?,
             }
         };
         if writable
@@ -360,7 +388,7 @@ impl OrchestrationStore {
             let task = data.tasks.get_mut(&task.id).ok_or("Task disappeared.")?;
             task.workspace = Some(resource);
             let current = data.attempts.get_mut(&attempt.id).unwrap();
-            current.cwd = plan.cwd.clone(); current.branch = plan.branch.clone(); current.is_worktree = plan.mode == WorkspaceMode::Worktree;
+            current.cwd = plan.cwd.clone(); current.branch = plan.branch.clone(); current.is_worktree = plan.mode.is_worktree();
             Ok(old_chats)
         })?;
         // Settled processes must actually stop before a new writer starts.
@@ -404,7 +432,7 @@ impl OrchestrationStore {
             cwd: plan.cwd,
             branch: plan.branch,
             is_repo: plan.is_repo,
-            is_worktree: plan.mode == WorkspaceMode::Worktree,
+            is_worktree: plan.mode.is_worktree(),
         })
     }
 
@@ -635,6 +663,12 @@ impl OrchestrationStore {
             .ok_or("This task has no workspace.")?;
         if ws.state == WorkspaceState::Cleaned {
             return Ok(task);
+        }
+        if ws.plan.mode == WorkspaceMode::Mission {
+            return Err(
+                "This task works in its mission's shared worktree. Close the mission to clean it up."
+                    .into(),
+            );
         }
         if !ws.plan.managed || ws.plan.mode != WorkspaceMode::Worktree {
             return Err(
@@ -1673,6 +1707,156 @@ mod tests {
             .unwrap_err()
             .contains("read-only work"));
         assert_eq!(repo.git(&["status", "--porcelain"]), "");
+    }
+    // ---- Missions: one worktree per repository, open until closed --------
+
+    fn close(store: &OrchestrationStore, run: &Run, abandon: bool) -> Result<Run, String> {
+        store.close_mission(&ChatManager::default(), "chat:master", &run.id, abandon)
+    }
+
+    #[test]
+    fn a_mission_shares_one_worktree_and_a_follow_up_lands_on_its_branch() {
+        let repo = Repo::new();
+        let (store, run, first) = setup(&repo, WorkspaceMode::Mission);
+        let one = prepare(&store, &first, Access::Auto).unwrap();
+        let id = run.id.strip_prefix("run_").unwrap();
+        assert_eq!(one.branch, format!("feature/mission-{id}"));
+        let made = repo.commit(&one.cwd, "first.txt", "first");
+        report(&store, &one, WorkerOutcome::Completed);
+
+        // The follow-up's plan is the mission's worktree, and not a conflict.
+        let follow_up = super::super::tests::task(&store, &run, vec![]);
+        let proposal = stored(&store, &follow_up).workspace_proposal.unwrap();
+        assert_eq!(proposal.conflict, None);
+        assert_eq!(proposal.plan.unwrap().branch, one.branch);
+        let two = prepare(&store, &follow_up, Access::Auto).unwrap();
+        assert_eq!(
+            (two.cwd.as_str(), two.branch.as_str()),
+            (one.cwd.as_str(), one.branch.as_str())
+        );
+        assert_eq!(repo.git(&["rev-parse", &two.branch]), made);
+    }
+
+    #[test]
+    fn a_mission_has_one_writer_at_a_time_and_the_scheduler_holds_the_next() {
+        let repo = Repo::new();
+        let (store, run, first) = setup(&repo, WorkspaceMode::Mission);
+        let second = super::super::tests::task(&store, &run, vec![]);
+        let wave = |store: &OrchestrationStore| {
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            let run = snapshot.runs[0].clone();
+            automation::ready_wave(&snapshot, &run)
+                .into_iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>()
+        };
+        // Two ready writers: the wave takes one, not both.
+        assert_eq!(wave(&store).len(), 1);
+        let one = prepare(&store, &first, Access::Auto).unwrap();
+        assert!(
+            wave(&store).is_empty(),
+            "the second writer waits while the first works"
+        );
+        // Started by hand anyway, it is refused before an attempt exists, so
+        // the task stays ready for its turn instead of failing.
+        let refused = prepare_from(&store, &second, Access::Auto, "").unwrap_err();
+        assert!(refused.contains("can start when it finishes"), "{refused}");
+        report(&store, &one, WorkerOutcome::Completed);
+        assert_eq!(wave(&store), vec![second.id.clone()]);
+        assert_eq!(prepare(&store, &second, Access::Auto).unwrap().cwd, one.cwd);
+    }
+
+    #[test]
+    fn closing_waits_for_the_merge_then_removes_the_worktree_and_local_branch() {
+        let repo = Repo::new();
+        repo.remote();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+        let one = prepare(&store, &task, Access::Auto).unwrap();
+        repo.commit(&one.cwd, "feature.txt", "done");
+        report(&store, &one, WorkerOutcome::Completed);
+
+        let refused = close(&store, &run, false).unwrap_err();
+        assert!(refused.contains("not merged"), "{refused}");
+        assert!(
+            Path::new(&one.cwd).exists(),
+            "a refused close removes nothing"
+        );
+        let refreshed = store.refresh_mission("chat:master", &run.id).unwrap();
+        assert!(!refreshed.mission_delivery[0].merged);
+
+        // The lead fast-forwards the base and pushes it; no PR, branch never pushed.
+        repo.git(&["merge", "--ff-only", &one.branch]);
+        repo.git(&["push", "origin", "main"]);
+        assert!(
+            store
+                .refresh_mission("chat:master", &run.id)
+                .unwrap()
+                .mission_delivery[0]
+                .merged
+        );
+
+        let closed = close(&store, &run, false).unwrap();
+        assert_eq!(closed.status, RunStatus::Closed);
+        assert!(!closed.abandoned && closed.closed_at.is_some());
+        assert!(closed.mission_delivery[0].removed && closed.mission_delivery[0].branch_deleted);
+        assert!(!Path::new(&one.cwd).exists());
+        assert!(repo.git(&["branch", "--list", &one.branch]).is_empty());
+        assert_eq!(
+            stored(&store, &task).workspace.unwrap().state,
+            WorkspaceState::Cleaned
+        );
+        // Closed is closed: new work is a new mission.
+        let again = store.create_task(
+            "chat:master",
+            run.id.clone(),
+            "More".into(),
+            "More".into(),
+            vec![],
+            None,
+            None,
+        );
+        assert!(again.unwrap_err().contains("closed"));
+    }
+
+    #[test]
+    fn abandoning_keeps_the_branch_and_never_drops_unpublished_commits() {
+        let repo = Repo::new();
+        repo.remote();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+        let one = prepare(&store, &task, Access::Auto).unwrap();
+        let head = repo.commit(&one.cwd, "draft.txt", "half done");
+        report(&store, &one, WorkerOutcome::Completed);
+        let refused = close(&store, &run, true).unwrap_err();
+        assert!(refused.contains("Push"), "{refused}");
+        assert!(Path::new(&one.cwd).exists());
+
+        crate::git_ops::workflow::tests::push_branch(&one.cwd, &one.branch);
+        let closed = close(&store, &run, true).unwrap();
+        assert_eq!(closed.status, RunStatus::Closed);
+        assert!(closed.abandoned);
+        assert!(!closed.mission_delivery[0].branch_deleted);
+        assert!(!Path::new(&one.cwd).exists());
+        assert_eq!(repo.git(&["rev-parse", &one.branch]), head);
+    }
+
+    #[test]
+    fn a_task_cannot_clean_up_the_worktree_its_mission_shares() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Mission);
+        let one = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &one, WorkerOutcome::Completed);
+        let head = repo.git(&["rev-parse", &one.branch]);
+        let refused = store
+            .cleanup_workspace(
+                &ChatManager::default(),
+                "chat:master",
+                &task.id,
+                true,
+                &head,
+            )
+            .unwrap_err();
+        assert!(refused.contains("Close the mission"), "{refused}");
+        assert!(Path::new(&one.cwd).exists());
     }
 }
 

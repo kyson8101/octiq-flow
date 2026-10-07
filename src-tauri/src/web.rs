@@ -1502,6 +1502,8 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     ("peer_ask", "orchestration_peer_ask"),
     ("service_register", "orchestration_service_register"),
     ("workspace_refresh", "orchestration_workspace_refresh"),
+    // Read-only: where the mission's branches stand. Closing is the person's.
+    ("mission_refresh", "orchestration_mission_refresh"),
     ("task_reopen", "orchestration_task_reopen"),
     // A lead accepting a report's result; never the person's acceptance.
     ("task_accept", "orchestration_task_accept_in_chat"),

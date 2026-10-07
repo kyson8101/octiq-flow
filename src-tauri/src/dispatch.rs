@@ -974,14 +974,24 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let defaults: Option<crate::orchestration::automation::WorkerDefaults> =
                 arg(&args, "workerDefaults")?;
             let defaults = defaults.map(|d| d.normalized()).transpose()?;
+            // Agents mode: this chat is a registered lead's.
+            let agents_lead =
+                crate::team::lead_for_chat(&crate::team::default_path(), &actor)?.is_some();
             let run = svc.orchestrations.create_run_with_mode(
                 actor.clone(),
                 arg(&args, "objective")?,
                 workspace_id,
                 root_path,
                 arg(&args, "maxConcurrent")?,
+                // In agents mode a run is a mission unless the caller says
+                // otherwise: one worktree per repository, open until closed.
+                // Elsewhere the default stays Auto.
                 arg::<Option<crate::git_ops::workflow::WorkspaceMode>>(&args, "workspaceMode")?
-                    .unwrap_or_default(),
+                    .unwrap_or(if agents_lead {
+                        crate::git_ops::workflow::WorkspaceMode::Mission
+                    } else {
+                        crate::git_ops::workflow::WorkspaceMode::Auto
+                    }),
             )?;
             let run = if let Some(defaults) = defaults {
                 svc.orchestrations
@@ -990,8 +1000,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 run
             };
             // Agents mode: a lead's plan always waits for the person.
-            let run = if crate::team::lead_for_chat(&crate::team::default_path(), &actor)?.is_some()
-            {
+            let run = if agents_lead {
                 svc.orchestrations.require_plan_approval(&run.id)?
             } else {
                 run
@@ -1534,6 +1543,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "runId")?,
             arg(&args, "archived")?,
+        )),
+        // The person's, like workspace cleanup: absent from the agents' hook.
+        "orchestration_mission_refresh" => to_value(svc.orchestrations.refresh_mission(
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+        )),
+        "orchestration_mission_close" => to_value(svc.orchestrations.close_mission(
+            &svc.chats,
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+            arg::<Option<bool>>(&args, "abandon")?.unwrap_or(false),
         )),
         "orchestration_workspace_cleanup" => to_value(svc.orchestrations.cleanup_workspace(
             &svc.chats,

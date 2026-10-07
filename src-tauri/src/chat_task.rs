@@ -784,6 +784,14 @@ fn default_target(root: &str, branch: &str) -> String {
 /// on the request path, and a check that hangs would hang the panel.
 const RELEASE_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The project's own release check, applied to one commit: what a mission's
+/// status board asks once git says its branch is merged. Same rule as a chat:
+/// a project nobody taught answers `None`.
+pub fn release_status(project_id: &str, root: &str, head: &str) -> (Option<bool>, String) {
+    let check = read().projects.get(project_id).cloned().unwrap_or_default();
+    check_release(root, head, &check)
+}
+
 /// Is this commit in what is actually running? Answers `None` — "unverified" —
 /// whenever the project has not said how to tell, which is most of them.
 fn check_release(root: &str, head: &str, check: &ReleaseCheck) -> (Option<bool>, String) {

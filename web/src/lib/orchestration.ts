@@ -1,7 +1,7 @@
 import type { TaskReport } from "./chatTask";
 import type { TaskAcceptance, TaskSize } from "./agentLevels";
 
-export type WorkspaceMode = "auto" | "worktree" | "direct";
+export type WorkspaceMode = "mission" | "auto" | "worktree" | "direct";
 export type RecoveryPolicy = { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; fallbackModel?: string | null; stallAfterMs?: number; toolStallAfterMs?: number };
 export type WorkerSettings = { agent: "codex" | "claude" | "antigravity"; access: string; model?: string; effort?: string; recovery?: RecoveryPolicy | null };
 /** Omitting agent lets the main agent select workers individually. */
@@ -41,6 +41,7 @@ export type WorkspaceProposal = {
 
 export const WORKSPACE_MODES: { value: WorkspaceMode; label: string; description: string }[] = [
   { value: "auto", label: "Auto", description: "Isolate writing tasks; let read-only workers use this checkout." },
+  { value: "mission", label: "Mission worktree", description: "One branch for the whole mission; tasks take turns writing and follow-ups stay on it." },
   { value: "worktree", label: "New worktree", description: "Give each task an isolated branch and keep it through review." },
   { value: "direct", label: "Current checkout", description: "Modify this folder directly, one worker at a time." },
 ];
@@ -74,7 +75,7 @@ export function deliveryTone(workspace: TaskWorkspace): "ok" | "warn" | "quiet" 
   return "quiet";
 }
 
-export type RunStatus = "planning" | "running" | "waiting" | "completed" | "failed" | "stopped";
+export type RunStatus = "planning" | "running" | "waiting" | "completed" | "failed" | "stopped" | "closed";
 export type TaskStatus = "pending" | "ready" | "running" | "blocked" | "completed" | "failed" | "cancelled";
 type AttemptStatus = "preparing" | "running" | "blocked" | "completed" | "failed" | "cancelled";
 
@@ -119,6 +120,27 @@ export type OrchestrationRun = {
   /** Hidden from the run list by the person; every record is kept, and
    *  restoring clears it. Only a finished run is archived. */
   archivedAt?: number;
+  /** When the person closed this mission (`mission.rs`). */
+  closedAt?: number;
+  /** Closed without its work merged; the branch is kept. */
+  abandoned?: boolean;
+  /** What git last said about each of the mission's worktrees. */
+  missionDelivery?: MissionDelivery[];
+};
+
+/** Where one of a mission's worktrees stands, as git last said. */
+export type MissionDelivery = {
+  repositoryRoot: string;
+  checkoutRoot: string;
+  branch: string;
+  baseBranch: string;
+  evidence: NonNullable<TaskWorkspace["delivery"]>;
+  merged: boolean;
+  /** `null` until merged, and whenever the project has no release check. */
+  released?: boolean | null;
+  releaseNote?: string;
+  removed?: boolean;
+  branchDeleted?: boolean;
 };
 
 /** A registered project and one repository registered on it

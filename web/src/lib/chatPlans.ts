@@ -59,7 +59,7 @@ export function approvalLabel(plan: ChatPlan): string {
   // evidence behind "approved", shown rather than implied (feedback 713786e9).
   const how = consent?.via === "conversation" ? "Approved in chat"
     : consent?.surface === "chat" ? "Approved on its card in chat"
-    : consent?.surface === "panel" ? "Approved in the run panel"
+    : consent?.surface === "panel" ? "Approved in the mission panel"
     : "Approved";
   const revision = consent?.revision ?? plan.revision;
   return revision ? `${how} · revision ${revision}` : how;

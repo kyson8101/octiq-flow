@@ -25,7 +25,7 @@ describe("RunBridges", () => {
 
   it("offers a bridge only as a choice the person still has to open", () => {
     const html = draw({ runs: [a, b] });
-    expect(html).toContain("Let this run&#x27;s main agent send notes to another run…");
+    expect(html).toContain("Let this mission&#x27;s main agent send notes to another mission…");
     expect(html).not.toContain("Open bridge");
   });
 
