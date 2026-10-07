@@ -100,6 +100,10 @@ describe("pending actions", () => {
       { id: "o1", kind: "outage", provider: "claude" },
     ] } }));
     expect(kept.map((a) => a.key).sort()).toEqual(["safety:c1", "safety:o1"]);
+    // One that can write an exact "Always allow" rule is something to do
+    // (feedback d59f830a): an authorized deploy gets through that way.
+    const allowable = { ...claude, id: "s2", rules: ["Bash(eas update --platform ios)"], allow: { project: "/p/.claude/settings.local.json" } };
+    expect(pendingActions(input(ledger(), { safetyBlocks: { w1: [allowable] } })).map((a) => a.key)).toEqual(["safety:s2"]);
     // In the person's own chat it is theirs to read.
     expect(pendingActions(input(ledger(), { safetyBlocks: { main: [claude] } })).map((a) => a.key))
       .toEqual(["safety:s1"]);

@@ -51,15 +51,22 @@ export type PendingAction = {
   taskId?: string;
 };
 
-type Request = { id?: string; batch?: string | null; status?: Question["status"]; kind?: string; provider?: string };
+type Request = {
+  id?: string; batch?: string | null; status?: Question["status"]; kind?: string; provider?: string;
+  rules?: readonly string[]; allow?: { project?: string; user?: string } | null;
+};
 type Requests = Readonly<Record<string, readonly Request[] | undefined>>;
 
-/** A worker's Claude auto-mode refusal: nobody can approve it, the worker was
- *  told and goes on another way. It asks nothing of the person, so it is no
- *  action and the main chat folds it into one line (feedback 76cde28e). A
- *  Codex card can continue the work, and an outage card can be retried. */
-export function isQuietWorkerRefusal(card: { provider?: string; kind?: string }): boolean {
-  return card.provider === "claude" && card.kind !== "outage";
+/** A worker's Claude auto-mode refusal that offers the person nothing to do:
+ *  nobody can approve it, no exact rule can be written for it, and the worker
+ *  was told and goes on another way. It is no action, and the main chat folds
+ *  it into one line (feedback 76cde28e). A card that can write an "Always
+ *  allow" rule stays a card, because that is how an authorized command the
+ *  classifier refused gets through (feedback d59f830a). A Codex card can
+ *  continue the work, and an outage card can be retried. */
+export function isQuietWorkerRefusal(card: Pick<Request, "provider" | "kind" | "rules" | "allow">): boolean {
+  const canAllow = !!card.rules?.length && !!(card.allow?.project || card.allow?.user);
+  return card.provider === "claude" && card.kind !== "outage" && !canAllow;
 }
 
 /** What one question card still needs, per `batch || id`: `question` while any
