@@ -30,6 +30,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -710,6 +711,9 @@ enum QueueTurnResult {
 #[derive(Default)]
 pub struct ChatManager {
     background: crate::background_tasks::Store,
+    /// The agent program each live process was started from, resolved through
+    /// its symlinks (`remember_binary`), keyed like `sessions`.
+    binaries: Mutex<HashMap<String, PathBuf>>,
     /// Tokens each registered agent's chats used (`agent_usage.rs`).
     pub(crate) usage: crate::agent_usage::Store,
     pub(crate) orchestrations: Arc<crate::orchestration::OrchestrationStore>,
@@ -1121,6 +1125,53 @@ impl ChatManager {
         sessions
             .get(key)
             .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
+    }
+
+    /// Note the program a just-started process runs, as the PATH lookup the
+    /// launch made resolves it through its symlinks. Homebrew keeps each Codex
+    /// release in its own versioned folder and removes the old one on upgrade,
+    /// so `/opt/homebrew/bin/codex` keeps working while a process started
+    /// before the upgrade points at a folder that is gone (feedback db5e1001).
+    fn remember_binary(&self, key: &str, bin: &str) {
+        let resolved =
+            crate::proc::find_executable(bin).and_then(|p| crate::paths::canonicalize(p).ok());
+        if let Ok(mut binaries) = self.binaries.lock() {
+            match resolved {
+                Some(path) => binaries.insert(key.to_string(), path),
+                None => binaries.remove(key),
+            };
+        }
+    }
+
+    /// Live, idle, non-worker chats whose program was removed from disk after
+    /// they started — an upgrade deleted the release they run. Anything that
+    /// process starts from its own path now fails: Codex's Browser Control
+    /// died on "failed to start codex app-server: No such file or directory"
+    /// (feedback db5e1001). Ended, the next message resumes them on the
+    /// installed release. A worker is left alone: ending it would lose its
+    /// attempt; its next launch picks up the new release anyway.
+    fn replaced_binary_keys(&self) -> Vec<String> {
+        let Ok(binaries) = self.binaries.lock() else {
+            return Vec::new();
+        };
+        let gone: Vec<String> = binaries
+            .iter()
+            .filter(|(_, path)| !path.exists())
+            .map(|(key, _)| key.clone())
+            .collect();
+        drop(binaries);
+        let Ok(sessions) = self.sessions.lock() else {
+            return Vec::new();
+        };
+        gone.into_iter()
+            .filter(|key| {
+                sessions
+                    .get(key)
+                    .is_some_and(|s| s.try_lock().is_ok_and(|s| !s.busy))
+            })
+            .filter(|key| !self.background.has_running(key))
+            .filter(|key| self.orchestrations.refusal_owner(key).is_none())
+            .collect()
     }
 
     /// The background work this chat's agent left running, `(id, description)`.
@@ -2641,6 +2692,7 @@ pub(crate) fn start_session(
         last_active: Instant::now(),
     }));
     sessions.insert(session_key.clone(), session.clone());
+    manager.remember_binary(&session_key, provider.bin());
     // The level the hook will be answered with, from here until it changes.
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
     record_access_for(&key, access);
@@ -4910,6 +4962,18 @@ fn sweep_still_chats(manager: &ChatManager, timeout: Duration) -> Vec<String> {
     ended
 }
 
+/// End every idle chat whose agent program an upgrade removed
+/// (`ChatManager::replaced_binary_keys`). `Duration::ZERO` still makes
+/// `end_process_when` re-check, under its locks, that no turn and no
+/// background work started in between.
+fn sweep_replaced_binaries(manager: &ChatManager) -> Vec<String> {
+    manager
+        .replaced_binary_keys()
+        .into_iter()
+        .filter(|key| end_process_when(manager, key, Some(Duration::ZERO)) == Ok(true))
+        .collect()
+}
+
 /// Watch for chats nobody is using and give their memory back.
 pub fn start_idle_reaper(manager: Arc<ChatManager>) {
     let Some(timeout) = idle_timeout() else {
@@ -4926,6 +4990,9 @@ pub fn start_idle_reaper(manager: Arc<ChatManager>) {
             println!("[chat] {key} ended after {}m still", timeout.as_secs() / 60);
             // Every message in it has stopped, so its stream pieces can go.
             crate::record_trim::compact_chat(&key);
+        }
+        for key in sweep_replaced_binaries(&manager) {
+            println!("[chat] {key} ended: the agent program it runs was replaced on disk");
         }
     });
 }
@@ -8212,6 +8279,37 @@ mod idle_tests {
         session.lock().unwrap().turn_started();
         assert!(!end_process_when(&manager, key, Some(FIFTEEN)).unwrap());
         end_process(&manager, key).unwrap();
+    }
+
+    /// Feedback db5e1001: Homebrew removed the Codex release a chat was
+    /// started from. The idle chat is ended, to resume on the installed one;
+    /// a chat mid-turn is left to finish.
+    #[test]
+    fn an_idle_chat_whose_program_was_removed_is_ended() {
+        let dir = crate::test_dir::TestDir::new("replaced-binary");
+        let release = dir.join("0.156.1");
+        std::fs::create_dir_all(&release).unwrap();
+        let program = release.join("codex");
+        std::fs::write(&program, "").unwrap();
+        let m = ChatManager::default();
+        let busy = still_session(false, Duration::ZERO);
+        put(&m, "chat-idle", still_session(false, Duration::ZERO));
+        put(&m, "chat-busy", busy.clone());
+        busy.lock().unwrap().turn_started();
+        for key in ["chat-idle", "chat-busy", "chat-gone"] {
+            m.binaries
+                .lock()
+                .unwrap()
+                .insert(key.into(), program.clone());
+        }
+        assert!(
+            sweep_replaced_binaries(&m).is_empty(),
+            "the release is still there"
+        );
+        std::fs::remove_dir_all(&release).unwrap();
+        assert_eq!(sweep_replaced_binaries(&m), vec!["chat-idle".to_string()]);
+        assert!(m.has_process("chat-busy"), "a turn in flight is never cut");
+        end_process(&m, "chat-busy").unwrap();
     }
 
     #[test]
