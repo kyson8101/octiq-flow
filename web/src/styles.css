@@ -13303,6 +13303,14 @@ body.is-ultra .eff {
    off. The bottom is short on purpose: `.msg-body`'s 10px gap already
    separates this card from the next, and padding the rail past its last line
    leaves the line dangling under nothing. */
+/* A picture Codex made or looked at, under its call, on the same rail as an
+   answer. */
+.tool-picture {
+  margin-left: calc(var(--tool-pad) + 10px);
+  padding: 4px 14px 4px calc(var(--tool-indent) - 11px);
+  border-left: 1px solid var(--border);
+}
+
 .tool-answer {
   margin-left: calc(var(--tool-pad) + 10px);
   padding: 4px 14px 4px calc(var(--tool-indent) - 11px);

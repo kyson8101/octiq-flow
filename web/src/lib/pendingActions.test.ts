@@ -89,6 +89,22 @@ describe("pending actions", () => {
     expect(pendingDescription(both)).toBe("1 blocked action to review, 1 safety check outage");
   });
 
+  it("asks nothing for a worker's Claude refusal, but still for the person's own", () => {
+    // Feedback 76cde28e: nobody can approve it and the worker goes on.
+    const claude = { id: "s1", kind: "high-risk-action", provider: "claude" };
+    expect(pendingActions(input(ledger(), { safetyBlocks: { w1: [claude] } }))).toEqual([]);
+    // A Codex card can continue the work, and an outage can be retried.
+    const kept = pendingActions(input(ledger(), { safetyBlocks: { w1: [
+      claude,
+      { id: "c1", kind: "high-risk-action", provider: "codex" },
+      { id: "o1", kind: "outage", provider: "claude" },
+    ] } }));
+    expect(kept.map((a) => a.key).sort()).toEqual(["safety:c1", "safety:o1"]);
+    // In the person's own chat it is theirs to read.
+    expect(pendingActions(input(ledger(), { safetyBlocks: { main: [claude] } })).map((a) => a.key))
+      .toEqual(["safety:s1"]);
+  });
+
   it("counts an action once even when it reaches the list twice", () => {
     const actions = pendingActions(input(ledger({ gates: [gate("g1", "r1"), gate("g1", "r1")] }), {
       asks: { w1: [{ id: "p1" }, { id: "p1" }] },

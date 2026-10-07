@@ -51,8 +51,16 @@ export type PendingAction = {
   taskId?: string;
 };
 
-type Request = { id?: string; batch?: string | null; status?: Question["status"]; kind?: string };
+type Request = { id?: string; batch?: string | null; status?: Question["status"]; kind?: string; provider?: string };
 type Requests = Readonly<Record<string, readonly Request[] | undefined>>;
+
+/** A worker's Claude auto-mode refusal: nobody can approve it, the worker was
+ *  told and goes on another way. It asks nothing of the person, so it is no
+ *  action and the main chat folds it into one line (feedback 76cde28e). A
+ *  Codex card can continue the work, and an outage card can be retried. */
+export function isQuietWorkerRefusal(card: { provider?: string; kind?: string }): boolean {
+  return card.provider === "claude" && card.kind !== "outage";
+}
 
 /** What one question card still needs, per `batch || id`: `question` while any
  *  of its questions is unanswered (a status-less one comes from a server older
@@ -115,8 +123,10 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
   };
   const requests = (kind: "permission" | "safety", lists: Requests | undefined) => {
     for (const [conversationId, list] of Object.entries(lists ?? {})) {
+      const worker = rowOf(conversationId) !== conversationId;
       for (const item of list ?? []) {
         if (!item?.id) continue;
+        if (kind === "safety" && worker && isQuietWorkerRefusal(item)) continue;
         request(kind === "safety" && item.kind === "outage" ? "outage" : kind, item.id, conversationId, kind);
       }
     }

@@ -21,7 +21,8 @@ import type { Block } from "../lib/chat";
 import { changedPaths, fileDiff } from "../lib/diff";
 import { parseSkillBrief } from "../lib/skillRun";
 import { askAnswer } from "../lib/askAnswer";
-import { commandTool, toolDetail, toolLook } from "../lib/toolKind";
+import { commandTool, toolDetail, toolLook, toolPicture } from "../lib/toolKind";
+import { ProseShot } from "./ProseShot";
 import { DiffStat, DiffView } from "./DiffView";
 import { GitChangeDiff } from "./GitChangeDiff";
 import { baseOf, dirOf } from "../lib/folderHead";
@@ -171,6 +172,7 @@ export function ToolCard({
   // flight the card is running for its own reasons and says so; and once the
   // ending has landed the card has a real word for how it went.
   const stillRunning = useStillRunning(tool.id) && tool.state === "done" && !tool.finish;
+  const picture = toolPicture(tool.name, tool.args, tool.state);
 
   return (
     <div
@@ -261,6 +263,14 @@ export function ToolCard({
         </button>
       )}
       </div>
+
+      {/* A picture the agent made or looked at is the point of the call, so it
+          is shown, not folded away. */}
+      {picture && (
+        <div className="tool-picture">
+          <ProseShot path={picture} />
+        </div>
+      )}
 
       {/* Outside the fold, on purpose. Everything else on a card is detail you
           go looking for; the question explains why the agent stopped here and

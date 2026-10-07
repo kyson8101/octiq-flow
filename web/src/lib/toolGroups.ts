@@ -57,7 +57,7 @@
 // the wall this whole file exists to prevent.
 import type { Block } from "./chat";
 import { fileDiff } from "./diff";
-import { toolDetail, toolLook, type ToolKind } from "./toolKind";
+import { toolDetail, toolLook, toolPicture, type ToolKind } from "./toolKind";
 
 export type Tool = Extract<Block, { kind: "tool" }>;
 
@@ -189,6 +189,9 @@ function foldable(tool: Tool, keepOut?: (tool: Tool) => boolean): boolean {
   // reader interrupted it. Errors are foldable: the group reports their count
   // explicitly and preserves the full failed cards inside its disclosure.
   if (tool.state === "stopped") return false;
+  // A picture the agent made or looked at is what the call was for; folded
+  // into a run, nobody would see it (feedback e780c2a2).
+  if (toolPicture(tool.name, tool.args, tool.state)) return false;
   return !NEVER_FOLD.has(toolLook(tool.name, tool.args).kind);
 }
 

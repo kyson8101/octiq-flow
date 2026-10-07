@@ -843,6 +843,7 @@ pub(crate) fn decision_summaries() -> Vec<PendingCard> {
                     group_id: None,
                     at: None,
                     owner: None,
+                    can_continue: block.provider == "codex",
                 });
                 continue;
             }
@@ -856,6 +857,7 @@ pub(crate) fn decision_summaries() -> Vec<PendingCard> {
                     group_id: Some(block.id.clone()),
                     at: Some(refusal.at),
                     owner: refusal.owner.clone(),
+                    can_continue: block.provider == "codex",
                 });
             }
         }
@@ -878,6 +880,8 @@ pub(crate) struct PendingCard {
     pub at: Option<i64>,
     /// The attempt the outage refusal was grouped under, when one was live.
     pub owner: Option<String>,
+    /// Whether answering the card can continue the work (`awaits_decision`).
+    pub can_continue: bool,
 }
 
 /// Remove one card after the person chooses a path or dismisses it.

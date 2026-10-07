@@ -55,6 +55,7 @@ const FAMILY: Record<string, ToolKind> = {
   webfetch: "web",
   websearch: "web",
   web_search: "web",
+  image_view: "read",
   task: "agent",
   agent: "agent",
   workflow: "agent",
@@ -533,4 +534,15 @@ export function toolDetail(name: string, args: unknown, isAgent = false): string
     if (typeof v === "string" && v.trim()) return v;
   }
   return "";
+}
+
+const PICTURE_TOOLS = new Set(["image_generation", "image_view"]);
+
+/** The picture a call made or looked at, drawn on its card: Codex's
+ *  `image_generation` and `image_view` (feedback e780c2a2). Null for any other
+ *  call, one still running, or a path that is not a picture. */
+export function toolPicture(name: string, args: unknown, state: string): string | null {
+  if (!PICTURE_TOOLS.has(name.toLowerCase()) || state !== "done") return null;
+  const path = args && typeof args === "object" ? (args as Record<string, unknown>).file_path : undefined;
+  return typeof path === "string" && /\.(png|jpe?g|gif|webp)$/i.test(path) ? path : null;
 }

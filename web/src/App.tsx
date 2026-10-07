@@ -172,7 +172,7 @@ import {
 } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
-import { pendingActions, pendingByRow, pendingByTask, type PendingAction } from "./lib/pendingActions";
+import { isQuietWorkerRefusal, pendingActions, pendingByRow, pendingByTask, type PendingAction } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
@@ -624,6 +624,13 @@ export default function App() {
   const workerRequestIds = useMemo(() => conversationId && !workerChat
     ? [...chatParents.keys()].filter((id) => mainChatId(id, chatParents) === conversationId)
     : [], [conversationId, workerChat, chatParents]);
+  // Safety cards that wait on the person. A worker's Claude refusal does not:
+  // nobody can approve it, so it is folded away, not counted.
+  const safetyWaiting = (id: string) => {
+    const cards = safetyBlocks[id] ?? [];
+    const worker = (mainChatId(id, chatParents) ?? id) !== id;
+    return worker ? cards.filter((card) => !isQuietWorkerRefusal(card)).length : cards.length;
+  };
   const [themeId, setThemeId] = useState(savedThemeId);
 
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
@@ -4598,7 +4605,7 @@ export default function App() {
   );
 
   const pendingApprovals = [conversationId, ...workerRequestIds].reduce((count, id) =>
-    count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0);
+    count + (id ? (asks[id]?.length ?? 0) + safetyWaiting(id) + (questions[id]?.length ?? 0) : 0), 0);
 
   return (
     <WorkspaceSlotsContext.Provider value={workspaceSlots}>
@@ -4848,7 +4855,7 @@ export default function App() {
               busy={busySet}
               waitingOn={(chatKey) => {
                 const id = chatKey.replace(/^chat:/, "");
-                return (asks[id]?.length ?? 0) + (questions[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0);
+                return (asks[id]?.length ?? 0) + (questions[id]?.length ?? 0) + safetyWaiting(id);
               }}
               chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
               chatExists={(chatKey) => conversations.some((c) => keyFor(c.id) === chatKey)}
@@ -5244,16 +5251,35 @@ export default function App() {
             />
           )}
 
-          {workerRequestIds.map((id) => ((asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0)) > 0 && (
-            <section key={id} aria-label="Agent safety approvals">
-              <p className="worker-approval-context">Approval for {conversations.find((chat) => chat.id === id)?.title ?? "agent"}. Follow-up instructions go through this main chat.</p>
-              <ChatRequests asks={asks[id] ?? []} safetyBlocks={safetyBlocks[id] ?? []} questions={[]}
+          {workerRequestIds.map((id) => {
+            const cards = safetyBlocks[id] ?? [];
+            const quiet = cards.filter(isQuietWorkerRefusal);
+            const loud = cards.filter((card) => !isQuietWorkerRefusal(card));
+            if ((asks[id]?.length ?? 0) + cards.length === 0) return null;
+            const title = conversations.find((chat) => chat.id === id)?.title ?? "agent";
+            const requests = (safety: typeof cards) => (
+              <ChatRequests asks={safety === quiet ? [] : asks[id] ?? []} safetyBlocks={safety} questions={[]}
                 onPermissionAnswered={(requestId) => setAsks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
                 onSafetyAnswered={(requestId) => setSafetyBlocks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
                 onQuestionsAnswered={() => {}}
                 onContinue={(message, options) => send(`For your worker chat ${id}:\n\n${message}\n\nCoordinate any follow-up through the orchestration tools.`, [], options)} />
-            </section>
-          ))}
+            );
+            return (
+              <section key={id} aria-label="Agent safety approvals">
+                {(asks[id]?.length ?? 0) + loud.length > 0 && <>
+                  <p className="worker-approval-context">Approval for {title}. Follow-up instructions go through this main chat.</p>
+                  {requests(loud)}
+                </>}
+                {/* Feedback 76cde28e: one quiet line, the card behind it. */}
+                {quiet.length > 0 && (
+                  <details className="worker-refusal-line">
+                    <summary>{title}: {quiet.length === 1 ? "1 action" : `${quiet.length} actions`} blocked by Claude's auto mode · nothing to approve</summary>
+                    {requests(quiet)}
+                  </details>
+                )}
+              </section>
+            );
+          })}
 
           {/* A task chat takes no messages: no composer, and no block in its
               place — the Read-only badge by its title says so. */}
