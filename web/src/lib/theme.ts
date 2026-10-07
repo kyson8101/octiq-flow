@@ -11,6 +11,10 @@
 //     in the terminal have to be the same shapes.
 //   * the drop shadow. The pasted shadows are built for small light cards
 //     (`3px 3px 0px`); on a full-height dark popover they read as a mistake.
+//
+// Manga is the one exception, and it is not made here: its lettering, panel
+// frames and screentone are a stylesheet of their own (`src/manga.css`)
+// scoped to `[data-theme="manga"]`, so no other mode can inherit them.
 
 /** A mode's palette tokens, under the names the palette files use. */
 export type Tokens = Record<string, string>;
@@ -172,9 +176,14 @@ export function mapTokens(t: Tokens): Record<string, string> {
     // radius itself, so a theme asking for 0 gets 0 on all three. Adding a
     // flat 2px/6px used to leave Brutalism and Neon quietly rounded, which is
     // the one thing a square-cornered theme is FOR.
-    "--r-sm": `${radius - gap}px`,
-    "--r-md": `${radius + gap}px`,
-    "--r-lg": `${radius + gap * 3}px`,
+    //
+    // A palette may name a rung outright (`--radius-sm` …). Manga does, because
+    // a hand-cut panel corner is uneven — `3px 1px 3px 2px` — and no single
+    // `--radius` number can be scaled into that.
+    "--r-sm": t["radius-sm"] ?? `${radius - gap}px`,
+    "--r-md": t["radius-md"] ?? `${radius + gap}px`,
+    "--r-lg": t["radius-lg"] ?? `${radius + gap * 3}px`,
+    "--r-pill": t["radius-pill"] ?? "999px",
   };
 }
 

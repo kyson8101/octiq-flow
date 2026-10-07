@@ -1,0 +1,400 @@
+/* ==========================================================================
+   Manga mode — the one appearance mode that changes SHAPE, not just colour.
+
+   Light, Dark and Fun are palettes (`lib/themes/*.css` → `lib/theme.ts`).
+   Manga is a palette plus this sheet: black ink on white paper, thin panel
+   frames ruled a little unevenly, solid black (beta) for a few marks, rounded
+   speech balloons, faint focus lines on the empty page, and a heavy Japanese
+   display face on the biggest headings. Every rule is scoped to
+   `:root[data-theme="manga"]`, so no other mode can pick any of it up.
+
+   It is a reading tool first and a manga second. A louder first cut — every
+   heading in display type, screentone everywhere, 3px frames, a sound effect
+   on the empty page — was too much to work in, and was pulled back to this.
+   So: body text stays in the app's own face, nothing is drawn behind words,
+   and frames are 1.5–2px.
+
+   Manga draws no drop shadows. Where a thing floats (a menu, a sheet) it gets
+   a white gutter round its frame instead — the gap a panel leaves where it
+   overlaps the one under it.
+
+   Also left alone: the monospace font (code in chat and in the terminal have
+   to be the same shapes) and the terminal, which draws through WebGL.
+   ========================================================================== */
+
+:root[data-theme="manga"] {
+  --ink: #121212;
+  --paper: #fbfaf6;
+  /* Uneven by half a pixel, not by a pixel and a half: enough for a hand-ruled
+     frame to read as drawn, not so much that every card shouts. */
+  --frame: 1.5px 1.5px 2px 1.5px;
+  --frame-heavy: 2px 2px 2.5px 2px;
+  --gutter: 0 0 0 3px var(--paper);
+
+  /* Reading text stays in the app's own face. The manga lettering is for a
+     few big headings only — a whole interface in display type is tiring. */
+  --display: "Dela Gothic One", var(--font);
+
+  --shadow-sm: none;
+  --shadow: var(--gutter), 0 0 0 4px var(--ink);
+  --scrim: rgb(18 18 18 / 30%);
+  --focus: var(--ink);
+  --focus-ring: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink);
+  --link: var(--ink);
+}
+
+/* ---- Paper -------------------------------------------------------------- */
+
+:root[data-theme="manga"] body,
+:root[data-theme="manga"] .app {
+  background: var(--paper);
+}
+
+:root[data-theme="manga"] ::selection {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+:root[data-theme="manga"] * { scrollbar-color: var(--ink) transparent; }
+:root[data-theme="manga"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+:root[data-theme="manga"] ::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 0;
+  background: var(--ink) padding-box;
+}
+
+/* ---- Lettering ---------------------------------------------------------- */
+
+:root[data-theme="manga"] :is(.sidebar-title, .hero-title, .settings-section-head h2, .settings-page h1) {
+  font-family: var(--display);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+/* ---- The empty page: a reveal panel ------------------------------------ */
+
+/* Focus lines (集中線) close in on the question, which is lettered heavy in
+   ink with a white knock-out edge so it stays clean over them, and a sound
+   effect lands beside it. */
+:root[data-theme="manga"] .hero-title {
+  position: relative;
+  isolation: isolate;
+  padding: 14px 22px;
+  font-size: 30px;
+  line-height: 1.2;
+  color: var(--ink);
+  -webkit-text-stroke: 6px var(--paper);
+  paint-order: stroke fill;
+}
+
+/* Fine, sparse and faint: a hint of the effect at the edge of the eye, not a
+   wall of it. Gone again before the box's edge so it never stops at a line. */
+:root[data-theme="manga"] .hero-title::before {
+  content: "";
+  position: absolute;
+  inset: -70px -120px;
+  z-index: -1;
+  background: repeating-conic-gradient(from 0deg, var(--ink) 0deg 0.3deg, transparent 0.3deg 4.5deg);
+  opacity: 0.35;
+  -webkit-mask-image: radial-gradient(closest-side, transparent 45%, #000 68%, transparent 100%);
+  mask-image: radial-gradient(closest-side, transparent 45%, #000 68%, transparent 100%);
+  pointer-events: none;
+}
+
+:root[data-theme="manga"] .hero .resume-open { position: relative; z-index: 1; }
+
+@media (max-width: 640px) {
+  :root[data-theme="manga"] .hero .hero-title { font-size: 22px; padding: 10px 14px; }
+  :root[data-theme="manga"] .hero-title::before { inset: -50px -60px; }
+}
+
+/* ---- Frame: chapter rule and gutters ------------------------------------ */
+
+/* The top bar closes with the double rule under a chapter heading. */
+:root[data-theme="manga"] .topbar {
+  background: var(--paper);
+  border-bottom: 2px solid var(--ink);
+  box-shadow: 0 2px 0 var(--paper), 0 3px 0 var(--ink);
+}
+
+:root[data-theme="manga"] .sidebar {
+  background: var(--bg-sunken);
+  border-right: 2px solid var(--ink);
+}
+
+:root[data-theme="manga"] .gitp-panel { border-left: 2px solid var(--ink); }
+
+/* ---- Controls ----------------------------------------------------------- */
+
+/* A button with a face of its own is a small panel. Pressing fills it solid
+   black — beta, manga's loudest mark, kept for the moment of the press. */
+:root[data-theme="manga"] :is(
+  .resume-open, .gitp-btn, .settings-primary, .panel-btn, .sheet-done,
+  .panel-inline-btn, .shelf-card-act, .settings-project-new
+) {
+  border: solid var(--ink);
+  border-width: var(--frame);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--ink);
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+
+:root[data-theme="manga"] :is(
+  .resume-open, .gitp-btn, .settings-primary, .panel-btn, .sheet-done,
+  .panel-inline-btn, .shelf-card-act, .settings-project-new
+):hover {
+  background: var(--bg-2);
+}
+
+:root[data-theme="manga"] :is(
+  .resume-open, .gitp-btn, .settings-primary, .panel-btn, .sheet-done,
+  .panel-inline-btn, .shelf-card-act, .settings-project-new
+):active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+:root[data-theme="manga"] .send,
+:root[data-theme="manga"] .composer .send:not(.stop) {
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: none;
+}
+
+:root[data-theme="manga"] :is(.gitp-badge, .resume-count, .sidebar-utility-count) {
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--ink);
+  color: var(--paper);
+}
+
+:root[data-theme="manga"] :is(input[type="text"], input[type="search"], input:not([type]), textarea):not(.composer-input):not(.attach-input) {
+  border: solid var(--ink);
+  border-width: 1.5px;
+  border-radius: var(--r-sm);
+  background-color: var(--bg-1);
+  color: var(--ink);
+}
+
+:root[data-theme="manga"] input[type="checkbox"],
+:root[data-theme="manga"] input[type="radio"] {
+  accent-color: var(--ink);
+}
+
+/* ---- The composer is a panel you write in ------------------------------- */
+
+:root[data-theme="manga"] .composer-box {
+  border: solid var(--ink);
+  border-width: var(--frame-heavy);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: none;
+}
+
+:root[data-theme="manga"] .composer-box:focus-within {
+  border-color: var(--ink);
+  box-shadow: none;
+}
+
+:root[data-theme="manga"] .work-location {
+  border: solid var(--ink);
+  border-width: 0 1.5px 1.5px 1.5px;
+  box-shadow: none;
+  background: var(--bg-sunken);
+}
+
+/* ---- Speech balloons ---------------------------------------------------- */
+
+/* Yours is a rounded balloon on the right, with a slim curved tail. */
+:root[data-theme="manga"] .msg-user .msg-body {
+  width: fit-content;
+  max-width: 100%;
+  min-width: 96px;
+  margin-left: auto;
+  margin-bottom: 16px;
+  padding: 11px 20px;
+  border: 1.5px solid var(--ink);
+  border-radius: 30px / 24px;
+  background: var(--bg-1);
+  box-shadow: none;
+}
+
+:root[data-theme="manga"] .msg-user .msg-body::after {
+  /* Laid over the balloon's bottom edge so its white hides that stretch of
+     outline and the tail's two strokes run straight out of the balloon. */
+  content: "";
+  position: absolute;
+  right: 40px;
+  bottom: -19px;
+  width: 22px;
+  height: 22px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'%3E%3Cpath d='M1 1.5 L13 1.5 Q15 12 21 21 Q8 15 1 1.5 Z' fill='%23ffffff'/%3E%3Cpath d='M3.5 3 Q9 14 21 21 Q15 12 12.5 3' fill='none' stroke='%23121212' stroke-width='1.5' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat;
+  pointer-events: none;
+}
+
+:root[data-theme="manga"] .msg-user.is-queued .msg-body {
+  border-style: dashed;
+}
+
+/* The agent's name is a beta tag: solid black, white lettering. */
+:root[data-theme="manga"] .msg-role {
+  display: inline-flex;
+  width: fit-content;
+  padding: 1px 8px;
+  border-radius: var(--r-sm);
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* A quote is a narration box: square, thin-ruled, set apart from the talk. */
+:root[data-theme="manga"] .prose blockquote {
+  margin-inline: 0;
+  padding: 8px 14px;
+  border: 1px solid var(--ink);
+  border-radius: 1px;
+  background: var(--bg-1);
+  color: var(--ink);
+}
+
+:root[data-theme="manga"] .prose a {
+  color: var(--ink);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+:root[data-theme="manga"] .prose pre {
+  border: solid var(--ink);
+  border-width: var(--frame);
+  border-radius: var(--r-md);
+  background: #ffffff;
+}
+
+:root[data-theme="manga"] .prose :not(pre) > code {
+  padding: 0 4px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  background: var(--bg-2);
+  color: var(--ink);
+}
+
+:root[data-theme="manga"] .prose-table {
+  border: solid var(--ink);
+  border-width: var(--frame);
+  border-radius: var(--r-sm);
+}
+
+/* A scene break: three ink dots, not a rule. */
+:root[data-theme="manga"] .prose hr {
+  height: 6px;
+  border: 0;
+  background: radial-gradient(circle, var(--ink) 2px, transparent 2.5px) center / 18px 6px repeat-x;
+  width: 54px;
+  margin-inline: auto;
+}
+
+/* ---- Panels on the page: sidebar chats, cards, theme tiles -------------- */
+
+/* Each chat is a panel. A manga page has no hue, so the project wash goes.
+   It arrives as an inline `--chat-project-color`, which a stylesheet cannot
+   outrank, so the background it feeds is replaced rather than re-tinted. The
+   open chat is marked with a beta bar down its edge. */
+:root[data-theme="manga"] .task-chat-list .chat {
+  background: var(--bg-1);
+}
+
+:root[data-theme="manga"] .task-chat-list .chat:hover,
+:root[data-theme="manga"] .task-chat-list .chat.is-on {
+  background: var(--bg-1);
+}
+
+:root[data-theme="manga"] .chat {
+  margin-block: 3px;
+  border: solid var(--ink);
+  border-width: var(--frame);
+}
+
+:root[data-theme="manga"] .chat-row:nth-child(3n + 1) .chat { border-radius: 3px 1px 4px 2px; }
+:root[data-theme="manga"] .chat-row:nth-child(3n + 2) .chat { border-radius: 1px 4px 2px 3px; }
+:root[data-theme="manga"] .chat-row:nth-child(3n) .chat { border-radius: 2px 3px 1px 4px; }
+
+:root[data-theme="manga"] .task-chat-list .chat.is-on {
+  box-shadow: inset 4px 0 0 var(--ink);
+}
+
+:root[data-theme="manga"] .chat::after { display: none; }
+
+:root[data-theme="manga"] :is(.shelf-card, .settings-project, .resume, .handover-card, .task-plan-card) {
+  border: solid var(--ink);
+  border-width: var(--frame);
+  border-radius: var(--r-md);
+  box-shadow: none;
+}
+
+:root[data-theme="manga"] .thm {
+  border: solid var(--ink);
+  border-width: var(--frame);
+  border-radius: var(--r-md);
+}
+
+:root[data-theme="manga"] .thm.is-on {
+  border-width: 2.5px;
+}
+
+/* The Manga tile looks like manga in every mode, so it can be found from Dark. */
+.thm[data-theme-id="manga"] .thm-shot {
+  background:
+    repeating-conic-gradient(from 0deg at 72% 70%, #121212 0deg 0.7deg, transparent 0.7deg 5deg),
+    #fbfaf6 !important;
+  outline: 2px solid #121212;
+  outline-offset: -2px;
+}
+
+.thm[data-theme-id="manga"] .thm-card {
+  border: 2px solid #121212;
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px #fbfaf6;
+}
+
+.thm[data-theme-id="manga"] .thm-dot { box-shadow: 0 0 0 2px #fbfaf6; }
+
+.thm[data-theme-id="manga"] .thm-name {
+  font-family: "Dela Gothic One", sans-serif;
+  font-weight: 400;
+}
+
+/* ---- Things that float: menus, sheets, dialogs ------------------------- */
+
+:root[data-theme="manga"] :is(
+  .picker-menu, .sidebar-dropdown, .prose-file-action-menu, .slash, [role="menu"], [role="listbox"]
+) {
+  border: solid var(--ink);
+  border-width: var(--frame);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--gutter);
+}
+
+:root[data-theme="manga"] :is(.sheet, .panel, dialog[open]:not(.sidebar-dropdown), [role="dialog"]) {
+  border: solid var(--ink);
+  border-width: var(--frame-heavy);
+  box-shadow: var(--gutter);
+}
+
+:root[data-theme="manga"] :is(.sheet-head, .panel-head, .gitp-head) {
+  border-bottom: 1.5px solid var(--ink);
+}
+
+/* ---- Settings ----------------------------------------------------------- */
+
+:root[data-theme="manga"] .settings-nav-item[aria-current="page"],
+:root[data-theme="manga"] .settings-nav-item.is-active,
+:root[data-theme="manga"] .sidebar-place.is-active {
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: none;
+}
+
+:root[data-theme="manga"] :is(.settings-nav-item[aria-current="page"], .settings-nav-item.is-active, .sidebar-place.is-active) * {
+  color: inherit;
+}

@@ -5,8 +5,14 @@ import { ConfirmProvider } from "./components/Confirm";
 import { OpenFileProvider } from "./components/OpenFile";
 import "lxgw-wenkai-screen-webfont/lxgwwenkaiscreen.css";
 import "@fontsource-variable/inter";
+// Heading faces for Manga and 中国风. A font file is fetched only when a rule
+// uses it (and only the unicode ranges it draws), so other modes pay nothing.
+import "@fontsource/dela-gothic-one";
+import "@fontsource/ma-shan-zheng";
 import "./design-system.css";
 import "./styles.css";
+import "./manga.css";
+import "./guofeng.css";
 import { applyTheme, savedThemeId } from "./lib/themeStore";
 
 // Old pane URLs now open the same single workspace as every other chat link.

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 1000" preserveAspectRatio="none">
+  <!-- The sidebar's edge: a long vertical brush line in pale ink, dry in places. -->
+  <defs>
+    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ebe3d3" stop-opacity="0.04"/>
+      <stop offset="0.3" stop-color="#ebe3d3" stop-opacity="0.16"/>
+      <stop offset="0.8" stop-color="#ebe3d3" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ebe3d3" stop-opacity="0.03"/>
+    </linearGradient>
+    <filter id="dry" x="-50%" y="0" width="200%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.6 0.012" numOctaves="2" seed="6" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  6 0 0 0 -2.2" result="m"/>
+      <feComposite in="SourceGraphic" in2="m" operator="in"/>
+    </filter>
+  </defs>
+  <path filter="url(#dry)" fill="url(#fade)" d="M4.2 0 C5.6 200 6.4 600 5 1000 L2.6 1000 C2 600 2.4 200 3 0 Z"/>
+</svg>

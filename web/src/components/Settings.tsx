@@ -308,7 +308,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                 <header className="settings-section-head">
                   <div>
                     <h2 id="settings-appearance-title">Appearance</h2>
-                    <p>Keep it light, stay focused in dark, or add some colour with fun mode.</p>
+                    <p>Keep it light, stay focused in dark, add some colour with fun mode, ink it like a manga, or go cinematic with 中国风.</p>
                   </div>
                 </header>
 
@@ -320,6 +320,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                       <button
                         key={theme.id}
                         className={`thm${selected ? " is-on" : ""}`}
+                        data-theme-id={theme.id}
                         type="button"
                         role="radio"
                         aria-checked={selected}

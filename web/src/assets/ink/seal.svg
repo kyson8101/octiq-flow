@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+  <!-- A mask for a seal impression: a square whose edges were pressed
+       unevenly, with flecks where the cinnabar did not take. Used as
+       `mask-image`, so only its alpha matters. -->
+  <defs>
+    <filter id="press" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.08" numOctaves="2" seed="5" result="edge"/>
+      <feDisplacementMap in="SourceGraphic" in2="edge" scale="5" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.35" numOctaves="1" seed="12" result="fleck"/>
+      <feColorMatrix in="fleck" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  9 0 0 0 -2.6" result="worn"/>
+      <feComposite in="rough" in2="worn" operator="in"/>
+    </filter>
+  </defs>
+  <rect x="3" y="3" width="94" height="94" rx="3" fill="#000" filter="url(#press)"/>
+</svg>

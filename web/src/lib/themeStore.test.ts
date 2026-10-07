@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED } from "./theme";
-import { applyTheme, BUILT_IN, DARK_MODE, FUN_MODE, LIGHT_MODE, savedThemeId, THEME_EVENT, THEMES } from "./themeStore";
+import { applyTheme, BUILT_IN, DARK_MODE, FUN_MODE, GUOFENG_MODE, LIGHT_MODE, MANGA_MODE, savedThemeId, THEME_EVENT, THEMES } from "./themeStore";
 
 describe("appearance switching", () => {
   let properties: Map<string, string>;
@@ -51,8 +51,26 @@ describe("appearance switching", () => {
     expect(savedThemeId()).toBe(FUN_MODE);
   });
 
-  it("only exposes light, dark and fun", () => {
-    expect(THEMES.map(({ id }) => id)).toEqual([LIGHT_MODE, DARK_MODE, FUN_MODE]);
+  it("puts manga on as a light mode with hand-cut corners", () => {
+    applyTheme(MANGA_MODE);
+    expect(attributes.get("data-color-scheme")).toBe("light");
+    expect(attributes.get("data-theme")).toBe(MANGA_MODE);
+    // Uneven corners named by the palette, not scaled from `--radius`.
+    expect(properties.get("--r-md")).toBe("4px 2px 5px 2px");
+    expect(savedThemeId()).toBe(MANGA_MODE);
+  });
+
+  it("puts 中国风 on as a dark mode with the gold accent", () => {
+    applyTheme(GUOFENG_MODE);
+    expect(attributes.get("data-color-scheme")).toBe("dark");
+    expect(attributes.get("data-theme")).toBe(GUOFENG_MODE);
+    // Gold, not cinnabar: the accent is also drawn as text.
+    expect(properties.get("--accent")).toBe("#c9a45c");
+    expect(savedThemeId()).toBe(GUOFENG_MODE);
+  });
+
+  it("only exposes light, dark, fun, manga and 中国风", () => {
+    expect(THEMES.map(({ id }) => id)).toEqual([LIGHT_MODE, DARK_MODE, FUN_MODE, MANGA_MODE, GUOFENG_MODE]);
   });
 
   it("migrates retired theme ids to a supported mode", () => {
@@ -60,6 +78,8 @@ describe("appearance switching", () => {
     expect(savedThemeId()).toBe(LIGHT_MODE);
     storage.set("octiq.theme", "candyland");
     expect(savedThemeId()).toBe(FUN_MODE);
+    storage.set("octiq.theme", "comic");
+    expect(savedThemeId()).toBe(MANGA_MODE);
     storage.set("octiq.theme", "sage");
     expect(savedThemeId()).toBe(DARK_MODE);
   });

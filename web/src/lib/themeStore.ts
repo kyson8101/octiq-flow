@@ -1,4 +1,4 @@
-// OctiqFlow has three appearance modes, and one function that puts one on the
+// OctiqFlow has five appearance modes, and one function that puts one on the
 // screen. Keep the public ids as plain words because they are persisted.
 //
 // Split from `theme.ts` on purpose: everything in there is pure and tested in
@@ -7,6 +7,8 @@ import { MANAGED, mapTokens, parseThemeCss, type Theme } from "./theme";
 
 import lightCss from "./themes/light.css?raw";
 import funCss from "./themes/fun.css?raw";
+import mangaCss from "./themes/manga.css?raw";
+import guofengCss from "./themes/guofeng.css?raw";
 
 /** The built-in theme has no tokens because it does not need any: it is what
  *  `design-system.css` already says. Choosing it CLEARS the overrides rather than
@@ -14,6 +16,8 @@ import funCss from "./themes/fun.css?raw";
 export const LIGHT_MODE = "light";
 export const DARK_MODE = "dark";
 export const FUN_MODE = "fun";
+export const MANGA_MODE = "manga";
+export const GUOFENG_MODE = "guofeng";
 /** Kept as an alias for callers that need to clear palette overrides. */
 export const BUILT_IN = DARK_MODE;
 
@@ -21,6 +25,8 @@ export const THEMES: Theme[] = [
   { id: LIGHT_MODE, name: "Light", scheme: "light", tokens: parseThemeCss(lightCss).light },
   { id: DARK_MODE, name: "Dark", scheme: "dark" },
   { id: FUN_MODE, name: "Fun", scheme: "dark", tokens: parseThemeCss(funCss).dark },
+  { id: MANGA_MODE, name: "Manga", scheme: "light", tokens: parseThemeCss(mangaCss).light },
+  { id: GUOFENG_MODE, name: "中国风", scheme: "dark", tokens: parseThemeCss(guofengCss).light },
 ];
 
 /** The five colours a tile needs to show what a theme looks like without
@@ -64,6 +70,9 @@ export function savedThemeId(): string {
     const saved = localStorage.getItem(KEY);
     if (saved === LIGHT_MODE || saved === "one-light") return LIGHT_MODE;
     if (saved === FUN_MODE || saved === "candyland") return FUN_MODE;
+    // `comic` shipped briefly, as an American comic book, before becoming Manga.
+    if (saved === MANGA_MODE || saved === "comic") return MANGA_MODE;
+    if (saved === GUOFENG_MODE) return GUOFENG_MODE;
     if (saved === DARK_MODE || saved === "octiq") return DARK_MODE;
     // Retired custom themes return to the calm default.
     return DARK_MODE;
