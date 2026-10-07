@@ -11,8 +11,8 @@ The Orchestrator's **Workspace mode** applies to a run:
 
 | Mode | First attempt | Subsequent attempts |
 | --- | --- | --- |
-| Mission (default for new runs) | The mission's one worktree per repository, `feature/mission-<run>`, shared by its tasks | The same worktree, for every later task too |
-| Auto | Isolated worktree for a writer; current checkout for read-only access | Reuse the persisted workspace |
+| Mission (default in agents mode) | The mission's one worktree per repository, `feature/mission-<run>`, shared by its tasks | The same worktree, for every later task too |
+| Auto (default otherwise) | Isolated worktree for a writer; current checkout for read-only access | Reuse the persisted workspace |
 | New worktree | Isolate every task on its own branch | Reuse the persisted workspace |
 | Current checkout | Use the selected folder and its actual branch; one worker at a time | Reuse that folder and branch |
 
@@ -31,7 +31,9 @@ workflow and branch confirmation rules.
 
 ## Missions
 
-A run created without a workspace mode is a **mission** (`orchestration/mission.rs`).
+In agents mode, a run created without a workspace mode is a **mission**
+(`orchestration/mission.rs`); elsewhere the default stays Auto, and Mission
+can still be chosen explicitly.
 It differs from the per-task modes in three ways:
 
 - **One worktree per repository.** Every task plans `feature/mission-<run-id>`

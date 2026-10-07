@@ -40,8 +40,8 @@ export type WorkspaceProposal = {
 };
 
 export const WORKSPACE_MODES: { value: WorkspaceMode; label: string; description: string }[] = [
-  { value: "mission", label: "Mission worktree", description: "One branch for the whole mission; tasks take turns writing and follow-ups stay on it." },
   { value: "auto", label: "Auto", description: "Isolate writing tasks; let read-only workers use this checkout." },
+  { value: "mission", label: "Mission worktree", description: "One branch for the whole mission; tasks take turns writing and follow-ups stay on it." },
   { value: "worktree", label: "New worktree", description: "Give each task an isolated branch and keep it through review." },
   { value: "direct", label: "Current checkout", description: "Modify this folder directly, one worker at a time." },
 ];

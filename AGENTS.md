@@ -408,7 +408,7 @@ other retired palette back to Dark.
 ## Orchestrated task workspaces
 
 See [the task workspace lifecycle](docs/subagent-worktree-lifecycle.md) for the
-host-owned policy. New runs are **missions** by default: one worktree per
+host-owned policy. In agents mode, new runs are **missions** by default: one worktree per
 repository shared by the run's tasks one writer at a time, a status board whose
 Merged/Released steps come from git only, and a Close/Abandon that only the
 person can trigger (`orchestration/mission.rs`). A worker settling, code being pushed, a PR being merged, and

@@ -143,7 +143,7 @@ export function OrchestrationPanel({
   const [creating, setCreating] = useState(initialRuns.length === 0 && !readOnly && allowManualRun);
   const [objective, setObjective] = useState("");
   const [maxConcurrent, setMaxConcurrent] = useState(4);
-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("mission");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("auto");
   const [automatic, setAutomatic] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

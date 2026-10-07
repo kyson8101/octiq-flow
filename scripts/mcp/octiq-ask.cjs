@@ -1719,7 +1719,7 @@ const ORCHESTRATION_RUN_CREATE = {
     properties: {
       objective: { type: "string", description: "The complete outcome the run must deliver." },
       maxConcurrent: { type: "integer", minimum: 1, maximum: 32, description: "Maximum simultaneous workers. Defaults to 4; direct mode uses 1." },
-      workspaceMode: { type: "string", enum: ["mission", "auto", "worktree", "direct"], description: "Mission (the default) gives the run one worktree per repository on feature/mission-<run>, shared by its tasks one writer at a time, so follow-ups land on the same branch; it stays open until the person closes it. Auto isolates writers, worktree isolates every task, direct edits the current checkout. Retries retain their task workspace." },
+      workspaceMode: { type: "string", enum: ["mission", "auto", "worktree", "direct"], description: "Mission (the default in agents mode; Auto elsewhere) gives the run one worktree per repository on feature/mission-<run>, shared by its tasks one writer at a time, so follow-ups land on the same branch; it stays open until the person closes it. Auto isolates writers, worktree isolates every task, direct edits the current checkout. Retries retain their task workspace." },
       workerDefaults: WORKER_DEFAULTS_SCHEMA,
     },
     required: ["objective"],

@@ -974,16 +974,24 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let defaults: Option<crate::orchestration::automation::WorkerDefaults> =
                 arg(&args, "workerDefaults")?;
             let defaults = defaults.map(|d| d.normalized()).transpose()?;
+            // Agents mode: this chat is a registered lead's.
+            let agents_lead =
+                crate::team::lead_for_chat(&crate::team::default_path(), &actor)?.is_some();
             let run = svc.orchestrations.create_run_with_mode(
                 actor.clone(),
                 arg(&args, "objective")?,
                 workspace_id,
                 root_path,
                 arg(&args, "maxConcurrent")?,
-                // Code-changing work is a mission unless the caller says
+                // In agents mode a run is a mission unless the caller says
                 // otherwise: one worktree per repository, open until closed.
+                // Elsewhere the default stays Auto.
                 arg::<Option<crate::git_ops::workflow::WorkspaceMode>>(&args, "workspaceMode")?
-                    .unwrap_or(crate::git_ops::workflow::WorkspaceMode::Mission),
+                    .unwrap_or(if agents_lead {
+                        crate::git_ops::workflow::WorkspaceMode::Mission
+                    } else {
+                        crate::git_ops::workflow::WorkspaceMode::Auto
+                    }),
             )?;
             let run = if let Some(defaults) = defaults {
                 svc.orchestrations
@@ -992,8 +1000,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 run
             };
             // Agents mode: a lead's plan always waits for the person.
-            let run = if crate::team::lead_for_chat(&crate::team::default_path(), &actor)?.is_some()
-            {
+            let run = if agents_lead {
                 svc.orchestrations.require_plan_approval(&run.id)?
             } else {
                 run
