@@ -644,7 +644,21 @@ impl OrchestrationStore {
         if ws.state == WorkspaceState::Cleaned {
             return Ok(task);
         }
-        let evidence = workflow::inspect(&ws.plan, true)?;
+        let mut evidence = workflow::inspect(&ws.plan, true)?;
+        // Only a merged commit can be running; the check is not run before.
+        if evidence.merged && evidence.has_commits {
+            let run = self
+                .snapshot(Some(&task.run_id))?
+                .runs
+                .into_iter()
+                .next()
+                .ok_or("Run disappeared.")?;
+            (evidence.released, evidence.release_note) = crate::chat_task::release_status(
+                &run.workspace_id,
+                &ws.plan.repository_root,
+                &evidence.head_sha,
+            );
+        }
         self.mutate(|data| {
             let task = data.tasks.get_mut(task_id).ok_or("Task disappeared.")?;
             task.workspace

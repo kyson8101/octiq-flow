@@ -60,6 +60,13 @@ pub struct DeliveryEvidence {
     pub pull_request: Option<String>,
     pub review_state: Option<String>,
     pub merged: bool,
+    /// In what is actually running, by the project's own release check.
+    /// `None` until merged, and whenever the project has no release check:
+    /// unverified, never "no" (feedback ee0a43b0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<bool>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub release_note: String,
     pub checked_at: i64,
     pub notes: Vec<String>,
 }

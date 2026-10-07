@@ -20,6 +20,9 @@ export type TaskWorkspace = {
     headSha: string; dirty: boolean; hasCommits: boolean; pushed: boolean;
     remoteBranch?: string; pullRequest?: string; reviewState?: string;
     merged: boolean; checkedAt: number; notes: string[];
+    /** In what is running, by the project's release check; absent when
+     *  unverified (not merged, or no release check). */
+    released?: boolean; releaseNote?: string;
   } | null;
 };
 
