@@ -1585,6 +1585,21 @@ describe("a turn that failed", () => {
   });
 });
 
+describe("a chat writing beside an orchestration worker", () => {
+  it("is told on a line of its own, and nothing else changes", () => {
+    const text = 'Task "Storyboard" is also writing in this checkout (/work/app). Edits here can collide with it.';
+    const state = reduceChat(emptyChat(), { type: "octiq_writer_beside", text });
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.blocks).toEqual([{ kind: "notice", text }]);
+    expect(state.failure).toBeUndefined();
+    expect(state.busy).toBe(false);
+  });
+
+  it("draws nothing for an empty notice", () => {
+    expect(reduceChat(emptyChat(), { type: "octiq_writer_beside" }).messages).toHaveLength(0);
+  });
+});
+
 describe("a message taken back before the agent was given it", () => {
   // OctiqFlow's own event: the words never reached an agent, so there is
   // nothing here either provider could report. It exists at all because the

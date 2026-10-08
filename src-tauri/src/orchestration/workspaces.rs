@@ -4,6 +4,33 @@ use super::*;
 use crate::git_ops::workflow::{self, DeliveryEvidence, WorkspaceMode, WorkspacePlan};
 use crate::paths::Canonical;
 
+/// An orchestration worker writing in the checkout a chat works in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriterBeside {
+    pub task_id: String,
+    pub title: String,
+    pub checkout: String,
+}
+
+impl WriterBeside {
+    /// What the strict check refuses with. `lib/writerConflict` matches
+    /// "has an active writer for task".
+    pub fn refusal(&self) -> String {
+        format!(
+            "This checkout has an active writer for task {} ({}). Wait or use a separate worktree.",
+            self.title, self.checkout
+        )
+    }
+
+    /// What a chat let through beside it is told, once per task.
+    pub fn notice(&self) -> String {
+        format!(
+            "Task \"{}\" is also writing in this checkout ({}). Edits here can collide with it.",
+            self.title, self.checkout
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceState {
@@ -466,16 +493,61 @@ impl OrchestrationStore {
         Ok(guard)
     }
 
-    /// Called from every managed chat launch/send. A coordinator may continue
-    /// coordinating; its prompt forbids editing a checkout delegated to workers.
+    /// The strict check: refused while any worker writes in `path`. The Git
+    /// panel and handing a worktree over use it; a chat the person drives uses
+    /// `chat_workspace_access`, which is told rather than refused.
     pub fn require_workspace_access(
         &self,
         chat_key: &str,
         path: &str,
         writable: bool,
     ) -> Result<(), String> {
+        match self.writers_beside(chat_key, path, writable)?.first() {
+            Some(writer) => Err(writer.refusal()),
+            None => Ok(()),
+        }
+    }
+
+    /// Called from every managed chat launch/send. The person often runs
+    /// several chats in one direction, so a chat that could write where an
+    /// orchestration worker writes is let through, and the writers are handed
+    /// back to be shown in it. An orchestration worker's own chat is still
+    /// refused: a Mission keeps one writer at a time.
+    pub fn chat_workspace_access(
+        &self,
+        chat_key: &str,
+        path: &str,
+        writable: bool,
+    ) -> Result<Vec<WriterBeside>, String> {
+        let writers = self.writers_beside(chat_key, path, writable)?;
+        let Some(first) = writers.first() else {
+            return Ok(writers);
+        };
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if inner
+            .data
+            .attempts
+            .values()
+            .any(|a| a.worker_chat_key == chat_key)
+        {
+            return Err(first.refusal());
+        }
+        Ok(writers)
+    }
+
+    /// The unsettled workers writing in `path`'s checkout, other than this
+    /// chat and its run's coordinator. A coordinator may continue
+    /// coordinating; its prompt forbids editing a checkout delegated to
+    /// workers. A workspace being cleaned up is refused outright.
+    fn writers_beside(
+        &self,
+        chat_key: &str,
+        path: &str,
+        writable: bool,
+    ) -> Result<Vec<WriterBeside>, String> {
+        let mut writers = Vec::new();
         if path.trim().is_empty() {
-            return Ok(());
+            return Ok(writers);
         }
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         if let Some(error) = &inner.load_error {
@@ -486,14 +558,20 @@ impl OrchestrationStore {
                 ws.lease_attempt_id.is_some() || ws.state == WorkspaceState::Cleaning
             })
         }) {
-            return Ok(());
+            return Ok(writers);
         }
         let checkout = workflow::checkout_identity(path)?;
         for task in inner.data.tasks.values() {
             let Some(ws) = &task.workspace else {
                 continue;
             };
-            if !workflow::overlaps(&checkout, &ws.plan.checkout_root) {
+            // The same rule dispatch uses (`require_workspace_available`): a
+            // managed worktree is shared only by a chat working INSIDE it. A
+            // chat in the plain folder above it (the Starfall layout) was not
+            // handed that worktree, and refusing it locked every writable chat
+            // in the project for as long as any worker ran.
+            let managed = ws.plan.managed && ws.plan.mode.is_worktree();
+            if !workflow::shares_checkout(&ws.plan.checkout_root, &checkout, managed) {
                 continue;
             }
             if ws.state == WorkspaceState::Cleaning {
@@ -519,11 +597,15 @@ impl OrchestrationStore {
                     continue;
                 }
                 if owner.access != Access::Read && attempt_is_unsettled(&inner.data, owner) {
-                    return Err(format!("This checkout has an active writer for task {}. Wait or use a separate worktree.", task.title));
+                    writers.push(WriterBeside {
+                        task_id: task.id.clone(),
+                        title: task.title.clone(),
+                        checkout: ws.plan.checkout_root.clone(),
+                    });
                 }
             }
         }
-        Ok(())
+        Ok(writers)
     }
 
     fn validation_task(&self, actor: &str, task_id: &str) -> Result<Task, String> {
@@ -1582,6 +1664,43 @@ mod tests {
         assert!(store
             .require_workspace_access("chat:other", &repo.root, false)
             .is_ok());
+        // A chat the person drives is let through and told who writes there.
+        let beside = store
+            .chat_workspace_access("chat:other", &repo.root, true)
+            .unwrap();
+        assert_eq!(beside.len(), 1);
+        assert_eq!(beside[0].task_id, task.id);
+        assert!(beside[0].notice().contains(&task.title));
+        assert!(store
+            .chat_workspace_access("chat:other", &repo.root, false)
+            .unwrap()
+            .is_empty());
+        // Another worker's chat is not: one writer at a time.
+        let worker = store
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .attempts
+            .values()
+            .next()
+            .unwrap()
+            .worker_chat_key
+            .clone();
+        let other_worker = format!("{worker}-other");
+        store
+            .mutate(|data| {
+                let mut copy = data.attempts.values().next().unwrap().clone();
+                copy.id = "attempt_other".into();
+                copy.worker_chat_key = other_worker.clone();
+                data.attempts.insert(copy.id.clone(), copy);
+                Ok(())
+            })
+            .unwrap();
+        assert!(store
+            .chat_workspace_access(&other_worker, &repo.root, true)
+            .unwrap_err()
+            .contains("active writer"));
         assert!(store.guard_git_operation(&repo.root).is_err());
         assert!(store
             .cleanup_workspace(
@@ -1596,10 +1715,12 @@ mod tests {
     }
     /// A project registered as a plain folder that holds a repository and
     /// its `.worktrees` (the Starfall layout): a running writer in one of
-    /// those worktrees is inside the folder, so a chat that could write
-    /// there is refused, and a read-only chat (a discussion) is not.
+    /// those worktrees was given a folder nobody else was, so a chat in the
+    /// folder above it may write — the rule dispatch already keeps
+    /// (`shares_checkout`). Only a chat working inside the worktree is
+    /// refused, and a read-only chat there still is not.
     #[test]
-    fn a_folder_holding_a_writers_worktree_refuses_writers_and_admits_readers() {
+    fn a_folder_holding_a_writers_worktree_admits_writers_above_it() {
         let repo = Repo::new();
         let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
         let writer = prepare(&store, &task, Access::Auto).unwrap();
@@ -1611,10 +1732,22 @@ mod tests {
         );
         assert!(store
             .require_workspace_access("chat:talk", &folder, true)
+            .is_ok());
+        assert!(store
+            .require_workspace_access("chat:talk", &folder, false)
+            .is_ok());
+        let inside = format!("{}/src", writer.cwd.trim_end_matches('/'));
+        std::fs::create_dir_all(&inside).unwrap();
+        assert!(store
+            .require_workspace_access("chat:talk", &writer.cwd, true)
             .unwrap_err()
             .contains("active writer"));
         assert!(store
-            .require_workspace_access("chat:talk", &folder, false)
+            .require_workspace_access("chat:talk", &inside, true)
+            .unwrap_err()
+            .contains("active writer"));
+        assert!(store
+            .require_workspace_access("chat:talk", &inside, false)
             .is_ok());
         // The repository beside the worktree is not that writer's checkout.
         assert!(store

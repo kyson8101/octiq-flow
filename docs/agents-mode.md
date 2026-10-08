@@ -95,11 +95,16 @@ designated, the page is the plain picker above.
   through rather than have it done, the front desk passes `purpose:
   "discuss"`. The route then opens at **read-only** access, whatever the
   agent's registered level, in the same place, and its first message says it
-  is a discussion. A read-only chat asks for no writer, so an orchestration
-  worker writing in the project (`require_workspace_access`) does not keep it
-  from opening. Writing is still refused: switching that chat's access later
-  meets the same check, and a project registered as a plain folder that holds
-  a worker's worktree refuses every chat that could write there. A work route
+  is a discussion. A chat the person drives is no longer refused for
+  writing beside an orchestration worker either (`chat_workspace_access`):
+  the person often runs several chats in one direction, so the chat is let
+  through and a line in it names the task writing there, once per task
+  (`octiq_writer_beside`). Only an orchestration worker's own chat is still
+  refused, so a Mission keeps one writer at a time, and the Git panel keeps
+  the strict check (`require_workspace_access`). A worker's managed worktree
+  is shared only by a chat working inside it, the same rule dispatch keeps
+  (`shares_checkout`). The read-only ways out below remain for a refusal
+  from an older backend or a workspace being cleaned up. A work route
   whose start a writer refused offers **Discuss only (read-only)** beside Try
   again and Give up (`handover_discuss`, socket-only), but only while the
   host has made sure no chat started (`abandonable`), since a started chat

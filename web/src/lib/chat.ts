@@ -1108,6 +1108,25 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     };
   }
 
+  // An orchestration worker writes in this chat's checkout too. The chat was
+  // let through, not refused; the host says so once per task.
+  if (type === "octiq_writer_beside") {
+    const text = asStr(e.text);
+    if (!text) return state;
+    return {
+      ...state,
+      messages: [
+        ...state.messages,
+        {
+          id: `writer-${state.messages.length}`,
+          role: "assistant",
+          blocks: [{ kind: "notice", text }],
+          streaming: false,
+        },
+      ],
+    };
+  }
+
   if (type === "octiq_auto_resume_failed") {
     return {
       ...state,
