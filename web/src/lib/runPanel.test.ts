@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationTask } from "./orchestration";
-import { attentionLabel, mainChatTarget, nextRunTab, runAttention, runPeople, splitArchived, stopRun } from "./runPanel";
+import { EMPTY_ORCHESTRATION, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
+import { attentionLabel, mainChatTarget, nextRunTab, runAttention, runPeople, splitArchived, stopRun, taskColumnCounts } from "./runPanel";
 
 const run = (id: string, coordinatorChatKey: string, extra: Partial<OrchestrationRun> = {}): OrchestrationRun => ({
   id, objective: id, coordinatorChatKey, workspaceId: "project", rootPath: "/repo",
@@ -53,6 +53,27 @@ describe("run attention", () => {
     expect(runAttention(stopped, [], [], []).total).toBe(0);
     // Nor is a failure in it: nothing can retry a stopped run.
     expect(runAttention(stopped, [task("t", "failed")], [], []).total).toBe(0);
+  });
+});
+
+describe("the top bar's Tasks button", () => {
+  it("counts the column's tasks and the decisions waiting in it, across the chat's runs", () => {
+    const a = run("a", "chat:main", { planApproval: { status: "pending", requestedAt: 1 } });
+    const b = run("b", "chat:main");
+    const tasks = [task("one", "running"), task("two", "blocked"), task("three", "pending", { runId: "b" })];
+    const gates = [gate("g", "two"), { ...gate("h"), runId: "b" }];
+    expect(taskColumnCounts({ ...EMPTY_ORCHESTRATION, runs: [a, b], tasks, gates }))
+      .toEqual({ tasks: 3, decisions: 3 });
+  });
+
+  it("leaves archived runs out, and owes nothing for a settled gate or plan", () => {
+    const live = run("a", "chat:main", { planApproval: { status: "approved", requestedAt: 1 } });
+    const archived = run("b", "chat:main", { status: "completed", archivedAt: 2, planApproval: { status: "pending", requestedAt: 1 } });
+    const tasks = [task("one", "completed"), task("old", "completed", { runId: "b" })];
+    const gates = [{ ...gate("g"), status: "resolved" as const }, { ...gate("h"), runId: "b" }];
+    expect(taskColumnCounts({ ...EMPTY_ORCHESTRATION, runs: [live, archived], tasks, gates }))
+      .toEqual({ tasks: 1, decisions: 0 });
+    expect(taskColumnCounts(EMPTY_ORCHESTRATION)).toEqual({ tasks: 0, decisions: 0 });
   });
 });
 

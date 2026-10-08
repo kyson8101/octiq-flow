@@ -164,7 +164,8 @@ import { GitButton, GitPanel } from "./components/GitPanel";
 import { OrchestrationPanel } from "./components/OrchestrationPanel";
 import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
-import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
+import { ChatWorkflowBar, TasksButton } from "./components/ChatWorkflowBar";
+import { taskColumnCounts } from "./lib/runPanel";
 import { ChatPlanCards } from "./components/ChatPlanCards";
 import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
 import {
@@ -389,6 +390,11 @@ const FILES_KEY = "octiq.v2.filesOpen";
  *  the rail shows itself the moment a chat starts an agent, so what is worth
  *  remembering is the decision to CLOSE it. A missing key is open. */
 const RAIL_KEY = "octiq.v2.railShut";
+/** The Tasks column beside an orchestrated chat, put away. Kept the same way
+ *  round as the agent column's: the column shows itself wherever there is room,
+ *  so what is worth remembering is the decision to hide it. One flag for every
+ *  chat in this browser, not one per chat. */
+const TASKS_KEY = "octiq.v2.tasksShut";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
@@ -603,6 +609,11 @@ export default function App() {
     [workerChat, orchestration, runChatKey, currentWorkflow]);
   const workflowVisible = orchestrated || runWorkflow.runs.length > 0;
   const workflowSplit = roomToSplit && !focusMode && workflowVisible;
+  // Put away from the top bar's Tasks button: the room is there, but the chat
+  // takes all of it. See TASKS_KEY.
+  const [tasksShut, setTasksShut] = useState(() => recall(TASKS_KEY) === "1");
+  const runSplit = workflowSplit && !tasksShut;
+  const taskCounts = useMemo(() => taskColumnCounts(runWorkflow), [runWorkflow]);
   const [displayedRuns, setDisplayedRuns] = useState<Record<string, string | null>>({});
   const displayedRunKey = runChatKey ?? "new";
   const onSelectedRunChange = useCallback((runId: string | null) => {
@@ -2865,6 +2876,12 @@ export default function App() {
     rememberFlag(RAIL_KEY, !next);
   }, []);
 
+  /** The Tasks column beside an orchestrated chat, on the same terms. */
+  const showTasks = useCallback((next: boolean) => {
+    setTasksShut(!next);
+    rememberFlag(TASKS_KEY, !next);
+  }, []);
+
   /** Put the git column away where leaving it up would be in the way — and
    *  only there. Below the drawer breakpoint it is a sheet ON the chat, so
    *  switching project or opening a conversation has to close it or the thing
@@ -4546,6 +4563,10 @@ export default function App() {
   // else has one stable home in the overflow at every width.
   const topbarDirectActions = !mainPage ? (
     <>
+      {/* Here, not in the overflow: a plan waiting in the hidden column rides
+          on this button, and a closed menu would hide it again. */}
+      {workflowSplit && <TasksButton tasks={taskCounts.tasks} decisions={taskCounts.decisions}
+        open={!tasksShut} onToggle={() => showTasks(tasksShut)} />}
       {conversationId && <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />}
       {sessionProject && <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />}
       {project && !unavailableChat && <FocusModeButton onClick={enterFocus} />}
@@ -4591,6 +4612,7 @@ export default function App() {
           aria-label={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"} onClick={() => {
           setRunOpened((before) => ({ ...before, [workflowKey]: true }));
           showWorkflowView("run");
+          showTasks(true);
         }}><span className="topbar-action-label">Run</span></button>}
       </>}
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
@@ -4883,7 +4905,7 @@ export default function App() {
             unified={workflowVisible} selectedRun={displayedRun} worker={workerChat}
             // One way back at a time: while the run panel is on screen its
             // Main agent chat button is that way, so the bar does not repeat it.
-            onBackToMain={workerChat && (workerCoordinatorKey ?? runChatKey) && !(workflowVisible && (workflowSplit || workflowView === "run"))
+            onBackToMain={workerChat && (workerCoordinatorKey ?? runChatKey) && !(workflowVisible && (runSplit || workflowView === "run"))
               ? () => openWorkflowChat((workerCoordinatorKey ?? runChatKey)!) : undefined}
             // The way back to [ Main | Task ] from a task opened full-width —
             // the only place it is offered for the task on screen.
@@ -4894,10 +4916,10 @@ export default function App() {
             planPending={!!plan}
             pendingApprovals={pendingApprovals}
             onView={showWorkflowView} />}
-          <div className={`workflow-surfaces${workflowSplit ? " is-split" : ""}`}>
-          {workflowVisible && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}
+          <div className={`workflow-surfaces${runSplit ? " is-split" : ""}`}>
+          {workflowVisible && <div className="workflow-run-surface" hidden={workflowSplit ? tasksShut : workflowView !== "run"}
             style={{ "--run-w": `${runDock.width}px` } as React.CSSProperties}>
-            {workflowSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
+            {runSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
             <OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
               allowManualRun={!agentsMode}
