@@ -50,6 +50,38 @@ pub const TIMED_OUT: &str = "nobody answered in time";
 /// The reason a card the person answered with Deny is refused with.
 pub const DENIED: &str = "you denied it";
 
+/// OctiqFlow's own tools that never need a permission card of Claude's.
+///
+/// Read access is Claude's plan mode, and plan mode asks about every MCP tool
+/// not marked read-only BEFORE `--allowedTools` is read (the front desk met
+/// the same thing, 2f8aa87). So a read-only chat put a card up each time its
+/// agent saved a memory entry or reported its status. None of these touch the
+/// project: they keep the host's own bookkeeping (memory, status, title,
+/// feedback, previews), or they already put their own card in front of the
+/// person (handover, registering an agent, the shared policy), where a second
+/// card would only ask the same thing twice.
+pub fn host_bookkeeping(tool: &str) -> bool {
+    matches!(
+        tool.strip_prefix("mcp__octiq__"),
+        Some(
+            "vault_agent_memory_append"
+                | "task_status"
+                | "set_chat_title"
+                | "ask_user"
+                | "feedback_submit"
+                | "preview_image"
+                | "preview_html"
+                | "pin_file"
+                | "handover"
+                | "handover_ask"
+                | "handover_outcome"
+                | "agent_register"
+                | "agent_update"
+                | "agent_policy_update"
+        )
+    )
+}
+
 /// What the user said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -548,5 +580,19 @@ mod tests {
         assert_eq!(Decision::Allow.as_str(), "allow");
         assert_eq!(Decision::Deny.as_str(), "deny");
         assert_eq!(Decision::Abstain.as_str(), "abstain");
+    }
+
+    #[test]
+    fn only_the_hosts_own_bookkeeping_skips_the_card() {
+        assert!(host_bookkeeping("mcp__octiq__vault_agent_memory_append"));
+        assert!(host_bookkeeping("mcp__octiq__task_status"));
+        assert!(host_bookkeeping("mcp__octiq__handover"));
+        // Writes the person's notes or starts work: still asked in plan mode.
+        assert!(!host_bookkeeping("mcp__octiq__vault_write"));
+        assert!(!host_bookkeeping("mcp__octiq__orchestration_run_create"));
+        // The same name on another server, or a built-in tool, is not ours.
+        assert!(!host_bookkeeping("mcp__other__task_status"));
+        assert!(!host_bookkeeping("task_status"));
+        assert!(!host_bookkeeping("Bash"));
     }
 }

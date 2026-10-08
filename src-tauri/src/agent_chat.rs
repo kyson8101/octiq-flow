@@ -4528,6 +4528,11 @@ fn answer_permission(
     };
 
     let tool = ask.tool_name.clone().unwrap_or_default();
+    if crate::permission::host_bookkeeping(&tool) {
+        eprintln!("[perm] {key} {tool} -> allow (host bookkeeping)");
+        write_control_response(session, &request_id, json!({ "behavior": "allow" }));
+        return;
+    }
     let Some(rt) = rt else {
         // No runtime to wait on — the desktop build. Deny rather than leave the
         // agent parked on a question that will never be put to anyone.
