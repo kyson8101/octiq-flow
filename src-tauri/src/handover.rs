@@ -2166,9 +2166,12 @@ impl Host for Live<'_> {
     }
 
     fn checkout_free(&self, path: &str, except: &[&str]) -> Result<(), String> {
+        // A worker writing here is no reason to refuse: the chat that starts
+        // is told it writes beside it (`chat_workspace_access`). A workspace
+        // being cleaned up still is.
         self.0
             .orchestrations
-            .require_workspace_access("handover", path, true)
+            .chat_workspace_access("handover", path, true)
             .map_err(|why| format!("{path} cannot be handed over: {why}"))?;
         if let Some(other) = self
             .0
