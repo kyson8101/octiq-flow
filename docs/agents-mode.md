@@ -74,10 +74,13 @@ changes what it runs on, and the next new chat uses it. With no front desk
 designated, the page is the plain picker above.
 
 - The person says what they want. The front desk's brief
-  (`team::front_desk_brief`) lists **every** registered agent, whoever it
-  reports to, with its role, its project scope and its manager, plus every
-  project. It routes to one agent, asks when two fit and nothing tells them
-  apart, and says so when none fits.
+  (`team::front_desk_brief`) lists only the agents who **report to the
+  person**, with their role, their project scope and the names of the team
+  under each, plus every project. That is the rule a conversation the person
+  starts already keeps: anyone lower down is reached through the manager at
+  the top of their chain, so a request for one of them goes to that manager,
+  who hands it on. It routes to one agent, asks when two fit and nothing
+  tells them apart, and says so when none fits.
 - To route, it calls `route_chat` (`/hook/route`). That records a **route**,
   a handover of kind `route` (`handover/route.rs`), and draws a card in its
   chat with the agent, the project and the brief. Nothing is created until the
@@ -113,8 +116,11 @@ designated, the page is the plain picker above.
   refused offers **Discuss read-only** on its bubble (`lib/writerConflict`),
   which sends it again at read-only access in the same conversation.
 - The host checks scope at the proposal and again at confirm, and refuses a
-  route to the front desk itself or from any chat that is not a front-desk
-  chat.
+  route to the front desk itself, to an agent who does not report to the
+  person (naming the manager at the top of its chain,
+  `route::not_a_direct_report`), or from any chat that is not a front-desk
+  chat. An agent moved under a manager after the card was drawn is refused at
+  confirm.
 - **A front-desk chat is hidden** from the sidebar, Recent, project pages,
   search and the resume list, by its identity on the host
   (`team::FrontDeskChat`). It is never saved to the chat index, so the next
