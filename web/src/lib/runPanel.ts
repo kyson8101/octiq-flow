@@ -1,6 +1,7 @@
 import { executionNeedsAttention } from "./agentTaskBoard";
 import {
-  isStuck, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationTask,
+  isStuck, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationSnapshot,
+  type OrchestrationTask,
 } from "./orchestration";
 
 /** The run panel's three views of one run. Decisions and plan approval are
@@ -47,6 +48,19 @@ export function runAttention(
       || executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId)))).length;
   const decisions = open.length + plan;
   return { decisions, blocked, total: decisions + blocked };
+}
+
+/** What the top bar's Tasks button carries for one chat's runs: how many
+ *  tasks the column holds, and how many decisions in it wait on the person.
+ *  Archived runs are history and count for neither. */
+export function taskColumnCounts(snapshot: OrchestrationSnapshot): { tasks: number; decisions: number } {
+  const runs = snapshot.runs.filter((run) => run.archivedAt == null);
+  const ids = new Set(runs.map((run) => run.id));
+  return {
+    tasks: snapshot.tasks.filter((task) => ids.has(task.runId)).length,
+    decisions: runs.reduce((sum, run) =>
+      sum + runAttention(run, snapshot.tasks, snapshot.attempts, snapshot.gates).decisions, 0),
+  };
 }
 
 /** Short enough for a collapsed row. Decisions lead: they wait on the person. */

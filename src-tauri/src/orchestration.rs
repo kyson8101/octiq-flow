@@ -44,6 +44,7 @@ mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
 pub use levels::{TaskAcceptance, TaskSize, XpAward};
+pub use workspaces::WriterBeside;
 use workspaces::{TaskWorkspace, WorkspaceProposal};
 
 const STORE_VERSION: u32 = 4;

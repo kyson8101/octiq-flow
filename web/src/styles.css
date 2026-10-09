@@ -10506,6 +10506,40 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
+/* An agent asking for more access: the two levels side by side, then why. */
+.access-card-levels {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 9px 0 0;
+}
+
+.access-card-levels dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--fg-0);
+}
+
+.access-card-arrow {
+  color: var(--fg-3);
+  font-size: 13px;
+}
+
+.access-card-reason {
+  margin: 3px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-1);
+  overflow-wrap: anywhere;
+}
+
+.access-card-error {
+  margin: 9px 0 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
 /* A tool call that the Codex safety reviewer already stopped. It shares the
    permission card's shape, while the small context row makes it immediately
    clear that Codex — not OctiqFlow — raised the warning. */

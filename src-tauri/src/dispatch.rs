@@ -57,6 +57,9 @@ impl Services {
             .unwrap_or_else(|| crate::profile::profile_dir().join("chats"))
             .join("questions.json");
         let orchestrations = Arc::new(OrchestrationStore::load_profile());
+        // Banners come from main agents only; the ledger says which chats are
+        // a run's workers and whose.
+        crate::push::route_workers_through(orchestrations.clone());
         let mut chats = ChatManager::with_saved_questions(question_path);
         chats.orchestrations = orchestrations.clone();
         let chats = Arc::new(chats);
@@ -696,6 +699,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "agent")?,
             arg(&args, "sessionId")?,
         )?)),
+        // Picking one up into a chat: its history becomes the start of the
+        // chat's record, so reopening the chat shows it before anything has
+        // been said there.
+        "agent_history_import" => to_value(crate::agent_history::agent_history_import(
+            arg(&args, "key")?,
+            arg(&args, "agent")?,
+            arg(&args, "sessionId")?,
+        )),
         "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
         "chat_set_agent_title" => to_value(crate::agent_chat::chat_set_agent_title(
             arg(&args, "chatId")?,
@@ -817,6 +828,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .unwrap_or(false);
             Ok(json!(crate::permission::decide(&id, decision, remember)))
         }
+
+        // An agent's request for a higher access level (`access_request`).
+        // The answer only settles the card: the level itself is changed by
+        // the page's own `chat_set_access`, before it answers "raised".
+        "access_request_pending" => Ok(json!(crate::access_request::pending())),
+        "access_request_answer" => Ok(json!(crate::access_request::answer(
+            &arg::<String>(&args, "id")?,
+            arg(&args, "decision")?,
+            arg::<Option<String>>(&args, "error")?,
+        ))),
 
         // Codex has no resumable permission channel. A safety-policy rejection
         // is therefore a post-hoc choice about the next user turn, kept long
@@ -1932,6 +1953,20 @@ mod tests {
         let out = dispatch(&svc, "agent_history_list", json!({ "limit": 5 })).expect("routed");
         let rows = out.as_array().expect("an array of sessions");
         assert!(rows.len() <= 5, "the limit is respected: {}", rows.len());
+    }
+
+    /// Picking a session up into a chat is routed, and refuses a record that
+    /// is not a chat's before it reads anything.
+    #[test]
+    fn a_browser_can_pick_a_past_session_up_into_a_chat() {
+        let svc = Services::load();
+        let err = dispatch(
+            &svc,
+            "agent_history_import",
+            json!({ "key": "orch:worker", "agent": "claude", "sessionId": "abc" }),
+        )
+        .expect_err("not a chat");
+        assert!(err.contains("not a chat"), "{err}");
     }
 
     #[test]

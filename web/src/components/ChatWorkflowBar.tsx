@@ -63,6 +63,30 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
   return <header className={unified ? "workflow-header" : undefined}>{title}{nav}</header>;
 }
 
+/** The top bar's switch for the Tasks column beside the chat. It only exists
+ *  where the two sit side by side; narrower, the Tasks/Chat tabs already take
+ *  turns. While the column is put away, decisions waiting in it ride on the
+ *  button, so hiding the tasks never hides a plan waiting for Approve. */
+export function TasksButton({ tasks, decisions, open, onToggle }: {
+  tasks: number; decisions: number; open: boolean; onToggle: () => void;
+}) {
+  const owed = !open && decisions > 0;
+  const label = `${open ? "Hide" : "Show"} the task column${tasks ? ` — ${tasks} ${tasks === 1 ? "task" : "tasks"}` : ""}${owed ? `, ${decisions} waiting for you` : ""}`;
+  return (
+    <button className={`icon-btn tasks-toggle${open ? " is-on" : ""}`} type="button"
+      aria-expanded={open} aria-label={label} title={label} onClick={onToggle}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2.5" />
+        <path d="M9.5 4v16" />
+      </svg>
+      <span className="topbar-action-label">Tasks</span>
+      {tasks > 0 && <span className="tasks-toggle-count">{tasks}</span>}
+      {owed && <span className="tasks-toggle-owed" aria-hidden="true">{decisions}</span>}
+    </button>
+  );
+}
+
 function BackIcon() {
   return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>;
 }

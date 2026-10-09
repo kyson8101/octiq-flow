@@ -23,6 +23,7 @@
 // prompt on first load is the thing people click "Block" on.
 import type { Message } from "./chat";
 import type { NotificationTarget } from "./notificationOpen";
+import { isWorkerChat, mainChatId } from "./orchestration";
 
 /** What is being announced. */
 export type NoticeKind = "done" | "permission" | "question";
@@ -71,6 +72,21 @@ export function owed(consent: Consent, focus: Focus, conversationId: string): bo
   if (!consent.enabled) return false;
   if (consent.permission !== "granted") return false;
   return !isWatching(focus, conversationId);
+}
+
+/** The chat a moment is announced on, or null for no banner at all.
+ *
+ *  Banners come from MAIN agents only. A run's workers are subagents of the
+ *  chat that coordinates them: their turns ending and their questions (which
+ *  reach you through a gate in the main chat anyway) say nothing. A worker's
+ *  permission ask or safety refusal is still owed, because its card is drawn
+ *  in the main chat and times out — so it is announced ON the main chat, where
+ *  the click has to land. A worker whose main chat is not known yet stays
+ *  silent rather than naming itself. Mirrors `announced_on` in push.rs. */
+export function announcedOn(kind: NoticeKind, id: string, parents: ReadonlyMap<string, string>): string | null {
+  if (!isWorkerChat(id, parents)) return id;
+  if (kind !== "permission") return null;
+  return mainChatId(id, parents);
 }
 
 /** One line of banner text out of however many lines of transcript. */

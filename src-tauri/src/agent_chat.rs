@@ -739,6 +739,9 @@ pub struct ChatManager {
     /// the session id each one names is kept out of the resume list.
     /// Each with the provider it runs on, which is half of a session's name.
     front_desks: Mutex<HashMap<String, ChatAgent>>,
+    /// "<chat>\n<task>" for each orchestration writer a chat has been told it
+    /// writes beside (`admit_beside_writers`), so it is said once, not per send.
+    writer_notices: Mutex<std::collections::HashSet<String>>,
 }
 
 /// The secret one launch of one agent proves itself with on
@@ -1088,6 +1091,30 @@ impl ChatManager {
             .filter(|id| safe_session_id(id).is_some())
     }
 
+    /// Which agent runs `key`, the level it runs at now, and when a new level
+    /// would take hold: what an access request is put to the person with.
+    /// The level is the start context's, which `chat_set_access` keeps
+    /// current for every provider. None for a chat with no live process.
+    pub(crate) fn access_standing(&self, key: &str) -> Option<crate::access_request::Standing> {
+        let session = self.sessions.lock().ok()?.get(key).cloned()?;
+        let (agent, app_server_thread) = {
+            let guard = session.lock().ok()?;
+            (guard.agent, guard.codex.is_some())
+        };
+        let access = self
+            .start_context(key)
+            .and_then(|start| start.access)
+            .unwrap_or(Access::Read);
+        Some(crate::access_request::Standing {
+            agent,
+            access,
+            takes: crate::access_request::takes(
+                app_server_thread,
+                provider_for(agent).capabilities(),
+            ),
+        })
+    }
+
     fn queue_context(&self, session_key: &str) -> Option<QueueContext> {
         self.start_context(session_key).map(QueueContext::from)
     }
@@ -1225,6 +1252,42 @@ impl ChatManager {
                 ) {
                     return Err(format!("Chat {key} is still using this checkout."));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Let a chat write beside an orchestration worker, saying so in it once
+    /// per task (`OrchestrationStore::chat_workspace_access`). Every path is
+    /// checked before anything is said, so a refused start says nothing.
+    fn admit_beside_writers<'a>(
+        &self,
+        process_key: &str,
+        stream_key: &str,
+        paths: impl IntoIterator<Item = &'a String>,
+        writable: bool,
+    ) -> Result<(), String> {
+        let mut found: Vec<crate::orchestration::WriterBeside> = Vec::new();
+        for path in paths {
+            for writer in self
+                .orchestrations
+                .chat_workspace_access(process_key, path, writable)?
+            {
+                if !found.contains(&writer) {
+                    found.push(writer);
+                }
+            }
+        }
+        if found.is_empty() {
+            return Ok(());
+        }
+        let mut told = self.writer_notices.lock().map_err(|e| e.to_string())?;
+        for writer in found {
+            if told.insert(format!("{stream_key}\n{}", writer.task_id)) {
+                record_chat_event(
+                    stream_key,
+                    json!({ "type": "octiq_writer_beside", "text": writer.notice() }),
+                );
             }
         }
         Ok(())
@@ -2332,9 +2395,10 @@ pub(crate) fn start_session(
     } else {
         Vec::new()
     };
-    manager.orchestrations.require_workspace_access(
+    manager.admit_beside_writers(
         &session_key,
-        &cwd,
+        &key,
+        std::iter::once(&cwd),
         access != Some(Access::Read),
     )?;
     // Hold ownership through launch: reset/stop cannot race preparation.
@@ -2385,18 +2449,12 @@ pub(crate) fn start_session(
         (prompt, _) => (prompt, visible_prompt),
     };
 
-    manager.orchestrations.require_workspace_access(
+    manager.admit_beside_writers(
         &session_key,
-        &cwd,
+        &key,
+        std::iter::once(&cwd).chain(extra_dirs.iter().flatten()),
         access != Some(Access::Read),
     )?;
-    for path in extra_dirs.iter().flatten() {
-        manager.orchestrations.require_workspace_access(
-            &session_key,
-            path,
-            access != Some(Access::Read),
-        )?;
-    }
 
     // The folder we start in is already visible to the agent, so naming it
     // again would be noise; blanks and repeats are dropped for the same reason.
@@ -3740,18 +3798,12 @@ fn chat_send_with_user_turn(
         return Err("additional agents are no longer supported".into());
     }
     if let Some(start) = manager.start_context(&key) {
-        manager.orchestrations.require_workspace_access(
+        manager.admit_beside_writers(
             &key,
-            &start.cwd,
+            &key,
+            std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()),
             start.access != Some(Access::Read),
         )?;
-        for path in start.extra_dirs.iter().flatten() {
-            manager.orchestrations.require_workspace_access(
-                &key,
-                path,
-                start.access != Some(Access::Read),
-            )?;
-        }
     }
     let images = images.unwrap_or_default();
     let session_key = key.clone();
@@ -4500,6 +4552,11 @@ fn answer_permission(
     };
 
     let tool = ask.tool_name.clone().unwrap_or_default();
+    if crate::permission::host_bookkeeping(&tool) {
+        eprintln!("[perm] {key} {tool} -> allow (host bookkeeping)");
+        write_control_response(session, &request_id, json!({ "behavior": "allow" }));
+        return;
+    }
     let Some(rt) = rt else {
         // No runtime to wait on — the desktop build. Deny rather than leave the
         // agent parked on a question that will never be put to anyone.
@@ -4608,11 +4665,12 @@ pub fn chat_set_access_impl(
         return Ok(());
     }
     if let Some(start) = manager.start_context(&key) {
-        for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
-            manager
-                .orchestrations
-                .require_workspace_access(&key, path, access != Access::Read)?;
-        }
+        manager.admit_beside_writers(
+            &key,
+            &key,
+            std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()),
+            access != Access::Read,
+        )?;
     }
     cancel_auto_resume(manager, &key, "cancelled when access changed")?;
     let session = {
@@ -4690,6 +4748,7 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     // Outliving it would be a permission nobody remembers giving.
     crate::permission::forget_chat(&key);
     crate::safety_block::forget_chat(&key);
+    crate::access_request::forget_chat(&key);
     with_access(|a| a.remove(&key));
     end_process(manager, &key)?;
     cancelled

@@ -6,7 +6,7 @@
 // does not need a DOM.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { bannerTitle, isWatching, lastSaid, noticeFor, owed, preview, show } from "./notify";
+import { announcedOn, bannerTitle, isWatching, lastSaid, noticeFor, owed, preview, show } from "./notify";
 
 const HERE = { hidden: false, focused: true, reading: "chat-1" };
 
@@ -29,6 +29,34 @@ describe("isWatching", () => {
 
   it("is false when nothing is on screen", () => {
     expect(isWatching({ ...HERE, reading: null }, "chat-1")).toBe(false);
+  });
+});
+
+describe("announcedOn", () => {
+  // worker chat id → its main chat id, as `workerChatParents` builds it.
+  const parents = new Map([["legacy-worker", "main"], ["orch-w1", "main"]]);
+
+  it("announces every moment of a main chat on that chat", () => {
+    for (const kind of ["done", "permission", "question"] as const) {
+      expect(announcedOn(kind, "main", parents)).toBe("main");
+      expect(announcedOn(kind, "ordinary", new Map())).toBe("ordinary");
+    }
+  });
+
+  it("never announces a worker's turns or questions", () => {
+    for (const id of ["legacy-worker", "orch-w1", "orch-not-in-ledger-yet"]) {
+      expect(announcedOn("done", id, parents)).toBeNull();
+      expect(announcedOn("question", id, parents)).toBeNull();
+    }
+  });
+
+  it("announces a worker's permission ask on its main chat", () => {
+    expect(announcedOn("permission", "orch-w1", parents)).toBe("main");
+    expect(announcedOn("permission", "legacy-worker", parents)).toBe("main");
+  });
+
+  it("stays silent for a worker whose main chat is not known yet", () => {
+    expect(announcedOn("permission", "orch-not-in-ledger-yet", parents)).toBeNull();
   });
 });
 

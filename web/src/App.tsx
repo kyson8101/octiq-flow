@@ -80,6 +80,7 @@ import {
   markDeleted,
 } from "./lib/deletions";
 import {
+  announcedOn,
   focusNow,
   isOn as notifyIsOn,
   lastSaid,
@@ -123,7 +124,7 @@ import {
 import { Connect } from "./components/Connect";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { SessionSearch } from "./components/SessionSearch";
-import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
+import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { ChatSearchPage } from "./components/ChatSearchPage";
@@ -164,7 +165,8 @@ import { GitButton, GitPanel } from "./components/GitPanel";
 import { OrchestrationPanel } from "./components/OrchestrationPanel";
 import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
-import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
+import { ChatWorkflowBar, TasksButton } from "./components/ChatWorkflowBar";
+import { taskColumnCounts } from "./lib/runPanel";
 import { ChatPlanCards } from "./components/ChatPlanCards";
 import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
 import {
@@ -193,6 +195,9 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
 import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
+import { requestConversation } from "./lib/pendingRequests";
+import { accessCovers, leastOffered, type AccessRequest } from "./lib/accessRequest";
+import type { AnswerAccess } from "./components/AccessRequestCard";
 import {
   provesLiveTurn,
   type ChatQueueState,
@@ -390,6 +395,11 @@ const FILES_KEY = "octiq.v2.filesOpen";
  *  the rail shows itself the moment a chat starts an agent, so what is worth
  *  remembering is the decision to CLOSE it. A missing key is open. */
 const RAIL_KEY = "octiq.v2.railShut";
+/** The Tasks column beside an orchestrated chat, put away. Kept the same way
+ *  round as the agent column's: the column shows itself wherever there is room,
+ *  so what is worth remembering is the decision to hide it. One flag for every
+ *  chat in this browser, not one per chat. */
+const TASKS_KEY = "octiq.v2.tasksShut";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
@@ -611,6 +621,11 @@ export default function App() {
     [workerChat, orchestration, runChatKey, currentWorkflow]);
   const workflowVisible = orchestrated || runWorkflow.runs.length > 0;
   const workflowSplit = roomToSplit && !focusMode && workflowVisible;
+  // Put away from the top bar's Tasks button: the room is there, but the chat
+  // takes all of it. See TASKS_KEY.
+  const [tasksShut, setTasksShut] = useState(() => recall(TASKS_KEY) === "1");
+  const runSplit = workflowSplit && !tasksShut;
+  const taskCounts = useMemo(() => taskColumnCounts(runWorkflow), [runWorkflow]);
   const [displayedRuns, setDisplayedRuns] = useState<Record<string, string | null>>({});
   const displayedRunKey = runChatKey ?? "new";
   const onSelectedRunChange = useCallback((runId: string | null) => {
@@ -677,7 +692,7 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions } =
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests } =
     useChatRequests(conn, (...args) => announceOnce(...args));
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
@@ -1006,6 +1021,7 @@ export default function App() {
     list: conversations,
     projects: workspaces,
     shelved,
+    parents: chatParents,
     agentFor: (_chatKey: string): string | undefined => undefined,
   });
   notifying.current = {
@@ -1015,6 +1031,9 @@ export default function App() {
     list: conversations,
     projects: workspaces,
     shelved,
+    // Which chats are a run's workers, and whose: banners come from main
+    // agents only (`announcedOn`).
+    parents: chatParents,
     // Agents mode: a banner says which agent it is about. An ordinary chat
     // has no persona and its banner is unchanged.
     agentFor: (chatKey: string) =>
@@ -1032,11 +1051,14 @@ export default function App() {
   const announced = useRef<Set<string>>(new Set());
 
   /** Put one moment on the desktop, unless it is already in front of you. */
-  const announce = useCallback(async (kind: NoticeKind, id: string, detail: string) => {
-    const { on, push: viaPush, reading, list, projects, shelved: away, agentFor } = notifying.current;
+  const announce = useCallback(async (kind: NoticeKind, from: string, detail: string) => {
+    const { on, push: viaPush, reading, list, projects, shelved: away, parents, agentFor } = notifying.current;
     // The server has this covered, and its banner arrives whether or not this
     // page is still here. Raising one too would only double it.
     if (viaPush) return;
+    // A worker's moment is its main chat's, or nobody's.
+    const id = announcedOn(kind, from, parents);
+    if (!id) return;
     // A task chat open beside the main one is being read as much as it is.
     const focus = focusNow(id === besideRef.current ? id : reading);
     if (!owed({ enabled: on, permission: permissionNow() }, focus, id)) return;
@@ -2525,9 +2547,18 @@ export default function App() {
       // and must not wait on a file that may be megabytes. The transcript
       // arrives after, into `id` — which is the conversation that was picked,
       // not whichever one is on screen by then.
+      //
+      // The server writes it as the start of this chat's own record, and it is
+      // read back from there like any chat's. Read into this page alone, it
+      // was gone the next time the chat was opened without that copy: nothing
+      // had been said yet, so the server held nothing to replay.
       setReading((prev) => ({ ...prev, [id]: true }));
-      void readSession(session)
-        .then((events) => {
+      void importSession(session, keyFor(id))
+        .then(async ({ imported, events }) => {
+          if (imported) {
+            if ((chatsRef.current[id]?.messages.length ?? 0) === 0) await catchUpChat(id);
+            return;
+          }
           const past = replaySession(events);
           if (past.messages.length === 0) return;
           patch(id, (s) =>
@@ -2559,7 +2590,7 @@ export default function App() {
       setProjectsScreen(false);
     },
     // `chats` is read through its ref, for one length, at the moment this runs.
-    [workspaces, projectId, conversationId, access, effort, patch],
+    [workspaces, projectId, conversationId, access, effort, patch, catchUpChat],
   );
 
   /** Put a conversation's transcript in front of the reader: seed what is
@@ -2871,6 +2902,12 @@ export default function App() {
   const showRail = useCallback((next: boolean) => {
     setRailShut(!next);
     rememberFlag(RAIL_KEY, !next);
+  }, []);
+
+  /** The Tasks column beside an orchestrated chat, on the same terms. */
+  const showTasks = useCallback((next: boolean) => {
+    setTasksShut(!next);
+    rememberFlag(TASKS_KEY, !next);
   }, []);
 
   /** Put the git column away where leaving it up would be in the way — and
@@ -4373,6 +4410,91 @@ export default function App() {
     [conversationId, restartForAccess],
   );
 
+  /** Raise one chat's access from its access card: the picker's own change,
+   *  for that chat, with the outcome handed back to the card. The level moves
+   *  on screen only once the agent has taken it. A level that needs a fresh
+   *  agent restarts it, as the picker does; any other refusal rejects with
+   *  why, and nothing moves. */
+  const raiseAccessFor = useCallback(
+    async (id: string, p: AccessLevel): Promise<void> => {
+      let restart: string | null = null;
+      if (runningRef.current.has(id)) {
+        wantedAccess.current[id] = p;
+        try {
+          await bridge.invoke("chat_set_access", { key: keyFor(id), access: p });
+        } catch (err) {
+          const why = String((err as Error).message ?? err);
+          // The process ended in between: the next message starts on the new
+          // level, which is what a raise means here too.
+          if (!why.includes("no such chat")) {
+            if (!why.includes("needs a fresh agent")) throw new Error(why);
+            restart = why;
+          }
+        }
+      }
+      if (id === visibleRef.current) {
+        setAccess(p);
+        remember(ACCESS_KEY, p);
+      }
+      if (meta.current[id]) meta.current[id].access = p;
+      if (restart) restartForAccess(id, restart);
+    },
+    [restartForAccess],
+  );
+
+  /** The person's answer to an access card. The host's card is settled only
+   *  after the level has changed, so what the agent is told is what happened.
+   *  A raise that fails tells a waiting agent so; a card nobody waits on
+   *  stays up with the reason, for another try. */
+  const answerAccess = useCallback<AnswerAccess>(
+    async (request, answer) => {
+      const id = requestConversation(request);
+      if (!id) return;
+      const settle = (decision: "raised" | "declined" | "failed", error?: string) =>
+        request.local
+          ? Promise.resolve()
+          : bridge.invoke("access_request_answer", { id: request.id, decision, error: error ?? null }).catch(() => {});
+      const drop = () => {
+        if (request.local) patch(id, (s) => ({ ...s, accessNeed: undefined }));
+        else setAccessRequests((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== request.id) }));
+      };
+      if (answer === "decline") {
+        await settle("declined");
+        drop();
+        return;
+      }
+      try {
+        await raiseAccessFor(id, request.requested);
+      } catch (err) {
+        if (!request.wait) throw err;
+        await settle("failed", String((err as Error).message ?? err));
+        drop();
+        return;
+      }
+      await settle("raised");
+      drop();
+    },
+    [raiseAccessFor, patch, setAccessRequests],
+  );
+
+  /** An Antigravity turn that ended on a refusal asks for access on the same
+   *  card, drawn from the chat's own state: no agent waits on it. Shown only
+   *  while the chat runs below what it asks for. */
+  const refusalAsk = useMemo<AccessRequest | null>(() => {
+    const need = chat.accessNeed;
+    if (!conversationId || !need) return null;
+    const requested = leastOffered("antigravity", need.requested);
+    if (accessCovers(access, requested)) return null;
+    return {
+      id: `refusal:${conversationId}`, chatKey: keyFor(conversationId), agent: "antigravity",
+      current: access, requested, reason: need.reason, takes: "between-turns", wait: false, local: true,
+    };
+  }, [chat.accessNeed, conversationId, access]);
+  const accessHere = useMemo(
+    () => [...(conversationId ? accessRequests[conversationId] ?? [] : []), ...(refusalAsk ? [refusalAsk] : [])],
+    [accessRequests, conversationId, refusalAsk],
+  );
+
   const ensureCoordinator = async (objective: string): Promise<string> => {
     if (!project) throw new Error("Choose a project before starting a mission.");
     if (workerChat) throw new Error("Start runs from the main chat.");
@@ -4438,8 +4560,8 @@ export default function App() {
   // from state this tab already holds for every chat: nothing is fetched per
   // row, and a chat never opened still says so.
   const pendingList = useMemo(
-    () => pendingActions({ orchestration, parents: chatParents, asks, safetyBlocks, questions, handovers }),
-    [orchestration, chatParents, asks, safetyBlocks, questions, handovers],
+    () => pendingActions({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, handovers }),
+    [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, handovers],
   );
   // A badge's way to its card: open the chat (and its run, for a decision),
   // then show the card once it is drawn. `runFocus` tells the run panel which
@@ -4554,6 +4676,10 @@ export default function App() {
   // else has one stable home in the overflow at every width.
   const topbarDirectActions = !mainPage ? (
     <>
+      {/* Here, not in the overflow: a plan waiting in the hidden column rides
+          on this button, and a closed menu would hide it again. */}
+      {workflowSplit && <TasksButton tasks={taskCounts.tasks} decisions={taskCounts.decisions}
+        open={!tasksShut} onToggle={() => showTasks(tasksShut)} />}
       {conversationId && <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />}
       {sessionProject && <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />}
       {project && !unavailableChat && <FocusModeButton onClick={enterFocus} />}
@@ -4585,6 +4711,7 @@ export default function App() {
           waiting={
             (questions[conversationId]?.length ?? 0) +
               (asks[conversationId]?.length ?? 0) +
+              (accessRequests[conversationId]?.length ?? 0) +
               (safetyBlocks[conversationId]?.length ?? 0) >
             0
           }
@@ -4599,6 +4726,7 @@ export default function App() {
           aria-label={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"} onClick={() => {
           setRunOpened((before) => ({ ...before, [workflowKey]: true }));
           showWorkflowView("run");
+          showTasks(true);
         }}><span className="topbar-action-label">Run</span></button>}
       </>}
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
@@ -4893,7 +5021,7 @@ export default function App() {
             unified={workflowVisible} selectedRun={displayedRun} worker={workerChat}
             // One way back at a time: while the run panel is on screen its
             // Main agent chat button is that way, so the bar does not repeat it.
-            onBackToMain={workerChat && (workerCoordinatorKey ?? runChatKey) && !(workflowVisible && (workflowSplit || workflowView === "run"))
+            onBackToMain={workerChat && (workerCoordinatorKey ?? runChatKey) && !(workflowVisible && (runSplit || workflowView === "run"))
               ? () => openWorkflowChat((workerCoordinatorKey ?? runChatKey)!) : undefined}
             // The way back to [ Main | Task ] from a task opened full-width —
             // the only place it is offered for the task on screen.
@@ -4904,10 +5032,10 @@ export default function App() {
             planPending={!!plan}
             pendingApprovals={pendingApprovals}
             onView={showWorkflowView} />}
-          <div className={`workflow-surfaces${workflowSplit ? " is-split" : ""}`}>
-          {workflowVisible && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}
+          <div className={`workflow-surfaces${runSplit ? " is-split" : ""}`}>
+          {workflowVisible && <div className="workflow-run-surface" hidden={workflowSplit ? tasksShut : workflowView !== "run"}
             style={{ "--run-w": `${runDock.width}px` } as React.CSSProperties}>
-            {workflowSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
+            {runSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
             <OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
               allowManualRun={!agentsMode}
@@ -5239,6 +5367,8 @@ export default function App() {
                 ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => !ids.includes(item.id)),
               }))}
               onContinue={(message, options) => send(message, [], options)}
+              accessRequests={accessHere}
+              onAccessAnswer={answerAccess}
             />
           )}
 
