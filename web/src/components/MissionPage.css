@@ -1,0 +1,85 @@
+/* A mission's page: goal, crew and where, as quiet disclosures above its
+   tasks — components/MissionPage. Labels and counts only when closed; the
+   detail opens on request. Token colours only; the accent is for work in
+   flight, so nothing here uses it. */
+.mission-page { display: grid; margin: 0 0 10px; }
+.mission-section { border-top: 1px solid var(--border); font-size: 11.5px; }
+.mission-section:last-child { border-bottom: 1px solid var(--border); }
+.mission-section > summary {
+  display: flex; align-items: baseline; gap: 8px;
+  min-height: 32px; padding: 7px 4px;
+  color: var(--fg-1); font-weight: 600; cursor: pointer;
+  list-style: none;
+}
+.mission-section > summary::-webkit-details-marker { display: none; }
+.mission-section > summary::before {
+  content: ""; align-self: center; flex: 0 0 auto;
+  width: 5px; height: 5px; margin: 0 3px 0 1px;
+  border-right: 1.5px solid var(--fg-3); border-bottom: 1.5px solid var(--fg-3);
+  transform: rotate(-45deg);
+  transition: transform 160ms ease-out;
+}
+.mission-section[open] > summary::before { transform: rotate(45deg); }
+.mission-section > summary small { min-width: 0; overflow: hidden; color: var(--fg-3); font-size: 10.5px; font-weight: 450; text-overflow: ellipsis; white-space: nowrap; }
+.mission-section > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: var(--r-sm); }
+.mission-section-body { padding: 0 4px 10px 18px; }
+.mission-none { margin: 0; color: var(--fg-3); font-size: 11px; }
+
+.mission-goal { margin: 0 0 8px; color: var(--fg-1); line-height: 1.5; overflow-wrap: anywhere; }
+.mission-criteria { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.mission-criteria-task { color: var(--fg-2); font-weight: 600; }
+.mission-criteria ul { margin: 2px 0 0; padding-left: 16px; color: var(--fg-2); line-height: 1.5; }
+
+.mission-crew { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.mission-crew > li {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center;
+  column-gap: 10px; row-gap: 0; min-height: 34px; padding: 2px 0;
+}
+.mission-crew > li > .agent-avatar { grid-row: 1 / span 2; }
+.mission-crew-name { min-width: 0; overflow: hidden; color: var(--fg-0); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.mission-crew-name small { color: var(--fg-3); font-weight: 450; }
+.mission-crew-roles { grid-row: 1 / span 2; grid-column: 3; display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.mission-role {
+  padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-pill, 999px);
+  color: var(--fg-2); font-size: 10px; line-height: 16px; white-space: nowrap;
+}
+.mission-role[data-role="lead"] { color: var(--fg-0); border-color: color-mix(in srgb, var(--fg-2) 50%, var(--border)); }
+.mission-crew-state { grid-column: 2; color: var(--fg-3); font-size: 10.5px; }
+.mission-crew > li[data-state="working"] .mission-crew-state { color: var(--link); }
+.mission-crew > li[data-state="blocked"] .mission-crew-state { color: var(--warn); }
+.mission-crew > li[data-state="done"] .mission-crew-state { color: var(--ok); }
+
+.mission-where { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.mission-where-repo { display: block; margin-bottom: 4px; color: var(--fg-1); font-weight: 600; overflow-wrap: anywhere; }
+.mission-where dl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 3px 10px; margin: 0; }
+.mission-where dt { color: var(--fg-3); }
+.mission-where dd { min-width: 0; margin: 0; color: var(--fg-2); overflow-wrap: anywhere; }
+.mission-where dd[data-tone="ok"] { color: var(--ok); }
+.mission-where code { font-family: var(--mono); font-size: 10.5px; }
+
+/* The inline reassign form, under the task's heading and lined up with its
+   title like the pending badge above it. */
+.mission-reassign {
+  display: grid; gap: 8px;
+  margin: 2px 12px 10px 50px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-1);
+  font-size: 11.5px;
+}
+.mission-reassign > p { margin: 0; color: var(--fg-2); line-height: 1.45; }
+.mission-reassign label { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 8px; color: var(--fg-3); }
+.mission-reassign select, .mission-reassign input {
+  min-width: 0; min-height: 32px; padding: 0 8px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-0); color: var(--fg-0); font: inherit;
+}
+.mission-reassign-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.mission-reassign .orch-run-error { margin: 0; }
+
+@media (max-width: 480px) {
+  .mission-reassign { margin-left: 12px; }
+  .mission-where dl { grid-template-columns: 56px minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mission-section > summary::before { transition: none; }
+}

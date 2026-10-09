@@ -844,6 +844,24 @@ pub struct WorkerLaunch {
     pub base_branch: String,
 }
 
+/// Who asks for a worker start. The two outside callers reach the host by
+/// different doors and cannot be mistaken for each other: the coordinator
+/// only through `/hook/orchestration` (`worker_start` →
+/// `orchestration_worker_start_in_chat`, which the person's socket refuses),
+/// the page only through the person's socket (`orchestration_worker_start`,
+/// which no hook action maps to).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartedBy<'a> {
+    /// The run's coordinator, or the host's own automatic dispatch: its
+    /// settings are its own choice, the manual override.
+    Coordinator,
+    /// The host recovering this failed attempt after a transient failure.
+    Recovery(&'a str),
+    /// A page's Start retry, naming the attempt it showed. The page may hold
+    /// a snapshot older than the task's latest handoff.
+    Page { retry_of: Option<&'a str> },
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerReport {
@@ -2296,15 +2314,19 @@ impl OrchestrationStore {
         actor_chat_key: &str,
         launch: &WorkerLaunch,
     ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
-        self.reserve_attempt_for(actor_chat_key, launch, None)
+        self.reserve_attempt_for(actor_chat_key, launch, StartedBy::Coordinator)
     }
 
     fn reserve_attempt_for(
         &self,
         actor_chat_key: &str,
         launch: &WorkerLaunch,
-        recovery_of: Option<&str>,
+        by: StartedBy,
     ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
+        let recovery_of = match by {
+            StartedBy::Recovery(attempt) => Some(attempt),
+            _ => None,
+        };
         let mut worker = automation::WorkerSettings {
             agent: launch.agent,
             model: launch.model.clone(),
@@ -2324,6 +2346,16 @@ impl OrchestrationStore {
                 return Err(
                     "The person has not approved this plan yet. Workers start once they do.".into(),
                 );
+            }
+            // Checked here, under the lock that writes `task.worker` below, so
+            // a start the handoff overtook can neither run nor record the
+            // replaced owner's settings as the new owner's.
+            if let StartedBy::Page { retry_of } = by {
+                page_retry_is_current(data, &task, retry_of)?;
+            }
+            if let Some(approved) = unstarted_handoff(data, &task) {
+                let owner = task.assignee.as_ref().map_or("another agent", |a| a.name.as_str());
+                keeps_to_handoff(approved, &worker, owner)?;
             }
             worker.recovery = task
                 .worker
@@ -2556,16 +2588,22 @@ impl OrchestrationStore {
         actor_chat_key: &str,
         launch: WorkerLaunch,
     ) -> Result<Attempt, String> {
-        self.start_worker_for(chats, workspaces, actor_chat_key, launch, None)
+        self.start_worker_for(
+            chats,
+            workspaces,
+            actor_chat_key,
+            launch,
+            StartedBy::Coordinator,
+        )
     }
 
-    pub(super) fn start_worker_for(
+    pub(crate) fn start_worker_for(
         &self,
         chats: Arc<ChatManager>,
         workspaces: &WorkspaceState,
         actor_chat_key: &str,
         mut launch: WorkerLaunch,
-        recovery_of: Option<&str>,
+        by: StartedBy,
     ) -> Result<Attempt, String> {
         launch.model = Some(automation::worker_model(
             launch.agent,
@@ -2579,7 +2617,7 @@ impl OrchestrationStore {
             Some(_) => None,
         };
         let (run, task, reserved, previous) =
-            self.reserve_attempt_for(actor_chat_key, &launch, recovery_of)?;
+            self.reserve_attempt_for(actor_chat_key, &launch, by)?;
         announce(&run.id, "worker_preparing");
         // A routed task runs in its destination project, which must still be
         // registered with that repository on it. Checked after reserving, so
@@ -4301,6 +4339,90 @@ fn attempt_has_open_gate(data: &Stored, attempt: &Attempt) -> bool {
     })
 }
 
+/// The worker a handoff names, while nobody has started under it yet: no
+/// attempt of the task's current assignee began at or after the last handoff.
+/// Those are the settings the person approved with the new owner, and the
+/// first start after it must keep to them. Later starts are the coordinator's
+/// own choice again, as before any handoff.
+fn unstarted_handoff<'a>(data: &Stored, task: &'a Task) -> Option<&'a automation::WorkerSettings> {
+    let handoff = task.handoffs.last()?;
+    (!handoff_started(data, task, handoff))
+        .then_some(task.worker.as_ref())
+        .flatten()
+}
+
+/// Whether the new owner has had any attempt since `handoff`, whatever became
+/// of it: running, failed, blocked, or failed before it had a workspace.
+fn handoff_started(data: &Stored, task: &Task, handoff: &TaskHandoff) -> bool {
+    data.attempts
+        .values()
+        .any(|attempt| attempt.task_id == task.id && under_handoff(attempt, handoff))
+}
+
+/// An attempt the new owner began at or after `handoff`. Read by owner as
+/// well as by time, so an older attempt made in the handoff's millisecond is
+/// still the replaced owner's.
+fn under_handoff(attempt: &Attempt, handoff: &TaskHandoff) -> bool {
+    attempt.created_at >= handoff.at
+        && attempt.assignee.as_ref().map(|a| &a.id) == Some(&handoff.to.id)
+}
+
+/// A page's Start retry carries the attempt the page showed. On a task that
+/// changed hands, a page naming none, or one from before the latest handoff
+/// once the new owner has started, is working from a snapshot the handoff
+/// overtook; it is refused, however many attempts the new owner has had
+/// since. Before the new owner's first start an older attempt may still be
+/// retried, bound to the approved settings by `keeps_to_handoff`. A task that
+/// never changed hands is as before.
+fn page_retry_is_current(data: &Stored, task: &Task, retry_of: Option<&str>) -> Result<(), String> {
+    let Some(handoff) = task.handoffs.last() else {
+        return Ok(());
+    };
+    let owner = &handoff.to.name;
+    let Some(retry_of) = retry_of else {
+        return Err(format!(
+            "This task was handed to {owner}, and this start does not say which attempt it retries. Refresh and retry the current attempt."
+        ));
+    };
+    let attempt = data
+        .attempts
+        .get(retry_of)
+        .filter(|attempt| attempt.task_id == task.id)
+        .ok_or("The attempt this page retries is not one of this task's. Refresh and retry the current attempt.")?;
+    if !under_handoff(attempt, handoff) && handoff_started(data, task, handoff) {
+        return Err(format!(
+            "This task was handed to {owner} after worker #{} and {owner} has started on it since. Refresh and retry the current attempt.",
+            attempt.number
+        ));
+    }
+    Ok(())
+}
+
+/// A start made before a handoff (a page that had not seen it, an old
+/// attempt's retry or recovery) asks for the replaced owner's provider,
+/// model or a higher access. It is refused rather than run, and rather than
+/// quietly swapped for the approved settings the caller did not ask for.
+fn keeps_to_handoff(
+    approved: &automation::WorkerSettings,
+    asked: &automation::WorkerSettings,
+    owner: &str,
+) -> Result<(), String> {
+    let model = |w: &automation::WorkerSettings| model_id(w.agent, w.model.as_deref());
+    if asked.agent != approved.agent
+        || asked.model != approved.model
+        || crate::access_request::rank(asked.access) > crate::access_request::rank(approved.access)
+    {
+        return Err(format!(
+            "This task was handed to {owner}, approved as {} at {} access; this start asks for {} at {} access, from before the handoff. Refresh and start it with the approved settings.",
+            model(approved),
+            access_id(approved.access),
+            model(asked),
+            access_id(asked.access),
+        ));
+    }
+    Ok(())
+}
+
 fn attempt_is_unsettled(data: &Stored, attempt: &Attempt) -> bool {
     matches!(
         attempt.status,
@@ -5664,10 +5786,14 @@ pub(crate) mod tests {
             .approve_plan("chat:master", &run.id, None, None)
             .unwrap();
 
-        // Maya's attempt is live: no second writer.
-        let (_, _, attempt, _) = store
-            .reserve_attempt("chat:master", &launch_for(&first.id))
-            .unwrap();
+        // Maya's attempt is live: no second writer. It starts as approved
+        // for her; the handoff binds its first start to those settings.
+        let maya = WorkerLaunch {
+            agent: ChatAgent::Claude,
+            model: Some("opus".into()),
+            ..launch_for(&first.id)
+        };
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &maya).unwrap();
         let attempt = store
             .activate_attempt(&attempt.id, "/tmp".into(), "maya".into(), true)
             .unwrap();
@@ -5720,6 +5846,288 @@ pub(crate) mod tests {
             .unwrap_err()
             .contains("not approved"));
         assert!(handoff().unwrap_err().contains("already has this task"));
+    }
+
+    #[test]
+    fn a_start_from_before_a_handoff_cannot_run_or_record_the_replaced_settings() {
+        // Review of the mission page: a page holding the old snapshot of a
+        // blocked task pressed Start retry after another page had handed the
+        // task to Codex at read access and the person approved it. Its request
+        // still named the old Claude attempt's settings, at full access.
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        let old = WorkerLaunch {
+            agent: ChatAgent::Claude,
+            model: Some("opus".into()),
+            access: Access::Full,
+            ..launch_for(&first.id)
+        };
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &old).unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "old".into(), true)
+            .unwrap();
+        finish_attempt(&store, attempt, WorkerOutcome::Blocked);
+
+        let approved = automation::WorkerSettings {
+            agent: ChatAgent::Codex,
+            access: Access::Read,
+            model: Some("gpt-5.6-terra".into()),
+            effort: None,
+            recovery: None,
+        };
+        store
+            .reassign_task(
+                "chat:master",
+                &first.id,
+                (
+                    Some(approved.clone()),
+                    Some(TaskAssignee {
+                        id: "noah".into(),
+                        name: "Noah".into(),
+                    }),
+                    None,
+                ),
+                "Noah reviews it read-only instead.".into(),
+            )
+            .unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+
+        let current = |store: &OrchestrationStore| {
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            let task = snapshot
+                .tasks
+                .into_iter()
+                .find(|t| t.id == first.id)
+                .unwrap();
+            (task, snapshot.attempts.len())
+        };
+        let refused = store.reserve_attempt("chat:master", &old).unwrap_err();
+        assert!(refused.contains("handed to Noah"), "{refused}");
+        assert!(refused.contains("read access"), "{refused}");
+        // Same provider and model, but above the approved access: refused too.
+        let above = WorkerLaunch {
+            agent: ChatAgent::Codex,
+            model: approved.model.clone(),
+            access: Access::Auto,
+            ..launch_for(&first.id)
+        };
+        assert!(store.reserve_attempt("chat:master", &above).is_err());
+        let (task, attempts) = current(&store);
+        assert_eq!(attempts, 1);
+        assert_eq!(task.status, TaskStatus::Ready);
+        let worker = task.worker.unwrap();
+        assert_eq!(
+            (worker.agent, worker.access, worker.model.as_deref()),
+            (ChatAgent::Codex, Access::Read, Some("gpt-5.6-terra"))
+        );
+
+        // The approved settings start, under the new owner.
+        let noah = WorkerLaunch {
+            access: Access::Read,
+            ..above
+        };
+        let (_, task, attempt, _) = store.reserve_attempt("chat:master", &noah).unwrap();
+        assert_eq!(attempt.assignee.as_ref().unwrap().id, "noah");
+        assert_eq!(
+            (attempt.agent, attempt.access),
+            (ChatAgent::Codex, Access::Read)
+        );
+        assert_eq!(task.worker.unwrap().access, Access::Read);
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "noah".into(), true)
+            .unwrap();
+        finish_attempt(&store, attempt, WorkerOutcome::Blocked);
+
+        // Once the new owner has started, the coordinator's own choice of
+        // settings for a retry is back, as before any handoff.
+        let (_, task, _, _) = store
+            .reserve_attempt(
+                "chat:master",
+                &WorkerLaunch {
+                    access: Access::Edits,
+                    ..noah
+                },
+            )
+            .unwrap();
+        assert_eq!(task.worker.unwrap().access, Access::Edits);
+    }
+
+    #[test]
+    fn a_stale_page_retry_is_refused_however_the_new_owners_attempt_ended() {
+        // Re-review of b0b47b3: page A still shows Maya's failed Claude/opus
+        // attempt at full access. Page B hands the task to Noah on Codex/terra
+        // at read access and it is approved; Noah's attempt then fails, is
+        // blocked, or fails before it has a workspace. A, never refreshed,
+        // presses Start retry. The guard must not lapse once Noah has started.
+        enum Ended {
+            Failed,
+            Blocked,
+            PrepareFailed,
+        }
+        for ended in [Ended::Failed, Ended::Blocked, Ended::PrepareFailed] {
+            let store = OrchestrationStore::default();
+            let (run, first) = pending_plan(&store);
+            // A second task keeps the run open when the first one fails.
+            task(&store, &run, Vec::new());
+            store
+                .approve_plan("chat:master", &run.id, None, None)
+                .unwrap();
+            let page =
+                |store: &OrchestrationStore, launch: &WorkerLaunch, retry_of: Option<&str>| {
+                    store.reserve_attempt_for("chat:master", launch, StartedBy::Page { retry_of })
+                };
+            let old = WorkerLaunch {
+                agent: ChatAgent::Claude,
+                model: Some("opus".into()),
+                access: Access::Full,
+                ..launch_for(&first.id)
+            };
+            let (_, _, maya, _) = page(&store, &old, None).unwrap();
+            let maya = store
+                .activate_attempt(&maya.id, "/tmp".into(), "maya".into(), true)
+                .unwrap();
+            finish_attempt(&store, maya.clone(), WorkerOutcome::Blocked);
+
+            let approved = automation::WorkerSettings {
+                agent: ChatAgent::Codex,
+                access: Access::Read,
+                model: Some("gpt-5.6-terra".into()),
+                effort: None,
+                recovery: None,
+            };
+            store
+                .reassign_task(
+                    "chat:master",
+                    &first.id,
+                    (
+                        Some(approved.clone()),
+                        Some(TaskAssignee {
+                            id: "noah".into(),
+                            name: "Noah".into(),
+                        }),
+                        None,
+                    ),
+                    "Noah reviews it read-only instead.".into(),
+                )
+                .unwrap();
+            store
+                .approve_plan("chat:master", &run.id, None, None)
+                .unwrap();
+
+            // Before Noah starts, a page naming none is refused, and one naming
+            // Maya's attempt is bound to the approved settings.
+            let none = page(&store, &old, None).unwrap_err();
+            assert!(none.contains("handed to Noah"), "{none}");
+            assert!(page(&store, &old, Some(&maya.id)).is_err());
+
+            // Noah's first attempt, by the coordinator or automatic dispatch.
+            let noah_launch = WorkerLaunch {
+                agent: ChatAgent::Codex,
+                model: approved.model.clone(),
+                access: Access::Read,
+                ..launch_for(&first.id)
+            };
+            let (_, _, noah, _) = store.reserve_attempt("chat:master", &noah_launch).unwrap();
+            match ended {
+                Ended::PrepareFailed => store
+                    .fail_preparation(
+                        &noah.id,
+                        "no workspace".into(),
+                        String::new(),
+                        String::new(),
+                        false,
+                    )
+                    .unwrap(),
+                Ended::Failed | Ended::Blocked => {
+                    let noah = store
+                        .activate_attempt(&noah.id, "/tmp".into(), "noah".into(), true)
+                        .unwrap();
+                    let outcome = match ended {
+                        Ended::Failed => WorkerOutcome::Failed,
+                        _ => WorkerOutcome::Blocked,
+                    };
+                    finish_attempt(&store, noah, outcome);
+                }
+            }
+
+            // Page A presses Start retry on Maya's attempt: refused, and
+            // nothing is written.
+            let refused = page(&store, &old, Some(&maya.id)).unwrap_err();
+            assert!(
+                refused.contains("handed to Noah after worker #1"),
+                "{refused}"
+            );
+            assert!(refused.contains("Refresh"), "{refused}");
+            // Even with the approved settings: the page did not see Noah's.
+            assert!(page(&store, &noah_launch, Some(&maya.id)).is_err());
+            // Nor any attempt that is not this task's.
+            assert!(page(&store, &noah_launch, Some("attempt_elsewhere")).is_err());
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            assert_eq!(snapshot.attempts.len(), 2);
+            let worker = snapshot
+                .tasks
+                .iter()
+                .find(|t| t.id == first.id)
+                .and_then(|t| t.worker.clone())
+                .unwrap();
+            assert_eq!(
+                (worker.agent, worker.access, worker.model.as_deref()),
+                (ChatAgent::Codex, Access::Read, Some("gpt-5.6-terra"))
+            );
+
+            // A fresh page retries Noah's attempt with its settings.
+            let (_, task, retried, _) = page(&store, &noah_launch, Some(&noah.id)).unwrap();
+            assert_eq!(retried.assignee.as_ref().unwrap().id, "noah");
+            assert_eq!(task.worker.unwrap().agent, ChatAgent::Codex);
+            let retried = store
+                .activate_attempt(&retried.id, "/tmp".into(), "noah-2".into(), true)
+                .unwrap();
+            finish_attempt(&store, retried, WorkerOutcome::Blocked);
+
+            // The coordinator's explicit start stays its manual override, no
+            // retryOf needed, even for settings no page would send.
+            let (_, task, _, _) = store
+                .reserve_attempt_for("chat:master", &old, StartedBy::Coordinator)
+                .unwrap();
+            assert_eq!(task.worker.unwrap().access, Access::Full);
+        }
+    }
+
+    #[test]
+    fn a_page_retry_on_a_task_never_handed_on_is_as_before() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let first = task(&store, &run, Vec::new());
+        task(&store, &run, Vec::new());
+        let page = |launch: &WorkerLaunch, retry_of: Option<&str>| {
+            store.reserve_attempt_for("chat:master", launch, StartedBy::Page { retry_of })
+        };
+        let (_, _, one, _) = page(&launch_for(&first.id), None).unwrap();
+        let one = store
+            .activate_attempt(&one.id, "/tmp".into(), "one".into(), true)
+            .unwrap();
+        finish_attempt(&store, one.clone(), WorkerOutcome::Blocked);
+        let (_, _, two, _) = page(
+            &WorkerLaunch {
+                agent: ChatAgent::Claude,
+                model: Some("opus".into()),
+                access: Access::Full,
+                ..launch_for(&first.id)
+            },
+            Some(&one.id),
+        )
+        .unwrap();
+        let two = store
+            .activate_attempt(&two.id, "/tmp".into(), "two".into(), true)
+            .unwrap();
+        finish_attempt(&store, two, WorkerOutcome::Failed);
+        // An older attempt than the latest is still this owner's to retry.
+        assert!(page(&launch_for(&first.id), Some(&one.id)).is_ok());
     }
 
     #[test]

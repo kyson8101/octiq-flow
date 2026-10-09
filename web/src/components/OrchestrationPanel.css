@@ -1093,3 +1093,15 @@
 .orch-execution dt { color: var(--fg-3); }
 .orch-execution dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .orch-execution-error { color: var(--danger); overflow-wrap: anywhere; }
+
+/* A mission's row: its owner by name, its kind and size, a reassign control
+   and, in its detail, every change of hands — components/MissionPage. */
+.orch-task-owner { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--fg-2); text-overflow: ellipsis; white-space: nowrap; }
+.orch-task-size { flex: 0 0 auto; white-space: nowrap; }
+.orch-task-heading:has(> .orch-task-actions > .orch-task-reassign) { --task-controls: calc(var(--task-control) * 2 + 6px); }
+.orch-task-heading:has(> .orch-task-actions > .orch-task-beside):has(> .orch-task-actions > .orch-task-reassign) { --task-controls: calc(var(--task-control) * 3 + 12px); }
+.orch-task-reassign { display: grid; place-items: center; flex: 0 0 var(--task-control); width: var(--task-control); height: var(--task-control); padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-3); cursor: pointer; transition: background 130ms ease-out, color 130ms ease-out; }
+.orch-task-reassign:hover:not(:disabled), .orch-task-reassign[aria-expanded="true"] { background: var(--bg-2); color: var(--fg-0); }
+.orch-task-reassign:disabled { opacity: 0.4; cursor: default; }
+.orch-task-reassign:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.orch-task-handoffs { margin: 0 0 10px; padding-left: 16px; color: var(--fg-2); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }

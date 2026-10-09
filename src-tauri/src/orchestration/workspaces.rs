@@ -1477,7 +1477,7 @@ mod tests {
             base_branch: String::new(),
         };
         let (run, task, reserved, previous) = store
-            .reserve_attempt_for("chat:master", &launch, Some(&first.id))
+            .reserve_attempt_for("chat:master", &launch, StartedBy::Recovery(&first.id))
             .unwrap();
         let workspace = store
             .prepare_task_workspace(
