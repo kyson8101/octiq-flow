@@ -36,7 +36,7 @@
 //!     day must never hold up the agent that triggered it.
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use web_push::{ContentEncoding, SubscriptionInfo, VapidSignatureBuilder, WebPushMessageBuilder};
@@ -229,9 +229,62 @@ pub fn body_for(kind: &str, detail: &str, agent: Option<&str>) -> String {
     }
 }
 
-/// Send the banner for one moment, if the chat key names a conversation.
+/// The ledger that says which chats are a run's workers, set once at startup.
+/// Unset (tests, a backend that never loaded `Services`) only the reserved
+/// `chat:orch-` prefix marks a worker.
+static WORKERS: OnceLock<Arc<crate::orchestration::OrchestrationStore>> = OnceLock::new();
+
+/// Called from `Services::load` with the one orchestration store.
+pub fn route_workers_through(store: Arc<crate::orchestration::OrchestrationStore>) {
+    let _ = WORKERS.set(store);
+}
+
+/// The chat a moment is announced on, or `None` for no banner at all.
+///
+/// Banners come from MAIN agents only. A run's workers are subagents of the
+/// chat that coordinates them: their turns ending and their questions (which
+/// reach the person through a gate in the main chat anyway) say nothing. A
+/// worker's permission ask or safety refusal is the one thing still owed,
+/// because its card is drawn in the main chat and times out — so it is
+/// announced ON the main chat, which is where the tap has to land. A worker
+/// whose main chat is not known stays silent rather than naming itself.
+///
+/// `coordinator` is the ledger's answer for this chat: `Some` when it is a
+/// worker (empty when its run is gone). Mirrors `announcedOn` in
+/// `web/src/lib/notify.ts`.
+pub fn announced_on(chat_key: &str, kind: &str, coordinator: Option<&str>) -> Option<String> {
+    let worker = chat_key.starts_with("chat:orch-") || coordinator.is_some();
+    if !worker {
+        return Some(chat_key.to_string());
+    }
+    if kind != "permission" {
+        return None;
+    }
+    coordinator
+        .filter(|main| main.starts_with("chat:") && *main != chat_key)
+        .map(str::to_string)
+}
+
+/// The ledger's coordinator for `chat_key`, when it is a worker.
+fn coordinator_of(chat_key: &str) -> Option<String> {
+    WORKERS.get()?.worker_coordinator(chat_key).ok().flatten()
+}
+
+/// Send the banner for one moment, if the chat key names a conversation and
+/// that conversation is a main agent's (see `announced_on`).
 pub fn notify_chat(chat_key: Option<&str>, kind: &str, detail: &str) {
-    if let Some(notice) = notice_for(chat_key, kind, detail) {
+    let Some(key) = chat_key else {
+        return;
+    };
+    let coordinator = if key.starts_with("chat:") {
+        coordinator_of(key)
+    } else {
+        None
+    };
+    let Some(target) = announced_on(key, kind, coordinator.as_deref()) else {
+        return;
+    };
+    if let Some(notice) = notice_for(Some(&target), kind, detail) {
         notify(notice);
     }
 }
@@ -580,6 +633,54 @@ mod tests {
         assert_eq!(banner_title("OctiqFlow", ""), "OctiqFlow");
         assert_eq!(banner_title("", "Fix the top bar"), "Fix the top bar");
         assert_eq!(banner_title("  ", "  "), "OctiqFlow");
+    }
+
+    #[test]
+    fn a_main_chat_announces_every_moment_on_itself() {
+        for kind in ["done", "permission", "question", "handover"] {
+            assert_eq!(
+                announced_on("chat:main", kind, None).as_deref(),
+                Some("chat:main")
+            );
+        }
+        // A terminal is not a worker either; `notice_for` drops it later.
+        assert_eq!(
+            announced_on("term:1", "done", None).as_deref(),
+            Some("term:1")
+        );
+    }
+
+    #[test]
+    fn a_worker_never_announces_its_own_turns_or_questions() {
+        // Ledger-known worker, reserved-prefix worker, and both at once.
+        for (key, coordinator) in [
+            ("chat:legacy-worker", Some("chat:main")),
+            ("chat:orch-w1", None),
+            ("chat:orch-w1", Some("chat:main")),
+        ] {
+            for kind in ["done", "question", "handover"] {
+                assert_eq!(announced_on(key, kind, coordinator), None, "{key} {kind}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_workers_permission_ask_is_announced_on_its_main_chat() {
+        assert_eq!(
+            announced_on("chat:orch-w1", "permission", Some("chat:main")).as_deref(),
+            Some("chat:main")
+        );
+        assert_eq!(
+            announced_on("chat:legacy-worker", "permission", Some("chat:main")).as_deref(),
+            Some("chat:main")
+        );
+        // No main chat to land on: silence, never a banner naming the worker.
+        assert_eq!(announced_on("chat:orch-w1", "permission", None), None);
+        assert_eq!(announced_on("chat:orch-w1", "permission", Some("")), None);
+        assert_eq!(
+            announced_on("chat:orch-w1", "permission", Some("chat:orch-w1")),
+            None
+        );
     }
 
     #[test]

@@ -80,6 +80,7 @@ import {
   markDeleted,
 } from "./lib/deletions";
 import {
+  announcedOn,
   focusNow,
   isOn as notifyIsOn,
   lastSaid,
@@ -998,6 +999,7 @@ export default function App() {
     list: conversations,
     projects: workspaces,
     shelved,
+    parents: chatParents,
     agentFor: (_chatKey: string): string | undefined => undefined,
   });
   notifying.current = {
@@ -1007,6 +1009,9 @@ export default function App() {
     list: conversations,
     projects: workspaces,
     shelved,
+    // Which chats are a run's workers, and whose: banners come from main
+    // agents only (`announcedOn`).
+    parents: chatParents,
     // Agents mode: a banner says which agent it is about. An ordinary chat
     // has no persona and its banner is unchanged.
     agentFor: (chatKey: string) =>
@@ -1024,11 +1029,14 @@ export default function App() {
   const announced = useRef<Set<string>>(new Set());
 
   /** Put one moment on the desktop, unless it is already in front of you. */
-  const announce = useCallback(async (kind: NoticeKind, id: string, detail: string) => {
-    const { on, push: viaPush, reading, list, projects, shelved: away, agentFor } = notifying.current;
+  const announce = useCallback(async (kind: NoticeKind, from: string, detail: string) => {
+    const { on, push: viaPush, reading, list, projects, shelved: away, parents, agentFor } = notifying.current;
     // The server has this covered, and its banner arrives whether or not this
     // page is still here. Raising one too would only double it.
     if (viaPush) return;
+    // A worker's moment is its main chat's, or nobody's.
+    const id = announcedOn(kind, from, parents);
+    if (!id) return;
     // A task chat open beside the main one is being read as much as it is.
     const focus = focusNow(id === besideRef.current ? id : reading);
     if (!owed({ enabled: on, permission: permissionNow() }, focus, id)) return;
