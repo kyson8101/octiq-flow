@@ -68,6 +68,26 @@ The remote branch is never touched. The run becomes `closed` (with
 `abandoned` for the second ending), refuses new tasks, and keeps its record.
 A run that still has Worktree-mode task worktrees must clean those up first.
 
+### The mission page
+
+A mission's run column (`web/src/components/MissionPage.tsx`) puts the board,
+then **Goal** (the objective and every live task's plan-card acceptance),
+**Crew** (lead first, then each task owner with the role held in this mission:
+developer for a work task, reviewer for a check, review or acceptance task) and
+**Where** (per repository: base branch, mission branch, worktree, and git's
+last word from `orchestration_mission_refresh`) above its tasks. All of it is
+derived from the ledger the page already reads (`web/src/lib/missionPage.ts`);
+nothing new is persisted, so missions from before the page draw the same.
+
+A task row's reassign control is the lead's own `orchestration_task_reassign`,
+sent by the page with the run's coordinator as actor. Candidates come from
+`orchestration_destinations` asked as that lead (its direct reports allowed at
+the task's destination, crew first), the reason records that the person asked,
+and the host keeps the handoff, re-opens plan approval and refuses any start
+until the person approves the new owner. A retry after a handoff launches the
+new owner's worker settings, never the replaced attempt's. Runs that are not
+missions keep the plain run panel.
+
 ## State and ownership
 
 ```text

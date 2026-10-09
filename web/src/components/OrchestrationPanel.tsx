@@ -17,6 +17,9 @@ import { agoLabel } from "../lib/chatTask";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
 import { isMission, missionState } from "../lib/mission";
 import { MissionTrack } from "./MissionTrack";
+import { MissionSections, ReassignButton, ReassignForm, useMissionCrew } from "./MissionPage";
+import type { CrewMember } from "../lib/missionPage";
+import { SIZE_LABEL } from "../lib/agentLevels";
 import { elapsedLabel } from "../lib/working";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { orchestrationFeed } from "../lib/orchestrationFeed";
@@ -770,6 +773,7 @@ function RunDetail({
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState<"close" | "abandon" | null>(null);
   const mission = isMission(run);
+  const crew = useMissionCrew(run, tasks, attempts, gates);
   const closed = run.status === "closed";
   const settingsId = useId();
   const tabsId = useId();
@@ -871,6 +875,9 @@ function RunDetail({
 
       {mission && <MissionTrack state={missionState(run, tasks)}
         live={attempts.some((attempt) => attempt.status === "running" || attempt.status === "preparing")} />}
+
+      {/* A mission's page: its goal, crew and branches, above its tasks. */}
+      {mission && <MissionSections run={run} tasks={tasks} crew={crew} />}
 
       {/* Owed to the person, so above every tab: switching tabs never hides a
           decision or a plan waiting for approval. */}
@@ -1040,7 +1047,7 @@ function RunDetail({
             onOpenBeside={onOpenBeside}
             open={!!currentChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === currentChatKey)}
             beside={!!besideChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === besideChatKey)}
-            projectName={projectName} />
+            projectName={projectName} mission={mission ? crew : undefined} />
         ))}
       </div>
 
@@ -1179,8 +1186,11 @@ function RunStages({ tasks, attempts, sandboxes }: {
 }
 
 /** The row opens the worker chat; the separate disclosure shows its checklist. */
-function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName }: {
+function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName, mission }: {
   projectName?: (id: string) => string | undefined;
+  /** A mission's crew: the row names its owner, kind and size, and offers
+   *  reassignment. Absent for every other run, whose row is unchanged. */
+  mission?: readonly CrewMember[];
   /** Test environments, when the run has a task that needs one. */
   sandboxes: SandboxSnapshot | null;
   onOpenBeside?: (chatKey: string) => void;
@@ -1203,6 +1213,7 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
   open: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [reassigning, setReassigning] = useState(false);
   const detailId = useId();
   const assigneeFace = useRosterAgent(task.assignee?.id);
   const mine = attempts.filter((candidate) => candidate.taskId === task.id).sort((a, b) => b.number - a.number);
@@ -1257,6 +1268,12 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
             {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
             {task.verdict === "fail" && <span className="orch-task-blocker" title="It finished, and what it checked did not pass. Tasks that depend on it wait.">Check failed</span>}
             {requiresVerdict(task) && task.verdict !== "fail" && <span className="orch-task-kind" title="It settles only with a pass or fail verdict, and only a pass releases the tasks that depend on it.">{KIND_LABEL[task.kind!]}</span>}
+            {mission && !requiresVerdict(task) && <span className="orch-task-kind">{KIND_LABEL.work}</span>}
+            {mission && task.size && <span className="orch-task-size" title="What the task is worth when its result is accepted">{SIZE_LABEL[task.size]}</span>}
+            {mission && task.assignee && <span className="orch-task-owner" title={`Owner: ${assigneeFace?.name ?? task.assignee.name}`}>
+              <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={14} decorative />
+              {assigneeFace?.name ?? task.assignee.name}
+            </span>}
             {environment && <span className="orch-task-env" data-tone={environment.tone} title={environment.detail.join("\n")}>{environment.label}</span>}
             {decision && <span className="orch-task-decision" title={[
               `Native decision ${decision.id}`,
@@ -1271,7 +1288,7 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
               {step && <> · <span className="orch-task-step">{step}</span></>}
             </span>}
             {reportedStage && !step && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
-            {attempt && <span className="orch-task-agent" title={`${task.assignee ? `${assigneeFace?.name ?? task.assignee.name} · ` : ""}${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}>{task.assignee
+            {attempt && !(mission && task.assignee) && <span className="orch-task-agent" title={`${task.assignee ? `${assigneeFace?.name ?? task.assignee.name} · ` : ""}${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}>{task.assignee
               ? <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={14} decorative />
               : <AgentLogo agent={attempt.agent} size={10} />}</span>}
             {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
@@ -1283,6 +1300,8 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
         <span className="orch-task-actions">
           {attempt && onOpenBeside && !open && !beside && <OpenBesideButton className="orch-task-beside" title={task.title}
             onClick={() => onOpenBeside(attempt.workerChatKey)} />}
+          {mission && task.assignee && !readOnly && <ReassignButton run={run} task={task} attempts={attempts}
+            open={reassigning} onToggle={() => setReassigning(!reassigning)} />}
           <button type="button" className="orch-task-expand" aria-expanded={expanded} aria-controls={detailId}
             aria-label={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`}
             title={expanded ? "Collapse task progress" : "Expand task progress"}
@@ -1292,6 +1311,7 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
         </span>
       </div>
       {pending.length > 0 && <PendingActionBadge className="orch-task-pending" actions={pending} subject={task.title} />}
+      {mission && reassigning && !readOnly && <ReassignForm run={run} task={task} crew={mission} onDone={() => setReassigning(false)} />}
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
         {/* The standard plan card: where it runs (planned until the host
             prepares it), who owns it on which model, and what done means. */}
@@ -1316,6 +1336,11 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
           {attempt?.execution && <><p>Task: {TASK_LABELS[task.status]}</p><WorkerExecutionEvidence execution={attempt.execution} /></>}
           {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
           {task.dependsOn.length > 0 && <p className="orch-task-after">After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}
+          {mission && (task.handoffs?.length ?? 0) > 0 && <ul className="orch-task-handoffs" aria-label="Changes of hands">
+            {task.handoffs!.map((handoff, index) => <li key={index}>
+              {handoff.from?.name ?? "Nobody"} → {handoff.to.name} · {timeLabel(handoff.at)} · {handoff.reason}
+            </li>)}
+          </ul>}
           {attempt && (
             <div className="orch-attempt">
               <button type="button" onClick={() => onOpenChat(attempt.workerChatKey)}>
@@ -1326,7 +1351,9 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
               {attempt.isWorktree && <span>worktree</span>}
               {attempt.summary && !attempt.proposedReport?.confirmedAt && <p>{attempt.summary}</p>}
               <ProposedReportNote attempt={attempt} ago={(at) => agoLabel(at, now)} />
-              {(retryable || reviewReady) && !readOnly && run.status !== "stopped" && (
+              {/* A mission task handed on waits for the person's approval of
+                  its new owner; the host refuses a start until then. */}
+              {(retryable || reviewReady) && !readOnly && run.status !== "stopped" && !(mission && run.planApproval?.status === "pending") && (
                 <div className="orch-attempt-retry">
                   <small>{attempt.cwd
                     ? "This attempt settled. Continue in the same workspace with a new authoritative attempt."
@@ -1424,12 +1451,17 @@ function messageOf(problem: unknown): string {
 }
 
 export function retryLaunchArgs(task: OrchestrationTask, attempt: OrchestrationAttempt) {
+  // A task that changed hands after this attempt is the new owner's: retrying
+  // it on the old owner's provider and model would start the assignment the
+  // handoff replaced.
+  const handedOn = (task.handoffs ?? []).some((handoff) => handoff.at >= attempt.createdAt);
+  const settings = handedOn && task.worker ? task.worker : attempt;
   return {
     taskId: task.id,
-    agent: attempt.agent,
-    model: attempt.model,
-    effort: attempt.effort,
-    access: attempt.access,
+    agent: settings.agent,
+    model: settings.model,
+    effort: settings.effort,
+    access: settings.access,
     // A prepared retry keeps the exact assigned checkout and its uncommitted
     // work. A preparation failure has no checkout to reuse, so isolate it anew.
     newWorktree: !attempt.cwd.trim(),
