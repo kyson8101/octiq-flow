@@ -57,6 +57,9 @@ impl Services {
             .unwrap_or_else(|| crate::profile::profile_dir().join("chats"))
             .join("questions.json");
         let orchestrations = Arc::new(OrchestrationStore::load_profile());
+        // Banners come from main agents only; the ledger says which chats are
+        // a run's workers and whose.
+        crate::push::route_workers_through(orchestrations.clone());
         let mut chats = ChatManager::with_saved_questions(question_path);
         chats.orchestrations = orchestrations.clone();
         let chats = Arc::new(chats);
