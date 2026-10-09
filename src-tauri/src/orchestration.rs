@@ -2763,6 +2763,9 @@ impl OrchestrationStore {
                 previous.execution.last_progress.as_deref().unwrap_or("Not observed"),
                 serde_json::to_string(&reports).unwrap_or_default(), previous.worker_chat_key));
         }
+        if let Some(decisions) = self.task_decisions(&task.id) {
+            prompt.push_str(&decisions);
+        }
         let mut worker_env = workspace.env.clone();
         worker_env.insert("OCTIQ_ORCHESTRATION_ATTEMPT".into(), reserved.id.clone());
         let start_chat = {
@@ -3444,6 +3447,16 @@ impl OrchestrationStore {
                         attempt.status = AttemptStatus::Running;
                         attempt.execution.state = execution::ExecutionState::Queued;
                         attempt.execution.current_operation = Some("Waiting for decision delivery".into());
+                        // Feedback cab56ae9: the clocks still read the moment
+                        // the worker asked, often longer ago than the idle
+                        // reaper waits, so the next monitor pass found a
+                        // Running attempt with no process and old activity,
+                        // failed it as disconnected, and cancelled this very
+                        // decision before delivery could resume the chat.
+                        // The quiet stretch ends here, not when it began.
+                        attempt.execution.last_activity_at = Some(now);
+                        attempt.execution.last_progress_at = Some(now);
+                        attempt.execution.stalled_at = None;
                         attempt.updated_at = now;
                     }
                 }
@@ -3460,6 +3473,15 @@ impl OrchestrationStore {
             announce(&event_run_id, "gate_resolved");
         }
         resolved
+    }
+
+    /// The decisions already made for a task, for the brief of its next
+    /// attempt (feedback cab56ae9): a resolution reaches only the attempt
+    /// that asked, so a retry used to start without it and the coordinator
+    /// had to brief it again by hand.
+    fn task_decisions(&self, task_id: &str) -> Option<String> {
+        let inner = self.inner.lock().ok()?;
+        decisions_brief(inner.data.gates.values(), task_id)
     }
 
     pub fn record_message(
@@ -4682,6 +4704,42 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
     true
 }
 
+/// Oldest first, so a later decision reads as the one that stands. Bounded:
+/// the brief rides the worker's command line (see `AgentShell::command`).
+fn decisions_brief<'a>(gates: impl Iterator<Item = &'a Gate>, task_id: &str) -> Option<String> {
+    let mut decided: Vec<_> = gates
+        .filter(|g| g.task_id.as_deref() == Some(task_id) && g.status == GateStatus::Resolved)
+        .filter_map(|g| g.resolution.as_deref().map(|r| (g.updated_at, g, r)))
+        .collect();
+    if decided.is_empty() {
+        return None;
+    }
+    decided.sort_by_key(|(at, g, _)| (*at, g.id.clone()));
+    let clip = |text: &str| -> String {
+        let text = text.trim();
+        if text.chars().count() > 1_500 {
+            text.chars().take(1_500).collect::<String>() + "…"
+        } else {
+            text.to_string()
+        }
+    };
+    let lines: Vec<_> = decided
+        .iter()
+        .rev()
+        .take(5)
+        .rev()
+        .map(|(_, g, r)| {
+            format!(
+                "- Gate {}\n  Question: {}\n  Decision: {}",
+                g.id,
+                clip(&g.question),
+                clip(r)
+            )
+        })
+        .collect();
+    Some(format!("\n\nDecisions already made for this task (from earlier attempts' gates). They stand: act on them and do not ask again.\n{}", lines.join("\n")))
+}
+
 fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     let brief = format!(
         "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Use task_status to report a short checklist at the start, then send the whole checklist when a step finishes or the plan changes. Set nextStep to the current stage. These reports drive the task board; never invent a completion percentage. Before settling, report the final checklist state. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection or a Claude auto-mode refusal with a pending OctiqFlow approval card is not a settled task: report the rejected action in prose, do not create a gate or report the worker, and end the turn so the card can resume this same attempt. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. If the task is a review, check or acceptance test, also pass verdict pass or fail: a review that finished and found blocking problems is outcome completed with verdict fail, which keeps dependent tasks waiting. A normal prose answer does not complete the task in OctiqFlow.",
@@ -4998,6 +5056,55 @@ pub(crate) mod tests {
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
             .unwrap()
+    }
+
+    /// Feedback cab56ae9: a retry's brief carries what the earlier attempts
+    /// were told, so the coordinator need not re-send it by hand.
+    #[test]
+    fn a_retry_brief_carries_the_task_s_decisions_and_only_those() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        assert!(store.task_decisions(&worker.task_id).is_none());
+        let ask = |question: &str| {
+            store
+                .create_gate(
+                    &worker.worker_chat_key,
+                    run.id.clone(),
+                    Some(worker.task_id.clone()),
+                    question.into(),
+                    vec![],
+                )
+                .unwrap()
+        };
+        let size = ask("Which sprite size?");
+        store
+            .resolve_gate("chat:master", size.id.clone(), "96 by 96, 8 frames".into())
+            .unwrap();
+        ask("Spend 42 credits?");
+        // A run-wide gate is not this task's decision.
+        let wide = store
+            .create_gate(
+                "chat:master",
+                run.id.clone(),
+                None,
+                "Pause the run?".into(),
+                vec![],
+            )
+            .unwrap();
+        store
+            .resolve_gate("chat:master", wide.id, "No".into())
+            .unwrap();
+
+        let brief = store.task_decisions(&worker.task_id).unwrap();
+        assert!(brief.contains(&size.id));
+        assert!(brief.contains("Which sprite size?"));
+        assert!(brief.contains("96 by 96, 8 frames"));
+        assert!(
+            !brief.contains("Spend 42 credits?"),
+            "an open gate is not decided"
+        );
+        assert!(!brief.contains("Pause the run?"));
     }
 
     pub(crate) fn launch_for(task_id: &str) -> WorkerLaunch {

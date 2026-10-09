@@ -1163,6 +1163,72 @@ mod tests {
         assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Failed);
     }
 
+    /// Feedback cab56ae9: a worker waits on its gate for longer than the idle
+    /// reaper allows, so its process is gone when the decision arrives. The
+    /// sweep that runs before delivery used to read the clocks from before
+    /// the gate, fail the attempt as disconnected, and cancel the decision.
+    #[test]
+    fn a_resolved_gate_reaches_a_worker_whose_process_was_reaped_while_it_waited() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        let gate = store
+            .create_gate(
+                &attempt.worker_chat_key,
+                run.id.clone(),
+                Some(attempt.task_id.clone()),
+                "Which sprite size?".into(),
+                vec![],
+            )
+            .unwrap();
+        // The worker last moved half an hour ago, then sat on its gate.
+        let asked = now_ms() - 30 * 60_000;
+        store
+            .mutate(|data| {
+                let e = &mut data.attempts.get_mut(&attempt.id).unwrap().execution;
+                e.last_activity_at = Some(asked);
+                e.last_progress_at = Some(asked);
+                Ok(())
+            })
+            .unwrap();
+        let chats = Arc::new(ChatManager::default());
+        let workspaces = crate::workspaces::WorkspaceState::with_projects(Vec::new());
+        // Blocked on its gate with no process: waiting, not lost.
+        store
+            .recover_due_workers(chats.clone(), &workspaces, now_ms())
+            .unwrap();
+        assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Blocked);
+
+        store
+            .resolve_gate("chat:master", gate.id, "96 by 96".into())
+            .unwrap();
+        // The scheduler's next tick, before delivery has resumed the chat.
+        store
+            .recover_due_workers(chats.clone(), &workspaces, now_ms() + 2_000)
+            .unwrap();
+        let current = latest(&store, &attempt.id);
+        assert_eq!(current.status, AttemptStatus::Running);
+        assert_eq!(current.execution.state, ExecutionState::Queued);
+        assert!(current.execution.stalled_at.is_none());
+        let notes = store.snapshot(None).unwrap().notifications;
+        assert!(!notes
+            .iter()
+            .any(|n| matches!(n.kind.as_str(), "stalled" | "disconnected")));
+        let resolution = notes.iter().find(|n| n.kind == "resolution").unwrap();
+        assert_eq!(resolution.target_chat_key, attempt.worker_chat_key);
+        assert!(store
+            .claim_notification(&resolution.id, now_ms() + 2_000)
+            .unwrap()
+            .is_some());
+
+        // A decision that never revives the worker still ends as a lost
+        // worker; it is only no longer judged by the time before the gate.
+        store
+            .recover_due_workers(chats, &workspaces, now_ms() + 60_000)
+            .unwrap();
+        assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Failed);
+    }
+
     /// Feedback 597f0e33: a worker waking now and then to read its running
     /// test's log is told about once per background job, naming the job.
     #[test]
