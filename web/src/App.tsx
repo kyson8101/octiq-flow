@@ -123,7 +123,7 @@ import {
 import { Connect } from "./components/Connect";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { SessionSearch } from "./components/SessionSearch";
-import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
+import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { ChatSearchPage } from "./components/ChatSearchPage";
@@ -2517,9 +2517,18 @@ export default function App() {
       // and must not wait on a file that may be megabytes. The transcript
       // arrives after, into `id` — which is the conversation that was picked,
       // not whichever one is on screen by then.
+      //
+      // The server writes it as the start of this chat's own record, and it is
+      // read back from there like any chat's. Read into this page alone, it
+      // was gone the next time the chat was opened without that copy: nothing
+      // had been said yet, so the server held nothing to replay.
       setReading((prev) => ({ ...prev, [id]: true }));
-      void readSession(session)
-        .then((events) => {
+      void importSession(session, keyFor(id))
+        .then(async ({ imported, events }) => {
+          if (imported) {
+            if ((chatsRef.current[id]?.messages.length ?? 0) === 0) await catchUpChat(id);
+            return;
+          }
           const past = replaySession(events);
           if (past.messages.length === 0) return;
           patch(id, (s) =>
@@ -2551,7 +2560,7 @@ export default function App() {
       setProjectsScreen(false);
     },
     // `chats` is read through its ref, for one length, at the moment this runs.
-    [workspaces, projectId, conversationId, access, effort, patch],
+    [workspaces, projectId, conversationId, access, effort, patch, catchUpChat],
   );
 
   /** Put a conversation's transcript in front of the reader: seed what is

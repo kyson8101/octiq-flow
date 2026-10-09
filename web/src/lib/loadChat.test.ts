@@ -67,6 +67,31 @@ it("keeps an imported transcript when the server has no events for it yet", asyn
   expect(options.getState().messages).toEqual(imported.messages);
 });
 
+// The reported bug: a past session picked up into a new chat, nothing said,
+// reopened where the page's own copy is gone. Its history is the start of the
+// chat's record on the server now, so it comes back from there — still
+// pointing at the session and the folder it ran in, or the first message would
+// resume nothing.
+it("reopens a picked-up session from its record when this page holds no copy", async () => {
+  const history: Frame[] = [
+    { seq: 1, event: { type: "user", message: { role: "user", content: [{ type: "text", text: "fix the bug" }] } } },
+    { seq: 2, event: { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } } },
+  ];
+  const options = setup();
+  // What opening the chat seeds from the server's index: no messages.
+  options.publish({ ...emptyChat(), sessionId: "s-1", cwd: "/work/app" });
+  const requestPage = vi.fn(async () => ({ events: history, context: [], before: null }));
+  await loadChat({ ...options, requestPage, request: async () => [] });
+  expect(requestPage).toHaveBeenCalledWith(null);
+  const state = options.getState();
+  const said = (m: (typeof state.messages)[number]) =>
+    m.blocks.map((b) => (b.kind === "text" ? b.text : "")).join("");
+  expect(state.messages.map((m) => [m.role, said(m)])).toEqual([["user", "fix the bug"], ["assistant", "done"]]);
+  expect(state.sessionId).toBe("s-1");
+  expect(state.cwd).toBe("/work/app");
+  expect(options.catchUp.mark("chat:a")).toBe(2);
+});
+
 it("reads a chat afresh when its record was compacted inside the stream a saved copy ends in", async () => {
   const stream = (seq: number, event: Record<string, unknown>): Frame => ({ seq, event: { type: "stream_event", event } });
   const piece = (seq: number, text: string) => stream(seq, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });

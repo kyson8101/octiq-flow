@@ -9,10 +9,12 @@
 // than left to reach for a socket that is not there in a test run.
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
+const invoke = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<unknown> => []));
+vi.mock("./bridge", () => ({ bridge: { invoke } }));
 
 import {
   folderName,
+  importSession,
   isUnder,
   replaySession,
   searchSessions,
@@ -188,5 +190,31 @@ describe("replaySession", () => {
     expect(replaySession([]).messages).toEqual([]);
     const chat = replaySession([{ type: "nonsense-nobody-writes" }, said("user", "hi")]);
     expect(chat.messages).toHaveLength(1);
+  });
+});
+
+describe("importSession", () => {
+  const picked: HistorySession = {
+    agent: "claude", sessionId: "s-1", title: "", cwd: "/work", startedAt: 0, updatedAt: 0,
+  };
+
+  it("asks the server to make the session the start of this chat's record", async () => {
+    invoke.mockReset().mockResolvedValueOnce({ imported: true, events: [] });
+    await expect(importSession(picked, "chat:a")).resolves.toEqual({ imported: true, events: [] });
+    expect(invoke).toHaveBeenCalledWith("agent_history_import", { key: "chat:a", agent: "claude", sessionId: "s-1" });
+  });
+
+  it("still shows the history when the backend is older than the page", async () => {
+    const said = { type: "user", message: { role: "user", content: [{ type: "text", text: "hi" }] } };
+    invoke.mockReset()
+      .mockRejectedValueOnce(new Error("'agent_history_import' is not available on this backend — it may be older than the page asking for it"))
+      .mockResolvedValueOnce([said]);
+    await expect(importSession(picked, "chat:a")).resolves.toEqual({ imported: false, events: [said] });
+    expect(invoke).toHaveBeenLastCalledWith("agent_history_read", { agent: "claude", sessionId: "s-1" });
+  });
+
+  it("passes on any other failure", async () => {
+    invoke.mockReset().mockRejectedValueOnce(new Error("no claude session on this machine with id s-1"));
+    await expect(importSession(picked, "chat:a")).rejects.toThrow("no claude session");
   });
 });
