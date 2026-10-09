@@ -97,6 +97,55 @@ describe("mission page", () => {
   });
 });
 
+describe("a mission whose plan waits for approval", () => {
+  // After a change of hands the host sends the plan back for approval. One
+  // task failed before it, so a retry would otherwise be offered.
+  function pending(status: "pending" | "approved"): OrchestrationSnapshot {
+    const next = structuredClone(mission);
+    next.runs[0].planApproval = { status, requestedAt: 30, revision: 2 };
+    next.tasks[0] = { ...next.tasks[0], status: "failed" };
+    next.attempts[0] = { ...next.attempts[0], status: "failed", createdAt: 5 };
+    next.tasks[2] = { ...next.tasks[2], handoffs: [{ from: { id: "maya", name: "Maya" }, to: { id: "noah", name: "Noah" }, reason: "x", at: 20 }] };
+    return next;
+  }
+  const rows = (html: string) => html.match(/<article class="orch-task /g)?.length ?? 0;
+
+  it("keeps every row, its owner, kind and size, and its reassign control", () => {
+    const html = render(pending("pending"));
+    expect(html).toContain("The tasks start once the plan above is approved.");
+    expect(rows(html)).toBe(3);
+    expect(html.match(/class="orch-task-reassign"/g)).toHaveLength(3);
+    expect(html.match(/class="orch-task-owner"/g)).toHaveLength(3);
+    expect(html).toContain(">Large<");
+    expect(html).toContain(">Review<");
+    // The host's rules still decide: an unstarted task can be handed on again.
+    expect(html).toMatch(/aria-label="Reassign task: Review it" title="Hand &quot;Review it&quot; to another crew member"/);
+  });
+
+  it("holds every start until the plan is approved", () => {
+    const html = render(pending("pending"));
+    expect(html).not.toContain("Start retry");
+    expect(html).not.toContain("Start next attempt");
+    // Progress stages and filters belong to a running plan.
+    expect(html).not.toContain("orch-task-filters");
+  });
+
+  it("is unchanged once approved", () => {
+    const html = render(pending("approved"));
+    expect(html).not.toContain("The tasks start once the plan above is approved.");
+    expect(rows(html)).toBe(3);
+    expect(html).toContain("Start retry");
+  });
+
+  it("leaves a run that is not a mission showing only the notice", () => {
+    const plain = pending("pending");
+    plain.runs[0].workspaceMode = "auto";
+    const html = render(plain);
+    expect(html).toContain("The tasks start once the plan above is approved.");
+    expect(rows(html)).toBe(0);
+  });
+});
+
 describe("reassigning from the page", () => {
   const run = mission.runs[0];
 

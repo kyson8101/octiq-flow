@@ -807,7 +807,11 @@ function RunDetail({
   useEffect(() => {
     if (brief) orchestrationFeed.detail(run.id);
   }, [brief, run.id]);
-  const active = TASK_FILTERS.find((option) => option.key === filter) ?? TASK_FILTERS[0];
+  // A mission's plan goes back to approval when a task changes hands, and the
+  // rows are where the next change of hands, or the correction of a wrong one,
+  // is made. So they stay, unfiltered, with every start held by the host.
+  const pendingRows = planPending && mission;
+  const active = pendingRows ? TASK_FILTERS[0] : TASK_FILTERS.find((option) => option.key === filter) ?? TASK_FILTERS[0];
   const visible = sortTasksByActivity(
     tasks.filter((task) => active.match(task, attempts.find((attempt) => attempt.id === task.activeAttemptId))),
     attempts,
@@ -1034,9 +1038,8 @@ function RunDetail({
           {TASK_FILTERS.map((option) => <button key={option.key} type="button" className={option.key === filter ? "is-on" : ""}
             aria-pressed={option.key === filter} onClick={() => setFilter(option.key)}>{option.label}</button>)}
         </div>}
-        {planPending ? (
-          <p className="orch-task-none">The tasks start once the plan above is approved.</p>
-        ) : tasks.length === 0 ? (
+        {planPending && <p className="orch-task-none">The tasks start once the plan above is approved.</p>}
+        {planPending && (!pendingRows || tasks.length === 0) ? null : tasks.length === 0 ? (
           <div className="orch-planning"><span className="orch-pulse" />The main agent is planning the tasks.</div>
         ) : visible.length === 0 ? (
           <p className="orch-task-none">Nothing is {active.label.toLowerCase()} right now.</p>

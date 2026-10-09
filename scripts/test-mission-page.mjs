@@ -5,8 +5,10 @@
 // lead first, each with the role they hold here) and Where (closed), then its
 // tasks, each naming owner, kind and size. Reassigning a task from its row
 // asks `orchestration_destinations` as the lead, then sends the lead's own
-// `orchestration_task_reassign`, and the row follows the ledger. A run that is
-// not a mission draws none of it. Desktop and 375px phone, no sideways scroll,
+// `orchestration_task_reassign`, and the row follows the ledger. While the plan
+// waits for approval again, every row, owner and reassign control stays, so a
+// second change of hands needs no approval in between; nothing can start. A
+// run that is not a mission draws none of it. Desktop and 375px phone, no sideways scroll,
 // no page errors.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
@@ -139,13 +141,15 @@ function resultFor(request) {
       // What reassign_task does: the new owner, the handoff kept, and the
       // task back in front of the person.
       const at = Date.now();
+      const to = { id: request.args.assignee, name: team.find((member) => member.id === request.args.assignee).name };
       snapshot = {
         ...snapshot,
-        runs: snapshot.runs.map((run) => run.id === "run_mission"
-          ? { ...run, planApproval: { ...run.planApproval, status: "pending", requestedAt: at, decidedAt: undefined } } : run),
+        runs: snapshot.runs.map((run) => run.id === "run_mission" ? { ...run, planApproval: {
+          ...run.planApproval, status: "pending", requestedAt: at, decidedAt: undefined, revision: (run.planApproval.revision ?? 0) + 1,
+        } } : run),
         tasks: snapshot.tasks.map((item) => item.id === request.args.taskId ? {
-          ...item, assignee: { id: "zed", name: "Zed" }, approvedAt: undefined, status: "pending",
-          handoffs: [{ from: item.assignee, to: { id: "zed", name: "Zed" }, reason: request.args.reason, at }],
+          ...item, assignee: to, approvedAt: undefined, status: "pending",
+          handoffs: [...(item.handoffs ?? []), { from: item.assignee, to, reason: request.args.reason, at }],
         } : item),
       };
       return snapshot.tasks.find((item) => item.id === request.args.taskId);
@@ -274,6 +278,28 @@ try {
     // The new owner waits for the person: the plan card is back.
     await surface.locator(".plan-review, [data-pending-keys^='plan:']").first().waitFor();
     await page.screenshot({ path: join(artifacts, "desktop-1440-after-reassign.png") });
+
+    // Pending approval keeps the rows: title, owner, kind, size and reassign,
+    // with the notice above them and no way to start anything.
+    assert.equal(await surface.locator(".orch-task").count(), 3, "every row stays while the plan is pending");
+    assert.equal(await surface.locator(".orch-task-reassign").count(), 3, "every row keeps its reassign control");
+    assert.match(await surface.locator(".orch-tab-panel").first().innerText(), /The tasks start once the plan above is approved\./);
+    assert.match(await review.locator(".orch-task-meta").innerText(), /Zed[\s\S]*Small|Small[\s\S]*Zed/);
+    assert.equal(await surface.getByRole("button", { name: /Start retry|Start next attempt/ }).count(), 0, "nothing can start");
+    assert.equal(await building.locator(".orch-task-reassign").isDisabled(), true, "the host's rules still hold");
+    await review.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(artifacts, "desktop-1440-pending-rows.png") });
+
+    // A wrong pick is corrected before anything is approved.
+    await review.locator(".orch-task-reassign").click();
+    await form.locator("select option[value='maya']").waitFor({ state: "attached" });
+    await form.locator("select").selectOption("maya");
+    await form.locator("input").fill("Zed is on leave too");
+    await form.getByRole("button", { name: "Reassign", exact: true }).click();
+    await waitFor(page, async () => calls.filter((call) => call.cmd === "orchestration_task_reassign").length === 2, "the second reassignment");
+    await waitFor(page, async () => /Maya/.test(await review.locator(".orch-task-meta").innerText()), "Maya on the review row");
+    assert.equal(snapshot.runs[0].planApproval.status, "pending", "still waiting for the person");
+    assert.equal(await surface.locator(".orch-task").count(), 3);
     await context.close();
   }
 
@@ -292,6 +318,17 @@ try {
     await review.scrollIntoViewIfNeeded();
     assert.equal(await noSidewaysScroll(page), true, "the form fits at 375px");
     await page.screenshot({ path: join(artifacts, "phone-375-reassign-form.png") });
+    const form = review.locator(".mission-reassign");
+    await form.locator("select").selectOption("zed");
+    await form.locator("input").fill("Noah is out today");
+    await form.getByRole("button", { name: "Reassign", exact: true }).click();
+    await waitFor(page, async () => /Zed/.test(await review.locator(".orch-task-meta").innerText()), "Zed on the review row");
+    // Pending approval at 375px: rows and their reassign controls stay.
+    assert.equal(await runSurface(page).locator(".orch-task").count(), 3, "every row stays at 375px");
+    assert.equal(await runSurface(page).locator(".orch-task-reassign").count(), 3);
+    assert.equal(await noSidewaysScroll(page), true, "no sideways scroll while pending");
+    await review.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(artifacts, "phone-375-pending-rows.png") });
     await context.close();
   }
 
