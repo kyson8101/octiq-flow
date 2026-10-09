@@ -440,6 +440,7 @@ describe("OrchestrationPanel", () => {
       agent: "codex",
       access: "auto",
       newWorktree: false,
+      retryOf: snapshot.attempts[0].id,
     });
   });
 });

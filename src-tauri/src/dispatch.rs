@@ -1508,7 +1508,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "id")?,
         )),
 
-        "orchestration_worker_start" => {
+        // Two doors, one start. The coordinator's explicit start comes only
+        // through `/hook/orchestration` as `_in_chat`, which the person's
+        // socket refuses; the page's Start retry comes only through the
+        // socket and names the attempt it retries (`retryOf`), so a page whose
+        // snapshot a handoff overtook is refused (`page_retry_is_current`).
+        "orchestration_worker_start" | "orchestration_worker_start_in_chat" => {
             let actor: String = arg(&args, "actorChatKey")?;
             let launch = crate::orchestration::WorkerLaunch {
                 task_id: arg(&args, "taskId")?,
@@ -1519,11 +1524,20 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 new_worktree: arg(&args, "newWorktree")?,
                 base_branch: arg::<Option<String>>(&args, "baseBranch")?.unwrap_or_default(),
             };
-            to_value(svc.orchestrations.start_worker(
+            let retry_of: Option<String> = arg(&args, "retryOf")?;
+            let by = if cmd == "orchestration_worker_start_in_chat" {
+                crate::orchestration::StartedBy::Coordinator
+            } else {
+                crate::orchestration::StartedBy::Page {
+                    retry_of: retry_of.as_deref(),
+                }
+            };
+            to_value(svc.orchestrations.start_worker_for(
                 svc.chats.clone(),
                 &svc.workspaces,
                 &actor,
                 launch,
+                by,
             ))
         }
         "orchestration_automation_configure" => to_value(svc.orchestrations.configure_automation(

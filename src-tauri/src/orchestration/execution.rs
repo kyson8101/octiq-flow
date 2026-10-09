@@ -849,7 +849,7 @@ impl OrchestrationStore {
                 workspaces,
                 &run.coordinator_chat_key,
                 launch,
-                Some(&attempt.id),
+                StartedBy::Recovery(&attempt.id),
             ) {
                 // A vanished project or invalid settings can fail before a
                 // new reservation exists. Do not retry that forever either.
@@ -1060,19 +1060,31 @@ mod tests {
             );
             assert!(
                 store
-                    .reserve_attempt_for("chat:master", &launch(&failed), Some(&failed.id))
+                    .reserve_attempt_for(
+                        "chat:master",
+                        &launch(&failed),
+                        StartedBy::Recovery(&failed.id)
+                    )
                     .is_err(),
                 "backoff is enforced under the reservation lock"
             );
             make_due(&store, &failed.id);
             let (_, _, reserved, previous) = store
-                .reserve_attempt_for("chat:master", &launch(&failed), Some(&failed.id))
+                .reserve_attempt_for(
+                    "chat:master",
+                    &launch(&failed),
+                    StartedBy::Recovery(&failed.id),
+                )
                 .unwrap();
             assert_eq!(reserved.model.as_deref(), Some("gpt-5.6-terra"));
             assert_eq!(reserved.access, failed.access);
             assert_eq!(previous.unwrap().cwd, failed.cwd);
             assert!(store
-                .reserve_attempt_for("chat:master", &launch(&failed), Some(&failed.id))
+                .reserve_attempt_for(
+                    "chat:master",
+                    &launch(&failed),
+                    StartedBy::Recovery(&failed.id)
+                )
                 .is_err());
             attempt = store
                 .activate_attempt(

@@ -1490,7 +1490,9 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     ("plan_approve", "orchestration_plan_approve_in_chat"),
     ("destinations", "orchestration_destinations"),
     ("snapshot", "orchestration_snapshot"),
-    ("worker_start", "orchestration_worker_start"),
+    // The coordinator's own start, its manual override. NOT the socket's
+    // `orchestration_worker_start`, which is the page's retry.
+    ("worker_start", "orchestration_worker_start_in_chat"),
     ("worker_report", "orchestration_worker_report"),
     // The run's coordinator settling a read-only worker from the words the
     // host held for it. Coordinator provenance is this capability's chat.
@@ -1997,6 +1999,9 @@ const CHAT_ONLY_COMMANDS: &[&str] = &[
     // Starts a teammate's turn as the asking worker; only its capability
     // says which worker that is.
     "orchestration_peer_ask",
+    // The coordinator's explicit start, free of the page's retry check: only
+    // its capability may claim to be the coordinator choosing settings.
+    "orchestration_worker_start_in_chat",
     // Acts as the chat's registered agent on its own memory, and what it
     // writes is shown in that chat as the agent's own update: only the
     // agent's capability, on /hook/vault, may say so.
@@ -3472,6 +3477,11 @@ mod tests {
             orchestration_hook_command("task_accept"),
             Some("orchestration_task_accept_in_chat")
         );
+        // The coordinator's start is never mistaken for the page's retry.
+        assert_eq!(
+            orchestration_hook_command("worker_start"),
+            Some("orchestration_worker_start_in_chat")
+        );
     }
 
     #[test]
@@ -3482,6 +3492,7 @@ mod tests {
             "orchestration_report_confirm",
             "orchestration_relay_send",
             "orchestration_peer_ask",
+            "orchestration_worker_start_in_chat",
             "memory_vault_agent",
         ] {
             assert!(socket_refusal(command).is_some(), "{command}");
@@ -3494,6 +3505,7 @@ mod tests {
             "orchestration_bridge_close",
             "chat_send",
             "memory_vault_call",
+            "orchestration_worker_start",
         ] {
             assert!(socket_refusal(command).is_none(), "{command}");
         }

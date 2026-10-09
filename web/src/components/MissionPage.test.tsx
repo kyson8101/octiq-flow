@@ -126,6 +126,9 @@ describe("reassigning from the page", () => {
       handoffs: [{ from: { id: "maya", name: "Maya" }, to: { id: "noah", name: "Noah" }, reason: "x", at: 20 }],
     });
     expect(retryLaunchArgs(handed, attempt)).toMatchObject({ agent: "codex", model: "gpt-5.5" });
+    // It names the attempt it showed, so the host can refuse it once the new
+    // owner has started and this page's snapshot is out of date.
+    expect(retryLaunchArgs(handed, attempt).retryOf).toBe(attempt.id);
     // A handoff before this attempt changes nothing: it is this owner's retry.
     const earlier = { ...handed, handoffs: [{ ...handed.handoffs![0], at: 5 }] };
     expect(retryLaunchArgs(earlier, attempt)).toMatchObject({ agent: "claude", model: "opus" });

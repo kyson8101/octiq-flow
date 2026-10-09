@@ -85,7 +85,14 @@ sent by the page with the run's coordinator as actor. Candidates come from
 the task's destination, crew first), the reason records that the person asked,
 and the host keeps the handoff, re-opens plan approval and refuses any start
 until the person approves the new owner. A retry after a handoff launches the
-new owner's worker settings, never the replaced attempt's. Runs that are not
+new owner's worker settings, never the replaced attempt's. The page's Start
+retry (the socket's `orchestration_worker_start`) names the attempt it shows
+as `retryOf`; on a task that changed hands, the host refuses a retry naming
+none, and one naming an attempt from before the handoff once the new owner has
+had any attempt of their own, whatever became of it. Until then the first
+start keeps to the approved settings. The coordinator's explicit start reaches
+the host only through its hook (`orchestration_worker_start_in_chat`, which
+the socket refuses), and stays its manual override. Runs that are not
 missions keep the plain run panel.
 
 ## State and ownership

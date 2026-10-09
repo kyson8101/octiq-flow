@@ -1465,6 +1465,10 @@ export function retryLaunchArgs(task: OrchestrationTask, attempt: OrchestrationA
     // A prepared retry keeps the exact assigned checkout and its uncommitted
     // work. A preparation failure has no checkout to reuse, so isolate it anew.
     newWorktree: !attempt.cwd.trim(),
+    // Which attempt this page showed. The host refuses it once the task has
+    // been handed on and the new owner has started, so a page the handoff
+    // overtook cannot launch the replaced settings under the new owner.
+    retryOf: attempt.id,
   };
 }
 
