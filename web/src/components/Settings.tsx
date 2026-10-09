@@ -10,6 +10,7 @@ import { useState } from "react";
 import { askPermission, permissionNow, setOn, supported } from "../lib/notify";
 import * as push from "../lib/push";
 import { applyTheme, preview, THEMES } from "../lib/themeStore";
+import { CHAT_WIDTH_DEFAULT, CHAT_WIDTHS, chatWidth as widthOf, type ChatWidthId } from "../lib/chatWidth";
 import type { ProjectDetail } from "./ProjectSettings";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { MemoryVaultSettings } from "./MemoryVaultSettings";
@@ -32,11 +33,15 @@ function compareProjectNames(left: ProjectDetail, right: ProjectDetail): number 
     || left.id.localeCompare(right.id);
 }
 
-export function Settings({ current, onPick, notify, onNotify, projects, onProject, agentsMode = false, onAgentsMode, onFeedback, initialSection = "projects", onClose }: {
+export function Settings({ current, onPick, chatWidth = CHAT_WIDTH_DEFAULT, onChatWidth, notify, onNotify, projects, onProject, agentsMode = false, onAgentsMode, onFeedback, initialSection = "projects", onClose }: {
   /** The chosen theme's id. Held by App so the sheet can close and reopen
    *  without forgetting, and so nothing re-reads localStorage to draw a tick. */
   current: string;
   onPick: (id: string) => void;
+  /** How wide the conversation column is drawn. Held by App, which applies
+   *  it, for the same reason as the theme. */
+  chatWidth?: ChatWidthId;
+  onChatWidth?: (id: ChatWidthId) => void;
   /** Whether desktop notifications are switched on. Held by App for the same
    *  reason as the theme: the thing that FIRES them has to read it too. */
   notify: boolean;
@@ -170,7 +175,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
               <SettingsNavButton
                 section="appearance"
                 label="Appearance"
-                detail={currentTheme}
+                detail={chatWidth === CHAT_WIDTH_DEFAULT ? currentTheme : `${currentTheme} · ${widthOf(chatWidth).name} chat`}
                 active={section === "appearance"}
                 onPick={setSection}
               />
@@ -337,6 +342,37 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                     );
                   })}
                 </div>
+
+                {onChatWidth && (
+                  <div className="settings-chat-width">
+                    <h3 id="settings-chat-width-title">Chat width</h3>
+                    <p className="settings-note">How wide the conversation and the composer are drawn on this browser. Phones always use the whole screen.</p>
+                    <div className="cw-grid" role="radiogroup" aria-labelledby="settings-chat-width-title">
+                      {CHAT_WIDTHS.map((width) => {
+                        const selected = width.id === chatWidth;
+                        // The picture's column, as a share of the page it sits in.
+                        const share = width.px == null ? 100 : Math.round((width.px / 1200) * 84);
+                        return (
+                          <button
+                            key={width.id}
+                            className={`thm cw${selected ? " is-on" : ""}`}
+                            data-chat-width={width.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={selected}
+                            onClick={() => onChatWidth(width.id)}
+                          >
+                            <span className="cw-shot" aria-hidden="true">
+                              <span className="cw-column" style={{ width: `${share}%` }} />
+                            </span>
+                            <span className="thm-name">{width.name}</span>
+                            <span className="cw-size">{width.px == null ? "No limit" : `${width.px}px`}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </section>
             )}
           </div>

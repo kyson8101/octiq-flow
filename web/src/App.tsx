@@ -229,6 +229,7 @@ import {
   type PrDashboardChat,
 } from "./components/PullRequestsDashboard";
 import type { PrAgentLaunch, PrPreparedAgentChat } from "./lib/pullRequests";
+import { chatWidthStyle, savedChatWidth, saveChatWidth, type ChatWidthId } from "./lib/chatWidth";
 import "./components/FocusMode.css";
 
 type Workspace = Project & {
@@ -509,6 +510,13 @@ export default function App() {
   const isMobile = useMedia(MOBILE);
   const { focusMode, enterFocus, exitFocus } = useFocusMode(!(isMobile && projectsScreen));
   const { fontSize: focusFontSize, changeFontSize: changeFocusFontSize } = useFocusFontSize();
+  /** How wide the conversation column is drawn, chosen in Settings and kept
+   *  per browser (see lib/chatWidth). */
+  const [chatWidth, setChatWidth] = useState<ChatWidthId>(savedChatWidth);
+  const changeChatWidth = useCallback((next: ChatWidthId) => {
+    setChatWidth(next);
+    saveChatWidth(next);
+  }, []);
   /** What the top bar offers a page. A phone's bar has no room for a page's
    *  buttons or a run's line, and focus mode hides the bar, so those render
    *  in the page instead. */
@@ -4743,7 +4751,7 @@ export default function App() {
     <div
       ref={projectSwipeRef}
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
-      style={focusMode ? focusFontStyle(focusFontSize) : undefined}
+      style={focusMode ? focusFontStyle(focusFontSize) : chatWidthStyle(chatWidth, chatExpanded)}
     >
       {focusMode && (
         <div className="focus-mode-tools">
@@ -4958,6 +4966,8 @@ export default function App() {
             <Settings
               current={themeId}
               onPick={setThemeId}
+              chatWidth={chatWidth}
+              onChatWidth={changeChatWidth}
               notify={notifyOn}
               onNotify={(on, viaPush) => {
                 setNotifyOn(on);
