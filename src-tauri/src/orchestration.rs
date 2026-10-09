@@ -2325,6 +2325,13 @@ impl OrchestrationStore {
                     "The person has not approved this plan yet. Workers start once they do.".into(),
                 );
             }
+            // Checked here, under the lock that writes `task.worker` below, so
+            // a start the handoff overtook can neither run nor record the
+            // replaced owner's settings as the new owner's.
+            if let Some(approved) = unstarted_handoff(data, &task) {
+                let owner = task.assignee.as_ref().map_or("another agent", |a| a.name.as_str());
+                keeps_to_handoff(approved, &worker, owner)?;
+            }
             worker.recovery = task
                 .worker
                 .as_ref()
@@ -4301,6 +4308,46 @@ fn attempt_has_open_gate(data: &Stored, attempt: &Attempt) -> bool {
     })
 }
 
+/// The worker a handoff names, while nobody has started under it yet: no
+/// attempt of the task's current assignee began at or after the last handoff.
+/// Those are the settings the person approved with the new owner, and the
+/// first start after it must keep to them. Later starts are the coordinator's
+/// own choice again, as before any handoff.
+fn unstarted_handoff<'a>(data: &Stored, task: &'a Task) -> Option<&'a automation::WorkerSettings> {
+    let handoff = task.handoffs.last()?;
+    let started = data.attempts.values().any(|attempt| {
+        attempt.task_id == task.id
+            && attempt.created_at >= handoff.at
+            && attempt.assignee.as_ref().map(|a| &a.id) == Some(&handoff.to.id)
+    });
+    (!started).then_some(task.worker.as_ref()).flatten()
+}
+
+/// A start made before a handoff (a page that had not seen it, an old
+/// attempt's retry or recovery) asks for the replaced owner's provider,
+/// model or a higher access. It is refused rather than run, and rather than
+/// quietly swapped for the approved settings the caller did not ask for.
+fn keeps_to_handoff(
+    approved: &automation::WorkerSettings,
+    asked: &automation::WorkerSettings,
+    owner: &str,
+) -> Result<(), String> {
+    let model = |w: &automation::WorkerSettings| model_id(w.agent, w.model.as_deref());
+    if asked.agent != approved.agent
+        || asked.model != approved.model
+        || crate::access_request::rank(asked.access) > crate::access_request::rank(approved.access)
+    {
+        return Err(format!(
+            "This task was handed to {owner}, approved as {} at {} access; this start asks for {} at {} access, from before the handoff. Refresh and start it with the approved settings.",
+            model(approved),
+            access_id(approved.access),
+            model(asked),
+            access_id(asked.access),
+        ));
+    }
+    Ok(())
+}
+
 fn attempt_is_unsettled(data: &Stored, attempt: &Attempt) -> bool {
     matches!(
         attempt.status,
@@ -5664,10 +5711,14 @@ pub(crate) mod tests {
             .approve_plan("chat:master", &run.id, None, None)
             .unwrap();
 
-        // Maya's attempt is live: no second writer.
-        let (_, _, attempt, _) = store
-            .reserve_attempt("chat:master", &launch_for(&first.id))
-            .unwrap();
+        // Maya's attempt is live: no second writer. It starts as approved
+        // for her; the handoff binds its first start to those settings.
+        let maya = WorkerLaunch {
+            agent: ChatAgent::Claude,
+            model: Some("opus".into()),
+            ..launch_for(&first.id)
+        };
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &maya).unwrap();
         let attempt = store
             .activate_attempt(&attempt.id, "/tmp".into(), "maya".into(), true)
             .unwrap();
@@ -5720,6 +5771,115 @@ pub(crate) mod tests {
             .unwrap_err()
             .contains("not approved"));
         assert!(handoff().unwrap_err().contains("already has this task"));
+    }
+
+    #[test]
+    fn a_start_from_before_a_handoff_cannot_run_or_record_the_replaced_settings() {
+        // Review of the mission page: a page holding the old snapshot of a
+        // blocked task pressed Start retry after another page had handed the
+        // task to Codex at read access and the person approved it. Its request
+        // still named the old Claude attempt's settings, at full access.
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        let old = WorkerLaunch {
+            agent: ChatAgent::Claude,
+            model: Some("opus".into()),
+            access: Access::Full,
+            ..launch_for(&first.id)
+        };
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &old).unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "old".into(), true)
+            .unwrap();
+        finish_attempt(&store, attempt, WorkerOutcome::Blocked);
+
+        let approved = automation::WorkerSettings {
+            agent: ChatAgent::Codex,
+            access: Access::Read,
+            model: Some("gpt-5.6-terra".into()),
+            effort: None,
+            recovery: None,
+        };
+        store
+            .reassign_task(
+                "chat:master",
+                &first.id,
+                (
+                    Some(approved.clone()),
+                    Some(TaskAssignee {
+                        id: "noah".into(),
+                        name: "Noah".into(),
+                    }),
+                    None,
+                ),
+                "Noah reviews it read-only instead.".into(),
+            )
+            .unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+
+        let current = |store: &OrchestrationStore| {
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            let task = snapshot
+                .tasks
+                .into_iter()
+                .find(|t| t.id == first.id)
+                .unwrap();
+            (task, snapshot.attempts.len())
+        };
+        let refused = store.reserve_attempt("chat:master", &old).unwrap_err();
+        assert!(refused.contains("handed to Noah"), "{refused}");
+        assert!(refused.contains("read access"), "{refused}");
+        // Same provider and model, but above the approved access: refused too.
+        let above = WorkerLaunch {
+            agent: ChatAgent::Codex,
+            model: approved.model.clone(),
+            access: Access::Auto,
+            ..launch_for(&first.id)
+        };
+        assert!(store.reserve_attempt("chat:master", &above).is_err());
+        let (task, attempts) = current(&store);
+        assert_eq!(attempts, 1);
+        assert_eq!(task.status, TaskStatus::Ready);
+        let worker = task.worker.unwrap();
+        assert_eq!(
+            (worker.agent, worker.access, worker.model.as_deref()),
+            (ChatAgent::Codex, Access::Read, Some("gpt-5.6-terra"))
+        );
+
+        // The approved settings start, under the new owner.
+        let noah = WorkerLaunch {
+            access: Access::Read,
+            ..above
+        };
+        let (_, task, attempt, _) = store.reserve_attempt("chat:master", &noah).unwrap();
+        assert_eq!(attempt.assignee.as_ref().unwrap().id, "noah");
+        assert_eq!(
+            (attempt.agent, attempt.access),
+            (ChatAgent::Codex, Access::Read)
+        );
+        assert_eq!(task.worker.unwrap().access, Access::Read);
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "noah".into(), true)
+            .unwrap();
+        finish_attempt(&store, attempt, WorkerOutcome::Blocked);
+
+        // Once the new owner has started, the coordinator's own choice of
+        // settings for a retry is back, as before any handoff.
+        let (_, task, _, _) = store
+            .reserve_attempt(
+                "chat:master",
+                &WorkerLaunch {
+                    access: Access::Edits,
+                    ..noah
+                },
+            )
+            .unwrap();
+        assert_eq!(task.worker.unwrap().access, Access::Edits);
     }
 
     #[test]
