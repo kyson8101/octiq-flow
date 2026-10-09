@@ -563,15 +563,51 @@ agent (`memoryNote`), so renaming an agent keeps its memory. Saving an agent
 creates the note when a writable vault is connected; otherwise the first write
 creates it.
 
-Agents reach it through two tools, `vault_agent_memory_read` and
-`vault_agent_memory_append`. The host works out **which agent is calling from
-the chat itself**: the lead a task was handed to (`team.json` `leads`), or the
-assignee of the task a worker chat runs. Tool arguments never name the caller.
-An agent may:
+Agents reach it through three tools, `vault_agent_memory_read`,
+`vault_agent_memory_append` and `vault_agent_memory_lessons`. The host works
+out **which agent is calling from the chat itself**: the lead a task was handed
+to (`team.json` `leads`), or the assignee of the task a worker chat runs. Tool
+arguments never name the caller. An agent may:
 
 - read its own memory, and its **direct reports'** (managers see what their
   people know);
-- append only to its own memory, one dated entry at a time, never overwriting.
+- append only to its own memory, one dated entry at a time, never overwriting;
+- propose a new **Lessons** section for its own memory, which the person
+  approves on a card.
+
+### Lessons and the newest entries (`memory_lessons.rs`)
+
+A note has two parts: a curated `## Lessons` section under its header, and the
+dated `## YYYY-MM-DD` entries appended below it. There is no separate
+`lessons.md`: the lessons belong in the note the agent already loads, not in a
+second file it has to know to read and decide which one to write.
+
+- **A read loads the right end.** Without `startLine`, `vault_agent_memory_read`
+  gathers the whole note and answers with the header, the Lessons section whole
+  and the newest dated entries (at most 12, about 16,000 characters; the newest
+  is always shown). It says how many entries it left out and where they start
+  (`olderEntriesFrom`). The vault's own read pages from the top, 200 lines by
+  default, so before this an append-only note past 200 lines loaded its OLDEST
+  entries; one ran to 962 lines. `startLine` still pages the raw note.
+- **Only the Lessons section is ever rewritten**, and only on the person's
+  Allow. `vault_agent_memory_lessons` takes the whole new section (6,000
+  characters at most, no `#`/`##` headings). The host shows it beside the text
+  it replaces on a one-off permission card, then writes it as one exact vault
+  patch of that section against the note as it is after the Allow: an entry
+  appended while the card was up is kept, and a section changed meanwhile is
+  refused rather than overwritten. The dated entries are never touched, so
+  everything an agent once recorded stays recoverable. A note with no section
+  gets one above its first entry.
+- **A worker cannot rewrite its Lessons.** Its attempt is not paused for a
+  card, so the MCP does not offer the tool to a worker and the host refuses one.
+  It records entries, and curates them the next time it leads a chat.
+- **The read nudges.** With no Lessons and more than 8 entries, or with
+  entries left out, the read carries a `lessonsHint` to propose some.
+- **A lesson for every agent goes up, not sideways.** The brief tells an agent
+  that a lesson holding for every agent in the project (a tool quirk, a repo
+  rule) is proposed as a change to the project's `AGENTS.md` in its reply or
+  report, for the person or its lead to accept, rather than kept in one
+  agent's memory or copied into several.
 
 An entry with no date is dated with the server machine's **local** date, and
 the vault receipt keeps the date used (`entryDate`), so a retry with the same

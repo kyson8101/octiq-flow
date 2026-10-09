@@ -597,6 +597,7 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__vault_read mcp__octiq__vault_write mcp__octiq__vault_patch \\
                      mcp__octiq__vault_move mcp__octiq__vault_archive mcp__octiq__vault_receipt \\
                      mcp__octiq__vault_agent_memory_read mcp__octiq__vault_agent_memory_append \\
+                     mcp__octiq__vault_agent_memory_lessons \\
                      mcp__octiq__handover mcp__octiq__handover_ask mcp__octiq__handover_outcome \\
                      mcp__octiq__agent_list mcp__octiq__agent_register mcp__octiq__agent_update \\
                      mcp__octiq__agent_policy_update",
@@ -1989,6 +1990,9 @@ pub(crate) mod tests {
             "agent_register",
             "agent_update",
             "agent_policy_update",
+            // An agent's own Lessons, likewise on the host's one-off card
+            // (`memory_lessons`).
+            "vault_agent_memory_lessons",
         ] {
             assert!(claude.contains(&format!("mcp__octiq__{tool}")), "{tool}");
         }

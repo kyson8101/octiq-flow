@@ -1349,7 +1349,7 @@ fn assign_memory_notes(agents: &mut [TeamAgent]) -> bool {
 /// The first contents of an agent's memory note.
 pub fn memory_seed(agent: &TeamAgent) -> String {
     format!(
-        "---\ntype: agent-memory\nagent: {name}\nagent-id: {id}\n---\n\n# {name} — memory\n\nWorking memory for {name}, a registered OctiqFlow agent. It holds only what is worth keeping between tasks: decisions and why, gotchas, how things work, and what to pick up next. Entries are dated and appended; none is rewritten.\n",
+        "---\ntype: agent-memory\nagent: {name}\nagent-id: {id}\n---\n\n# {name} — memory\n\nWorking memory for {name}, a registered OctiqFlow agent. It holds only what is worth keeping between tasks: decisions and why, gotchas, how things work, and what to pick up next. A Lessons section, once there is one, holds what still holds and changes only with the person's approval; the dated entries below it are appended and never rewritten.\n",
         name = agent.name,
         id = agent.id,
     )
@@ -1452,7 +1452,7 @@ pub fn memory_brief(agent: &TeamAgent, team: &[TeamAgent]) -> String {
         )
     };
     format!(
-        "You have your own working memory in the shared Memory Vault. Before starting, call vault_agent_memory_read to load it. Record only what your future self would need, with one short entry through vault_agent_memory_append: a decision and why, a gotcha, how something works, or what to pick up next. Do not log routine steps, restate the diff, or copy the task. Pass today's local date as `date`. Write your memory only through vault_agent_memory_append, never vault_write or vault_patch: OctiqFlow then shows the person that it was saved. Only a result whose receipt status is saved means the entry was written, so never say you updated your memory otherwise. If the call fails or times out, retry with the same requestId, never a new one.{managers}"
+        "You have your own working memory in the shared Memory Vault. Before starting, call vault_agent_memory_read to load it. Record only what your future self would need, with one short entry through vault_agent_memory_append: a decision and why, a gotcha, how something works, or what to pick up next. Do not log routine steps, restate the diff, or copy the task. Pass today's local date as `date`. Write your memory only through vault_agent_memory_append, never vault_write or vault_patch: OctiqFlow then shows the person that it was saved. Only a result whose receipt status is saved means the entry was written, so never say you updated your memory otherwise. If the call fails or times out, retry with the same requestId, never a new one. The read returns your Lessons and your newest entries; it says how many older ones it left out. When your entries have outgrown your Lessons, or a lesson no longer holds, propose the whole updated Lessons section with vault_agent_memory_lessons: what still holds, short, never the task log. The person approves it on a card, and your dated entries are never changed. A lesson that holds for every agent in this project, such as a tool quirk or a repository rule, does not belong only in your memory: say so in your reply or report as a proposed change to the project's AGENTS.md, for the person or your lead to accept.{managers}"
     )
 }
 
@@ -1624,11 +1624,24 @@ pub fn memory_read(
         }
     };
     let path = note_of(target)?;
-    let mut args = serde_json::json!({ "path": path });
-    if let Some(line) = start_line {
-        args["startLine"] = line.into();
-    }
-    match vault.call(actor, "read", &args) {
+    // A page of the raw note when asked for one. Otherwise the note as it
+    // should be loaded: its Lessons and its NEWEST entries, never the first
+    // 200 lines of an append-only log (`memory_lessons`).
+    let read = match start_line {
+        Some(line) => vault.call(
+            actor,
+            "read",
+            &serde_json::json!({ "path": path, "startLine": line }),
+        ),
+        None => crate::memory_lessons::read_all(vault, actor, path).map(|(text, page)| {
+            let mut note = crate::memory_lessons::view_fields(&crate::memory_lessons::view(&text));
+            for key in ["path", "revision", "totalLines"] {
+                note[key] = page.get(key).cloned().unwrap_or_default();
+            }
+            note
+        }),
+    };
+    match read {
         Ok(mut note) => {
             note["agent"] = target.name.clone().into();
             Ok(note)
@@ -3092,6 +3105,56 @@ mod tests {
                 .unwrap_err()
                 .contains("does not report to you")
         );
+    }
+
+    #[test]
+    fn a_memory_read_loads_the_newest_entries_and_startline_still_pages_the_note() {
+        // A 962-line note used to load as its first 200 lines: its oldest.
+        let base = crate::test_dir::TestDir::new("memory");
+        let root = base.join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = crate::memory_vault::Vault::at(base.join("profile"));
+        vault
+            .configure(crate::memory_vault::Config {
+                path: root.to_string_lossy().into_owned(),
+                writable: true,
+            })
+            .unwrap();
+        let path = temp();
+        let nova = save(&path, draft("Nova", None)).unwrap();
+        let team = list(&path, None, true).unwrap();
+        for day in 1..=28 {
+            let text = format!("Lesson {day}.\n{}", "detail\n".repeat(20));
+            memory_append(
+                &vault,
+                "chat:lead",
+                &nova,
+                &text,
+                Some(&format!("2026-09-{day:02}")),
+                &format!("r{day}"),
+            )
+            .result(&nova)
+            .unwrap();
+        }
+
+        let loaded = memory_read(&vault, "chat:lead", &nova, &team, None, None).unwrap();
+        let content = loaded["content"].as_str().unwrap();
+        assert!(content.contains("Lesson 28."), "the newest entry is loaded");
+        assert!(!content.contains("Lesson 1.\n"), "the oldest is left out");
+        assert!(content.contains("# Nova — memory"));
+        assert_eq!(loaded["entries"], 28);
+        assert_eq!(loaded["hasLessons"], false);
+        assert!(loaded["olderEntriesFrom"].as_u64().is_some());
+        assert!(loaded["lessonsHint"].is_string());
+        assert!(loaded["revision"].is_string() && loaded["totalLines"].as_u64() > Some(600));
+        assert_eq!(loaded["agent"], "Nova");
+
+        let from = loaded["olderEntriesFrom"].as_u64().unwrap();
+        let page = memory_read(&vault, "chat:lead", &nova, &team, None, Some(from)).unwrap();
+        assert!(page["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("## 2026-09-01\n\nLesson 1."));
     }
 
     #[test]

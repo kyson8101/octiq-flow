@@ -2103,10 +2103,17 @@ const VAULT_TOOLS = [
   vaultTool("patch", "Replace one exact text match in an existing note, preserving the rest. Refuses ambiguous matches or stale revisions. Reuse requestId only for an identical retry.", { ...VAULT_CHANGE, oldText: { type: "string", minLength: 1 }, newText: { type: "string" } }, ["path", "oldText", "newText", "expectedRevision", "requestId"], false),
   vaultTool("move", "Move/rename a Markdown note within the vault without overwriting another note. Use only for requested reorganisation. Wiki-links in other notes are not rewritten; repair relevant links separately.", { ...VAULT_CHANGE, newPath: VAULT_PATH }, ["path", "newPath", "expectedRevision", "requestId"], false),
   vaultTool("archive", "Move a note into the vault's recoverable .octiq-vault-trash folder. Never permanently deletes. Use only when the person requested removal or archiving, not as automatic cleanup.", VAULT_CHANGE, ["path", "expectedRevision", "requestId"], false),
-  vaultTool("agent_memory_read", "Agents mode: read your own working memory, or a direct report's by passing their name as agent. OctiqFlow knows which registered agent you are from this chat. An empty result means nothing is recorded yet.", { agent: { type: "string", description: "A direct report's name. Omit for your own memory." }, startLine: { type: "integer", minimum: 1 } }),
+  vaultTool("agent_memory_read", "Agents mode: read your own working memory, or a direct report's by passing their name as agent. OctiqFlow knows which registered agent you are from this chat. Without startLine it returns the header, the Lessons section and the newest dated entries, and says how many older entries it left out (olderEntriesFrom); pass startLine to page the whole note from that line. An empty result means nothing is recorded yet.", { agent: { type: "string", description: "A direct report's name. Omit for your own memory." }, startLine: { type: "integer", minimum: 1, description: "Read the raw note from this line, 400 lines at most. Omit for Lessons plus the newest entries." } }),
   vaultTool("agent_memory_append", "Agents mode: add one dated entry to your own working memory. Record only what your future self needs: a decision and why, a gotcha, how something works, what to pick up next. Never a task log. Only a result whose receipt status is saved means the entry was written; OctiqFlow then shows the update in this chat. After a failure or timeout, retry with the same requestId, never a new one.", { text: { type: "string", minLength: 1, maxLength: 4000 }, date: { type: "string", description: "Today's local date, YYYY-MM-DD." }, requestId: VAULT_CHANGE.requestId }, ["text", "requestId"], false),
   vaultTool("receipt", "Look up this chat's durable write receipt after a timeout or uncertain result. saved confirms the operation at the recorded revision; needs_review requires inspecting the note. Do not blindly retry an append with a new ID.", { id: { type: "string", description: "Receipt ID returned by the write operation or its error." } }, ["id"]),
 ];
+/** Rewriting your own Lessons waits on the person's card, so an orchestration
+ *  worker, whose attempt is not paused for one, is not offered it. The host
+ *  refuses one from a worker too. */
+const VAULT_LESSONS = vaultTool("agent_memory_lessons", "Agents mode: propose the whole new Lessons section of your own working memory: what still holds from your dated entries (decisions and why, gotchas, how things work), short, never a task log. It replaces the current section; your dated entries are never changed. The person approves or declines it on a card in this chat; only a result with status saved means it was saved. A decline or an unanswered card changes nothing. A lesson that holds for every agent in the project belongs in a proposed change to the project's AGENTS.md instead.", {
+  lessons: { type: "string", minLength: 1, maxLength: 6000, description: "The whole new Lessons section, without its heading. Markdown; use ### or lists, never # or ## headings." },
+}, ["lessons"], false);
+const vaultTools = (worker) => (worker ? VAULT_TOOLS : [...VAULT_TOOLS, VAULT_LESSONS]);
 
 const FEEDBACK_STATUS = { type: "string", enum: ["new", "triaged", "in_progress", "resolved", "dismissed"] };
 function feedbackTool(name, description, properties, required = []) {
@@ -2279,7 +2286,7 @@ async function handle(msg) {
               ...(IS_WORKER ? [] : [HANDOVER, HANDOVER_ASK, HANDOVER_OUTCOME]),
               ...AGENT_TOOLS(IS_WORKER),
               ...FEEDBACK_TOOLS,
-              ...VAULT_TOOLS,
+              ...vaultTools(IS_WORKER),
               ...ORCHESTRATION_TOOLS,
             ]
           : [READ_CONVERSATION, CREATE_ARTIFACT],
@@ -2338,7 +2345,7 @@ async function handle(msg) {
         }
       }
       if (String(msg.params?.name || "").startsWith("vault_")) {
-        const tool = VAULT_TOOLS.find((candidate) => candidate.name === msg.params.name);
+        const tool = vaultTools(IS_WORKER).find((candidate) => candidate.name === msg.params.name);
         if (!CHAT_KEY || !tool) {
           return reply(msg.id, { isError: true, outcome: hostOutcome("validation"), content: [{ type: "text", text: "This vault tool requires an OctiqFlow chat." }] });
         }
@@ -2348,7 +2355,12 @@ async function handle(msg) {
           // come from the host, not from model-supplied tool arguments.
           const args = Object.fromEntries(Object.keys(tool.inputSchema.properties)
             .filter((key) => Object.hasOwn(supplied, key)).map((key) => [key, supplied[key]]));
-          const result = await callHook("vault", msg.params.name.slice(6), args, 60 * 1000, "Memory Vault operation");
+          // A proposed Lessons section waits on the person's card: the wait
+          // is this MCP's own, as for the agents tools.
+          const lessons = tool === VAULT_LESSONS;
+          if (lessons) args.waitSeconds = AGENT_WAIT_SECONDS;
+          const timeout = lessons ? (AGENT_WAIT_SECONDS + 30) * 1000 : 60 * 1000;
+          const result = await callHook("vault", msg.params.name.slice(6), args, timeout, "Memory Vault operation");
           if (msg.params.name !== "vault_receipt" && result?.status && result.status !== "saved") {
             return reply(msg.id, { isError: true, content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
           }

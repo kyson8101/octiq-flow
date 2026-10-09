@@ -28,10 +28,11 @@ test("both providers discover native vault tools without another MCP server", as
   for (const flags of [[], ["--disable-ask-user"]]) {
     const result = await call("", "chat:current", "tools/list", {}, flags);
     const tools = result.tools.filter(tool => tool.name.startsWith("vault_"));
-    assert.equal(tools.length, 11);
+    assert.equal(tools.length, 12);
     assert.ok(tools.some(tool => tool.name === "vault_search"));
     assert.ok(tools.some(tool => tool.name === "vault_agent_memory_read"));
     assert.ok(tools.some(tool => tool.name === "vault_agent_memory_append"));
+    assert.ok(tools.some(tool => tool.name === "vault_agent_memory_lessons"));
     assert.ok(tools.some(tool => tool.name === "vault_patch"));
     assert.ok(!tools.some(tool => /config|delete/.test(tool.name)));
     for (const tool of tools) {
@@ -118,4 +119,38 @@ test("an agent's memory append names only its words, and the host alone says whe
   assert.equal(refused.isError, true);
   assert.match(refused.content[0].text, /writes are off/);
   assert.equal(requests.length, 2);
+
+  // A proposed Lessons section carries this MCP's own card wait, never one
+  // the model supplied.
+  status = 200; response = { result: { status: "saved", text: "saved" } };
+  const lessons = await call(root, "chat:current", "tools/call", {
+    name: "vault_agent_memory_lessons", arguments: { lessons: "- Use worktrees.", waitSeconds: 1, agent: "Other" },
+  });
+  assert.equal(lessons.isError, undefined);
+  assert.deepEqual(requests[2], {
+    url: "/hook/vault",
+    body: { chatKey: "chat:current", action: "agent_memory_lessons", args: { lessons: "- Use worktrees.", waitSeconds: 180 } },
+  });
+});
+
+test("an orchestration worker is not offered the Lessons rewrite", async () => {
+  const run = (method, params) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs")], {
+      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ROOT: "", OCTIQ_CHAT_KEY: "chat:worker", OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let out = "";
+    child.on("error", reject);
+    child.stdout.on("data", chunk => {
+      out += chunk;
+      if (out.includes("\n")) { resolve(JSON.parse(out.split("\n")[0]).result); child.stdin.end(); }
+    });
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) + "\n");
+  });
+  const listed = await run("tools/list", {});
+  const vault = listed.tools.filter(tool => tool.name.startsWith("vault_")).map(tool => tool.name);
+  assert.ok(vault.includes("vault_agent_memory_append"));
+  assert.ok(!vault.includes("vault_agent_memory_lessons"));
+  const refused = await run("tools/call", { name: "vault_agent_memory_lessons", arguments: { lessons: "x" } });
+  assert.equal(refused.isError, true);
 });

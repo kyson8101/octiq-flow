@@ -1608,6 +1608,14 @@ async fn vault_handler(
         Ok(chat_key) => chat_key,
         Err(refused) => return hook_refusal(refused),
     };
+    // A proposed Lessons section waits on the person's card, so it is answered
+    // here rather than on the synchronous command path.
+    if request.action == "agent_memory_lessons" {
+        return match lessons_hook(&ctx, &chat_key, request.args).await {
+            Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+            Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
+        };
+    }
     match run_hook_command(
         &ctx,
         "memory_vault_agent".into(),
@@ -1620,6 +1628,42 @@ async fn vault_handler(
         Ok(result) => axum::Json(json!({"result": result})).into_response(),
         Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
+}
+
+/// An agent proposing a new Lessons section for its own memory
+/// (`memory_lessons`). Who it is comes from the chat, as for every
+/// agent-memory call; the section is written only on the person's Allow.
+async fn lessons_hook(
+    ctx: &Ctx,
+    chat_key: &str,
+    args: Value,
+) -> Result<Value, crate::outcome::Refusal> {
+    use crate::outcome::{ReasonClass, Refusal};
+    // A worker's attempt is not paused on a card: it records entries, and
+    // curates them the next time it leads a chat.
+    if ctx.services.orchestrations.active_task(chat_key)?.is_some() {
+        return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot rewrite its Lessons. Record what you learned with vault_agent_memory_append; propose Lessons from a chat you lead."));
+    }
+    let (me, _) = crate::team::identity(&ctx.services.handovers.team, chat_key, None)
+        .map_err(|error| Refusal::new(ReasonClass::ScopeRefused, error))?;
+    let proposal = serde_json::from_value(match args {
+        Value::Null => json!({}),
+        args => args,
+    })
+    .map_err(|error| {
+        Refusal::new(
+            ReasonClass::Validation,
+            format!("Those arguments are not valid: {error}"),
+        )
+    })?;
+    crate::memory_lessons::propose(
+        &crate::memory_vault::Vault::profile(),
+        chat_key,
+        &me,
+        proposal,
+        crate::permission::ask,
+    )
+    .await
 }
 
 async fn feedback_handler(
