@@ -211,7 +211,7 @@ impl OrchestrationStore {
             }
             let mut done = Vec::new();
             for plan in &plans {
-                chats.require_checkout_idle(&plan.checkout_root)?;
+                chats.require_checkout_idle(&plan.checkout_root, plan.is_managed_worktree())?;
                 let mut delivery = delivery_of(&run, plan)?;
                 if delivery.evidence.dirty {
                     return Err(format!(
