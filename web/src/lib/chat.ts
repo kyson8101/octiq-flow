@@ -44,7 +44,8 @@ import {
 import { readCodexEvent } from "./codexEvents";
 import { readPiEvent, type PiContent, type PiRead } from "./piEvents";
 import { readAntigravityEvent, type AntigravityDenial, type AntigravityRead } from "./antigravityEvents";
-import { accessLabel, type AccessLevel } from "./agentProviders";
+import { type AccessLevel } from "./agentProviders";
+import { antigravityAccessNeed } from "./accessRequest";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 import { parsePeerMessages, type PeerMessage } from "./peerMessage";
@@ -393,6 +394,15 @@ export type ChatState = {
    *  a token for the prose and tool arguments streaming in. An estimate, and it
    *  gives way to the real number the moment the message ends. */
   turnDraft?: number;
+  /** An Antigravity turn ended on a refusal: the least access that lets it
+   *  through, and why. Drawn as the access card (`lib/accessRequest`) while
+   *  the chat runs below it; gone once the next turn is taken up. */
+  accessNeed?: { requested: AccessLevel; reason: string };
+  /** How many refusals Antigravity's last `result` listed. Its
+   *  `denied_actions` keeps every refusal of the conversation so far (agy
+   *  1.2.16: a later turn that refused nothing lists the earlier ones), so a
+   *  turn's own are the ones past this count. */
+  antigravityDenied?: number;
   /** From the last `result` event. */
   lastCostUsd?: number;
   lastDurationMs?: number;
@@ -2334,7 +2344,11 @@ function foldAntigravity(
     return { ...state, sessionId: read.id };
   }
 
-  if (read.kind === "turn") return codexTurnStarted(state, event, parent, speaker, now);
+  if (read.kind === "turn") {
+    // The person has said what comes next; a refusal before it asks nothing.
+    const started = codexTurnStarted(state, event, parent, speaker, now);
+    return mine && started.accessNeed ? { ...started, accessNeed: undefined } : started;
+  }
 
   const say = (current: ChatState, text: string) =>
     withCodexCurrent(current, parent, speaker, (message) => ({
@@ -2424,14 +2438,21 @@ function foldAntigravity(
       messages = withStreamCard(messages, "agent-error", said.detail ?? "", said.detail || said.title, said.outcome);
     }
   }
-  if (mine && read.denied.length) {
-    // Nobody could be asked, so Antigravity refused and ended the turn. Say
-    // what it refused, at which level, and the way on: no card is coming.
-    const why = antigravityRefusal(read.denied, read.access);
-    messages = withStreamCard(markAntigravityRefused(messages, read.denied, outcome), "agent-warning", why, why, outcome);
+  let accessNeed = state.accessNeed;
+  // A shorter list than last time is a conversation that started over.
+  const seen = state.antigravityDenied ?? 0;
+  const fresh = mine ? (read.denied.length >= seen ? read.denied.slice(seen) : read.denied) : [];
+  if (fresh.length) {
+    // Nobody could be asked, so Antigravity refused and ended the turn. The
+    // refused calls fail where they are, and the turn's ask for more access
+    // is the access card, as an agent's own request_access is.
+    messages = markAntigravityRefused(messages, fresh, outcome);
+    accessNeed = antigravityAccessNeed(fresh, read.access);
   }
   return {
     ...state,
+    ...(accessNeed ? { accessNeed } : {}),
+    ...(mine ? { antigravityDenied: read.denied.length } : {}),
     ...(mine
       ? {
           ...turnOver,
@@ -2493,54 +2514,6 @@ const ANTIGRAVITY_ACTION_TOOLS: Record<string, (name: string) => boolean> = {
   read_file: (name) => ["view_file", "list_dir", "find_by_name", "grep_search"].includes(name),
   read_url: (name) => name === "read_url_content",
 };
-
-const ANTIGRAVITY_ACTION_WORDS: Record<string, string> = {
-  command: "a shell command",
-  mcp: "an MCP tool call",
-  write_file: "a file change",
-  read_file: "a file read",
-  read_url: "a web page read",
-  execute_url: "opening a web address",
-  unsandboxed: "a command outside its sandbox",
-};
-
-/** `WriteToFile` → `write to file`. */
-function antigravityToolWords(displayName: string): string {
-  return displayName
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/_/g, " ")
-    .toLowerCase();
-}
-
-/** Why an Antigravity turn ended on a refusal, in the person's words, and the
- *  least access that lets it through. Accept edits writes files inside the
- *  project without asking (agy 1.2.16); a read or a write outside the project,
- *  a command or anything else needs Auto or Skip permissions. Which side of
- *  the project a refused write fell on is not in the refusal, so a write
- *  refused below Accept edits names both. */
-export function antigravityRefusal(denied: readonly AntigravityDenial[], access: string | undefined): string {
-  const seen = new Map<string, AntigravityDenial>();
-  for (const denial of denied) {
-    const key = denial.action || denial.displayName || "";
-    if (key && !seen.has(key)) seen.set(key, denial);
-  }
-  const what = [...seen.values()].map(({ action, displayName }) => {
-    const words = ANTIGRAVITY_ACTION_WORDS[action];
-    const tool = displayName ? antigravityToolWords(displayName) : "";
-    if (words) return tool && action !== "command" && action !== "mcp" ? `${words} (${tool})` : words;
-    return tool || action;
-  });
-  const level = access ? `at ${accessLabel("antigravity", access as AccessLevel)} access` : "at this access level";
-  const label = (id: AccessLevel) => accessLabel("antigravity", id);
-  const writesOnly = [...seen.values()].every((denial) => denial.action === "write_file");
-  const belowEdits = access === undefined || access === "read" || access === "manual";
-  const way = writesOnly && belowEdits
-    ? `Give this chat ${label("edits")} access to let it change files in this project; a file outside the project needs Auto or ${label("full")}.`
-    : writesOnly && access === "edits"
-      ? `${label("edits")} covers only files inside this project; raise this chat's access to Auto or ${label("full")} to let it run.`
-      : `Raise this chat's access to Auto or ${label("full")} to let it run.`;
-  return `Antigravity refused ${what.join(" and ")} ${level} and ended the turn: it cannot ask anyone while it works, so no permission card can appear. ${way}`;
-}
 
 function piBlock(content: PiContent, speaker: Speaker | undefined): Block {
   if (content.kind === "text" || content.kind === "thinking") return content;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { antigravityRefusal, emptyChat, reduceChat, type ChatState, type Message } from "./chat";
+import { emptyChat, reduceChat, type ChatState, type Message } from "./chat";
+import { antigravityAccessNeed } from "./accessRequest";
 import { antigravityTool, readAntigravityEvent } from "./antigravityEvents";
 
 // Real `agy` 1.2.16 streams, captured on 2026-10-03 with the flags
@@ -103,13 +104,25 @@ describe("Antigravity conversations (real agy 1.2.16 streams)", () => {
     // The file read before it, in an earlier turn, keeps its tick.
     expect(read?.state).toBe("done");
 
-    // The refusal is said where the turn ended, with the level and the way on.
-    const refusal = rows.find((b) => b.id.startsWith("agent-warning-"));
-    expect(refusal?.result).toBe(
-      "Antigravity refused a shell command at Accept edits access and ended the turn: it cannot ask anyone while it works, so no permission card can appear. Raise this chat's access to Auto or Skip permissions to let it run.",
-    );
-    expect(refusal?.outcome).toMatchObject({ origin: "provider", providerName: "Antigravity" });
+    // The refusal asks for more access on the access card, not in a row of
+    // its own text.
+    expect(rows.some((b) => b.id.startsWith("agent-warning-"))).toBe(false);
     expect(state.failure).toBeUndefined();
+    // The third turn was taken up after it, so it asks nothing any more.
+    expect(state.accessNeed).toBeUndefined();
+  });
+
+  it("asks for the least level that lets a refused turn through until the next turn starts", () => {
+    const events = asTheHostRecordsIt(threeTurns, "edits", ["a", "b", "c"]);
+    const ends = events.flatMap((e, i) => (e.event === "result" ? [i] : []));
+    const refused = fold(events.slice(0, ends[1] + 1));
+    expect(refused.accessNeed).toEqual({
+      requested: "auto",
+      reason: "Antigravity refused a shell command at Accept edits access and ended the turn: it cannot ask anyone while it works.",
+    });
+    // The next message is what the person chose instead; the ask goes.
+    const next = events.findIndex((e, i) => i > ends[1] && (e.step_update as Json | undefined)?.step_type === "user_input");
+    expect(fold(events.slice(0, next + 1)).accessNeed).toBeUndefined();
   });
 
   it("counts each model call's tokens, not the conversation's running total", () => {
@@ -131,8 +144,8 @@ describe("Antigravity conversations (real agy 1.2.16 streams)", () => {
     const command = tools(state.messages).find((b) => b.name === "run_command");
     expect(command?.state).toBe("error");
     expect(command?.result).toContain("user denied permission to run command");
-    const refusal = tools(state.messages).find((b) => b.id.startsWith("agent-warning-"));
-    expect(refusal?.result).toContain("at Plan access");
+    expect(state.accessNeed?.reason).toContain("at Plan access");
+    expect(state.accessNeed?.requested).toBe("auto");
   });
 
   it("fails a file write Plan refused, and asks only for Accept edits", () => {
@@ -144,11 +157,11 @@ describe("Antigravity conversations (real agy 1.2.16 streams)", () => {
     expect(write?.state).toBe("error");
     expect(write?.result).toBe("Antigravity refused this call: nobody could approve it at this access level.");
     expect(write?.outcome).toMatchObject({ origin: "provider", providerName: "Antigravity" });
-    const refusal = tools(state.messages).find((b) => b.id.startsWith("agent-warning-"));
-    expect(refusal?.result).toBe(
-      "Antigravity refused a file change (write to file) at Plan access and ended the turn: it cannot ask anyone while it works, so no permission card can appear. Give this chat Accept edits access to let it change files in this project; a file outside the project needs Auto or Skip permissions.",
-    );
-    expect(refusal?.result).not.toContain("write_file");
+    expect(state.accessNeed).toEqual({
+      requested: "edits",
+      reason: "Antigravity refused a file change (write to file) at Plan access and ended the turn: it cannot ask anyone while it works. A file outside the project needs Auto · unguarded or Skip permissions.",
+    });
+    expect(state.accessNeed?.reason).not.toContain("write_file");
     expect(state.busy).toBe(false);
   });
 
@@ -156,10 +169,8 @@ describe("Antigravity conversations (real agy 1.2.16 streams)", () => {
     const state = fold(asTheHostRecordsIt(editsReadOutside, "edits", ["Read a file outside the project"]));
     const read = tools(state.messages).find((b) => b.name === "view_file");
     expect(read?.state).toBe("error");
-    const refusal = tools(state.messages).find((b) => b.id.startsWith("agent-warning-"));
-    expect(refusal?.result).toMatch(
-      /^Antigravity refused a file read \(view file\) at Accept edits access and ended the turn.*Raise this chat's access to Auto or Skip permissions to let it run\.$/,
-    );
+    expect(state.accessNeed?.requested).toBe("auto");
+    expect(state.accessNeed?.reason).toMatch(/^Antigravity refused a file read \(view file\) at Accept edits access and ended the turn/);
   });
 
   it("says why a launch failed before any turn", () => {
@@ -201,27 +212,32 @@ describe("readAntigravityEvent", () => {
   });
 
   it("names both refusals, once each, and falls back when the level is unknown", () => {
-    expect(
-      antigravityRefusal([{ action: "mcp" }, { action: "command", displayName: "RunCommand" }, { action: "mcp" }], undefined),
-    ).toMatch(/^Antigravity refused an MCP tool call and a shell command at this access level and ended the turn/);
+    const need = antigravityAccessNeed(
+      [{ action: "mcp" }, { action: "command", displayName: "RunCommand" }, { action: "mcp" }], undefined,
+    );
+    expect(need.reason).toMatch(/^Antigravity refused an MCP tool call and a shell command at this access level and ended the turn/);
+    expect(need.requested).toBe("auto");
   });
 
   it("asks for the least access that lets a refusal through", () => {
     const write = { action: "write_file", displayName: "WriteToFile" };
     // A write below Accept edits: Accept edits for the project, more beyond it.
-    expect(antigravityRefusal([write], "read")).toMatch(
-      /Give this chat Accept edits access to let it change files in this project; a file outside the project needs Auto or Skip permissions\.$/,
-    );
+    expect(antigravityAccessNeed([write], "read")).toMatchObject({
+      requested: "edits",
+      reason: expect.stringMatching(/A file outside the project needs Auto · unguarded or Skip permissions\.$/),
+    });
     // Accept edits already refused it, so the file was outside the project.
-    expect(antigravityRefusal([write], "edits")).toMatch(
-      /Accept edits covers only files inside this project; raise this chat's access to Auto or Skip permissions to let it run\.$/,
-    );
+    expect(antigravityAccessNeed([write], "edits")).toMatchObject({
+      requested: "auto",
+      reason: expect.stringMatching(/Accept edits covers only files inside this project\.$/),
+    });
     // A command alongside the write needs Auto, whatever the write needed.
-    expect(antigravityRefusal([write, { action: "command" }], "read")).toMatch(
-      /^Antigravity refused a file change \(write to file\) and a shell command at Plan access.*Raise this chat's access to Auto or Skip permissions to let it run\.$/,
-    );
+    expect(antigravityAccessNeed([write, { action: "command" }], "read")).toMatchObject({
+      requested: "auto",
+      reason: expect.stringMatching(/^Antigravity refused a file change \(write to file\) and a shell command at Plan access/),
+    });
     // A permission this page has no words for is named by its tool.
-    expect(antigravityRefusal([{ action: "brand_new", displayName: "DoTheThing" }], "read")).toMatch(
+    expect(antigravityAccessNeed([{ action: "brand_new", displayName: "DoTheThing" }], "read").reason).toMatch(
       /^Antigravity refused do the thing at Plan access/,
     );
   });

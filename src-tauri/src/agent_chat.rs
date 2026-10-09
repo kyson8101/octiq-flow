@@ -1091,6 +1091,30 @@ impl ChatManager {
             .filter(|id| safe_session_id(id).is_some())
     }
 
+    /// Which agent runs `key`, the level it runs at now, and when a new level
+    /// would take hold: what an access request is put to the person with.
+    /// The level is the start context's, which `chat_set_access` keeps
+    /// current for every provider. None for a chat with no live process.
+    pub(crate) fn access_standing(&self, key: &str) -> Option<crate::access_request::Standing> {
+        let session = self.sessions.lock().ok()?.get(key).cloned()?;
+        let (agent, app_server_thread) = {
+            let guard = session.lock().ok()?;
+            (guard.agent, guard.codex.is_some())
+        };
+        let access = self
+            .start_context(key)
+            .and_then(|start| start.access)
+            .unwrap_or(Access::Read);
+        Some(crate::access_request::Standing {
+            agent,
+            access,
+            takes: crate::access_request::takes(
+                app_server_thread,
+                provider_for(agent).capabilities(),
+            ),
+        })
+    }
+
     fn queue_context(&self, session_key: &str) -> Option<QueueContext> {
         self.start_context(session_key).map(QueueContext::from)
     }
@@ -4724,6 +4748,7 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     // Outliving it would be a permission nobody remembers giving.
     crate::permission::forget_chat(&key);
     crate::safety_block::forget_chat(&key);
+    crate::access_request::forget_chat(&key);
     with_access(|a| a.remove(&key));
     end_process(manager, &key)?;
     cancelled
