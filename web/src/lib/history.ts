@@ -99,6 +99,36 @@ export function readSession(session: HistorySession): Promise<unknown[]> {
     });
 }
 
+/** What picking a session up into a chat did. `imported` means its history is
+ *  now the start of that chat's own record on the server, to be read back like
+ *  any chat's; otherwise `events` is the history, for the page alone. */
+export type ImportedSession = { imported: boolean; events: unknown[] };
+
+/** Pick a past session up INTO the chat recorded under `key`.
+ *
+ *  Reading it into the page only (`readSession`) was the bug: a chat nobody
+ *  has spoken in yet has no record on the server, so the history existed only
+ *  in this page, and reopening the chat once that copy was gone — another
+ *  device, a reload with a full store — showed an empty conversation. The
+ *  server now writes it as the start of the chat's record.
+ *
+ *  A backend older than this page cannot do that; it still gets the history
+ *  read into the page, as before, rather than none at all. */
+export function importSession(session: HistorySession, key: string): Promise<ImportedSession> {
+  return bridge
+    .invoke<ImportedSession>("agent_history_import", {
+      key,
+      agent: session.agent,
+      sessionId: session.sessionId,
+    })
+    .then((out) => ({ imported: !!out?.imported, events: out?.events ?? [] }))
+    .catch((err: unknown) => {
+      const raw = err instanceof Error ? err.message : String(err ?? "");
+      if (!raw.includes("not available on this backend")) throw new Error(explain(err));
+      return readSession(session).then((events) => ({ imported: false, events }));
+    });
+}
+
 /** Fold a past session's events into a chat, exactly the way a live one folds.
  *
  *  There is no second message format anywhere in this app, and this function is

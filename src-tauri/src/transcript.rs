@@ -144,6 +144,54 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     Some(seq)
 }
 
+/// Start a chat's record with `events`, but only a record that has nothing in
+/// it yet. True when they were written; false when the chat already has a
+/// record, which is never written over or added to here.
+///
+/// This is how a session picked out of an agent's own history becomes part of
+/// the chat that picked it up. Until something was said in it, that chat had
+/// no record at all: its history lived only in the page that read it, so
+/// opening it anywhere else, or after that page's copy was gone, showed a
+/// blank conversation. Held under the append lock, so a turn starting in the
+/// same moment either lands after the whole history or makes this refuse.
+pub fn seed(key: &str, events: &[Value]) -> Result<bool, String> {
+    let path = path_for(key).ok_or_else(|| format!("not a usable chat key: {key:?}"))?;
+    let mut text = String::new();
+    for event in events {
+        text.push_str(&serde_json::to_string(event).map_err(|e| e.to_string())?);
+        text.push('\n');
+    }
+
+    let mut guard = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    let counts = guard.get_or_insert_with(HashMap::new);
+    let next = match counts.get(key) {
+        Some(next) => *next,
+        None => count(&path) + 1,
+    };
+    if next != 1 {
+        return Ok(false);
+    }
+    if events.is_empty() {
+        return Ok(true);
+    }
+    let existed = path.exists();
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("cannot write the chat record: {e}"))?;
+    file.write_all(text.as_bytes())
+        .and_then(|_| file.sync_data())
+        .map_err(|e| format!("cannot write the chat record: {e}"))?;
+    counts.insert(key.to_string(), events.len() as u64 + 1);
+    if !existed {
+        if let Some(dir) = path.parent() {
+            let _ = sync_dir(dir);
+        }
+    }
+    Ok(true)
+}
+
 /// Make a folder's entries (a file just created or renamed into it) durable.
 pub(crate) fn sync_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(test)]
@@ -1034,5 +1082,45 @@ mod tests {
         assert_eq!(since(&key, 0).len(), 1);
         forget(&key);
         assert!(since(&key, 0).is_empty());
+    }
+
+    /// A resumed session's history becomes the start of the chat's record, so
+    /// reopening the chat replays it like anything else said there, and the
+    /// first turn afterwards is numbered after it.
+    #[test]
+    fn a_seeded_history_starts_the_record_and_turns_follow_it() {
+        let key = unique_key("seeded");
+        let history = [
+            json!({"type":"user", "message":{"content":[{"type":"text","text":"earlier"}]}}),
+            json!({"type":"assistant", "message":{"content":[{"type":"text","text":"reply"}]}}),
+        ];
+        assert_eq!(seed(&key, &history), Ok(true));
+        let read = since(&key, 0);
+        assert_eq!(read.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(read[0].event, history[0]);
+        assert_eq!(append(&key, &json!({"type":"result"})), Some(3));
+
+        // A restarted server counts the file rather than trusting memory.
+        forget_count(&key);
+        assert_eq!(append(&key, &json!({"type":"result"})), Some(4));
+        forget(&key);
+    }
+
+    /// A chat something was already said in keeps its record exactly as it
+    /// is: seeding never writes over a conversation, nor slips lines into it.
+    #[test]
+    fn a_chat_with_a_record_is_never_seeded() {
+        let key = unique_key("seed-refused");
+        append(&key, &json!({"type":"system", "subtype":"init"}));
+        assert_eq!(seed(&key, &[json!({"type":"user"})]), Ok(false));
+        assert_eq!(since(&key, 0).len(), 1);
+
+        // Known only from the file, as after a restart.
+        forget_count(&key);
+        assert_eq!(seed(&key, &[json!({"type":"user"})]), Ok(false));
+        assert_eq!(since(&key, 0).len(), 1);
+        forget(&key);
+
+        assert!(seed("chat:with/slash", &[]).is_err());
     }
 }

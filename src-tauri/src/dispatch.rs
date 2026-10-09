@@ -699,6 +699,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "agent")?,
             arg(&args, "sessionId")?,
         )?)),
+        // Picking one up into a chat: its history becomes the start of the
+        // chat's record, so reopening the chat shows it before anything has
+        // been said there.
+        "agent_history_import" => to_value(crate::agent_history::agent_history_import(
+            arg(&args, "key")?,
+            arg(&args, "agent")?,
+            arg(&args, "sessionId")?,
+        )),
         "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
         "chat_set_agent_title" => to_value(crate::agent_chat::chat_set_agent_title(
             arg(&args, "chatId")?,
@@ -1945,6 +1953,20 @@ mod tests {
         let out = dispatch(&svc, "agent_history_list", json!({ "limit": 5 })).expect("routed");
         let rows = out.as_array().expect("an array of sessions");
         assert!(rows.len() <= 5, "the limit is respected: {}", rows.len());
+    }
+
+    /// Picking a session up into a chat is routed, and refuses a record that
+    /// is not a chat's before it reads anything.
+    #[test]
+    fn a_browser_can_pick_a_past_session_up_into_a_chat() {
+        let svc = Services::load();
+        let err = dispatch(
+            &svc,
+            "agent_history_import",
+            json!({ "key": "orch:worker", "agent": "claude", "sessionId": "abc" }),
+        )
+        .expect_err("not a chat");
+        assert!(err.contains("not a chat"), "{err}");
     }
 
     #[test]

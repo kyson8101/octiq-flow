@@ -77,7 +77,12 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   if (cancelled()) return;
   // Imported sessions may have a local transcript before the server has any
   // events for this key. An empty answer must not erase those messages.
-  const seed = from === 0 && run?.length ? { ...emptyChat(), sessionId: before.sessionId } : before;
+  // The folder travels with the session id: a session picked up from history
+  // has no `system/init` in its record to say where it ran, and resuming it
+  // anywhere else would not find it.
+  const seed = from === 0 && run?.length
+    ? { ...emptyChat(), sessionId: before.sessionId, cwd: before.cwd }
+    : before;
   const context = page?.context ?? [];
   let next = await replayChat(seed, context, 0, cancelled);
   next = await replayChat(next, run ?? [], from, cancelled);
