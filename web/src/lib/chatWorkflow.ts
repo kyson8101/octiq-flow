@@ -1,6 +1,6 @@
 import type { Conversation } from "./store";
 import { workerArchiveChatList } from "./workerArchive";
-import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot, type OrchestrationRun } from "./orchestration";
+import { EMPTY_ORCHESTRATION, isStuck, type OrchestrationSnapshot, type OrchestrationRun } from "./orchestration";
 
 export const isActiveRun = (run: OrchestrationRun) => ["planning", "running", "waiting"].includes(run.status);
 
@@ -22,7 +22,7 @@ export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRu
   const gates = snapshot.gates.filter((gate) => gate.runId === run.id && gate.status === "open");
   const progress = `${tasks.filter((task) => task.status === "completed").length}/${tasks.length} done`;
   if (gates.length) return `Needs decision · ${progress}`;
-  if (tasks.some((task) => task.status === "blocked" || task.status === "failed") && isActiveRun(run)) return `Needs attention · ${progress}`;
+  if (tasks.some(isStuck) && isActiveRun(run)) return `Needs attention · ${progress}`;
   const label = run.status.charAt(0).toUpperCase() + run.status.slice(1);
   return `${label} · ${progress}`;
 }

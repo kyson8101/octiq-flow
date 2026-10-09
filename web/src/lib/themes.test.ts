@@ -24,8 +24,8 @@ import { BUILT_IN, preview, THEMES } from "./themeStore";
 const PALETTES = THEMES.filter((t) => t.id !== BUILT_IN);
 
 describe("the theme files on disk", () => {
-  it("ships exactly the three supported modes", () => {
-    expect(THEMES.map(({ id }) => id)).toEqual(["light", "dark", "fun"]);
+  it("ships exactly the five supported modes", () => {
+    expect(THEMES.map(({ id }) => id)).toEqual(["light", "dark", "fun", "manga", "guofeng"]);
     expect(new Set(THEMES.map((t) => t.id)).size).toBe(THEMES.length);
   });
 

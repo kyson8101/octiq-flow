@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" preserveAspectRatio="none">
+  <!-- Ink-wash mountains (水墨山): three ranges, palest furthest away. Each
+       ridge is roughened like a brush edge and softened like wet ink, and each
+       dissolves into mist at its foot, so the scene has no bottom edge. -->
+  <defs>
+    <linearGradient id="far" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ebe3d3" stop-opacity="0.06"/>
+      <stop offset="0.6" stop-color="#ebe3d3" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="mid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0.25" stop-color="#ebe3d3" stop-opacity="0.09"/>
+      <stop offset="0.85" stop-color="#ebe3d3" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="near" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0.55" stop-color="#ebe3d3" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ebe3d3" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="wash" x="-2%" y="-10%" width="104%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02 0.05" numOctaves="3" seed="8" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="10" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+      <feGaussianBlur in="rough" stdDeviation="1.6"/>
+    </filter>
+  </defs>
+  <g filter="url(#wash)">
+    <path fill="url(#far)" d="M0 300 L0 150 Q40 126 70 100 Q95 74 120 92 Q150 114 190 62 Q215 30 240 60 Q270 98 310 102 Q350 106 380 72 Q410 34 440 18 Q470 40 500 82 Q540 122 590 106 Q630 92 660 60 Q690 28 720 62 Q760 102 810 114 Q860 122 900 82 Q935 44 965 60 Q1000 80 1040 98 Q1090 116 1130 90 Q1170 70 1200 86 L1200 300 Z"/>
+    <path fill="url(#mid)" d="M0 300 L0 190 Q50 176 90 150 Q120 128 150 140 Q190 158 230 120 Q260 92 290 118 Q330 152 380 156 Q430 160 470 130 Q505 104 530 112 Q570 126 610 160 Q660 196 720 176 Q770 160 800 126 Q830 96 860 118 Q900 150 950 162 Q1010 176 1060 150 Q1110 124 1150 140 Q1180 152 1200 150 L1200 300 Z"/>
+    <path fill="url(#near)" d="M0 300 L0 236 Q60 222 110 198 Q150 180 185 194 Q230 214 280 186 Q320 162 350 176 Q395 200 450 210 Q520 222 580 196 Q620 178 650 166 Q690 152 730 186 Q780 224 850 214 Q910 206 960 180 Q1000 160 1040 182 Q1100 214 1200 202 L1200 300 Z"/>
+  </g>
+</svg>

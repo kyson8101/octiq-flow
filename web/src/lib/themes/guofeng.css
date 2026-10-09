@@ -1,0 +1,38 @@
+/* OctiqFlow 中国风 palette — dark and cinematic: ink-black night, rice-paper
+   ivory for text, a muted gold accent, cinnabar for seal marks.
+
+   The accent is the gold, not the cinnabar: ~90 rules draw TEXT in
+   `--accent`, and red lettering reads as an error. Cinnabar is used by name
+   (`--seal`) in `src/guofeng.css`, only on stamps.
+
+   Like Manga, this mode is more than a palette: the lettering, vignette,
+   ink-wash mountains and seals live in `src/guofeng.css`, scoped to
+   `[data-theme="guofeng"]`. */
+:root {
+  --background: #0e0d0c;
+  --foreground: #ebe3d3;
+  --card: #181614;
+  --card-foreground: #ebe3d3;
+  --popover: #181614;
+  --popover-foreground: #ebe3d3;
+  --primary: #c9a45c;
+  --primary-foreground: #14110c;
+  --secondary: #221f1b;
+  --surface-raised: #24211c;
+  --selection-tint: rgb(201 164 92 / 12%);
+  --secondary-foreground: #ebe3d3;
+  --muted: #221f1b;
+  --muted-foreground: #a39a8a;
+  --accent: #221f1b;
+  --accent-foreground: #ebe3d3;
+  --destructive: #d0574a;
+  --destructive-foreground: #1a0d0b;
+  --border: #2e2a24;
+  --input: #3a352d;
+  --ring: #c9a45c;
+  --chart-1: oklch(0.72 0.09 160);
+  --chart-2: oklch(0.78 0.11 80);
+  --chart-3: oklch(0.7 0.08 230);
+  --sidebar: #0a0908;
+  --radius: 0.375rem;
+}

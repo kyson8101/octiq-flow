@@ -1,0 +1,44 @@
+/* OctiqFlow Manga palette. White paper and black ink — a manga page is
+   monochrome, and its greys are screentone, not colour. The accent is ink
+   itself, which works both ways it is used: as a fill under white text, and as
+   text on paper (~90 rules draw text in `--accent`).
+
+   Green and amber stay, muted, because they carry meaning (a clean repo, a
+   dropped connection) and red stays for danger. Nothing else has a hue.
+
+   Unlike the other modes this one is more than a palette: panel frames,
+   lettering, screentone and balloons live in `src/manga.css`, scoped to
+   `[data-theme="manga"]`. The radius rungs are named outright: panels are cut
+   square with a hand's unevenness, which no single `--radius` scales into. */
+:root {
+  --background: #fbfaf6;
+  --foreground: #121212;
+  --card: #ffffff;
+  --card-foreground: #121212;
+  --popover: #ffffff;
+  --popover-foreground: #121212;
+  --primary: #121212;
+  --primary-foreground: #ffffff;
+  --secondary: #efeeea;
+  --surface-raised: #ecebe6;
+  --selection-tint: rgb(18 18 18 / 9%);
+  --secondary-foreground: #121212;
+  --muted: #efeeea;
+  --muted-foreground: #4f4f4f;
+  --accent: #efeeea;
+  --accent-foreground: #121212;
+  --destructive: #c8202f;
+  --destructive-foreground: #ffffff;
+  --border: #2a2a2a;
+  --input: #121212;
+  --ring: #121212;
+  --chart-1: oklch(0.5 0.1 150);
+  --chart-2: oklch(0.6 0.11 75);
+  --chart-3: oklch(0.45 0 0);
+  --sidebar: #f4f3ef;
+  --radius: 0.25rem;
+  --radius-sm: 3px 1px 3px 2px;
+  --radius-md: 4px 2px 5px 2px;
+  --radius-lg: 6px 2px 5px 3px;
+  --radius-pill: 999px;
+}

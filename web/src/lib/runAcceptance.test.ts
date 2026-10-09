@@ -43,7 +43,8 @@ describe("acceptance coverage comes from planned checks and reported verdicts (f
     expect(by.tasks.value).toBe("2 of 2");
     expect(by.checks.value).toBe("None planned");
     expect(by.acceptance.value).toBe("Unverified");
-    expect(by.deployed.value).toBe("Not tracked");
+    expect(by.deployed.value).toBe("Unverified");
+    expect(by.deployed.note).toContain("Nothing merged yet");
   });
 
   it("says passed checks are passed checks, not product acceptance, and a failure is failing", () => {
@@ -63,11 +64,27 @@ describe("acceptance coverage comes from planned checks and reported verdicts (f
     ];
     const sandboxes: SandboxSnapshot = { defaultEnabled: false, environments: { "chat:w1": env("chat:w1") } };
     const stages = Object.fromEntries(runStages(tasks, [attempt("a1", "unchecked", "chat:w1")], sandboxes).map((s) => [s.key, s]));
-    expect(stages.integration.value).toBe("1 of 3 branches merged");
+    expect(stages.integration.value).toBe("1 of 3 branches merged · 1 prepared, not merged");
     expect(stages.integration.note).toContain("1 not checked yet");
     expect(stages.sandbox.value).toBe("1 ready");
     expect(stages.sandbox.note).toContain("not a deployment");
-    expect(stages.deployed.value).toBe("Not tracked");
+    // Merged, but the project has no release check: unverified, not "no".
+    expect(stages.deployed.value).toBe("Unverified");
+    expect(stages.deployed.note).toContain("no release check");
+  });
+
+  it("says what the release check found for merged heads (feedback ee0a43b0)", () => {
+    const released = (value: boolean | undefined) => {
+      const ws = workspace(true);
+      return { ...ws, delivery: { ...ws.delivery!, released: value } };
+    };
+    const stages = Object.fromEntries(runStages([
+      task("live", { workspace: released(true) }),
+      task("waiting", { workspace: released(false) }),
+      task("unknown", { workspace: released(undefined) }),
+    ], [], null).map((s) => [s.key, s]));
+    expect(stages.deployed.value).toBe("1 of 3 merged branches released");
+    expect(stages.deployed.note).toContain("unverified, not unreleased");
   });
 });
 

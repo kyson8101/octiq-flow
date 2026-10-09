@@ -329,6 +329,19 @@ fn normalize_item(mut item: Value) -> Value {
     if object.get("status").and_then(Value::as_str) == Some("inProgress") {
         object.insert("status".into(), Value::String("in_progress".into()));
     }
+    // A generated picture arrives whole as base64 (2–3 MB a picture) beside
+    // the file Codex already saved it to. The chat draws it from that file, so
+    // the copy would only be written to the record and sent to every browser.
+    if object.get("type").and_then(Value::as_str) == Some("image_generation")
+        && object
+            .get("saved_path")
+            .and_then(Value::as_str)
+            .is_some_and(|p| !p.is_empty())
+    {
+        if let Some(result) = object.get_mut("result") {
+            *result = Value::String(String::new());
+        }
+    }
     item
 }
 
@@ -498,6 +511,29 @@ mod tests {
         assert_eq!(event["item"]["status"], "in_progress");
         assert_eq!(event["item"]["aggregated_output"], "ok");
         assert_eq!(event["item"]["exit_code"], 0);
+    }
+
+    /// Feedback e780c2a2: the picture is drawn from `saved_path`, so the
+    /// megabytes of base64 beside it are not carried into the record.
+    #[test]
+    fn a_generated_picture_keeps_its_path_and_drops_its_base64() {
+        let item = |saved: Option<&str>| {
+            normalize_item(json!({
+                "type": "imageGeneration", "id": "ig-1", "status": "completed",
+                "result": "iVBORw0KGgoAAAANSUhEUgAA", "savedPath": saved,
+                "revisedPrompt": "a photo",
+            }))
+        };
+        let saved = item(Some("/home/k/.codex/generated_images/t/ig-1.png"));
+        assert_eq!(saved["type"], "image_generation");
+        assert_eq!(
+            saved["saved_path"],
+            "/home/k/.codex/generated_images/t/ig-1.png"
+        );
+        assert_eq!(saved["result"], "");
+        assert_eq!(saved["revised_prompt"], "a photo");
+        // With no file to draw from, the only copy is kept.
+        assert_eq!(item(None)["result"], "iVBORw0KGgoAAAANSUhEUgAA");
     }
 
     #[test]

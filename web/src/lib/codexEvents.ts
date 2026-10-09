@@ -158,6 +158,32 @@ export function readCodexEvent(raw: unknown): CodexRead | null {
         state: runState(status, completed),
       };
 
+    // Feedback e780c2a2: a picture Codex made or looked at fell through to
+    // `default` and drew nothing. Both are drawn by path: `image_generation`
+    // also carries the whole PNG as base64 in `result` (megabytes), which is
+    // left out of the block; `saved_path` is the same picture on disk.
+    case "image_generation": {
+      const path = str(item.saved_path);
+      const prompt = str(item.revised_prompt);
+      return {
+        kind: "tool",
+        id,
+        name: "image_generation",
+        args: { ...(path ? { file_path: path } : {}), ...(prompt ? { prompt } : {}) },
+        state: runState(status, completed),
+        ...(completed && str(obj(item.failure).message) ? { result: str(obj(item.failure).message) } : {}),
+      };
+    }
+
+    case "image_view":
+      return {
+        kind: "tool",
+        id,
+        name: "image_view",
+        args: { file_path: str(item.path) },
+        state: runState(status, completed),
+      };
+
     case "mcp_tool_call": {
       const result = completed ? mcpResult(item) : "";
       const state = runState(status, completed);

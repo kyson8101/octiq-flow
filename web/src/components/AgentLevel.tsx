@@ -257,7 +257,7 @@ export function AgentProfile({ agent, connected, onOpenRun, onChanged }: {
               <li>The size is chosen before the task starts and cannot change after. Each task pays once, however often it is reopened or retried.</li>
               <li>Accepted tasks counts every task you or a lead accepted, once and for good, including tasks that earned no XP. A task reopened and accepted again shows in the history again, but is counted once.</li>
               <li>Level 1 starts at 0 XP. Going from level L to L+1 takes {profile.rules.levelStep} × L XP.</li>
-              <li>Only accepted tasks in runs count. Work in ordinary chats is not scored.</li>
+              <li>Only accepted tasks in missions count. Work in ordinary chats is not scored.</li>
               <li>Scoring began {shortDate(profile.scoringSince)}. Tasks finished before then are not scored.</li>
               <li>Token usage is shown for information only. It does not affect XP.</li>
             </ul>

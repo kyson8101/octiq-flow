@@ -45,12 +45,12 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
       <BackIcon />
     </button>}
     {onOpenBeside && <OpenBesideButton className="is-bar" title={besideTitle} onClick={onOpenBeside} />}
-    <RunTitle text={run?.objective ?? "New run"} />
+    <RunTitle text={run?.objective ?? "New mission"} />
     {readOnly && <ReadOnlyBadge className="workflow-read-only" />}
   </>;
   const nav = views ? <nav className="chat-workflow-bar" aria-label="Chat workflow">
     <div className="chat-workflow-views" role="group" aria-label="Conversation view">
-      <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>{unified ? "Tasks" : "Run"}{planPending ? " (plan awaiting approval)" : ""}</button>
+      <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>{unified ? "Tasks" : "Mission"}{planPending ? " (plan awaiting approval)" : ""}</button>
       <button type="button" aria-pressed={view === "chat"} onClick={() => onView("chat")}>Chat</button>
     </div>
   </nav> : null;
@@ -61,6 +61,30 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
     {title}{nav}
   </div>, slot);
   return <header className={unified ? "workflow-header" : undefined}>{title}{nav}</header>;
+}
+
+/** The top bar's switch for the Tasks column beside the chat. It only exists
+ *  where the two sit side by side; narrower, the Tasks/Chat tabs already take
+ *  turns. While the column is put away, decisions waiting in it ride on the
+ *  button, so hiding the tasks never hides a plan waiting for Approve. */
+export function TasksButton({ tasks, decisions, open, onToggle }: {
+  tasks: number; decisions: number; open: boolean; onToggle: () => void;
+}) {
+  const owed = !open && decisions > 0;
+  const label = `${open ? "Hide" : "Show"} the task column${tasks ? ` — ${tasks} ${tasks === 1 ? "task" : "tasks"}` : ""}${owed ? `, ${decisions} waiting for you` : ""}`;
+  return (
+    <button className={`icon-btn tasks-toggle${open ? " is-on" : ""}`} type="button"
+      aria-expanded={open} aria-label={label} title={label} onClick={onToggle}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2.5" />
+        <path d="M9.5 4v16" />
+      </svg>
+      <span className="topbar-action-label">Tasks</span>
+      {tasks > 0 && <span className="tasks-toggle-count">{tasks}</span>}
+      {owed && <span className="tasks-toggle-owed" aria-hidden="true">{decisions}</span>}
+    </button>
+  );
 }
 
 function BackIcon() {

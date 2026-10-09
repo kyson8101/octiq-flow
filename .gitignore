@@ -8,6 +8,10 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+# pnpm 10+ writes this placeholder ("esbuild: set this to true or false") on
+# every install in a fresh worktree. Untracked, it left every task worktree
+# dirty, so none of them could be cleaned up (feedback 1becac39).
+/web/pnpm-workspace.yaml
 dist
 dist-ssr
 *.local

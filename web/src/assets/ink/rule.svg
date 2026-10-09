@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 8" preserveAspectRatio="none">
+  <!-- A thin gold brush line: thick in the middle, lifting off at both ends,
+       with breaks along its length where the brush ran dry. -->
+  <defs>
+    <linearGradient id="lift" x1="0" x2="1">
+      <stop offset="0" stop-color="#c9a45c" stop-opacity="0"/>
+      <stop offset="0.2" stop-color="#c9a45c" stop-opacity="0.7"/>
+      <stop offset="0.75" stop-color="#c9a45c" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#c9a45c" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="dry" x="0" y="-50%" width="100%" height="200%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.03 0.6" numOctaves="2" seed="2" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  6 0 0 0 -2.3" result="m"/>
+      <feComposite in="SourceGraphic" in2="m" operator="in"/>
+    </filter>
+  </defs>
+  <path filter="url(#dry)" fill="url(#lift)" d="M0 4.6 C200 2.4 800 2.2 1000 3.8 L1000 5 C800 6.8 200 6.6 0 5.4 Z"/>
+</svg>

@@ -35,6 +35,7 @@ pub mod execution;
 pub mod inbox;
 pub mod levels;
 pub mod lifecycle;
+pub mod mission;
 pub mod peer;
 #[cfg(test)]
 mod reporting_tests;
@@ -43,6 +44,7 @@ mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
 pub use levels::{TaskAcceptance, TaskSize, XpAward};
+pub use workspaces::WriterBeside;
 use workspaces::{TaskWorkspace, WorkspaceProposal};
 
 const STORE_VERSION: u32 = 4;
@@ -58,6 +60,9 @@ pub enum RunStatus {
     Completed,
     Failed,
     Stopped,
+    /// A mission the person closed: its worktrees are gone, its record stays,
+    /// and new work starts a new mission. `Run::abandoned` says which ending.
+    Closed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +130,16 @@ pub struct Run {
     /// archived; everything it recorded stays, and restoring clears this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<i64>,
+    /// When the person closed this mission. See `mission.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<i64>,
+    /// Closed without its work merged. The branch is kept.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abandoned: bool,
+    /// What git last said about each of the mission's worktrees: merged,
+    /// released. Read on request (`refresh_mission`), never inferred.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mission_delivery: Vec<mission::MissionDelivery>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,6 +416,11 @@ pub struct Task {
     /// who had it, who took it, why, and when. See `reassign_task`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs: Vec<TaskHandoff>,
+    /// The task the coordinator created to replace this one after it was
+    /// blocked or failed. Its history stays; it is no longer owed anything,
+    /// so it stops counting as blocked (feedback 6b0870f9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1264,6 +1284,9 @@ impl OrchestrationStore {
             updated_at: now,
             stopped_reason: None,
             archived_at: None,
+            closed_at: None,
+            abandoned: false,
+            mission_delivery: Vec::new(),
         };
         let created = run.clone();
         self.mutate(|data| {
@@ -1710,6 +1733,37 @@ impl OrchestrationStore {
         )
     }
 
+    /// Whether `old` may be replaced: a task of this coordinator's run that
+    /// was blocked or failed, has no worker on it, and was not replaced yet.
+    /// Asked before the replacement is created, so a refusal creates nothing.
+    pub fn check_supersede(
+        &self,
+        actor_chat_key: &str,
+        run_id: &str,
+        old: &str,
+    ) -> Result<(), String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        supersedable(&inner.data, actor_chat_key, run_id, old)
+    }
+
+    /// Record that `new` replaces `old` (see `check_supersede`).
+    pub fn supersede(&self, actor_chat_key: &str, old: &str, new: &str) -> Result<Task, String> {
+        let task = self.mutate(|data| {
+            let replacement = data
+                .tasks
+                .get(new)
+                .ok_or("The replacing task does not exist.")?;
+            let run_id = replacement.run_id.clone();
+            supersedable(data, actor_chat_key, &run_id, old)?;
+            let task = data.tasks.get_mut(old).expect("checked above");
+            task.superseded_by = Some(new.to_string());
+            task.updated_at = now_ms();
+            Ok(task.clone())
+        })?;
+        announce(&task.run_id, "task_superseded");
+        Ok(task)
+    }
+
     /// `create_carded_task` with the task's runtime prerequisite, which goes
     /// in with the task in the same write, like its card and size.
     #[allow(clippy::too_many_arguments)]
@@ -1773,6 +1827,9 @@ impl OrchestrationStore {
             if run.archived_at.is_some() {
                 return Err("This run is archived. Restore it before adding work.".into());
             }
+            if run.status == RunStatus::Closed {
+                return Err("This mission is closed. Start a new mission for new work.".into());
+            }
             if worker.is_none() && run.worker_defaults.as_ref().is_some_and(|d| d.agent.is_none()) {
                 return Err("Choose a suitable worker for this task: provide worker.agent, worker.model, worker.access, and optional worker.effort.".into());
             }
@@ -1832,6 +1889,7 @@ impl OrchestrationStore {
                 kind,
                 verdict: None,
                 handoffs: Vec::new(),
+                superseded_by: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -2298,7 +2356,10 @@ impl OrchestrationStore {
                     return Err("This recovery was superseded or is not due.".into());
                 }
             }
-            if matches!(run.status, RunStatus::Completed | RunStatus::Stopped) {
+            if matches!(
+                run.status,
+                RunStatus::Completed | RunStatus::Stopped | RunStatus::Closed
+            ) {
                 return Err("This run no longer accepts workers.".into());
             }
             if task.status == TaskStatus::Completed || task.status == TaskStatus::Cancelled {
@@ -2345,6 +2406,26 @@ impl OrchestrationStore {
                     "Run {} already has its {} allowed workers active.",
                     run.id, run.max_concurrent
                 ));
+            }
+            // A mission's writers take turns in its one worktree. Refused here,
+            // before an attempt exists, the task stays ready for its turn;
+            // refused at launch it would settle as failed.
+            if run.workspace_mode == WorkspaceMode::Mission && launch.access != Access::Read {
+                let root = workspaces::task_root(&run, task.destination.as_ref());
+                let busy = data.attempts.values().find(|a| {
+                    a.run_id == run.id
+                        && a.access != Access::Read
+                        && attempt_is_unsettled(data, a)
+                        && data.tasks.get(&a.task_id).is_some_and(|t| {
+                            workspaces::task_root(&run, t.destination.as_ref()) == root
+                        })
+                });
+                if let Some(busy) = busy {
+                    let title = data.tasks.get(&busy.task_id).map_or("", |t| t.title.as_str());
+                    return Err(format!(
+                        "\"{title}\" is writing in this mission's worktree. This task can start when it finishes."
+                    ));
+                }
             }
 
             let number = data
@@ -3723,6 +3804,37 @@ fn root_allowed(workspace: &Workspace, chat_cwd: Option<&str>, root: &str) -> bo
             .any(|repo| root.starts_with(repo))
 }
 
+fn supersedable(
+    data: &Stored,
+    actor_chat_key: &str,
+    run_id: &str,
+    old: &str,
+) -> Result<(), String> {
+    coordinator(data, run_id, actor_chat_key)?;
+    let task = data
+        .tasks
+        .get(old)
+        .ok_or("The task to replace does not exist.")?;
+    if task.run_id != run_id {
+        return Err("A task can only replace one in its own run.".into());
+    }
+    if task.superseded_by.is_some() {
+        return Err("That task was already replaced.".into());
+    }
+    if !matches!(task.status, TaskStatus::Blocked | TaskStatus::Failed) {
+        return Err("Only a blocked or failed task can be replaced.".into());
+    }
+    if task
+        .active_attempt_id
+        .as_ref()
+        .and_then(|id| data.attempts.get(id))
+        .is_some_and(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running))
+    {
+        return Err("That task still has a worker on it. Stop it first.".into());
+    }
+    Ok(())
+}
+
 fn coordinator<'a>(
     data: &'a Stored,
     run_id: &str,
@@ -3756,7 +3868,7 @@ fn depends_on_transitively(data: &Stored, from: &str, target: &str) -> bool {
 fn run_has_ended(run: &Run) -> bool {
     matches!(
         run.status,
-        RunStatus::Stopped | RunStatus::Completed | RunStatus::Failed
+        RunStatus::Stopped | RunStatus::Completed | RunStatus::Failed | RunStatus::Closed
     )
 }
 
@@ -4343,7 +4455,7 @@ fn recompute_run(data: &mut Stored, run_id: &str) {
         RunStatus::Stopped
     };
     if let Some(run) = data.runs.get_mut(run_id) {
-        if run.status != RunStatus::Stopped {
+        if !matches!(run.status, RunStatus::Stopped | RunStatus::Closed) {
             run.status = status;
             run.updated_at = now_ms();
         }
@@ -4471,7 +4583,11 @@ fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     let workspace = task.workspace.as_ref().map(|w| format!(
         "\n\nAssigned workspace: {}\nBranch: {}\nMode: {:?}\nBase SHA: {}\nExisting changes to preserve:\n{}\nThe host owns this workspace lifecycle. Do not switch branches, create replacement worktrees, or remove this directory. Stop all source changes after reporting. Use orchestration validation workspaces for isolated commit checks.",
         w.plan.cwd, w.plan.branch, w.plan.mode, w.plan.base_sha, w.plan.initial_status
-    )).unwrap_or_default();
+    ) + if w.plan.mode == WorkspaceMode::Mission {
+        "\nThis is the mission's shared worktree: earlier tasks' work is already on this branch, and later tasks continue from what you leave. Commit your finished work here before reporting."
+    } else {
+        ""
+    }).unwrap_or_default();
     let kind = if task.kind.requires_verdict() {
         format!(
             "\n\nThis is a {} task: the host refuses a completed report without a verdict. Settle it as completed with verdict pass or fail; only pass releases the tasks that depend on it. If you could not finish checking, report failed or blocked instead.",
@@ -4649,6 +4765,43 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    /// Feedback 6b0870f9: only the coordinator replaces a blocked or failed
+    /// task of its own run, once, and never one a worker is still on.
+    #[test]
+    fn a_blocked_task_is_replaced_once_by_its_coordinator() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        let old = attempt.task_id.clone();
+        let refused = store
+            .check_supersede("chat:master", &run.id, &old)
+            .unwrap_err();
+        assert!(refused.contains("blocked or failed"), "{refused}");
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "Review failed".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        assert!(store.check_supersede("chat:other", &run.id, &old).is_err());
+        store.check_supersede("chat:master", &run.id, &old).unwrap();
+        let new = task(&store, &run, Vec::new());
+        let replaced = store.supersede("chat:master", &old, &new.id).unwrap();
+        assert_eq!(replaced.superseded_by.as_deref(), Some(new.id.as_str()));
+        assert_eq!(replaced.status, TaskStatus::Blocked, "its history stays");
+        let again = store.supersede("chat:master", &old, &new.id).unwrap_err();
+        assert!(again.contains("already replaced"), "{again}");
+        assert!(store
+            .check_supersede("chat:master", &run.id, &new.id)
+            .is_err());
+    }
+
     /// A read-only review whose worker's turn ended without a report, so the
     /// host holds its closing words as a proposal; and a task held behind it.
     pub(crate) fn proposed_review(
@@ -4703,7 +4856,7 @@ pub(crate) mod tests {
         (review, after, attempt, proposal)
     }
 
-    pub(super) fn running_worker(store: &OrchestrationStore, run: &Run) -> Attempt {
+    pub(crate) fn running_worker(store: &OrchestrationStore, run: &Run) -> Attempt {
         let task = task(store, run, Vec::new());
         let (_, _, attempt, _) = store
             .reserve_attempt(

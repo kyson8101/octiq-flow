@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 140" preserveAspectRatio="none">
+  <!-- A dry-brush (飞白) stroke. Horizontal streak noise cuts bristle gaps out
+       of the shape, then a slower noise roughens its edges like ink on paper. -->
+  <defs>
+    <filter id="dry" x="-5%" y="-30%" width="110%" height="160%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.003 0.22" numOctaves="3" seed="4" result="streaks"/>
+      <feColorMatrix in="streaks" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  7 0 0 0 -2.9" result="bristles"/>
+      <feComposite in="SourceGraphic" in2="bristles" operator="in" result="dry"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="2" seed="11" result="wobble"/>
+      <feDisplacementMap in="dry" in2="wobble" scale="18" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+  </defs>
+  <g fill="#ebe3d3">
+    <path filter="url(#dry)" d="M16 70 C50 22 200 18 420 24 C640 30 860 18 978 44 C996 56 990 84 962 94 C760 114 520 124 300 120 C160 118 60 124 24 112 C6 104 4 86 16 70 Z"/>
+    <circle cx="968" cy="26" r="5"/>
+    <circle cx="986" cy="40" r="2.5"/>
+    <circle cx="945" cy="18" r="2"/>
+    <circle cx="12" cy="112" r="3"/>
+  </g>
+</svg>

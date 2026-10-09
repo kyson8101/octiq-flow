@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ChatWorkflowBar } from "./ChatWorkflowBar";
+import { ChatWorkflowBar, TasksButton } from "./ChatWorkflowBar";
 import { EMPTY_ORCHESTRATION } from "../lib/orchestration";
 
 describe("ChatWorkflowBar", () => {
@@ -57,7 +57,7 @@ describe("ChatWorkflowBar", () => {
     const snapshot = { ...EMPTY_ORCHESTRATION, runs: [{ id: "run", coordinatorChatKey: "chat:main", objective: "Fix", status: "running" as const, workspaceId: "project", rootPath: "/repo", createdAt: 1, updatedAt: 1, maxConcurrent: 2 }] };
     const html = renderToStaticMarkup(<ChatWorkflowBar snapshot={snapshot} orchestrated={false} view="run" pendingApprovals={2} onView={() => {}} />);
     expect(html).not.toContain("<select");
-    expect(html).toContain('aria-pressed="true">Run');
+    expect(html).toContain('aria-pressed="true">Mission');
     expect(html).not.toContain("2 awaiting approval");
     expect(html).not.toContain("Open Run to pause dispatch or stop");
   });
@@ -90,5 +90,32 @@ describe("ChatWorkflowBar", () => {
     expect(html).toMatch(/class="workflow-back-main"[^>]+aria-label="Back to main chat"/);
     expect(html.indexOf("workflow-back-main")).toBeLessThan(html.indexOf("Ship the unified workspace"));
     expect(html.match(/Back to main chat/g)).toHaveLength(2);
+  });
+});
+
+describe("TasksButton", () => {
+  it("hides the open column and carries its task count, with nothing owed on show", () => {
+    const html = renderToStaticMarkup(<TasksButton tasks={4} decisions={2} open onToggle={() => {}} />);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('class="icon-btn tasks-toggle is-on"');
+    expect(html).toContain('aria-label="Hide the task column — 4 tasks"');
+    expect(html).toContain('<span class="tasks-toggle-count">4</span>');
+    // The column is on screen and says what waits in it; the button does not repeat it.
+    expect(html).not.toContain("tasks-toggle-owed");
+  });
+
+  it("says what waits for the person while the column is put away", () => {
+    const html = renderToStaticMarkup(<TasksButton tasks={1} decisions={1} open={false} onToggle={() => {}} />);
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("is-on");
+    expect(html).toContain('aria-label="Show the task column — 1 task, 1 waiting for you"');
+    expect(html).toContain('<span class="tasks-toggle-owed" aria-hidden="true">1</span>');
+  });
+
+  it("omits zero counts", () => {
+    const html = renderToStaticMarkup(<TasksButton tasks={0} decisions={0} open={false} onToggle={() => {}} />);
+    expect(html).toContain('aria-label="Show the task column"');
+    expect(html).not.toContain("tasks-toggle-count");
+    expect(html).not.toContain("tasks-toggle-owed");
   });
 });

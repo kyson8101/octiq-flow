@@ -51,6 +51,24 @@
   position: relative; flex: 0 1 var(--run-w, 440px); min-width: 0;
   max-width: calc(100% - 340px); border-right: 1px solid var(--border);
 }
+/* Brought back from the Tasks button: it eases in rather than snapping. Only
+   opacity moves, so nothing beside it slides while the chat re-flows. */
+.workflow-surfaces.is-split > .workflow-run-surface:not([hidden]) { animation: workflow-run-in 180ms ease-out; }
+@keyframes workflow-run-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .workflow-surfaces.is-split > .workflow-run-surface:not([hidden]) { animation: none; } }
+/* The top bar's Tasks switch: the same shape as the Agents and Pinned files
+   counts beside it. Amber is "owed by you", as everywhere else. Doubled up
+   with `.icon-btn` because styles.css, which sizes that to a square, loads
+   after this sheet and would otherwise clip the count off the end. */
+.icon-btn.tasks-toggle { width: auto; gap: 5px; padding: 0 9px; border: 1px solid transparent; color: var(--fg-1); }
+.icon-btn.tasks-toggle.is-on { border-color: var(--border); background: var(--bg-2); color: var(--fg-0); }
+.tasks-toggle-count { font-size: 12px; font-variant-numeric: tabular-nums; }
+.tasks-toggle-owed {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-pill, 999px);
+  background: color-mix(in srgb, var(--warn) 18%, var(--bg-1)); color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border));
+  font-size: 10.5px; font-weight: 600; line-height: 14px; text-align: center; font-variant-numeric: tabular-nums;
+}
 .workflow-run-resizer {
   position: absolute; z-index: 2; top: 0; bottom: 0; right: -5px; width: 9px;
   cursor: col-resize; touch-action: none; transition: background 130ms ease-out;

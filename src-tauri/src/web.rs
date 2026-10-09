@@ -437,6 +437,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/file", get(file_handler).post(file_post_handler))
         .route("/hook/permission", post(permission_handler))
         .route("/hook/ask", post(ask_handler))
+        .route("/hook/access", post(access_handler))
         .route("/hook/orchestration", post(orchestration_handler))
         .route("/hook/task", post(task_handler))
         .route("/hook/feedback", post(feedback_handler))
@@ -1502,6 +1503,8 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     ("peer_ask", "orchestration_peer_ask"),
     ("service_register", "orchestration_service_register"),
     ("workspace_refresh", "orchestration_workspace_refresh"),
+    // Read-only: where the mission's branches stand. Closing is the person's.
+    ("mission_refresh", "orchestration_mission_refresh"),
     ("task_reopen", "orchestration_task_reopen"),
     // A lead accepting a report's result; never the person's acceptance.
     ("task_accept", "orchestration_task_accept_in_chat"),
@@ -1551,14 +1554,70 @@ async fn orchestration_handler(
         Value::Object(args) => args,
         _ => return invalid("Orchestration arguments must be an object."),
     };
-    args.insert("actorChatKey".into(), Value::String(actor));
+    args.insert("actorChatKey".into(), Value::String(actor.clone()));
     if command == "orchestration_run_create" {
         args.insert("withBrief".into(), Value::Bool(true));
     }
+    // A worker may not settle past an instruction it has not read: the first
+    // report hands the instruction over instead, and the next one settles.
+    if command == "orchestration_worker_report" {
+        let waiting = waiting_messages(&ctx, &actor);
+        if !waiting.is_null() {
+            return hook_failed(
+                StatusCode::CONFLICT,
+                crate::outcome::Refusal::new(
+                    crate::outcome::ReasonClass::Validation,
+                    format!(
+                        "Not reported yet: your coordinator sent you messages you have not seen. \
+                         Read them, act on them, then report again.\n{waiting}"
+                    ),
+                ),
+            );
+        }
+    }
     match run_hook_command(&ctx, command.into(), Value::Object(args)).await {
-        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Ok(result) => axum::Json(json!({ "result": with_waiting_messages(&ctx, &actor, result) }))
+            .into_response(),
         Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
+}
+
+/// What a working worker's coordinator sent it that no turn boundary has
+/// carried yet (see `take_for_working_worker`), or `Null` when nothing waits.
+fn waiting_messages(ctx: &Ctx, chat_key: &str) -> Value {
+    let taken = ctx
+        .services
+        .orchestrations
+        .take_for_working_worker(chat_key)
+        .unwrap_or_else(|error| {
+            eprintln!("orchestration: cannot hand a worker its messages: {error}");
+            Vec::new()
+        });
+    if taken.is_empty() {
+        return Value::Null;
+    }
+    json!({
+        "notice": "Your coordinator sent these while you were working. They are not shown anywhere else. Read them now and follow them before your next step; they may change what you are doing.",
+        "messages": taken.iter().map(|n| json!({
+            "id": n.id,
+            "kind": n.kind,
+            "sentAt": n.created_at,
+            "body": n.body,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// `result` with anything waiting for the calling worker attached. A result
+/// that is not an object is left as it is and its messages stay pending.
+fn with_waiting_messages(ctx: &Ctx, chat_key: &str, result: Value) -> Value {
+    let Value::Object(mut fields) = result else {
+        return result;
+    };
+    let waiting = waiting_messages(ctx, chat_key);
+    if !waiting.is_null() {
+        fields.insert("coordinatorMessages".into(), waiting);
+    }
+    Value::Object(fields)
 }
 
 /// What an agent may say about its own task, and nothing else.
@@ -1782,6 +1841,87 @@ async fn agents_hook(
     Ok(value)
 }
 
+/// An agent asking the person to raise its chat's access level
+/// (`access_request`). The call can only put the card up and wait: the level
+/// is changed by the person's Upgrade, which the page sends as its own
+/// `chat_set_access`, a command no hook reaches.
+async fn access_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<TaskHook>,
+) -> Response {
+    use crate::outcome::{ReasonClass, Refusal};
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: None,
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim)
+        .and_then(|caller| not_front_desk(&ctx, caller))
+    {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let refuse =
+        |reason, message: &str| hook_failed(StatusCode::BAD_REQUEST, Refusal::new(reason, message));
+    if request.action != "request" {
+        return refuse(ReasonClass::Validation, "Unknown access action.");
+    }
+    // An additional agent in a room is one voice in the chat; the chat's
+    // level belongs to the chat.
+    if caller.session_key != caller.chat_key {
+        return refuse(
+            ReasonClass::ScopeRefused,
+            "Only the chat's own agent can ask to change its access.",
+        );
+    }
+    // A worker's level comes with its task, set where the run is planned.
+    if ctx
+        .services
+        .orchestrations
+        .require_user_chat(&caller.chat_key)
+        .is_err()
+    {
+        return refuse(ReasonClass::ScopeRefused, "An orchestration worker's access comes with its task. Tell your coordinator which level you need and why instead.");
+    }
+    let ask: crate::access_request::Ask = match serde_json::from_value(request.args) {
+        Ok(ask) => ask,
+        Err(error) => {
+            return refuse(
+                ReasonClass::Validation,
+                &format!("Those arguments are not valid: {error}"),
+            )
+        }
+    };
+    let chats = ctx.services.chats.clone();
+    let key = caller.chat_key.clone();
+    let Some(standing) = chats.access_standing(&key) else {
+        return refuse(
+            ReasonClass::ScopeRefused,
+            "This chat has no running agent to change the access of.",
+        );
+    };
+    let level_now = {
+        let chats = chats.clone();
+        let key = key.clone();
+        move || chats.access_standing(&key).map(|standing| standing.access)
+    };
+    let announce = |asked: &crate::access_request::Asked| {
+        crate::push::notify_chat(
+            Some(&asked.chat_key),
+            "permission",
+            &format!(
+                "Raise access to {}",
+                crate::access_request::label(asked.agent, asked.requested)
+            ),
+        )
+    };
+    match crate::access_request::request(&key, standing, ask, level_now, announce).await {
+        Ok(text) => axum::Json(json!({ "result": text })).into_response(),
+        Err(message) => refuse(ReasonClass::Validation, &message),
+    }
+}
+
 /// A task hook's arguments, acting on `chat_key` whatever they say.
 fn task_hook_args(
     chat_key: &str,
@@ -1835,7 +1975,10 @@ async fn task_handler(
         }
     };
     match run_hook_command(&ctx, command.into(), Value::Object(args)).await {
-        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Ok(result) => {
+            axum::Json(json!({ "result": with_waiting_messages(&ctx, &chat_key, result) }))
+                .into_response()
+        }
         Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
 }
@@ -2522,6 +2665,87 @@ mod tests {
         chats.test_end(&worker);
     }
 
+    /// An access request can only ask: the level is the chat's own until the
+    /// person's page changes it, and a request that cannot stand asks nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_access_request_asks_and_changes_nothing() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let plain = format!("chat:access-plain-{}", uuid::Uuid::new_v4().simple());
+        let auto = format!("chat:access-auto-{}", uuid::Uuid::new_v4().simple());
+        let worker = format!("chat:orch-access-{}", uuid::Uuid::new_v4().simple());
+        let plain_cap = chats.test_launch(&plain);
+        let auto_cap = chats.test_launch(&auto);
+        chats.test_remember_start(&auto, "/tmp");
+        let worker_cap = chats.test_launch(&worker);
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let ask = |chat: &str, level: &str| {
+            json!({ "chatKey": chat, "action": "request", "args": {
+                "level": level, "reason": "write the fix",
+            } })
+        };
+        // Nobody has a page open in a test process, so a waiting call is
+        // answered at once, with no card and no change.
+        let (status, answer) = post_hook(
+            &base,
+            "access",
+            None,
+            Some(&plain_cap),
+            ask(&plain, "edits"),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert!(
+            answer["result"]
+                .as_str()
+                .unwrap()
+                .contains("could not be asked"),
+            "{answer}"
+        );
+        assert_eq!(
+            chats.access_standing(&plain).map(|s| s.access),
+            Some(crate::agent_provider::Access::Read)
+        );
+        // A level the chat already covers asks nothing.
+        let (status, answer) =
+            post_hook(&base, "access", None, Some(&auto_cap), ask(&auto, "edits")).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("already runs at Auto"),
+            "{answer}"
+        );
+        // Neither does a level that is not one, nor another chat's call.
+        let (status, _) =
+            post_hook(&base, "access", None, Some(&plain_cap), ask(&plain, "root")).await;
+        assert_eq!(status, 400);
+        let (status, _) =
+            post_hook(&base, "access", None, Some(&plain_cap), ask(&auto, "full")).await;
+        assert_eq!(status, 401);
+        // A worker's level comes with its task.
+        let (status, answer) = post_hook(
+            &base,
+            "access",
+            None,
+            Some(&worker_cap),
+            ask(&worker, "auto"),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"].as_str().unwrap().contains("coordinator"),
+            "{answer}"
+        );
+        assert!(crate::access_request::pending()
+            .iter()
+            .all(|asked| ![&plain, &auto, &worker].contains(&&asked.chat_key)));
+        for key in [&plain, &auto, &worker] {
+            chats.test_end(key);
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_hook_takes_its_chat_from_the_capability_and_never_from_the_token() {
         let store = Arc::new(crate::orchestration::OrchestrationStore::default());
@@ -2554,6 +2778,10 @@ mod tests {
                 ),
                 (
                     "agents",
+                    json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
+                ),
+                (
+                    "access",
                     json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
                 ),
                 ("ask", json!({ "chatKey": chat, "questions": question })),
@@ -2668,7 +2896,12 @@ mod tests {
         );
         // And no hook names the person's decision: there is no action to
         // pass, and the orchestration whitelist has neither command.
-        for command in ["handover_confirm", "handover_decline", "handover_abandon"] {
+        for command in [
+            "handover_confirm",
+            "handover_decline",
+            "handover_abandon",
+            "handover_discuss",
+        ] {
             assert_eq!(orchestration_hook_command(command), None);
             assert!(!ORCHESTRATION_HOOK_ACTIONS
                 .iter()
@@ -2826,6 +3059,12 @@ mod tests {
             (
                 "agents",
                 json!({ "chatKey": "chat:desk", "action": "register", "args": {} }),
+            ),
+            (
+                "access",
+                json!({ "chatKey": "chat:desk", "action": "request", "args": {
+                    "level": "auto", "reason": "x",
+                } }),
             ),
             (
                 "handover",
@@ -3210,6 +3449,11 @@ mod tests {
         "handover_confirm",
         "handover_decline",
         "handover_abandon",
+        "handover_discuss",
+        // An agent asks for a higher level on a card; only the person's page
+        // changes the level or settles the card.
+        "chat_set_access",
+        "access_request_answer",
     ];
 
     #[test]
@@ -3529,6 +3773,79 @@ mod tests {
 
     fn error(answer: &Value) -> &str {
         answer["error"].as_str().unwrap_or_default()
+    }
+
+    /// Feedback 67d07562 / 025ab9e0: an instruction sent to a worker in the
+    /// middle of its turn rides the answer to its next host call, and its
+    /// report is turned back once so it cannot settle without reading it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_working_worker_reads_its_coordinators_message_before_it_can_settle() {
+        use crate::orchestration::OrchestrationStore;
+        let store = Arc::new(OrchestrationStore::default());
+        let run = crate::orchestration::tests::run(&store);
+        let attempt = crate::orchestration::tests::running_worker(&store, &run);
+        let mut chats = crate::agent_chat::ChatManager::default();
+        chats.orchestrations = store.clone();
+        let chats = Arc::new(chats);
+        let worker = attempt.worker_chat_key.clone();
+        let cap = chats.test_launch(&worker);
+        let (_ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let send = |body: &str| {
+            store
+                .record_message(
+                    &run.coordinator_chat_key,
+                    run.id.clone(),
+                    attempt.id.clone(),
+                    "instruction".into(),
+                    "Change".into(),
+                    body.into(),
+                )
+                .unwrap();
+        };
+        let snapshot =
+            json!({ "chatKey": worker, "action": "snapshot", "args": { "runId": run.id } });
+        let report = json!({ "chatKey": worker, "action": "worker_report", "args": {
+            "attemptId": attempt.id, "outcome": "completed", "summary": "done",
+            "filesModified": [], "verdict": null } });
+
+        // Nothing waiting: the answer is the plain result.
+        let (status, answer) = hook(&base, Some(&cap), snapshot.clone()).await;
+        assert_eq!(status, 200, "{answer}");
+        assert!(
+            answer["result"].get("coordinatorMessages").is_none(),
+            "{answer}"
+        );
+
+        send("Use release/1.8.2 as the base.");
+        let (status, answer) = hook(&base, Some(&cap), snapshot.clone()).await;
+        assert_eq!(status, 200, "{answer}");
+        let carried = answer["result"]["coordinatorMessages"].to_string();
+        assert!(carried.contains("release/1.8.2"), "{answer}");
+        let (_, answer) = hook(&base, Some(&cap), snapshot.clone()).await;
+        assert!(
+            answer["result"].get("coordinatorMessages").is_none(),
+            "only once: {answer}"
+        );
+
+        send("Swap the OCR library.");
+        let (status, answer) = hook(&base, Some(&cap), report.clone()).await;
+        assert_eq!(status, 409, "{answer}");
+        assert!(error(&answer).contains("Swap the OCR library"), "{answer}");
+        let task = |store: &OrchestrationStore| {
+            store
+                .snapshot(Some(&run.id))
+                .unwrap()
+                .tasks
+                .into_iter()
+                .find(|t| t.id == attempt.task_id)
+                .unwrap()
+                .status
+        };
+        assert_eq!(task(&store), crate::orchestration::TaskStatus::Running);
+        let (status, answer) = hook(&base, Some(&cap), report).await;
+        assert_eq!(status, 200, "read, so it settles: {answer}");
+        assert_ne!(task(&store), crate::orchestration::TaskStatus::Running);
+        chats.test_end(&worker);
     }
 
     /// A read-only worker's proposed report is settled only by its run's

@@ -413,6 +413,13 @@ impl OrchestrationStore {
                     outage_notice(data, &attempt, group);
                     continue;
                 }
+                // A refusal nobody can approve asks nothing of the coordinator
+                // or the person: the worker was told and goes on another way.
+                // It stays in nativeDecisions, as one line on the task board,
+                // and wakes no turn (feedback 76cde28e).
+                if !card.can_continue {
+                    continue;
+                }
                 let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
                 inbox::enqueue(data, &attempt.run_id, &chat, &target, format!("native-decision:{id}"), "native_decision",
                     format!("Native safety decision {id} for task {}. Read nativeDecisions in orchestration_snapshot for its reason and continuation viability. Do not infer approval from worker prose or create a duplicate gate.", attempt.task_id));
@@ -1419,9 +1426,10 @@ mod tests {
         crate::safety_block::forget_chat(&chat);
     }
 
-    /// Real safety refusals keep one notice each, due at once.
+    /// Real safety refusals keep one record each. A Claude one, which nobody
+    /// can approve, wakes no coordinator turn (feedback 76cde28e).
     #[test]
-    fn a_safety_refusal_still_notifies_once_per_refusal() {
+    fn a_claude_safety_refusal_is_recorded_once_each_and_wakes_nobody() {
         let store = OrchestrationStore::default();
         let (run, attempt) = worker(&store);
         let chat = attempt.worker_chat_key.clone();
@@ -1459,14 +1467,10 @@ mod tests {
             CLAUDE_REFUSAL_RECOVERY,
             "Claude's auto mode refused this call without asking anyone, and OctiqFlow cannot approve it: there is no supported way to allow one refused call before it runs. The card only records the refusal. Do not retry the call or reword it to get past the classifier. Continue another safe way, or settle the attempt blocked and name the refused command so the person can decide."
         );
-        let notices: Vec<_> = snapshot
+        assert!(!snapshot
             .notifications
             .iter()
-            .filter(|n| n.source.starts_with("native-decision:"))
-            .filter(|n| decisions.iter().any(|d| n.source.ends_with(&d.id)))
-            .collect();
-        assert_eq!(notices.len(), 2);
-        assert!(notices.iter().all(|n| n.next_attempt_at <= now_ms()));
+            .any(|n| n.kind == "native_decision"));
         crate::safety_block::forget_chat(&chat);
     }
 

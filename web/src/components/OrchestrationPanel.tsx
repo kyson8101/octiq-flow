@@ -15,6 +15,8 @@ import {
 } from "../lib/runPanel";
 import { agoLabel } from "../lib/chatTask";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
+import { isMission, missionState } from "../lib/mission";
+import { MissionTrack } from "./MissionTrack";
 import { elapsedLabel } from "../lib/working";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { orchestrationFeed } from "../lib/orchestrationFeed";
@@ -37,7 +39,7 @@ import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 
 import {
-  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -369,16 +371,16 @@ export function OrchestrationPanel({
     if (!mainKey) return;
     try { onOpenChat(mainKey); } catch (problem) { setError(messageOf(problem)); }
   };
-  const toolbar = embedded && (mainKey || archivedRuns.length > 0) ? <div className="orch-toolbar" role="toolbar" aria-label="Run panel">
+  const toolbar = embedded && (mainKey || archivedRuns.length > 0) ? <div className="orch-toolbar" role="toolbar" aria-label="Mission panel">
     {mainKey && <button type="button" className="orch-tool" onClick={openMain}
       aria-current={currentChatKey === mainKey ? "page" : undefined}
       aria-label={`Main agent chat${pendingApprovals ? `, ${pendingApprovals} ${pendingApprovals === 1 ? "approval" : "approvals"} waiting` : ""}`}
-      title="Open the main agent's chat for this run">
+      title="Open the main agent's chat for this mission">
       <ChatIcon /><span>Main agent chat</span>
       {pendingApprovals > 0 && <span className="orch-tool-count" aria-hidden="true">{pendingApprovals}</span>}
     </button>}
     {archivedRuns.length > 0 && <button type="button" className="orch-tool is-quiet" aria-pressed={showArchived}
-      title={showArchived ? "Back to the runs in progress" : "Show archived runs; they can be restored"}
+      title={showArchived ? "Back to the missions in progress" : "Show archived missions; they can be restored"}
       onClick={() => { setShowArchived(!showArchived); setSelectedId(null); setConfirmStop(null); setRunError(null); }}>
       <ArchiveIcon /><span>Archived</span><span className="orch-tool-count is-quiet">{archivedRuns.length}</span>
     </button>}
@@ -394,7 +396,7 @@ export function OrchestrationPanel({
       onClick={() => { setCreating(true); setConfirmStop(null); setShowArchived(false); }}
     >
       <PlusIcon />
-      Start a run
+      Start a mission
     </button>
   ) : null;
 
@@ -461,7 +463,7 @@ export function OrchestrationPanel({
   return (
     <>
       {!embedded && <div className="panel-scrim" onClick={onClose} />}
-      <aside className={embedded ? "orch-embedded" : "panel orch-page"} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label={embedded ? "Runs for this chat" : undefined} aria-labelledby={embedded ? undefined : "orch-title"}>
+      <aside className={embedded ? "orch-embedded" : "panel orch-page"} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label={embedded ? "Missions for this chat" : undefined} aria-labelledby={embedded ? undefined : "orch-title"}>
         {!embedded && <>
         <header className="panel-head orch-page-head">
           <div className="panel-id">
@@ -477,7 +479,7 @@ export function OrchestrationPanel({
         <div className="orch-layout">
           {/* One run needs no picker — and inside a chat that is the normal
               case, where the strip was costing a row above the fold. */}
-          {showNav && <nav className="orch-runs" aria-label="Orchestration runs">
+          {showNav && <nav className="orch-runs" aria-label="Missions">
             {newRunButton}
             <div className="orch-run-list">
               {runs.map((run) => {
@@ -515,7 +517,7 @@ export function OrchestrationPanel({
             {shownError && <div className="orch-error" role="alert">{shownError}</div>}
             {readOnly && <p className="orch-empty">This agent chat is read-only. Send instructions and decisions in the main chat.</p>}
             {accordionMode ? (
-              runs.length ? <div className="orch-run-accordions" aria-label={showArchived ? "Archived goals" : "Goals"}>
+              runs.length ? <div className="orch-run-accordions" aria-label={showArchived ? "Archived missions" : "Missions"}>
                 {runs.map((run) => {
                   const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
                   const runAttempts = snapshot.attempts.filter((attempt) => attempt.runId === run.id);
@@ -549,7 +551,7 @@ export function OrchestrationPanel({
                     </div>
                   </section>;
                 })}
-              </div> : <div className="orch-empty">No goals in this chat yet. Keep talking to the CTO to start work.</div>
+              </div> : <div className="orch-empty">No missions in this chat yet. Keep talking to the CTO to start work.</div>
             ) : creating && !readOnly ? (
               <NewRun
                 project={project}
@@ -569,7 +571,7 @@ export function OrchestrationPanel({
             ) : selected ? (
               runDetail(selected)
             ) : (
-              <div className="orch-empty">{embedded ? "No runs in this chat yet." : "No runs in this project yet."}</div>
+              <div className="orch-empty">{embedded ? "No missions in this chat yet." : "No missions in this project yet."}</div>
             )}
           </div>
         </div>
@@ -653,7 +655,7 @@ function NewRun({
           <span>{hasCoordinator ? "This chat becomes the master." : "Open a chat first; it becomes the master."}</span>
         </div>
         <button className="orch-primary" type="button" disabled={!ready} onClick={onStart}>
-          {busy ? "Starting…" : "Start master run"}
+          {busy ? "Starting…" : "Start mission"}
         </button>
       </div>
     </section>
@@ -669,7 +671,7 @@ type TaskFilter = "all" | "working" | "blocked" | "done";
 const TASK_FILTERS: { key: TaskFilter; label: string; match: (task: OrchestrationTask, attempt?: OrchestrationAttempt) => boolean }[] = [
   { key: "all", label: "All", match: () => true },
   { key: "working", label: "Working", match: (task, attempt) => task.status === "running" && (!attempt?.execution || attemptIsExecuting(attempt)) },
-  { key: "blocked", label: "Blocked", match: (task, attempt) => task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt) },
+  { key: "blocked", label: "Blocked", match: (task, attempt) => isStuck(task) || (!task.supersededBy && executionNeedsAttention(attempt)) },
   { key: "done", label: "Done", match: (task) => task.status === "completed" },
 ];
 
@@ -766,6 +768,9 @@ function RunDetail({
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  const [confirmEnd, setConfirmEnd] = useState<"close" | "abandon" | null>(null);
+  const mission = isMission(run);
+  const closed = run.status === "closed";
   const settingsId = useId();
   const tabsId = useId();
   const detailRef = useRef<HTMLElement>(null);
@@ -844,7 +849,7 @@ function RunDetail({
   };
 
   const settingsToggle = <button type="button" className={`orch-settings-toggle${compactControls ? " is-compact" : ""}`} aria-expanded={settingsOpen} aria-controls={settingsId}
-    aria-label={compactControls ? "Run options" : "Run settings"} title={settingsOpen ? "Hide run options" : "Run options and controls"}
+    aria-label={compactControls ? "Mission options" : "Mission settings"} title={settingsOpen ? "Hide mission options" : "Mission options and controls"}
     onClick={() => { if (settingsOpen) onCancelStop(); setSettingsOpen(!settingsOpen); setConfirmArchive(false); }}>
     {compactControls ? <MoreIcon /> : <SettingsIcon />}{!compactControls && <span>Settings</span>}
   </button>;
@@ -863,6 +868,9 @@ function RunDetail({
           ? !readOnly && <button type="button" className="orch-run-restore" disabled={busy} onClick={() => onArchive(false)}>Restore</button>
           : <AttentionButton attention={attention} planPending={planPending} onShow={onShowAttention} />}
       </div>}
+
+      {mission && <MissionTrack state={missionState(run, tasks)}
+        live={attempts.some((attempt) => attempt.status === "running" || attempt.status === "preparing")} />}
 
       {/* Owed to the person, so above every tab: switching tabs never hides a
           decision or a plan waiting for approval. */}
@@ -895,7 +903,7 @@ function RunDetail({
           <h3 id={`${tabsId}-decisions`}>Needs you</h3>
           {openGates.map((gate) => (
             <article className="orch-gate" key={gate.id} data-pending-keys={`gate:${gate.id}`} tabIndex={-1}>
-              <p className="orch-gate-task" title={gate.taskId ? taskNames.get(gate.taskId) : undefined}>{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This run"}</p>
+              <p className="orch-gate-task" title={gate.taskId ? taskNames.get(gate.taskId) : undefined}>{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This mission"}</p>
               <p>{gate.question}</p>
               {!readOnly && gate.options.length > 0 && (
                 <div className="orch-gate-options">
@@ -919,7 +927,7 @@ function RunDetail({
       )}
 
       <div className="orch-tabs-row">
-        <div className="orch-tabs" role="tablist" aria-label="Run details" onKeyDown={onTabKey}>
+        <div className="orch-tabs" role="tablist" aria-label="Mission details" onKeyDown={onTabKey}>
           {RUN_TABS.map((key) => <button key={key} type="button" role="tab" id={`${tabsId}-${key}`}
             ref={(node) => { tabRefs.current[key] = node; }}
             aria-selected={tab === key} aria-controls={`${tabsId}-${key}-panel`} tabIndex={tab === key ? 0 : -1}
@@ -931,7 +939,7 @@ function RunDetail({
         {settingsToggle}
       </div>
 
-      <div className={`orch-run-settings${compactControls ? " is-compact" : ""}`} id={settingsId} role="region" aria-label={compactControls ? "Run options" : "Run settings"} hidden={!settingsOpen}>
+      <div className={`orch-run-settings${compactControls ? " is-compact" : ""}`} id={settingsId} role="region" aria-label={compactControls ? "Mission options" : "Mission settings"} hidden={!settingsOpen}>
         <div className="orch-run-settings-body">
           {!compactControls && <dl>
             <dt>Folder</dt><dd title={run.rootPath}>{shortWorkspacePath(run.rootPath)}</dd>
@@ -940,6 +948,16 @@ function RunDetail({
             <dt>Workers</dt><dd>{run.workerDefaults?.agent ? `Chosen per task · ${AGENT_NAME[run.workerDefaults.agent]} fallback` : "Chosen per task by the main agent"}</dd>
             <dt>Worker limit</dt><dd>{run.maxConcurrent}</dd>
           </dl>}
+          {/* What git last said, per repository — the evidence behind the
+              Merged and Released steps, so it shows in compact mode too. */}
+          {mission && (run.missionDelivery?.length ?? 0) > 0 && <ul className="mission-delivery" aria-label="Mission delivery">
+            {run.missionDelivery!.map((item) => <li key={item.checkoutRoot} title={item.repositoryRoot}>
+              <code>{item.branch}</code> → <code>{item.baseBranch}</code>
+              {" · "}{item.merged ? "merged" : "not merged"}
+              {item.merged && ` · ${item.released === true ? "released" : item.released === false ? "not released" : "release unverified"}`}
+              {item.removed && ` · worktree removed${item.branchDeleted ? ", branch deleted" : ", branch kept"}`}
+            </li>)}
+          </ul>}
           <div className="orch-run-actions">
             {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && !confirmStop && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
             {!readOnly && run.status === "completed" && archivable.length > 0 && !confirmStop && <button className="orch-quiet" type="button" disabled={busy}
@@ -952,7 +970,7 @@ function RunDetail({
               confirmStop ? (
                 <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-stop`}
                   onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancelStop(); } }}>
-                  <p id={`${tabsId}-stop`}>Stop this run? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
+                  <p id={`${tabsId}-stop`}>Stop this mission? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
                   <button ref={cancelRef} type="button" disabled={busy} onClick={onCancelStop}>Cancel</button>
                   <button className="is-danger" type="button" disabled={busy} onClick={() => onStop(false)}>Stop</button>
                   <button className="is-danger" type="button" disabled={busy} onClick={() => onStop(true)}>Stop and archive</button>
@@ -961,19 +979,40 @@ function RunDetail({
                 <button className="orch-quiet" type="button" disabled={busy} onClick={onAskStop}>Stop</button>
               )
             )}
-            {!readOnly && !archived && !ACTIVE_RUNS.has(run.status) && (
+            {!readOnly && mission && !closed && !confirmStop && !confirmEnd && <button className="orch-quiet" type="button" disabled={busy}
+              title="Ask git whether the mission's branch is merged, and released"
+              onClick={() => onWorkspaceAction("orchestration_mission_refresh", { runId: run.id })}>Check merge</button>}
+            {!readOnly && mission && !closed && !ACTIVE_RUNS.has(run.status) && (
+              confirmEnd ? (
+                <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-end`}
+                  onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirmEnd(null); } }}>
+                  <p id={`${tabsId}-end`}>{confirmEnd === "close"
+                    ? "Close this mission? Once git confirms the merge, its worktree is removed and its local branch deleted. The remote branch and the history are kept."
+                    : "Abandon this mission? Open tasks are cancelled. Its worktree is removed only if every commit is pushed, and the branch is kept."}</p>
+                  <button type="button" disabled={busy} autoFocus onClick={() => setConfirmEnd(null)}>Cancel</button>
+                  <button className={confirmEnd === "abandon" ? "is-danger" : undefined} type="button" disabled={busy}
+                    onClick={() => { const abandon = confirmEnd === "abandon"; setConfirmEnd(null); onWorkspaceAction("orchestration_mission_close", { runId: run.id, abandon }); }}>
+                    {confirmEnd === "close" ? "Close mission" : "Abandon mission"}
+                  </button>
+                </div>
+              ) : !confirmArchive && <>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={() => setConfirmEnd("close")}>Close mission</button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={() => setConfirmEnd("abandon")}>Abandon</button>
+              </>
+            )}
+            {!readOnly && !archived && !ACTIVE_RUNS.has(run.status) && !confirmEnd && (
               confirmArchive ? (
                 <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-archive`}
                   onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirmArchive(false); } }}>
-                  <p id={`${tabsId}-archive`}>Archive this run? It leaves the list; its history and worktrees are kept, and it can be restored.</p>
+                  <p id={`${tabsId}-archive`}>Archive this mission? It leaves the list; its history and worktrees are kept, and it can be restored.</p>
                   <button type="button" disabled={busy} autoFocus onClick={() => setConfirmArchive(false)}>Cancel</button>
                   <button type="button" disabled={busy} onClick={() => { setConfirmArchive(false); onArchive(true); }}>Archive</button>
                 </div>
               ) : (
-                <button className="orch-quiet" type="button" disabled={busy} onClick={() => setConfirmArchive(true)}>Archive run</button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={() => setConfirmArchive(true)}>Archive mission</button>
               )
             )}
-            {!readOnly && archived && <button className="orch-quiet" type="button" disabled={busy} onClick={() => onArchive(false)}>Restore run</button>}
+            {!readOnly && archived && <button className="orch-quiet" type="button" disabled={busy} onClick={() => onArchive(false)}>Restore mission</button>}
           </div>
           <RunBridges run={run} snapshot={snapshot} busy={busy} readOnly={readOnly} onBridge={onBridge} />
           {runError && <p className="orch-run-error" role="alert">{runError}</p>}
@@ -1006,10 +1045,10 @@ function RunDetail({
       </div>
 
       <div className="orch-tab-panel orch-notifications" role="tabpanel" id={`${tabsId}-notifications-panel`} aria-labelledby={`${tabsId}-notifications`} hidden={tab !== "notifications"}>
-        {notifications.length === 0 ? <p className="orch-task-none">No notifications for this run.</p> : <>
+        {notifications.length === 0 ? <p className="orch-task-none">No notifications for this mission.</p> : <>
           <p>{awaitingReceipt} awaiting receipt. Delivery waits while the main agent is busy or user messages are queued. Receipt confirms delivery, not completion of the requested action.</p>
           {[...notifications].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, NOTIFICATIONS_SHOWN).map((item) => <article key={item.id}>
-            <strong>{item.kind === "progress" ? "Progress update" : item.kind === "decision" ? "Decision needed" : item.kind === "report" ? "Worker report" : item.kind === "resolution" ? "Decision reply" : item.kind === "capacity" ? "Capacity error" : item.kind === "disconnected" ? "Worker disconnected" : item.kind === "stalled" ? "Worker stalled" : item.kind === "provider" ? "Provider error" : item.kind === "relay" ? "Note from another run" : "Agent message"}</strong>
+            <strong>{item.kind === "progress" ? "Progress update" : item.kind === "decision" ? "Decision needed" : item.kind === "report" ? "Worker report" : item.kind === "resolution" ? "Decision reply" : item.kind === "capacity" ? "Capacity error" : item.kind === "disconnected" ? "Worker disconnected" : item.kind === "stalled" ? "Worker stalled" : item.kind === "provider" ? "Provider error" : item.kind === "relay" ? "Note from another mission" : "Agent message"}</strong>
             <span>{({ pending: "Queued", delivering: "Awaiting receipt", acknowledged: "Received by agent", cancelled: "No longer needed" })[item.state]}</span>
             {["capacity", "provider", "disconnected", "stalled"].includes(item.kind) && <p>{item.body}</p>}
             {item.coalesced > 0 && <small>{item.coalesced + 1} updates combined</small>}
@@ -1194,7 +1233,7 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
     && !gateBlockedTasks.has(task.id);
   // What the run's attention count pointed at; a decision names its own task.
   const owed = !gateBlockedTasks.has(task.id)
-    && (task.status === "blocked" || task.status === "failed" || task.verdict === "fail" || executionNeedsAttention(attempt));
+    && !task.supersededBy && (isStuck(task) || task.verdict === "fail" || executionNeedsAttention(attempt));
   // Cards this task is holding for the person; answered in the main chat or
   // in this panel, never on the row.
   const pending = usePendingActions().forTask(task.id);

@@ -14,3 +14,8 @@
 .read-only-strip { display: flex; flex: 0 0 auto; padding: 8px var(--chat-gutter, 20px) 0; }
 /* Where a worker's approval card is shown in its main chat. */
 .worker-approval-context { margin: 12px 20px 4px; color: var(--fg-2); font-size: 12px; }
+/* A worker refusal nobody can approve: one quiet line, its card behind it. */
+.worker-refusal-line { margin: 8px 20px 4px; color: var(--fg-3, var(--fg-2)); font-size: 12px; }
+.worker-refusal-line > summary { cursor: pointer; list-style-position: inside; }
+.worker-refusal-line > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm, 4px); }
+.worker-refusal-line[open] > summary { margin-bottom: 6px; }

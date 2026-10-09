@@ -152,6 +152,14 @@ export function runStages(
   const branches = live.filter((task) => task.workspace && task.workspace.plan.mode !== "direct");
   const merged = branches.filter((task) => task.workspace?.delivery?.merged || (task.workspace?.state === "cleaned" && !task.workspace.abandoned)).length;
   const unchecked = branches.filter((task) => !task.workspace?.delivery && task.workspace?.state !== "cleaned").length;
+  // A prepared patch: committed on its branch, not in the base yet.
+  const prepared = branches.filter((task) => task.workspace?.delivery?.hasCommits && !task.workspace.delivery.merged).length;
+  // What the project's release check said about each merged head. Absent is
+  // unverified, never "not released".
+  const mergedDeliveries = branches.map((task) => task.workspace?.delivery).filter((d) => d?.merged && d.hasCommits);
+  const released = mergedDeliveries.filter((d) => d?.released === true).length;
+  const notReleased = mergedDeliveries.filter((d) => d?.released === false).length;
+  const releaseKnown = released + notReleased;
 
   const envs = live
     .map((task) => taskEnvironment(task, attempts, sandboxes, () => ""))
@@ -168,7 +176,7 @@ export function runStages(
     ? { key: "acceptance", label: "Acceptance", value: "Failing", tone: "warn", note: "A check, review or acceptance task found problems; its dependants wait." }
     : checks.total && !checks.awaiting && !checks.noVerdict
       ? { key: "acceptance", label: "Acceptance", value: "Every planned check passed", tone: "ok", note: "What the planned checks covered passed. It is not a record that the product was accepted." }
-      : { key: "acceptance", label: "Acceptance", value: "Unverified", tone: "quiet", note: checks.total ? "Checks are still outstanding." : "No check, review or acceptance task in this run. Task completion is not acceptance." };
+      : { key: "acceptance", label: "Acceptance", value: "Unverified", tone: "quiet", note: checks.total ? "Checks are still outstanding." : "No check, review or acceptance task in this mission. Task completion is not acceptance." };
 
   return [
     { key: "tasks", label: "Tasks settled", value: `${settled} of ${live.length}`, tone: "quiet", note: "How much of the plan has finished. Not how much of it works." },
@@ -180,9 +188,11 @@ export function runStages(
     },
     {
       key: "integration", label: "Source integration",
-      value: branches.length ? `${merged} of ${branches.length} branches merged` : "No task branches",
+      value: branches.length
+        ? [`${merged} of ${branches.length} branches merged`, prepared ? `${prepared} prepared, not merged` : null].filter(Boolean).join(" · ")
+        : "No task branches",
       tone: branches.length && merged === branches.length ? "ok" : "quiet",
-      note: unchecked ? `${unchecked} not checked yet; refresh a task's delivery to ask git.` : "As of each task's last delivery check.",
+      note: unchecked ? `${unchecked} not checked yet; refresh a task's delivery to ask git.` : "As of each task's last delivery check. Prepared means committed on its branch, not yet in the base.",
     },
     {
       key: "sandbox", label: "Sandbox runtime",
@@ -190,7 +200,14 @@ export function runStages(
       tone: envCounts.get("stale") || envCounts.get("unhealthy") || envCounts.get("error") ? "warn" : envs.length && envCounts.get("ready") === envs.length ? "ok" : "quiet",
       note: "Test environments on this host. Ready means its readiness check passed; it is not a deployment.",
     },
-    { key: "deployed", label: "Deployed runtime", value: "Not tracked", tone: "quiet", note: "OctiqFlow does not record deployments per run. Check the release evidence separately." },
+    releaseKnown
+      ? {
+        key: "deployed", label: "Deployed runtime",
+        value: `${released} of ${mergedDeliveries.length} merged ${mergedDeliveries.length === 1 ? "branch" : "branches"} released`,
+        tone: notReleased ? "quiet" : released === mergedDeliveries.length ? "ok" : "quiet",
+        note: "By the project's release check, as of each task's last delivery check. A head the check could not answer for is unverified, not unreleased.",
+      }
+      : { key: "deployed", label: "Deployed runtime", value: "Unverified", tone: "quiet", note: mergedDeliveries.length ? "The project has no release check, or none of its merged heads has been checked. Set one in the chat's Release row." : "Nothing merged yet, so nothing can be running." },
     acceptance,
   ];
 }

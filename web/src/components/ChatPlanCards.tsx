@@ -77,7 +77,7 @@ export function RejectedPlan({ plan }: { plan: ChatPlan }) {
         <span className="plan-task-chevron" aria-hidden="true" />
       </summary>
       <div className="chat-plan-rejection-detail">
-        <p>Rejected by the person{rejection?.surface === "chat" ? " in chat" : rejection?.surface === "panel" ? " in the run panel" : ""}.</p>
+        <p>Rejected by the person{rejection?.surface === "chat" ? " in chat" : rejection?.surface === "panel" ? " in the mission panel" : ""}.</p>
         {rejection?.reason && <p>Reason: {rejection.reason}</p>}
         {withdrawnTasks.length > 0 && <p>Withdrawn: {withdrawnTasks.map((task) => task.title).join(", ")}</p>}
         {restoredTasks.length > 0 && <p>Restored to the approved plan: {restoredTasks.map((task) => task.title).join(", ")}</p>}

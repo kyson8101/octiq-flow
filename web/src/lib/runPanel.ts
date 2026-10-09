@@ -1,6 +1,7 @@
 import { executionNeedsAttention } from "./agentTaskBoard";
-import type {
-  OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationTask,
+import {
+  isStuck, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationSnapshot,
+  type OrchestrationTask,
 } from "./orchestration";
 
 /** The run panel's three views of one run. Decisions and plan approval are
@@ -43,10 +44,23 @@ export function runAttention(
   const plan = run.planApproval?.status === "pending" && ["planning", "running", "waiting"].includes(run.status) ? 1 : 0;
   // A stopped run cannot retry anything, so its failures are history, not owed.
   const blocked = run.status === "stopped" ? 0 : tasks.filter((task) => task.runId === run.id && !gated.has(task.id)
-    && (task.status === "blocked" || task.status === "failed"
+    && (isStuck(task)
       || executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId)))).length;
   const decisions = open.length + plan;
   return { decisions, blocked, total: decisions + blocked };
+}
+
+/** What the top bar's Tasks button carries for one chat's runs: how many
+ *  tasks the column holds, and how many decisions in it wait on the person.
+ *  Archived runs are history and count for neither. */
+export function taskColumnCounts(snapshot: OrchestrationSnapshot): { tasks: number; decisions: number } {
+  const runs = snapshot.runs.filter((run) => run.archivedAt == null);
+  const ids = new Set(runs.map((run) => run.id));
+  return {
+    tasks: snapshot.tasks.filter((task) => ids.has(task.runId)).length,
+    decisions: runs.reduce((sum, run) =>
+      sum + runAttention(run, snapshot.tasks, snapshot.attempts, snapshot.gates).decisions, 0),
+  };
 }
 
 /** Short enough for a collapsed row. Decisions lead: they wait on the person. */
@@ -85,7 +99,8 @@ function personState(
 ): PersonState {
   if (task.status === "completed") return "done";
   if (task.status === "cancelled") return "stopped";
-  if (gated || task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt)) return "blocked";
+  if (task.supersededBy) return "done";
+  if (gated || isStuck(task) || executionNeedsAttention(attempt)) return "blocked";
   const executing = !!attempt && (attempt.execution
     ? ["executing", "waiting_tool"].includes(attempt.execution.state)
     : attempt.status === "running");

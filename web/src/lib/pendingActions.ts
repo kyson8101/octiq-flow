@@ -51,8 +51,23 @@ export type PendingAction = {
   taskId?: string;
 };
 
-type Request = { id?: string; batch?: string | null; status?: Question["status"]; kind?: string };
+type Request = {
+  id?: string; batch?: string | null; status?: Question["status"]; kind?: string; provider?: string;
+  rules?: readonly string[]; allow?: { project?: string; user?: string } | null;
+};
 type Requests = Readonly<Record<string, readonly Request[] | undefined>>;
+
+/** A worker's Claude auto-mode refusal that offers the person nothing to do:
+ *  nobody can approve it, no exact rule can be written for it, and the worker
+ *  was told and goes on another way. It is no action, and the main chat folds
+ *  it into one line (feedback 76cde28e). A card that can write an "Always
+ *  allow" rule stays a card, because that is how an authorized command the
+ *  classifier refused gets through (feedback d59f830a). A Codex card can
+ *  continue the work, and an outage card can be retried. */
+export function isQuietWorkerRefusal(card: Pick<Request, "provider" | "kind" | "rules" | "allow">): boolean {
+  const canAllow = !!card.rules?.length && !!(card.allow?.project || card.allow?.user);
+  return card.provider === "claude" && card.kind !== "outage" && !canAllow;
+}
 
 /** What one question card still needs, per `batch || id`: `question` while any
  *  of its questions is unanswered (a status-less one comes from a server older
@@ -76,6 +91,10 @@ export type PendingActionInput = {
   asks?: Requests;
   safetyBlocks?: Requests;
   questions?: Requests;
+  /** An agent's ask for a higher access level (`access_request_pending`). It
+   *  waits on the person's click like a permission card, and is badged as
+   *  one, under its own key. */
+  accessRequests?: Requests;
   /** Handovers an agent asked for: waiting on the person's confirm, or on
    *  their Try again / Give up after a start that failed. */
   handovers?: readonly { id: string; sourceChatKey: string; status: string; error?: string; kind?: string }[];
@@ -115,14 +134,19 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
   };
   const requests = (kind: "permission" | "safety", lists: Requests | undefined) => {
     for (const [conversationId, list] of Object.entries(lists ?? {})) {
+      const worker = rowOf(conversationId) !== conversationId;
       for (const item of list ?? []) {
         if (!item?.id) continue;
+        if (kind === "safety" && worker && isQuietWorkerRefusal(item)) continue;
         request(kind === "safety" && item.kind === "outage" ? "outage" : kind, item.id, conversationId, kind);
       }
     }
   };
   requests("permission", input.asks);
   requests("safety", input.safetyBlocks);
+  for (const [conversationId, list] of Object.entries(input.accessRequests ?? {})) {
+    for (const item of list ?? []) if (item?.id) request("permission", item.id, conversationId, "access");
+  }
   for (const [conversationId, list] of Object.entries(input.questions ?? {})) {
     // The main chat draws its workers' permission and safety cards, but
     // never their questions (a worker asks through a gate), so a worker's

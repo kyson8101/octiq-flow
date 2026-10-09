@@ -17,7 +17,7 @@ pub(super) const KEPT_MESSAGES: usize = 6;
 pub(super) fn is_finished(status: RunStatus) -> bool {
     matches!(
         status,
-        RunStatus::Completed | RunStatus::Failed | RunStatus::Stopped
+        RunStatus::Completed | RunStatus::Failed | RunStatus::Stopped | RunStatus::Closed
     )
 }
 

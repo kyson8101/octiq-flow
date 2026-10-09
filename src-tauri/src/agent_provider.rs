@@ -298,6 +298,10 @@ pub struct PermissionRequest<'a> {
 #[derive(Default)]
 pub struct AgentEvent<'a> {
     pub session_id: Option<&'a str>,
+    /// The agent opened a turn. Usually one the host started by writing to
+    /// it, but Claude also opens one of its own when background work it
+    /// left running finishes after its full stop.
+    pub turn_opened: bool,
     pub turn_finished: bool,
     /// Text that must be carried until a later full-stop event.
     pub spoken_text: Option<&'a str>,
@@ -600,7 +604,7 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__vault_agent_memory_lessons \\
                      mcp__octiq__handover mcp__octiq__handover_ask mcp__octiq__handover_outcome \\
                      mcp__octiq__agent_list mcp__octiq__agent_register mcp__octiq__agent_update \\
-                     mcp__octiq__agent_policy_update",
+                     mcp__octiq__agent_policy_update mcp__octiq__request_access",
                 ),
                 sh_quote(&with_preferences(
                     &format!(
@@ -696,6 +700,9 @@ impl AgentProvider for ClaudeProvider {
 
         if kind == Some("system") && event.get("subtype").and_then(Value::as_str) == Some("init") {
             observed.session_id = event.get("session_id").and_then(Value::as_str);
+            // Claude announces every turn with `init`, including the one it
+            // starts by itself after `task_notification`.
+            observed.turn_opened = true;
         }
         if kind == Some("result") {
             observed.turn_finished = true;
@@ -786,17 +793,22 @@ fn append_codex_mcp(cmd: &mut String, mcp: Option<&Path>, front_desk: bool) {
         sh_quote(&args),
         sh_quote(&env_vars),
     ));
-    if front_desk {
-        // A front desk runs read-only, which is approval policy `never`,
-        // and under it Codex fails an MCP call that wants approval. Its one
-        // tool only puts a card in front of the person, who confirms it or
-        // not, so it is approved here: Claude's `--allowedTools
-        // mcp__octiq__route_chat`. No other tool is named.
-        cmd.push_str(&format!(
-            " -c {}",
-            sh_quote("mcp_servers.octiq.tools.route_chat.approval_mode=\"approve\"")
-        ));
-    }
+    // Read-only is approval policy `never`, and under it Codex fails an MCP
+    // call that wants approval. Each tool named here only puts a card in front
+    // of the person, who decides it there, so it is approved, as Claude's
+    // `--allowedTools` does: a front desk's `route_chat`, and an ordinary
+    // chat's `request_access`, which a read-only chat is the one to need.
+    let approved = if front_desk {
+        "route_chat"
+    } else {
+        "request_access"
+    };
+    cmd.push_str(&format!(
+        " -c {}",
+        sh_quote(&format!(
+            "mcp_servers.octiq.tools.{approved}.approval_mode=\"approve\""
+        ))
+    ));
 }
 
 /// The former Codex transport, retained behind `OCTIQ_CODEX_TRANSPORT=exec`.
@@ -1238,7 +1250,7 @@ const ANTIGRAVITY_HOST_PROMPT: &str = "You are running inside OctiqFlow, which o
 /// What this launch's access level lets through, as `antigravity_access_flag`
 /// sets it and as agy 1.2.16 behaves headless (probed 2026-10-03): whatever
 /// its mode would ask about is refused, and the refusal ends the turn.
-fn antigravity_access_prompt(access: Access) -> String {
+fn antigravity_access_prompt(access: Access, worker: bool) -> String {
     let level = match access {
         Access::Read => "This chat runs at Plan access: you can read and search the project. Changing any file, running any shell command, and reading outside the project are refused.",
         Access::Manual => "This chat runs in Antigravity's default mode: you can read and search the project. Changing any file, running any shell command, and reading outside the project are refused.",
@@ -1248,7 +1260,10 @@ fn antigravity_access_prompt(access: Access) -> String {
     };
     let way = match access {
         Access::Auto | Access::Full => "",
-        _ => " A refused call ends the turn. If a task needs one, say which and why instead of trying it, so the person can run it or raise the access.",
+        // A worker's level comes with its task; its coordinator is the one
+        // to tell.
+        _ if worker => " A refused call ends the turn. If a task needs one, say which and why instead of trying it, so the person can run it or raise the access.",
+        _ => " A refused call ends the turn. If a task needs one, do not try it: call `request_access` with the least level that lets it through and why, then end the turn. The person decides on a card, and a raise applies from their next message.",
     };
     format!(
         "This session runs headless, so nobody can approve a tool call while it runs. {level}{way}"
@@ -1266,7 +1281,8 @@ fn antigravity_rules(role: AntigravityRole) -> String {
             } else {
                 String::new()
             };
-            let access = antigravity_access_prompt(access);
+            let access =
+                antigravity_access_prompt(access, matches!(role, AntigravityRole::Worker(_)));
             format!(
                 "# OctiqFlow\n\n{ANTIGRAVITY_HOST_PROMPT}\n\n{access}\n\n{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker}"
             )
@@ -1993,6 +2009,8 @@ pub(crate) mod tests {
             // An agent's own Lessons, likewise on the host's one-off card
             // (`memory_lessons`).
             "vault_agent_memory_lessons",
+            // A raise of the chat's access is asked on its own card too.
+            "request_access",
         ] {
             assert!(claude.contains(&format!("mcp__octiq__{tool}")), "{tool}");
         }
@@ -2198,8 +2216,9 @@ pub(crate) mod tests {
         let ordinary = codex_request(false, &[]);
         let marker = "\"OCTIQ_HOOK_PORT\",\"OCTIQ_FRONT_DESK\"]";
         // Read-only is approval policy `never`, under which Codex fails an
-        // MCP call that wants approval: a live probe's route_chat did. Only
-        // route_chat is approved, and only for a front desk.
+        // MCP call that wants approval: a live probe's route_chat did. A
+        // front desk has route_chat approved, an ordinary chat request_access;
+        // each only puts a card up, and nothing else is approved.
         let approve = "-c 'mcp_servers.octiq.tools.route_chat.approval_mode=\"approve\"'";
         for line in [
             CODEX.build_command(&desk),
@@ -2209,12 +2228,16 @@ pub(crate) mod tests {
             assert!(line.contains(approve), "{line}");
             assert_eq!(line.matches("approval_mode").count(), 1, "{line}");
         }
+        let ask_access = "-c 'mcp_servers.octiq.tools.request_access.approval_mode=\"approve\"'";
         for line in [
             CODEX.build_command(&ordinary),
             codex_exec_command(&ordinary, &CODEX),
         ] {
             assert!(!line.contains("OCTIQ_FRONT_DESK"), "{line}");
-            assert!(!line.contains("approval_mode"), "{line}");
+            assert!(!line.contains("route_chat"), "{line}");
+            // Its one approved tool only puts a card up for the person.
+            assert!(line.contains(ask_access), "{line}");
+            assert_eq!(line.matches("approval_mode").count(), 1, "{line}");
             assert!(line.contains("\"OCTIQ_HOOK_PORT\"]"), "{line}");
         }
         // With no MCP config written there is no server to approve a tool on;
@@ -2508,6 +2531,24 @@ pub(crate) mod tests {
         assert!(pi.contains("--tools read,grep,find,ls"));
         assert!(!pi.contains("bash,edit,write"));
         assert!(pi.ends_with("'@/tmp/screen shot.png' 'inspect it'"));
+    }
+
+    /// Feedback 5fd9b781 / 4c7f5647: the turn Claude opens by itself after a
+    /// background `task_notification` is announced by `init`, as every turn is.
+    #[test]
+    fn claude_init_opens_a_turn_and_nothing_else_does() {
+        let claude = provider_for(AgentKind::Claude);
+        let init = json!({ "type": "system", "subtype": "init", "session_id": "s-1" });
+        let opened = claude.observe_event(&init);
+        assert!(opened.turn_opened);
+        assert_eq!(opened.session_id, Some("s-1"));
+        for other in [
+            json!({ "type": "system", "subtype": "task_notification", "task_id": "b1" }),
+            json!({ "type": "system", "subtype": "status" }),
+            json!({ "type": "result", "result": "done" }),
+        ] {
+            assert!(!claude.observe_event(&other).turn_opened, "{other}");
+        }
     }
 
     #[test]

@@ -91,6 +91,27 @@ designated, the page is the plain picker above.
   folder of the route's own, which the new chat may read. A file that could
   not be given is named on the card. A newer proposal replaces a pending one.
   Cancel leaves no record and no file.
+- **A discussion is not work.** When the person wants to talk something
+  through rather than have it done, the front desk passes `purpose:
+  "discuss"`. The route then opens at **read-only** access, whatever the
+  agent's registered level, in the same place, and its first message says it
+  is a discussion. A chat the person drives is no longer refused for
+  writing beside an orchestration worker either (`chat_workspace_access`):
+  the person often runs several chats in one direction, so the chat is let
+  through and a line in it names the task writing there, once per task
+  (`octiq_writer_beside`). Only an orchestration worker's own chat is still
+  refused, so a Mission keeps one writer at a time, and the Git panel keeps
+  the strict check (`require_workspace_access`). A worker's managed worktree
+  is shared only by a chat working inside it, the same rule dispatch keeps
+  (`shares_checkout`). The read-only ways out below remain for a refusal
+  from an older backend or a workspace being cleaned up. A work route
+  whose start a writer refused offers **Discuss only (read-only)** beside Try
+  again and Give up (`handover_discuss`, socket-only), but only while the
+  host has made sure no chat started (`abandonable`), since a started chat
+  keeps the settings it started with. A conversation started straight with
+  an agent, or any other chat, gets the same way out: a message the writer
+  refused offers **Discuss read-only** on its bubble (`lib/writerConflict`),
+  which sends it again at read-only access in the same conversation.
 - The host checks scope at the proposal and again at confirm, and refuses a
   route to the front desk itself or from any chat that is not a front-desk
   chat.

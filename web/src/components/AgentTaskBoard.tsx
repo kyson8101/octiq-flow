@@ -42,7 +42,7 @@ export function AgentTaskBoard(props: Props) {
   const counts = boardCounts(tasks, snapshot);
   const elapsed = runElapsed(snapshot, run.id, now);
   return <section className="agent-board" aria-label="Agent task board">
-    {snapshot.runs.length > 1 && <select className="agent-board-runs" aria-label="Task run" value={run.id} onChange={(event) => setChosenRun(event.target.value)}>
+    {snapshot.runs.length > 1 && <select className="agent-board-runs" aria-label="Mission" value={run.id} onChange={(event) => setChosenRun(event.target.value)}>
       {snapshot.runs.map((item) => <option key={item.id} value={item.id}>{item.objective}</option>)}
     </select>}
     <div className="agent-board-overview">

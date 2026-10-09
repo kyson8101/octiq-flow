@@ -57,6 +57,9 @@ impl Services {
             .unwrap_or_else(|| crate::profile::profile_dir().join("chats"))
             .join("questions.json");
         let orchestrations = Arc::new(OrchestrationStore::load_profile());
+        // Banners come from main agents only; the ledger says which chats are
+        // a run's workers and whose.
+        crate::push::route_workers_through(orchestrations.clone());
         let mut chats = ChatManager::with_saved_questions(question_path);
         chats.orchestrations = orchestrations.clone();
         let chats = Arc::new(chats);
@@ -696,6 +699,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "agent")?,
             arg(&args, "sessionId")?,
         )?)),
+        // Picking one up into a chat: its history becomes the start of the
+        // chat's record, so reopening the chat shows it before anything has
+        // been said there.
+        "agent_history_import" => to_value(crate::agent_history::agent_history_import(
+            arg(&args, "key")?,
+            arg(&args, "agent")?,
+            arg(&args, "sessionId")?,
+        )),
         "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
         "chat_set_agent_title" => to_value(crate::agent_chat::chat_set_agent_title(
             arg(&args, "chatId")?,
@@ -817,6 +828,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .unwrap_or(false);
             Ok(json!(crate::permission::decide(&id, decision, remember)))
         }
+
+        // An agent's request for a higher access level (`access_request`).
+        // The answer only settles the card: the level itself is changed by
+        // the page's own `chat_set_access`, before it answers "raised".
+        "access_request_pending" => Ok(json!(crate::access_request::pending())),
+        "access_request_answer" => Ok(json!(crate::access_request::answer(
+            &arg::<String>(&args, "id")?,
+            arg(&args, "decision")?,
+            arg::<Option<String>>(&args, "error")?,
+        ))),
 
         // Codex has no resumable permission channel. A safety-policy rejection
         // is therefore a post-hoc choice about the next user turn, kept long
@@ -974,14 +995,24 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let defaults: Option<crate::orchestration::automation::WorkerDefaults> =
                 arg(&args, "workerDefaults")?;
             let defaults = defaults.map(|d| d.normalized()).transpose()?;
+            // Agents mode: this chat is a registered lead's.
+            let agents_lead =
+                crate::team::lead_for_chat(&crate::team::default_path(), &actor)?.is_some();
             let run = svc.orchestrations.create_run_with_mode(
                 actor.clone(),
                 arg(&args, "objective")?,
                 workspace_id,
                 root_path,
                 arg(&args, "maxConcurrent")?,
+                // In agents mode a run is a mission unless the caller says
+                // otherwise: one worktree per repository, open until closed.
+                // Elsewhere the default stays Auto.
                 arg::<Option<crate::git_ops::workflow::WorkspaceMode>>(&args, "workspaceMode")?
-                    .unwrap_or_default(),
+                    .unwrap_or(if agents_lead {
+                        crate::git_ops::workflow::WorkspaceMode::Mission
+                    } else {
+                        crate::git_ops::workflow::WorkspaceMode::Auto
+                    }),
             )?;
             let run = if let Some(defaults) = defaults {
                 svc.orchestrations
@@ -990,8 +1021,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 run
             };
             // Agents mode: a lead's plan always waits for the person.
-            let run = if crate::team::lead_for_chat(&crate::team::default_path(), &actor)?.is_some()
-            {
+            let run = if agents_lead {
                 svc.orchestrations.require_plan_approval(&run.id)?
             } else {
                 run
@@ -1087,25 +1117,32 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "repository")?,
                 arg(&args, "worker")?,
             )?;
-            to_value(
-                svc.orchestrations.create_task_full(
-                    &actor,
-                    run_id,
-                    arg(&args, "title")?,
-                    arg(&args, "spec")?,
-                    list_arg(&args, "dependsOn")?,
-                    parent,
-                    worker,
-                    assignee,
-                    destination,
-                    card,
-                    arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
-                        .unwrap_or_default(),
-                    arg(&args, "size")?,
-                    arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?
-                        .unwrap_or_default(),
-                ),
-            )
+            // A replacement for a blocked or failed task (feedback 6b0870f9).
+            // Checked first, so a refusal creates no task.
+            let supersedes: Option<String> = arg(&args, "supersedes")?;
+            if let Some(old) = &supersedes {
+                svc.orchestrations.check_supersede(&actor, &run_id, old)?;
+            }
+            let created = svc.orchestrations.create_task_full(
+                &actor,
+                run_id,
+                arg(&args, "title")?,
+                arg(&args, "spec")?,
+                list_arg(&args, "dependsOn")?,
+                parent,
+                worker,
+                assignee,
+                destination,
+                card,
+                arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
+                    .unwrap_or_default(),
+                arg(&args, "size")?,
+                arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?.unwrap_or_default(),
+            );
+            if let (Ok(task), Some(old)) = (&created, &supersedes) {
+                svc.orchestrations.supersede(&actor, old, &task.id)?;
+            }
+            to_value(created)
         }
         // A lead changes or withdraws a task of a plan the person has not
         // approved yet. Owner and destination go through the same routing as
@@ -1341,6 +1378,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "id")?,
             crate::handover::Decision::Abandon,
         )),
+        "handover_discuss" => to_value(crate::handover::decide(
+            svc,
+            &arg::<String>(&args, "id")?,
+            crate::handover::Decision::Discuss,
+        )),
         // Front-desk chats the person left before they routed anywhere, for
         // the way back on the new-chat screen. No list shows them otherwise.
         "front_desk_unfinished" => to_value(crate::handover::route::unfinished_desks(
@@ -1534,6 +1576,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "runId")?,
             arg(&args, "archived")?,
+        )),
+        // The person's, like workspace cleanup: absent from the agents' hook.
+        "orchestration_mission_refresh" => to_value(svc.orchestrations.refresh_mission(
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+        )),
+        "orchestration_mission_close" => to_value(svc.orchestrations.close_mission(
+            &svc.chats,
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+            arg::<Option<bool>>(&args, "abandon")?.unwrap_or(false),
         )),
         "orchestration_workspace_cleanup" => to_value(svc.orchestrations.cleanup_workspace(
             &svc.chats,
@@ -1900,6 +1953,20 @@ mod tests {
         let out = dispatch(&svc, "agent_history_list", json!({ "limit": 5 })).expect("routed");
         let rows = out.as_array().expect("an array of sessions");
         assert!(rows.len() <= 5, "the limit is respected: {}", rows.len());
+    }
+
+    /// Picking a session up into a chat is routed, and refuses a record that
+    /// is not a chat's before it reads anything.
+    #[test]
+    fn a_browser_can_pick_a_past_session_up_into_a_chat() {
+        let svc = Services::load();
+        let err = dispatch(
+            &svc,
+            "agent_history_import",
+            json!({ "key": "orch:worker", "agent": "claude", "sessionId": "abc" }),
+        )
+        .expect_err("not a chat");
+        assert!(err.contains("not a chat"), "{err}");
     }
 
     #[test]

@@ -306,6 +306,55 @@ pub fn agent_history_read(agent: String, session_id: String) -> Result<Vec<Value
     })
 }
 
+/// What `agent_history_import` did with a past session.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct Imported {
+    /// The history now starts the chat's own record.
+    pub imported: bool,
+    /// The history, when it could NOT be recorded because the chat already
+    /// has a record, so the page can still show it. Empty otherwise: the page
+    /// reads a recorded history back through the chat's record like any other.
+    pub events: Vec<Value>,
+}
+
+/// Pick a past session up INTO a chat: read it, and make it the beginning of
+/// that chat's record.
+///
+/// `agent_history_read` alone left the history in the page that asked for it.
+/// A chat nobody had spoken in yet had no record on the server, so reopening
+/// it after that page's copy was gone (another device, a reload with a full
+/// store) showed an empty conversation where the session had been. Recorded
+/// here, it is replayed on open, after a reload, and on every device, exactly
+/// as anything said in the chat itself is.
+pub fn agent_history_import(
+    key: String,
+    agent: String,
+    session_id: String,
+) -> Result<Imported, String> {
+    // Only an ordinary chat's record. A worker's or a desk's is not a place a
+    // browser gets to write history into.
+    if !key.starts_with("chat:") {
+        return Err(format!("not a chat: {key:?}"));
+    }
+    let events = agent_history_read(agent, session_id)?;
+    seed_record(&key, events)
+}
+
+/// The recording half of `agent_history_import`, apart from finding the file.
+fn seed_record(key: &str, events: Vec<Value>) -> Result<Imported, String> {
+    if crate::transcript::seed(key, &events)? {
+        Ok(Imported {
+            imported: true,
+            events: Vec::new(),
+        })
+    } else {
+        Ok(Imported {
+            imported: false,
+            events,
+        })
+    }
+}
+
 /// The file's text, up to the byte budget. Reading whole is fine at this size
 /// and far simpler than streaming; the budget is what keeps it fine.
 fn read_capped(path: &Path) -> Result<String, String> {
@@ -1211,5 +1260,50 @@ mod tests {
             out.last().unwrap()["message"]["content"][0]["text"],
             format!("line {}", READ_MAX_EVENTS + 24)
         );
+    }
+
+    /// The bug this exists for: a session picked up into a chat nobody spoke
+    /// in left the chat with no record, so reopening it showed nothing. The
+    /// history is now the start of the chat's record.
+    #[test]
+    fn a_picked_up_session_becomes_the_start_of_the_chats_record() {
+        let key = format!("chat:test-import-{}", uuid::Uuid::new_v4().simple());
+        let history = claude_events(concat!(
+            r#"{"type":"user","message":{"role":"user","content":"fix the bug"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}"#,
+            "\n",
+        ));
+        let out = seed_record(&key, history.clone()).unwrap();
+        assert_eq!(
+            out,
+            Imported {
+                imported: true,
+                events: Vec::new()
+            }
+        );
+        let recorded: Vec<Value> = crate::transcript::since(&key, 0)
+            .into_iter()
+            .map(|r| r.event)
+            .collect();
+        assert_eq!(recorded, history);
+
+        // Picked up again (a second tab, a retry): nothing is doubled, and the
+        // history comes back for the page to show instead.
+        let again = seed_record(&key, history.clone()).unwrap();
+        assert!(!again.imported);
+        assert_eq!(again.events, history);
+        assert_eq!(crate::transcript::since(&key, 0).len(), 2);
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn only_a_chats_record_can_have_a_session_imported_into_it() {
+        let err =
+            agent_history_import("orch:worker".into(), "claude".into(), "abc".into()).unwrap_err();
+        assert!(err.contains("not a chat"), "{err}");
+        let err =
+            agent_history_import("chat:x".into(), "claude".into(), "../etc".into()).unwrap_err();
+        assert!(err.contains("not a usable session id"), "{err}");
     }
 }

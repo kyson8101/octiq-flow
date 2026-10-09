@@ -30,6 +30,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -710,6 +711,9 @@ enum QueueTurnResult {
 #[derive(Default)]
 pub struct ChatManager {
     background: crate::background_tasks::Store,
+    /// The agent program each live process was started from, resolved through
+    /// its symlinks (`remember_binary`), keyed like `sessions`.
+    binaries: Mutex<HashMap<String, PathBuf>>,
     /// Tokens each registered agent's chats used (`agent_usage.rs`).
     pub(crate) usage: crate::agent_usage::Store,
     pub(crate) orchestrations: Arc<crate::orchestration::OrchestrationStore>,
@@ -735,6 +739,9 @@ pub struct ChatManager {
     /// the session id each one names is kept out of the resume list.
     /// Each with the provider it runs on, which is half of a session's name.
     front_desks: Mutex<HashMap<String, ChatAgent>>,
+    /// "<chat>\n<task>" for each orchestration writer a chat has been told it
+    /// writes beside (`admit_beside_writers`), so it is said once, not per send.
+    writer_notices: Mutex<std::collections::HashSet<String>>,
 }
 
 /// The secret one launch of one agent proves itself with on
@@ -1084,6 +1091,30 @@ impl ChatManager {
             .filter(|id| safe_session_id(id).is_some())
     }
 
+    /// Which agent runs `key`, the level it runs at now, and when a new level
+    /// would take hold: what an access request is put to the person with.
+    /// The level is the start context's, which `chat_set_access` keeps
+    /// current for every provider. None for a chat with no live process.
+    pub(crate) fn access_standing(&self, key: &str) -> Option<crate::access_request::Standing> {
+        let session = self.sessions.lock().ok()?.get(key).cloned()?;
+        let (agent, app_server_thread) = {
+            let guard = session.lock().ok()?;
+            (guard.agent, guard.codex.is_some())
+        };
+        let access = self
+            .start_context(key)
+            .and_then(|start| start.access)
+            .unwrap_or(Access::Read);
+        Some(crate::access_request::Standing {
+            agent,
+            access,
+            takes: crate::access_request::takes(
+                app_server_thread,
+                provider_for(agent).capabilities(),
+            ),
+        })
+    }
+
     fn queue_context(&self, session_key: &str) -> Option<QueueContext> {
         self.start_context(session_key).map(QueueContext::from)
     }
@@ -1121,6 +1152,58 @@ impl ChatManager {
         sessions
             .get(key)
             .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
+    }
+
+    /// Note the program a just-started process runs, as the PATH lookup the
+    /// launch made resolves it through its symlinks. Homebrew keeps each Codex
+    /// release in its own versioned folder and removes the old one on upgrade,
+    /// so `/opt/homebrew/bin/codex` keeps working while a process started
+    /// before the upgrade points at a folder that is gone (feedback db5e1001).
+    fn remember_binary(&self, key: &str, bin: &str) {
+        let resolved =
+            crate::proc::find_executable(bin).and_then(|p| crate::paths::canonicalize(p).ok());
+        if let Ok(mut binaries) = self.binaries.lock() {
+            match resolved {
+                Some(path) => binaries.insert(key.to_string(), path),
+                None => binaries.remove(key),
+            };
+        }
+    }
+
+    /// Live, idle, non-worker chats whose program was removed from disk after
+    /// they started — an upgrade deleted the release they run. Anything that
+    /// process starts from its own path now fails: Codex's Browser Control
+    /// died on "failed to start codex app-server: No such file or directory"
+    /// (feedback db5e1001). Ended, the next message resumes them on the
+    /// installed release. A worker is left alone: ending it would lose its
+    /// attempt; its next launch picks up the new release anyway.
+    fn replaced_binary_keys(&self) -> Vec<String> {
+        let Ok(binaries) = self.binaries.lock() else {
+            return Vec::new();
+        };
+        let gone: Vec<String> = binaries
+            .iter()
+            .filter(|(_, path)| !path.exists())
+            .map(|(key, _)| key.clone())
+            .collect();
+        drop(binaries);
+        let Ok(sessions) = self.sessions.lock() else {
+            return Vec::new();
+        };
+        gone.into_iter()
+            .filter(|key| {
+                sessions
+                    .get(key)
+                    .is_some_and(|s| s.try_lock().is_ok_and(|s| !s.busy))
+            })
+            .filter(|key| !self.background.has_running(key))
+            .filter(|key| self.orchestrations.refusal_owner(key).is_none())
+            .collect()
+    }
+
+    /// The background work this chat's agent left running, `(id, description)`.
+    pub(crate) fn running_background(&self, key: &str) -> Vec<(String, String)> {
+        self.background.running(key)
     }
 
     pub(crate) fn has_process(&self, key: &str) -> bool {
@@ -1165,10 +1248,46 @@ impl ChatManager {
             for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
                 if crate::git_ops::workflow::overlaps(
                     checkout,
-                    &crate::git_ops::workflow::checkout_identity(path)?,
+                    &crate::git_ops::workflow::held_checkout(path),
                 ) {
                     return Err(format!("Chat {key} is still using this checkout."));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Let a chat write beside an orchestration worker, saying so in it once
+    /// per task (`OrchestrationStore::chat_workspace_access`). Every path is
+    /// checked before anything is said, so a refused start says nothing.
+    fn admit_beside_writers<'a>(
+        &self,
+        process_key: &str,
+        stream_key: &str,
+        paths: impl IntoIterator<Item = &'a String>,
+        writable: bool,
+    ) -> Result<(), String> {
+        let mut found: Vec<crate::orchestration::WriterBeside> = Vec::new();
+        for path in paths {
+            for writer in self
+                .orchestrations
+                .chat_workspace_access(process_key, path, writable)?
+            {
+                if !found.contains(&writer) {
+                    found.push(writer);
+                }
+            }
+        }
+        if found.is_empty() {
+            return Ok(());
+        }
+        let mut told = self.writer_notices.lock().map_err(|e| e.to_string())?;
+        for writer in found {
+            if told.insert(format!("{stream_key}\n{}", writer.task_id)) {
+                record_chat_event(
+                    stream_key,
+                    json!({ "type": "octiq_writer_beside", "text": writer.notice() }),
+                );
             }
         }
         Ok(())
@@ -1182,6 +1301,7 @@ impl ChatManager {
         worker: &str,
         coordinator: &str,
         writable: bool,
+        managed_worktree: bool,
     ) -> Result<(), String> {
         if !writable {
             return Ok(());
@@ -1199,9 +1319,13 @@ impl ChatManager {
             // turn's permissions yet. Conservatively wait for other live
             // processes instead of treating their next-turn setting as proof.
             for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
-                let other = crate::git_ops::workflow::checkout_identity(path)?;
-                if crate::git_ops::workflow::overlaps(checkout, &other) {
-                    return Err(format!("Chat {key} is already using this checkout. Stop it or choose Worktree mode."));
+                let other = crate::git_ops::workflow::held_checkout(path);
+                if crate::git_ops::workflow::shares_checkout(checkout, &other, managed_worktree) {
+                    return Err(if managed_worktree {
+                        format!("Chat {key} is working inside this worktree ({other}). Stop it before starting another writer here.")
+                    } else {
+                        format!("Chat {key} is already using this checkout ({other}). Stop it or choose Worktree mode.")
+                    });
                 }
             }
         }
@@ -2271,9 +2395,10 @@ pub(crate) fn start_session(
     } else {
         Vec::new()
     };
-    manager.orchestrations.require_workspace_access(
+    manager.admit_beside_writers(
         &session_key,
-        &cwd,
+        &key,
+        std::iter::once(&cwd),
         access != Some(Access::Read),
     )?;
     // Hold ownership through launch: reset/stop cannot race preparation.
@@ -2324,18 +2449,12 @@ pub(crate) fn start_session(
         (prompt, _) => (prompt, visible_prompt),
     };
 
-    manager.orchestrations.require_workspace_access(
+    manager.admit_beside_writers(
         &session_key,
-        &cwd,
+        &key,
+        std::iter::once(&cwd).chain(extra_dirs.iter().flatten()),
         access != Some(Access::Read),
     )?;
-    for path in extra_dirs.iter().flatten() {
-        manager.orchestrations.require_workspace_access(
-            &session_key,
-            path,
-            access != Some(Access::Read),
-        )?;
-    }
 
     // The folder we start in is already visible to the agent, so naming it
     // again would be noise; blanks and repeats are dropped for the same reason.
@@ -2631,6 +2750,7 @@ pub(crate) fn start_session(
         last_active: Instant::now(),
     }));
     sessions.insert(session_key.clone(), session.clone());
+    manager.remember_binary(&session_key, provider.bin());
     // The level the hook will be answered with, from here until it changes.
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
     record_access_for(&key, access);
@@ -2853,11 +2973,21 @@ pub(crate) fn start_session(
                             .flatten()
                             .or(blocked_quota_reset);
                         let observed = stream_provider.observe_event(&event);
-                        if let Ok(session) = asking.lock() {
+                        if let Ok(mut session) = asking.lock() {
                             if let Err(error) =
                                 reading.background.observe(&key, &session.launch_id, &event)
                             {
                                 eprintln!("chat: cannot record background work: {error}");
+                            }
+                            // A turn nobody wrote for: Claude woke itself when
+                            // its background work finished. Until this, the
+                            // session read idle through the whole turn, so
+                            // ask_user refused it as "turn has already ended"
+                            // (feedback 5fd9b781) and the idle sweeper, whose
+                            // clock had run since the previous full stop,
+                            // ended the worker mid-report (feedback 4c7f5647).
+                            if observed.turn_opened && !session.busy {
+                                session.turn_started();
                             }
                         }
                         if stream_provider.kind() == ChatAgent::Claude {
@@ -3668,18 +3798,12 @@ fn chat_send_with_user_turn(
         return Err("additional agents are no longer supported".into());
     }
     if let Some(start) = manager.start_context(&key) {
-        manager.orchestrations.require_workspace_access(
+        manager.admit_beside_writers(
             &key,
-            &start.cwd,
+            &key,
+            std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()),
             start.access != Some(Access::Read),
         )?;
-        for path in start.extra_dirs.iter().flatten() {
-            manager.orchestrations.require_workspace_access(
-                &key,
-                path,
-                start.access != Some(Access::Read),
-            )?;
-        }
     }
     let images = images.unwrap_or_default();
     let session_key = key.clone();
@@ -4428,6 +4552,11 @@ fn answer_permission(
     };
 
     let tool = ask.tool_name.clone().unwrap_or_default();
+    if crate::permission::host_bookkeeping(&tool) {
+        eprintln!("[perm] {key} {tool} -> allow (host bookkeeping)");
+        write_control_response(session, &request_id, json!({ "behavior": "allow" }));
+        return;
+    }
     let Some(rt) = rt else {
         // No runtime to wait on — the desktop build. Deny rather than leave the
         // agent parked on a question that will never be put to anyone.
@@ -4536,11 +4665,12 @@ pub fn chat_set_access_impl(
         return Ok(());
     }
     if let Some(start) = manager.start_context(&key) {
-        for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
-            manager
-                .orchestrations
-                .require_workspace_access(&key, path, access != Access::Read)?;
-        }
+        manager.admit_beside_writers(
+            &key,
+            &key,
+            std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()),
+            access != Access::Read,
+        )?;
     }
     cancel_auto_resume(manager, &key, "cancelled when access changed")?;
     let session = {
@@ -4618,6 +4748,7 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     // Outliving it would be a permission nobody remembers giving.
     crate::permission::forget_chat(&key);
     crate::safety_block::forget_chat(&key);
+    crate::access_request::forget_chat(&key);
     with_access(|a| a.remove(&key));
     end_process(manager, &key)?;
     cancelled
@@ -4890,6 +5021,18 @@ fn sweep_still_chats(manager: &ChatManager, timeout: Duration) -> Vec<String> {
     ended
 }
 
+/// End every idle chat whose agent program an upgrade removed
+/// (`ChatManager::replaced_binary_keys`). `Duration::ZERO` still makes
+/// `end_process_when` re-check, under its locks, that no turn and no
+/// background work started in between.
+fn sweep_replaced_binaries(manager: &ChatManager) -> Vec<String> {
+    manager
+        .replaced_binary_keys()
+        .into_iter()
+        .filter(|key| end_process_when(manager, key, Some(Duration::ZERO)) == Ok(true))
+        .collect()
+}
+
 /// Watch for chats nobody is using and give their memory back.
 pub fn start_idle_reaper(manager: Arc<ChatManager>) {
     let Some(timeout) = idle_timeout() else {
@@ -4906,6 +5049,9 @@ pub fn start_idle_reaper(manager: Arc<ChatManager>) {
             println!("[chat] {key} ended after {}m still", timeout.as_secs() / 60);
             // Every message in it has stopped, so its stream pieces can go.
             crate::record_trim::compact_chat(&key);
+        }
+        for key in sweep_replaced_binaries(&manager) {
+            println!("[chat] {key} ended: the agent program it runs was replaced on disk");
         }
     });
 }
@@ -8192,6 +8338,37 @@ mod idle_tests {
         session.lock().unwrap().turn_started();
         assert!(!end_process_when(&manager, key, Some(FIFTEEN)).unwrap());
         end_process(&manager, key).unwrap();
+    }
+
+    /// Feedback db5e1001: Homebrew removed the Codex release a chat was
+    /// started from. The idle chat is ended, to resume on the installed one;
+    /// a chat mid-turn is left to finish.
+    #[test]
+    fn an_idle_chat_whose_program_was_removed_is_ended() {
+        let dir = crate::test_dir::TestDir::new("replaced-binary");
+        let release = dir.join("0.156.1");
+        std::fs::create_dir_all(&release).unwrap();
+        let program = release.join("codex");
+        std::fs::write(&program, "").unwrap();
+        let m = ChatManager::default();
+        let busy = still_session(false, Duration::ZERO);
+        put(&m, "chat-idle", still_session(false, Duration::ZERO));
+        put(&m, "chat-busy", busy.clone());
+        busy.lock().unwrap().turn_started();
+        for key in ["chat-idle", "chat-busy", "chat-gone"] {
+            m.binaries
+                .lock()
+                .unwrap()
+                .insert(key.into(), program.clone());
+        }
+        assert!(
+            sweep_replaced_binaries(&m).is_empty(),
+            "the release is still there"
+        );
+        std::fs::remove_dir_all(&release).unwrap();
+        assert_eq!(sweep_replaced_binaries(&m), vec!["chat-idle".to_string()]);
+        assert!(m.has_process("chat-busy"), "a turn in flight is never cut");
+        end_process(&m, "chat-busy").unwrap();
     }
 
     #[test]

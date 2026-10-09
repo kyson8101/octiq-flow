@@ -188,9 +188,12 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   git's read of `~/.gitconfig`, so Auto is unguarded and the UI says so. A
   refused turn is stamped `octiq_access`; the page fails the refused tool row
   (agy may report it as a silent success) and asks for the least level that
-  lets it through — Accept edits for a project file write, Auto otherwise. The
-  plugin rules tell the model the level it runs at. PreToolUse hooks and
-  workspace settings files cannot lift the refusal.
+  lets it through — Accept edits for a project file write, Auto otherwise — on
+  the access card (see **An agent asks for more access on a card**). The
+  `result`'s `denied_actions` keeps every refusal of the conversation, so only
+  the ones past the previous `result`'s count are this turn's. The plugin rules
+  tell the model the level it runs at. PreToolUse hooks and workspace settings
+  files cannot lift the refusal.
 - **What OctiqFlow writes for Antigravity.** Its MCP server and host rules
   ride a plugin in a folder each launch adds with `--add-dir`:
   `~/.octiqflow/mcp/antigravity/<chat-<level>|worker-<level>|front-desk>/.agents/plugins/octiqflow/`
@@ -293,6 +296,24 @@ Three rules hold:
   four seconds so several open tabs cost one `git status`. The accent is for a
   turn in flight only — states the work is merely *owed* stay quiet.
 
+### An agent asks for more access on a card
+
+`request_access` (`octiq-ask.cjs` → `POST /hook/access` → `access_request.rs`)
+puts a card in the chat its capability proves: the level now, the level asked
+for, and why. **The call changes nothing.** The card's Upgrade sends the page's
+own `chat_set_access` — the access picker's command, which no hook reaches —
+and only after it worked does the page answer `access_request_answer`; the
+host then reads the chat's level back from its start context and tells the
+agent that, not the page's word. Workers, front desks and room seats are
+refused: a worker's level comes with its task.
+
+When a raise takes hold is the provider's (`access_request::Takes`): Claude
+mid-turn (a control request), Codex app-server and command-line providers from
+the next turn, Antigravity only between turns — so its call does not wait; the
+card stays up and the agent is told to end its turn. Claude waits as long as a
+permission card, Codex 50 s (its MCP call times out near 60). An Antigravity
+refusal asks on this same card, drawn from `ChatState.accessNeed`.
+
 ### Both agents' full stops carry their closing words
 
 `turn_is_over` reads `result` (Claude) and `turn.completed` / `turn.failed`
@@ -387,17 +408,44 @@ escape codes flag a terminal — run `octiq-notify` and the alert fires.
 
 ### Appearance modes (browser client)
 
-The client offers exactly three modes in Settings: **Light**, **Dark**, and
-**Fun**. Their persisted ids are `light`, `dark`, and `fun`; `themeStore.ts`
-migrates the retired `one-light`, `octiq`, and `candyland` ids and sends every
-other retired palette back to Dark.
+The client offers exactly five modes in Settings: **Light**, **Dark**,
+**Fun**, **Manga** and **中国风**. Their persisted ids are `light`, `dark`,
+`fun`, `manga` and `guofeng`; `themeStore.ts` migrates the retired
+`one-light`, `octiq`, `candyland` and `comic` ids and sends every other
+retired palette back to Dark.
 
-- Dark is the default palette in `design-system.css`. Light and Fun are the only
-  palette files under `web/src/lib/themes/`.
+- Dark is the default palette in `design-system.css`. Light, Fun, Manga and
+  中国风 are the palette files under `web/src/lib/themes/`.
 - `web/src/lib/theme.ts` translates their shadcn-shaped tokens (`--primary`,
   `--card`, `--muted-foreground`) into the app's semantic variables
-  (`--accent`, `--bg-1`, `--fg-2`). Modes set colours and corner radii only —
-  never fonts or shadows.
+  (`--accent`, `--bg-1`, `--fg-2`). Palettes set colours and corner radii only —
+  never fonts or shadows. A palette may name its radius rungs outright
+  (`--radius-sm/md/lg/pill`), which is how Manga gets uneven hand-cut corners.
+- **Manga and 中国风 change more than colour.** Each has its own sheet next to
+  `styles.css`, every rule scoped to its `:root[data-theme=…]`, so no other
+  mode picks any of it up. Both follow one rule: **readability wins over
+  effect** — reading text stays in a real reading face, nothing is drawn
+  behind words, and display lettering is for the few biggest headings.
+- **Manga** (`web/src/manga.css`): thin, slightly uneven panel
+  frames, solid-black (beta) marks, speech balloons, faint focus lines on the
+  empty page and Dela Gothic One on the biggest headings live in
+  `web/src/manga.css`, every rule scoped to `:root[data-theme="manga"]`. It is
+  monochrome: the accent is ink, and only the meaning colours (ok, warn,
+  danger) keep a hue. No drop shadows — a floating thing gets a white gutter
+  round its frame. Frames stay 1.5–2px; a louder version (display type
+  everywhere, screentone, 3px frames) was tried and rejected as too much to
+  work in.
+- **中国风** (`web/src/guofeng.css`): dark and cinematic. Ink-black night with
+  a lens vignette at the edges only and faint film grain, 霞鹜文楷 (LXGW WenKai)
+  for reading, Ma Shan Zheng brush lettering on the biggest headings, and
+  cinnabar seals with pressed edges (the 流 stamp, the agent's name tag, quote
+  rules). The ink is real brushwork drawn as SVG in `web/src/assets/ink/`
+  (飞白 dry-brush streaks cut by turbulence noise): the stroke behind the empty
+  page's question, gold brush rules, the sidebar's ink edge, the open chat's
+  mark, and ink-wash mountains in mist — full strength on the empty page,
+  veiled to half behind a chat so replies stay legible. The accent
+  is gold, not cinnabar, because ~90 rules draw text in `--accent` and red
+  text reads as an error; cinnabar is `--seal`, used by name.
 - The terminal cannot read a `var()` — xterm hands its palette to WebGL. So
   `web/src/lib/xtermTheme.ts` resolves variables through a hidden element and a
   1×1 canvas.
@@ -408,7 +456,10 @@ other retired palette back to Dark.
 ## Orchestrated task workspaces
 
 See [the task workspace lifecycle](docs/subagent-worktree-lifecycle.md) for the
-host-owned policy. A worker settling, code being pushed, a PR being merged, and
+host-owned policy. In agents mode, new runs are **missions** by default: one worktree per
+repository shared by the run's tasks one writer at a time, a status board whose
+Merged/Released steps come from git only, and a Close/Abandon that only the
+person can trigger (`orchestration/mission.rs`). A worker settling, code being pushed, a PR being merged, and
 a workspace being eligible for cleanup are separate states. Retry and review
 fixes reuse the task's persisted workspace with a new attempt ID. Current
 checkout mode never deletes a directory. The main chat coordinates while a

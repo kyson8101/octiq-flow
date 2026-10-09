@@ -1,4 +1,6 @@
 import { PermissionAsk, type Ask } from "./PermissionAsk";
+import { AccessRequestCard, type AnswerAccess } from "./AccessRequestCard";
+import type { AccessRequest } from "../lib/accessRequest";
 import { SafetyBlock, type Continue, type SafetyBlockNotice } from "./SafetyBlock";
 import { UserQuestion, type Question } from "./UserQuestion";
 import { questionActions } from "../lib/pendingActions";
@@ -9,7 +11,7 @@ import "./PendingActionBadge.css";
  *  so a badge in the chat list can find it; the wrapper draws no box. */
 export function ChatRequests({
   asks, safetyBlocks, questions, onPermissionAnswered, onSafetyAnswered,
-  onQuestionsAnswered, onContinue,
+  onQuestionsAnswered, onContinue, accessRequests = [], onAccessAnswer,
 }: {
   asks: Ask[];
   safetyBlocks: SafetyBlockNotice[];
@@ -18,6 +20,10 @@ export function ChatRequests({
   onSafetyAnswered: (id: string) => void;
   onQuestionsAnswered: (ids: string[]) => void;
   onContinue: Continue;
+  /** Asks for a higher access level: the agent's own, and the one an
+   *  Antigravity refusal makes. Drawn only with a way to answer them. */
+  accessRequests?: AccessRequest[];
+  onAccessAnswer?: AnswerAccess;
 }) {
   // One card answers every batch of this chat's questions, and is the target
   // only of what they still need: a saved batch waiting for delivery, still
@@ -28,6 +34,12 @@ export function ChatRequests({
       {asks.map((ask) => (
         <div key={ask.id} className="pending-target" data-pending-keys={`permission:${ask.id}`}>
           <PermissionAsk ask={ask} onAnswered={onPermissionAnswered} />
+        </div>
+      ))}
+      {onAccessAnswer && accessRequests.map((request) => (
+        <div key={request.id} className="pending-target"
+          data-pending-keys={request.local ? undefined : `access:${request.id}`}>
+          <AccessRequestCard request={request} onAnswer={onAccessAnswer} />
         </div>
       ))}
       {safetyBlocks.map((block) => (

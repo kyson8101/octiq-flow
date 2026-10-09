@@ -653,6 +653,22 @@ impl OrchestrationStore {
     }
 
     pub(super) fn monitor_workers(&self, now: i64) -> Result<(), String> {
+        self.monitor_workers_with(now, &|_| Vec::new())
+    }
+
+    /// `background` names the work a worker's chat left running in the
+    /// background (`ChatManager::running_background`).
+    ///
+    /// Feedback 597f0e33 / 4c7f5647: a worker waiting on its own long test
+    /// run wakes, reads the log, and ends its turn again; each wake reset the
+    /// stall and the next quiet stretch raised another notice. While the same
+    /// background work runs, its stall is told once, naming that work, and
+    /// a hang is still reported, just not again for the same job.
+    pub(super) fn monitor_workers_with(
+        &self,
+        now: i64,
+        background: &dyn Fn(&str) -> Vec<(String, String)>,
+    ) -> Result<(), String> {
         let snapshot = self.snapshot(None)?;
         for before in snapshot
             .attempts
@@ -698,6 +714,7 @@ impl OrchestrationStore {
             {
                 continue;
             }
+            let jobs = background(&before.worker_chat_key);
             let changed = self.mutate(|data| {
                 let current = &data.attempts[&before.id];
                 if !matches!(current.status, AttemptStatus::Preparing | AttemptStatus::Running) { return Ok(false); }
@@ -714,8 +731,16 @@ impl OrchestrationStore {
                 attempt.execution.state = ExecutionState::Stalled;
                 attempt.execution.stalled_at = Some(now);
                 let target = data.runs[&before.run_id].coordinator_chat_key.clone();
-                inbox::enqueue(data, &before.run_id, &before.worker_chat_key, &target, format!("stalled:{}:{}", before.id, before.execution.last_activity_at.unwrap_or(0)), "stalled",
-                    format!("No meaningful worker progress for task {} (attempt {}) since {}. Last operation: {}. Work may still be executing; inspect before interrupting. The host has not replayed any tool.", before.task_id, before.id, before.execution.last_progress_at.unwrap_or(before.created_at), before.execution.current_operation.as_deref().unwrap_or("unknown")));
+                let (source, waiting) = if jobs.is_empty() {
+                    (format!("stalled:{}:{}", before.id, before.execution.last_activity_at.unwrap_or(0)), String::new())
+                } else {
+                    let ids: Vec<_> = jobs.iter().map(|(id, _)| id.as_str()).collect();
+                    let names: Vec<_> = jobs.iter().map(|(_, d)| d.as_str()).collect();
+                    (format!("stalled-background:{}:{}", before.id, ids.join(",")),
+                     format!(" Its background work is still running: {}. This is said once per background job; check its output before interrupting.", names.join("; ")))
+                };
+                inbox::enqueue(data, &before.run_id, &before.worker_chat_key, &target, source, "stalled",
+                    format!("No meaningful worker progress for task {} (attempt {}) since {}. Last operation: {}.{waiting} Work may still be executing; inspect before interrupting. The host has not replayed any tool.", before.task_id, before.id, before.execution.last_progress_at.unwrap_or(before.created_at), before.execution.current_operation.as_deref().unwrap_or("unknown")));
                 Ok(true)
             })?;
             if changed {
@@ -731,7 +756,7 @@ impl OrchestrationStore {
         workspaces: &WorkspaceState,
         now: i64,
     ) -> Result<(), String> {
-        self.monitor_workers(now)?;
+        self.monitor_workers_with(now, &|key| chats.running_background(key))?;
         let snapshot = self.snapshot(None)?;
         for attempt in snapshot
             .attempts
@@ -1124,6 +1149,48 @@ mod tests {
             .recover_due_workers(chats, &workspaces, later)
             .unwrap();
         assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Failed);
+    }
+
+    /// Feedback 597f0e33: a worker waking now and then to read its running
+    /// test's log is told about once per background job, naming the job.
+    #[test]
+    fn a_stall_beside_running_background_work_is_told_once_per_job() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        let job = |id: &str| vec![(id.to_string(), "Run the full vitest suite".to_string())];
+        let stalls = |store: &OrchestrationStore| {
+            store
+                .snapshot(None)
+                .unwrap()
+                .notifications
+                .iter()
+                .filter(|n| n.kind == "stalled")
+                .count()
+        };
+        let mut now = now_ms() + 300_001;
+        for _ in 0..3 {
+            store.monitor_workers_with(now, &|_| job("bg1")).unwrap();
+            // The worker wakes, reads the log, and goes quiet again.
+            store.observe_worker_event(&attempt.worker_chat_key, &json!({"type":"item.completed", "item":{"type":"agent_message","text":"Tests still running; waiting"}})).unwrap();
+            now += 300_001;
+        }
+        assert_eq!(stalls(&store), 1);
+        let note = store
+            .snapshot(None)
+            .unwrap()
+            .notifications
+            .into_iter()
+            .find(|n| n.kind == "stalled")
+            .unwrap();
+        assert!(
+            note.body.contains("Run the full vitest suite"),
+            "{}",
+            note.body
+        );
+        // A new job, or none, is a new story.
+        store.monitor_workers_with(now, &|_| job("bg2")).unwrap();
+        assert_eq!(stalls(&store), 2);
     }
 
     #[test]

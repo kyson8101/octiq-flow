@@ -15,6 +15,18 @@ pub enum WorkspaceMode {
     Auto,
     Worktree,
     Direct,
+    /// One worktree per repository for the whole mission, on
+    /// `feature/mission-<run>`, shared by its tasks one writer at a time.
+    /// Follow-up work lands on the same branch; closing the mission is what
+    /// removes it.
+    Mission,
+}
+
+impl WorkspaceMode {
+    /// A managed linked worktree this workflow created and may remove.
+    pub fn is_worktree(self) -> bool {
+        matches!(self, WorkspaceMode::Worktree | WorkspaceMode::Mission)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -48,6 +60,13 @@ pub struct DeliveryEvidence {
     pub pull_request: Option<String>,
     pub review_state: Option<String>,
     pub merged: bool,
+    /// In what is actually running, by the project's own release check.
+    /// `None` until merged, and whenever the project has no release check:
+    /// unverified, never "no" (feedback ee0a43b0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<bool>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub release_note: String,
     pub checked_at: i64,
     pub notes: Vec<String>,
 }
@@ -73,9 +92,10 @@ fn git(root: &str, args: &[&str]) -> Result<String, String> {
 }
 
 pub fn checkout_identity(path: &str) -> Result<String, String> {
+    let shown = path;
     let path = Path::new(path)
         .canonical()
-        .map_err(|e| format!("Workspace does not exist: {e}"))?;
+        .map_err(|e| format!("Workspace does not exist: {shown}: {e}"))?;
     let path = path.to_string_lossy().into_owned();
     let root = git(&path, &["rev-parse", "--show-toplevel"]).unwrap_or(path);
     Path::new(&root)
@@ -84,8 +104,42 @@ pub fn checkout_identity(path: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The checkout ANOTHER chat or attempt holds, for an overlap check only.
+///
+/// Feedback dda0bd59 / ed5ab9e3: a directory deleted under a live chat, or a
+/// stale attempt's removed worktree, made `checkout_identity` fail, and its
+/// `?` refused every dispatch in every run with a path-less ENOENT. A path
+/// that is gone holds nothing, so it is compared as written: it still clashes
+/// with a checkout it literally names, and with nothing else.
+pub fn held_checkout(path: &str) -> String {
+    checkout_identity(path).unwrap_or_else(|_| path.to_string())
+}
+
+/// Whether `root` is inside a Git repository, the same test `plan` makes.
+pub fn has_git(root: &str) -> bool {
+    checkout_identity(root)
+        .is_ok_and(|checkout| git(&checkout, &["rev-parse", "--git-common-dir"]).is_ok())
+}
+
 pub fn overlaps(a: &str, b: &str) -> bool {
     Path::new(a).starts_with(b) || Path::new(b).starts_with(a)
+}
+
+/// Whether another chat working in `other` (a [`held_checkout`]) shares a
+/// writer's `checkout`.
+///
+/// A managed worktree is a folder nobody else was given, so only a chat that
+/// works INSIDE it shares it. A chat in a folder above it — a project that
+/// lists the plain folder its repositories sit in, say — was not handed this
+/// worktree, and counting it refused every worktree under that folder with
+/// "already using this checkout" (feedback 63e319a4). Every other checkout
+/// keeps the strict rule both ways.
+pub fn shares_checkout(checkout: &str, other: &str, managed_worktree: bool) -> bool {
+    if managed_worktree {
+        Path::new(other).starts_with(checkout)
+    } else {
+        overlaps(checkout, other)
+    }
 }
 
 pub fn plan(
@@ -102,14 +156,17 @@ pub fn plan(
     let checkout = checkout_identity(&cwd)?;
     let is_repo = git(&checkout, &["rev-parse", "--git-common-dir"]).is_ok();
     if !is_repo {
-        if mode != WorkspaceMode::Direct {
+        // A mission in a folder with no Git history has nothing to branch:
+        // it works in the folder, like Current checkout, rather than failing
+        // every task it plans.
+        if !matches!(mode, WorkspaceMode::Direct | WorkspaceMode::Mission) {
             return Err(
                 "Worktree mode requires a Git repository. Select Current checkout for this folder."
                     .into(),
             );
         }
         return Ok(WorkspacePlan {
-            mode,
+            mode: WorkspaceMode::Direct,
             cwd: cwd.clone(),
             checkout_root: checkout.clone(),
             repository_root: checkout,
@@ -159,11 +216,20 @@ pub fn plan(
     let base = if base.is_empty() { &current } else { base };
     ensure_local_branch(&checkout, base)?;
     let base_sha = git(&checkout, &["rev-parse", &format!("refs/heads/{base}")])?;
-    let id = task_id.strip_prefix("task_").unwrap_or(task_id);
+    // A mission's workspace is keyed by its run, so every task in it plans the
+    // same branch and path; a task's own by the task.
+    let mission = mode == WorkspaceMode::Mission;
+    let id = task_id
+        .strip_prefix(if mission { "run_" } else { "task_" })
+        .unwrap_or(task_id);
     if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
         return Err("Invalid task ID for a workspace.".into());
     }
-    let branch = format!("feature/octiq-{id}");
+    let branch = if mission {
+        format!("feature/mission-{id}")
+    } else {
+        format!("feature/octiq-{id}")
+    };
     let mut target = primary
         .parent()
         .ok_or("Repository has no parent directory.")?
@@ -180,7 +246,11 @@ pub fn plan(
         .strip_prefix(&checkout)
         .map_err(|e| e.to_string())?;
     Ok(WorkspacePlan {
-        mode: WorkspaceMode::Worktree,
+        mode: if mission {
+            WorkspaceMode::Mission
+        } else {
+            WorkspaceMode::Worktree
+        },
         cwd: target.join(relative).to_string_lossy().into_owned(),
         checkout_root: target.to_string_lossy().into_owned(),
         repository_root: primary.to_string_lossy().into_owned(),
@@ -200,6 +270,11 @@ pub fn plan(
 /// workspace, anything already there belongs to someone else.
 pub fn occupied(plan: &WorkspacePlan) -> Option<String> {
     if !plan.managed {
+        return None;
+    }
+    // A mission's later tasks find its worktree already there, made by this
+    // workflow for this path — that is the point of it, not a collision.
+    if plan.mode == WorkspaceMode::Mission && owned_here(plan) {
         return None;
     }
     let branch = git(
@@ -222,6 +297,20 @@ pub fn occupied(plan: &WorkspacePlan) -> Option<String> {
             plan.branch, plan.checkout_root
         )),
     }
+}
+
+/// The plan's branch exists and records this very path as its owner — the
+/// mark `provision` leaves, and nothing else writes.
+fn owned_here(plan: &WorkspacePlan) -> bool {
+    git(
+        &plan.repository_root,
+        &[
+            "config",
+            "--get",
+            &format!("branch.{}.octiqWorkspace", plan.branch),
+        ],
+    )
+    .is_ok_and(|owner| owner == plan.checkout_root)
 }
 
 /// A persisted plan is written before this runs. Retrying uses the SAME branch
@@ -284,6 +373,19 @@ pub fn provision(plan: &WorkspacePlan) -> Result<(), String> {
 }
 
 pub fn verify(plan: &WorkspacePlan) -> Result<(), String> {
+    verify_checkout(plan)?;
+    if plan.is_repo && current_branch(&plan.cwd)? != plan.branch {
+        return Err(
+            "The assigned workspace branch changed. Restore its branch before continuing.".into(),
+        );
+    }
+    Ok(())
+}
+
+/// `verify` short of the branch: the folder is still this task's checkout of
+/// this repository, whatever it has checked out. A reviewer told to detach at
+/// the exact head it reviews is still in its own workspace.
+fn verify_checkout(plan: &WorkspacePlan) -> Result<(), String> {
     if !Path::new(&plan.cwd).is_dir() {
         return Err(format!(
             "The assigned workspace is missing: {}. Restore it before retrying.",
@@ -296,12 +398,6 @@ pub fn verify(plan: &WorkspacePlan) -> Result<(), String> {
         );
     }
     if plan.is_repo {
-        if current_branch(&plan.cwd)? != plan.branch {
-            return Err(
-                "The assigned workspace branch changed. Restore its branch before continuing."
-                    .into(),
-            );
-        }
         let primary = primary_checkout_root(&plan.cwd)?
             .canonical()
             .map_err(|e| e.to_string())?;
@@ -405,38 +501,96 @@ pub fn inspect(plan: &WorkspacePlan, check_remote: bool) -> Result<DeliveryEvide
                 }
             }
         }
-        // For repositories without a PR, verify both remote base and branch.
-        // Never use `git branch -d` or the branch's upstream as a merge gate.
-        if result.pull_request.is_none() && result.pushed && plan.branch != plan.base_branch {
-            if let Ok(remote) = git(
-                &plan.cwd,
-                &["config", "--get", &format!("branch.{}.remote", plan.branch)],
-            ) {
-                if let Ok(tip) = git(
-                    &plan.cwd,
-                    &[
-                        "ls-remote",
-                        "--exit-code",
-                        &remote,
-                        &format!("refs/heads/{}", plan.base_branch),
-                    ],
-                ) {
-                    if let Some(sha) = tip.split_whitespace().next() {
-                        result.merged = git(
-                            &plan.cwd,
-                            &["merge-base", "--is-ancestor", &result.head_sha, sha],
-                        )
-                        .is_ok();
-                    }
+        // Without a PR, the exact HEAD must be in the base branch's tip on its
+        // remote. Never use `git branch -d` or the branch's upstream as a
+        // merge gate. The task branch need not have been pushed: a lead who
+        // fast-forwards the base and pushes that leaves no other trace, and
+        // asking for the branch too hid cleanup for every such task
+        // (feedback 1becac39, 9b1e8978).
+        if result.pull_request.is_none() && plan.branch != plan.base_branch {
+            match merged_into_remote_base(plan, &result.head_sha) {
+                Some(merged) => {
+                    result.merged = merged;
+                    // In the remote base, the commit is published.
+                    result.pushed |= merged;
                 }
+                None => result.notes.push(format!(
+                    "Could not compare this commit with {} on its remote; merge is unverified.",
+                    plan.base_branch
+                )),
             }
         }
     }
     Ok(result)
 }
 
+/// Whether `head` is already in the base branch on its remote, read without
+/// the mission branch ever having been pushed: a lead who fast-forwards the
+/// base locally and pushes it leaves exactly this behind, and no PR. The
+/// remote is the base branch's own, else `origin`. Asks the remote; never
+/// fetches. `None` when the remote could not be asked, or the tip it names is
+/// not here to compare against.
+pub fn merged_into_remote_base(plan: &WorkspacePlan, head: &str) -> Option<bool> {
+    if !plan.is_repo || plan.base_branch.is_empty() || head.is_empty() {
+        return None;
+    }
+    let remote = git(
+        &plan.repository_root,
+        &[
+            "config",
+            "--get",
+            &format!("branch.{}.remote", plan.base_branch),
+        ],
+    )
+    .ok()
+    .filter(|r| r != "." && !r.starts_with('-'))
+    .unwrap_or_else(|| "origin".into());
+    let tip = git(
+        &plan.repository_root,
+        &[
+            "ls-remote",
+            "--exit-code",
+            &remote,
+            &format!("refs/heads/{}", plan.base_branch),
+        ],
+    )
+    .ok()?;
+    let sha = tip.split_whitespace().next()?.to_string();
+    git(
+        &plan.repository_root,
+        &["cat-file", "-e", &format!("{sha}^{{commit}}")],
+    )
+    .ok()?;
+    Some(
+        git(
+            &plan.repository_root,
+            &["merge-base", "--is-ancestor", head, &sha],
+        )
+        .is_ok(),
+    )
+}
+
+/// Delete a closed mission's LOCAL branch, with `-d`: Git itself refuses one
+/// that is not merged, so this can never lose a commit. The remote branch is
+/// never touched. `Ok(false)` when Git kept it — a squash merge, say — which
+/// is reported, not forced.
+pub fn delete_merged_branch(plan: &WorkspacePlan) -> Result<bool, String> {
+    if !plan.managed || plan.mode != WorkspaceMode::Mission || !owned_here(plan) {
+        return Ok(false);
+    }
+    if Path::new(&plan.checkout_root).exists() {
+        return Err("Remove the mission's worktree before its branch.".into());
+    }
+    Ok(run_git_mut(
+        &plan.repository_root,
+        &["branch", "-d", &plan.branch],
+        false,
+    )
+    .is_ok())
+}
+
 pub fn cleanup(plan: &WorkspacePlan, expected_head: &str) -> Result<(), String> {
-    if !plan.managed || plan.mode != WorkspaceMode::Worktree {
+    if !plan.managed || !plan.mode.is_worktree() {
         return Err(
             "Current checkout and adopted workspaces are never removed automatically.".into(),
         );
@@ -464,7 +618,9 @@ pub fn validation_worktree(
     commits: &[String],
     target: &Path,
 ) -> Result<(), String> {
-    verify(plan)?;
+    // Built from the repository at exact commits, so what the task checkout
+    // has checked out does not matter (feedback ef927bf0 / 6b1d8eba).
+    verify_checkout(plan)?;
     let exact = |sha: &str| -> Result<String, String> {
         if sha.len() < 7 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("Validation requires exact commit SHAs.".into());
@@ -579,6 +735,17 @@ pub(crate) mod tests {
             self.git(&["push", "-u", "origin", "main"]);
         }
     }
+    pub(crate) fn push_branch(cwd: &str, branch: &str) {
+        git(cwd, &["push", "-u", "origin", branch]).unwrap();
+    }
+    #[test]
+    fn a_mission_in_a_folder_without_git_works_in_place() {
+        let dir = crate::test_dir::TestDir::new("workflow-plain").canonicalized();
+        let root = dir.to_string_lossy().into_owned();
+        let p = plan(&root, "", "run_abc", WorkspaceMode::Mission).unwrap();
+        assert_eq!(p.mode, WorkspaceMode::Direct);
+        assert!(!p.managed && p.branch.is_empty());
+    }
     #[test]
     fn stable_allocation_preserves_primary_and_disables_inherited_tracking() {
         let repo = Repo::new();
@@ -644,6 +811,36 @@ pub(crate) mod tests {
         );
     }
 
+    /// Feedback dda0bd59 / ed5ab9e3: someone else's vanished folder is not an
+    /// error for this dispatch. It still clashes with what it literally names.
+    #[test]
+    fn a_vanished_folder_holds_only_the_path_it_names() {
+        let repo = Repo::new();
+        let gone = repo.dir.join("removed-worktree");
+        let gone = gone.to_string_lossy();
+        let error = checkout_identity(&gone).unwrap_err();
+        assert!(error.contains(gone.as_ref()), "{error}");
+        assert_eq!(held_checkout(&gone), gone);
+        assert!(!overlaps(&held_checkout(&gone), &repo.root));
+        assert!(overlaps(&held_checkout(&gone), &format!("{gone}/sub")));
+        assert_eq!(held_checkout(&repo.root), repo.root);
+    }
+
+    /// Feedback 63e319a4: a chat in the plain folder above a repository does
+    /// not hold a managed worktree, but does hold an ordinary checkout.
+    #[test]
+    fn only_a_chat_inside_a_managed_worktree_shares_it() {
+        let parent = "/work/Starfall";
+        let worktree = "/work/Starfall/.worktrees/novel/feature/octiq-x";
+        assert!(!shares_checkout(worktree, parent, true));
+        assert!(shares_checkout(worktree, worktree, true));
+        assert!(shares_checkout(worktree, &format!("{worktree}/web"), true));
+        assert!(!shares_checkout(worktree, "/work/Starfall/novel", true));
+        let primary = "/work/Starfall/novel";
+        assert!(shares_checkout(primary, parent, false));
+        assert!(shares_checkout(primary, &format!("{primary}/web"), false));
+    }
+
     #[test]
     fn retained_workspace_branch_drift_is_rejected() {
         let repo = Repo::new();
@@ -682,6 +879,47 @@ pub(crate) mod tests {
             head,
             "cleanup retains the branch"
         );
+    }
+
+    /// Feedback ef927bf0 / 6b1d8eba: a reviewer detached at the exact head it
+    /// reviews can still have a validation checkout made, and its own tree is
+    /// left where it was. Dispatch still insists on the branch.
+    #[test]
+    fn a_detached_review_checkout_still_gets_a_validation_checkout() {
+        let repo = Repo::new();
+        let p = plan(&repo.root, "main", "task_detached", WorkspaceMode::Worktree).unwrap();
+        provision(&p).unwrap();
+        let head = repo.commit(&p.cwd, "feature.txt", "feature\n");
+        git(&p.cwd, &["checkout", "--detach", &head]).unwrap();
+        assert!(verify(&p).is_err(), "a writer still needs its branch");
+        let target = repo.dir.join("validation-detached");
+        validation_worktree(&p, &p.base_sha, &[head.clone()], &target).unwrap();
+        assert!(target.join("feature.txt").exists());
+        assert_eq!(git(&p.cwd, &["rev-parse", "HEAD"]).unwrap(), head);
+        assert!(git(&p.cwd, &["branch", "--show-current"])
+            .unwrap()
+            .is_empty());
+        remove_validation(&p, &target.to_string_lossy()).unwrap();
+    }
+
+    /// Feedback 1becac39 / 9b1e8978: the lead fast-forwards the base and
+    /// pushes that; the task branch itself never reaches the remote.
+    #[test]
+    fn a_head_in_the_remote_base_is_merged_without_its_branch_pushed() {
+        let repo = Repo::new();
+        repo.remote();
+        let p = plan(&repo.root, "main", "task_unpushed", WorkspaceMode::Worktree).unwrap();
+        provision(&p).unwrap();
+        let head = repo.commit(&p.cwd, "feature.txt", "feature\n");
+        let before = inspect(&p, true).unwrap();
+        assert!(!before.merged && !before.pushed, "{:?}", before.notes);
+        repo.git(&["merge", "--ff-only", &p.branch]);
+        repo.git(&["push"]);
+        let after = inspect(&p, true).unwrap();
+        assert!(after.merged, "{:?}", after.notes);
+        assert!(after.pushed, "in the remote base, it is published");
+        cleanup(&p, &head).unwrap();
+        assert!(!Path::new(&p.cwd).exists());
     }
 
     #[test]

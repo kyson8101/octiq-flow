@@ -170,7 +170,8 @@ export function taskState(
   waiting: number,
 ): { state: AgentState; label: string } | null {
   if (!run || run.archivedAt || !LIVE_RUN.includes(run.status)) return null;
-  if (task.status === "completed" || task.status === "cancelled") return null;
+  // A replaced task is history: the agent is on its replacement, if anyone.
+  if (task.status === "completed" || task.status === "cancelled" || task.supersededBy) return null;
   if (waiting > 0) return { state: "needs_you", label: "Needs your approval" };
   if (gated) return { state: "needs_you", label: "Waiting on a decision" };
   if (task.status === "failed") return { state: "blocked", label: "Failed" };
