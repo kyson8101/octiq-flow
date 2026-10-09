@@ -43,6 +43,10 @@ export type Conversation = {
    *  does not silently change either. */
   modelId?: string;
   permission?: string;
+  /** How hard the agent thinks in this chat, restored on reopening like the
+   *  two above. Absent on a chat from before it was kept: the page's own level
+   *  applies then. */
+  effort?: string;
   /** When the chat was started. Kept separately from the meaningful activity
    *  time below so creation history is never lost when the task list moves. */
   createdAt: number;
@@ -335,6 +339,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       held.cwd === c.cwd &&
       held.modelId === c.modelId &&
       held.permission === c.permission &&
+      held.effort === c.effort &&
       held.createdAt === c.createdAt &&
       held.updatedAt === c.updatedAt &&
       held.seq === c.seq &&

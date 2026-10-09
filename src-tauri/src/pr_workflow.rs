@@ -1072,6 +1072,7 @@ mod tests {
             cwd: None,
             model_id: None,
             access: None,
+            effort: None,
             created_at: now_ms(),
             updated_at: now_ms(),
             read_at: None,

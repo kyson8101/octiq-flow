@@ -800,7 +800,7 @@ export default function App() {
   // screen may be showing something else entirely — so the facts travel with
   // the conversation, not with the UI.
   const meta = useRef<
-    Record<string, { projectId: string; modelId: string; access: AccessLevel }>
+    Record<string, { projectId: string; modelId: string; access: AccessLevel; effort?: Effort }>
   >({});
   // A user chat outlives any one provider session. Selecting another model
   // ends the native process, then the next send starts the chosen provider
@@ -1370,6 +1370,7 @@ export default function App() {
             return {
               ...r,
               permission: r.access ?? cached?.permission,
+              effort: r.effort ?? cached?.effort,
               cwd: r.cwd ?? cached?.cwd,
               // Keep the cached messages so the chat opens instantly; the
               // transcript tops it up on open. A chat this device has never
@@ -1799,6 +1800,7 @@ export default function App() {
             messages: s.messages,
             modelId: info.modelId,
             permission: info.access,
+            effort: info.effort ?? before?.effort,
             // Set once, on the first save. It records when the task began;
             // updatedAt below carries the meaningful activity used by byTask.
             createdAt: before?.createdAt ?? Date.now(),
@@ -2531,7 +2533,7 @@ export default function App() {
       const id = blank ? conversationId! : crypto.randomUUID();
 
       const sessionAccess = accessFor(session.agent, access);
-      meta.current[id] = { projectId: forProject, modelId: model.id, access: sessionAccess };
+      meta.current[id] = { projectId: forProject, modelId: model.id, access: sessionAccess, effort: kept };
       setChoice(model);
       setEffort(kept);
       setAccess(sessionAccess);
@@ -2660,16 +2662,22 @@ export default function App() {
     setNewChatError(null);
     const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
     const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
+    // The level this chat runs at, not the one the page last held: a resumed
+    // agent is started with it. A chat from before it was kept has none, and
+    // keeps whatever the page shows.
+    const conversationEffort = c.effort ? effortFor(model.agent, c.effort as Effort) : undefined;
     meta.current[c.id] = {
       projectId: c.projectId,
       modelId: model.id,
       access: conversationAccess,
+      effort: conversationEffort,
     };
     holdConversation(c);
     setProjectId(c.projectId);
     setConversationId(c.id);
     if (c.modelId) setChoice(model);
     setAccess(conversationAccess);
+    if (conversationEffort) setEffort(conversationEffort);
     setProjectsScreen(false);
     setPrDashboardOpen(false);
     setProjectsPage(null);
@@ -2692,6 +2700,7 @@ export default function App() {
         projectId: besideConversation.projectId,
         modelId: model.id,
         access: accessFor(model.agent, (besideConversation.permission as AccessLevel) ?? "read"),
+        effort: besideConversation.effort ? effortFor(model.agent, besideConversation.effort as Effort) : undefined,
       };
     }
     holdConversation(besideConversation);
@@ -3335,6 +3344,7 @@ export default function App() {
         cwd: restored.cwd ?? cached?.cwd,
         modelId: restored.modelId ?? undefined,
         permission: restored.access ?? cached?.permission,
+        effort: restored.effort ?? cached?.effort,
         messages: cached?.messages ?? [],
         seq: cached?.seq,
         synced: true,
@@ -3545,6 +3555,7 @@ export default function App() {
         projectId: targetProject.id,
         modelId: choice.id,
         access: sendAccess,
+        effort,
       };
       // The same files the agent is given, kept on the bubble so the message
       // shows what was sent with it. The object URLs are dropped: they are this
@@ -3656,6 +3667,7 @@ export default function App() {
           messages: chatsRef.current[id]?.messages ?? held?.messages ?? [],
           modelId: choice.id,
           permission: sendAccess,
+          effort,
           createdAt: held?.createdAt ?? startedAt,
           updatedAt: startedAt,
           pinned: held?.pinned ?? false,
@@ -3842,6 +3854,7 @@ export default function App() {
       messages: [],
       modelId: choice.id,
       permission: launchAccess,
+      effort,
       createdAt: preparedAt,
       updatedAt: preparedAt,
     };
@@ -3857,7 +3870,7 @@ export default function App() {
       },
     });
 
-    meta.current[id] = { projectId: targetProject.id, modelId: choice.id, access: launchAccess };
+    meta.current[id] = { projectId: targetProject.id, modelId: choice.id, access: launchAccess, effort };
     catchUp.current.own(keyFor(id));
     patch(id, () => preparedState);
     const next = [activity, ...conversationsRef.current.filter((item) => item.id !== id)];
@@ -4057,6 +4070,7 @@ export default function App() {
       if (kept !== effort) {
         setEffort(kept);
         remember(EFFORT_KEY, kept);
+        if (conversationId && meta.current[conversationId]) meta.current[conversationId].effort = kept;
       }
       if (conversationId && meta.current[conversationId]) {
         meta.current[conversationId].modelId = c.id;
@@ -4150,6 +4164,8 @@ export default function App() {
       // the agent, and was back to the old word after a reload. See
       // `lib/remember`.
       remember(EFFORT_KEY, e);
+      // This chat's own level from now on, saved with it like its access.
+      if (conversationId && meta.current[conversationId]) meta.current[conversationId].effort = e;
       const liveCommand = liveSettingCommand(choice.agent, "effort", e);
       if (liveCommand && tellSession(liveCommand)) return;
       // Otherwise the setting is on the command line, so the process has to go
@@ -4342,6 +4358,7 @@ export default function App() {
       messages: chatsRef.current[id]?.messages ?? [],
       modelId: settings?.choice.id,
       permission: settings?.access,
+      effort: settings?.effort,
       createdAt: desk.createdAt,
       updatedAt: desk.createdAt,
     });
@@ -4509,7 +4526,7 @@ export default function App() {
       ...(held ?? {}), id, projectId: project.id, title: held?.title ?? shortTitle(objective),
       cwd: held?.cwd ?? chatsRef.current[id]?.cwd ?? project.primary_path,
       sessionId: pendingModelHandoffs.current.has(id) ? undefined : chatsRef.current[id]?.sessionId ?? held?.sessionId,
-      messages: chatsRef.current[id]?.messages ?? held?.messages ?? [], modelId: choice.id, permission: access,
+      messages: chatsRef.current[id]?.messages ?? held?.messages ?? [], modelId: choice.id, permission: access, effort,
       createdAt: held?.createdAt ?? now, updatedAt: now,
     };
     // Await the durable index: the host must be able to recover this chat even
@@ -4518,7 +4535,7 @@ export default function App() {
       ...activity, messages: undefined, sessionId: activity.sessionId ?? null,
       access, pinned: activity.pinned ?? false, generation: activity.generation ?? 0,
     } });
-    meta.current[id] = { projectId: project.id, modelId: choice.id, access };
+    meta.current[id] = { projectId: project.id, modelId: choice.id, access, effort };
     const next = [activity, ...conversationsRef.current.filter((item) => item.id !== id)];
     conversationsRef.current = next;
     setConversations(next); saveConversations(next);

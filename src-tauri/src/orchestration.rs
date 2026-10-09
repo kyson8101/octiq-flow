@@ -2658,6 +2658,7 @@ impl OrchestrationStore {
             cwd: Some(prepared.cwd.clone()),
             model_id: Some(model_id(launch.agent, launch.model.as_deref())),
             access: Some(access_id(launch.access).into()),
+            effort: launch.effort.clone(),
             created_at: now,
             updated_at: now,
             read_at: None,

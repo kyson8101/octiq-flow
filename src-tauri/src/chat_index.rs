@@ -60,6 +60,11 @@ pub struct ChatMeta {
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// How hard the agent thinks in this chat. A resumed process is started
+    /// with it, so a chat set to `high` does not come back at whatever level
+    /// the page last held. A save that omits it keeps the recorded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// When it started. This never changes, even as recent activity reorders the list.
     #[serde(default)]
     pub created_at: i64,
@@ -321,6 +326,11 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             // the activity this save carries retires the tick by itself,
             // through `is_done`.
             let done_at = existing.done_at;
+            // A page from before this field, or one that never learned it,
+            // saves without it; that must not wipe the level the chat runs at.
+            if meta.effort.is_none() {
+                meta.effort = existing.effort.clone();
+            }
             // The plan is history: the first one recorded stands.
             let launch = existing
                 .launch
@@ -722,6 +732,7 @@ mod tests {
             cwd: None,
             model_id: None,
             access: None,
+            effort: None,
             created_at: created,
             updated_at: created,
             read_at: None,
@@ -731,6 +742,32 @@ mod tests {
             generation: 0,
             launch: None,
         }
+    }
+
+    #[test]
+    fn a_save_without_effort_keeps_the_recorded_one() {
+        let _guard = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let id = "effort-kept";
+        cleanup(&[id]);
+        let effort = || list().into_iter().find(|c| c.id == id).unwrap().effort;
+        upsert(ChatMeta {
+            effort: Some("high".into()),
+            ..meta(id, 1)
+        })
+        .unwrap();
+        // A page that never learned the level saves without it.
+        upsert(meta(id, 1)).unwrap();
+        assert_eq!(effort().as_deref(), Some("high"));
+        // The person choosing another level does move it.
+        upsert(ChatMeta {
+            effort: Some("low".into()),
+            ..meta(id, 1)
+        })
+        .unwrap();
+        assert_eq!(effort().as_deref(), Some("low"));
+        cleanup(&[id]);
     }
 
     #[test]
