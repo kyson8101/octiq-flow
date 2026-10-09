@@ -58,6 +58,9 @@ export function accessRequestTitle(request: AccessRequest): string {
 /** The line under the buttons: when a raise takes hold, and what holds the
  *  agent meanwhile. */
 export function accessRequestNote(request: AccessRequest): string {
+  if (raiseRestarts(request)) {
+    return "This level needs a fresh agent: raising it ends the turn now, and your next message continues at it. Not now leaves the level as it is.";
+  }
   const when =
     request.takes === "now"
       ? "It applies at once, to the work the agent is doing now."

@@ -10,7 +10,6 @@ import { accessLabel } from "../lib/agentProviders";
 import {
   accessRequestNote,
   accessRequestTitle,
-  raiseRestarts,
   type AccessRequest,
 } from "../lib/accessRequest";
 
@@ -73,10 +72,7 @@ export function AccessRequestCard({ request, onAnswer }: { request: AccessReques
         </button>
       </div>
 
-      <p className="ask-card-note">
-        {accessRequestNote(request)}
-        {raiseRestarts(request) && " This level needs a fresh agent: raising it ends the turn now, and your next message continues at it."}
-      </p>
+      <p className="ask-card-note">{accessRequestNote(request)}</p>
     </div>
   );
 }

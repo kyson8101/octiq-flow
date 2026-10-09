@@ -47,8 +47,10 @@ describe("the access card", () => {
     expect(raiseRestarts(agy)).toBe(false);
     const bypass = { ...claude, requested: "full" as const };
     expect(raiseRestarts(bypass)).toBe(true);
-    expect(renderToStaticMarkup(<AccessRequestCard request={bypass} onAnswer={async () => {}} />))
-      .toContain("raising it ends the turn now");
+    const html = renderToStaticMarkup(<AccessRequestCard request={bypass} onAnswer={async () => {}} />);
+    expect(html).toContain("raising it ends the turn now");
+    // A fresh agent is not a change "at once".
+    expect(html).not.toContain("It applies at once");
     expect(accessRequestTitle(bypass)).toBe("Raise this chat's access to Bypass permissions?");
   });
 
