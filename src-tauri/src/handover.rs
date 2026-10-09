@@ -1493,6 +1493,20 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
                     agent.name, record.destination.project_name
                 ));
             }
+            // A route reaches only an agent who reports to the person; one
+            // moved under a manager since the card was drawn is refused.
+            if record.kind == Kind::Route && !team::reports_to_person(&agent, &team) {
+                let through = team::top_of_chain(&agent, &team).map_or(String::new(), |top| {
+                    format!(
+                        " Ask the front desk again: it can route you to {}.",
+                        top.name
+                    )
+                });
+                return Err(format!(
+                    "{} no longer reports to you, so the front desk cannot open a chat with it.{through}",
+                    agent.name
+                ));
+            }
             let discuss = record.route.as_ref().is_some_and(|r| r.discuss);
             let settings = route::opening_settings(&agent, discuss);
             (Some(agent), settings)

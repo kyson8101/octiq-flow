@@ -1291,6 +1291,30 @@ pub fn reports_to_person(agent: &TeamAgent, team: &[TeamAgent]) -> bool {
         .is_none_or(|manager| !team.iter().any(|a| a.id == manager))
 }
 
+/// The agent at the top of `agent`'s chain, who reports to the person: the
+/// one the person reaches `agent` through. `None` when `agent` is at the top
+/// itself, or the chain loops (`save` refuses a loop; a hand-edited file may
+/// not).
+pub fn top_of_chain<'a>(agent: &TeamAgent, team: &'a [TeamAgent]) -> Option<&'a TeamAgent> {
+    let mut at = agent;
+    let mut top = None;
+    for _ in 0..team.len() {
+        let Some(manager) = at
+            .reports_to
+            .as_deref()
+            .and_then(|m| team.iter().find(|a| a.id == m))
+        else {
+            return top;
+        };
+        if manager.id == agent.id {
+            return None;
+        }
+        top = Some(manager);
+        at = manager;
+    }
+    None
+}
+
 /// Whether `agent` may send work into `project_id`: a global agent anywhere, a
 /// project agent only into its own project.
 pub fn may_work_in(agent: &TeamAgent, project_id: &str) -> bool {
@@ -2056,9 +2080,12 @@ pub fn home_project<'a>(
 }
 
 /// The first message of a conversation with the front desk: the person's
-/// words, then everything the front desk needs to route them, which is the
-/// WHOLE roster (every registered agent, whoever it reports to) and every
-/// project. Records `chat_key` as a front-desk chat.
+/// words, then everything the front desk needs to route them: every agent
+/// who reports to the person, with the names of the team under each, and
+/// every project. Like a conversation the person starts, a route goes only
+/// to an agent at the top of the chart; anyone lower down is reached through
+/// their manager (`route::request` refuses the rest). Records `chat_key` as
+/// a front-desk chat.
 ///
 /// `None` when `lead_id` is not the designated front desk, or `chat_key`
 /// already belongs to an ordinary conversation with that agent: designating
@@ -2126,6 +2153,7 @@ fn front_desk_text(
         .agents
         .iter()
         .filter(|a| a.id != desk.id)
+        .filter(|a| reports_to_person(a, &stored.agents))
         .filter(|a| {
             a.project_id
                 .as_deref()
@@ -2133,7 +2161,7 @@ fn front_desk_text(
         })
         .collect();
     let roster = if agents.is_empty() {
-        "(no other agent is registered)".to_owned()
+        "(no other agent reports to the person)".to_owned()
     } else {
         agents
             .iter()
@@ -2167,7 +2195,7 @@ fn front_desk_text(
         "{task}{BRIEF_MARK}Front desk: {name}\n\n\
 {standing}You are {name}, the person's front desk in OctiqFlow.{role} You never do the work yourself, never act for another agent, and have no tools but route_chat. Your one job is to find the registered agent who should handle what the person wants and open a new chat with them.\n\n\
 How to route:\n\
-- Pick the ONE agent below whose role and project fit the request best. When the person names an agent or a project, follow that if it is in the lists.\n\
+- You route only to the agents below: they report to the person. Pick the ONE whose role and project fit the request best. When the person names an agent or a project, follow that if it is in the lists. When they name someone in an agent's team, route to that agent, who hands the work on, and name the one they asked for in the brief.\n\
 - If two or more agents fit and nothing in the request tells them apart, ask the person one short question that names the candidates, then end your turn. Do not guess.\n\
 - If the request clearly fits no registered agent, say so in one or two sentences, name the closest agents, and do not call route_chat.\n\
 - Otherwise call route_chat with `agent` (the agent's id), `project` (a project id from the list; a project agent's own project is the default),{home_short} `brief` and `attachments`. Write the brief for the agent, who has not seen this chat: what the person wants, the goal, and every constraint, name, link and detail they gave, in their words where it matters. Invent nothing. Pass every path listed under \"Attachments:\" in the person's messages unless they asked to leave one out.\n\
@@ -2176,7 +2204,7 @@ How to route:\n\
 - route_chat only shows the person a card with the agent, the project and your brief. Nothing is created until they confirm it. After calling it, say in one short line what the card proposes and end your turn. If the person asks for a change, call route_chat again with the revised brief; it replaces the card.\n\n\
 Reply briefly, in the person's language.\n\n\
 Registered projects:\n{project_rows}\n\n\
-Registered agents:\n{roster}",
+Agents who report to the person:\n{roster}",
         name = desk.name,
         home_short = if home.is_some() {
             " leave `project` out to use the home workspace,"
@@ -2194,6 +2222,8 @@ fn desk_head(stored: &Stored) -> Option<TeamAgent> {
         .and_then(|id| stored.agents.iter().find(|a| a.id == id).cloned())
 }
 
+/// One agent the front desk may route to. Its team is named, not described:
+/// enough to send a request for one of them to the manager on top.
 fn roster_line(
     agent: &TeamAgent,
     team: &[TeamAgent],
@@ -2214,13 +2244,15 @@ fn roster_line(
             name_of(project).unwrap_or_else(|| "that no longer exists".into())
         ),
     };
-    let reports = match agent
-        .reports_to
-        .as_deref()
-        .and_then(|m| team.iter().find(|a| a.id == m))
-    {
-        Some(manager) => format!("reports to {}", manager.name),
-        None => "reports to the person".into(),
+    let below: Vec<&str> = team
+        .iter()
+        .filter(|a| a.id != agent.id && top_of_chain(a, team).is_some_and(|t| t.id == agent.id))
+        .map(|a| a.name.as_str())
+        .collect();
+    let reports = if below.is_empty() {
+        String::new()
+    } else {
+        format!(" · their team: {}", below.join(", "))
     };
     let lead = if head.is_some_and(|h| h.id == agent.id) {
         " · the person's lead across projects"
@@ -2228,7 +2260,7 @@ fn roster_line(
         ""
     };
     format!(
-        "- id `{}` · {}{lead} — {role} · {scope} · {reports}",
+        "- id `{}` · {}{lead} — {role} · {scope}{reports}",
         agent.id, agent.name
     )
 }
@@ -2253,8 +2285,9 @@ pub fn handover_brief(
 /// The first message of a chat the front desk routed the person to: the
 /// same lead brief as a conversation they start themselves, so a lead still
 /// plans and delegates. `cross_project` is a route to the head, whose
-/// conversation spans every project exactly as "Talk to <head>" does. The
-/// person confirmed the route, so the agent need not report to them.
+/// conversation spans every project exactly as "Talk to <head>" does. Only
+/// an agent who reports to the person is routed to (`route::request`, and
+/// again at confirm).
 pub fn route_brief(
     path: &Path,
     chat_key: &str,
@@ -3598,7 +3631,7 @@ mod tests {
     }
 
     #[test]
-    fn the_front_desk_brief_carries_the_whole_roster_and_records_a_hidden_chat() {
+    fn the_front_desk_brief_lists_only_the_persons_reports_and_records_a_hidden_chat() {
         let path = temp();
         let cto = save(&path, draft("Potato", None)).unwrap();
         set_head(&path, Some(&cto.id)).unwrap();
@@ -3634,12 +3667,20 @@ mod tests {
             host.starts_with(&format!("Front desk: {}", desk.name)),
             "{host}"
         );
-        for agent in [&cto, &starfall, &report] {
+        for agent in [&cto, &starfall] {
             assert!(
                 host.contains(&format!("id `{}` · {}", agent.id, agent.name)),
                 "{host}"
             );
         }
+        // Mango reports to Potato: only named, under Potato's team, so a
+        // request for Mango goes to Potato.
+        assert!(!host.contains(&format!("id `{}`", report.id)), "{host}");
+        assert!(host.contains("their team: Mango"), "{host}");
+        assert!(
+            host.contains("You route only to the agents below"),
+            "{host}"
+        );
         assert!(
             !host.contains(&format!("id `{}`", desk.id)),
             "not itself: {host}"
@@ -3652,7 +3693,6 @@ mod tests {
             host.contains("works only in project starfall-novel (id `p-star`)"),
             "{host}"
         );
-        assert!(host.contains("reports to Potato"), "{host}");
         assert!(host.contains("the person's lead across projects"), "{host}");
         assert!(host.contains("id `p-gen` · General (home"), "{host}");
         assert!(host.contains("ask the person one short question"), "{host}");

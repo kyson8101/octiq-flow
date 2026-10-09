@@ -10,6 +10,10 @@
 //! settings. What is different:
 //!
 //! - **Who may ask.** Only a front-desk chat, and never for itself.
+//! - **To whom.** Only an agent who reports to the person, as for a
+//!   conversation they start themselves; anyone lower down is reached
+//!   through the manager at the top of their chain. Checked again at
+//!   confirm, so an agent moved under a manager since the card is refused.
 //! - **Where.** As a conversation the person starts: a project agent in its
 //!   project, in a new worktree; the head across projects from home; any
 //!   other agent in the project named, or at home. Never anyone's checkout.
@@ -257,6 +261,24 @@ fn place(
     })
 }
 
+/// Why `agent` cannot be routed to, when it does not report to the person:
+/// the refusal names the manager the person reaches it through.
+pub(super) fn not_a_direct_report(agent: &TeamAgent, team: &[TeamAgent]) -> Option<String> {
+    if team::reports_to_person(agent, team) {
+        return None;
+    }
+    let through = team::top_of_chain(agent, team).map_or(String::new(), |top| {
+        format!(
+            " Route to {}, who can hand it on, and name {} in the brief.",
+            top.name, agent.name
+        )
+    });
+    Some(format!(
+        "{} does not report to the person, so the front desk cannot route to it.{through}",
+        agent.name
+    ))
+}
+
 /// Is `path` a file the person uploaded to this app, and nothing else: a
 /// plain file directly in the attachments folder, never a link out of it.
 fn uploaded(uploads: &Path, path: &str) -> Result<PathBuf, String> {
@@ -478,6 +500,9 @@ pub fn request(
     if agent.id == source.desk.id {
         return Err("You are the front desk. Route the person to another registered agent; you do not take the work yourself.".into());
     }
+    if let Some(refusal) = not_a_direct_report(&agent, &team) {
+        return Err(refusal);
+    }
     let head = team::head(&team_path)?;
     let home = team::home(&team_path)?;
     let placed = place(
@@ -685,8 +710,10 @@ mod tests {
         head: TeamAgent,
         /// Global, not the head.
         writer: TeamAgent,
-        /// Scoped to App, reports to the head.
+        /// Scoped to App, reports to the person.
         scoped: TeamAgent,
+        /// Scoped to App, reports to Mango: reached only through Mango.
+        report: TeamAgent,
     }
 
     fn redraft(agent: &TeamAgent) -> crate::team::TeamDraft {
@@ -722,11 +749,12 @@ mod tests {
         team::set_head(&team, Some(&head.id)).unwrap();
         let writer = register(&team, "Quill", None, "sonnet", Access::Edits);
         let scoped = register(&team, "Mango", Some("p-app"), "sonnet", Access::Edits);
-        let scoped = team::save(
+        let report = register(&team, "Pip", Some("p-app"), "sonnet", Access::Edits);
+        let report = team::save(
             &team,
             crate::team::TeamDraft {
-                reports_to: Some(head.id.clone()),
-                ..redraft(&scoped)
+                reports_to: Some(scoped.id.clone()),
+                ..redraft(&report)
             },
         )
         .unwrap();
@@ -740,6 +768,7 @@ mod tests {
             head,
             writer,
             scoped,
+            report,
         }
     }
 
@@ -936,6 +965,68 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_lower_down_is_refused_and_the_refusal_names_their_manager() {
+        let w = desk_world();
+        let error = request(
+            &w.store,
+            &host(&w),
+            source(&w, "chat:desk1"),
+            ask("Pip", "r1"),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("Pip does not report to the person"),
+            "{error}"
+        );
+        assert!(error.contains("Route to Mango"), "{error}");
+        assert!(records(&w).is_empty());
+        // Two levels down, the refusal names the one at the top.
+        team::save(
+            &w.team,
+            crate::team::TeamDraft {
+                reports_to: Some(w.head.id.clone()),
+                ..redraft(&w.scoped)
+            },
+        )
+        .unwrap();
+        let error = request(
+            &w.store,
+            &host(&w),
+            source(&w, "chat:desk1"),
+            ask(&w.report.id, "r2"),
+        )
+        .unwrap_err();
+        assert!(error.contains("Route to Potato"), "{error}");
+        assert!(records(&w).is_empty());
+    }
+
+    #[test]
+    fn confirm_refuses_an_agent_moved_under_a_manager_since_the_card() {
+        let w = desk_world();
+        let host = host(&w);
+        let record = request(
+            &w.store,
+            &host,
+            source(&w, "chat:desk1"),
+            ask("Quill", "r1"),
+        )
+        .unwrap();
+        team::save(
+            &w.team,
+            crate::team::TeamDraft {
+                reports_to: Some(w.head.id.clone()),
+                ..redraft(&w.writer)
+            },
+        )
+        .unwrap();
+        let error = confirm(&w.store, &record.id, &host).unwrap_err();
+        assert!(error.contains("Quill no longer reports to you"), "{error}");
+        assert!(error.contains("route you to Potato"), "{error}");
+        assert!(host.starts.lock().unwrap().is_empty());
+        assert_eq!(records(&w)[0].status, Status::Pending);
+    }
+
+    #[test]
     fn the_front_desk_cannot_route_to_itself() {
         let w = desk_world();
         let error = request(
@@ -995,6 +1086,15 @@ mod tests {
     #[test]
     fn a_route_to_the_head_is_its_cross_project_conversation_at_home() {
         let w = desk_world();
+        // A head with a report, so its brief hands work out.
+        team::save(
+            &w.team,
+            crate::team::TeamDraft {
+                reports_to: Some(w.head.id.clone()),
+                ..redraft(&w.report)
+            },
+        )
+        .unwrap();
         let mut asked = ask("Potato", "r1");
         // Whatever project the request is about, the head plans from home.
         asked.project = Some("App".into());
