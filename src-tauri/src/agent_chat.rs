@@ -1238,7 +1238,14 @@ impl ChatManager {
         decided
     }
 
-    pub(crate) fn require_checkout_idle(&self, checkout: &str) -> Result<(), String> {
+    /// Refused while a live chat works in `checkout`. A managed worktree is
+    /// used only by a chat inside it (`shares_checkout`), so a coordinator in
+    /// the plain folder above it does not stop its cleanup.
+    pub(crate) fn require_checkout_idle(
+        &self,
+        checkout: &str,
+        managed_worktree: bool,
+    ) -> Result<(), String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let starts = self.starts.lock().map_err(|e| e.to_string())?;
         for key in sessions.keys() {
@@ -1246,9 +1253,10 @@ impl ChatManager {
                 .get(key)
                 .ok_or("A running chat has unknown workspace settings.")?;
             for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
-                if crate::git_ops::workflow::overlaps(
+                if crate::git_ops::workflow::shares_checkout(
                     checkout,
                     &crate::git_ops::workflow::held_checkout(path),
+                    managed_worktree,
                 ) {
                     return Err(format!("Chat {key} is still using this checkout."));
                 }

@@ -124,6 +124,18 @@ pub(super) fn task_root<'a>(run: &'a Run, destination: Option<&'a TaskDestinatio
     destination.map_or(run.root_path.as_str(), |d| d.repository.as_str())
 }
 
+/// Whether `attempt` works in a worktree this workflow made for its task, for
+/// [`workflow::leases_clash`]. Anything else (a legacy adopted checkout, a
+/// plain folder) keeps the strict rule.
+fn attempt_in_managed_worktree(data: &Stored, attempt: &Attempt) -> bool {
+    attempt.is_worktree
+        && data
+            .tasks
+            .get(&attempt.task_id)
+            .and_then(|t| t.workspace.as_ref())
+            .is_some_and(|ws| ws.plan.is_managed_worktree())
+}
+
 /// Plan a task's workspace without creating, locking or refreshing anything.
 pub(super) fn propose(
     run: &Run,
@@ -413,9 +425,10 @@ impl OrchestrationStore {
             let current = data.attempts.get(&attempt.id).ok_or("Attempt disappeared.")?;
             if current.status != AttemptStatus::Preparing { return Err("Attempt is no longer preparing.".into()); }
             let mut old_chats = Vec::new();
+            let managed = plan.is_managed_worktree();
             for other in data.tasks.values() {
                 let Some(other_ws) = &other.workspace else { continue; };
-                if !workflow::overlaps(&other_ws.plan.checkout_root, &plan.checkout_root) { continue; }
+                if !workflow::leases_clash(&other_ws.plan.checkout_root, other_ws.plan.is_managed_worktree(), &plan.checkout_root, managed) { continue; }
                 if other_ws.state == WorkspaceState::Cleaning { return Err("Workspace cleanup is in progress.".into()); }
                 if let Some(owner) = other_ws.lease_attempt_id.as_ref().and_then(|id| data.attempts.get(id)) {
                     if owner.id == attempt.id { continue; }
@@ -426,7 +439,7 @@ impl OrchestrationStore {
                 }
             }
             for other in data.attempts.values().filter(|a| a.id != attempt.id && !a.cwd.is_empty() && attempt_is_unsettled(data, a)) {
-                if writable && other.access != Access::Read && workflow::overlaps(&workflow::held_checkout(&other.cwd), &plan.checkout_root) {
+                if writable && other.access != Access::Read && workflow::leases_clash(&workflow::held_checkout(&other.cwd), attempt_in_managed_worktree(data, other), &plan.checkout_root, managed) {
                     return Err(format!("This checkout is already leased to task {}.", other.task_id));
                 }
             }
@@ -451,7 +464,7 @@ impl OrchestrationStore {
             &attempt.worker_chat_key,
             &run.coordinator_chat_key,
             writable,
-            plan.managed && plan.mode.is_worktree(),
+            plan.is_managed_worktree(),
         )?;
         if saved
             .as_ref()
@@ -570,7 +583,7 @@ impl OrchestrationStore {
             // chat in the plain folder above it (the Starfall layout) was not
             // handed that worktree, and refusing it locked every writable chat
             // in the project for as long as any worker ran.
-            let managed = ws.plan.managed && ws.plan.mode.is_worktree();
+            let managed = ws.plan.is_managed_worktree();
             if !workflow::shares_checkout(&ws.plan.checkout_root, &checkout, managed) {
                 continue;
             }
@@ -829,14 +842,14 @@ impl OrchestrationStore {
                 return Err("Resolve the open decision before cleanup.".into());
             }
             for other in data.attempts.values().filter(|a| a.task_id != task_id && attempt_is_unsettled(data, a) && !a.cwd.is_empty()) {
-                if workflow::overlaps(&workflow::held_checkout(&other.cwd), &ws.plan.checkout_root) {
+                if workflow::leases_clash(&workflow::held_checkout(&other.cwd), attempt_in_managed_worktree(data, other), &ws.plan.checkout_root, true) {
                     return Err("Another task is still using this checkout.".into());
                 }
             }
             if abandon && data.tasks.values().any(|t| t.depends_on.iter().any(|id| id == task_id) && t.active_attempt_id.is_some()) {
                 return Err("A dependent task already started. Preserve this workspace until that work is resolved.".into());
             }
-            if data.tasks.values().filter(|t| t.id != task_id).any(|t| t.workspace.as_ref().is_some_and(|other| other.state != WorkspaceState::Cleaned && workflow::overlaps(&other.plan.checkout_root, &ws.plan.checkout_root))) {
+            if data.tasks.values().filter(|t| t.id != task_id).any(|t| t.workspace.as_ref().is_some_and(|other| other.state != WorkspaceState::Cleaned && workflow::leases_clash(&other.plan.checkout_root, other.plan.is_managed_worktree(), &ws.plan.checkout_root, true))) {
                 return Err("Another task retains this checkout. Preserve it until all workspace owners are resolved.".into());
             }
             if !abandon && task.status != TaskStatus::Completed {
@@ -885,7 +898,7 @@ impl OrchestrationStore {
                     }
                 }
             }
-            chats.require_checkout_idle(&ws.plan.checkout_root)?;
+            chats.require_checkout_idle(&ws.plan.checkout_root, true)?;
             let evidence = workflow::inspect(&ws.plan, true)?;
             if expected_head.is_empty() || evidence.head_sha != expected_head {
                 return Err(
@@ -1753,6 +1766,66 @@ mod tests {
         assert!(store
             .require_workspace_access("chat:talk", &repo.root, true)
             .is_ok());
+    }
+    /// Feedback 03a21d80: run A writes directly in the plain folder that holds
+    /// a repository, and run B's worktree task in that repository is NOT
+    /// leased to A. The worktree is B's own folder. Either order dispatches,
+    /// and a second direct writer in A's folder is still refused.
+    #[test]
+    fn a_direct_lease_on_the_folder_above_does_not_block_a_worktree_task() {
+        let repo = Repo::new();
+        let folder = repo.dir.to_string_lossy().into_owned();
+        let store = OrchestrationStore::default();
+        let run_in = |root: &str, mode| {
+            store
+                .create_run_with_mode(
+                    "chat:master".into(),
+                    "Work".into(),
+                    "project".into(),
+                    root.into(),
+                    Some(4),
+                    mode,
+                )
+                .unwrap()
+        };
+        let direct = run_in(&folder, WorkspaceMode::Direct);
+        let isolated = run_in(&repo.root, WorkspaceMode::Auto);
+        let first = super::super::tests::task(&store, &direct, vec![]);
+        let writer = prepare(&store, &first, Access::Auto).unwrap();
+        assert_eq!(writer.cwd, folder);
+        let worktree = prepare(
+            &store,
+            &super::super::tests::task(&store, &isolated, vec![]),
+            Access::Auto,
+        )
+        .unwrap();
+        assert!(worktree.is_worktree);
+        assert!(Path::new(&worktree.cwd).starts_with(&folder));
+        // The other order: a worktree writer is running, a direct writer
+        // starts in the folder above it.
+        let second_isolated = prepare(
+            &store,
+            &super::super::tests::task(&store, &isolated, vec![]),
+            Access::Auto,
+        )
+        .unwrap();
+        assert!(second_isolated.is_worktree);
+        let late_direct = run_in(&folder, WorkspaceMode::Direct);
+        report(&store, &writer, WorkerOutcome::Completed);
+        assert!(prepare(
+            &store,
+            &super::super::tests::task(&store, &late_direct, vec![]),
+            Access::Auto
+        )
+        .is_ok());
+        // Two writers in the same plain folder still clash.
+        assert!(prepare(
+            &store,
+            &super::super::tests::task(&store, &direct, vec![]),
+            Access::Auto
+        )
+        .unwrap_err()
+        .contains("already leased"));
     }
     #[test]
     fn independent_worktrees_can_write_in_parallel_and_auto_readers_reuse_root() {

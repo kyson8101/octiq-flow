@@ -49,6 +49,13 @@ pub struct WorkspacePlan {
     pub initial_status: String,
 }
 
+impl WorkspacePlan {
+    /// A worktree this workflow made: a folder nobody else was given.
+    pub fn is_managed_worktree(&self) -> bool {
+        self.managed && self.mode.is_worktree()
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliveryEvidence {
@@ -139,6 +146,20 @@ pub fn shares_checkout(checkout: &str, other: &str, managed_worktree: bool) -> b
         Path::new(other).starts_with(checkout)
     } else {
         overlaps(checkout, other)
+    }
+}
+
+/// Whether two workspace leases claim one checkout: the same rule as
+/// [`shares_checkout`], from both sides. A managed worktree clashes only with
+/// a lease inside it. A Current checkout lease on the plain folder above it was
+/// not given that worktree. Feedback 03a21d80: a direct-mode task leasing the
+/// non-git Starfall folder refused every worktree task in a repository under
+/// it, in every other run, until that task settled.
+pub fn leases_clash(a: &str, a_managed_worktree: bool, b: &str, b_managed_worktree: bool) -> bool {
+    match (a_managed_worktree, b_managed_worktree) {
+        (true, false) => shares_checkout(a, b, true),
+        (false, true) => shares_checkout(b, a, true),
+        _ => overlaps(a, b),
     }
 }
 
@@ -839,6 +860,34 @@ pub(crate) mod tests {
         let primary = "/work/Starfall/novel";
         assert!(shares_checkout(primary, parent, false));
         assert!(shares_checkout(primary, &format!("{primary}/web"), false));
+    }
+
+    /// Feedback 03a21d80: a Current checkout lease on the plain folder above a
+    /// repository does not hold a managed worktree under it, from either side.
+    #[test]
+    fn a_direct_lease_above_a_managed_worktree_does_not_clash_with_it() {
+        let parent = "/work/Starfall";
+        let worktree = "/work/Starfall/.worktrees/lab/feature/octiq-x";
+        let other = "/work/Starfall/.worktrees/lab/feature/octiq-y";
+        assert!(!leases_clash(parent, false, worktree, true));
+        assert!(!leases_clash(worktree, true, parent, false));
+        assert!(leases_clash(
+            worktree,
+            true,
+            &format!("{worktree}/web"),
+            false
+        ));
+        assert!(leases_clash(
+            &format!("{worktree}/web"),
+            false,
+            worktree,
+            true
+        ));
+        assert!(leases_clash(worktree, true, worktree, true));
+        assert!(!leases_clash(worktree, true, other, true));
+        // Two ordinary checkouts keep the strict rule both ways.
+        assert!(leases_clash(parent, false, "/work/Starfall/lab", false));
+        assert!(leases_clash("/work/Starfall/lab", false, parent, false));
     }
 
     #[test]
