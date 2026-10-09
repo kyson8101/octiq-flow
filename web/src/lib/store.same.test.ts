@@ -55,6 +55,12 @@ describe("sameIndex", () => {
     expect(sameIndex([chat()], [chat({ title: "renamed on the phone" })])).toBe(false);
   });
 
+  it("is false when a chat's effort changes elsewhere", () => {
+    // A resumed agent is started at the chat's own level, so another device
+    // moving it has to reach this one.
+    expect(sameIndex([chat({ effort: "medium" })], [chat({ effort: "high" })])).toBe(false);
+  });
+
   it("is false when the task list receives a newer response", () => {
     expect(sameIndex([chat()], [chat({ latestResponse: "Finished the task." })])).toBe(false);
   });

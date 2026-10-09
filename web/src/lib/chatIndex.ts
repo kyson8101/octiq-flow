@@ -35,6 +35,9 @@ export type IndexEntry = {
   cwd?: string | null;
   modelId: string | null;
   access: string | null;
+  /** Absent from a page that never learned it; the server then keeps the
+   *  level it already holds. */
+  effort?: string | null;
   createdAt: number;
   updatedAt: number;
   /** When a viewer last opened this chat, shared across every device. Absent
@@ -69,6 +72,7 @@ function entryFromConversation(chat: Conversation): IndexEntry {
     cwd: chat.cwd ?? null,
     modelId: chat.modelId ?? null,
     access: chat.permission ?? null,
+    effort: chat.effort ?? null,
     createdAt: chat.createdAt,
     updatedAt: chat.updatedAt,
     readAt: chat.readAt,
