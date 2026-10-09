@@ -188,9 +188,12 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   git's read of `~/.gitconfig`, so Auto is unguarded and the UI says so. A
   refused turn is stamped `octiq_access`; the page fails the refused tool row
   (agy may report it as a silent success) and asks for the least level that
-  lets it through — Accept edits for a project file write, Auto otherwise. The
-  plugin rules tell the model the level it runs at. PreToolUse hooks and
-  workspace settings files cannot lift the refusal.
+  lets it through — Accept edits for a project file write, Auto otherwise — on
+  the access card (see **An agent asks for more access on a card**). The
+  `result`'s `denied_actions` keeps every refusal of the conversation, so only
+  the ones past the previous `result`'s count are this turn's. The plugin rules
+  tell the model the level it runs at. PreToolUse hooks and workspace settings
+  files cannot lift the refusal.
 - **What OctiqFlow writes for Antigravity.** Its MCP server and host rules
   ride a plugin in a folder each launch adds with `--add-dir`:
   `~/.octiqflow/mcp/antigravity/<chat-<level>|worker-<level>|front-desk>/.agents/plugins/octiqflow/`
@@ -292,6 +295,24 @@ Three rules hold:
   on `git-status-changed`, and when the panel opens; verification is cached for
   four seconds so several open tabs cost one `git status`. The accent is for a
   turn in flight only — states the work is merely *owed* stay quiet.
+
+### An agent asks for more access on a card
+
+`request_access` (`octiq-ask.cjs` → `POST /hook/access` → `access_request.rs`)
+puts a card in the chat its capability proves: the level now, the level asked
+for, and why. **The call changes nothing.** The card's Upgrade sends the page's
+own `chat_set_access` — the access picker's command, which no hook reaches —
+and only after it worked does the page answer `access_request_answer`; the
+host then reads the chat's level back from its start context and tells the
+agent that, not the page's word. Workers, front desks and room seats are
+refused: a worker's level comes with its task.
+
+When a raise takes hold is the provider's (`access_request::Takes`): Claude
+mid-turn (a control request), Codex app-server and command-line providers from
+the next turn, Antigravity only between turns — so its call does not wait; the
+card stays up and the agent is told to end its turn. Claude waits as long as a
+permission card, Codex 50 s (its MCP call times out near 60). An Antigravity
+refusal asks on this same card, drawn from `ChatState.accessNeed`.
 
 ### Both agents' full stops carry their closing words
 

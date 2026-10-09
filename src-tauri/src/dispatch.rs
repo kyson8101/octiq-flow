@@ -821,6 +821,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             Ok(json!(crate::permission::decide(&id, decision, remember)))
         }
 
+        // An agent's request for a higher access level (`access_request`).
+        // The answer only settles the card: the level itself is changed by
+        // the page's own `chat_set_access`, before it answers "raised".
+        "access_request_pending" => Ok(json!(crate::access_request::pending())),
+        "access_request_answer" => Ok(json!(crate::access_request::answer(
+            &arg::<String>(&args, "id")?,
+            arg(&args, "decision")?,
+            arg::<Option<String>>(&args, "error")?,
+        ))),
+
         // Codex has no resumable permission channel. A safety-policy rejection
         // is therefore a post-hoc choice about the next user turn, kept long
         // enough to survive a browser reload.

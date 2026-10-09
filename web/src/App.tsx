@@ -195,6 +195,9 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
 import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
+import { requestConversation } from "./lib/pendingRequests";
+import { accessCovers, leastOffered, type AccessRequest } from "./lib/accessRequest";
+import type { AnswerAccess } from "./components/AccessRequestCard";
 import {
   provesLiveTurn,
   type ChatQueueState,
@@ -681,7 +684,7 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions } =
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests } =
     useChatRequests(conn, (...args) => announceOnce(...args));
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
@@ -4390,6 +4393,91 @@ export default function App() {
     [conversationId, restartForAccess],
   );
 
+  /** Raise one chat's access from its access card: the picker's own change,
+   *  for that chat, with the outcome handed back to the card. The level moves
+   *  on screen only once the agent has taken it. A level that needs a fresh
+   *  agent restarts it, as the picker does; any other refusal rejects with
+   *  why, and nothing moves. */
+  const raiseAccessFor = useCallback(
+    async (id: string, p: AccessLevel): Promise<void> => {
+      let restart: string | null = null;
+      if (runningRef.current.has(id)) {
+        wantedAccess.current[id] = p;
+        try {
+          await bridge.invoke("chat_set_access", { key: keyFor(id), access: p });
+        } catch (err) {
+          const why = String((err as Error).message ?? err);
+          // The process ended in between: the next message starts on the new
+          // level, which is what a raise means here too.
+          if (!why.includes("no such chat")) {
+            if (!why.includes("needs a fresh agent")) throw new Error(why);
+            restart = why;
+          }
+        }
+      }
+      if (id === visibleRef.current) {
+        setAccess(p);
+        remember(ACCESS_KEY, p);
+      }
+      if (meta.current[id]) meta.current[id].access = p;
+      if (restart) restartForAccess(id, restart);
+    },
+    [restartForAccess],
+  );
+
+  /** The person's answer to an access card. The host's card is settled only
+   *  after the level has changed, so what the agent is told is what happened.
+   *  A raise that fails tells a waiting agent so; a card nobody waits on
+   *  stays up with the reason, for another try. */
+  const answerAccess = useCallback<AnswerAccess>(
+    async (request, answer) => {
+      const id = requestConversation(request);
+      if (!id) return;
+      const settle = (decision: "raised" | "declined" | "failed", error?: string) =>
+        request.local
+          ? Promise.resolve()
+          : bridge.invoke("access_request_answer", { id: request.id, decision, error: error ?? null }).catch(() => {});
+      const drop = () => {
+        if (request.local) patch(id, (s) => ({ ...s, accessNeed: undefined }));
+        else setAccessRequests((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== request.id) }));
+      };
+      if (answer === "decline") {
+        await settle("declined");
+        drop();
+        return;
+      }
+      try {
+        await raiseAccessFor(id, request.requested);
+      } catch (err) {
+        if (!request.wait) throw err;
+        await settle("failed", String((err as Error).message ?? err));
+        drop();
+        return;
+      }
+      await settle("raised");
+      drop();
+    },
+    [raiseAccessFor, patch, setAccessRequests],
+  );
+
+  /** An Antigravity turn that ended on a refusal asks for access on the same
+   *  card, drawn from the chat's own state: no agent waits on it. Shown only
+   *  while the chat runs below what it asks for. */
+  const refusalAsk = useMemo<AccessRequest | null>(() => {
+    const need = chat.accessNeed;
+    if (!conversationId || !need) return null;
+    const requested = leastOffered("antigravity", need.requested);
+    if (accessCovers(access, requested)) return null;
+    return {
+      id: `refusal:${conversationId}`, chatKey: keyFor(conversationId), agent: "antigravity",
+      current: access, requested, reason: need.reason, takes: "between-turns", wait: false, local: true,
+    };
+  }, [chat.accessNeed, conversationId, access]);
+  const accessHere = useMemo(
+    () => [...(conversationId ? accessRequests[conversationId] ?? [] : []), ...(refusalAsk ? [refusalAsk] : [])],
+    [accessRequests, conversationId, refusalAsk],
+  );
+
   const ensureCoordinator = async (objective: string): Promise<string> => {
     if (!project) throw new Error("Choose a project before starting a mission.");
     if (workerChat) throw new Error("Start runs from the main chat.");
@@ -4455,8 +4543,8 @@ export default function App() {
   // from state this tab already holds for every chat: nothing is fetched per
   // row, and a chat never opened still says so.
   const pendingList = useMemo(
-    () => pendingActions({ orchestration, parents: chatParents, asks, safetyBlocks, questions, handovers }),
-    [orchestration, chatParents, asks, safetyBlocks, questions, handovers],
+    () => pendingActions({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, handovers }),
+    [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, handovers],
   );
   // A badge's way to its card: open the chat (and its run, for a decision),
   // then show the card once it is drawn. `runFocus` tells the run panel which
@@ -4606,6 +4694,7 @@ export default function App() {
           waiting={
             (questions[conversationId]?.length ?? 0) +
               (asks[conversationId]?.length ?? 0) +
+              (accessRequests[conversationId]?.length ?? 0) +
               (safetyBlocks[conversationId]?.length ?? 0) >
             0
           }
@@ -5259,6 +5348,8 @@ export default function App() {
                 ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => !ids.includes(item.id)),
               }))}
               onContinue={(message, options) => send(message, [], options)}
+              accessRequests={accessHere}
+              onAccessAnswer={answerAccess}
             />
           )}
 

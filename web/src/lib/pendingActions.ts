@@ -91,6 +91,10 @@ export type PendingActionInput = {
   asks?: Requests;
   safetyBlocks?: Requests;
   questions?: Requests;
+  /** An agent's ask for a higher access level (`access_request_pending`). It
+   *  waits on the person's click like a permission card, and is badged as
+   *  one, under its own key. */
+  accessRequests?: Requests;
   /** Handovers an agent asked for: waiting on the person's confirm, or on
    *  their Try again / Give up after a start that failed. */
   handovers?: readonly { id: string; sourceChatKey: string; status: string; error?: string; kind?: string }[];
@@ -140,6 +144,9 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
   };
   requests("permission", input.asks);
   requests("safety", input.safetyBlocks);
+  for (const [conversationId, list] of Object.entries(input.accessRequests ?? {})) {
+    for (const item of list ?? []) if (item?.id) request("permission", item.id, conversationId, "access");
+  }
   for (const [conversationId, list] of Object.entries(input.questions ?? {})) {
     // The main chat draws its workers' permission and safety cards, but
     // never their questions (a worker asks through a gate), so a worker's

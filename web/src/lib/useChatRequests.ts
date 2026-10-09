@@ -5,6 +5,7 @@ import type { NoticeKind } from "./notify";
 import { askSummary, type Ask } from "../components/PermissionAsk";
 import type { SafetyBlockNotice } from "../components/SafetyBlock";
 import type { Question } from "../components/UserQuestion";
+import { accessRequestTitle, type AccessRequest } from "./accessRequest";
 
 import { PendingRequests, requestConversation, type PendingRequest, type RequestState } from "./pendingRequests";
 type Announce = (key: string, kind: NoticeKind, id: string, detail: string) => void;
@@ -24,9 +25,11 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
   const permissions = usePendingRequests<Ask>();
   const safety = usePendingRequests<SafetyBlockNotice>();
   const prompts = usePendingRequests<Question>();
+  const raises = usePendingRequests<AccessRequest>();
   const { items: asks, setItems: setAsks } = permissions;
   const { items: safetyBlocks, setItems: setSafetyBlocks } = safety;
   const { items: questions, setItems: setQuestions } = prompts;
+  const { items: accessRequests, setItems: setAccessRequests } = raises;
   const notice = useRef(announce);
   notice.current = announce;
 
@@ -58,6 +61,7 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       refill(permissions, "permission_pending"),
       refill(safety, "safety_block_pending"),
       refill(prompts, "question_pending"),
+      refill(raises, "access_request_pending"),
     ];
     return () => cancel.forEach((stop) => stop());
   }, [conn]);
@@ -104,7 +108,21 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       if (!q?.id || !requestConversation(q)) return;
       prompts.publish(prompts.store.add(q));
     });
+    // An agent asking for more access (`access_request.rs`). It holds the
+    // agent like a permission card, so it is announced like one.
+    const offRaise = bridge.on<AccessRequest>("access-request", (request) => {
+      const id = request ? requestConversation(request) : null;
+      if (!id || !request.id) return;
+      notice.current(request.id, "permission", id, accessRequestTitle(request));
+      raises.publish(raises.store.add(request));
+    });
+    const offRaiseGone = bridge.on<{ id: string }>("access-request-expired", (gone) => {
+      if (!gone?.id) return;
+      raises.publish(raises.store.remove(gone.id));
+    });
     return () => {
+      offRaise();
+      offRaiseGone();
       offAsk();
       offGone();
       offSafety();
@@ -115,5 +133,5 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
     };
   }, []);
 
-  return { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions };
+  return { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests };
 }

@@ -437,6 +437,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/file", get(file_handler).post(file_post_handler))
         .route("/hook/permission", post(permission_handler))
         .route("/hook/ask", post(ask_handler))
+        .route("/hook/access", post(access_handler))
         .route("/hook/orchestration", post(orchestration_handler))
         .route("/hook/task", post(task_handler))
         .route("/hook/feedback", post(feedback_handler))
@@ -1796,6 +1797,87 @@ async fn agents_hook(
     Ok(value)
 }
 
+/// An agent asking the person to raise its chat's access level
+/// (`access_request`). The call can only put the card up and wait: the level
+/// is changed by the person's Upgrade, which the page sends as its own
+/// `chat_set_access`, a command no hook reaches.
+async fn access_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<TaskHook>,
+) -> Response {
+    use crate::outcome::{ReasonClass, Refusal};
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: None,
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim)
+        .and_then(|caller| not_front_desk(&ctx, caller))
+    {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let refuse =
+        |reason, message: &str| hook_failed(StatusCode::BAD_REQUEST, Refusal::new(reason, message));
+    if request.action != "request" {
+        return refuse(ReasonClass::Validation, "Unknown access action.");
+    }
+    // An additional agent in a room is one voice in the chat; the chat's
+    // level belongs to the chat.
+    if caller.session_key != caller.chat_key {
+        return refuse(
+            ReasonClass::ScopeRefused,
+            "Only the chat's own agent can ask to change its access.",
+        );
+    }
+    // A worker's level comes with its task, set where the run is planned.
+    if ctx
+        .services
+        .orchestrations
+        .require_user_chat(&caller.chat_key)
+        .is_err()
+    {
+        return refuse(ReasonClass::ScopeRefused, "An orchestration worker's access comes with its task. Tell your coordinator which level you need and why instead.");
+    }
+    let ask: crate::access_request::Ask = match serde_json::from_value(request.args) {
+        Ok(ask) => ask,
+        Err(error) => {
+            return refuse(
+                ReasonClass::Validation,
+                &format!("Those arguments are not valid: {error}"),
+            )
+        }
+    };
+    let chats = ctx.services.chats.clone();
+    let key = caller.chat_key.clone();
+    let Some(standing) = chats.access_standing(&key) else {
+        return refuse(
+            ReasonClass::ScopeRefused,
+            "This chat has no running agent to change the access of.",
+        );
+    };
+    let level_now = {
+        let chats = chats.clone();
+        let key = key.clone();
+        move || chats.access_standing(&key).map(|standing| standing.access)
+    };
+    let announce = |asked: &crate::access_request::Asked| {
+        crate::push::notify_chat(
+            Some(&asked.chat_key),
+            "permission",
+            &format!(
+                "Raise access to {}",
+                crate::access_request::label(asked.agent, asked.requested)
+            ),
+        )
+    };
+    match crate::access_request::request(&key, standing, ask, level_now, announce).await {
+        Ok(text) => axum::Json(json!({ "result": text })).into_response(),
+        Err(message) => refuse(ReasonClass::Validation, &message),
+    }
+}
+
 /// A task hook's arguments, acting on `chat_key` whatever they say.
 fn task_hook_args(
     chat_key: &str,
@@ -2539,6 +2621,87 @@ mod tests {
         chats.test_end(&worker);
     }
 
+    /// An access request can only ask: the level is the chat's own until the
+    /// person's page changes it, and a request that cannot stand asks nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_access_request_asks_and_changes_nothing() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let plain = format!("chat:access-plain-{}", uuid::Uuid::new_v4().simple());
+        let auto = format!("chat:access-auto-{}", uuid::Uuid::new_v4().simple());
+        let worker = format!("chat:orch-access-{}", uuid::Uuid::new_v4().simple());
+        let plain_cap = chats.test_launch(&plain);
+        let auto_cap = chats.test_launch(&auto);
+        chats.test_remember_start(&auto, "/tmp");
+        let worker_cap = chats.test_launch(&worker);
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let ask = |chat: &str, level: &str| {
+            json!({ "chatKey": chat, "action": "request", "args": {
+                "level": level, "reason": "write the fix",
+            } })
+        };
+        // Nobody has a page open in a test process, so a waiting call is
+        // answered at once, with no card and no change.
+        let (status, answer) = post_hook(
+            &base,
+            "access",
+            None,
+            Some(&plain_cap),
+            ask(&plain, "edits"),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert!(
+            answer["result"]
+                .as_str()
+                .unwrap()
+                .contains("could not be asked"),
+            "{answer}"
+        );
+        assert_eq!(
+            chats.access_standing(&plain).map(|s| s.access),
+            Some(crate::agent_provider::Access::Read)
+        );
+        // A level the chat already covers asks nothing.
+        let (status, answer) =
+            post_hook(&base, "access", None, Some(&auto_cap), ask(&auto, "edits")).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("already runs at Auto"),
+            "{answer}"
+        );
+        // Neither does a level that is not one, nor another chat's call.
+        let (status, _) =
+            post_hook(&base, "access", None, Some(&plain_cap), ask(&plain, "root")).await;
+        assert_eq!(status, 400);
+        let (status, _) =
+            post_hook(&base, "access", None, Some(&plain_cap), ask(&auto, "full")).await;
+        assert_eq!(status, 401);
+        // A worker's level comes with its task.
+        let (status, answer) = post_hook(
+            &base,
+            "access",
+            None,
+            Some(&worker_cap),
+            ask(&worker, "auto"),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"].as_str().unwrap().contains("coordinator"),
+            "{answer}"
+        );
+        assert!(crate::access_request::pending()
+            .iter()
+            .all(|asked| ![&plain, &auto, &worker].contains(&&asked.chat_key)));
+        for key in [&plain, &auto, &worker] {
+            chats.test_end(key);
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_hook_takes_its_chat_from_the_capability_and_never_from_the_token() {
         let store = Arc::new(crate::orchestration::OrchestrationStore::default());
@@ -2571,6 +2734,10 @@ mod tests {
                 ),
                 (
                     "agents",
+                    json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
+                ),
+                (
+                    "access",
                     json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
                 ),
                 ("ask", json!({ "chatKey": chat, "questions": question })),
@@ -2848,6 +3015,12 @@ mod tests {
             (
                 "agents",
                 json!({ "chatKey": "chat:desk", "action": "register", "args": {} }),
+            ),
+            (
+                "access",
+                json!({ "chatKey": "chat:desk", "action": "request", "args": {
+                    "level": "auto", "reason": "x",
+                } }),
             ),
             (
                 "handover",
@@ -3233,6 +3406,10 @@ mod tests {
         "handover_decline",
         "handover_abandon",
         "handover_discuss",
+        // An agent asks for a higher level on a card; only the person's page
+        // changes the level or settles the card.
+        "chat_set_access",
+        "access_request_answer",
     ];
 
     #[test]

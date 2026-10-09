@@ -78,6 +78,7 @@ pub fn host_bookkeeping(tool: &str) -> bool {
                 | "agent_register"
                 | "agent_update"
                 | "agent_policy_update"
+                | "request_access"
         )
     )
 }
@@ -587,6 +588,7 @@ mod tests {
         assert!(host_bookkeeping("mcp__octiq__vault_agent_memory_append"));
         assert!(host_bookkeeping("mcp__octiq__task_status"));
         assert!(host_bookkeeping("mcp__octiq__handover"));
+        assert!(host_bookkeeping("mcp__octiq__request_access"));
         // Writes the person's notes or starts work: still asked in plan mode.
         assert!(!host_bookkeeping("mcp__octiq__vault_write"));
         assert!(!host_bookkeeping("mcp__octiq__orchestration_run_create"));
