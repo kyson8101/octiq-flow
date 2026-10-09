@@ -742,7 +742,15 @@ pub struct ChatManager {
     /// "<chat>\n<task>" for each orchestration writer a chat has been told it
     /// writes beside (`admit_beside_writers`), so it is said once, not per send.
     writer_notices: Mutex<std::collections::HashSet<String>>,
+    /// Chats whose turn was interrupted and whose own full stop has not come
+    /// back yet, with when — see `ChatManager::unwinding`.
+    unwinding: Mutex<HashMap<String, Instant>>,
 }
+
+/// How long an interrupted turn may take to send its own full stop before
+/// host notifications stop waiting for it. Claude and Codex answer an
+/// interrupt in well under a second; this only covers one that never does.
+const UNWIND_GRACE: Duration = Duration::from_secs(30);
 
 /// The secret one launch of one agent proves itself with on
 /// `/hook/orchestration`, handed to it as `OCTIQ_CHAT_CAPABILITY`.
@@ -1030,7 +1038,39 @@ impl ChatManager {
         Ok(())
     }
 
+    /// A turn of `key` was interrupted and the agent has not reached its own
+    /// full stop yet. The interrupt marks the session idle at once, so a host
+    /// notification written in that gap went in as the NEXT turn, and the
+    /// cut-off turn's late `result` then ended it: the agent worked on with
+    /// the session read as idle, which the idle sweeper may kill.
+    fn unwinding(&self, key: &str) -> bool {
+        let Ok(mut unwinding) = self.unwinding.lock() else {
+            return true;
+        };
+        match unwinding.get(key) {
+            Some(at) if at.elapsed() < UNWIND_GRACE => true,
+            Some(_) => {
+                unwinding.remove(key);
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn set_unwinding(&self, key: &str, on: bool) {
+        if let Ok(mut unwinding) = self.unwinding.lock() {
+            if on {
+                unwinding.insert(key.to_string(), Instant::now());
+            } else {
+                unwinding.remove(key);
+            }
+        }
+    }
+
     pub(crate) fn notification_ready(&self, key: &str) -> bool {
+        if self.unwinding(key) {
+            return false;
+        }
         let Ok(sessions) = self.sessions.lock() else {
             return false;
         };
@@ -3131,6 +3171,7 @@ pub(crate) fn start_session(
                                     codex.active_turn_id = None;
                                 }
                                 s.turn_ended();
+                                reading.set_unwinding(&session_key, false);
                                 refused = dispatch_next_persistent_turn(
                                     &reading,
                                     &session_key,
@@ -3715,7 +3756,10 @@ pub(crate) fn deliver_orchestration_notification(
         }
         if let Some(session) = sessions.get(key) {
             let mut session = session.lock().map_err(|e| e.to_string())?;
+            // Read under the session lock, which the interrupt that sets it
+            // and the full stop that clears it both hold.
             if session.busy
+                || manager.unwinding(key)
                 || !provider_for(session.agent)
                     .capabilities()
                     .input
@@ -4186,7 +4230,11 @@ fn interrupt_session(
     }
 
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    interrupt_persistent_turn(&mut guard)
+    // Marked before the interrupt goes out, so no notification slips into
+    // the gap; the reader clears it on the cut-off turn's full stop.
+    let was_busy = guard.busy;
+    manager.set_unwinding(session_key, was_busy);
+    interrupt_persistent_turn(&mut guard).inspect_err(|_| manager.set_unwinding(session_key, false))
 }
 
 pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {
@@ -4199,6 +4247,53 @@ pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<()
     let cancelled = cancel_question_work(manager, &key);
     interrupt_session(manager, &key, &key)?;
     cancelled
+}
+
+/// What [`interrupt_worker_turn`] did to a worker's turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkerInterrupt {
+    /// Its turn was cut short; the message starts its next one.
+    Interrupted,
+    /// No turn was in flight; the message goes in between turns.
+    Idle,
+    /// Only ending its process would stop this provider, and that fails the
+    /// attempt. The message waits for its next call to OctiqFlow.
+    Unsupported,
+}
+
+/// Feedback 531f1dac: cut a worker's turn short so its coordinator's message
+/// reaches it now. A worker reads a message between turns or in the answer to
+/// its next call to the host, and one inside a twenty-minute render makes
+/// neither, so a pause or a stop arrived after the work it was meant to
+/// prevent.
+///
+/// The interrupt is the Stop button's: the provider cancels the running tool
+/// and keeps the conversation, the attempt waits for a report rather than
+/// failing, and `inbox::deliver_pending` hands the message over once the
+/// cut-off turn has reached its own full stop.
+pub(crate) fn interrupt_worker_turn(
+    manager: &Arc<ChatManager>,
+    key: &str,
+) -> Result<WorkerInterrupt, String> {
+    let busy = {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        match sessions.get(key) {
+            Some(session) => {
+                let session = session.lock().map_err(|e| e.to_string())?;
+                session.busy.then_some(session.agent)
+            }
+            None => None,
+        }
+    };
+    let Some(agent) = busy else {
+        return Ok(WorkerInterrupt::Idle);
+    };
+    if relaunches_to_continue(agent) {
+        return Ok(WorkerInterrupt::Unsupported);
+    }
+    chat_interrupt_impl(manager, key.to_string())?;
+    Ok(WorkerInterrupt::Interrupted)
 }
 
 fn write_codex_response(session: &Arc<Mutex<ChatSession>>, id: &Value, result: Value) {
@@ -7718,6 +7813,78 @@ mod tests {
             .map(|turn| turn.text)
             .collect();
         assert_eq!(order, ["first\nsend this now"]);
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    /// Feedback 531f1dac: a coordinator's pause reached a worker 15–20
+    /// minutes late, after the render it was meant to stop. Interrupting cuts
+    /// the turn short, and no host notification goes in until the cut-off
+    /// turn's own full stop has come back.
+    #[test]
+    fn a_coordinator_interrupt_cuts_a_busy_worker_turn_and_holds_notifications_until_its_full_stop()
+    {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("worker-interrupt-{}", uuid::Uuid::new_v4().simple());
+        assert_eq!(
+            interrupt_worker_turn(&manager, &key),
+            Ok(WorkerInterrupt::Idle),
+            "no process: the message waits for the next launch"
+        );
+        let session = claude_session(true);
+        hold(&manager, &key, session.clone());
+        assert!(!manager.notification_ready(&key), "a turn is in flight");
+
+        assert_eq!(
+            interrupt_worker_turn(&manager, &key),
+            Ok(WorkerInterrupt::Interrupted)
+        );
+        assert!(!session.lock().unwrap().busy);
+        assert!(
+            !manager.notification_ready(&key),
+            "the cut-off turn has not sent its full stop yet"
+        );
+        // The reader clears it on that full stop.
+        manager.set_unwinding(&key, false);
+        assert!(manager.notification_ready(&key));
+        assert_eq!(
+            interrupt_worker_turn(&manager, &key),
+            Ok(WorkerInterrupt::Idle),
+            "an idle worker is not interrupted again"
+        );
+        assert!(manager.notification_ready(&key));
+
+        // A full stop that never comes holds delivery only for the grace.
+        manager.unwinding.lock().unwrap().insert(
+            key.clone(),
+            Instant::now()
+                .checked_sub(UNWIND_GRACE + Duration::from_secs(1))
+                .expect("a clock with some run-up behind it"),
+        );
+        assert!(manager.notification_ready(&key));
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    /// Stopping a provider that takes no control message would end its
+    /// process, which fails the attempt; that is the coordinator's run_stop,
+    /// not a message.
+    #[test]
+    fn a_worker_that_cannot_be_interrupted_keeps_its_process() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("worker-no-interrupt-{}", uuid::Uuid::new_v4().simple());
+        let session = claude_session(true);
+        session.lock().unwrap().agent = ChatAgent::Antigravity;
+        hold(&manager, &key, session.clone());
+
+        assert_eq!(
+            interrupt_worker_turn(&manager, &key),
+            Ok(WorkerInterrupt::Unsupported)
+        );
+        assert!(session.lock().unwrap().busy);
+        assert!(manager.sessions.lock().unwrap().contains_key(&key));
 
         end_process(&manager, &key).expect("end the stand-in");
         crate::transcript::forget(&key);
