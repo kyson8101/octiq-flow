@@ -77,4 +77,32 @@ describe("Settings", () => {
     );
     expect(out).not.toContain("Feedback inbox");
   });
+
+  it("offers the chat width under Appearance, with the chosen one checked", () => {
+    const out = renderToStaticMarkup(
+      <Settings current="dark" onPick={() => {}} chatWidth="wide" onChatWidth={() => {}}
+        notify={false} onNotify={() => {}} projects={[]} onProject={() => {}}
+        initialSection="appearance" onClose={() => {}} />,
+    );
+    expect(out).toContain('id="settings-chat-width-title">Chat width</h3>');
+    expect(out).toContain('role="radiogroup" aria-labelledby="settings-chat-width-title"');
+    for (const id of ["narrow", "default", "wide", "wider", "full"]) {
+      expect(out).toContain(`data-chat-width="${id}"`);
+    }
+    const checked = out.match(/data-chat-width="(\w+)"[^>]*aria-checked="true"/g) ?? [];
+    expect(checked).toEqual([expect.stringContaining('data-chat-width="wide"')]);
+    expect(out).toContain("960px</span>");
+    expect(out).toContain("No limit</span>");
+    // The nav row says the width once it is not the default.
+    expect(out).toContain("<small>Dark · Wide chat</small>");
+  });
+
+  it("leaves the width choice out when there is nothing to apply it", () => {
+    const out = renderToStaticMarkup(
+      <Settings current="dark" onPick={() => {}} notify={false} onNotify={() => {}}
+        projects={[]} onProject={() => {}} initialSection="appearance" onClose={() => {}} />,
+    );
+    expect(out).not.toContain("Chat width");
+    expect(out).toContain("<small>Dark</small>");
+  });
 });

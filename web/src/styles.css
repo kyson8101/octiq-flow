@@ -8649,6 +8649,60 @@ body.is-ultra .eff {
   height: 76px;
 }
 
+/* Chat width: the same tiles as the themes, each a page with its column drawn
+   at that width, so the choices compare side by side. */
+.settings-chat-width {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+.settings-chat-width h3 {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-chat-width .settings-note {
+  margin: 4px 0 var(--space-4);
+}
+
+.cw-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 10px;
+}
+
+.cw-shot {
+  display: flex;
+  justify-content: center;
+  height: 44px;
+  padding: 6px 0;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+}
+
+.cw-column {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg-2) 26%, transparent);
+  transition: background-color 160ms ease-out;
+}
+
+.cw.is-on .cw-column {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.cw-size {
+  margin-top: -5px;
+  padding-left: 1px;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* WebKit lays a select's chosen option out as text inside it and counts that
    text toward the scroll width of whatever scrolls around the select, however
    narrow the select itself is drawn. A lead's role or a long project name in
