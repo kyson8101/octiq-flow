@@ -1712,15 +1712,35 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         "orchestration_message_send" => {
             let actor: String = arg(&args, "actorChatKey")?;
+            let to: String = arg(&args, "to")?;
+            let interrupt = arg::<Option<bool>>(&args, "interrupt")?.unwrap_or(false);
+            if interrupt && to == "coordinator" {
+                return Err("Only a coordinator interrupts, and only a worker attempt.".into());
+            }
             let message = svc.orchestrations.record_message(
                 &actor,
                 arg(&args, "runId")?,
-                arg(&args, "to")?,
+                to,
                 arg(&args, "kind")?,
                 arg(&args, "subject")?,
                 arg(&args, "body")?,
             )?;
-            to_value(Ok(message))
+            let mut value = serde_json::to_value(&message).map_err(|e| e.to_string())?;
+            if interrupt && !svc.orchestrations.message_waiting(&message.id) {
+                // A host call of the worker's took it in the meantime.
+                value["interrupt"] = json!("delivered");
+            } else if interrupt {
+                // The message is already durable; an interrupt that fails
+                // leaves it to the ordinary delivery.
+                match crate::agent_chat::interrupt_worker_turn(&svc.chats, &message.to_chat_key) {
+                    Ok(worker) => value["interrupt"] = json!(worker),
+                    Err(error) => {
+                        value["interrupt"] = json!("failed");
+                        value["interruptError"] = json!(error);
+                    }
+                }
+            }
+            Ok(value)
         }
         "orchestration_run_stop" => {
             let actor: String = arg(&args, "actorChatKey")?;

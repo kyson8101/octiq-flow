@@ -319,6 +319,19 @@ impl OrchestrationStore {
         }
         Ok(taken)
     }
+    /// Whether message `message_id` still waits for its recipient. One a
+    /// working worker already took with a host call is not worth cutting its
+    /// turn for: nothing would be left to start the next one.
+    pub(crate) fn message_waiting(&self, message_id: &str) -> bool {
+        let source = format!("message:{message_id}");
+        self.inner.lock().is_ok_and(|inner| {
+            inner
+                .data
+                .notifications
+                .values()
+                .any(|n| n.source == source && n.state == DeliveryState::Pending)
+        })
+    }
     pub(crate) fn acknowledge_notification(&self, key: &str, id: &str) -> Result<(), String> {
         let run_id = self.mutate(|data| {
             let n = data
@@ -479,7 +492,7 @@ mod tests {
             .take_for_working_worker(&worker.worker_chat_key)
             .unwrap()
             .is_empty());
-        store
+        let message = store
             .record_message(
                 &run.coordinator_chat_key,
                 run.id.clone(),
@@ -489,6 +502,7 @@ mod tests {
                 "Rebase onto release/1.8.2.".into(),
             )
             .unwrap();
+        assert!(store.message_waiting(&message.id));
         assert!(store
             .take_for_working_worker(&run.coordinator_chat_key)
             .unwrap()
@@ -502,6 +516,9 @@ mod tests {
             .unwrap();
         assert_eq!(taken.len(), 1);
         assert!(taken[0].body.contains("release/1.8.2"), "{}", taken[0].body);
+        // Feedback 531f1dac: taken, so an interrupt would cut its turn for
+        // nothing.
+        assert!(!store.message_waiting(&message.id));
         let note = store
             .snapshot(None)
             .unwrap()

@@ -1979,6 +1979,12 @@ const ORCHESTRATION_MESSAGE_SEND = {
     "or an active attempt ID for a worker. Settled attempts cannot resume: start a retry first. " +
     "A worker in the middle of a turn gets it in the answer to its next call to OctiqFlow " +
     "(task_status, an orchestration tool or its report), and cannot report before reading it. " +
+    "A worker inside one long tool call (a render, a build) makes no such call, so to pause, " +
+    "stop or redirect it, the coordinator sets interrupt true: the worker's turn is cut short " +
+    "like the Stop button, the attempt stays active, and the message starts its next turn. " +
+    "The result's interrupt says interrupted, delivered (the worker already read it), " +
+    "idle (delivered between turns), unsupported " +
+    "(this provider can only be stopped by ending the attempt) or failed. " +
     "This is coordination, not task completion.",
   inputSchema: {
     type: "object",
@@ -1988,6 +1994,12 @@ const ORCHESTRATION_MESSAGE_SEND = {
       kind: { type: "string", description: "status, instruction, question, reply, or escalation." },
       subject: { type: "string" },
       body: { type: "string" },
+      interrupt: {
+        type: "boolean",
+        description:
+          "Coordinator to a worker attempt only. Cut the worker's current turn short so it reads " +
+          "this now. Use it for pause, stop or a change of direction, not for ordinary notes.",
+      },
     },
     required: ["runId", "to", "kind", "subject", "body"],
   },
