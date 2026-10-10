@@ -434,9 +434,9 @@ pub fn agent_call(
             serde_json::to_value(store.get(&request.id)?).map_err(|e| e.to_string())
         }
         "update" => agent_update(&store, args, UpdatedBy::agent(chat.id, chat.title)),
-        _ => Err(
-            "Unknown feedback action. Agents may submit, list, get, or update reports.".into(),
-        ),
+        _ => {
+            Err("Unknown feedback action. Agents may submit, list, get, or update reports.".into())
+        }
     }
 }
 
@@ -584,12 +584,8 @@ mod tests {
             agent(),
         )
         .unwrap();
-        let kept = agent_update(
-            &f.0,
-            json!({ "id": id, "status": "in_progress" }),
-            agent(),
-        )
-        .unwrap();
+        let kept =
+            agent_update(&f.0, json!({ "id": id, "status": "in_progress" }), agent()).unwrap();
         assert_eq!(kept["status"], "in_progress");
         assert_eq!(kept["note"], "Needs a repro");
         assert_eq!(kept["revision"], 3);
@@ -665,16 +661,20 @@ mod tests {
             assert!(agent_update(&f.0, invalid, agent()).is_err());
         }
         let long = "x".repeat(8_001);
-        assert!(
-            agent_update(&f.0, json!({ "id": id, "status": "resolved", "note": long }), agent())
-                .unwrap_err()
-                .contains("at most 8000")
-        );
-        assert!(
-            agent_update(&f.0, json!({ "id": "missing", "status": "resolved" }), agent())
-                .unwrap_err()
-                .contains("not found")
-        );
+        assert!(agent_update(
+            &f.0,
+            json!({ "id": id, "status": "resolved", "note": long }),
+            agent()
+        )
+        .unwrap_err()
+        .contains("at most 8000"));
+        assert!(agent_update(
+            &f.0,
+            json!({ "id": "missing", "status": "resolved" }),
+            agent()
+        )
+        .unwrap_err()
+        .contains("not found"));
         assert_eq!(f.0.get(&id).unwrap().revision, 1);
     }
     #[test]
