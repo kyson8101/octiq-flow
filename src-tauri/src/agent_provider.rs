@@ -2016,8 +2016,8 @@ pub(crate) mod tests {
         }
         assert!(claude.contains("mcp__octiq__feedback_submit"));
         assert!(claude.contains("mcp__octiq__feedback_list"));
-        // A status change is approved like the vault's writes: the plan mode
-        // of a read-only chat still asks (`permission::host_bookkeeping`).
+        // A status change is the inbox's own bookkeeping, like a report: no
+        // card at any level (`permission::host_bookkeeping` covers plan mode).
         assert!(claude.contains("mcp__octiq__feedback_update"));
         assert!(instructions.contains("`feedback_submit`"));
         assert!(instructions.contains("`feedback_update`"));

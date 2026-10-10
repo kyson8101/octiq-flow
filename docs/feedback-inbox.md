@@ -93,12 +93,15 @@ records who made the last change, and the report shows it under its date:
 its launch proves, or **by you** for a save from this page. A report nobody
 has updated shows no such line. The model cannot supply or change this.
 
-The update is not one of the host's own bookkeeping tools, so OctiqFlow never
-answers Claude's question about it on the person's behalf. A Claude chat at
-Read access asks on the ordinary permission card before each status change,
-and the person decides there. At the other access levels the call is on the
-chat's allowed list and goes through without a card, as a vault write does.
-You can always move the status back from this page.
+The update is one of the host's own bookkeeping tools, like `feedback_submit`:
+the inbox is OctiqFlow's own record, so no permission card is shown for it at
+any access level, Read included. Codex is given the same hints for it as for
+`feedback_submit` and does not ask either. What holds an agent back is the
+tool's description and the chat's instructions: change a status only after
+verifying the fix or the observation yourself, name the commit or release in
+the note of a resolved report, and dismiss someone else's report only as a
+duplicate or as not reproducible, with the reason. You can always move the
+status back from this page.
 
 **Copy fix brief** creates a self-contained handoff to paste into a development
 chat or issue tracker. It includes the report ID, evidence, source identifiers,
@@ -132,11 +135,12 @@ The list refreshes on feedback events and reconnection. On a phone, use
 
 Agent tools expose a status and note update and no delete action; an agent
 cannot edit a report's evidence. `mcp__octiq__feedback_update` is on Claude's
-`--allowedTools` and is left out of `permission::host_bookkeeping`, which is
-what makes a Read-access chat ask on a card (see **Review and fix**). The
-ordinary authenticated browser command socket remains a single-user
-administrative interface, as with OctiqFlow's other settings. Reports have no
-automatic expiry.
+`--allowedTools` and in `permission::host_bookkeeping`, next to
+`feedback_submit`; the second is what answers the question a Read-access
+chat's plan mode asks before the allowed list is read, so no level shows a
+card (see **Review and fix**). The ordinary authenticated browser command
+socket remains a single-user administrative interface, as with OctiqFlow's
+other settings. Reports have no automatic expiry.
 
 Release the client and backend together through the normal release workflow.
 Building only the client against an older running backend leaves the inbox

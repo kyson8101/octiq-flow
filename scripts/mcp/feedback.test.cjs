@@ -35,7 +35,7 @@ test("feedback tools are chat-bound, discoverable by both providers, and mark on
       assert.ok(!("source" in tool.inputSchema.properties));
       assert.ok(!("updatedBy" in tool.inputSchema.properties));
     }
-    // A write marked read-only would skip the card a read-only chat asks on.
+    // The hints say what a tool does, not whether anyone is asked about it.
     assert.deepEqual(tools.map(tool => tool.annotations.readOnlyHint), [false, true, true, false]);
     const update = tools.at(-1);
     assert.deepEqual(Object.keys(update.inputSchema.properties), ["id", "status", "note", "expectedRevision"]);
