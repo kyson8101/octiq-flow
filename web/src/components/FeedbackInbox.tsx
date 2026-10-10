@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { copyText } from "../lib/clipboard";
-import { feedbackBrief, feedbackStatuses, type FeedbackPage, type FeedbackReport, type FeedbackStatus } from "../lib/feedback";
+import { feedbackBrief, feedbackStatuses, feedbackUpdatedBy, type FeedbackPage, type FeedbackReport, type FeedbackStatus } from "../lib/feedback";
 import "./FeedbackInbox.css";
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -95,7 +95,8 @@ export function FeedbackInbox({ onClose, onOpenChat, availableChatIds }: {
   </dialog>;
 }
 
-function FeedbackDetail({ report, available, onOpenChat, onBack, onSaved }: {
+/** Exported for its test: the inbox draws it for the selected report. */
+export function FeedbackDetail({ report, available, onOpenChat, onBack, onSaved }: {
   report: FeedbackReport; available: boolean; onOpenChat: (id: string) => void; onBack: () => void; onSaved: (report: FeedbackReport) => void;
 }) {
   const [status, setStatus] = useState(report.status);
@@ -105,6 +106,7 @@ function FeedbackDetail({ report, available, onOpenChat, onBack, onSaved }: {
   const [copied, setCopied] = useState(false);
   const [changed, setChanged] = useState(false);
   const dirty = status !== report.status || note !== report.note;
+  const updatedBy = feedbackUpdatedBy(report);
   useEffect(() => bridge.on<{ id: string }>("feedback-changed", event => {
     if (event.id === report.id) setChanged(true);
   }), [report.id]);
@@ -130,6 +132,7 @@ function FeedbackDetail({ report, available, onOpenChat, onBack, onSaved }: {
     <h3>{report.title}</h3>
     <p className="feedback-origin">{report.source.projectName || "Unknown project"} · {report.source.modelId ?? "Unknown agent"} · OctiqFlow {report.source.appVersion}</p>
     <p className="feedback-origin">Reported {date(report.createdAt)}</p>
+    {updatedBy && <p className="feedback-origin">Last updated {date(report.updatedAt)} by {updatedBy}</p>}
     <div className="feedback-actions">
       <button type="button" disabled={!available} onClick={() => onOpenChat(report.source.chatId)} title={available ? report.source.chatTitle : "The source chat is no longer available"}>Open source chat</button>
       <button type="button" disabled={dirty} title={dirty ? "Save your triage changes before copying" : undefined} onClick={async event => {

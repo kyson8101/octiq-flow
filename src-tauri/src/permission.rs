@@ -592,6 +592,10 @@ mod tests {
         // Writes the person's notes or starts work: still asked in plan mode.
         assert!(!host_bookkeeping("mcp__octiq__vault_write"));
         assert!(!host_bookkeeping("mcp__octiq__orchestration_run_create"));
+        // Reporting is bookkeeping; moving a report's status is the person's
+        // triage, so a read-only chat asks before its agent does it.
+        assert!(host_bookkeeping("mcp__octiq__feedback_submit"));
+        assert!(!host_bookkeeping("mcp__octiq__feedback_update"));
         // The same name on another server, or a built-in tool, is not ours.
         assert!(!host_bookkeeping("mcp__other__task_status"));
         assert!(!host_bookkeeping("task_status"));
