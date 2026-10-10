@@ -1067,6 +1067,25 @@ impl ChatManager {
         }
     }
 
+    /// Tell the orchestration ledger about one line of a chat's stream.
+    ///
+    /// Feedback 240ea516: Claude spells the full stop of a turn the host cut
+    /// short (Stop, or a coordinator's interrupt) as a failed `result`. The
+    /// ledger is told the cut was ours, so the worker's attempt waits for the
+    /// message behind the interrupt instead of failing. Call this before the
+    /// full stop clears the mark.
+    fn observe_for_orchestration(
+        &self,
+        session_key: &str,
+        key: &str,
+        event: &Value,
+    ) -> Result<(), String> {
+        let interrupted = event.get("type").and_then(Value::as_str) == Some("result")
+            && self.unwinding(session_key);
+        self.orchestrations
+            .observe_worker_turn_event(key, event, interrupted)
+    }
+
     pub(crate) fn notification_ready(&self, key: &str) -> bool {
         if self.unwinding(key) {
             return false;
@@ -2965,7 +2984,7 @@ pub(crate) fn start_session(
                             }
                         }
                         if let Err(error) =
-                            reading.orchestrations.observe_worker_event(&key, &event)
+                            reading.observe_for_orchestration(&session_key, &key, &event)
                         {
                             eprintln!("orchestration: cannot record provider event: {error}");
                         }
@@ -7863,6 +7882,132 @@ mod tests {
                 .expect("a clock with some run-up behind it"),
         );
         assert!(manager.notification_ready(&key));
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    /// Feedback 240ea516: the interrupt came back "interrupted" and seconds
+    /// later the host failed the attempt on the cut-off turn's own full stop,
+    /// which Claude spells as a failed `result`. The attempt stays active and
+    /// the coordinator's message opens the worker's next turn. The stream is
+    /// a real one, interrupted while a Bash call ran.
+    #[test]
+    fn a_coordinator_interrupt_keeps_a_claude_workers_attempt_and_its_message_opens_the_next_turn()
+    {
+        use crate::orchestration::tests::{claude_interrupted_tool, run, running_worker_on};
+        use crate::orchestration::AttemptStatus;
+        use std::io::BufRead;
+
+        let manager = Arc::new(ChatManager::default());
+        let store = manager.orchestrations.clone();
+        let run = run(&store);
+        let worker = running_worker_on(&store, &run, ChatAgent::Claude);
+        let key = worker.worker_chat_key.clone();
+        let (session, mut stdout) = capturing_claude_session();
+        hold(&manager, &key, session.clone());
+        let attempt = || {
+            store
+                .snapshot(None)
+                .unwrap()
+                .attempts
+                .into_iter()
+                .find(|a| a.id == worker.id)
+                .unwrap()
+        };
+        let events = claude_interrupted_tool();
+        let called = events
+            .iter()
+            .position(|e| {
+                e["type"] == "assistant" && e["message"]["content"][0]["type"] == "tool_use"
+            })
+            .expect("the Bash call");
+        let cut = events
+            .iter()
+            .position(|e| e["type"] == "result")
+            .expect("the cut-off turn's full stop");
+        for event in &events[..=called] {
+            manager
+                .observe_for_orchestration(&key, &key, event)
+                .unwrap();
+        }
+        assert_eq!(attempt().execution.pending_tools.len(), 1, "mid tool call");
+
+        let message = store
+            .record_message(
+                &run.coordinator_chat_key,
+                run.id.clone(),
+                worker.id.clone(),
+                "instruction".into(),
+                "Pause".into(),
+                "Stop the render.".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            interrupt_worker_turn(&manager, &key),
+            Ok(WorkerInterrupt::Interrupted)
+        );
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let sent: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(sent["request"]["subtype"], "interrupt");
+
+        // What Claude then says: the cancelled call, and a failed `result`.
+        for event in &events[called + 1..=cut] {
+            manager
+                .observe_for_orchestration(&key, &key, event)
+                .unwrap();
+        }
+        let after = attempt();
+        assert_eq!(after.status, AttemptStatus::Running, "not failed");
+        assert!(after.execution.latest_error.is_none());
+        assert!(after.execution.pending_tools.is_empty());
+        assert!(store.message_waiting(&message.id), "not cancelled");
+        let note = store
+            .due_notifications(i64::MAX)
+            .unwrap()
+            .into_iter()
+            .find(|n| n.target_chat_key == key)
+            .expect("the message is still owed to the worker");
+        assert_eq!(
+            deliver_orchestration_notification(manager.clone(), &note, Default::default()),
+            Ok(false),
+            "not before the reader has seen the full stop"
+        );
+
+        // The reader clears the mark on that full stop; the message goes in.
+        manager.set_unwinding(&key, false);
+        assert_eq!(
+            deliver_orchestration_notification(manager.clone(), &note, Default::default()),
+            Ok(true)
+        );
+        assert!(session.lock().unwrap().busy, "the next turn has started");
+        line.clear();
+        stdout.read_line(&mut line).unwrap();
+        assert!(line.contains("Stop the render."), "{line}");
+
+        // That turn runs to its ordinary full stop on the same attempt, and a
+        // failure in it is no longer excused by the interrupt before it.
+        for event in &events[cut + 1..] {
+            manager
+                .observe_for_orchestration(&key, &key, event)
+                .unwrap();
+        }
+        assert_eq!(attempt().status, AttemptStatus::Running);
+        manager
+            .observe_for_orchestration(&key, &key, &events[cut])
+            .unwrap();
+        assert_eq!(
+            attempt().status,
+            AttemptStatus::Running,
+            "an abort the result names itself is still a cut"
+        );
+        let mut broke = events[cut].clone();
+        broke.as_object_mut().unwrap().remove("terminal_reason");
+        manager
+            .observe_for_orchestration(&key, &key, &broke)
+            .unwrap();
+        assert_eq!(attempt().status, AttemptStatus::Failed);
 
         end_process(&manager, &key).expect("end the stand-in");
         crate::transcript::forget(&key);

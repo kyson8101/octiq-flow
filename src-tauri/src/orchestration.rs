@@ -5038,13 +5038,31 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn running_worker(store: &OrchestrationStore, run: &Run) -> Attempt {
+        running_worker_on(store, run, ChatAgent::Codex)
+    }
+
+    /// A real `claude -p` stream (2.1.292, the flag set `build_command` uses)
+    /// whose first turn is interrupted while a Bash call runs and whose
+    /// second answers the message sent after it. Feedback 240ea516.
+    pub(crate) fn claude_interrupted_tool() -> Vec<serde_json::Value> {
+        include_str!("../../web/src/lib/__fixtures__/claude-interrupted-tool.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a stream-json line"))
+            .collect()
+    }
+
+    pub(crate) fn running_worker_on(
+        store: &OrchestrationStore,
+        run: &Run,
+        agent: ChatAgent,
+    ) -> Attempt {
         let task = task(store, run, Vec::new());
         let (_, _, attempt, _) = store
             .reserve_attempt(
                 "chat:master",
                 &WorkerLaunch {
                     task_id: task.id,
-                    agent: ChatAgent::Codex,
+                    agent,
                     model: None,
                     effort: None,
                     access: Access::Auto,

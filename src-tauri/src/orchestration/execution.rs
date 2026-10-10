@@ -196,7 +196,30 @@ enum Observation {
     ToolEnd(String, String),
     Waiting(String),
     TurnEnded,
+    /// The turn was cut short, not lost: see [`turn_was_cut`].
+    TurnCut,
     Error(ExecutionError, bool), // provider is retrying internally
+}
+
+/// Feedback 240ea516: Claude ends a turn that was cut short with a `result`
+/// spelled as a failure (`error_during_execution`, `is_error`, an
+/// `ede_diagnostic` line in `errors`), so a coordinator's interrupt failed
+/// the very attempt it was redirecting, and the message it carried was
+/// cancelled with it.
+///
+/// Two things say the turn was cut, either one enough: the host's own
+/// interrupt is still waiting for this full stop (`interrupted`), or the
+/// result names an abort as its `terminal_reason`. The diagnostic's words are
+/// never read, and any other failing `result` stays a failure, interrupted or
+/// not. Codex reports an interrupted turn as `turn.completed`, and
+/// Antigravity cannot be interrupted without ending its process.
+fn turn_was_cut(kind: &str, event: &Value, interrupted: bool) -> bool {
+    kind == "result"
+        && event["subtype"] == "error_during_execution"
+        && (interrupted
+            || event["terminal_reason"]
+                .as_str()
+                .is_some_and(|reason| reason.starts_with("aborted")))
 }
 
 fn error_text(event: &Value) -> String {
@@ -235,11 +258,16 @@ fn error_text(event: &Value) -> String {
     ))
 }
 
-fn observe(event: &Value, now: i64) -> Vec<Observation> {
+/// `interrupted`: the host cut this chat's turn short and that turn's own
+/// full stop has not come back yet.
+fn observe(event: &Value, now: i64, interrupted: bool) -> Vec<Observation> {
     if let Some(kind) = event["event"].as_str() {
         return observe_antigravity(kind, event, now);
     }
     let kind = event["type"].as_str().unwrap_or_default();
+    if turn_was_cut(kind, event, interrupted) {
+        return vec![Observation::TurnCut];
+    }
     if kind == "model.activity"
         || (kind == "stream_event"
             && event.pointer("/event/type").and_then(Value::as_str) == Some("content_block_delta"))
@@ -471,11 +499,24 @@ impl OrchestrationStore {
     }
 
     pub(crate) fn observe_worker_event(&self, key: &str, event: &Value) -> Result<(), String> {
+        self.observe_worker_turn_event(key, event, false)
+    }
+
+    /// [`Self::observe_worker_event`] for a line of the worker's own stream,
+    /// where `interrupted` says the host cut the turn it belongs to
+    /// (`ChatManager::unwinding`): that turn's full stop is then a turn cut
+    /// short, and the attempt stays active for the message behind it.
+    pub(crate) fn observe_worker_turn_event(
+        &self,
+        key: &str,
+        event: &Value,
+        interrupted: bool,
+    ) -> Result<(), String> {
         let Some(before) = self.observed_attempt(key) else {
             return Ok(());
         };
         let now = now_ms();
-        let observations = observe(event, now);
+        let observations = observe(event, now, interrupted);
         // Streaming deltas are activity, never progress. Persist at most once a
         // second unless an operation or failure changed.
         if observations.iter().all(|o| {
@@ -558,6 +599,19 @@ impl OrchestrationStore {
                             e.state = ExecutionState::AwaitingReport;
                             e.current_operation = Some("Turn ended without a worker report".into());
                         }
+                        continue;
+                    }
+                    Observation::TurnCut => {
+                        e.provider_retry_started_at = None;
+                        // The provider cancelled whatever the turn was
+                        // running; a call left here would name a tool nothing
+                        // is running through every turn after it.
+                        e.pending_tools.retain(|id, _| id == super::ENVIRONMENT_OPERATION);
+                        let pending = &e.pending_tools;
+                        e.pending_tool_started_at.retain(|id, _| pending.contains_key(id));
+                        if attempt.status == AttemptStatus::Blocked { continue; }
+                        e.state = ExecutionState::AwaitingReport;
+                        e.current_operation = Some("Turn interrupted; waiting for its next message".into());
                         continue;
                     }
                     Observation::Activity => continue,
@@ -1472,6 +1526,216 @@ mod tests {
         .is_ok());
     }
 
+    /// Feedback 240ea516: a coordinator's interrupt failed the Claude attempt
+    /// it was redirecting, because Claude spells the full stop of a cut-off
+    /// turn as a failed `result`. Replayed from a real interrupted stream.
+    #[test]
+    fn a_turn_the_host_cut_short_keeps_the_attempt_active_for_the_message_behind_it() {
+        use super::super::tests::{claude_interrupted_tool, running_worker_on};
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker_on(&store, &run, ChatAgent::Claude);
+        let key = &attempt.worker_chat_key;
+        let events = claude_interrupted_tool();
+        let called = events
+            .iter()
+            .position(|e| {
+                e["type"] == "assistant" && e["message"]["content"][0]["type"] == "tool_use"
+            })
+            .expect("the Bash call");
+        let cut = events
+            .iter()
+            .position(|e| e["type"] == "result")
+            .expect("the cut-off turn's full stop");
+        assert_eq!(events[cut]["subtype"], "error_during_execution");
+        assert_eq!(events[cut]["is_error"], true);
+        assert_eq!(
+            events[cut]["errors"][0],
+            "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use",
+            "the very result the feedback's attempts failed on"
+        );
+
+        for event in &events[..=called] {
+            store.observe_worker_turn_event(key, event, false).unwrap();
+        }
+        let working = latest(&store, &attempt.id).execution;
+        assert_eq!(working.state, ExecutionState::WaitingTool);
+        assert_eq!(working.pending_tools.len(), 1);
+
+        // The coordinator's message is durable before the interrupt goes out.
+        let message = store
+            .record_message(
+                &run.coordinator_chat_key,
+                run.id.clone(),
+                attempt.id.clone(),
+                "instruction".into(),
+                "Pause".into(),
+                "Stop the render.".into(),
+            )
+            .unwrap();
+        for event in &events[called + 1..=cut] {
+            store.observe_worker_turn_event(key, event, true).unwrap();
+        }
+        let after = latest(&store, &attempt.id);
+        assert_eq!(after.status, AttemptStatus::Running);
+        assert_eq!(after.execution.state, ExecutionState::AwaitingReport);
+        assert_eq!(
+            after.execution.current_operation.as_deref(),
+            Some("Turn interrupted; waiting for its next message")
+        );
+        assert!(after.execution.latest_error.is_none());
+        assert!(after.execution.pending_tools.is_empty());
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Running);
+        assert!(
+            snapshot
+                .notifications
+                .iter()
+                .all(|n| n.target_chat_key != run.coordinator_chat_key),
+            "the coordinator is not told its own interrupt failed the worker"
+        );
+        assert!(store.message_waiting(&message.id));
+        assert!(
+            store
+                .due_notifications(i64::MAX)
+                .unwrap()
+                .iter()
+                .any(|n| &n.target_chat_key == key && n.body.contains("Stop the render.")),
+            "the message is still owed to the worker, as its next turn"
+        );
+
+        // The turn that message opens, and its ordinary full stop.
+        let next = &events[cut + 1..];
+        assert_eq!(next[0]["subtype"], "init");
+        store
+            .observe_worker_turn_event(key, &next[0], false)
+            .unwrap();
+        assert_eq!(
+            latest(&store, &attempt.id).execution.state,
+            ExecutionState::Executing
+        );
+        for event in &next[1..] {
+            store.observe_worker_turn_event(key, event, false).unwrap();
+        }
+        let done = latest(&store, &attempt.id);
+        assert_eq!(done.status, AttemptStatus::Running);
+        assert_eq!(done.execution.state, ExecutionState::AwaitingReport);
+        assert_eq!(
+            done.execution.current_operation.as_deref(),
+            Some("Turn ended without a worker report")
+        );
+    }
+
+    /// Either signal says a turn was cut: the host's own interrupt still
+    /// waiting for the full stop, or the result naming an abort. The
+    /// diagnostic's words alone say nothing.
+    #[test]
+    fn a_cut_turn_is_read_from_the_hosts_interrupt_or_the_results_own_abort() {
+        let diagnostic =
+            json!(["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"]);
+        let cut = |interrupted: bool, event: Value| {
+            matches!(
+                observe(&event, 0, interrupted).as_slice(),
+                [Observation::TurnCut]
+            )
+        };
+        let failed = |interrupted: bool, event: Value| {
+            matches!(
+                observe(&event, 0, interrupted).as_slice(),
+                [Observation::Error(_, false)]
+            )
+        };
+        // A CLI that names no reason: only the host's interrupt says so.
+        let bare = json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":diagnostic});
+        assert!(cut(true, bare.clone()));
+        assert!(failed(false, bare));
+        // The interrupt's mark has lapsed, but the result says it was aborted.
+        for reason in ["aborted_tools", "aborted_streaming"] {
+            let aborted = json!({"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":reason,"errors":diagnostic});
+            assert!(cut(false, aborted.clone()), "{reason}");
+            assert!(cut(true, aborted), "{reason}");
+        }
+        // A turn that ended well under an interrupt that came too late.
+        assert!(matches!(
+            observe(
+                &json!({"type":"result","subtype":"success","is_error":false,"result":"done"}),
+                0,
+                true
+            )
+            .as_slice(),
+            [Observation::TurnEnded]
+        ));
+        // Codex and Antigravity read as they did.
+        assert!(matches!(
+            observe(
+                &json!({"type":"turn.completed","status":"interrupted"}),
+                0,
+                true
+            )
+            .as_slice(),
+            [Observation::TurnEnded]
+        ));
+        assert!(failed(
+            true,
+            json!({"type":"turn.failed","error":{"message":"boom"}})
+        ));
+        use crate::agent_provider::tests::{agy_events, AGY_BAD_MODEL};
+        assert!(failed(true, agy_events(AGY_BAD_MODEL)[0].clone()));
+    }
+
+    /// A provider failure is still one, with or without an interrupt
+    /// outstanding: the attempt fails and its coordinator is told, as before.
+    #[test]
+    fn a_failed_result_still_fails_the_attempt_even_under_an_interrupt() {
+        for interrupted in [false, true] {
+            for (event, state) in [
+                (
+                    json!({"type":"result","subtype":"success","is_error":true,"api_error_status":529,"result":"API Error: 529 Overloaded"}),
+                    ExecutionState::CapacityBlocked,
+                ),
+                (
+                    json!({"type":"result","subtype":"error_max_turns","is_error":true}),
+                    ExecutionState::Failed,
+                ),
+                (
+                    json!({"type":"assistant","error":"invalid_request","message":{"content":[{"type":"text","text":"Prompt is too long"}]}}),
+                    ExecutionState::Failed,
+                ),
+            ] {
+                let store = OrchestrationStore::default();
+                let run = run(&store);
+                let attempt = running_worker(&store, &run);
+                store
+                    .observe_worker_turn_event(&attempt.worker_chat_key, &event, interrupted)
+                    .unwrap();
+                let after = latest(&store, &attempt.id);
+                assert_eq!(after.status, AttemptStatus::Failed, "{event}");
+                assert_eq!(after.execution.state, state, "{event}");
+                assert!(after.execution.latest_error.is_some(), "{event}");
+                let notes = store.snapshot(None).unwrap().notifications;
+                assert_eq!(notes.len(), 1, "{event}");
+                assert_eq!(notes[0].target_chat_key, run.coordinator_chat_key);
+            }
+        }
+        // A turn that broke on its own, with no interrupt and no abort named:
+        // the failure the feedback's message described, when it IS one.
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        store
+            .observe_worker_event(
+                &attempt.worker_chat_key,
+                &json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}),
+            )
+            .unwrap();
+        let after = latest(&store, &attempt.id);
+        assert_eq!(after.status, AttemptStatus::Failed);
+        assert_eq!(
+            after.execution.latest_error.unwrap().message,
+            "Provider request failed [\"boom\"]"
+        );
+    }
+
     #[test]
     fn an_antigravity_worker_stream_reads_as_activity_tools_and_a_full_stop() {
         use crate::agent_provider::tests::{agy_events, AGY_BAD_MODEL, AGY_THREE_TURNS};
@@ -1479,7 +1743,7 @@ mod tests {
         let mut ended = 0;
         let mut turns = 0;
         for event in agy_events(AGY_THREE_TURNS) {
-            for seen in observe(&event, 0) {
+            for seen in observe(&event, 0, false) {
                 match seen {
                     Observation::ToolStart(id, name) => started.push((id, name)),
                     Observation::ToolEnd(..) => ended += 1,
@@ -1500,7 +1764,7 @@ mod tests {
         assert_eq!(turns, 3);
         let bad = agy_events(AGY_BAD_MODEL);
         assert!(matches!(
-            observe(&bad[0], 0).as_slice(),
+            observe(&bad[0], 0, false).as_slice(),
             [Observation::Error(_, false)]
         ));
     }
