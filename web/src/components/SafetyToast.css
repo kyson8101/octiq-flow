@@ -1,0 +1,161 @@
+/* A refusal the agent carried on past, said once and briefly.
+
+   It hangs over the foot of the transcript rather than taking a row of its
+   own: a row would push the conversation up for five seconds and drop it back
+   again, twice the motion for something that asks nothing. It is as wide as
+   the message column, so with the reader at the end it covers the folded line
+   the same refusal leaves in the transcript, and leaving uncovers it. */
+.safety-toast-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 4px;
+  /* Under the agent panel (2) and the way back down (3). */
+  z-index: 1;
+  box-sizing: border-box;
+  max-width: var(--chat-column);
+  margin: 0 auto;
+  padding: 0 16px;
+  /* Only the notice takes a click; beside it is the conversation. */
+  pointer-events: none;
+}
+
+/* Opaque, and no shadow: the fill and the frame are what lift it, which is
+   also all Manga allows a floating thing. */
+.safety-toast {
+  pointer-events: auto;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  /* Room on the right for the way back down, which sits over this corner
+     while the reader is away from the end. */
+  padding: 0 46px 0 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-1));
+  color: var(--fg-1);
+  font-size: 12.5px;
+  line-height: 1.3;
+  animation: safety-toast-in 180ms ease-out;
+  transition:
+    opacity 180ms ease-out,
+    transform 180ms ease-out;
+}
+
+.safety-toast.is-leaving {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+@keyframes safety-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.safety-toast-icon {
+  flex: 0 0 auto;
+  color: var(--warn);
+}
+
+/* In the sentence rather than beside it, so on a phone the words wrap round
+   it instead of losing half the line to it. */
+.safety-toast-count {
+  display: inline-block;
+  margin-right: 7px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--warn) 20%, transparent);
+  color: var(--fg-0);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* One line, whatever the reason turns out to be: the end of it gives way. */
+.safety-toast-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.safety-toast-what {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.safety-toast-reason::before,
+.safety-toast-calm::before {
+  content: "·";
+  margin: 0 6px;
+  color: var(--fg-3);
+}
+
+.safety-toast-calm {
+  color: var(--fg-2);
+}
+
+.safety-toast-details {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease-out;
+}
+
+.safety-toast-details:hover {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+}
+
+.safety-toast-details:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* A phone has no room for the sentence, the reason and the count on one
+   line, and the reason is the half worth reading: two lines, never three. */
+@media (max-width: 640px) {
+  .safety-toast {
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  /* Two lines of words stand taller than one folded line under them. With
+     more than one refusal there is a second line above that, so the notice
+     covers exactly the two (28 + 4 + 28, see `.safety-line-row`) rather than
+     one and a half. */
+  .safety-toast.is-many {
+    min-height: 60px;
+  }
+
+  .safety-toast-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .safety-toast {
+    animation: none;
+    transition: opacity 1ms linear;
+  }
+
+  .safety-toast.is-leaving {
+    transform: none;
+  }
+}

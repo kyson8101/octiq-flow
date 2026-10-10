@@ -10,8 +10,9 @@
 // agent the rule exists, so the agent retries itself. Its outage card (the
 // classifier gave no verdict) offers the one as-is retry Claude itself allows,
 // and an allow rule the person adds to their own settings.
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
+import { AUTO_MODE_BLOCKED } from "../lib/safetyToast";
 import { CopyBit, CopyIcon } from "./CopyBit";
 
 export type SafetyBlockNotice = {
@@ -462,19 +463,31 @@ export async function answerClaude(
  * Claude's auto-mode card: what was refused, that nothing here approves that
  * call, and — when the host could name the line exactly — a lasting "Always
  * allow" whose rules and file are shown before anything is written.
+ *
+ * `folded` is the same card for a refusal the agent carried on past: one line
+ * in the transcript, which opens to everything the card holds. Nothing about
+ * what the buttons do differs between the two.
  */
 function ClaudeSafetyBlock({
   block,
   onContinue,
   onAnswered,
   startOpen,
+  folded,
+  reveal,
 }: {
   block: SafetyBlockNotice;
   onContinue: Continue;
   onAnswered: (id: string) => void;
   startOpen: boolean;
+  folded: boolean;
+  reveal?: number;
 }) {
   const [open, setOpen] = useState(startOpen);
+  // The folded line's own disclosure: the card under it.
+  const [shown, setShown] = useState(folded && startOpen);
+  const line = useRef<HTMLDivElement>(null);
+  const cardId = useId();
   const [sending, setSending] = useState<"safer" | "dismiss" | AllowScope | null>(null);
   const [error, setError] = useState("");
   const [wrote, setWrote] = useState<AllowedOutage | null>(null);
@@ -509,6 +522,27 @@ function ClaudeSafetyBlock({
     }
   };
 
+  // Asked for from the notice's Details: open the line and bring it into
+  // view, once the card under it has been drawn. Only a NEW ask does it: a
+  // line drawn again later (the chat reopened) stays as quiet as it started.
+  const asked = useRef(reveal);
+  const bring = useRef(false);
+  useEffect(() => {
+    if (!reveal || reveal === asked.current) return;
+    asked.current = reveal;
+    bring.current = true;
+    setShown(true);
+  }, [reveal]);
+  // After the one above, and again once `shown` has drawn the card: the
+  // scroll has to measure the line with its card in it.
+  useEffect(() => {
+    if (!shown || !bring.current) return;
+    bring.current = false;
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    line.current?.scrollIntoView({ block: "nearest", behavior: still ? "auto" : "smooth" });
+    line.current?.querySelector<HTMLElement>(".safety-line-row")?.focus({ preventScroll: true });
+  }, [shown, reveal]);
+
   const written = wrote
     ? `${wrote.added.length ? `Added ${wrote.added.join(", ")}` : "Nothing new to add"}` +
       `${wrote.present.length ? `${wrote.added.length ? "; " : ""}already there: ${wrote.present.join(", ")}` : ""} in ${wrote.path}.`
@@ -520,16 +554,8 @@ function ClaudeSafetyBlock({
   // step. The whole line, the classifier's words and every way to allow it
   // (with the exact rules and files "Always allow" writes, shown before the
   // button) wait behind Details.
-  return (
-    <div className="ask-card safety-card is-compact" role="alert" aria-label={block.title}>
-      <div className="ask-card-head safety-card-head">
-        <span className="safety-card-icon" aria-hidden="true">!</span>
-        <span className="safety-card-heading">
-          <strong className="ask-card-title">{block.title}</strong>
-          {block.summary && <span className="safety-card-reason">{block.summary}</span>}
-        </span>
-      </div>
-
+  const body = (
+    <>
       {block.action && (
         <pre className="safety-card-action safety-card-preview"><span>{block.action}</span></pre>
       )}
@@ -540,7 +566,7 @@ function ClaudeSafetyBlock({
 
       <div className="ask-card-buttons safety-card-buttons">
         <button className="safety-card-toggle" type="button" aria-expanded={open}
-          aria-controls={open ? detailsId : undefined} onClick={() => setOpen((shown) => !shown)}>
+          aria-controls={open ? detailsId : undefined} onClick={() => setOpen((was) => !was)}>
           {/* One label both ways, so the row never re-wraps on a phone:
               the chevron and aria-expanded carry the state. */}
           Details
@@ -616,6 +642,46 @@ function ClaudeSafetyBlock({
           </div>}
         </div>
       )}
+    </>
+  );
+
+  if (folded) {
+    // Not an alert: the agent is still working and nothing here is owed. The
+    // line says what happened; the reason and the start of the command ride
+    // along as far as the row has room for.
+    return (
+      <div className={`safety-line${shown ? " is-open" : ""}`} ref={line}>
+        <button className="safety-line-row" type="button" aria-expanded={shown}
+          aria-controls={shown ? cardId : undefined} onClick={() => setShown((was) => !was)}>
+          <span className="safety-card-icon" aria-hidden="true">!</span>
+          <span className="safety-line-what">{AUTO_MODE_BLOCKED}</span>
+          {block.summary && <span className="safety-line-reason">{block.summary}</span>}
+          {block.action && <code className="safety-line-action">{block.action}</code>}
+          <svg className="safety-card-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+        {shown && (
+          <div className="ask-card safety-card is-compact is-folded" id={cardId} role="group" aria-label={block.title}>
+            {body}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="ask-card safety-card is-compact" role="alert" aria-label={block.title}>
+      <div className="ask-card-head safety-card-head">
+        <span className="safety-card-icon" aria-hidden="true">!</span>
+        <span className="safety-card-heading">
+          <strong className="ask-card-title">{block.title}</strong>
+          {block.summary && <span className="safety-card-reason">{block.summary}</span>}
+        </span>
+      </div>
+
+      {body}
     </div>
   );
 }
@@ -625,17 +691,26 @@ export function SafetyBlock({
   onContinue,
   onAnswered,
   startOpen = false,
+  folded = false,
+  reveal,
 }: {
   block: SafetyBlockNotice;
   onContinue: Continue;
   onAnswered: (id: string) => void;
   startOpen?: boolean;
+  /** A judged Claude refusal the agent carried on past: one line in the
+   *  transcript that opens to the card. Every other kind stays a card. */
+  folded?: boolean;
+  /** Changes when the notice's Details asks for this line: open it and
+   *  bring it into view. Read only when `folded`. */
+  reveal?: number;
 }) {
   if (block.provider === "claude" && block.kind === "outage") {
     return <OutageBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
   }
   if (block.provider === "claude") {
-    return <ClaudeSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
+    return <ClaudeSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen}
+      folded={folded} reveal={reveal} />;
   }
   return <CodexSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
 }

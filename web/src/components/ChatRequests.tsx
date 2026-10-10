@@ -55,3 +55,28 @@ export function ChatRequests({
     </>
   );
 }
+
+/** Auto-mode refusals the agent carried on past (`lib/safetyToast`), as lines
+ *  at the end of the transcript. Each still carries its card's pending key, so
+ *  a badge finds the line exactly as it would the card. `reveal` names the
+ *  line the notice's Details asked for; its `n` changes on every ask. */
+export function SafetyLines({
+  blocks, reveal, onSafetyAnswered, onContinue,
+}: {
+  blocks: SafetyBlockNotice[];
+  reveal?: { id: string; n: number } | null;
+  onSafetyAnswered: (id: string) => void;
+  onContinue: Continue;
+}) {
+  if (!blocks.length) return null;
+  return (
+    <div className="safety-lines">
+      {blocks.map((block) => (
+        <div key={block.id} className="pending-target" data-pending-keys={`safety:${block.id}`}>
+          <SafetyBlock block={block} folded reveal={reveal?.id === block.id ? reveal.n : undefined}
+            onContinue={onContinue} onAnswered={onSafetyAnswered} />
+        </div>
+      ))}
+    </div>
+  );
+}

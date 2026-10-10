@@ -204,6 +204,75 @@ describe("SafetyBlock", () => {
       });
     });
 
+    describe("folded into the transcript while the agent carries on", () => {
+      const line = "git push --force origin main && rm -rf .git/hooks";
+      const refused: SafetyBlockNotice = { ...claude, summary: "Security Weaken", action: line };
+      const shown = line.replace(/&/g, "&amp;");
+      const drawFolded = (notice: SafetyBlockNotice, startOpen = false) =>
+        renderToStaticMarkup(
+          <SafetyBlock block={notice} folded onContinue={() => {}} onAnswered={() => {}} startOpen={startOpen} />,
+        );
+
+      it("is one shut line: what happened, why, and the start of the command", () => {
+        const html = drawFolded(refused);
+        expect(html).toMatch(/^<div class="safety-line"><button class="safety-line-row" type="button" aria-expanded="false">/);
+        expect(html).toContain('<span class="safety-line-what">Auto mode blocked an action</span>');
+        expect(html).toContain('<span class="safety-line-reason">Security Weaken</span>');
+        expect(html).toContain(`<code class="safety-line-action">${shown}</code>`);
+      });
+
+      it("asks for nothing until it is opened: no alert, no card, no buttons", () => {
+        const html = drawFolded(refused);
+        for (const gone of [
+          'role="alert"', "ask-card", "Use safer approach", "Dismiss", "Details", CLAUDE_BLOCKED_STATUS,
+          "safety-card-preview", "Permission for this action was denied",
+        ]) expect(html).not.toContain(gone);
+      });
+
+      it("opens to the same card: the command, the reason and both answers", () => {
+        const html = drawFolded(refused, true);
+        expect(html).toMatch(
+          /class="safety-line is-open"><button class="safety-line-row" type="button" aria-expanded="true" aria-controls="([^"]+)">[\s\S]*<div class="ask-card safety-card is-compact is-folded" id="\1" role="group"/,
+        );
+        expect(html).not.toContain('role="alert"');
+        expect(html).toContain(`<pre class="safety-card-action safety-card-preview"><span>${shown}</span></pre>`);
+        expect(html).toContain(CLAUDE_BLOCKED_STATUS);
+        expect(html).toContain("Permission for this action was denied by the Claude Code auto mode classifier.");
+        expect(html).toContain("How to allow this");
+        expect(html.indexOf("Use safer approach")).toBeLessThan(html.indexOf("Dismiss"));
+        // The line is the heading; the card under it does not say it twice.
+        expect(html).not.toContain("safety-card-heading");
+      });
+
+      it("keeps Always allow, with its rules, behind the opened line", () => {
+        const allowable: SafetyBlockNotice = {
+          ...refused, rules: ["Bash(git push --force origin main)"], allow: { project: "/repo/.claude/settings.local.json" },
+        };
+        expect(drawFolded(allowable)).not.toContain("Always allow");
+        const html = drawFolded(allowable, true);
+        expect(html).toContain("Bash(git push --force origin main)");
+        expect(html).toContain("Always allow in this project");
+      });
+
+      it("has no reason or command to show when the host sent none", () => {
+        const html = drawFolded({ ...refused, summary: "", action: null });
+        expect(html).toContain("Auto mode blocked an action");
+        expect(html).not.toContain("safety-line-reason");
+        expect(html).not.toContain("safety-line-action");
+      });
+
+      it("folds only a judged Claude refusal: an outage or a Codex block stays a card", () => {
+        const outage = drawFolded({ ...refused, kind: "outage", title: "Claude's safety check was unavailable" });
+        expect(outage).toContain("is-outage");
+        expect(outage).not.toContain("safety-line");
+        const codex = renderToStaticMarkup(
+          <SafetyBlock block={block} folded onContinue={() => {}} onAnswered={() => {}} />,
+        );
+        expect(codex).toContain("Codex safety review");
+        expect(codex).not.toContain("safety-line");
+      });
+    });
+
     describe("the two answers do exactly what they did", () => {
       const record = () => {
         const order: string[] = [];

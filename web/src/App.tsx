@@ -192,7 +192,10 @@ import { besideFor, besideTask, readBeside, roomBeside, type Beside } from "./li
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
-import { ChatRequests } from "./components/ChatRequests";
+import { ChatRequests, SafetyLines } from "./components/ChatRequests";
+import { SafetyToast } from "./components/SafetyToast";
+import type { Continue } from "./components/SafetyBlock";
+import { splitSafety, useSafetyToast } from "./lib/safetyToast";
 import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
 import { requestConversation } from "./lib/pendingRequests";
@@ -4387,6 +4390,31 @@ export default function App() {
     ),
     [handoverPlace, handoverAnchorsKey, openHandoverChat, handoverProjectOf],
   );
+  // This chat's own safety cards, split by whether the agent stopped
+  // (`lib/safetyToast`). An auto-mode refusal it carried on past is a line at
+  // the end of the transcript and a short notice; everything else, and that
+  // same refusal once the turn is over, is a card above the prompt box.
+  const turnRunning = chat.busy && !cutOff;
+  const safetyHere = conversationId ? safetyBlocks[conversationId] : undefined;
+  const safetySplit = useMemo(() => splitSafety(safetyHere ?? [], turnRunning), [safetyHere, turnRunning]);
+  const safetyNotice = useSafetyToast(workerChat ? null : conversationId, turnRunning);
+  // A notice outlives neither its refusal nor the turn: answered elsewhere,
+  // or the agent stopped and the card is up, and there is nothing to add.
+  const safetyToast = safetyNotice.toast && safetySplit.folded.some((block) => block.id === safetyNotice.toast?.blockId)
+    ? safetyNotice.toast : null;
+  const [safetyReveal, setSafetyReveal] = useState<{ id: string; n: number } | null>(null);
+  const clearSafetyNotice = safetyNotice.clear;
+  const showSafetyLine = useCallback((id: string) => {
+    setSafetyReveal((before) => ({ id, n: (before?.n ?? 0) + 1 }));
+    clearSafetyNotice();
+  }, [clearSafetyNotice]);
+  const answeredSafety = useCallback((id: string) => {
+    if (!conversationId) return;
+    setSafetyBlocks((prev) => ({
+      ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => item.id !== id),
+    }));
+  }, [conversationId, setSafetyBlocks]);
+  const continueSafety = useCallback<Continue>((message, options) => send(message, [], options), [send]);
   const planTail = useMemo(
     () => {
       const plans = plansHere.some((plan) => plan.pending)
@@ -4394,9 +4422,14 @@ export default function App() {
       const handed = handoverPlace.tail.length
         ? <HandoverCards outgoing={handoverPlace.tail} onDecide={decideAndGo} />
         : null;
-      return plans || handed ? <>{handed}{plans}</> : undefined;
+      const refused = !workerChat && safetySplit.folded.length
+        ? <SafetyLines blocks={safetySplit.folded} reveal={safetyReveal}
+          onSafetyAnswered={answeredSafety} onContinue={continueSafety} />
+        : null;
+      return plans || handed || refused ? <>{refused}{handed}{plans}</> : undefined;
     },
-    [plansHere, planDrafting, planProjectName, handoverPlace, decideAndGo],
+    [plansHere, planDrafting, planProjectName, handoverPlace, decideAndGo,
+      workerChat, safetySplit, safetyReveal, answeredSafety, continueSafety],
   );
 
   const changeAccess = useCallback(
@@ -4729,7 +4762,8 @@ export default function App() {
             (questions[conversationId]?.length ?? 0) +
               (asks[conversationId]?.length ?? 0) +
               (accessRequests[conversationId]?.length ?? 0) +
-              (safetyBlocks[conversationId]?.length ?? 0) >
+              // A refusal the agent carried on past waits on nobody.
+              safetySplit.cards.length >
             0
           }
         />}
@@ -5283,6 +5317,9 @@ export default function App() {
                       agentByTool={agentByTool}
                       onOpenAgent={setFocusedAgent}
                     />
+                    {!workerChat && (
+                      <SafetyToast toast={safetyToast} onDetails={showSafetyLine} onDone={clearSafetyNotice} />
+                    )}
                     {focused && (
                       <AgentFocus
                         run={focused}
@@ -5372,14 +5409,12 @@ export default function App() {
           {conversationId && !workerChat && (
             <ChatRequests
               asks={asks[conversationId] ?? []}
-              safetyBlocks={safetyBlocks[conversationId] ?? []}
+              safetyBlocks={safetySplit.cards}
               questions={questions[conversationId] ?? []}
               onPermissionAnswered={(id) => setAsks((prev) => ({
                 ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => item.id !== id),
               }))}
-              onSafetyAnswered={(id) => setSafetyBlocks((prev) => ({
-                ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => item.id !== id),
-              }))}
+              onSafetyAnswered={answeredSafety}
               onQuestionsAnswered={(ids) => setQuestions((prev) => ({
                 ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => !ids.includes(item.id)),
               }))}

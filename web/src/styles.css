@@ -10820,9 +10820,119 @@ body.is-ultra .eff {
   }
 }
 
+/* The same refusal while the agent is still working: one line at the end of
+   the transcript, in the family of the CLI's own reports (`.cli-note`) — a
+   thing that happened, not a thing to answer. It opens to the card. */
+.safety-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.safety-line {
+  min-width: 0;
+}
+
+.safety-line-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.15s ease-out,
+    color 0.15s ease-out;
+}
+
+.safety-line-row:hover {
+  background: var(--bg-2);
+  color: var(--fg-1);
+}
+
+.safety-line-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.safety-line-row .safety-card-icon {
+  width: 16px;
+  height: 16px;
+  font-size: 10.5px;
+}
+
+.safety-line-what {
+  flex: 0 0 auto;
+  color: var(--fg-1);
+  white-space: nowrap;
+}
+
+/* The reason and the start of the command give way, in that order, before
+   the sentence does. */
+.safety-line-reason,
+.safety-line-action {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.safety-line-reason {
+  flex: 0 1 auto;
+}
+
+.safety-line-reason::before {
+  content: "·";
+  margin-right: 7px;
+  color: var(--fg-3);
+}
+
+.safety-line-action {
+  flex: 1 1 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
+
+.safety-line-row .safety-card-chevron {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.safety-line-row[aria-expanded="true"] .safety-card-chevron {
+  transform: rotate(180deg);
+}
+
+/* The card under an opened line. Its heading is the line itself. */
+.safety-card.is-folded {
+  max-width: none;
+  margin: 6px 0 0;
+  animation: safety-card-more-in 0.18s ease-out;
+}
+
+.safety-card.is-folded > .safety-card-preview:first-child {
+  margin-top: 0;
+}
+
+.safety-card.is-folded > .safety-card-calm:first-child {
+  margin-top: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .safety-card-more,
-  .safety-card-chevron {
+  .safety-card-chevron,
+  .safety-card.is-folded,
+  .safety-line-row {
     animation: none;
     transition: none;
   }

@@ -314,6 +314,28 @@ card stays up and the agent is told to end its turn. Claude waits as long as a
 permission card, Codex 50 s (its MCP call times out near 60). An Antigravity
 refusal asks on this same card, drawn from `ChatState.accessNeed`.
 
+### An auto-mode refusal the agent carries on past is a notice, not a card
+
+Claude's auto mode refuses a call mid-turn and the agent usually goes on
+another way, so the page says it the way Claude Code's own terminal does
+(`lib/safetyToast`): a short notice over the foot of the transcript
+(`SafetyToast`, about five seconds, held under the pointer or keyboard focus,
+one notice counting several refusals), and one folded line at the end of the
+transcript that opens to the same card with the same two answers
+(`SafetyBlock` with `folded`). Nothing on the host changed: the record, its
+pending key and what the buttons send are the card's.
+
+- **What splits them is whether the turn is still running** (`splitSafety`).
+  A judged refusal folds only while `chat.busy`; once the turn is over with it
+  still unanswered, the agent has stopped and it is the full card above the
+  prompt box again. The record carries no time and no tool-use id, so "the
+  agent went on and finished anyway" cannot be told from "it stopped on this".
+- **An outage card and a Codex block never fold.** Both offer something only
+  the person can choose (a retry, an approval).
+- **Only a live `safety-blocked` event raises the notice.** The list read on
+  connect or on reopening a chat (`safety_block_pending`) never does, and
+  leaving the chat drops it.
+
 ### Both agents' full stops carry their closing words
 
 `turn_is_over` reads `result` (Claude) and `turn.completed` / `turn.failed`
