@@ -255,9 +255,10 @@ export type OrchestrationAttempt = {
   proposedReport?: ProposedReport | null;
   /** An attempt of a peer-request task: what its limit of working time
    *  needs beyond the stamps here. `carriedMs` is what earlier attempts used;
-   *  each of `cardWaits` is a stretch it sat on a card only the person can
-   *  answer, which is not counted (`to` is absent while the card is up). */
-  peerClock?: { carriedMs: number; cardWaits?: { from: number; to?: number }[] };
+   *  each of `waits` is a stretch the host saw it waiting with nothing
+   *  running, which is not counted; `usedMs` is the most it was ever found
+   *  to have used, and never goes down. */
+  peerClock?: { carriedMs: number; usedMs: number; waits?: { from: number; to: number }[] };
   createdAt: number;
   updatedAt: number;
 };

@@ -579,7 +579,12 @@ kind, from a chat and from the page) and a gate on its task is answered only
 by the person on the page (`ResolvedBy::Person`: the socket's
 `orchestration_gate_resolve`, which no hook action maps to). A new path that
 puts an agent's words in a worker's inbox, or continues a worker, asks
-`task.peer_request` first.
+`task.peer_request` first. Its `maxMinutes` is working time, and a wait is
+free only while the host can verify that nothing is running: between two of
+the scheduler's looks that both saw a card, or an open gate with no turn in
+flight. A gate under a running turn is charged, used time never goes down,
+and what the agent left running in the background is not counted
+(`docs/agents-mode.md`, The time limit).
 
 ## Conventions & gotchas
 

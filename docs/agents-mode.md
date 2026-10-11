@@ -666,30 +666,54 @@ task as usual.
 #### The time limit
 
 **`maxMinutes` is N minutes of working time; waiting for a decision does not
-count; it is not extended.** The plan row says it (`requested by <agent> · N
+count, while the host can see that nothing is running; it is not extended.**
+The plan row says it (`requested by <agent> · N
 min working time`), and so do the teammate's brief and the coordinator's
 notice.
 
 - **What counts.** The attempt's life, from the moment it is reserved to the
-  moment it settles, less every stretch it was parked (`worked_ms`): while a
-  decision gate of its task was open, and while it sat on a card only the
+  moment it settles, less every stretch the host SAW it waiting with nothing
+  running (`used_ms`). A wait is free only while the host can verify that, and
+  every estimate errs toward charging. An answered decision gives nothing
+  back: a peer that asks a question every 59 seconds of a one-minute request
+  is ended at 60 seconds of work.
+- **What a wait is.** The scheduler looks at each live attempt every two
+  seconds. A look sees a wait when the attempt's chat is on a card only the
   person can answer (a Codex safety approval that continues the work, or a
-  permission question). When the wait is over the clock carries on from what
-  was already used. An answered decision gives nothing back: a peer that asks
-  a question every 59 seconds of a one-minute request is ended at 60 seconds
-  of work.
-- **Where it is kept.** In the ledger, as stamps, never as a counter: the
-  attempt's `createdAt` and `finishedAt`, each gate's `createdAt` and
-  `closedAt` (written once when the gate is resolved or cancelled; `updatedAt`
-  is not read), and the attempt's `peerClock` (`cardWaits`, each `{from, to}`,
-  stamped by the scheduler's pass when it first sees the card and when it
-  first sees it gone, so exact to that pass's two seconds; and `carriedMs`).
-  Overlapping waits are merged, and each is clipped to the attempt's life. A
-  restart loses none of it.
-- **It is never ended under the person.** An attempt parked on a gate or a
-  card is not ended, even past its limit. It is ended on the first pass after
-  that wait is over, and the reason says the limit was reached and that the
-  host held it.
+  permission question), or when a gate of its task is open **and** the chat
+  has no turn in flight (the `busy` the idle reaper trusts, read through
+  `ChatManager::turn_in_flight`: from a write to the agent's stdin until that
+  turn's own full stop). Opening a gate stops no clock by itself: while the
+  turn that opened it still runs, the attempt is working, is charged, and is
+  ended at its limit with the gate open. The teammate's brief says to end the
+  turn after opening a gate.
+- **Bounds, not guesses.** Free time is only the time between two looks in a
+  row that both saw the wait, with no line of the agent's stream arriving
+  between them (`Wait`, `{from, to}`). The clock is read before and after each
+  look; a wait opens at the later reading and is extended to the earlier one.
+  Nothing is counted back to the look before the first sighting or on to the
+  look after the last, so a wait seen by one look is no time at all.
+- **It never goes down.** `peerClock.usedMs` is the most the attempt was ever
+  found to have used, what it carried in included. A wall clock that steps
+  back leaves it there, and the next attempt carries it.
+- **Where it is kept.** In the ledger: the attempt's `createdAt` and
+  `finishedAt`, and its `peerClock` (`waits`, `usedMs`, `carriedMs`). A wait's
+  end and `usedMs` move in memory on every look and are written every fifteen
+  looks (about thirty seconds), and at once when a wait ends, the wall clock
+  steps back or the attempt is ended. After a restart a wait counts up to its
+  last write; the rest of it, and the time the server was down, is charged.
+- **What it does not count.** The limit is on the attempt's life as the host
+  can see it, not on every process the agent started. A background process
+  the agent left running after its turn ended goes on under an open gate
+  without being charged, because the chat has no turn in flight and its stream
+  is silent; so does a tool call running silently beside a pending card. A
+  turn that begins and ends between two looks is noticed only by the lines it
+  writes to the stream. Ending the attempt stops the agent's process, not
+  what that process detached.
+- **It is never ended under the person.** An attempt a look sees waiting is
+  not ended, even past its limit. It is ended by the first look that sees the
+  wait over, and the reason says the limit was reached and that the host held
+  it.
 - **Nothing extends it.** There is no tool, argument or message that adds
   time. A longer job is a new request, which the person approves like the
   first.

@@ -730,10 +730,10 @@ pub struct Gate {
     pub created_at: i64,
     pub updated_at: i64,
     /// When it stopped being open: resolved or cancelled. Its own stamp,
-    /// written once by `close`, because a peer request's working time is
-    /// counted around it (`peer_request::worked_ms`) and `updated_at` is free
-    /// to move for any other reason. A gate closed before this was recorded
-    /// has none and is read by its `updated_at`.
+    /// written once by `close`, because `updated_at` is free to move for any
+    /// other reason. A gate closed before this was recorded has none. A peer
+    /// request's working time does not read it: a gate is a wait only while
+    /// the host sees nothing running under it (`peer_request::Wait`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<i64>,
 }

@@ -288,7 +288,7 @@ pub fn start_scheduler(
         }
         // Before the pass below, which stops the process of an attempt this
         // ends.
-        if let Err(error) = store.expire_peer_requests(now_ms()) {
+        if let Err(error) = store.expire_peer_requests(&chats) {
             eprintln!("orchestration: peer request time limits failed: {error}");
         }
         if let Err(error) = store.recover_due_workers(chats.clone(), &workspaces, now_ms()) {

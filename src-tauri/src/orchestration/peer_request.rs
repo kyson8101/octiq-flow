@@ -23,9 +23,13 @@
 //! - Bounds: `MAX_REQUESTS_PER_ATTEMPT` per worker attempt,
 //!   `MAX_OPEN_REQUESTS_PER_LEAD_CHAT` open at once per lead chat,
 //!   `MAX_REQUEST_CHARS` of request text, and `max_minutes` of WORKING time
-//!   (`worked_ms`, `expire_peer_requests` on the scheduler's pass: no timer
-//!   of its own). Waiting for a decision is not working and is not counted;
-//!   what was used is never given back, and nothing extends the limit.
+//!   (`used_ms`, `expire_peer_requests` on the scheduler's pass: no timer of
+//!   its own). A wait for a decision is free only while the host can see
+//!   that nothing is running, between two looks that both saw it (`Wait`);
+//!   what was used never goes down, and nothing extends the limit.
+//! - Nobody but the person adds to it once it is approved: no coordinator's
+//!   message reaches its worker (`NO_INSTRUCTIONS`), and only the person
+//!   answers a gate on it (`PERSONS_GATE`).
 //! - Depth: a peer-request task cannot be split, and its worker cannot make a
 //!   peer request. It may still ask a question (`peer.rs`).
 //! - When the teammate's attempt settles, the run's coordinator is told as
@@ -53,6 +57,8 @@ pub const TIME_LIMIT_REASON: &str = "peer request time limit";
 /// docs. The plan card says the same in its own words (`PlanReview.tsx`).
 pub const TIME_LIMIT_TERMS: &str =
     "working time; waiting for a decision does not count, and it is not extended";
+/// What the teammate is told about waiting: a gate alone stops no clock.
+pub const WAITING_TERMS: &str = "A wait is free only while nothing of yours is running: after you open a gate, end your turn, because a gate that is open while your turn still runs is working time.";
 /// Why a peer-request task is not reopened (`reopen_task`): the follow-up
 /// would be new instructions on an approval given for other words.
 pub const NOT_REOPENED: &str = "A peer request is one approved job, so it is not reopened. Ask for the follow-up as a new request, which the person approves.";
@@ -71,61 +77,85 @@ pub const PERSONS_GATE: &str = "This gate belongs to a peer request, so only the
 /// its question would reach the teammate's next attempt as a decision.
 pub const TEAMMATES_GATE: &str = "Only the teammate doing a peer request opens a gate on its task, and only the person answers it. For a decision of your own, open a gate without taskId.";
 
-/// One stretch an attempt spent parked on a card only the person can answer
-/// (`on_card`). Stamped by the scheduler's pass when it first sees the card
-/// and when it first sees it gone, so each end is exact to that pass's two
-/// seconds. `to` is absent while the card is still up.
+/// How many of the scheduler's looks an attempt's clock may go unwritten:
+/// about thirty seconds. A wait's end and the high-water are kept exact in
+/// memory and written this often, and at once when a wait ends, the wall
+/// clock steps back or the attempt is ended. A restart therefore reads a
+/// clock at most this stale, and what it lost is charged.
+const SAVE_EVERY_LOOKS: u32 = 15;
+
+/// One stretch the host SAW an attempt waiting with nothing running: from
+/// the first of the scheduler's looks that saw it (`Look::waiting`) to the
+/// last one in a row that still did. Both ends are sightings, so the time
+/// before the first and after the last is working time: nothing is assumed
+/// back to the look before, or on to the look after.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CardWait {
+pub struct Wait {
     pub from: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to: Option<i64>,
+    pub to: i64,
 }
 
 /// What a peer request's attempt keeps of its working time
-/// (`Attempt::peer_clock`), in the ledger so a restart loses none of it. The
-/// rest of the sum is already there: the attempt's own start and end, and the
-/// open and close stamps of its task's gates.
+/// (`Attempt::peer_clock`), in the ledger so a restart keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PeerClock {
     /// Working time the attempts before this one used, since the person last
     /// started the task (`clock_for`).
     pub carried_ms: i64,
+    /// The stretches it was seen waiting, oldest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub card_waits: Vec<CardWait>,
+    pub waits: Vec<Wait>,
+    /// The most this attempt was ever found to have used, what it carried in
+    /// included. Used time never goes down: a wall clock that steps back
+    /// leaves this where it was (`used_ms`).
+    pub used_ms: i64,
+    /// The last look saw it waiting, so the next one that does extends the
+    /// last of `waits`. In memory only: after a restart no wait is open.
+    #[serde(skip)]
+    waiting: bool,
+    /// Looks since this clock was last written to the ledger.
+    #[serde(skip)]
+    unsaved: u32,
+    /// The clock's reading at the last look, to notice it stepping back.
+    #[serde(skip)]
+    looked_at: i64,
+}
+
+/// What one of the scheduler's looks at a live attempt shows.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Look {
+    /// Its chat is on a card only the person can answer (`on_card`).
+    pub card: bool,
+    /// Its chat has a turn in flight (`ChatManager::turn_in_flight`): from a
+    /// write to the agent's stdin until that turn's own full stop.
+    pub turn: bool,
+}
+
+impl Look {
+    /// Whether this look saw the attempt waiting with nothing running: on a
+    /// card, or with a gate of its task open and no turn in flight. A gate
+    /// alone is not a wait: an agent that opens one and keeps working is
+    /// working.
+    fn waiting(self, gate_open: bool) -> bool {
+        self.card || (gate_open && !self.turn)
+    }
 }
 
 fn budget_ms(request: &PeerRequest) -> i64 {
     i64::from(request.max_minutes) * 60_000
 }
 
-/// The stretches of an attempt's life, up to `end`, that it spent parked:
-/// while a gate of its task was open (`created_at` to `closed_at`) and while
-/// it sat on a card. Clipped to the attempt's life and merged, so two waits
-/// that overlap are one stretch.
-fn parked(data: &Stored, attempt: &Attempt, end: i64) -> Vec<(i64, i64)> {
+/// The stretches of an attempt's life, up to `end`, that it was seen
+/// waiting, clipped to that life and merged.
+fn waited(attempt: &Attempt, end: i64) -> Vec<(i64, i64)> {
     let start = attempt.created_at;
-    let gates = data
-        .gates
-        .values()
-        .filter(|gate| gate.task_id.as_deref() == Some(attempt.task_id.as_str()))
-        .map(|gate| {
-            let closed = match gate.status {
-                GateStatus::Open => end,
-                _ => gate.closed_at.unwrap_or(gate.updated_at),
-            };
-            (gate.created_at, closed)
-        });
-    let cards = attempt
+    let mut stretches: Vec<(i64, i64)> = attempt
         .peer_clock
         .iter()
-        .flat_map(|clock| &clock.card_waits)
-        .map(|wait| (wait.from, wait.to.unwrap_or(end)));
-    let mut stretches: Vec<(i64, i64)> = gates
-        .chain(cards)
-        .map(|(from, to)| (from.max(start), to.min(end)))
+        .flat_map(|clock| &clock.waits)
+        .map(|wait| (wait.from.max(start), wait.to.min(end)))
         .filter(|(from, to)| from < to)
         .collect();
     stretches.sort_unstable();
@@ -139,28 +169,29 @@ fn parked(data: &Stored, attempt: &Attempt, end: i64) -> Vec<(i64, i64)> {
     merged
 }
 
-/// The working time one attempt has used by `now`: its life, from the moment
-/// it was reserved to the moment it settled (or `now`), less every stretch it
-/// was parked. Derived from stamps the ledger keeps, never from a counter, so
-/// it reads the same after a restart and no event can refill it.
-fn worked_ms(data: &Stored, attempt: &Attempt, now: i64) -> i64 {
+/// What the stamps alone say an attempt had used by `at`: what it carried
+/// in, and its life from the moment it was reserved to the moment it settled
+/// (or `at`), less every stretch it was seen waiting.
+fn counted_ms(attempt: &Attempt, at: i64) -> i64 {
     let start = attempt.created_at;
-    let end = attempt.finished_at.unwrap_or(now).max(start);
-    let waited: i64 = parked(data, attempt, end)
+    let end = attempt.finished_at.unwrap_or(at).max(start);
+    let waits: i64 = waited(attempt, end)
         .iter()
         .map(|(from, to)| to - from)
         .sum();
-    end - start - waited
-}
-
-/// Everything a request's limit counts by `now`: this attempt's own working
-/// time and what it carried in.
-fn used_ms(data: &Stored, attempt: &Attempt, now: i64) -> i64 {
-    attempt
+    let carried = attempt
         .peer_clock
         .as_ref()
-        .map_or(0, |clock| clock.carried_ms)
-        + worked_ms(data, attempt, now)
+        .map_or(0, |clock| clock.carried_ms);
+    carried + end - start - waits
+}
+
+/// Everything a request's limit counts by `now`: what the stamps say, and
+/// never less than the most it was ever found to have used. No event refills
+/// it and no clock winds it back.
+fn used_ms(attempt: &Attempt, now: i64) -> i64 {
+    let high = attempt.peer_clock.as_ref().map_or(0, |clock| clock.used_ms);
+    counted_ms(attempt, now).max(high)
 }
 
 /// The clock a new attempt of a peer-request task starts with.
@@ -189,7 +220,7 @@ pub(super) fn clock_for(
         .values()
         .filter(|attempt| attempt.task_id == task.id)
         .max_by_key(|attempt| attempt.number)
-        .map_or(0, |last| used_ms(data, last, now));
+        .map_or(0, |last| used_ms(last, now));
     if carried_ms >= budget_ms(request) {
         let minutes = request.max_minutes;
         return Err(format!(
@@ -198,13 +229,14 @@ pub(super) fn clock_for(
     }
     Ok(PeerClock {
         carried_ms,
-        card_waits: Vec::new(),
+        used_ms: carried_ms,
+        ..PeerClock::default()
     })
 }
 
-/// Whether a chat is parked on a card only the person can answer: a Codex
-/// safety approval that continues its work, or a permission question. The
-/// attempt is waiting, not working, and is never ended under the card.
+/// Whether a chat is on a card only the person can answer: a Codex safety
+/// approval that continues its work, or a permission question. The attempt
+/// is waiting, not working, and is never ended under the card.
 fn on_card(chat_key: &str) -> bool {
     crate::safety_block::awaits_decision(chat_key) || crate::permission::awaits(chat_key)
 }
@@ -222,7 +254,7 @@ pub struct PeerRequest {
     pub requester_attempt_id: Option<String>,
     /// The result the requester expects back.
     pub output: String,
-    /// How many minutes the teammate may WORK on it (`worked_ms`).
+    /// How many minutes the teammate may WORK on it (`used_ms`).
     pub max_minutes: u32,
     pub requested_at: i64,
 }
@@ -358,7 +390,7 @@ pub(super) fn worker_brief(request: &PeerRequest, clock: Option<&PeerClock>) -> 
         String::new()
     };
     format!(
-        "\n\nThis task is a peer request from your teammate {name}: one bounded piece of work, not a change in who you report to. Produce the expected output named in the task and report it with orchestration_worker_report; the host delivers your report to {name} and to this run's coordinator. You have {minutes} minutes of {TIME_LIMIT_TERMS}.{used} When they are used the host ends the attempt as failed ({TIME_LIMIT_REASON}), so report what you have before then. {APPROVED_SCOPE} You cannot split this task or make a peer request of your own. You may still ask a teammate a question with orchestration_peer_ask.",
+        "\n\nThis task is a peer request from your teammate {name}: one bounded piece of work, not a change in who you report to. Produce the expected output named in the task and report it with orchestration_worker_report; the host delivers your report to {name} and to this run's coordinator. You have {minutes} minutes of {TIME_LIMIT_TERMS}.{used} When they are used the host ends the attempt as failed ({TIME_LIMIT_REASON}), so report what you have before then. {WAITING_TERMS} {APPROVED_SCOPE} You cannot split this task or make a peer request of your own. You may still ask a teammate a question with orchestration_peer_ask.",
         name = request.requested_by.name,
         minutes = request.max_minutes,
     )
@@ -845,20 +877,36 @@ impl OrchestrationStore {
     /// scheduler's pass; the same pass stops a failed attempt's process
     /// (`recover_due_workers`), so nothing here owns a timer or a process.
     ///
-    /// The limit is a budget of working time (`worked_ms`): an attempt parked
-    /// on a gate or a card is waiting, not working, and when the wait is over
-    /// the clock carries on from what was already used. Nothing refills it.
-    /// An attempt is never ended while it is parked: one that is past its
-    /// limit when a wait begins is ended once that wait is over.
-    pub(crate) fn expire_peer_requests(&self, now: i64) -> Result<Vec<String>, String> {
-        self.expire_peer_requests_with(now, &on_card)
+    /// The limit is a budget of working time, and a wait is free only while
+    /// the host can verify that nothing is running. Every estimate errs
+    /// toward charging:
+    ///
+    /// - A look sees a wait when the attempt's chat is on a card only the
+    ///   person can answer, or when a gate of its task is open AND the chat
+    ///   has no turn in flight (`Look::waiting`). Opening a gate stops no
+    ///   clock by itself: while the turn that opened it still runs, the
+    ///   attempt is working and is charged, and can be ended.
+    /// - Free time is only the time between two looks in a row that BOTH saw
+    ///   the wait, with no line of the agent's own stream arriving between
+    ///   them (`Wait`). A wait seen by one look is no time at all.
+    /// - What was used never goes down (`PeerClock::used_ms`).
+    ///
+    /// An attempt is never ended while a look sees it waiting: one that is
+    /// past its limit then is ended by the first look that sees the wait
+    /// over.
+    pub(crate) fn expire_peer_requests(&self, chats: &ChatManager) -> Result<Vec<String>, String> {
+        self.expire_peer_requests_with(&now_ms, &|chat| Look {
+            card: on_card(chat),
+            turn: chats.turn_in_flight(chat),
+        })
     }
 
-    /// [`Self::expire_peer_requests`], with what tells a chat is on a card.
+    /// [`Self::expire_peer_requests`], with the clock and what a look at a
+    /// chat shows.
     fn expire_peer_requests_with(
         &self,
-        now: i64,
-        on_card: &dyn Fn(&str) -> bool,
+        clock: &dyn Fn() -> i64,
+        look: &dyn Fn(&str) -> Look,
     ) -> Result<Vec<String>, String> {
         /// The live attempt of every peer-request task, with its request.
         fn live(data: &Stored) -> Vec<(&Attempt, &PeerRequest)> {
@@ -873,52 +921,116 @@ impl OrchestrationStore {
                 })
                 .collect()
         }
-        fn card_open(attempt: &Attempt) -> bool {
-            attempt
-                .peer_clock
-                .as_ref()
-                .and_then(|clock| clock.card_waits.last())
-                .is_some_and(|wait| wait.to.is_none())
-        }
-        /// Working, and out of time.
-        fn due(data: &Stored, attempt: &Attempt, request: &PeerRequest, now: i64) -> bool {
-            matches!(
-                attempt.status,
-                AttemptStatus::Preparing | AttemptStatus::Running
-            ) && !attempt_has_open_gate(data, attempt)
-                && used_ms(data, attempt, now) >= budget_ms(request)
-        }
 
-        // The cards are asked about with the ledger unlocked, and the ledger
-        // is written only when a wait began or ended or an attempt is due:
-        // an ordinary pass over working attempts writes nothing.
-        let chats: Vec<(String, String)> = {
+        let chats: Vec<(String, String, bool)> = {
             let inner = self.inner.lock().map_err(|error| error.to_string())?;
             if inner.load_error.is_some() {
                 return Ok(Vec::new());
             }
-            live(&inner.data)
+            let data = &inner.data;
+            live(data)
                 .into_iter()
-                .map(|(attempt, _)| (attempt.id.clone(), attempt.worker_chat_key.clone()))
+                .map(|(attempt, _)| {
+                    (
+                        attempt.id.clone(),
+                        attempt.worker_chat_key.clone(),
+                        attempt_has_open_gate(data, attempt),
+                    )
+                })
                 .collect()
         };
         if chats.is_empty() {
             return Ok(Vec::new());
         }
-        let carded: BTreeSet<String> = chats
+        // The chats are looked at with the ledger unlocked, between two
+        // readings of the clock. A wait is opened at the later reading and
+        // extended to the earlier one, so a recorded stretch lies inside
+        // the two real sightings that bound it.
+        let before = clock();
+        let looks: BTreeMap<String, (Look, bool)> = chats
             .into_iter()
-            .filter(|(_, chat)| on_card(chat))
-            .map(|(id, _)| id)
+            .map(|(id, chat, gate_open)| (id, (look(&chat), gate_open)))
             .collect();
-        {
-            let inner = self.inner.lock().map_err(|error| error.to_string())?;
-            let data = &inner.data;
-            if !live(data).into_iter().any(|(attempt, request)| {
-                let on_card = carded.contains(&attempt.id);
-                on_card != card_open(attempt) || (!on_card && due(data, attempt, request, now))
-            }) {
-                return Ok(Vec::new());
+        let after = clock();
+
+        // Every look moves the clocks in memory. The ledger is written when
+        // a wait ended, the wall clock stepped back, a clock has gone
+        // `SAVE_EVERY_LOOKS` unwritten, or an attempt is due.
+        let (save, due) = {
+            let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
+            let data = &mut inner.data;
+            let seen: Vec<(String, i64, bool)> = live(data)
+                .into_iter()
+                .map(|(attempt, request)| {
+                    (
+                        attempt.id.clone(),
+                        budget_ms(request),
+                        attempt_has_open_gate(data, attempt),
+                    )
+                })
+                .collect();
+            let mut save = false;
+            let mut due = Vec::new();
+            for (id, budget, gate_open) in seen {
+                // Reserved after the looks were taken: the next pass's.
+                let Some(&(look, gate_was_open)) = looks.get(&id) else {
+                    continue;
+                };
+                // A gate must be open at both readings of the ledger.
+                let waiting = look.waiting(gate_was_open && gate_open);
+                let attempt = data.attempts.get_mut(&id).expect("listed above");
+                let active_at = attempt.execution.last_activity_at;
+                let own = attempt.peer_clock.get_or_insert_default();
+                // A line of the agent's stream since the wait was last seen
+                // means something ran in between.
+                let quiet = own
+                    .waits
+                    .last()
+                    .is_some_and(|wait| active_at.is_none_or(|at| at <= wait.to));
+                if waiting && own.waiting && quiet {
+                    let wait = own.waits.last_mut().expect("read above");
+                    wait.to = wait.to.max(before);
+                } else {
+                    // The wait the last look saw is over, or its quiet was
+                    // broken: it keeps the end it was last seen at, and one
+                    // seen only once is no stretch at all.
+                    if own.waiting {
+                        own.waiting = false;
+                        if own.waits.last().is_some_and(|wait| wait.to <= wait.from) {
+                            own.waits.pop();
+                        } else {
+                            save = true;
+                        }
+                    }
+                    if waiting {
+                        own.waits.push(Wait {
+                            from: after,
+                            to: after,
+                        });
+                        own.waiting = true;
+                    }
+                }
+                // A wall clock that stepped back: what was used is written
+                // now, where a restart finds it.
+                save |= after < own.looked_at;
+                own.looked_at = after;
+                own.unsaved += 1;
+                save |= own.unsaved >= SAVE_EVERY_LOOKS;
+                let used = used_ms(&data.attempts[&id], after);
+                let own = data
+                    .attempts
+                    .get_mut(&id)
+                    .and_then(|attempt| attempt.peer_clock.as_mut())
+                    .expect("set above");
+                own.used_ms = used;
+                if !waiting && used >= budget {
+                    due.push(id);
+                }
             }
+            (save, due)
+        };
+        if !save && due.is_empty() {
+            return Ok(Vec::new());
         }
         let ended = self.mutate(|data| {
             let seen: Vec<(String, PeerRequest)> = live(data)
@@ -927,43 +1039,47 @@ impl OrchestrationStore {
                 .collect();
             let mut ended = Vec::new();
             for (id, request) in seen {
-                let on_card = carded.contains(&id);
                 let attempt = data.attempts.get_mut(&id).expect("listed above");
-                if on_card != card_open(attempt) {
-                    let waits = &mut attempt.peer_clock.get_or_insert_default().card_waits;
-                    match waits.last_mut().filter(|wait| wait.to.is_none()) {
-                        Some(wait) => wait.to = Some(now.max(wait.from)),
-                        None => waits.push(CardWait {
-                            from: now,
-                            to: None,
-                        }),
-                    }
-                }
-                let attempt = data.attempts.get(&id).expect("listed above").clone();
-                if on_card || !due(data, &attempt, &request, now) {
+                let Some(own) = attempt.peer_clock.as_mut() else {
+                    continue;
+                };
+                own.unsaved = 0;
+                let (waiting, used) = (own.waiting, own.used_ms);
+                if !due.contains(&id) || waiting || used < budget_ms(&request) {
                     continue;
                 }
+                let attempt = attempt.clone();
                 let minutes = request.max_minutes;
                 // Out of time before its last wait was over: it was held
                 // until then rather than ended under the person.
-                let held = parked(data, &attempt, now)
-                    .last()
-                    .is_some_and(|(_, until)| used_ms(data, &attempt, *until) >= budget_ms(&request));
+                let held = attempt
+                    .peer_clock
+                    .iter()
+                    .flat_map(|clock| clock.waits.last())
+                    .any(|wait| {
+                        wait.from < wait.to && counted_ms(&attempt, wait.to) >= budget_ms(&request)
+                    });
                 let held = if held {
                     " It had reached the limit before the decision it was waiting on came back, so the host held it until that wait was over."
+                } else {
+                    ""
+                };
+                // A gate that is open under a running turn parks nothing.
+                let working = if attempt_has_open_gate(data, &attempt) {
+                    " A gate of its task was open, but its turn was still running, and that is working time."
                 } else {
                     ""
                 };
                 let error = execution::ExecutionError {
                     kind: "time_limit".into(),
                     message: format!(
-                        "{TIME_LIMIT_REASON}: the limit was reached. The attempt used the {minutes} minutes of working time its request allowed, so the host ended it.{held} Waiting for a decision was not counted, and the limit is not extended: the person can start it again with Start retry on the task, or the rest is a new request. Its workspace is preserved."
+                        "{TIME_LIMIT_REASON}: the limit was reached. The attempt used the {minutes} minutes of working time its request allowed, so the host ended it.{held}{working} Waiting for a decision with nothing running was not counted, and the limit is not extended: the person can start it again with Start retry on the task, or the rest is a new request. Its workspace is preserved."
                     ),
-                    at: now,
+                    at: after,
                     retryable: false,
                 };
                 // `fail` tells the run's coordinator and a requesting worker.
-                if !execution::fail(data, &id, error, now) {
+                if !execution::fail(data, &id, error, after) {
                     continue;
                 }
                 ended.push((attempt.run_id, attempt.worker_chat_key));
@@ -1670,66 +1786,6 @@ pub(crate) mod tests {
         assert_eq!(store.snapshot(None).unwrap().tasks.len(), 1);
     }
 
-    #[test]
-    fn an_attempt_that_outruns_its_request_is_ended_as_failed() {
-        let store = OrchestrationStore::default();
-        let run = run(&store);
-        let worker = worker_ada(&store, &run);
-        let made = from_worker(
-            &store,
-            &worker,
-            PeerWork {
-                max_minutes: Some(10),
-                ..work("bo")
-            },
-        )
-        .unwrap();
-        let peer = approved_and_started(&store, &made.task_id);
-        let limit = 10 * 60_000;
-        // Inside its time nothing happens, and an ordinary task has no limit.
-        assert!(store
-            .expire_peer_requests(peer.created_at + limit - 1)
-            .unwrap()
-            .is_empty());
-        let ended = store.expire_peer_requests(peer.created_at + limit).unwrap();
-        assert_eq!(ended, vec![peer.worker_chat_key.clone()]);
-        let snapshot = store.snapshot(None).unwrap();
-        let attempt = snapshot.attempts.iter().find(|a| a.id == peer.id).unwrap();
-        assert_eq!(attempt.status, AttemptStatus::Failed);
-        assert!(attempt
-            .summary
-            .as_deref()
-            .unwrap()
-            .starts_with("peer request time limit: the limit was reached. The attempt used the 10 minutes of working time its request allowed"));
-        assert!(attempt.execution.next_retry_at.is_none(), "never retried");
-        // Left for the scheduler's pass to stop, like any failed attempt.
-        assert!(attempt.execution.latest_error.is_some());
-        let task = task_of(&store, &made.task_id);
-        assert_eq!(task.status, TaskStatus::Failed);
-        assert!(task.result.unwrap().starts_with(TIME_LIMIT_REASON));
-        assert_eq!(
-            task_of(&store, &worker.task_id).status,
-            TaskStatus::Running,
-            "the requester's own attempt is not the one that overran"
-        );
-        // Both the coordinator and the worker that asked are told.
-        let told = notices(&store, "chat:master", "time_limit");
-        assert_eq!(told.len(), 1);
-        assert!(told[0].body.contains(TIME_LIMIT_REASON));
-        let taken = store
-            .take_for_working_worker(&worker.worker_chat_key)
-            .unwrap();
-        assert_eq!(taken.len(), 1);
-        assert!(taken[0]
-            .body
-            .contains("ended as failed. peer request time limit"));
-        // Ending it once is the end of it.
-        assert!(store
-            .expire_peer_requests(peer.created_at + 2 * limit)
-            .unwrap()
-            .is_empty());
-    }
-
     /// A request for `minutes`, approved and started. Its attempt's
     /// `created_at` is the zero every test below counts from.
     pub(crate) fn timed(store: &OrchestrationStore, minutes: u32) -> (PeerRequested, Attempt) {
@@ -1745,37 +1801,100 @@ pub(crate) mod tests {
         (made, peer)
     }
 
-    /// The peer asks for a decision as a worker does, `from` ms into its
-    /// attempt, and gets it `to` ms in (never, when `None`). The gate is
-    /// opened and resolved through the store, then stamped with those times.
-    fn waited(
-        store: &OrchestrationStore,
-        made: &PeerRequested,
-        peer: &Attempt,
-        from: i64,
-        to: Option<i64>,
-    ) -> String {
-        let gate = store
-            .create_gate(
-                &peer.worker_chat_key,
-                made.run_id.clone(),
-                Some(made.task_id.clone()),
-                "Which volume?".into(),
-                vec![],
-            )
-            .unwrap();
-        if to.is_some() {
-            person_answers(store, &gate.id, "volume1");
+    /// The scheduler, stood in for: what each of its looks at the peer's
+    /// chat shows, and the time it reads off the clock. A working agent has
+    /// a turn in flight, which is how every watch starts.
+    struct Watch<'a> {
+        store: &'a OrchestrationStore,
+        peer: &'a Attempt,
+        card: std::cell::Cell<bool>,
+        turn: std::cell::Cell<bool>,
+    }
+
+    impl<'a> Watch<'a> {
+        fn over(store: &'a OrchestrationStore, peer: &'a Attempt) -> Self {
+            Self {
+                store,
+                peer,
+                card: false.into(),
+                turn: true.into(),
+            }
         }
-        store
-            .mutate(|data| {
-                let gate = data.gates.get_mut(&gate.id).unwrap();
-                gate.created_at = peer.created_at + from;
-                gate.closed_at = to.map(|to| peer.created_at + to);
-                Ok(())
-            })
-            .unwrap();
-        gate.id
+
+        /// One look `at` ms into the attempt: who it ended.
+        fn look(&self, at: i64) -> Vec<String> {
+            self.look_between(at, at)
+        }
+
+        /// One look whose clock read `before` ahead of it and `after` behind.
+        fn look_between(&self, before: i64, after: i64) -> Vec<String> {
+            let readings = std::cell::Cell::new(0);
+            let zero = self.peer.created_at;
+            self.store
+                .expire_peer_requests_with(
+                    &|| {
+                        readings.set(readings.get() + 1);
+                        zero + if readings.get() == 1 { before } else { after }
+                    },
+                    &|chat| {
+                        assert_eq!(chat, self.peer.worker_chat_key);
+                        Look {
+                            card: self.card.get(),
+                            turn: self.turn.get(),
+                        }
+                    },
+                )
+                .unwrap()
+        }
+
+        /// A look every two seconds from `from` to `to`, as the scheduler
+        /// takes them: everyone they ended.
+        fn looks(&self, from: i64, to: i64) -> Vec<String> {
+            (from..=to)
+                .step_by(2_000)
+                .flat_map(|at| self.look(at))
+                .collect()
+        }
+
+        /// The peer asks for a decision as a worker does, and its turn ends
+        /// or not as `turn` says.
+        fn asks(&self, made: &PeerRequested, turn: bool) -> String {
+            let gate = self
+                .store
+                .create_gate(
+                    &self.peer.worker_chat_key,
+                    made.run_id.clone(),
+                    None,
+                    "Which volume?".into(),
+                    vec![],
+                )
+                .unwrap();
+            self.turn.set(turn);
+            gate.id
+        }
+
+        /// The person answers on the page, which starts the peer's next turn.
+        fn answered(&self, gate: &str) {
+            person_answers(self.store, gate, "volume1");
+            self.turn.set(true);
+        }
+
+        /// The stretches the attempt was seen waiting, in ms into it.
+        fn waits(&self) -> Vec<(i64, i64)> {
+            let zero = self.peer.created_at;
+            attempt_of(self.store, &self.peer.id)
+                .peer_clock
+                .map(|clock| clock.waits)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|wait| (wait.from - zero, wait.to - zero))
+                .collect()
+        }
+
+        /// What the attempt's limit counts `at` ms into it.
+        fn used(&self, at: i64) -> i64 {
+            used(self.store, &self.peer.id, self.peer.created_at + at)
+        }
     }
 
     /// The person answers a gate on the page: the socket's door, which the
@@ -1814,178 +1933,468 @@ pub(crate) mod tests {
     /// What the attempt's limit counts by `now`.
     fn used(store: &OrchestrationStore, id: &str, now: i64) -> i64 {
         let inner = store.inner.lock().unwrap();
-        used_ms(&inner.data, &inner.data.attempts[id], now)
+        used_ms(&inner.data.attempts[id], now)
     }
 
-    /// The scheduler's pass `at` ms into the attempt: who it ended.
-    fn pass(store: &OrchestrationStore, peer: &Attempt, at: i64) -> Vec<String> {
-        store.expire_peer_requests(peer.created_at + at).unwrap()
-    }
-
-    /// The review's case (feedback 5baf9cb1): one minute allowed, and a
-    /// decision asked for and answered every 59 seconds. Each answer used to
-    /// start the minute again, so fifteen rounds were 885 seconds of work
-    /// with the attempt still not due.
-    #[test]
-    fn a_decision_every_59_seconds_does_not_give_the_minute_back() {
-        // Pass by pass: the first answered decision changes nothing, and the
-        // attempt ends at sixty seconds of work.
-        let store = OrchestrationStore::default();
-        let (made, peer) = timed(&store, 1);
-        assert!(pass(&store, &peer, 59_000).is_empty());
-        waited(&store, &made, &peer, 59_000, Some(59_000));
-        assert!(pass(&store, &peer, 59_999).is_empty());
-        assert_eq!(
-            pass(&store, &peer, 60_000),
-            vec![peer.worker_chat_key.clone()]
-        );
-        let ended = attempt_of(&store, &peer.id);
-        assert_eq!(ended.status, AttemptStatus::Failed);
-        assert!(
-            ended.summary.as_deref().unwrap().starts_with(
-                "peer request time limit: the limit was reached. The attempt used the 1 minutes of working time its request allowed"
-            ),
-            "{:?}",
-            ended.summary
-        );
-
-        // All fifteen rounds with no pass between them, as the review's
-        // probe ran them: 885 seconds of work is far past one minute, and
-        // the first look ends it. It used to last until second 945.
-        let store = OrchestrationStore::default();
-        let (made, peer) = timed(&store, 1);
-        for round in 1..=15 {
-            waited(&store, &made, &peer, round * 59_000, Some(round * 59_000));
-        }
-        assert_eq!(
-            used(&store, &peer.id, peer.created_at + 885_001),
-            885_001,
-            "an answered decision gives nothing back"
-        );
-        assert_eq!(
-            pass(&store, &peer, 885_001),
-            vec![peer.worker_chat_key.clone()]
-        );
-    }
-
-    #[test]
-    fn a_long_wait_for_a_decision_is_not_counted_and_the_clock_carries_on() {
-        let store = OrchestrationStore::default();
-        let (made, peer) = timed(&store, 1);
-        // Forty seconds of work, then ten minutes parked on a gate.
-        let gate = waited(&store, &made, &peer, 40_000, None);
-        assert!(pass(&store, &peer, 5 * 60_000).is_empty());
-        assert_eq!(attempt_of(&store, &peer.id).status, AttemptStatus::Blocked);
-        person_answers(&store, &gate, "volume1");
-        store
-            .mutate(|data| {
-                let gate = data.gates.get_mut(&gate).unwrap();
-                gate.closed_at = Some(peer.created_at + 640_000);
-                // Touched later for some other reason: not the clock's stamp.
-                gate.updated_at = peer.created_at + 900_000;
-                Ok(())
-            })
-            .unwrap();
-        // Twenty seconds were left when it asked, and twenty are left now.
-        assert!(pass(&store, &peer, 659_999).is_empty());
-        assert_eq!(
-            pass(&store, &peer, 660_000),
-            vec![peer.worker_chat_key.clone()]
-        );
-        let ended = attempt_of(&store, &peer.id);
-        assert!(
-            !ended.summary.as_deref().unwrap().contains("held it"),
-            "it was working when its time ran out"
-        );
-    }
-
-    #[test]
-    fn two_waits_that_overlap_are_counted_once() {
-        let store = OrchestrationStore::default();
-        let (made, peer) = timed(&store, 1);
-        // 10s to 40s, and a second decision open from 20s to 50s: forty
-        // seconds parked, not sixty.
-        let first = waited(&store, &made, &peer, 10_000, Some(40_000));
-        store
-            .mutate(|data| {
-                let mut second = data.gates[&first].clone();
-                second.id = "gate_second".into();
-                second.created_at = peer.created_at + 20_000;
-                second.closed_at = Some(peer.created_at + 50_000);
-                data.gates.insert(second.id.clone(), second);
-                // And one of another task, which is not this attempt's wait.
-                let mut other = data.gates[&first].clone();
-                other.id = "gate_other".into();
-                other.task_id = Some("task_other".into());
-                other.created_at = peer.created_at;
-                other.closed_at = Some(peer.created_at + 90_000);
-                data.gates.insert(other.id.clone(), other);
-                Ok(())
-            })
-            .unwrap();
-        assert!(pass(&store, &peer, 99_999).is_empty());
-        assert_eq!(
-            pass(&store, &peer, 100_000),
-            vec![peer.worker_chat_key.clone()]
-        );
-    }
-
-    #[test]
-    fn a_cancelled_gate_is_a_wait_up_to_the_moment_it_was_cancelled() {
-        let store = OrchestrationStore::default();
-        let (made, peer) = timed(&store, 1);
-        let gate = waited(&store, &made, &peer, 10_000, Some(40_000));
-        store
-            .mutate(|data| {
-                let gate = data.gates.get_mut(&gate).unwrap();
-                gate.status = GateStatus::Cancelled;
-                gate.resolution = None;
-                Ok(())
-            })
-            .unwrap();
-        assert!(pass(&store, &peer, 89_999).is_empty());
-        // A gate closed before `closed_at` was recorded is read by the one
-        // stamp it has.
-        store
-            .mutate(|data| {
-                let gate = data.gates.get_mut(&gate).unwrap();
-                gate.closed_at = None;
-                gate.updated_at = peer.created_at + 30_000;
-                Ok(())
-            })
-            .unwrap();
-        assert!(pass(&store, &peer, 79_999).is_empty());
-        assert_eq!(
-            pass(&store, &peer, 80_000),
-            vec![peer.worker_chat_key.clone()]
-        );
-
-        // The host cancels a task's open gate when its attempt fails. What
-        // that attempt had used is its work up to the gate, and the gate is
-        // stamped closed at the failure.
-        let store = OrchestrationStore::default();
-        let (made, peer) = timed(&store, 1);
-        let gate = waited(&store, &made, &peer, 30_000, None);
-        let failed_at = peer.created_at + 300_000;
+    /// End an attempt for a reason of its own, `at` (an absolute time).
+    fn fails(store: &OrchestrationStore, id: &str, at: i64, kind: &str, retryable: bool) {
         store
             .mutate(|data| {
                 let error = execution::ExecutionError {
-                    kind: "provider".into(),
+                    kind: kind.into(),
                     message: "The provider refused the request.".into(),
-                    at: failed_at,
-                    retryable: false,
+                    at,
+                    retryable,
                 };
-                assert!(execution::fail(data, &peer.id, error, failed_at));
-                let gate = &data.gates[&gate];
-                assert_eq!(gate.status, GateStatus::Cancelled);
-                assert_eq!(gate.closed_at, Some(failed_at));
-                assert_eq!(
-                    used_ms(data, &data.attempts[&peer.id], failed_at + 60_000),
-                    30_000
-                );
+                assert!(execution::fail(data, id, error, at));
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn an_attempt_that_outruns_its_request_is_ended_as_failed() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = worker_ada(&store, &run);
+        let made = from_worker(
+            &store,
+            &worker,
+            PeerWork {
+                max_minutes: Some(10),
+                ..work("bo")
+            },
+        )
+        .unwrap();
+        let peer = approved_and_started(&store, &made.task_id);
+        let watch = Watch::over(&store, &peer);
+        let limit = 10 * 60_000;
+        // Inside its time nothing happens, and an ordinary task has no limit.
+        assert!(watch.look(limit - 1).is_empty());
+        assert_eq!(watch.look(limit), vec![peer.worker_chat_key.clone()]);
+        let attempt = attempt_of(&store, &peer.id);
+        assert_eq!(attempt.status, AttemptStatus::Failed);
+        assert!(attempt
+            .summary
+            .as_deref()
+            .unwrap()
+            .starts_with("peer request time limit: the limit was reached. The attempt used the 10 minutes of working time its request allowed"));
+        assert!(attempt.execution.next_retry_at.is_none(), "never retried");
+        // Left for the scheduler's pass to stop, like any failed attempt.
+        assert!(attempt.execution.latest_error.is_some());
+        let task = task_of(&store, &made.task_id);
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert!(task.result.unwrap().starts_with(TIME_LIMIT_REASON));
+        assert_eq!(
+            task_of(&store, &worker.task_id).status,
+            TaskStatus::Running,
+            "the requester's own attempt is not the one that overran"
+        );
+        // Both the coordinator and the worker that asked are told.
+        let told = notices(&store, "chat:master", "time_limit");
+        assert_eq!(told.len(), 1);
+        assert!(told[0].body.contains(TIME_LIMIT_REASON));
+        let taken = store
+            .take_for_working_worker(&worker.worker_chat_key)
+            .unwrap();
+        assert_eq!(taken.len(), 1);
+        assert!(taken[0]
+            .body
+            .contains("ended as failed. peer request time limit"));
+        // Ending it once is the end of it.
+        assert!(store
+            .expire_peer_requests_with(&|| peer.created_at + 2 * limit, &|_| Look::default())
+            .unwrap()
+            .is_empty());
+    }
+
+    /// The first review's case (feedback 5baf9cb1): one minute allowed, and
+    /// a decision asked for and answered every 59 seconds. Each answer used
+    /// to start the minute again, so fifteen rounds were 885 seconds of work
+    /// with the attempt still not due.
+    #[test]
+    fn a_decision_every_59_seconds_does_not_give_the_minute_back() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        assert!(watch.look(59_000).is_empty());
+        let gate = watch.asks(&made, true);
+        watch.answered(&gate);
+        assert!(watch.look(59_999).is_empty());
+        assert_eq!(watch.look(60_000), vec![peer.worker_chat_key.clone()]);
+
+        // All fifteen rounds with no look between them, as the review's
+        // probe ran them: 885 seconds of work, and the first look ends it.
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        for _ in 1..=15 {
+            let gate = watch.asks(&made, true);
+            watch.answered(&gate);
+        }
+        assert_eq!(watch.used(885_001), 885_001);
+        assert_eq!(watch.look(885_001), vec![peer.worker_chat_key.clone()]);
+    }
+
+    /// Review H3: opening a gate stopped the clock and nothing else. The
+    /// agent that opened it could go on calling tools, with the limit read
+    /// as 59 seconds used a day later. A gate under a running turn is
+    /// working time, and the limit ends the attempt.
+    #[test]
+    fn a_gate_opened_under_a_running_turn_is_working_time_and_the_limit_ends_it() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        assert!(watch.look(58_000).is_empty());
+        // 59 seconds in it asks, and its turn goes on.
+        let gate = watch.asks(&made, true);
+        assert_eq!(attempt_of(&store, &peer.id).status, AttemptStatus::Blocked);
+        assert!(watch.look(59_000).is_empty());
+        assert!(watch.waits().is_empty(), "nothing was seen waiting");
+        assert_eq!(watch.look(60_000), vec![peer.worker_chat_key.clone()]);
+        let ended = attempt_of(&store, &peer.id);
+        assert_eq!(ended.status, AttemptStatus::Failed);
+        let summary = ended.summary.unwrap();
+        assert!(
+            summary.starts_with("peer request time limit: the limit was reached."),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("A gate of its task was open, but its turn was still running, and that is working time."),
+            "{summary}"
+        );
+        assert!(!summary.contains("held it"), "{summary}");
+        // The gate went with the attempt, like any failed attempt's.
+        let gates = store.snapshot(None).unwrap().gates;
+        let gate = gates.iter().find(|g| g.id == gate).unwrap();
+        assert_eq!(gate.status, GateStatus::Cancelled);
+
+        // The review's reading, a day on with the gate left open and no
+        // look taken: the gate alone takes nothing off.
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        watch.asks(&made, true);
+        assert_eq!(watch.used(86_400_000), 86_400_000);
+        // And with a look every two seconds for ten minutes of it.
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 120);
+        let watch = Watch::over(&store, &peer);
+        watch.asks(&made, true);
+        assert!(watch.looks(2_000, 600_000).is_empty());
+        assert!(watch.waits().is_empty());
+        assert_eq!(watch.used(600_000), 600_000);
+    }
+
+    /// The scheduler's own look, with nothing stood in: whether the chat has
+    /// a turn in flight is read off the chat (`ChatManager::turn_in_flight`),
+    /// and a gate under a running turn is not seen as a wait.
+    #[test]
+    fn the_schedulers_look_reads_the_turn_off_the_chat_itself() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 120);
+        let chats = ChatManager::default();
+        chats.test_launch(&peer.worker_chat_key);
+        let waits = || {
+            attempt_of(&store, &peer.id)
+                .peer_clock
+                .map(|clock| clock.waits)
+                .unwrap_or_default()
+        };
+        let looks = |times: usize| {
+            for _ in 0..times {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+                assert!(store.expire_peer_requests(&chats).unwrap().is_empty());
+            }
+        };
+        // In a turn, with a gate open: working.
+        chats.test_busy(&peer.worker_chat_key, true);
+        store
+            .create_gate(
+                &peer.worker_chat_key,
+                made.run_id.clone(),
+                None,
+                "Which volume?".into(),
+                vec![],
+            )
+            .unwrap();
+        looks(3);
+        assert!(waits().is_empty(), "{:?}", waits());
+        // The turn ends: the looks from here on see the wait.
+        chats.test_busy(&peer.worker_chat_key, false);
+        looks(3);
+        let seen = waits();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(seen[0].from < seen[0].to, "{seen:?}");
+        // A turn again: the wait keeps the end it was last seen at.
+        chats.test_busy(&peer.worker_chat_key, true);
+        looks(2);
+        assert_eq!(waits(), seen);
+        // A chat with no process has no turn either.
+        chats.test_end(&peer.worker_chat_key);
+        looks(3);
+        assert_eq!(waits().len(), 2, "{:?}", waits());
+    }
+
+    /// A gate is free from the first look that saw the turn over, not from
+    /// the moment it was opened, and up to the last look that saw it open.
+    #[test]
+    fn a_gate_is_free_only_from_the_look_that_saw_the_turn_over() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        // Forty seconds of work, then it asks; its turn runs six more.
+        assert!(watch.looks(2_000, 38_000).is_empty());
+        let gate = watch.asks(&made, true);
+        assert!(watch.looks(40_000, 44_000).is_empty());
+        assert!(watch.waits().is_empty());
+        watch.turn.set(false);
+        assert!(watch.looks(46_000, 600_000).is_empty());
+        assert_eq!(attempt_of(&store, &peer.id).status, AttemptStatus::Blocked);
+        // The person answers ten minutes in, and the next look sees it work.
+        watch.answered(&gate);
+        assert!(watch.look(602_000).is_empty());
+        assert_eq!(watch.waits(), vec![(46_000, 600_000)]);
+        // 46 seconds before the wait and 2 after it: twelve are left.
+        assert_eq!(watch.used(602_000), 48_000);
+        assert!(watch.look(613_999).is_empty());
+        assert_eq!(watch.look(614_000), vec![peer.worker_chat_key.clone()]);
+        assert!(!attempt_of(&store, &peer.id)
+            .summary
+            .unwrap()
+            .contains("held it"));
+    }
+
+    /// Review M6: a wait seen by one look is not a wait from the look before
+    /// it, nor to the look after it. A card that is up for two milliseconds
+    /// across a look, thirty times over, used to take a minute off.
+    #[test]
+    fn a_wait_is_counted_only_between_two_looks_that_both_saw_it() {
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 2);
+        let watch = Watch::over(&store, &peer);
+        // Every other look for two minutes sees a card; none sees it twice.
+        for at in (2_000..120_000).step_by(2_000) {
+            watch.card.set(at % 4_000 == 0);
+            assert!(watch.look(at).is_empty(), "{at}");
+        }
+        assert!(watch.waits().is_empty(), "{:?}", watch.waits());
+        assert_eq!(watch.used(120_000), 120_000);
+        watch.card.set(false);
+        assert_eq!(watch.look(120_000), vec![peer.worker_chat_key.clone()]);
+
+        // Seen by two looks in a row, it is the time between those two and
+        // no more, however long before and after it was really up.
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 2);
+        let watch = Watch::over(&store, &peer);
+        assert!(watch.looks(2_000, 8_000).is_empty());
+        watch.card.set(true);
+        assert!(watch.looks(10_000, 12_000).is_empty());
+        watch.card.set(false);
+        assert!(watch.look(14_000).is_empty());
+        assert_eq!(watch.waits(), vec![(10_000, 12_000)]);
+        assert_eq!(watch.used(14_000), 12_000);
+
+        // The clock is read on both sides of a look. A wait opens at the
+        // later reading and is extended to the earlier one, so it lies
+        // inside the two sightings.
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 2);
+        let watch = Watch::over(&store, &peer);
+        watch.card.set(true);
+        assert!(watch.look_between(10_000, 10_500).is_empty());
+        assert!(watch.look_between(12_000, 12_700).is_empty());
+        watch.card.set(false);
+        assert!(watch.look_between(14_000, 14_100).is_empty());
+        assert_eq!(watch.waits(), vec![(10_500, 12_000)]);
+    }
+
+    /// A line of the agent's own stream between two looks that both saw the
+    /// wait means something ran between them: that stretch is charged.
+    #[test]
+    fn stream_activity_between_two_looks_breaks_the_wait() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 2);
+        let watch = Watch::over(&store, &peer);
+        watch.asks(&made, false);
+        assert!(watch.looks(10_000, 12_000).is_empty());
+        store
+            .mutate(|data| {
+                data.attempts
+                    .get_mut(&peer.id)
+                    .unwrap()
+                    .execution
+                    .last_activity_at = Some(peer.created_at + 13_000);
+                Ok(())
+            })
+            .unwrap();
+        assert!(watch.looks(14_000, 16_000).is_empty());
+        assert_eq!(watch.waits(), vec![(10_000, 12_000), (14_000, 16_000)]);
+        assert_eq!(watch.used(16_000), 12_000);
+    }
+
+    /// A gate and a card at once are one wait, counted once.
+    #[test]
+    fn a_gate_and_a_card_that_overlap_are_one_wait() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        // A gate from 10s with the turn over, a card from 20s to 30s, the
+        // gate answered at 40s: thirty seconds waited, not forty.
+        let gate = watch.asks(&made, false);
+        assert!(watch.looks(10_000, 18_000).is_empty());
+        watch.card.set(true);
+        assert!(watch.looks(20_000, 30_000).is_empty());
+        watch.card.set(false);
+        assert!(watch.looks(32_000, 40_000).is_empty());
+        watch.answered(&gate);
+        assert!(watch.look(42_000).is_empty());
+        assert_eq!(watch.waits(), vec![(10_000, 40_000)]);
+        assert_eq!(watch.used(42_000), 12_000);
+        // A card under a running turn is still the person's to answer.
+        watch.card.set(true);
+        assert!(watch.looks(44_000, 344_000).is_empty());
+        watch.card.set(false);
+        assert!(watch.look(346_000).is_empty());
+        assert_eq!(watch.waits(), vec![(10_000, 40_000), (44_000, 344_000)]);
+        // 12 seconds used before that card, 4 around it: 44 are left.
+        assert_eq!(watch.used(346_000), 16_000);
+        assert!(watch.look(389_999).is_empty());
+        assert_eq!(watch.look(390_000), vec![peer.worker_chat_key.clone()]);
+    }
+
+    /// A card only the person can answer: the attempt waits on it, and is
+    /// never ended while a look sees it up.
+    #[test]
+    fn an_attempt_seen_on_a_card_is_not_working_and_is_not_ended_under_it() {
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        assert!(watch.look(30_000).is_empty());
+        assert!(watch.waits().is_empty());
+        // Fifty seconds in, a card goes up. It stays up for ten minutes.
+        watch.card.set(true);
+        assert!(watch.look(50_000).is_empty());
+        assert_eq!(watch.waits(), vec![(50_000, 50_000)]);
+        assert!(watch.look(650_000).is_empty());
+        assert_eq!(attempt_of(&store, &peer.id).status, AttemptStatus::Running);
+        // Answered: the first look to see it gone is two seconds of work.
+        watch.card.set(false);
+        assert!(watch.look(652_000).is_empty());
+        assert_eq!(watch.waits(), vec![(50_000, 650_000)]);
+        assert!(watch.look(659_999).is_empty());
+        assert_eq!(watch.look(660_000), vec![peer.worker_chat_key.clone()]);
+        assert!(!attempt_of(&store, &peer.id)
+            .summary
+            .unwrap()
+            .contains("held it"));
+
+        // Out of time by the look that first sees its card: it is not ended
+        // under the person. It ends when the card is answered, and says so.
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        watch.card.set(true);
+        assert!(watch.look(61_000).is_empty());
+        assert!(watch.look(600_000).is_empty());
+        assert_eq!(attempt_of(&store, &peer.id).status, AttemptStatus::Running);
+        watch.card.set(false);
+        assert_eq!(watch.look(602_000), vec![peer.worker_chat_key.clone()]);
+        let summary = attempt_of(&store, &peer.id).summary.unwrap();
+        assert!(
+            summary.starts_with("peer request time limit: the limit was reached."),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("It had reached the limit before the decision it was waiting on came back, so the host held it until that wait was over."),
+            "{summary}"
+        );
+    }
+
+    /// The same for a gate: an attempt past its limit when it is seen
+    /// waiting is held while the decision is open and ended when it is back.
+    #[test]
+    fn an_attempt_out_of_time_on_an_open_gate_is_ended_when_the_gate_closes() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        let gate = watch.asks(&made, false);
+        assert!(watch.look(61_000).is_empty());
+        assert!(watch.look(3_600_000).is_empty());
+        watch.answered(&gate);
+        assert_eq!(watch.look(3_600_001), vec![peer.worker_chat_key.clone()]);
+        assert!(attempt_of(&store, &peer.id)
+            .summary
+            .unwrap()
+            .contains("held it until that wait was over"));
+    }
+
+    /// Review M5: what was used never goes down. A wall clock that steps
+    /// back leaves it where it was, in the ledger and in what the next
+    /// attempt carries.
+    #[test]
+    fn used_time_does_not_go_down_when_the_clock_steps_back() {
+        let file = TestPath::new("peer-request", "orchestrations.json");
+        let store = OrchestrationStore::load(file.to_path_buf());
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        for (now, counted) in [(50_000, 50_000), (30_000, 30_000), (-10_000, 0)] {
+            assert!(watch.look(now).is_empty());
+            let inner = store.inner.lock().unwrap();
+            let attempt = &inner.data.attempts[&peer.id];
+            assert_eq!(counted_ms(attempt, peer.created_at + now), counted);
+            assert_eq!(used_ms(attempt, peer.created_at + now), 50_000, "{now}");
+            assert_eq!(attempt.peer_clock.as_ref().unwrap().used_ms, 50_000);
+        }
+        // The ten seconds it had left are still all it has.
+        assert!(watch.look(-9_000).is_empty());
+        drop(store);
+
+        // The step back was written when it was seen, so a restart, which
+        // ends the attempt at a moment of its own, starts from it too.
+        let store = OrchestrationStore::load(file.to_path_buf());
+        let interrupted = attempt_of(&store, &peer.id);
+        assert_eq!(interrupted.status, AttemptStatus::Failed);
+        assert_eq!(interrupted.peer_clock.as_ref().unwrap().used_ms, 50_000);
+        let ended = interrupted.finished_at.unwrap();
+        assert!(
+            ended - peer.created_at < 50_000,
+            "the test ran in under 50s"
+        );
+        assert_eq!(used(&store, &peer.id, ended), 50_000);
+        let task = task_of(&store, &made.task_id);
+        let (_, _, next, _) = store
+            .reserve_attempt(LEAD_CHAT, &host_launch(&store, &task))
+            .unwrap();
+        let carried = next.peer_clock.as_ref().unwrap();
+        assert_eq!((carried.carried_ms, carried.used_ms), (50_000, 50_000));
+        let next = store
+            .activate_attempt(&next.id, "/tmp".into(), "peer".into(), true)
+            .unwrap();
+        let watch = Watch::over(&store, &next);
+        assert!(watch.look(9_999).is_empty());
+        assert_eq!(watch.look(10_000), vec![next.worker_chat_key.clone()]);
+    }
+
+    /// An attempt that fails for its own reason while it waits has used its
+    /// work up to the wait, as last seen.
+    #[test]
+    fn an_attempt_that_fails_while_it_waits_keeps_what_it_had_used() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        let gate = watch.asks(&made, false);
+        assert!(watch.look(30_000).is_empty());
+        assert!(watch.look(300_000).is_empty());
+        let failed_at = peer.created_at + 300_000;
+        fails(&store, &peer.id, failed_at, "provider", false);
+        // The host cancels a failed attempt's open gate.
+        let gates = store.snapshot(None).unwrap().gates;
+        let gate = gates.iter().find(|g| g.id == gate).unwrap();
+        assert_eq!(gate.status, GateStatus::Cancelled);
+        assert_eq!(gate.closed_at, Some(failed_at));
+        assert_eq!(watch.used(360_000), 30_000);
     }
 
     /// The limit belongs to the request, not to one attempt of it. Whoever
@@ -1995,22 +2404,14 @@ pub(crate) mod tests {
         let store = OrchestrationStore::default();
         let (made, peer) = timed(&store, 1);
         let task = task_of(&store, &made.task_id);
-        let fail_at = |id: &str, at: i64| {
-            store
-                .mutate(|data| {
-                    let error = execution::ExecutionError {
-                        kind: "provider".into(),
-                        message: "The provider refused the request.".into(),
-                        at,
-                        retryable: false,
-                    };
-                    assert!(execution::fail(data, id, error, at));
-                    Ok(())
-                })
-                .unwrap();
-        };
         // Forty seconds of work, and the attempt fails for its own reason.
-        fail_at(&peer.id, peer.created_at + 40_000);
+        fails(
+            &store,
+            &peer.id,
+            peer.created_at + 40_000,
+            "provider",
+            false,
+        );
 
         // The coordinator starts it again (a lead chat coordinates its own
         // request, so this is the requester's own doing): twenty seconds are
@@ -2030,11 +2431,9 @@ pub(crate) mod tests {
             brief.contains("Earlier attempts already used about 1 of them."),
             "{brief}"
         );
-        assert!(pass(&store, &second, 19_999).is_empty());
-        assert_eq!(
-            pass(&store, &second, 20_000),
-            vec![second.worker_chat_key.clone()]
-        );
+        let watch = Watch::over(&store, &second);
+        assert!(watch.look(19_999).is_empty());
+        assert_eq!(watch.look(20_000), vec![second.worker_chat_key.clone()]);
 
         // Nothing is left, and no agent can add any: the coordinator's start
         // is refused before an attempt exists.
@@ -2071,11 +2470,9 @@ pub(crate) mod tests {
         let third = store
             .activate_attempt(&third.id, "/tmp".into(), "peer".into(), true)
             .unwrap();
-        assert!(pass(&store, &third, 59_999).is_empty());
-        assert_eq!(
-            pass(&store, &third, 60_000),
-            vec![third.worker_chat_key.clone()]
-        );
+        let watch = Watch::over(&store, &third);
+        assert!(watch.look(59_999).is_empty());
+        assert_eq!(watch.look(60_000), vec![third.worker_chat_key.clone()]);
     }
 
     /// The host's own recovery after a provider failure is a new attempt of
@@ -2085,16 +2482,9 @@ pub(crate) mod tests {
         let store = OrchestrationStore::default();
         let (made, peer) = timed(&store, 1);
         let task = task_of(&store, &made.task_id);
-        let failed_at = peer.created_at + 45_000;
+        fails(&store, &peer.id, peer.created_at + 45_000, "capacity", true);
         store
             .mutate(|data| {
-                let error = execution::ExecutionError {
-                    kind: "capacity".into(),
-                    message: "Selected model is at capacity".into(),
-                    at: failed_at,
-                    retryable: true,
-                };
-                assert!(execution::fail(data, &peer.id, error, failed_at));
                 // Due now, whatever the backoff.
                 data.attempts
                     .get_mut(&peer.id)
@@ -2113,11 +2503,23 @@ pub(crate) mod tests {
             .unwrap();
         // The backoff between the two is nobody's working time.
         assert_eq!(next.peer_clock.as_ref().unwrap().carried_ms, 45_000);
-        assert!(pass(&store, &next, 14_999).is_empty());
-        assert_eq!(
-            pass(&store, &next, 15_000),
-            vec![next.worker_chat_key.clone()]
-        );
+        let watch = Watch::over(&store, &next);
+        assert!(watch.look(14_999).is_empty());
+        assert_eq!(watch.look(15_000), vec![next.worker_chat_key.clone()]);
+    }
+
+    /// Put an attempt's start `ago` ms into the past, so that what its looks
+    /// stamp is behind the real clock a restart reads. Its stream is taken
+    /// to have been quiet since then.
+    fn started_ago(store: &OrchestrationStore, peer: &Attempt, ago: i64) -> Attempt {
+        store
+            .mutate(|data| {
+                let attempt = data.attempts.get_mut(&peer.id).unwrap();
+                attempt.created_at -= ago;
+                attempt.execution.last_activity_at = Some(attempt.created_at);
+                Ok(attempt.clone())
+            })
+            .unwrap()
     }
 
     /// A restart ends every live attempt, and the ledger is all that is left.
@@ -2127,25 +2529,24 @@ pub(crate) mod tests {
         let file = TestPath::new("peer-request", "orchestrations.json");
         let store = OrchestrationStore::load(file.to_path_buf());
         let (made, peer) = timed(&store, 1);
-        // Forty seconds ago it started; ten of them on a gate, five on a card.
-        let started = peer.created_at - 40_000;
-        let gate = waited(&store, &made, &peer, 0, Some(0));
+        // Forty seconds ago it started; fifteen of them it was seen waiting.
+        let peer = started_ago(&store, &peer, 40_000);
+        let started = peer.created_at;
         store
             .mutate(|data| {
-                let attempt = data.attempts.get_mut(&peer.id).unwrap();
-                attempt.created_at = started;
-                attempt.peer_clock = Some(PeerClock {
-                    carried_ms: 0,
-                    card_waits: vec![CardWait {
-                        from: started + 25_000,
-                        to: Some(started + 30_000),
-                    }],
+                data.attempts.get_mut(&peer.id).unwrap().peer_clock = Some(PeerClock {
+                    waits: vec![
+                        Wait {
+                            from: started + 10_000,
+                            to: started + 20_000,
+                        },
+                        Wait {
+                            from: started + 25_000,
+                            to: started + 30_000,
+                        },
+                    ],
+                    ..PeerClock::default()
                 });
-                let gate = data.gates.get_mut(&gate).unwrap();
-                gate.created_at = started + 10_000;
-                gate.closed_at = Some(started + 20_000);
-                // Not the clock's stamp, and it moves on its own.
-                gate.updated_at = started;
                 Ok(())
             })
             .unwrap();
@@ -2170,109 +2571,60 @@ pub(crate) mod tests {
             .activate_attempt(&next.id, "/tmp".into(), "peer".into(), true)
             .unwrap();
         let left = 60_000 - used;
-        assert!(pass(&store, &next, left - 1).is_empty());
-        assert_eq!(
-            pass(&store, &next, left),
-            vec![next.worker_chat_key.clone()]
-        );
+        let watch = Watch::over(&store, &next);
+        assert!(watch.look(left - 1).is_empty());
+        assert_eq!(watch.look(left), vec![next.worker_chat_key.clone()]);
     }
 
-    /// A card only the person can answer: the attempt is parked on it, not
-    /// working, and is never ended while it is up.
+    /// A restart in the middle of a wait. The looks keep a wait's end in
+    /// memory and write it every `SAVE_EVERY_LOOKS`, so what the ledger has
+    /// is the wait up to the last write: the rest of it, and the time the
+    /// host was down, is charged.
     #[test]
-    fn an_attempt_parked_on_a_card_is_not_working_and_is_not_ended_under_it() {
-        use std::cell::Cell;
-        let store = OrchestrationStore::default();
-        let (_, peer) = timed(&store, 1);
-        let card = Cell::new(false);
-        let pass = |at: i64| {
-            store
-                .expire_peer_requests_with(peer.created_at + at, &|chat| {
-                    chat == peer.worker_chat_key && card.get()
-                })
-                .unwrap()
+    fn a_restart_in_the_middle_of_a_wait_counts_it_up_to_the_last_write() {
+        let file = TestPath::new("peer-request", "orchestrations.json");
+        let store = OrchestrationStore::load(file.to_path_buf());
+        let (_, peer) = timed(&store, 10);
+        let peer = started_ago(&store, &peer, 100_000);
+        let watch = Watch::over(&store, &peer);
+        let on_disk = || {
+            let ledger: serde_json::Value =
+                serde_json::from_slice(&fs::read(file.to_path_buf()).unwrap()).unwrap();
+            ledger["attempts"][&peer.id]["peerClock"].clone()
         };
-        let waits = || {
-            attempt_of(&store, &peer.id)
-                .peer_clock
-                .map(|clock| clock.card_waits)
-                .unwrap_or_default()
-        };
-        assert!(pass(30_000).is_empty());
-        assert!(waits().is_empty(), "an ordinary pass writes nothing");
-        // Fifty seconds in, a card goes up. It stays up for ten minutes.
-        card.set(true);
-        assert!(pass(50_000).is_empty());
+        // Nine looks at a working attempt write nothing.
+        let before = fs::read(file.to_path_buf()).unwrap();
+        assert!(watch.looks(2_000, 18_000).is_empty());
+        assert_eq!(fs::read(file.to_path_buf()).unwrap(), before);
+        // A card goes up at the tenth look and stays. The fifteenth and the
+        // thirtieth looks write the clock; the thirty-fifth is the last.
+        watch.card.set(true);
+        assert!(watch.looks(20_000, 28_000).is_empty());
+        assert_eq!(fs::read(file.to_path_buf()).unwrap(), before);
+        assert!(watch.looks(30_000, 70_000).is_empty());
+        assert_eq!(watch.waits(), vec![(20_000, 70_000)], "in memory");
+        let saved = on_disk();
+        let zero = peer.created_at;
         assert_eq!(
-            waits(),
-            vec![CardWait {
-                from: peer.created_at + 50_000,
-                to: None
-            }]
+            saved["waits"],
+            json!([{ "from": zero + 20_000, "to": zero + 60_000 }]),
+            "{saved}"
         );
-        assert!(pass(650_000).is_empty());
-        assert_eq!(attempt_of(&store, &peer.id).status, AttemptStatus::Running);
-        // Answered: ten seconds were left, and ten are left.
-        card.set(false);
-        assert!(pass(650_000).is_empty());
-        assert_eq!(waits()[0].to, Some(peer.created_at + 650_000));
-        assert!(pass(659_999).is_empty());
-        assert_eq!(pass(660_000), vec![peer.worker_chat_key.clone()]);
-        assert!(!attempt_of(&store, &peer.id)
-            .summary
-            .unwrap()
-            .contains("held it"));
+        assert_eq!(saved["usedMs"], 20_000, "{saved}");
+        // Nothing the looks keep only in memory is written.
+        assert_eq!(saved.as_object().unwrap().len(), 3, "{saved}");
+        drop(store);
 
-        // Out of time by the pass that first sees its card: it is not ended
-        // under the person. It ends when the card is answered, and says so.
-        let store = OrchestrationStore::default();
-        let (_, peer) = timed(&store, 1);
-        let card = Cell::new(true);
-        let pass = |at: i64| {
-            store
-                .expire_peer_requests_with(peer.created_at + at, &|_| card.get())
-                .unwrap()
-        };
-        assert!(pass(61_000).is_empty());
-        assert!(pass(600_000).is_empty());
-        assert_eq!(attempt_of(&store, &peer.id).status, AttemptStatus::Running);
-        card.set(false);
-        assert_eq!(pass(602_000), vec![peer.worker_chat_key.clone()]);
-        let summary = attempt_of(&store, &peer.id).summary.unwrap();
-        assert!(
-            summary.starts_with("peer request time limit: the limit was reached."),
-            "{summary}"
-        );
-        assert!(
-            summary.contains("It had reached the limit before the decision it was waiting on came back, so the host held it until that wait was over."),
-            "{summary}"
-        );
-    }
-
-    /// The same for a gate: an attempt past its limit when it asks is held
-    /// while the decision is open and ended when it comes back.
-    #[test]
-    fn an_attempt_out_of_time_on_an_open_gate_is_ended_when_the_gate_closes() {
-        let store = OrchestrationStore::default();
-        let (made, peer) = timed(&store, 1);
-        let gate = waited(&store, &made, &peer, 60_500, None);
-        assert!(pass(&store, &peer, 61_000).is_empty());
-        assert!(pass(&store, &peer, 3_600_000).is_empty());
-        person_answers(&store, &gate, "volume1");
-        store
-            .mutate(|data| {
-                data.gates.get_mut(&gate).unwrap().closed_at = Some(peer.created_at + 3_600_000);
-                Ok(())
-            })
-            .unwrap();
+        let store = OrchestrationStore::load(file.to_path_buf());
+        let interrupted = attempt_of(&store, &peer.id);
+        assert_eq!(interrupted.status, AttemptStatus::Failed);
+        let ended = interrupted.finished_at.unwrap();
+        assert!(ended - zero >= 100_000);
         assert_eq!(
-            pass(&store, &peer, 3_600_001),
-            vec![peer.worker_chat_key.clone()]
+            used(&store, &peer.id, ended),
+            ended - zero - 40_000,
+            "forty seconds of the wait, and no more"
         );
-        assert!(attempt_of(&store, &peer.id)
-            .summary
-            .unwrap()
-            .contains("held it until that wait was over"));
     }
 
     /// How the limit is worded wherever an agent or the person reads it.
