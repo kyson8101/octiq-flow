@@ -372,7 +372,7 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
 }
 
 .run-row-who > span {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -384,10 +384,14 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
   white-space: pre;
 }
 
-/* What it waits for gives way first; the name gives way last. */
-.run-row-who > .run-row-after { flex-shrink: 8; }
+/* What it waits for gives way, alone: sharing the squeeze, however unevenly,
+   takes a fraction of a pixel off the name and costs it a whole word. With
+   nothing to wait for, the name is what gives. The model and effort are
+   short and stay whole. */
+.run-row-who > .run-row-after { flex: 0 1 auto; }
 .run-row-who > .run-row-name,
-.run-row-who > .orch-task-owner { flex-shrink: 1; color: inherit; }
+.run-row-who > .orch-task-owner { flex: 0 1 auto; color: inherit; }
+.run-row-who:has(> .run-row-after) > :is(.run-row-name, .orch-task-owner) { flex-shrink: 0; }
 
 .run-row-who > .run-row-pill {
   flex: 0 0 auto;
@@ -423,8 +427,12 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
 .run-row-figures {
   flex: 0 0 auto;
   color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+.run-row-who > .run-row-figures { margin-left: auto; padding-left: 8px; }
+.run-row-who > .run-row-figures::before { content: none; }
 
 .run-row .orch-task-track.run-row-bar {
   grid-column: 2 / -1;

@@ -281,7 +281,9 @@ describe("OrchestrationPanel", () => {
     current.gates = [];
     const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(html).toContain("1/1 tasks · Completed");
+    // The count is the tile's; the line says the state.
+    expect(html).toContain("<span>Completed</span>");
+    expect(html).toContain("<dt>Tasks</dt><dd>1 / 1</dd>");
     expect(html).toContain("Acceptance: unverified");
   });
 
@@ -439,8 +441,13 @@ describe("OrchestrationPanel", () => {
         initialSnapshot={settled} onOpenChat={() => {}} onClose={() => {}} />,
     );
 
-    // One line, and no percentage: done of total is what the ledger knows.
-    expect(html).toContain("<span>1/1 tasks · Completed</span>");
+    // One line and the tiles, and no percentage: done of total is what the
+    // ledger knows, and it is said once.
+    expect(html).toContain("<span>Completed</span>");
+    expect(html).toContain("<dt>Tasks</dt><dd>1 / 1</dd>");
+    expect(html).not.toContain("1/1 tasks ·");
+    // No tile for a figure the host did not send.
+    expect(html).not.toContain("<dt>Tokens</dt>");
     expect(html).not.toMatch(/(>\s*\d+|<\/span>)\s*%/);
     expect(html).not.toContain('role="progressbar"');
     // Nothing is owed, so no attention count — rather than five reading zero.
@@ -729,8 +736,9 @@ describe("compact run panel", () => {
     expect(html).not.toContain("Stop run");
     expect(html).not.toContain("Pause automatic dispatch");
     expect(html).not.toContain("task-meter");
-    // The header carries count and state once.
-    expect(html.match(/0\/1 tasks/g)).toHaveLength(1);
+    // The count is carried once, by its tile.
+    expect(html.match(/<dd>0 \/ 1<\/dd>/g)).toHaveLength(1);
+    expect(html).not.toContain("0/1 tasks ·");
   });
 
   it("hides archived runs behind Archived, where each can be restored", () => {

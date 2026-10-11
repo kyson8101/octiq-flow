@@ -544,7 +544,9 @@ export function OrchestrationPanel({
                         <StatusMark status={run.status} />
                         <span className="orch-run-accordion-copy">
                           <strong>{run.objective}</strong>
-                          <RunLine snapshot={snapshot} run={run} tasks={runTasks} attempts={runAttempts} />
+                          {/* Open, its tiles are right under this line. */}
+                          <RunLine snapshot={snapshot} run={run} tasks={runTasks} attempts={runAttempts}
+                            tiled={expanded && runTasks.length > 0 && !planPending} />
                           <RunPeople run={run} tasks={runTasks} attempts={runAttempts} gates={snapshot.gates} />
                         </span>
                       </button>
@@ -807,6 +809,8 @@ function RunDetail({
   // those cards says so, in the group that asks.
   const pendingView = usePendingActions();
   const progress = runProgress(snapshot, run, now, new Map(tasks.map((task) => [task.id, pendingView.forTask(task.id)])));
+  // A plan still waiting has nothing to total yet.
+  const tiled = tasks.length > 0 && !planPending;
   const awaitingReceipt = notifications.filter((item) => item.state === "pending" || item.state === "delivering").length;
 
   // Asked to show what is owed: focus on the first owed thing — a decision,
@@ -862,11 +866,14 @@ function RunDetail({
 
       {/* Without a goal header, the run's one line of state lives here. */}
       {!inAccordion && <div className="orch-summary">
-        <RunLine snapshot={snapshot} run={run} tasks={tasks} attempts={attempts} />
+        <RunLine snapshot={snapshot} run={run} tasks={tasks} attempts={attempts} tiled={tiled} />
         {archived
           ? !readOnly && <button type="button" className="orch-run-restore" disabled={busy} onClick={() => onArchive(false)}>Restore</button>
           : <AttentionButton attention={attention} planPending={planPending} onShow={onShowAttention} />}
       </div>}
+
+      {/* The run's totals, over everything else: whichever tab is open. */}
+      {tiled && <RunTiles tiles={progress.tiles} />}
 
       {mission && <MissionTrack state={missionState(run, tasks)}
         live={attempts.some((attempt) => attempt.status === "running" || attempt.status === "preparing")} />}
@@ -1025,7 +1032,6 @@ function RunDetail({
 
       <div className="orch-tab-panel" role="tabpanel" id={`${tabsId}-tasks-panel`} aria-labelledby={`${tabsId}-tasks`} hidden={tab !== "tasks"}>
         {!planPending && tasks.length > 0 && <RunStages tasks={tasks} attempts={attempts} sandboxes={sandboxes} />}
-        {tasks.length > 0 && !planPending && <RunTiles tiles={progress.tiles} />}
         {planPending && <p className="orch-task-none">The tasks start once the plan above is approved.</p>}
         {planPending && (!pendingRows || tasks.length === 0) ? null : tasks.length === 0 ? (
           <div className="orch-planning"><span className="orch-pulse" />The main agent is planning the tasks.</div>
@@ -1076,11 +1082,14 @@ function RunDetail({
  *  printed — four tiles reading 0 is how the old screen managed to fill a
  *  phone while saying nothing. Nothing here is a percentage: done of total is
  *  what the ledger knows. */
-function RunLine({ snapshot, run, tasks, attempts }: {
+function RunLine({ snapshot, run, tasks, attempts, tiled = false }: {
   snapshot: OrchestrationSnapshot;
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
   attempts: OrchestrationAttempt[];
+  /** The run's tiles are on screen under this line: they carry the task
+   *  count and the time, so the line does not say them a second time. */
+  tiled?: boolean;
 }) {
   const now = useElapsedTick(runIsLive(snapshot, run.id));
   const counts = boardCounts(tasks, snapshot);
@@ -1092,7 +1101,7 @@ function RunLine({ snapshot, run, tasks, attempts }: {
   const planned = checkCoverage(tasks).total > 0;
   const acceptance = acceptanceLine(runStages(tasks, attempts, null));
   const parts = [
-    `${counts.done}/${counts.total} tasks`,
+    tiled ? null : `${counts.done}/${counts.total} tasks`,
     run.archivedAt != null ? `${statusLabel(run.status)} · archived` : statusLabel(run.status),
     working > 0 ? `${working} of ${run.maxConcurrent} working` : null,
     counts.todo > 0 ? `${counts.todo} queued` : null,
@@ -1102,7 +1111,7 @@ function RunLine({ snapshot, run, tasks, attempts }: {
   return <small className="orch-run-line">
     <span>{parts.join(" · ")}</span>
     {/* In minutes: a figure that changes every few seconds is a clock. */}
-    {elapsed !== null && <span className="orch-run-elapsed" title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{minutesLabel(elapsed)}</span>}
+    {elapsed !== null && !tiled && <span className="orch-run-elapsed" title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{minutesLabel(elapsed)}</span>}
     {/* Every task done reads as "finished", which is exactly when it needs
         saying what, if anything, checked the outcome. */}
     {(settled || planned) && <span className="orch-progress-acceptance" data-tone={acceptance.tone} title={acceptance.note}>Acceptance: {acceptance.value.toLowerCase()}</span>}
@@ -1345,8 +1354,11 @@ function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, ga
             </span>}
             {row.verdict && <span className="run-row-pill" data-verdict={row.verdict}
               title={row.verdict === "pass" ? "What it checked passed." : "It finished, and what it checked did not pass. Tasks that depend on it wait."}>{row.verdict}</span>}
+            {/* With nothing to say under it, the figures end this line
+                rather than taking one of their own. */}
+            {!note && figures && <span className="run-row-figures">{figures}</span>}
           </span>
-          {(note || figures) && <span className="run-row-nums">
+          {note && <span className="run-row-nums">
             <span className="run-row-note" data-tone={row.tone ?? undefined}
               title={steps ? `${stateWord} · ${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}` : stateWord}>{note}</span>
             {figures && <span className="run-row-figures">{figures}</span>}
