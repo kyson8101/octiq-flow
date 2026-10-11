@@ -338,6 +338,7 @@ mod tests {
                                     resolution: None,
                                     created_at: 1,
                                     updated_at: 1,
+                                    closed_at: None,
                                 },
                             );
                         }

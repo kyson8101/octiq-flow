@@ -37,6 +37,7 @@ pub mod levels;
 pub mod lifecycle;
 pub mod mission;
 pub mod peer;
+pub mod peer_request;
 #[cfg(test)]
 mod reporting_tests;
 mod retention;
@@ -421,6 +422,11 @@ pub struct Task {
     /// so it stops counting as blocked (feedback 6b0870f9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+    /// Set on a task a teammate asked for (`peer_request.rs`): who asked,
+    /// the result they expect back and the time it may take. Fixed from
+    /// creation; it is what makes the task a peer request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_request: Option<peer_request::PeerRequest>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -643,6 +649,10 @@ pub struct Attempt {
     /// ended without a report (feedback e15fabde). See `ProposedReport`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_report: Option<ProposedReport>,
+    /// An attempt of a peer-request task: what its limit of working time
+    /// needs beyond the stamps already here (`peer_request::PeerClock`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_clock: Option<peer_request::PeerClock>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -719,6 +729,22 @@ pub struct Gate {
     pub resolution: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When it stopped being open: resolved or cancelled. Its own stamp,
+    /// written once by `close`, because `updated_at` is free to move for any
+    /// other reason. A gate closed before this was recorded has none. A peer
+    /// request's working time does not read it: a gate is a wait only while
+    /// the host sees nothing running under it (`peer_request::Wait`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<i64>,
+}
+
+impl Gate {
+    /// Settle an open gate, once.
+    fn close(&mut self, status: GateStatus, now: i64) {
+        self.status = status;
+        self.updated_at = now;
+        self.closed_at.get_or_insert(now);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -860,6 +886,20 @@ pub enum StartedBy<'a> {
     /// A page's Start retry, naming the attempt it showed. The page may hold
     /// a snapshot older than the task's latest handoff.
     Page { retry_of: Option<&'a str> },
+}
+
+/// Who answers a gate. As with [`StartedBy`], the two reach the host by
+/// different doors and no argument can claim the other: the coordinator only
+/// through `/hook/orchestration` (`gate_resolve` →
+/// `orchestration_gate_resolve_in_chat`, which the person's socket refuses),
+/// the person only through their socket (`orchestration_gate_resolve`, which
+/// no hook action maps to).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedBy {
+    /// The run's coordinator, an agent.
+    Coordinator,
+    /// The person, on the page.
+    Person,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1091,7 +1131,12 @@ impl OrchestrationStore {
                     .data
                     .peer_asks
                     .values()
-                    .filter(|ask| visible.contains(ask.run_id.as_str()))
+                    // A lead chat's ask belongs to no run when the chat
+                    // coordinates none: the whole-ledger read lists it.
+                    .filter(|ask| {
+                        visible.contains(ask.run_id.as_str())
+                            || (run_id.is_none() && ask.run_id.is_empty())
+                    })
                     .cloned()
                     .collect();
                 asks.sort_by_key(|ask| (ask.asked_at, ask.id.clone()));
@@ -1843,6 +1888,9 @@ impl OrchestrationStore {
                     if parent_task.parent_task_id.is_some() {
                         return Err("This task is already a subtask. Delegation goes no deeper; do it yourself.".into());
                     }
+                    if parent_task.peer_request.is_some() {
+                        return Err("This task is a peer request, and a peer request cannot be split. Do the work yourself.".into());
+                    }
                     if assignee.is_none() {
                         return Err("Give each subtask an `assignee`: one of your direct reports.".into());
                     }
@@ -1880,6 +1928,10 @@ impl OrchestrationStore {
                 if task.run_id != run_id {
                     return Err("A parent task must belong to the same run.".into());
                 }
+                // One bounded piece of work for one teammate: it has no parts.
+                if task.peer_request.is_some() {
+                    return Err("That task is a peer request, and a peer request cannot be split. Its teammate does the work itself.".into());
+                }
             }
             let now = now_ms();
             let ready = depends_on.iter().all(|dependency| {
@@ -1916,6 +1968,7 @@ impl OrchestrationStore {
                 verdict: None,
                 handoffs: Vec::new(),
                 superseded_by: None,
+                peer_request: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -2018,6 +2071,9 @@ impl OrchestrationStore {
             }
             if task.parent_task_id.is_some() {
                 return Err("This is a manager's subtask; its manager hands it on.".into());
+            }
+            if task.peer_request.is_some() {
+                return Err("This is a peer request to one named teammate and cannot change hands. Withdraw it, or let whoever asked make another.".into());
             }
             if let Some(active) = task.active_attempt_id.as_deref().and_then(|id| data.attempts.get(id)) {
                 if matches!(active.status, AttemptStatus::Preparing | AttemptStatus::Running) {
@@ -2146,6 +2202,11 @@ impl OrchestrationStore {
                 || !matches!(task.status, TaskStatus::Pending | TaskStatus::Ready)
             {
                 return Err("This task has already started or been withdrawn.".into());
+            }
+            // A peer request is fixed as asked: its text, its teammate and
+            // its destination are what the bounds were checked against.
+            if task.peer_request.is_some() && !revision.withdraw {
+                return Err("A peer request cannot be revised. Withdraw it (withdraw: true) and let whoever asked make another.".into());
             }
             if revision.withdraw {
                 if let Some(dependant) = data.tasks.values().find(|other| {
@@ -2365,21 +2426,39 @@ impl OrchestrationStore {
                 let owner = task.assignee.as_ref().map_or("another agent", |a| a.name.as_str());
                 keeps_to_handoff(approved, &worker, owner)?;
             }
+            // A peer runs as its registered identity, whoever starts it.
+            if let (Some(_), Some(approved)) = (&task.peer_request, &task.worker) {
+                let peer = task.assignee.as_ref().map_or("a teammate", |a| a.name.as_str());
+                peer_request::keeps_to_identity(approved, &worker, launch.effort.as_deref(), peer)?;
+            }
+            // And from the branch the host planned for it. Only the person's
+            // own start names another: an agent's choice of base would reach
+            // the teammate as its task's branch and checkout.
+            if task.peer_request.is_some()
+                && !launch.base_branch.is_empty()
+                && !matches!(by, StartedBy::Page { .. })
+            {
+                return Err(peer_request::PEERS_BASE.into());
+            }
+            // The run's defaults are the coordinator's to change at any
+            // time, and a recovery policy names a fallback model in words of
+            // its choosing. A peer request takes none of them: what was
+            // approved with the task, or the host's own default.
+            let defaults = run
+                .worker_defaults
+                .as_ref()
+                .filter(|_| task.peer_request.is_none());
             worker.recovery = task
                 .worker
                 .as_ref()
                 .and_then(|w| w.recovery.clone())
-                .or_else(|| {
-                    run.worker_defaults
-                        .as_ref()
-                        .and_then(|w| w.recovery.clone())
-                });
+                .or_else(|| defaults.and_then(|w| w.recovery.clone()));
             let recovery_agent = task
                 .worker
                 .as_ref()
                 .filter(|w| w.recovery.is_some())
                 .map(|w| w.agent)
-                .or_else(|| run.worker_defaults.as_ref().and_then(|w| w.agent));
+                .or_else(|| defaults.and_then(|w| w.agent));
             if recovery_agent.is_some_and(|agent| agent != worker.agent) {
                 if let Some(policy) = &mut worker.recovery {
                     policy.fallback_model = None;
@@ -2476,6 +2555,16 @@ impl OrchestrationStore {
                 .saturating_add(1) as u32;
             let id = format!("attempt_{}", compact_id());
             let now = now_ms();
+            // A peer request's working time carries on from the attempts
+            // before this one, unless the person starts it again.
+            let peer_clock = task
+                .peer_request
+                .as_ref()
+                .map(|request| {
+                    let by_person = matches!(by, StartedBy::Page { .. });
+                    peer_request::clock_for(data, &task, request, by_person, now)
+                })
+                .transpose()?;
             let mut execution = execution::Execution::queued(
                 now,
                 recovery_of
@@ -2508,6 +2597,7 @@ impl OrchestrationStore {
                 finished_at: None,
                 archived_at: None,
                 proposed_report: None,
+                peer_clock,
                 created_at: now,
                 updated_at: now,
             };
@@ -2738,9 +2828,13 @@ impl OrchestrationStore {
         // Agents mode: every assigned agent has its own memory.
         if let Some(assignee) = &task.assignee {
             let path = crate::team::default_path();
-            if let Some((me, brief)) =
-                crate::team::assignee_brief(&path, &assignee.id, &workspace.id)
-            {
+            if let Some((me, brief)) = crate::team::assignee_brief(
+                &path,
+                &assignee.id,
+                &workspace.id,
+                // A peer request goes no further: its worker asks, never hands on.
+                task.peer_request.is_none(),
+            ) {
                 let _ = crate::team::ensure_memory(
                     &crate::memory_vault::Vault::profile(),
                     &reserved.worker_chat_key,
@@ -2750,8 +2844,17 @@ impl OrchestrationStore {
                 prompt.push_str(&brief);
             }
         }
+        if let Some(request) = &task.peer_request {
+            prompt.push_str(&peer_request::worker_brief(
+                request,
+                reserved.peer_clock.as_ref(),
+            ));
+        }
         // Agents mode: a second-level assignee that manages agents may split.
-        if let (Some(assignee), None) = (&task.assignee, &task.parent_task_id) {
+        // Never a peer request, which is one teammate's own piece of work.
+        if let (Some(assignee), None, None) =
+            (&task.assignee, &task.parent_task_id, &task.peer_request)
+        {
             if let Ok(Some(brief)) = crate::team::manager_brief(
                 &crate::team::default_path(),
                 &workspace.id,
@@ -3330,6 +3433,14 @@ impl OrchestrationStore {
             {
                 return Err("This chat does not belong to that run.".into());
             }
+            // A worker's gate is its own task's whether or not it names it,
+            // so the checks below are made of the task the gate will carry.
+            let task_id = task_id.clone().or_else(|| {
+                owned_task
+                    .as_ref()
+                    .filter(|task| task.run_id == run_id)
+                    .map(|task| task.id.clone())
+            });
             if let Some(requested) = task_id.as_deref() {
                 let task = data
                     .tasks
@@ -3351,14 +3462,19 @@ impl OrchestrationStore {
                 {
                     return Err("A worker may open a gate only for its own task.".into());
                 }
+                // A coordinator's gate would put its own question, and its
+                // own answer, in the brief of the teammate's next attempt.
+                if task.peer_request.is_some()
+                    && owned_task.as_ref().map(|task| task.id.as_str()) != Some(requested)
+                {
+                    return Err(peer_request::TEAMMATES_GATE.into());
+                }
             }
             let now = now_ms();
             let gate = Gate {
                 id: format!("gate_{}", compact_id()),
                 run_id: run_id.clone(),
-                task_id: task_id
-                    .clone()
-                    .or_else(|| owned_task.as_ref().map(|task| task.id.clone())),
+                task_id,
                 created_by_chat_key: actor_chat_key.into(),
                 target_chat_key: run.coordinator_chat_key.clone(),
                 question,
@@ -3367,6 +3483,7 @@ impl OrchestrationStore {
                 resolution: None,
                 created_at: now,
                 updated_at: now,
+                closed_at: None,
             };
             if let Some(task) = gate.task_id.as_ref().and_then(|id| data.tasks.get_mut(id)) {
                 task.status = TaskStatus::Blocked;
@@ -3387,9 +3504,24 @@ impl OrchestrationStore {
                 run.updated_at = now;
             }
             data.gates.insert(gate.id.clone(), gate.clone());
+            // A peer request's gate is the person's to answer: whoever asked
+            // for the work hears that it waits, and is not asked to decide.
+            let peer_task = gate
+                .task_id
+                .as_ref()
+                .and_then(|id| data.tasks.get(id))
+                .filter(|task| task.peer_request.is_some())
+                .cloned();
             if gate.created_by_chat_key != gate.target_chat_key {
+                let body = match &peer_task {
+                    Some(task) => peer_request::gate_notice(task, &gate),
+                    None => format!("Worker needs a decision for gate {}.\n\n{}\n\nRead orchestration_snapshot and resolve through orchestration_gate_resolve. Only ask the person if their decision is needed.", gate.id, gate.question),
+                };
                 inbox::enqueue(data, &gate.run_id, &gate.created_by_chat_key, &gate.target_chat_key,
-                    format!("gate:{}", gate.id), "decision", format!("Worker needs a decision for gate {}.\n\n{}\n\nRead orchestration_snapshot and resolve through orchestration_gate_resolve. Only ask the person if their decision is needed.", gate.id, gate.question));
+                    format!("gate:{}", gate.id), "decision", body);
+            }
+            if let Some(task) = &peer_task {
+                peer_request::tell_requester_of_gate(data, task, &gate);
             }
             Ok(gate)
         })
@@ -3403,15 +3535,20 @@ impl OrchestrationStore {
         gate_id: String,
         resolution: String,
     ) -> Result<Gate, String> {
-        self.resolve_gate_and_resume(actor, gate_id, resolution, false)
+        self.resolve_gate_and_resume(actor, gate_id, resolution, false, ResolvedBy::Coordinator)
     }
 
+    /// Answer an open gate as the run's coordinator, or as the person on the
+    /// page acting in that coordinator's place (`by`). A gate of a
+    /// peer-request task is the person's alone: an agent's answer is free
+    /// text, and would add to a job the person approved in other words.
     pub fn resolve_gate_and_resume(
         &self,
         actor_chat_key: &str,
         gate_id: String,
         resolution: String,
         resume_target: bool,
+        by: ResolvedBy,
     ) -> Result<Gate, String> {
         let resolution = required_text("gate resolution", resolution, 10_000)?;
         let mut event_run_id = String::new();
@@ -3425,14 +3562,21 @@ impl OrchestrationStore {
             if gate.status != GateStatus::Open {
                 return Err("This gate has already settled.".into());
             }
+            let peer_request = gate
+                .task_id
+                .as_ref()
+                .and_then(|id| data.tasks.get(id))
+                .is_some_and(|task| task.peer_request.is_some());
+            if peer_request && by != ResolvedBy::Person {
+                return Err(peer_request::PERSONS_GATE.into());
+            }
             let now = now_ms();
             let gate_mut = data
                 .gates
                 .get_mut(&gate_id)
                 .expect("the gate was read above");
-            gate_mut.status = GateStatus::Resolved;
+            gate_mut.close(GateStatus::Resolved, now);
             gate_mut.resolution = Some(resolution);
-            gate_mut.updated_at = now;
             let resolved = gate_mut.clone();
             if let Some(task) = resolved
                 .task_id
@@ -3473,8 +3617,12 @@ impl OrchestrationStore {
             event_run_id = run_id.clone();
             recompute_run(data, &run_id);
             if resume_target || resolved.created_by_chat_key != actor_chat_key {
+                let said = match by {
+                    ResolvedBy::Person => format!("The person answered gate {} on the page.", resolved.id),
+                    ResolvedBy::Coordinator => format!("Gate {} was resolved.", resolved.id),
+                };
                 inbox::enqueue(data, &run_id, actor_chat_key, &resolved.created_by_chat_key, format!("resolved:{}", resolved.id), "resolution",
-                    format!("Gate {} was resolved.\n\nQuestion: {}\nDecision: {}\n\nContinue the assigned task using this decision. Report the exact attempt when it settles.", resolved.id, resolved.question, resolved.resolution.as_deref().unwrap_or_default()));
+                    format!("{said}\n\nQuestion: {}\nDecision: {}\n\nContinue the assigned task using this decision. Report the exact attempt when it settles.", resolved.question, resolved.resolution.as_deref().unwrap_or_default()));
             }
             Ok(resolved)
         });
@@ -3535,6 +3683,12 @@ impl OrchestrationStore {
                     .tasks
                     .get(&attempt.task_id)
                     .ok_or("The target attempt's task does not exist.")?;
+                // Whoever asked for a peer request is the worker's teammate,
+                // not its manager, and a message is words nobody approved:
+                // none of any kind is delivered, to any attempt of the task.
+                if task.peer_request.is_some() {
+                    return Err(peer_request::NO_INSTRUCTIONS.into());
+                }
                 if task.active_attempt_id.as_deref() != Some(attempt.id.as_str()) {
                     return Err("The target attempt is stale; a newer attempt owns the task.".into());
                 }
@@ -3790,8 +3944,7 @@ fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec
     }
     for gate in data.gates.values_mut().filter(|gate| gate.run_id == run_id) {
         if gate.status == GateStatus::Open {
-            gate.status = GateStatus::Cancelled;
-            gate.updated_at = now;
+            gate.close(GateStatus::Cancelled, now);
         }
     }
     let run = data
@@ -4180,6 +4333,15 @@ fn decide_plan_in(
                         "Rejected by the person with plan revision {plan_revision}."
                     ));
                     task.updated_at = now;
+                    // A worker that asked a teammate for this hears that it
+                    // will not happen, instead of waiting for a report.
+                    let withdrawn = task.clone();
+                    peer_request::tell_requester(
+                        data,
+                        &withdrawn,
+                        format!("peer-rejected:{id}"),
+                        "the person rejected it on the plan card, so it will not be done. Carry on without it.",
+                    );
                 }
             }
             let rejection = PlanRejection {
@@ -4304,6 +4466,14 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
             // Likewise only when not ordinary work.
             if !task.kind.is_work() {
                 entry["kind"] = json!(task.kind);
+            }
+            // Who asked a teammate for it, and the bounds they set.
+            if let Some(request) = &task.peer_request {
+                entry["peerRequest"] = json!({
+                    "requestedBy": request.requested_by,
+                    "output": request.output,
+                    "maxMinutes": request.max_minutes,
+                });
             }
             entry
         })
@@ -4520,6 +4690,17 @@ fn settle_attempt(
     let settled = task_mut.clone();
     make_ready(data, &attempt.run_id);
     recompute_run(data, &attempt.run_id);
+    // A peer request's report goes back to the worker that asked for it.
+    peer_request::tell_requester(
+        data,
+        &settled,
+        format!("peer-report:{}", attempt.id),
+        &format!(
+            "reported {:?}.\n\n{}",
+            settled.status,
+            settled.result.as_deref().unwrap_or_default()
+        ),
+    );
     let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
     if target == actor_chat_key {
         return settled;
@@ -4537,7 +4718,7 @@ fn settle_attempt(
         }
     }
     inbox::enqueue(data, &attempt.run_id, actor_chat_key, &target, format!("report:{}", attempt.id), "report",
-        format!("Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.", settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default()));
+        format!("{}Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.", peer_request::report_note(&settled), settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default()));
     settled
 }
 
@@ -4683,8 +4864,7 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
                 .as_ref()
                 .is_some_and(|id| recovered.contains_key(id))
         {
-            gate.status = GateStatus::Cancelled;
-            gate.updated_at = now;
+            gate.close(GateStatus::Cancelled, now);
         }
     }
     let mut run_ids = BTreeSet::new();
@@ -4927,6 +5107,7 @@ fn announce(run_id: &str, change: &str) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    pub(crate) use super::workspaces::tests::finished_peer_request;
     use super::*;
 
     pub(crate) fn run(store: &OrchestrationStore) -> Run {
@@ -8072,6 +8253,54 @@ pub(crate) mod tests {
             store.snapshot(None).unwrap().attempts[0].status,
             AttemptStatus::Running
         );
+    }
+
+    /// Review M7: the task a worker's gate carries is its own whether or not
+    /// the call names it, so "one open gate per task" is asked of that task.
+    #[test]
+    fn a_task_has_one_open_gate_even_when_the_worker_does_not_name_it() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        let open = |task_id: Option<String>| {
+            store.create_gate(
+                &worker.worker_chat_key,
+                run.id.clone(),
+                task_id,
+                "Which volume?".into(),
+                vec![],
+            )
+        };
+        let first = open(None).unwrap();
+        assert_eq!(first.task_id.as_deref(), Some(worker.task_id.as_str()));
+        for task_id in [None, Some(worker.task_id.clone())] {
+            let second = open(task_id).unwrap_err();
+            assert_eq!(
+                second,
+                "This task already has an open decision gate. Resolve it first."
+            );
+        }
+        let gates = store.snapshot(None).unwrap().gates;
+        assert_eq!(gates.len(), 1);
+        // Answered, the task may ask again.
+        store
+            .resolve_gate("chat:master", first.id, "volume1".into())
+            .unwrap();
+        open(None).unwrap();
+        // A coordinator's gate that names no task is the run's, as before,
+        // and any number of those may be open.
+        for _ in 0..2 {
+            let gate = store
+                .create_gate(
+                    "chat:master",
+                    run.id.clone(),
+                    None,
+                    "Ship today?".into(),
+                    vec![],
+                )
+                .unwrap();
+            assert!(gate.task_id.is_none());
+        }
     }
 
     #[test]

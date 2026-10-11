@@ -1137,7 +1137,7 @@ impl ChatManager {
     /// holds reads as unwinding, which only ever makes a notification wait
     /// for the next pass. A caller holding either lock reads
     /// `ChatSession::cut_off` itself.
-    fn unwinding(&self, key: &str) -> bool {
+    pub(crate) fn unwinding(&self, key: &str) -> bool {
         let Ok(sessions) = self.sessions.lock() else {
             return true;
         };
@@ -6002,13 +6002,19 @@ impl ChatManager {
     /// A stand-in agent under `key`, holding the capability a real launch
     /// is given. Returns that secret.
     pub(crate) fn test_launch(&self, key: &str) -> String {
+        self.test_launch_in(key, key)
+    }
+
+    /// [`Self::test_launch`] for a process running under `key` in the chat
+    /// `chat_key`: an additional agent in a room when the two differ.
+    pub(crate) fn test_launch_in(&self, key: &str, chat_key: &str) -> String {
         let child = stand_in::still()
             .stdin(Stdio::null())
             .spawn()
             .expect("a stand-in agent");
         let launch_id = uuid::Uuid::new_v4().to_string();
         let mut sessions = self.sessions.lock().unwrap();
-        let secret = self.grant_capability(&sessions, key, key, &launch_id);
+        let secret = self.grant_capability(&sessions, key, chat_key, &launch_id);
         sessions.insert(
             key.to_string(),
             Arc::new(Mutex::new(ChatSession {
@@ -6050,6 +6056,20 @@ impl ChatManager {
     pub(crate) fn test_busy(&self, key: &str, busy: bool) {
         let session = self.sessions.lock().unwrap().get(key).cloned().unwrap();
         session.lock().unwrap().busy = busy;
+    }
+
+    /// Leave a stand-in from `test_launch` as a Stop leaves a chat whose turn
+    /// it cut short: idle at once, that turn's full stop still owed. `false`
+    /// is the full stop being read. No thread waits out a grace.
+    pub(crate) fn test_full_stop_owed(&self, key: &str, owed: bool) {
+        let session = self.sessions.lock().unwrap().get(key).cloned().unwrap();
+        let mut session = session.lock().unwrap();
+        session.busy = false;
+        session.cut_off = if owed {
+            CutOff::Owed(self.next_unwind())
+        } else {
+            CutOff::No
+        };
     }
 
     /// End a stand-in from `test_launch`, as the chat ending would.

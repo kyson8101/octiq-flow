@@ -199,6 +199,17 @@ export type OrchestrationTask = {
   handoffs?: { from?: { id: string; name: string }; to: { id: string; name: string }; reason: string; at: number }[];
   /** The task the coordinator created to replace this blocked or failed one. */
   supersededBy?: string;
+  /** Set on a task a teammate asked for (orchestration/peer_request.rs): who
+   *  asked, the result they expect back, and `maxMinutes` of working time
+   *  (waiting for a decision does not count, and it is not extended). */
+  peerRequest?: {
+    requestedBy: { id: string; name: string };
+    requesterChatKey: string;
+    requesterAttemptId?: string;
+    output: string;
+    maxMinutes: number;
+    requestedAt: number;
+  };
   createdAt: number;
   updatedAt: number;
 };
@@ -206,6 +217,16 @@ export type OrchestrationTask = {
 /** Blocked or failed and not replaced: something someone still has to deal
  *  with. A task the coordinator replaced keeps its history but is owed
  *  nothing, so it never counts as blocked (feedback 6b0870f9). */
+/** Whether a gate belongs to a peer request. The host takes that gate's
+ *  answer from the person's page and from no agent, so the page sends it to
+ *  the host instead of through the main chat. */
+export function isPeerRequestGate(
+  gate: Pick<OrchestrationGate, "taskId">,
+  tasks: readonly Pick<OrchestrationTask, "id" | "peerRequest">[],
+): boolean {
+  return !!gate.taskId && tasks.some((task) => task.id === gate.taskId && !!task.peerRequest);
+}
+
 export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy">): boolean {
   return (task.status === "blocked" || task.status === "failed") && !task.supersededBy;
 }
@@ -232,6 +253,12 @@ export type OrchestrationAttempt = {
   /** A read-only worker's closing words, held when its turn ended without a
    *  report. Not a settlement until the coordinator confirms this id. */
   proposedReport?: ProposedReport | null;
+  /** An attempt of a peer-request task: what its limit of working time
+   *  needs beyond the stamps here. `carriedMs` is what earlier attempts used;
+   *  each of `waits` is a stretch the host saw it waiting with nothing
+   *  running, which is not counted; `usedMs` is the most it was ever found
+   *  to have used, and never goes down. */
+  peerClock?: { carriedMs: number; usedMs: number; waits?: { from: number; to: number }[] };
   createdAt: number;
   updatedAt: number;
 };
@@ -274,6 +301,9 @@ export type OrchestrationGate = {
   resolution?: string;
   createdAt: number;
   updatedAt: number;
+  /** When it was resolved or cancelled. Absent while open, and on a gate
+   *  closed before this was recorded. */
+  closedAt?: number;
 };
 
 export type OrchestrationMessage = {
@@ -344,13 +374,16 @@ export type OrchestrationSnapshot = {
   briefRuns?: string[];
 };
 
-/** One worker's question to a teammate and the answer (orchestration/peer.rs).
- *  Advice inside an approved task: it hands nothing over and needs no gate. */
+/** One question to a teammate and the answer (orchestration/peer.rs). Advice:
+ *  it hands nothing over and needs no gate. A worker's names its run, task
+ *  and attempt. A lead's own chat has no attempt: its ask names the chat
+ *  (`askerChatKey`) and, when the chat coordinates a live run, that run. */
 export type PeerAsk = {
   id: string;
-  runId: string;
-  taskId: string;
-  attemptId: string;
+  runId?: string;
+  taskId?: string;
+  attemptId?: string;
+  askerChatKey?: string;
   asker: { id: string; name: string };
   helper: { id: string; name: string };
   helperAgent: "claude" | "codex" | "pi" | "antigravity";

@@ -58,8 +58,8 @@ pub const DENIED: &str = "you denied it";
 /// agent saved a memory entry or reported its status. None of these touch the
 /// project: they keep the host's own bookkeeping (memory, status, title,
 /// feedback, previews), or they already put their own card in front of the
-/// person (handover, registering an agent, the shared policy), where a second
-/// card would only ask the same thing twice.
+/// person (handover, registering an agent, the shared policy, a team), where a
+/// second card would only ask the same thing twice.
 pub fn host_bookkeeping(tool: &str) -> bool {
     matches!(
         tool.strip_prefix("mcp__octiq__"),
@@ -80,6 +80,8 @@ pub fn host_bookkeeping(tool: &str) -> bool {
                 | "agent_update"
                 | "agent_delete"
                 | "agent_policy_update"
+                | "team_create"
+                | "team_update"
                 | "request_access"
         )
     )
@@ -200,6 +202,19 @@ fn with_pending<T>(f: impl FnOnce(&mut HashMap<String, Waiting>) -> T) -> T {
 /// the chat sat there looking broken.
 pub fn pending() -> Vec<Asked> {
     with_pending(|p| p.values().map(|w| w.asked.clone()).collect())
+}
+
+/// The questions from this chat still waiting on the person, one entry per
+/// card: the id of the tool call the card asks about (`Request::tool_use_id`),
+/// or `None` when the question named no call. The agent is parked on THAT
+/// call; a card says nothing about any other call of the same turn.
+pub(crate) fn awaited_calls(chat_key: &str) -> Vec<Option<String>> {
+    with_pending(|p| {
+        p.values()
+            .filter(|w| w.asked.request.chat_key.as_deref() == Some(chat_key))
+            .map(|w| w.asked.request.tool_use_id.clone())
+            .collect()
+    })
 }
 
 /// Grants made with "Always", as `chat key` + NUL + `signature`.
@@ -441,6 +456,34 @@ pub fn decide(id: &str, decision: Decision, remember: bool) -> bool {
     delivered
 }
 
+/// Put a question on the list the way `ask` does once a browser is watching,
+/// for a test of code that reads the list. `decide` takes it off again.
+#[cfg(test)]
+pub(crate) fn test_ask(chat_key: &str, tool_use_id: Option<&str>) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (tx, _) = oneshot::channel();
+    let asked = Asked {
+        id: id.clone(),
+        request: Request {
+            chat_key: Some(chat_key.into()),
+            tool_name: Some("Bash".into()),
+            tool_use_id: tool_use_id.map(str::to_string),
+            ..Default::default()
+        },
+    };
+    with_pending(|p| {
+        p.insert(
+            id.clone(),
+            Waiting {
+                tx,
+                remember: None,
+                asked,
+            },
+        )
+    });
+    id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,6 +635,9 @@ mod tests {
         assert!(host_bookkeeping("mcp__octiq__handover"));
         assert!(host_bookkeeping("mcp__octiq__request_access"));
         assert!(host_bookkeeping("mcp__octiq__agent_delete"));
+        // A team change is asked on the host's own one-off card too.
+        assert!(host_bookkeeping("mcp__octiq__team_create"));
+        assert!(host_bookkeeping("mcp__octiq__team_update"));
         // Writes the person's notes or starts work: still asked in plan mode.
         assert!(!host_bookkeeping("mcp__octiq__vault_write"));
         assert!(!host_bookkeeping("mcp__octiq__orchestration_run_create"));

@@ -597,6 +597,7 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__orchestration_worker_report mcp__octiq__orchestration_gate_create \\
                      mcp__octiq__orchestration_gate_resolve mcp__octiq__orchestration_message_send \\
                      mcp__octiq__orchestration_run_stop mcp__octiq__orchestration_peer_ask \\
+                     mcp__octiq__orchestration_peer_request \\
                      mcp__octiq__vault_info mcp__octiq__vault_list mcp__octiq__vault_search \\
                      mcp__octiq__vault_read mcp__octiq__vault_write mcp__octiq__vault_patch \\
                      mcp__octiq__vault_move mcp__octiq__vault_archive mcp__octiq__vault_receipt \\
@@ -604,7 +605,8 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__vault_agent_memory_lessons \\
                      mcp__octiq__handover mcp__octiq__handover_ask mcp__octiq__handover_outcome \\
                      mcp__octiq__agent_list mcp__octiq__agent_register mcp__octiq__agent_update \\
-                     mcp__octiq__agent_delete mcp__octiq__agent_policy_update mcp__octiq__request_access",
+                     mcp__octiq__agent_delete mcp__octiq__agent_policy_update \\
+                     mcp__octiq__team_create mcp__octiq__team_update mcp__octiq__request_access",
                 ),
                 sh_quote(&with_preferences(
                     &format!(
@@ -2007,12 +2009,20 @@ pub(crate) mod tests {
             "agent_update",
             "agent_delete",
             "agent_policy_update",
+            "team_create",
+            "team_update",
             // An agent's own Lessons, likewise on the host's one-off card
             // (`memory_lessons`).
             "vault_agent_memory_lessons",
             // A raise of the chat's access is asked on its own card too.
             "request_access",
         ] {
+            assert!(claude.contains(&format!("mcp__octiq__{tool}")), "{tool}");
+        }
+        // A peer ask only reads, and a peer request only records a task that
+        // waits on the plan card: the person decides there, not on a prompt
+        // in front of the call.
+        for tool in ["orchestration_peer_ask", "orchestration_peer_request"] {
             assert!(claude.contains(&format!("mcp__octiq__{tool}")), "{tool}");
         }
         assert!(claude.contains("mcp__octiq__feedback_submit"));
@@ -2171,6 +2181,7 @@ pub(crate) mod tests {
             "orchestration_run_create",
             "mcp__octiq__handover",
             "mcp__octiq__agent_register",
+            "mcp__octiq__team_create",
             "vault_write",
             "--append-system-prompt",
             "--add-dir",

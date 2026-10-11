@@ -146,7 +146,12 @@ checklist context. The previous process stops before the lease transfers.
 Late reports cannot settle a replacement. Inspect `nextRetryAt`, `retryCount`
 and `retryModel` before starting a manual retry, which supersedes scheduled
 recovery. Pausing ready-wave dispatch does not cancel already scheduled recovery;
-stopping the run does.
+stopping the run does. A recovery that comes due while the run's plan is
+waiting for the person (a task or a peer request was added to it) is held,
+not dropped: nothing starts before they decide, the attempt keeps its
+`nextRetryAt` and shows `Recovery is waiting for the person's decision on the
+plan`, the coordinator is told once, and the host starts the retry on its
+first pass after the plan is approved or rejected.
 
 No meaningful progress for five minutes raises a durable stalled notification;
 tool waits get thirty minutes by default. These are advisory alerts: silence
@@ -209,9 +214,14 @@ The bundled chat-bound MCP exposes:
 - `orchestration_gate_create` / `orchestration_gate_resolve`
 - `orchestration_message_send`
 - `orchestration_run_stop`
-- `orchestration_peer_ask` — agents mode: a worker asks a teammate one
-  question, answered read-only by the host as that teammate (see
-  `docs/agents-mode.md`, Teams and peer help)
+- `orchestration_peer_ask` — agents mode: a worker, or a lead in its own
+  chat, asks a teammate one question, answered read-only by the host as that
+  teammate (see `docs/agents-mode.md`, Teams and peer help)
+- `orchestration_peer_request` — agents mode: a worker, or a lead in its own
+  chat, asks a teammate to do one bounded piece of work. It records a task
+  that waits on the plan card for the person; nothing starts before that.
+  `maxMinutes` is minutes of working time; waiting for a decision does not
+  count; it is not extended (same section)
 
 The local `/hook/orchestration` endpoint takes the calling chat from its
 launch capability (never the body or the server token) and injects it;

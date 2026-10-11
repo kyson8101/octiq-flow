@@ -204,11 +204,40 @@ fn scoped_project<'a>(team: &'a [TeamAgent], who: &str) -> Result<Option<&'a str
 /// rules; every refusal says what to pass instead, and is OctiqFlow's scope
 /// refusal wherever it is shown (`outcome`).
 pub fn route(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Routed, String> {
-    resolve(team, projects, req)
+    resolve(team, projects, req, false)
         .map_err(|error| crate::outcome::refuse(crate::outcome::ReasonClass::ScopeRefused, error))
 }
 
-fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Routed, String> {
+/// [`route`] for a peer request (`peer_request.rs`): `req.manager` is the
+/// REQUESTER and `req.who` a teammate of it, so the direct-report rule does
+/// not apply. Everything else does: only a registered project and repository,
+/// only where the requester may send work, only where the teammate may work,
+/// and never a lead-only model. That `who` is on the requester's team is the
+/// caller's check (`peer::choose_helper`); this is the one path a task takes
+/// to an agent that does not report to whoever asked for it.
+pub fn route_lateral(
+    team: &[TeamAgent],
+    projects: &[Workspace],
+    req: &Route,
+) -> Result<Routed, String> {
+    resolve(team, projects, req, true)
+        .map_err(|error| crate::outcome::refuse(crate::outcome::ReasonClass::ScopeRefused, error))
+}
+
+/// What a requester can do about a peer request refused for where it would
+/// run. A task's own refusals say what to pass instead; a requester cannot
+/// reassign, so it is told its two ways on.
+const LATERAL_SCOPE_HINT: &str = " A peer request runs only in a project both of you may work in: ask again with `project` set to one, or ask your own lead to assign the work.";
+
+fn resolve(
+    team: &[TeamAgent],
+    projects: &[Workspace],
+    req: &Route,
+    lateral: bool,
+) -> Result<Routed, String> {
+    // Whose direct reports `who` must be among. A teammate reports to no one
+    // here; it was chosen from the requester's own team.
+    let reports_to = if lateral { None } else { req.manager };
     let manager = match req.manager {
         Some(id) => Some(
             team.iter()
@@ -222,6 +251,27 @@ fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Ro
     let who = nonempty(req.who);
     let project_spec = nonempty(req.project);
     let repository_spec = nonempty(req.repository);
+    let scope_hint = if lateral { LATERAL_SCOPE_HINT } else { "" };
+    // A teammate that cannot work in `project`, said in a peer request's own
+    // words before `resolve_in` says it in a task's ("assign someone else").
+    let teammate_may_work_in = |project: &str| -> Result<(), String> {
+        let teammate = who.filter(|_| lateral).and_then(|who| {
+            team.iter()
+                .find(|a| a.id == who || a.name.eq_ignore_ascii_case(who))
+        });
+        match teammate {
+            Some(teammate) if !team::may_work_in(teammate, project) => Err(format!(
+                "{} works only in {}.{LATERAL_SCOPE_HINT}",
+                teammate.name,
+                teammate
+                    .project_id
+                    .as_deref()
+                    .and_then(name_of)
+                    .unwrap_or_else(|| "another project".into()),
+            )),
+            _ => Ok(()),
+        }
+    };
 
     let target: Option<(&Workspace, Option<&str>)> = match (project_spec, repository_spec) {
         (Some(project), repository) => Some((find_project(projects, project)?, repository)),
@@ -267,13 +317,13 @@ fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Ro
         // No destination: the run's own root, as before destinations existed.
         // Still only where the manager may work.
         if !allowed(req.run_project) {
-            return Err(
-                "This run's project is outside your scope. Name a destination in your own project."
-                    .into(),
-            );
+            return Err(format!(
+                "This run's project is outside your scope. Name a destination in your own project.{scope_hint}"
+            ));
         }
+        teammate_may_work_in(req.run_project)?;
         let assignee = who
-            .map(|who| team::resolve_in(team, req.run_project, who, req.manager, &name_of))
+            .map(|who| team::resolve_in(team, req.run_project, who, reports_to, &name_of))
             .transpose()?;
         return Ok(Routed {
             assignee,
@@ -284,7 +334,7 @@ fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Ro
     if !allowed(&project.id) {
         let manager = manager.expect("only a manager restricts projects");
         return Err(format!(
-            "You work only in {}, so you cannot send work to {}.",
+            "You work only in {}, so you cannot send work to {}.{scope_hint}",
             manager
                 .project_id
                 .as_deref()
@@ -293,6 +343,7 @@ fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Ro
             project.name
         ));
     }
+    teammate_may_work_in(&project.id)?;
     let repository = resolve_repository(project, repository)?;
     if !Path::new(&repository).is_dir() {
         return Err(format!(
@@ -301,7 +352,7 @@ fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Ro
         ));
     }
     let assignee = who
-        .map(|who| team::resolve_in(team, &project.id, who, req.manager, &name_of))
+        .map(|who| team::resolve_in(team, &project.id, who, reports_to, &name_of))
         .transpose()?;
     Ok(Routed {
         assignee,

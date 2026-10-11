@@ -124,14 +124,18 @@ impl RecoveryPolicy {
     }
 }
 
+/// The recovery policy an attempt runs under: its task's own, else the run's
+/// defaults, else the host's. A peer-request task takes nothing from the
+/// run's defaults (`reserve_attempt_for`): they are the coordinator's to
+/// change after the person approved the request.
 fn policy(data: &Stored, attempt: &Attempt) -> RecoveryPolicy {
-    data.tasks
-        .get(&attempt.task_id)
-        .and_then(|t| t.worker.as_ref())
+    let task = data.tasks.get(&attempt.task_id);
+    task.and_then(|t| t.worker.as_ref())
         .and_then(|w| w.recovery.clone())
         .or_else(|| {
             data.runs
                 .get(&attempt.run_id)
+                .filter(|_| task.is_none_or(|t| t.peer_request.is_none()))
                 .and_then(|r| r.worker_defaults.as_ref())
                 .and_then(|w| w.recovery.clone())
         })
@@ -461,11 +465,21 @@ pub(super) fn fail(data: &mut Stored, id: &str, error: ExecutionError, now: i64)
         .values_mut()
         .filter(|g| g.task_id.as_deref() == Some(&before.task_id) && g.status == GateStatus::Open)
     {
-        gate.status = GateStatus::Cancelled;
-        gate.updated_at = now;
+        gate.close(GateStatus::Cancelled, now);
     }
     inbox::enqueue(data, &before.run_id, &before.worker_chat_key, &target, format!("execution-failed:{id}"), &error.kind,
         format!("Host detected {} for task {} (attempt {}).\n\n{}\n\n{}\nRead orchestration_snapshot. This attempt is failed and is not active work.", error.kind, before.task_id, id, error.message, recovery));
+    // A peer request that failed for good: the worker that asked hears it.
+    if !retry {
+        if let Some(task) = data.tasks.get(&before.task_id).cloned() {
+            peer_request::tell_requester(
+                data,
+                &task,
+                format!("peer-report:{id}"),
+                &format!("ended as failed. {}", error.message),
+            );
+        }
+    }
     recompute_run(data, &before.run_id);
     true
 }
@@ -862,6 +876,15 @@ impl OrchestrationStore {
             {
                 continue;
             }
+            // The plan is back with the person (a peer request, a new task),
+            // and nothing starts until they decide. A task they had already
+            // approved keeps its retry and waits with it: refusing the start
+            // would drop the retry and leave the task failed for a reason
+            // that was never its own.
+            if run.awaiting_plan_approval() {
+                self.hold_recovery(&attempt.id)?;
+                continue;
+            }
             if snapshot
                 .gates
                 .iter()
@@ -907,22 +930,81 @@ impl OrchestrationStore {
             ) {
                 // A vanished project or invalid settings can fail before a
                 // new reservation exists. Do not retry that forever either.
-                self.mutate(|data| {
-                    if !data.tasks.get(&attempt.task_id).is_some_and(|t| t.active_attempt_id.as_deref() == Some(&attempt.id)) { return Ok(()); }
+                let stopped = self.mutate(|data| {
+                    if !data.tasks.get(&attempt.task_id).is_some_and(|t| t.active_attempt_id.as_deref() == Some(&attempt.id)) { return Ok(false); }
+                    // The plan went back to the person between the read above
+                    // and this start: held, as above, not dropped.
+                    if data.runs.get(&run.id).is_some_and(|r| r.awaiting_plan_approval()) {
+                        hold(data, &attempt.id);
+                        return Ok(false);
+                    }
                     let current = data.attempts.get_mut(&attempt.id).unwrap();
-                    if current.execution.next_retry_at.take().is_none() { return Ok(()); }
+                    if current.execution.next_retry_at.take().is_none() { return Ok(false); }
                     current.execution.current_operation = Some(format!("Recovery stopped: {}", bounded(&error)));
+                    let failure = current.execution.latest_error.as_ref().map(|e| e.message.clone()).unwrap_or_default();
                     let task = data.tasks.get_mut(&attempt.task_id).unwrap();
                     task.status = TaskStatus::Failed;
+                    let task = task.clone();
                     inbox::enqueue(data, &run.id, &attempt.worker_chat_key, &run.coordinator_chat_key, format!("recovery-failed:{}", attempt.id), "provider", format!("Automatic recovery for task {} could not start: {}. The workspace is preserved. Inspect orchestration_snapshot before retrying.", attempt.task_id, bounded(&error)));
+                    // A peer request that has now failed for good: the worker
+                    // that asked hears it here, with what stopped the retry.
+                    // `fail` said nothing to it while a retry was scheduled.
+                    peer_request::tell_requester(
+                        data,
+                        &task,
+                        format!("peer-report:{}", attempt.id),
+                        &format!("ended as failed, and the host's automatic retry could not start.\n\nFailure: {failure}\nRetry: {}", bounded(&error)),
+                    );
                     recompute_run(data, &run.id);
-                    Ok(())
+                    Ok(true)
                 })?;
-                announce(&run.id, "recovery_failed");
+                if stopped {
+                    announce(&run.id, "recovery_failed");
+                }
             }
         }
         Ok(())
     }
+
+    /// Keep a due recovery waiting while its run's plan is with the person.
+    /// Written and told once: a pass that finds it already held writes
+    /// nothing.
+    fn hold_recovery(&self, attempt_id: &str) -> Result<(), String> {
+        {
+            let inner = self.inner.lock().map_err(|error| error.to_string())?;
+            if inner.load_error.is_some() || inner.data.attempts.get(attempt_id).is_none_or(held) {
+                return Ok(());
+            }
+        }
+        let run = self.mutate(|data| Ok(hold(data, attempt_id)))?;
+        if let Some(run) = run {
+            announce(&run, "worker_execution");
+        }
+        Ok(())
+    }
+}
+
+/// What a held recovery's attempt shows while it waits (`hold`).
+const RECOVERY_HELD: &str = "Recovery is waiting for the person's decision on the plan";
+
+fn held(attempt: &Attempt) -> bool {
+    attempt.execution.current_operation.as_deref() == Some(RECOVERY_HELD)
+}
+
+/// Mark a failed attempt's due recovery as waiting for the plan, and tell the
+/// coordinator, once. Its `next_retry_at` is left alone: the recovery runs on
+/// the first pass after the plan is decided. The run's id when this wrote.
+fn hold(data: &mut Stored, attempt_id: &str) -> Option<String> {
+    let attempt = data.attempts.get_mut(attempt_id)?;
+    if held(attempt) || attempt.execution.next_retry_at.is_none() {
+        return None;
+    }
+    attempt.execution.current_operation = Some(RECOVERY_HELD.into());
+    let attempt = attempt.clone();
+    let target = data.runs.get(&attempt.run_id)?.coordinator_chat_key.clone();
+    inbox::enqueue(data, &attempt.run_id, &attempt.worker_chat_key, &target, format!("recovery-held:{attempt_id}"), "provider",
+        format!("Automatic recovery for task {} (attempt {attempt_id}) is due, and the plan is waiting for the person's approval, so nothing starts yet. The retry is kept: the host starts it once the person has decided on the plan. Nothing is needed from you for it.", attempt.task_id));
+    Some(attempt.run_id)
 }
 
 #[cfg(test)]

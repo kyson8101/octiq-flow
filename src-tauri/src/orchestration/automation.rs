@@ -286,6 +286,11 @@ pub fn start_scheduler(
         if let Err(error) = store.check_services(now_ms()) {
             eprintln!("orchestration: service monitoring failed: {error}");
         }
+        // Before the pass below, which stops the process of an attempt this
+        // ends.
+        if let Err(error) = store.expire_peer_requests(&chats) {
+            eprintln!("orchestration: peer request time limits failed: {error}");
+        }
         if let Err(error) = store.recover_due_workers(chats.clone(), &workspaces, now_ms()) {
             eprintln!("orchestration: worker monitoring failed: {error}");
         }

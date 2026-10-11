@@ -449,10 +449,19 @@ impl OrchestrationStore {
                 .ok_or("Attempt does not exist.")?;
             let task = &data.tasks[&attempt.task_id];
             let run = &data.runs[&attempt.run_id];
-            if actor != run.coordinator_chat_key && actor != attempt.worker_chat_key {
+            let own = actor == attempt.worker_chat_key;
+            if actor != run.coordinator_chat_key && !own {
                 return Err(
                     "Only the owning worker or coordinator can register this service.".into(),
                 );
+            }
+            // A peer request's worker reads its task's services back, name
+            // and recovery guidance included, and a registration replaces
+            // the one of the same name. So on such a task the worker is the
+            // only writer: the coordinator is the teammate that asked, or
+            // speaks for it.
+            if task.peer_request.is_some() && !own {
+                return Err(super::peer_request::PEERS_SERVICE.into());
             }
             if task.active_attempt_id.as_deref() != Some(&attempt.id) {
                 return Err("A superseded attempt cannot register a service.".into());
@@ -460,15 +469,17 @@ impl OrchestrationStore {
             if matches!(run.status, RunStatus::Stopped) {
                 return Err("A stopped run cannot register a service.".into());
             }
-            if actor == attempt.worker_chat_key
+            if own
                 && !matches!(
                     attempt.status,
                     AttemptStatus::Running | AttemptStatus::Preparing
                 )
             {
-                return Err(
-                    "A settled worker cannot register a service. Use the coordinator.".into(),
-                );
+                return Err(if task.peer_request.is_some() {
+                    "A settled worker cannot register a service.".into()
+                } else {
+                    "A settled worker cannot register a service. Use the coordinator.".into()
+                });
             }
             let service = Service {
                 id: format!("service_{}", compact_id()),

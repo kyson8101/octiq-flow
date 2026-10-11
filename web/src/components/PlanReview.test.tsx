@@ -32,6 +32,14 @@ describe("PlanReview", () => {
     expect(html).not.toMatch(/disabled=""[^>]*>Approve/);
   });
 
+  it("says who asked for a peer request, and for how long", () => {
+    const peerRequest = { requestedBy: { id: "ada", name: "Ada" }, requesterChatKey: "chat:lead", output: "One line.", maxMinutes: 30, requestedAt: 1 };
+    const html = render([task("a", [], { assignee: { id: "bo", name: "Bo" }, peerRequest }), task("b")]);
+    expect(html).toContain('<span class="plan-task-after" title="30 minutes of working time; waiting for a decision does not count, and it is not extended.">requested by <bdi>Ada</bdi> · 30 min working time</span>');
+    // Only on that task: an ordinary one says nothing of the kind.
+    expect(html.match(/requested by/g)).toHaveLength(1);
+  });
+
   it("reveals an optional one-line reason only in the reject confirmation step", () => {
     const html = renderToStaticMarkup(<PlanRejectConfirmation reason="Not this direction" busy={false} disabled={false}
       rejecting={false} onReason={() => {}} onConfirm={() => {}} onCancel={() => {}} />);

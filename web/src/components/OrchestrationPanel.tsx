@@ -42,7 +42,7 @@ import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 
 import {
-  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isPeerRequestGate, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -261,6 +261,19 @@ export function OrchestrationPanel({
     setBusy(true);
     setError(null);
     try {
+      // A peer request's gate is answered by the person and by no agent, so
+      // the answer goes to the host, not through the main chat.
+      if (isPeerRequestGate(gate, snapshot.tasks)) {
+        await bridge.invoke("orchestration_gate_resolve", {
+          actorChatKey: run.coordinatorChatKey,
+          gateId: gate.id,
+          resolution: resolution.trim(),
+          resumeTarget: true,
+        });
+        setAnswers((current) => ({ ...current, [gate.id]: "" }));
+        await read();
+        return;
+      }
       onOpenChat(run.coordinatorChatKey,
         `For orchestration gate ${gate.id}:\n\n${gate.question}\n\nMy answer: ${resolution.trim()}\n\nReview this answer and coordinate the next step through orchestration_gate_resolve.`);
       setAnswers((current) => ({ ...current, [gate.id]: "" }));
@@ -930,7 +943,7 @@ function RunDetail({
                   aria-label={`Decision for ${gate.question}`}
                   onChange={(event) => onAnswer(gate.id, event.target.value)}
                 />
-                <button type="button" disabled={busy || !(answers[gate.id] ?? "").trim()} onClick={() => onResolve(gate, answers[gate.id] ?? "")}>Send to main chat</button>
+                <button type="button" disabled={busy || !(answers[gate.id] ?? "").trim()} onClick={() => onResolve(gate, answers[gate.id] ?? "")}>{isPeerRequestGate(gate, tasks) ? "Answer" : "Send to main chat"}</button>
               </div>}
             </article>
           ))}

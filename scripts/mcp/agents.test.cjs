@@ -23,13 +23,14 @@ function call(env, method, params, flags = []) {
   });
 }
 
-const agentTools = result => result.tools.filter(tool => tool.name.startsWith("agent_")).map(tool => tool.name);
+const isRosterTool = tool => tool.name.startsWith("agent_") || tool.name.startsWith("team_");
+const agentTools = result => result.tools.filter(isRosterTool).map(tool => tool.name);
 
 test("agent tools are offered to both providers, list-only for a worker, none outside a chat", async () => {
   for (const flags of [[], ["--disable-ask-user"]]) {
     const listed = await call({ OCTIQ_CHAT_KEY: "chat:lead" }, "tools/list", {}, flags);
-    assert.deepEqual(agentTools(listed), ["agent_list", "agent_register", "agent_update", "agent_delete", "agent_policy_update"]);
-    for (const tool of listed.tools.filter(tool => tool.name.startsWith("agent_"))) {
+    assert.deepEqual(agentTools(listed), ["agent_list", "agent_register", "agent_update", "agent_delete", "agent_policy_update", "team_create", "team_update"]);
+    for (const tool of listed.tools.filter(isRosterTool)) {
       assert.equal(tool.inputSchema.additionalProperties, false);
       // Identity and the card's deadline are never the agent's to say.
       for (const key of ["chatKey", "waitSeconds", "avatar", "id"]) assert.ok(!(key in tool.inputSchema.properties), `${tool.name}: ${key}`);
@@ -46,6 +47,22 @@ test("agent tools are offered to both providers, list-only for a worker, none ou
     assert.equal(policy.inputSchema.properties.policy.maxLength, 4000);
     assert.equal(policy.annotations.readOnlyHint, false);
     assert.match(policy.description, /approves or declines it on a card/);
+    // A team tool names a team and its members, and nothing else of an agent.
+    const create = listed.tools.find(tool => tool.name === "team_create");
+    assert.deepEqual(create.inputSchema.required, ["name"]);
+    assert.deepEqual(Object.keys(create.inputSchema.properties), ["name", "members"]);
+    const update = listed.tools.find(tool => tool.name === "team_update");
+    assert.deepEqual(update.inputSchema.required, ["team"]);
+    assert.deepEqual(Object.keys(update.inputSchema.properties), ["team", "name", "addMembers", "removeMembers"]);
+    for (const tool of [create, update]) {
+      assert.equal(tool.annotations.readOnlyHint, false);
+      assert.match(tool.description, /approves or declines it on a card/);
+      assert.match(tool.description, /takes it off that team; the card says which/);
+      // What being on a team grants, as the card's Membership row says it.
+      assert.match(tool.description, /Teammates may ask each other questions \(orchestration_peer_ask\) and request bounded work from each other \(orchestration_peer_request\), and each request for work is approved by the person separately/);
+    }
+    // The listing says what it now carries.
+    assert.match(listed.tools.find(tool => tool.name === "agent_list").description, /teamId with team/);
   }
   const worker = await call({ OCTIQ_CHAT_KEY: "chat:orch-w", OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, "tools/list", {});
   assert.deepEqual(agentTools(worker), ["agent_list"]);
@@ -88,6 +105,17 @@ test("agent calls go to /hook/agents with only documented fields and the provide
   await call(env, "tools/call", { name: "agent_delete", arguments: { agent: "Nova", role: "x" } });
   assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "delete", args: { agent: "Nova", waitSeconds: 180 } });
 
+  // A team goes to the same hook under its own name, with only its fields.
+  await call(env, "tools/call", { name: "team_create", arguments: { name: "Leads", members: ["Potato", "Nova"], project: "Starfall" } });
+  assert.deepEqual(requests.at(-1), { url: "/hook/agents", body: { chatKey: "chat:lead", action: "team_create", args: { name: "Leads", members: ["Potato", "Nova"], waitSeconds: 180 } } });
+  await call(env, "tools/call", { name: "team_update", arguments: { team: "Leads", name: "Heads", addMembers: ["Ada"], removeMembers: ["Nova"], reportsTo: "Potato" } }, ["--disable-ask-user"]);
+  assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "team_update", args: { team: "Leads", name: "Heads", addMembers: ["Ada"], removeMembers: ["Nova"], waitSeconds: 50 } });
+  // No other team_ name reaches the hook.
+  const sent = requests.length;
+  const unknown = await call(env, "tools/call", { name: "team_delete", arguments: { team: "Leads" } });
+  assert.equal(unknown.isError, true);
+  assert.equal(requests.length, sent);
+
   await call(env, "tools/call", { name: "agent_list", arguments: { project: "Starfall" } });
   assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "list", args: { project: "Starfall" } });
 
@@ -117,5 +145,8 @@ test("agent calls go to /hook/agents with only documented fields and the provide
   assert.equal(worker._meta["octiq/outcome"].reasonClass, "validation");
   const workerPolicy = await call({ ...env, OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, "tools/call", { name: "agent_policy_update", arguments: { policy: "x" } });
   assert.equal(workerPolicy.isError, true);
+  const workerTeam = await call({ ...env, OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, "tools/call", { name: "team_create", arguments: { name: "Leads" } });
+  assert.equal(workerTeam.isError, true);
+  assert.equal(workerTeam._meta["octiq/outcome"].reasonClass, "validation");
   assert.equal(requests.length, count);
 });

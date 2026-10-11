@@ -152,6 +152,34 @@ fn refresh_lead_turn(svc: &Services, key: &str, text: String) -> Result<String, 
     crate::team::refresh_turn_brief(&crate::team::default_path(), key, text, &projects)
 }
 
+/// Who calls a peer tool, when it is not a worker: the registered lead whose
+/// own agents-mode chat `actor` is, with that chat's project and folder.
+/// `None` for a worker's chat, which the store identifies by its attempt.
+/// Any other chat has no registered agent and is refused.
+fn peer_lead(
+    svc: &Services,
+    team_path: &std::path::Path,
+    actor: &str,
+) -> Result<Option<crate::orchestration::peer::LeadCaller>, String> {
+    if svc.orchestrations.is_worker_chat(actor)? {
+        return Ok(None);
+    }
+    let Some(record) = crate::team::lead_for_chat(team_path, actor)? else {
+        return Err(crate::outcome::refuse(
+            crate::outcome::ReasonClass::ScopeRefused,
+            "Peer tools are for a registered agent: a worker on a running task, or a lead in its own agents-mode chat. This chat is neither.",
+        ));
+    };
+    let (project_id, cwd) =
+        crate::orchestration::infer_context(&svc.workspaces, actor, None, None)?;
+    Ok(Some(crate::orchestration::peer::LeadCaller {
+        agent_id: record.lead_id,
+        project_id,
+        cwd,
+        cross_project: record.cross_project,
+    }))
+}
+
 /// The first message of a chat that is being started.
 enum FirstTurn {
     /// What the person typed, if anything.
@@ -1126,11 +1154,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // key when it resolves a visible gate or starts a run explicitly.
         "orchestration_snapshot" => {
             let run_id: Option<String> = arg(&args, "runId")?;
-            let snapshot = svc.orchestrations.snapshot(run_id.as_deref());
             // An agent's read lands in its transcript and goes out to every
             // tab, so it gets the compact view; the browser, which names no
             // actor, keeps the whole store.
             let Some(actor) = arg::<Option<String>>(&args, "actorChatKey")? else {
+                let snapshot = svc.orchestrations.snapshot(run_id.as_deref());
                 // The tab's whole-ledger read can leave finished runs' long
                 // text out; its run panel asks for one run whole (`brief.rs`).
                 let brief = arg::<Option<bool>>(&args, "brief")?.unwrap_or(false);
@@ -1142,7 +1170,15 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             };
             let task_id: Option<String> = arg(&args, "taskId")?;
             let message_limit: Option<usize> = arg(&args, "messageLimit")?;
-            let snapshot = snapshot?;
+            // Every agent's read is built from this one ledger, so a peer
+            // request's worker, held to its own task, finds nothing else in
+            // the view or in the environments below.
+            let (snapshot, own_task) = svc.orchestrations.snapshot_for_agent(
+                &actor,
+                run_id.as_deref(),
+                task_id.as_deref(),
+            )?;
+            let task_id = own_task.clone().or(task_id);
             let full = snapshot.clone();
             let mut view = crate::orchestration::agent_view::agent_snapshot(
                 snapshot,
@@ -1154,6 +1190,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                         .unwrap_or(crate::orchestration::agent_view::DEFAULT_MESSAGES),
                 },
             )?;
+            if own_task.is_some() {
+                crate::orchestration::agent_view::held_to_own_task(&mut view);
+            }
             // Only when a task in view needs one: the sandbox record is read
             // from disk, and most runs never touch it.
             let shown: std::collections::BTreeSet<String> = view["runs"]
@@ -1177,10 +1216,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                         "environments".into(),
                         crate::orchestration::agent_view::environments(&full, &sandboxes, &shown),
                     );
-                    out.insert(
-                        "environmentCapacity".into(),
-                        crate::orchestration::agent_view::capacity(&sandboxes),
-                    );
+                    // Host-wide, and it names the chats waiting for a slot.
+                    if own_task.is_none() {
+                        out.insert(
+                            "environmentCapacity".into(),
+                            crate::orchestration::agent_view::capacity(&sandboxes),
+                        );
+                    }
                 }
             }
             Ok(view)
@@ -1861,15 +1903,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             };
             to_value(Ok::<_, String>(settled))
         }
-        // A worker's question to a teammate, answered by the host as that
-        // teammate in a read-only one-shot turn (`orchestration/peer.rs`).
+        // A question to a teammate, answered by the host as that teammate in
+        // a read-only one-shot turn (`orchestration/peer.rs`): from a worker
+        // on its task, or from a registered lead in its own chat.
         "orchestration_peer_ask" => {
+            let actor: String = arg(&args, "actorChatKey")?;
             let path = crate::team::default_path();
             let agents = crate::team::list(&path, None, true)?;
             let teams = crate::team::teams(&path)?;
             let policy = crate::team::policy(&path)?;
+            let lead = peer_lead(svc, &path, &actor)?;
             to_value(svc.orchestrations.peer_ask(
-                &arg::<String>(&args, "actorChatKey")?,
+                &actor,
+                lead.as_ref(),
                 crate::orchestration::peer::PeerQuestion {
                     teammate_id: arg(&args, "teammateId")?,
                     question: arg(&args, "question")?,
@@ -1881,6 +1927,39 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 &policy.text,
                 crate::orchestration::peer::run_helper,
             ))
+        }
+        // One bounded piece of work for a teammate, recorded as a task that
+        // waits for the person (`orchestration/peer_request.rs`). Who asks
+        // comes from the chat; nothing in the arguments names the requester.
+        "orchestration_peer_request" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let path = crate::team::default_path();
+            let agents = crate::team::list(&path, None, true)?;
+            let teams = crate::team::teams(&path)?;
+            let projects = crate::workspaces::list_workspaces_impl(&svc.workspaces)?;
+            let lead = peer_lead(svc, &path, &actor)?;
+            let made = svc.orchestrations.peer_request(
+                &actor,
+                lead.as_ref(),
+                crate::orchestration::peer_request::PeerWork {
+                    peer: arg(&args, "peer")?,
+                    title: arg(&args, "title")?,
+                    request: arg(&args, "request")?,
+                    output: arg(&args, "output")?,
+                    project: arg(&args, "project")?,
+                    repository: arg(&args, "repository")?,
+                    max_minutes: arg(&args, "maxMinutes")?,
+                },
+                &agents,
+                &teams,
+                &projects,
+            )?;
+            // The host opened a run for this chat: it must be able to wake
+            // the chat when the teammate reports, as for any coordinator.
+            if made.run_created {
+                svc.chats.persist_orchestration_context(&actor)?;
+            }
+            to_value(Ok(made))
         }
         "orchestration_relay_send" => to_value(svc.orchestrations.relay_between_runs(
             &arg::<String>(&args, "actorChatKey")?,
@@ -1922,15 +2001,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             )?;
             to_value(Ok(gate))
         }
-        "orchestration_gate_resolve" => {
+        // Two doors, as for a worker start. A coordinator's answer comes only
+        // through `/hook/orchestration` as `_in_chat`, which the person's
+        // socket refuses; the person's comes only through the socket. A
+        // peer request's gate takes the person's and no other.
+        "orchestration_gate_resolve" | "orchestration_gate_resolve_in_chat" => {
             let actor: String = arg(&args, "actorChatKey")?;
             let resolution: String = arg(&args, "resolution")?;
             let resume_target = arg::<Option<bool>>(&args, "resumeTarget")?.unwrap_or(false);
+            let by = if cmd == "orchestration_gate_resolve_in_chat" {
+                crate::orchestration::ResolvedBy::Coordinator
+            } else {
+                crate::orchestration::ResolvedBy::Person
+            };
             let gate = svc.orchestrations.resolve_gate_and_resume(
                 &actor,
                 arg(&args, "gateId")?,
                 resolution,
                 resume_target,
+                by,
             )?;
             to_value(Ok(gate))
         }
