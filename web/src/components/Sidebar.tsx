@@ -69,7 +69,7 @@ export function Sidebar({
   ledgerUnavailable = false,
   coordinatorChatKeys = NONE,
   projects, shelved, deletedCount = 0, onShowDeleted,
-  conversations: everyChat, currentConversation, running, busy, deleting = NONE,
+  conversations: everyChat, currentConversation, running, busy, completing = NONE, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, newLabel = "New task", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
@@ -103,6 +103,8 @@ export function Sidebar({
   currentConversation: string | null;
   running: Set<string>;
   busy: Set<string>;
+  /** Chats wrapping up to be marked done (`lib/chatComplete`). */
+  completing?: ReadonlySet<string>;
   deleting?: ReadonlySet<string>;
   leaving?: ReadonlySet<string>;
   deleteMs?: number;
@@ -315,7 +317,7 @@ export function Sidebar({
           going ? "is-going" : "", isLeaving ? "is-leaving" : "",
           chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
           unread ? "is-unread" : "", done ? "is-done" : "", openWorker ? "is-worker-on" : "",
-          pending.length ? "has-pending" : "",
+          pending.length ? "has-pending" : "", completing.has(chat.id) ? "is-completing" : "",
         ].filter(Boolean).join(" ")} style={chatTintStyle}>
           {renaming === chat.id ? (
             <form className="chat-rename" onSubmit={(event) => {
@@ -340,7 +342,7 @@ export function Sidebar({
             <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
               busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
               className="chat-btn" type="button"
-              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${tasksWorking > 0 ? `, ${tasksWorking} ${tasksWorking === 1 ? "task" : "tasks"} running` : ""}${pending.length ? `, ${pendingLabel(pending)}` : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
+              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${completing.has(chat.id) ? ", completing" : ""}${tasksWorking > 0 ? `, ${tasksWorking} ${tasksWorking === 1 ? "task" : "tasks"} running` : ""}${pending.length ? `, ${pendingLabel(pending)}` : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
               disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
               aria-description={`${parent ? `Agent chat under ${parent.title}. ` : ""}Hover to preview. Hold for chat actions.`}
               onPointerDown={(event) => {

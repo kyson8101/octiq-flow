@@ -129,6 +129,8 @@ pub fn emit<S: Serialize>(event: &str, payload: S) {
     let Ok(value) = serde_json::to_value(&payload) else {
         return;
     };
+    #[cfg(test)]
+    tap::hear(event, &value);
     let tx = events();
     // Nobody attached: the frame would be built and dropped.
     if tx.receiver_count() == 0 {
@@ -137,6 +139,73 @@ pub fn emit<S: Serialize>(event: &str, payload: S) {
     let frame = json!({ "t": "event", "event": event, "payload": value });
     if let Ok(text) = serde_json::to_string(&frame) {
         let _ = tx.send(text);
+    }
+}
+
+/// How a test reads back what was emitted about one thing, in order.
+///
+/// The broadcast channel is shared by every test in the process and drops
+/// the oldest frames of a reader that falls behind, so "was A said before B"
+/// cannot be asked of it under a loaded suite. A tap keeps every event whose
+/// payload names its needle (a chat id, say), in the order `emit` was called.
+#[cfg(test)]
+pub(crate) mod tap {
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::Value;
+
+    type Heard = Arc<Mutex<Vec<(String, Value)>>>;
+
+    static TAPS: Mutex<Vec<(String, Heard)>> = Mutex::new(Vec::new());
+
+    pub(crate) struct Tap {
+        needle: String,
+        heard: Heard,
+    }
+
+    impl Tap {
+        /// Hear every event from now on whose payload contains `needle`.
+        pub(crate) fn on(needle: &str) -> Self {
+            let heard = Heard::default();
+            TAPS.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((needle.to_string(), heard.clone()));
+            Self {
+                needle: needle.to_string(),
+                heard,
+            }
+        }
+
+        /// `(event, payload)` for everything heard so far, oldest first.
+        pub(crate) fn heard(&self) -> Vec<(String, Value)> {
+            self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    impl Drop for Tap {
+        fn drop(&mut self) {
+            TAPS.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(needle, heard)| {
+                    needle != &self.needle || !Arc::ptr_eq(heard, &self.heard)
+                });
+        }
+    }
+
+    pub(super) fn hear(event: &str, payload: &Value) {
+        let taps = TAPS.lock().unwrap_or_else(|e| e.into_inner());
+        if taps.is_empty() {
+            return;
+        }
+        let text = payload.to_string();
+        for (needle, heard) in taps.iter() {
+            if text.contains(needle.as_str()) {
+                heard
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((event.to_string(), payload.clone()));
+            }
+        }
     }
 }
 

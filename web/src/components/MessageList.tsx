@@ -46,6 +46,8 @@ import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { RollingText } from "./RollingNumber";
 import { MessageBubble } from "./MessageBubble";
+import { WrapUpNote } from "./CompleteChat";
+import { wrapUpBubble } from "../lib/chatComplete";
 import { canDiscussUnsent } from "../lib/writerConflict";
 import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
@@ -855,6 +857,8 @@ function TurnView({
   const waitingId = queued ? message.turnId : undefined;
   const cancel = onCancelQueued && waitingId ? () => onCancelQueued(waitingId) : undefined;
   const start = onStartQueued && waitingId ? () => onStartQueued(waitingId) : undefined;
+  // The host's wrap-up turn of a completion is not something the person said.
+  const wrapUp = role === "user" ? wrapUpBubble(message) : null;
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
@@ -878,7 +882,7 @@ function TurnView({
     return [...seen.values()];
   }, [messages]);
 
-  if (relay) {
+  if (relay && !wrapUp) {
     return (
       <article className="msg msg-relay">
         <span aria-hidden="true">↳</span> {relay}
@@ -941,11 +945,11 @@ function TurnView({
           <span className="msg-reply-preview">{replyTo.preview}</span>
         </div>
       )}
-      <MessageBubble user={role === "user"} message={message} onStart={start} onCancel={cancel}
-        onRestore={(unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
+      <MessageBubble user={role === "user"} message={message} wrapUp={!!wrapUp} onStart={start} onCancel={cancel}
+        onRestore={!wrapUp && (unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
         onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
         onDiscuss={role === "user" && onDiscussUnsent && canDiscussUnsent(message) ? () => onDiscussUnsent(message.turnId!) : undefined}
-        footer={role === "user" && answer ? <CopyAnswer text={answer} what="message" /> : undefined}>
+        footer={role === "user" && answer && !wrapUp ? <CopyAnswer text={answer} what="message" /> : undefined}>
 
         {/* Above the words, the way they sit above the box while you attach
             them — and because a message whose words are "look at this" makes no
@@ -958,7 +962,9 @@ function TurnView({
             are two messages, and one "show more" over both would open the pair.
             Anything else in a user turn (there is nothing today) still goes the
             ordinary way. */}
-        {role === "user" && blocks.every((b) => b.kind === "text") ? (
+        {wrapUp ? (
+          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} />
+        ) : role === "user" && blocks.every((b) => b.kind === "text") ? (
           blocks.map((b, i) => <UserText key={i} text={shown((b as { text: string }).text)} />)
         ) : (
           <Blocks

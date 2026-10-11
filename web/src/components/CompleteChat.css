@@ -1,0 +1,372 @@
+/* ---- Completing a chat ---------------------------------------------------
+   The action, the question before it, and the one line that says where it
+   stands. Nothing here is a warning and nothing is destructive: the question
+   is the decision colour, and the line is quiet. The accent is left to the
+   turn in flight, which has its own indicator. */
+
+/* ---- The question ------------------------------------------------------ */
+
+.complete-ask {
+  width: min(420px, 100%);
+  border-color: color-mix(in srgb, var(--decide) 45%, var(--border));
+}
+
+.complete-ask-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.complete-ask-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--decide);
+}
+
+.complete-ask-lead {
+  margin: 8px 0 0;
+  color: var(--fg-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.complete-ask-waits,
+.complete-ask-loading,
+.complete-ask-refusal {
+  margin: 6px 0 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.complete-ask-refusal {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--decide) 30%, var(--border));
+  border-radius: var(--r-sm);
+  background: var(--decide-tint);
+  color: var(--fg-1);
+}
+
+.complete-ask-facts {
+  display: grid;
+  gap: 1px;
+  margin: 14px 0 0;
+  border: 1px solid color-mix(in srgb, var(--decide) 22%, var(--border));
+  border-radius: var(--r-sm);
+  background: var(--decide-tint);
+  overflow: hidden;
+}
+
+.complete-ask-facts > div {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.complete-ask-facts > div + div {
+  border-top: 1px solid color-mix(in srgb, var(--decide) 14%, var(--border));
+}
+
+.complete-ask-facts dt {
+  color: var(--fg-2);
+}
+
+.complete-ask-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--fg-0);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.complete-ask-steps {
+  margin-top: 12px;
+  font-size: 12.5px;
+}
+
+.complete-ask-steps > summary {
+  width: fit-content;
+  min-height: 28px;
+  padding: 4px 0;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.complete-ask-steps > summary:hover {
+  color: var(--fg-0);
+}
+
+.complete-ask-steps > summary:focus-visible {
+  outline: 2px solid var(--decide);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+.complete-ask-steps ol {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.complete-ask-steps li {
+  display: grid;
+  grid-template-columns: 18px 72px minmax(0, 1fr);
+  gap: 6px;
+  align-items: baseline;
+  color: var(--fg-2);
+  line-height: 1.45;
+  counter-increment: step;
+}
+
+.complete-ask-steps li::before {
+  content: counter(step);
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.complete-ask-steps li strong {
+  color: var(--fg-1);
+  font-weight: 600;
+}
+
+/* The answer it leads with: the decision colour as a tint under its own
+   outline, the way every decision card draws it. */
+.complete-ask .ask-btn.is-primary {
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.complete-ask .ask-btn.is-primary:hover {
+  background: color-mix(in srgb, var(--decide) 28%, var(--bg-1));
+  filter: none;
+}
+
+.complete-ask .ask-btn.is-primary:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.complete-ask .ask-btn:focus-visible {
+  outline-color: var(--decide);
+}
+
+/* A tint of ink is one more grey among greys, so Manga's is solid. */
+:root[data-theme="manga"] .complete-ask .ask-btn.is-primary {
+  border-color: var(--decide);
+  background: var(--decide);
+  color: var(--decide-fg);
+}
+
+/* ---- The action, while it cannot be used --------------------------------- */
+
+.icon-btn.complete-chat:disabled {
+  color: var(--fg-3);
+  cursor: default;
+}
+
+.icon-btn.complete-chat:disabled:hover {
+  background: transparent;
+  color: var(--fg-3);
+}
+
+/* ---- The line above the composer ----------------------------------------- */
+
+.chat-completion {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(var(--chat-column) - 32px);
+  width: calc(100% - 32px);
+  min-height: 38px;
+  margin: 0 auto 6px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: 12.5px;
+  animation: chat-completion-in 180ms ease-out;
+}
+
+@keyframes chat-completion-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.chat-completion-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-2);
+}
+
+.chat-completion[data-kind="done"] .chat-completion-mark {
+  color: var(--ok);
+}
+
+/* The one thing on this line that moves, and only while the chat is
+   completing. Neutral on purpose: the accent belongs to the turn in flight. */
+.chat-completion-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-2);
+  animation: chat-completion-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes chat-completion-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.chat-completion-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.chat-completion-label {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.chat-completion-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-completion-action,
+.chat-completion-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color 130ms ease-out, color 130ms ease-out;
+}
+
+/* Closing a mission is the person's decision, so it takes that colour. */
+.chat-completion-action {
+  padding: 3px 10px;
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 14%, var(--bg-1));
+  color: var(--fg-0);
+}
+
+.chat-completion-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--decide) 26%, var(--bg-1));
+}
+
+.chat-completion-action:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.chat-completion-dismiss {
+  width: 28px;
+  color: var(--fg-2);
+}
+
+.chat-completion-dismiss:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.chat-completion-action:focus-visible,
+.chat-completion-dismiss:focus-visible {
+  outline: 2px solid var(--decide);
+  outline-offset: 2px;
+}
+
+/* ---- The wrap-up's bubble -------------------------------------------------
+   The host's text is the agent's instructions, not something the person
+   said. The bubble says what it is; the words are behind a disclosure. */
+
+.wrap-up-note {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.wrap-up-note-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 7px;
+}
+
+.wrap-up-note-mark {
+  display: inline-flex;
+  align-self: center;
+  color: var(--fg-2);
+}
+
+.wrap-up-note-label {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.wrap-up-note-detail {
+  color: var(--fg-2);
+  font-size: 0.875em;
+}
+
+.wrap-up-note-text {
+  font-size: 0.8125em;
+}
+
+.wrap-up-note-text > summary {
+  width: fit-content;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.wrap-up-note-text > summary:hover {
+  color: var(--fg-0);
+}
+
+.wrap-up-note-text > p {
+  margin: 6px 0 0;
+  color: var(--fg-1);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-completion,
+  .chat-completion-dot {
+    animation: none;
+  }
+
+  .chat-completion-action,
+  .chat-completion-dismiss {
+    transition: none;
+  }
+}
