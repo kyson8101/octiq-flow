@@ -11,12 +11,18 @@
 // to guess is how people end up granting everything. The plan `ExitPlanMode`
 // asks you to approve arrives here too, and is the clearest case of it: there
 // is nothing else on the card to judge it by.
+//
+// It arrives folded (`lib/cardFold`): the tool, the path, the short facts and
+// the answers. A long part is named with its size and opens whole, above the
+// answers; nothing on this card is ever cut without saying how much.
 import { useEffect, useState } from "react";
 import { ASK_WAIT_SECS, askDeadline, askRemaining, askWaitSecs, clockText } from "../lib/askClock";
 import { askDetail, changeFacts, type ChangeRow } from "../lib/askDetail";
 import { bridge } from "../lib/bridge";
+import { diffLabel, longRowsLabel, rowFold, textFold, type RowFold } from "../lib/cardFold";
 import { fileDiff } from "../lib/diff";
 import { mcpParts, toolLook, toolWords } from "../lib/toolKind";
+import { FoldBody, FoldLine, useFold, WholeText } from "./CardFold";
 import { DiffView } from "./DiffView";
 import { ToolIcon } from "./ToolIcon";
 
@@ -39,8 +45,21 @@ export type Ask = {
   receivedAt?: number;
 };
 
-/** The line beside the buttons, in the three parts the card draws: what holds
- *  the agent, the time left when the page knows it, and what follows. */
+/** The line beside the buttons, in the three parts the card draws: the one
+ *  consequence that matters, with the time left when the page knows it. The
+ *  rest of `askNote` is the line's tooltip and, on a card that opens, the
+ *  last thing in its detail. */
+export function askShortParts(ask: Ask, remaining?: number | null): [string, string | null, string] {
+  if (typeof remaining === "number") return ["No answer in ", clockText(remaining), " counts as Deny"];
+  const secs = askWaitSecs(ask);
+  if (secs === 0) return ["No answer counts as Deny", null, ""];
+  const within = secs < ASK_WAIT_SECS ? (secs === 1 ? "1 second" : `${secs} seconds`) : "three minutes";
+  return [`No answer within ${within} counts as Deny`, null, ""];
+}
+
+/** The same line said in full, in the three parts a clock splits it into:
+ *  what holds the agent, the time left when the page knows it, and what
+ *  follows. */
 export function askNoteParts(ask: Ask, remaining?: number | null): [string, string | null, string] {
   const always = ask.once ? "" : " “Always” lasts until this chat is stopped.";
   if (typeof remaining === "number") {
@@ -54,7 +73,7 @@ export function askNoteParts(ask: Ask, remaining?: number | null): [string, stri
   return [`Paused until you answer. No answer within ${within} counts as Deny.${always}`, null, ""];
 }
 
-/** The line beside the buttons: what holds the agent, and for how long.
+/** The whole of it: what holds the agent, and for how long.
  *  `remaining` is the seconds left, for a question this page saw arrive. */
 export function askNote(ask: Ask, remaining?: number | null): string {
   const [before, clock, after] = askNoteParts(ask, remaining);
@@ -97,6 +116,17 @@ function ChangeValue({ row }: { row: ChangeRow }) {
   );
 }
 
+/** A row that is folded: what stays of it beside its label. The end of a
+ *  consequence too long to draw whole comes first, then the size. */
+function FoldedValue({ fold }: { fold: Extract<RowFold, { folded: true }> }) {
+  return (
+    <dd className="is-folded">
+      {fold.tail && <span className="ask-change-tail">{fold.tail}</span>}
+      <span className="ask-change-size">{fold.note}</span>
+    </dd>
+  );
+}
+
 /** The path a tool is about to touch, when it names one. */
 function target(ask: Ask): string | null {
   const input = ask.toolInput ?? {};
@@ -116,8 +146,15 @@ export function askSummary(ask: Ask): string {
   return path ? `${tool} — ${path}` : tool;
 }
 
-export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: string) => void }) {
+export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
+  ask: Ask;
+  onAnswered: (id: string) => void;
+  /** Draw it opened. Off everywhere in the app, where a card arrives folded;
+   *  on in the tests, which draw static markup and cannot press the control. */
+  startOpen?: boolean;
+}) {
   const [sending, setSending] = useState<"allow" | "deny" | "always" | null>(null);
+  const fold = useFold(ask.id, { startOpen });
   const path = target(ask);
   // The same drawing the card will show once the edit has run — asked BEFORE
   // it runs, so it has no line numbers to give. That is the honest half: what
@@ -135,7 +172,18 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
   // and its id beside them. The chat's cards keep `mcp(server:tool)`.
   const mcp = mcpParts(ask.toolName ?? "");
   const now = useNow(askDeadline(ask) !== null);
-  const [before, clock, after] = askNoteParts(ask, askRemaining(ask, now));
+  const [before, clock, after] = askShortParts(ask, askRemaining(ask, now));
+  // What is folded, and under which name. A row keeps its label on the card
+  // whether or not its value is; a text keeps its first line.
+  const rows = (facts?.rows ?? []).map((row) => ({ row, fold: rowFold(row) }));
+  const longRows = rows.filter((item) => item.fold.folded);
+  const text = extra && !facts ? textFold(extra.body) : null;
+  const folded = [
+    diff && diffLabel(diff),
+    longRows.length > 0 && longRowsLabel(longRows.length),
+    text && !text.whole && text.rest,
+  ];
+  const folds = folded.some(Boolean);
 
   const answer = async (choice: "allow" | "deny" | "always") => {
     setSending(choice);
@@ -185,41 +233,64 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
         </div>
       )}
 
-      {diff && (
-        <div className="ask-card-detail">
-          <div className="ask-card-label">{diff.kind === "create" ? "writing" : "changing"}</div>
-          <DiffView diff={diff} />
-        </div>
-      )}
-
       {facts && (
         <div className="ask-card-detail ask-change">
           <p className="ask-change-lead">{facts.lead}</p>
           <dl className="ask-change-rows">
-            {facts.rows.map((row, i) => (
+            {rows.map(({ row, fold: how }, i) => (
               <div key={i}>
                 <dt>{row.label}</dt>
-                <ChangeValue row={row} />
+                {how.folded ? <FoldedValue fold={how} /> : <ChangeValue row={row} />}
               </div>
             ))}
           </dl>
         </div>
       )}
 
-      {extra && !facts && (
+      {extra && text && (
         <div className="ask-card-detail">
           <div className="ask-card-label">{extra.label}</div>
-          <pre className="ask-card-body">{extra.body.slice(0, extra.limit)}</pre>
+          {text.whole
+            ? <pre className="ask-card-body">{extra.body}</pre>
+            : <pre className="ask-card-body is-first"><span className="ask-card-first">{text.first}</span></pre>}
         </div>
       )}
 
+      <FoldLine fold={fold} labels={folded} />
+      {folds && <FoldBody fold={fold}>
+        {diff && (
+          <div className="ask-card-detail">
+            <div className="ask-card-label">{diff.kind === "create" ? "writing" : "changing"}</div>
+            <DiffView diff={diff} />
+          </div>
+        )}
+        {longRows.length > 0 && (
+          <dl className="ask-change-rows is-whole">
+            {longRows.map(({ row }, i) => (
+              <div key={i}>
+                <dt>{row.label}</dt>
+                <ChangeValue row={row} />
+              </div>
+            ))}
+          </dl>
+        )}
+        {extra && text && !text.whole && (
+          <div className="ask-card-detail">
+            <div className="ask-card-label">{extra.label}</div>
+            <WholeText text={extra.body} />
+          </div>
+        )}
+        <p className="card-fold-note">{askNote(ask)}</p>
+      </FoldBody>}
+
       <div className="ask-card-foot">
         {/* Plain text, not a live region: a clock read out every second would
-            bury the question the card is asking. */}
+            bury the question the card is asking. The whole sentence is the
+            line's tooltip. */}
         {clock === null ? (
-          <p className="ask-card-wait">{before}</p>
+          <p className="ask-card-wait" title={askNote(ask)}>{before}</p>
         ) : (
-          <p className="ask-card-wait">
+          <p className="ask-card-wait" title={askNote(ask)}>
             {before}
             <span className="ask-card-clock">{clock}</span>
             {after}

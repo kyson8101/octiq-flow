@@ -1,0 +1,77 @@
+/* The one disclosure of a decision card (`CardFold.tsx`): a line that names
+   what is folded, a chevron at its end, and the box it opens above the card's
+   buttons. Quiet text and no colour of its own: what is folded is not news. */
+.card-fold-line {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0; min-height: 28px; margin-top: 8px;
+  color: var(--fg-2); font-size: 12px; line-height: 1.4;
+}
+.card-fold-labels { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.card-fold-labels > span + span::before { content: " · "; color: var(--fg-3); }
+
+.card-fold-toggle {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 28px; height: 28px; margin: 0 -6px 0 0; padding: 0;
+  border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer;
+}
+/* The whole line is the target; the chevron is only where it is drawn. */
+.card-fold-line > .card-fold-toggle::after { content: ""; position: absolute; inset: 0; }
+.card-fold-toggle:focus-visible { outline: 2px solid var(--focus, var(--decide)); outline-offset: 1px; }
+.card-fold-chevron {
+  width: 6px; height: 6px; margin-bottom: 3px;
+  border-right: 1.5px solid var(--fg-2); border-bottom: 1.5px solid var(--fg-2);
+  transform: rotate(45deg); transition: transform var(--enter-duration) var(--enter-ease);
+}
+.card-fold-toggle[aria-expanded="true"] .card-fold-chevron { transform: translateY(2px) rotate(-135deg); }
+@media (hover: hover) {
+  .card-fold-line:hover { color: var(--fg-0); }
+  .card-fold-toggle:hover .card-fold-chevron,
+  .card-fold-line:hover .card-fold-chevron { border-color: var(--fg-0); }
+}
+@media (pointer: coarse) {
+  .card-fold-line { min-height: 44px; }
+  .card-fold-toggle { width: 44px; height: 44px; margin-right: -12px; }
+}
+
+/* What it opens: a one-row grid whose row opens from nothing, as `.arrive`
+   does, and shuts the same way. Two boxes, because a box cannot be shorter
+   than its own padding. */
+.card-fold { display: grid; grid-template-rows: 1fr; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.card-fold[hidden] { display: none; }
+.card-fold > .card-fold-in { min-width: 0; min-height: 0; }
+/* A long detail scrolls here, inside the card, and is never cut. */
+.card-fold > .card-fold-in.is-bounded {
+  max-height: min(52vh, 420px);
+  overflow-y: auto; overscroll-behavior: contain;
+}
+.card-fold.is-opening { animation: enter-reveal var(--enter-reveal-duration) var(--enter-ease); }
+.card-fold.is-opening > .card-fold-in {
+  animation:
+    enter-clip var(--enter-reveal-duration) linear,
+    enter-fade var(--enter-reveal-duration) var(--enter-ease);
+}
+.card-fold.is-closing { animation: card-fold-shut var(--enter-duration) var(--enter-ease) forwards; }
+.card-fold.is-closing > .card-fold-in {
+  overflow: hidden;
+  animation: card-fold-out var(--enter-duration) var(--enter-ease) forwards;
+}
+@keyframes card-fold-shut { to { grid-template-rows: 0fr; } }
+@keyframes card-fold-out { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .card-fold.is-opening, .card-fold.is-opening > .card-fold-in,
+  .card-fold.is-closing, .card-fold.is-closing > .card-fold-in { animation: none; }
+  .card-fold-chevron { transition: none; }
+}
+
+/* Inside the detail the one scroll is the detail's own. */
+.card-fold-in .ask-card-body.is-whole,
+.card-fold-in .route-message-text.is-whole { max-height: none; }
+.card-fold-in .diff-body { max-height: none; }
+.card-fold-in > :first-child { margin-top: 4px; }
+
+/* What a capped detail left out, said under it. */
+.card-fold-cut { margin: 6px 0 0; color: var(--fg-1); font-size: 12px; font-weight: 600; }
+
+/* The sentences a folded card shortens, whole. */
+.card-fold-note { margin: 9px 0 0; color: var(--fg-2); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

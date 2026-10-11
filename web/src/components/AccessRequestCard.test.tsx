@@ -5,7 +5,7 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn() } }));
 import { AccessRequestCard } from "./AccessRequestCard";
 import { ChatRequests } from "./ChatRequests";
 import {
-  accessCovers, accessRequestNote, accessRequestTitle, leastOffered, raiseRestarts, type AccessRequest,
+  accessCovers, accessRequestNote, accessRequestShort, accessRequestTitle, leastOffered, raiseRestarts, type AccessRequest,
 } from "../lib/accessRequest";
 import { pendingActions } from "../lib/pendingActions";
 import { EMPTY_ORCHESTRATION } from "../lib/orchestration";
@@ -25,8 +25,50 @@ describe("the access card", () => {
     expect(html).toContain("Write the fix to src/lib/chat.ts.");
     expect(html).toContain("Raise to Accept edits");
     expect(html).toContain("Not now");
-    expect(html).toContain("It applies at once");
-    expect(html).toContain("The agent is waiting for your answer; none within three minutes leaves the level as it is.");
+    // Folded: when a raise takes hold, on one short line beside the answers.
+    expect(html).toMatch(/<p class="ask-card-wait" title="[^"]*">Applies at once<\/p>/);
+    // A reason of one short line is a fact: whole, with nothing of it folded.
+    expect(html).toContain('<p class="access-card-reason">Write the fix to src/lib/chat.ts.</p>');
+    expect(html).toContain('<span>How it applies</span>');
+    expect(html).not.toContain("<span>Why ·");
+    expect(html).toMatch(/<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="[^"]+"/);
+    expect(html).not.toContain("card-fold-note");
+  });
+
+  it("opens to all of what a raise does, above the answers", () => {
+    const html = renderToStaticMarkup(<AccessRequestCard request={claude} onAnswer={async () => {}} startOpen />);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain(
+      '<p class="card-fold-note">It applies at once, to the work the agent is doing now. '
+      + "The agent is waiting for your answer; none within three minutes leaves the level as it is.</p>",
+    );
+    expect(html.indexOf("card-fold-note")).toBeLessThan(html.indexOf("ask-card-foot"));
+    expect(html).toContain("Raise to Accept edits");
+    expect(html).toContain("Not now");
+  });
+
+  it("holds a reason that runs on to one line, names its size, and opens it whole", () => {
+    const reason = "The fix touches three files outside the folder this chat may write to:\n"
+      + "web/src/lib/chat.ts, web/src/lib/chat.test.ts and the fixture beside them.";
+    const long: AccessRequest = { ...claude, reason };
+    const html = renderToStaticMarkup(<AccessRequestCard request={long} onAnswer={async () => {}} />);
+    expect(html).toContain(`<p class="access-card-reason is-first">${reason}</p>`);
+    expect(html).toContain("<span>Why · 2 lines</span><span>How it applies</span>");
+    const open = renderToStaticMarkup(<AccessRequestCard request={long} onAnswer={async () => {}} startOpen />);
+    expect(open).toContain(`<div class="ask-card-label">Why</div><p class="access-card-reason">${reason}</p>`);
+    for (const drawn of [html, open]) {
+      expect(drawn).toContain(">Plan<");
+      expect(drawn).toContain(">Accept edits<");
+      expect(drawn).toContain("Raise to Accept edits");
+    }
+  });
+
+  it("says in a few words when a raise takes hold", () => {
+    expect(accessRequestShort(claude)).toBe("Applies at once");
+    expect(accessRequestShort({ ...claude, takes: "next-turn" })).toBe("Applies from the agent's next turn");
+    expect(accessRequestShort({ ...claude, takes: "between-turns" })).toBe("Applies from your next message");
+    // A raise that restarts the agent ends the turn, and that is never folded.
+    expect(accessRequestShort({ ...claude, requested: "full" })).toBe("Raising ends the turn now");
   });
 
   it("names Codex's levels as Codex's picker does", () => {
@@ -48,9 +90,12 @@ describe("the access card", () => {
     const bypass = { ...claude, requested: "full" as const };
     expect(raiseRestarts(bypass)).toBe(true);
     const html = renderToStaticMarkup(<AccessRequestCard request={bypass} onAnswer={async () => {}} />);
-    expect(html).toContain("raising it ends the turn now");
+    // On the folded card, beside the button that does it.
+    expect(html).toContain(">Raising ends the turn now</p>");
+    expect(renderToStaticMarkup(<AccessRequestCard request={bypass} onAnswer={async () => {}} startOpen />))
+      .toContain('<p class="card-fold-note">This level needs a fresh agent: raising it ends the turn now');
     // A fresh agent is not a change "at once".
-    expect(html).not.toContain("It applies at once");
+    expect(html).not.toContain("pplies at once");
     expect(accessRequestTitle(bypass)).toBe("Raise this chat's access to Bypass permissions?");
   });
 

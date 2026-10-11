@@ -33,23 +33,11 @@
 .handover-facts dd { margin: 0; min-width: 0; color: var(--fg-1); font-size: 12.5px; overflow-wrap: anywhere; }
 .handover-dim { color: var(--fg-2); }
 
-.handover-brief { margin-top: 8px; min-width: 0; }
-.handover-brief > summary {
-  display: inline-flex; align-items: center; gap: 8px;
-  min-height: 28px; padding: 0 2px;
-  color: var(--fg-2); font-size: 12px; list-style: none; cursor: pointer;
-  border-radius: var(--r-sm);
-  transition: color 130ms ease-out;
-}
-.handover-brief > summary::-webkit-details-marker { display: none; }
-@media (hover: hover) { .handover-brief > summary:hover { color: var(--fg-0); } }
-.handover-brief > summary:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
 .handover-chevron {
   width: 6px; height: 6px; margin-bottom: 3px;
   border-right: 1.5px solid var(--fg-3); border-bottom: 1.5px solid var(--fg-3);
   transform: rotate(45deg); transition: transform 160ms ease-out;
 }
-.handover-brief[open] .handover-chevron { transform: translateY(2px) rotate(-135deg); }
 .handover-brief-body { display: grid; gap: 10px; padding: 6px 0 2px; min-width: 0; }
 .handover-section { min-width: 0; }
 .handover-section h4 { margin: 0 0 2px; color: var(--fg-2); font-size: 11.5px; font-weight: 600; }
@@ -265,11 +253,14 @@
   color: var(--fg-1); font-family: var(--mono); font-size: 12px;
   -webkit-box-decoration-break: clone; box-decoration-break: clone;
 }
+/* Opened, the detail is the one scroll: the brief is whole inside it. */
+.card-fold-in .route-brief-text { max-height: none; overflow: visible; }
+.card-fold-in .route-brief:first-child { margin-top: 6px; }
+.route-message h4 { margin: 0 0 5px; color: var(--fg-2); font-size: 11.5px; font-weight: 600; }
 .route-unreadable { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 2px; }
 .route-unreadable li { color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
-/* One click further, and quieter than the brief: the message to the letter. */
-.route-message { margin-top: 10px; }
-.route-message > summary { color: var(--fg-3); }
+/* Quieter than the brief: the message to the letter. */
+.route-message { margin-top: 12px; }
 .route-message-text {
   margin: 4px 0 0; max-height: 240px; overflow: auto; overscroll-behavior: contain;
   padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm);
