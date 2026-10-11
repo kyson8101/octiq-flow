@@ -3623,6 +3623,61 @@ body {
   }
 }
 
+/* ---- The chat's folder is gone ----------------------------------------
+   A task chat outlives its worktree. One quiet row above the composer says
+   so and what the next message will do about it; it reports, and never
+   stands in the way of sending. */
+.chat-folder-gone {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(var(--chat-column) - 32px);
+  width: calc(100% - 32px);
+  min-height: 38px;
+  margin: 0 auto 6px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 32%, var(--border));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-1));
+  color: var(--fg-2);
+  font-size: 12.5px;
+  animation: chat-folder-gone-in 180ms ease-out;
+}
+
+.chat-folder-gone-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--warn);
+}
+
+.chat-folder-gone-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.chat-folder-gone-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-folder-gone-hint {
+  color: var(--fg-3);
+}
+
+@keyframes chat-folder-gone-in {
+  from { opacity: 0; transform: translateY(2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-folder-gone { animation: none; }
+}
+
 /* ---- Background notices ----------------------------------------------
    Provider diagnostics are useful when debugging, but they are not part of
    the conversation and usually offer no immediate action. One quiet row keeps

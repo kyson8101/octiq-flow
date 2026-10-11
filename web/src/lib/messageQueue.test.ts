@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./chat";
-import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./messageQueue";
+import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage, unconfirmedSend } from "./messageQueue";
 
 const queued = () => reduceChat(addUserTurn(emptyChat(), "next", [], 1, "turn"), {
   type: "octiq_user_turn_delivery", uuid: "turn", state: "queued",
@@ -158,4 +158,24 @@ it("records an unacknowledged launch ending without changing acknowledged messag
   state = reduceChat(state, { type: "turn.started", octiq_user_turn_id: "turn" });
   state = reduceChat(state, { type: "octiq_user_turn_delivery", uuid: "turn", state: "unknown" });
   expect(state.messages[0]).toMatchObject({ takenUp: true, delivery: "dispatched" });
+});
+
+describe("a send the host refused", () => {
+  const REMOVED = "The chat's folder /trees/app/task-1 was removed and could not be restored: /repos/app is gone too. Start a new chat.";
+
+  it("keeps the message, unconfirmed, with the host's own words", () => {
+    const sent = { ...addUserTurn(emptyChat(), "carry on", [], 1, "turn"), busy: true };
+    const state = unconfirmedSend(sent, "turn", new Error(REMOVED), false);
+    expect(state.busy).toBe(false);
+    expect(state.messages[0]).toMatchObject({ delivery: "unknown", queueError: REMOVED });
+    // Not the OS error it used to be.
+    expect(state.messages[0]?.queueError).not.toContain("No such file or directory");
+  });
+
+  it("leaves a turn in flight busy, and a message the agent has alone", () => {
+    const sent = { ...addUserTurn(emptyChat(), "carry on", [], 1, "turn"), busy: true };
+    expect(unconfirmedSend(sent, "turn", "refused", true).busy).toBe(true);
+    const taken = { ...sent, messages: sent.messages.map((m) => ({ ...m, takenUp: true })) };
+    expect(unconfirmedSend(taken, "turn", "refused", false).messages[0]?.queueError).toBeUndefined();
+  });
 });

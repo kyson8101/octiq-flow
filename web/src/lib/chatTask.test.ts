@@ -9,6 +9,7 @@ import {
   phaseOf,
   prCompletionLine,
   releaseLine,
+  removedFolderNote,
   stepProgress,
   type TaskDelivery,
   type TaskWorkspace,
@@ -134,6 +135,45 @@ describe("where the chat is", () => {
 
   it("still says it was a worktree after it has been removed", () => {
     expect(locationOf(workspace({ exists: false }))).toBe("Task worktree (removed)");
+  });
+
+  it("says nothing about a folder that is there", () => {
+    expect(removedFolderNote()).toBeUndefined();
+    expect(removedFolderNote(workspace())).toBeUndefined();
+  });
+
+  it("promises a removed task worktree no more than a rebuild gives back", () => {
+    const gone = workspace({ exists: false, cwd: "/trees/app/task-1" });
+    expect(removedFolderNote(gone, "/repos/app")).toEqual({
+      title: "Task worktree removed: /trees/app/task-1",
+      detail:
+        "Your next message rebuilds it from its branch with committed work only. Uncommitted and untracked files are not restored. If it cannot be rebuilt, this chat moves to the project's own folder.",
+    });
+    // Review R4: "restores it" read as the folder coming back as it was.
+    expect(removedFolderNote(gone, "/repos/app")?.detail).not.toContain("restores it");
+  });
+
+  it("names where a chat that was never in a worktree continues", () => {
+    const gone = workspace({
+      exists: false,
+      isWorktree: false,
+      cwd: "/repos/old-app",
+      primaryRoot: "/repos/old-app",
+    });
+    expect(removedFolderNote(gone, "/repos/app/")).toEqual({
+      title: "Directory removed: /repos/old-app",
+      detail:
+        "Your next message moves this chat to /repos/app/. Nothing from the removed folder is restored.",
+    });
+    // The repository's own checkout outranks the project's folder.
+    expect(removedFolderNote({ ...gone, cwd: "/repos/old-app/packages/web" }, "/repos/app")?.detail)
+      .toBe("Your next message moves this chat to /repos/old-app. Nothing from the removed folder is restored.");
+  });
+
+  it("does not promise a folder it cannot name", () => {
+    const gone = workspace({ exists: false, isWorktree: false, cwd: "/repos/app", primaryRoot: "" });
+    expect(removedFolderNote(gone, "/repos/app/")?.detail)
+      .toBe("There is no other folder to continue in. Start a new chat.");
   });
 
   it("reads the working tree in one line", () => {

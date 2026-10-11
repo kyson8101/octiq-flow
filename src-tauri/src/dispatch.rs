@@ -502,12 +502,39 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         "chat_start" => {
             let key: String = arg(&args, "key")?;
+            let mut cwd: String = arg(&args, "cwd")?;
+            let resume: Option<String> = arg(&args, "resume")?;
+            // A chat outlives the worktree it ran in. Put the folder back, or
+            // move the chat to one that exists, before anything reads it: the
+            // sandbox below and the launch both need a real directory. It is
+            // refused before it changes anything, and what it holds (the
+            // workspace lifecycle lock and its claim on the chat) is kept
+            // until the chat has been started, further down.
+            let held = crate::chat_recover::recover(
+                &svc.chats,
+                &svc.workspaces,
+                &key,
+                &cwd,
+                arg::<Option<String>>(&args, "fallbackCwd")?.as_deref(),
+            )?;
+            if let Some(held) = &held {
+                cwd = held.recovery.cwd.clone();
+            }
             crate::sandbox::Store::profile().select(
                 &key,
-                &arg::<String>(&args, "cwd")?,
+                &cwd,
                 arg(&args, "useSandbox")?,
-                arg::<Option<String>>(&args, "resume")?.is_some(),
+                resume.is_some(),
             )?;
+            if let Some(held) = &held {
+                held.recovery.clone().settle(
+                    &key,
+                    arg(&args, "agent")?,
+                    resume.as_deref(),
+                    arg::<Option<std::collections::BTreeMap<String, String>>>(&args, "env")?
+                        .as_ref(),
+                );
+            }
             let turn_id = crate::agent_chat::fresh_turn_id(arg(&args, "turnId")?);
             let prompt: Option<String> = arg(&args, "prompt")?;
             if let Some(words) = &prompt {
@@ -521,16 +548,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let prompt = prompt
                 .map(|text| refresh_lead_turn(svc, &key, text))
                 .transpose()?;
-            unit(crate::agent_chat::chat_start_answering_impl(
+            let started = crate::agent_chat::chat_start_answering_impl(
                 svc.chats.clone(),
                 key,
-                arg(&args, "cwd")?,
+                cwd,
                 arg(&args, "agent")?,
                 arg(&args, "model")?,
                 arg(&args, "access")?,
                 prompt,
                 arg(&args, "handoff")?,
-                arg(&args, "resume")?,
+                resume,
                 arg(&args, "extraDirs")?,
                 arg(&args, "env")?,
                 arg(&args, "effort")?,
@@ -540,7 +567,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 // An outage card's retry: its card stays up until this start
                 // has taken the turn (`safety_block::person_turn`).
                 arg(&args, "safetyBlock")?,
-            ))
+            );
+            drop(held);
+            unit(started)
         }
         "chat_send" => {
             let key: String = arg(&args, "key")?;

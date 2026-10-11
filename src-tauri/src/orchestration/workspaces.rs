@@ -506,6 +506,79 @@ impl OrchestrationStore {
         Ok(guard)
     }
 
+    /// Hold workspace lifecycle still: until the guard is dropped no worker is
+    /// handed a checkout and no cleanup starts. `chat_recover` holds it from
+    /// its checks until the chat it put back has been started.
+    pub(crate) fn hold_workspace_lifecycle(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        self.workspace_ops.lock().map_err(|e| e.to_string())
+    }
+
+    /// Whether the host may put the removed folder `path` back for
+    /// `chat_key`'s chat (`chat_recover`). Asked with the lifecycle held.
+    ///
+    /// Stricter than a chat's own admission (`chat_workspace_access`), which
+    /// lets the person write beside a worker: this would CREATE the checkout,
+    /// or move a chat into it, on the word of a page that may be stale. So it
+    /// is refused for a worker's chat, whose folder comes with its task, and
+    /// while a task holds the checkout on a lease, is preparing it or is
+    /// cleaning it up. The folder is gone and git cannot be asked what it
+    /// was, so paths are compared as far as they still exist.
+    pub(crate) fn require_no_owner_of_removed(
+        &self,
+        chat_key: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        if inner
+            .data
+            .attempts
+            .values()
+            .any(|a| a.worker_chat_key == chat_key)
+        {
+            return Err(format!(
+                "The folder {path} was removed. It belongs to a task, and its run puts it back when the task starts again."
+            ));
+        }
+        let as_far_as_it_exists = |path: &str| {
+            let path = Path::new(path.trim_end_matches(['/', '\\']));
+            crate::paths::canonical_target(path).unwrap_or_else(|| path.to_path_buf())
+        };
+        let gone = as_far_as_it_exists(path);
+        for task in inner.data.tasks.values() {
+            let Some(ws) = &task.workspace else {
+                continue;
+            };
+            let held = ws.lease_attempt_id.is_some()
+                || matches!(
+                    ws.state,
+                    WorkspaceState::Preparing | WorkspaceState::Cleaning
+                );
+            // A plan with no checkout names nothing, and every path starts
+            // with nothing.
+            if !held || ws.plan.checkout_root.trim().is_empty() {
+                continue;
+            }
+            let root = as_far_as_it_exists(&ws.plan.checkout_root);
+            let shared = gone.starts_with(&root)
+                || (!ws.plan.is_managed_worktree() && root.starts_with(&gone));
+            if !shared {
+                continue;
+            }
+            return Err(if ws.state == WorkspaceState::Cleaning {
+                format!("The folder {path} was removed: its workspace is being cleaned up. Start a new chat.")
+            } else {
+                format!(
+                    "The folder {path} was removed, and task \"{}\" holds that checkout ({}). The host does not rebuild a folder under a running task; send again once the task has settled.",
+                    task.title, ws.plan.checkout_root
+                )
+            });
+        }
+        Ok(())
+    }
+
     /// The strict check: refused while any worker writes in `path`. The Git
     /// panel and handing a worktree over use it; a chat the person drives uses
     /// `chat_workspace_access`, which is told rather than refused.
@@ -1646,6 +1719,103 @@ mod tests {
         let profile = store.level_profile("agent_ada", 0).unwrap();
         assert_eq!((profile.progress.xp, profile.accepted_tasks), (75, 1));
         assert!(profile.awaiting.is_empty());
+    }
+
+    /// Review R2: a stale page must not have a worktree rebuilt, or its chat
+    /// moved, under a task that holds the checkout.
+    #[test]
+    fn a_removed_folder_a_task_holds_is_not_put_back_for_a_chat() {
+        let repo = Repo::new();
+        let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let attempt = prepare(&store, &task, Access::Auto).unwrap();
+        let held = attempt.cwd.clone();
+        // A worktree of the person's own beside it, for the control below.
+        let own = repo.dir.join("own").to_string_lossy().into_owned();
+        repo.git(&["worktree", "add", "-b", "person/own", &own]);
+        std::fs::remove_dir_all(&held).unwrap();
+        std::fs::remove_dir_all(&own).unwrap();
+        let listed = repo.git(&["worktree", "list", "--porcelain"]);
+
+        // The check itself: the leased checkout and anything inside it.
+        let inside = Path::new(&held).join("packages").join("app");
+        for path in [held.clone(), inside.to_string_lossy().into_owned()] {
+            let refused = store
+                .require_no_owner_of_removed("chat:stale", &path)
+                .unwrap_err();
+            assert!(refused.contains("holds that checkout"), "{refused}");
+            assert!(refused.contains(&task.title), "{refused}");
+        }
+        assert!(store
+            .require_no_owner_of_removed("chat:stale", &own)
+            .is_ok());
+        // A worker's chat is never recovered this way, wherever it points.
+        let refused = store
+            .require_no_owner_of_removed(&attempt.worker_chat_key, &own)
+            .unwrap_err();
+        assert!(refused.contains("belongs to a task"), "{refused}");
+
+        // The whole recovery, as `chat_start` asks for it.
+        let store = Arc::new(store);
+        let mut chats = ChatManager::default();
+        chats.orchestrations = store.clone();
+        let known = || crate::chat_recover::Remembered {
+            project_paths: vec![repo.root.clone()],
+            ..Default::default()
+        };
+        let refused = crate::chat_recover::recover_from(&chats, "chat:stale", &held, known)
+            .err()
+            .expect("refused");
+        assert!(refused.contains("holds that checkout"), "{refused}");
+        assert!(!Path::new(&held).exists(), "nothing was rebuilt");
+        assert_eq!(
+            repo.git(&["worktree", "list", "--porcelain"]),
+            listed,
+            "git was not touched"
+        );
+        assert!(!chats.has_process("chat:stale"));
+        // The lifecycle lock and the claim were let go with the refusal, and
+        // the person's own removed worktree is still put back.
+        let recovered = crate::chat_recover::recover_from(&chats, "chat:stale", &own, known)
+            .expect("recovered")
+            .expect("its folder was gone");
+        assert_eq!(recovered.recovery.cwd, own);
+        assert!(Path::new(&own).join("source.txt").is_file());
+        // While that recovery is held, no worker is handed a checkout.
+        assert!(store.workspace_ops.try_lock().is_err());
+        drop(recovered);
+        assert!(store.workspace_ops.try_lock().is_ok());
+
+        // A workspace being cleaned up is refused as well.
+        store
+            .mutate(|data| {
+                let ws = data
+                    .tasks
+                    .get_mut(&task.id)
+                    .and_then(|t| t.workspace.as_mut())
+                    .unwrap();
+                ws.lease_attempt_id = None;
+                ws.state = WorkspaceState::Cleaning;
+                Ok(())
+            })
+            .unwrap();
+        let refused = store
+            .require_no_owner_of_removed("chat:stale", &held)
+            .unwrap_err();
+        assert!(refused.contains("being cleaned up"), "{refused}");
+        // Once it is cleaned, the folder is nobody's.
+        store
+            .mutate(|data| {
+                data.tasks
+                    .get_mut(&task.id)
+                    .and_then(|t| t.workspace.as_mut())
+                    .unwrap()
+                    .state = WorkspaceState::Cleaned;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store
+            .require_no_owner_of_removed("chat:stale", &held)
+            .is_ok());
     }
 
     #[test]

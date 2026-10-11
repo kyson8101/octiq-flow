@@ -21,6 +21,7 @@ mod background_tasks;
 mod bus;
 mod canvas;
 mod chat_index;
+mod chat_recover;
 mod chat_search;
 mod chat_task;
 mod claude_allow;

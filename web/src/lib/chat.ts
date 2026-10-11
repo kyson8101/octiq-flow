@@ -1137,6 +1137,28 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     };
   }
 
+  // The folder this chat ran in was removed, and the host put it back or
+  // moved the chat before starting the agent (`chat_recover.rs`). It says what
+  // it did on a line of its own, and where the chat runs from now.
+  if (type === "octiq_chat_recovered") {
+    const text = asStr(e.text);
+    const cwd = asStr(e.cwd) || state.cwd;
+    if (!text) return cwd === state.cwd ? state : { ...state, cwd };
+    return {
+      ...state,
+      cwd,
+      messages: [
+        ...state.messages,
+        {
+          id: `recovered-${state.messages.length}`,
+          role: "assistant",
+          blocks: [{ kind: "notice", text }],
+          streaming: false,
+        },
+      ],
+    };
+  }
+
   if (type === "octiq_auto_resume_failed") {
     return {
       ...state,

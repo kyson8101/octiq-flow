@@ -138,6 +138,121 @@ pub fn git_prepare_chat_workspace(
     })
 }
 
+/// What git still records about a linked worktree, read from
+/// `git worktree list --porcelain`. An entry outlives its folder until the
+/// next `worktree prune`, which is what lets a removed worktree be rebuilt on
+/// the branch it had.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct WorktreeEntry {
+    pub path: String,
+    /// Empty for a detached HEAD.
+    pub branch: String,
+    pub head: String,
+}
+
+/// Every worktree `primary` lists, the primary checkout first.
+pub(crate) fn listed_worktrees(primary: &str) -> Vec<WorktreeEntry> {
+    run_git(primary, &["worktree", "list", "--porcelain"])
+        .map(|text| parse_worktree_list(&text))
+        .unwrap_or_default()
+}
+
+fn parse_worktree_list(text: &str) -> Vec<WorktreeEntry> {
+    let mut entries = Vec::new();
+    let mut current: Option<WorktreeEntry> = None;
+    for line in text.lines().chain(std::iter::once("")) {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            entries.extend(current.replace(WorktreeEntry {
+                path: path.to_string(),
+                ..WorktreeEntry::default()
+            }));
+        } else if let Some(entry) = current.as_mut() {
+            if let Some(head) = line.strip_prefix("HEAD ") {
+                entry.head = head.to_string();
+            } else if let Some(name) = line.strip_prefix("branch ") {
+                entry.branch = name.strip_prefix("refs/heads/").unwrap_or(name).to_string();
+            } else if line.is_empty() {
+                entries.extend(current.take());
+            }
+        }
+    }
+    entries
+}
+
+/// A worktree put back where one was removed.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RestoredWorktree {
+    /// Empty when the worktree came back detached at `head`.
+    pub branch: String,
+    pub head: String,
+    /// True when the branch was gone too and was made again at `head`.
+    pub branch_recreated: bool,
+}
+
+/// Rebuild a removed linked worktree at the SAME path.
+///
+/// The branch is checked out when it still exists. When it is gone, it is made
+/// again at `head`, the commit remembered for it; with no branch name the
+/// worktree comes back detached there. Nothing is overwritten: a `target` that
+/// exists is refused, and git refuses a branch another worktree holds.
+pub(crate) fn restore_worktree(
+    primary: &str,
+    target: &str,
+    branch: &str,
+    head: &str,
+) -> Result<RestoredWorktree, String> {
+    if Path::new(target).exists() {
+        return Err(format!("{target} already exists"));
+    }
+    // A stale entry for this very path makes `worktree add` refuse it.
+    run_git_mut(primary, &["worktree", "prune"], false)?;
+    if let Some(parent) = Path::new(target).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    let branch = branch.trim();
+    let head = head.trim();
+    let commit = format!("{head}^{{commit}}");
+    let head_known = !head.is_empty()
+        && run_git(primary, &["rev-parse", "--verify", "--quiet", &commit]).is_some();
+    let branch_recreated = if branch.is_empty() {
+        if !head_known {
+            return Err("neither its branch nor its last commit is known".into());
+        }
+        run_git_mut(
+            primary,
+            &["worktree", "add", "--detach", target, head],
+            false,
+        )?;
+        false
+    } else if ensure_local_branch(primary, branch).is_ok() {
+        run_git_mut(primary, &["worktree", "add", target, branch], false)?;
+        false
+    } else if head_known {
+        run_git_mut(
+            primary,
+            &["worktree", "add", "-b", branch, target, head],
+            false,
+        )?;
+        true
+    } else if head.is_empty() {
+        return Err(format!(
+            "branch '{branch}' no longer exists and no commit was remembered for it"
+        ));
+    } else {
+        return Err(format!(
+            "branch '{branch}' no longer exists and its last commit {head} is not in the repository"
+        ));
+    };
+    Ok(RestoredWorktree {
+        branch: branch.to_string(),
+        head: run_git(target, &["rev-parse", "HEAD"])
+            .map(|value| value.trim().to_string())
+            .unwrap_or_else(|| head.to_string()),
+        branch_recreated,
+    })
+}
+
 /// Commit the ticked files of ONE repo.
 ///
 /// `files` are repo-relative paths straight from the panel's list; for a rename
@@ -320,7 +435,7 @@ fn ensure_local_branch(root: &str, branch: &str) -> Result<(), String> {
 /// The primary checkout owns the common `.git` directory even when `root` is
 /// itself a linked worktree. Its parent is therefore the stable place from
 /// which all OctiqFlow worktrees can be grouped.
-fn primary_checkout_root(root: &str) -> Result<PathBuf, String> {
+pub(crate) fn primary_checkout_root(root: &str) -> Result<PathBuf, String> {
     let common = run_git(
         root,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -881,6 +996,86 @@ mod tests {
         if let Some(group) = Path::new(&worktree).ancestors().nth(2) {
             let _ = std::fs::remove_dir_all(group);
         }
+    }
+
+    #[test]
+    fn a_worktree_list_is_read_with_branch_and_head() {
+        let listed = parse_worktree_list(
+            "worktree /repo\nHEAD aaa111\nbranch refs/heads/main\n\n\
+             worktree /wt/task\nHEAD bbb222\nbranch refs/heads/octiq/task-1\n\
+             prunable gitdir file points to non-existent location\n\n\
+             worktree /wt/loose\nHEAD ccc333\ndetached\n",
+        );
+        assert_eq!(
+            listed,
+            vec![
+                WorktreeEntry {
+                    path: "/repo".into(),
+                    branch: "main".into(),
+                    head: "aaa111".into(),
+                },
+                WorktreeEntry {
+                    path: "/wt/task".into(),
+                    branch: "octiq/task-1".into(),
+                    head: "bbb222".into(),
+                },
+                WorktreeEntry {
+                    path: "/wt/loose".into(),
+                    branch: String::new(),
+                    head: "ccc333".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_removed_worktree_is_restored_without_overwriting_anything() {
+        let Some(dir) = temp_repo("restore-worktree") else {
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        let prepared = git_prepare_chat_workspace(
+            root.clone(),
+            current_branch(&root).unwrap(),
+            true,
+            "Restore me".into(),
+            "chat-87654321".into(),
+        )
+        .expect("worktree is prepared");
+        let head = run_git(&prepared.cwd, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // Still there: refused, and nothing is touched.
+        let refused = restore_worktree(&root, &prepared.cwd, &prepared.branch, &head);
+        assert!(refused.unwrap_err().contains("already exists"));
+
+        run_git_mut(
+            &root,
+            &["worktree", "remove", "--force", prepared.cwd.as_str()],
+            false,
+        )
+        .unwrap();
+        let restored = restore_worktree(&root, &prepared.cwd, &prepared.branch, "").unwrap();
+        assert_eq!(restored.branch, prepared.branch);
+        assert_eq!(restored.head, head);
+        assert!(!restored.branch_recreated);
+        assert_eq!(current_branch(&prepared.cwd).unwrap(), prepared.branch);
+
+        // Branch and commit both unknown: said, not guessed.
+        run_git_mut(
+            &root,
+            &["worktree", "remove", "--force", prepared.cwd.as_str()],
+            false,
+        )
+        .unwrap();
+        run_git_mut(&root, &["branch", "-D", prepared.branch.as_str()], false).unwrap();
+        let unknown = restore_worktree(&root, &prepared.cwd, &prepared.branch, "").unwrap_err();
+        assert!(unknown.contains("no commit was remembered"), "{unknown}");
+        let detached = restore_worktree(&root, &prepared.cwd, "", &head).unwrap();
+        assert!(detached.branch.is_empty());
+        assert_eq!(detached.head, head);
     }
 
     #[test]

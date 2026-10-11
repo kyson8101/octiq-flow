@@ -1600,6 +1600,41 @@ describe("a chat writing beside an orchestration worker", () => {
   });
 });
 
+describe("a chat whose folder was removed and recovered by the host", () => {
+  const recovered = {
+    type: "octiq_chat_recovered",
+    kind: "moved",
+    from: "/trees/app/task-1",
+    cwd: "/repos/app",
+    branch: "main",
+    head: "abc1234",
+    text: "Folder /trees/app/task-1 was removed. This chat continues in /repos/app on branch main.",
+  };
+
+  it("says what happened on a line of its own and runs from the new folder", () => {
+    const before = { ...emptyChat(), cwd: "/trees/app/task-1" };
+    const state = reduceChat(before, recovered);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.blocks).toEqual([{ kind: "notice", text: recovered.text }]);
+    expect(state.cwd).toBe("/repos/app");
+    expect(state.failure).toBeUndefined();
+    expect(state.busy).toBe(false);
+  });
+
+  it("keeps the conversation that came before it", () => {
+    let state = addUserTurn({ ...emptyChat(), cwd: "/trees/app/task-1" }, "carry on", [], 1, "u-1");
+    state = reduceChat(state, { ...recovered, kind: "rebuilt", cwd: "/trees/app/task-1" });
+    expect(state.messages.map((m) => m.turnId)).toEqual(["u-1", undefined]);
+    expect(state.cwd).toBe("/trees/app/task-1");
+  });
+
+  it("still moves the chat when the host sent no words", () => {
+    const state = reduceChat({ ...emptyChat(), cwd: "/gone" }, { type: "octiq_chat_recovered", cwd: "/repos/app" });
+    expect(state.messages).toHaveLength(0);
+    expect(state.cwd).toBe("/repos/app");
+  });
+});
+
 describe("a message taken back before the agent was given it", () => {
   // OctiqFlow's own event: the words never reached an agent, so there is
   // nothing here either provider could report. It exists at all because the

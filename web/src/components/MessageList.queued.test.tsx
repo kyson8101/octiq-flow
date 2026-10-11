@@ -42,6 +42,14 @@ describe("message delivery controls", () => {
     expect(draw({ delivery: "unknown" })).toContain("Restore to composer");
   });
 
+  it("shows the host's own reason under a message it could not start", () => {
+    const why = "The chat's folder /trees/app/task-1 was removed and could not be restored: /repos/app is gone too. Start a new chat.";
+    const html = draw({ delivery: "unknown", queueError: why }, false);
+    expect(html).toContain("Delivery unconfirmed");
+    expect(html).toContain("was removed and could not be restored");
+    expect(html).toContain('role="alert"');
+  });
+
   it.each(["start", "cancel"] as const)("locks both controls during %s", (queueAction) => {
     const html = draw({ queueAction });
     expect(html.match(/disabled=""/g)).toHaveLength(2);

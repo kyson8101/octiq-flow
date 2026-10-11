@@ -89,3 +89,22 @@ export function reclaimedMessage(message: Message) {
     attachments: (message.attachments ?? []).map((a) => ({ ...a, isImage: !!a.isImage })),
   };
 }
+
+/** A send the host refused or never answered. The message stays on screen as
+ * unconfirmed, carrying the host's own words: a refusal is written for the
+ * person to act on ("The chat's folder … was removed and could not be
+ * restored: …"), so it is shown as given rather than replaced with a generic
+ * line. A message the agent already has is left alone. */
+export function unconfirmedSend(
+  state: ChatState,
+  turnId: string,
+  error: unknown,
+  running: boolean,
+): ChatState {
+  return {
+    ...state,
+    busy: running ? state.busy : false,
+    messages: state.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
+      ? { ...m, delivery: "unknown", queueError: String((error as Error)?.message ?? error) } : m),
+  };
+}

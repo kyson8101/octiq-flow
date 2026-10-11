@@ -518,6 +518,23 @@ fn assemble(chat_id: String, stored: Stored, store: &Store) -> TaskStatus {
     }
 }
 
+/// What the last verification stored for a chat: where it was, and the commit
+/// its branch was at. `chat_recover` reads this to put back a folder that has
+/// since been removed, which is exactly when nothing on disk can say.
+pub(crate) fn remembered(chat_id: &str) -> (Option<Workspace>, Option<Delivery>) {
+    let stored = read().chats.remove(chat_id).unwrap_or_default();
+    (stored.workspace, stored.delivery)
+}
+
+/// The chat's folder just changed under it, so the next read asks git again
+/// instead of serving the answer from before.
+pub(crate) fn expire(chat_id: &str) {
+    verified_at()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(chat_id);
+}
+
 /// Forget one chat's record, for a chat that is being deleted.
 pub fn forget(chat_id: &str) {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -200,6 +200,40 @@ export function locationOf(workspace?: TaskWorkspace): string {
   return workspace.isWorktree ? "Task worktree" : "Primary checkout";
 }
 
+/** What to say above the composer when the chat's own folder is gone, or
+ *  nothing when it is there.
+ *
+ *  The host puts it right before the next message starts the agent
+ *  (`chat_recover.rs`): a task worktree is rebuilt at the same path from its
+ *  branch, anything else moves to the repository's primary checkout or the
+ *  project's folder. So this line promises only what that does, and never
+ *  blocks the send: a rebuilt worktree holds committed work and nothing else,
+ *  and a chat that moves is in a different folder afterwards. `projectPath`
+ *  is the project's folder as the page has it now. */
+export function removedFolderNote(
+  workspace?: TaskWorkspace,
+  projectPath = "",
+): { title: string; detail: string } | undefined {
+  if (!workspace || workspace.exists || !workspace.cwd) return undefined;
+  if (workspace.isWorktree) {
+    return {
+      title: `Task worktree removed: ${workspace.cwd}`,
+      detail:
+        "Your next message rebuilds it from its branch with committed work only. Uncommitted and untracked files are not restored. If it cannot be rebuilt, this chat moves to the project's own folder.",
+    };
+  }
+  const plain = (path: string) => path.replace(/[\\/]+$/, "");
+  const next = [workspace.primaryRoot, projectPath].find(
+    (path) => path && plain(path) !== plain(workspace.cwd),
+  );
+  return {
+    title: `Directory removed: ${workspace.cwd}`,
+    detail: next
+      ? `Your next message moves this chat to ${next}. Nothing from the removed folder is restored.`
+      : "There is no other folder to continue in. Start a new chat.",
+  };
+}
+
 /** The working tree in one line. */
 export function gitStateOf(workspace?: TaskWorkspace): string {
   if (!workspace || !workspace.isRepo) return "Unknown";
