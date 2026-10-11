@@ -60,6 +60,13 @@ describe("the run's line above the composer", () => {
     expect(html).not.toMatch(/\b0 (working|failed|decisions?)\b/);
   });
 
+  it("says no percent before anything is done", () => {
+    const html = render(strip({ done: 0, total: 2, percent: 0, label: "Tasks 0/2", side: [{ text: "1 working", strong: false }] }));
+    expect(html).not.toContain("run-strip-pct");
+    expect(html).not.toContain(">0%<");
+    expect(html).toContain('<span class="run-strip-label">Tasks 0/2</span>');
+  });
+
   it("is one button that opens the agents, and one that hides the line", () => {
     const html = render(strip());
     expect(html.match(/<button /g)).toHaveLength(2);

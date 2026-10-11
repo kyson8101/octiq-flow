@@ -39,7 +39,8 @@ export function RunProgressStrip({ strip, onOpen, onHide }: {
           <span className="run-strip-fill" style={{ width: `${strip.percent}%` }} />
           <span className="run-strip-label">{strip.label}</span>
         </span>
-        <span className="run-strip-pct" aria-hidden="true">{strip.percent}%</span>
+        {/* Nothing done yet is what the empty bar and "0/2" already say. */}
+        {strip.percent > 0 && <span className="run-strip-pct" aria-hidden="true">{strip.percent}%</span>}
         {strip.side.length > 0 && <span className="run-strip-side" aria-hidden="true">
           {strip.side.map((item, index) => <span key={item.text} className={index ? "run-strip-then" : undefined}>
             {index > 0 && " · "}<Side item={item} lead={index === 0} />
