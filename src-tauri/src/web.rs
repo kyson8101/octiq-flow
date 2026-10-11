@@ -1701,8 +1701,9 @@ async fn lessons_hook(
 ) -> Result<Value, crate::outcome::Refusal> {
     use crate::outcome::{ReasonClass, Refusal};
     // A worker's attempt is not paused on a card: it records entries, and
-    // curates them the next time it leads a chat.
-    if ctx.services.orchestrations.active_task(chat_key)?.is_some() {
+    // curates them the next time it leads a chat. A worker stays one after
+    // its attempt settles, while its capability still works.
+    if ctx.services.orchestrations.is_worker_chat(chat_key)? {
         return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot rewrite its Lessons. Record what you learned with vault_agent_memory_append; propose Lessons from a chat you lead."));
     }
     let (me, _) = crate::team::identity(&ctx.services.handovers.team, chat_key, None)
@@ -1809,8 +1810,11 @@ async fn agents_hook(
             serde_json::from_value(args).map_err(invalid)?,
         )?);
     }
-    // A worker settles its own attempt; who is on the team is not its call.
-    if ctx.services.orchestrations.active_task(chat_key)?.is_some() {
+    // A worker settles its own attempt; who is on the team is not its call,
+    // and no card of its is put to the person. Asked of what the chat IS,
+    // not of a task in flight: a worker that has reported, failed or been
+    // reopened is still a worker, and its capability still works.
+    if ctx.services.orchestrations.is_worker_chat(chat_key)? {
         return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead."));
     }
     if action == "delete" {
@@ -2987,6 +2991,162 @@ mod tests {
         );
         assert_eq!(answer["outcome"]["origin"], "octiqflow", "{answer}");
         assert_eq!(crate::team::list(&team, None, true).unwrap().len(), 1);
+        chats.test_end("chat:lead");
+    }
+
+    /// agent_delete review, H2: a worker is refused by what its chat IS, not
+    /// by a task in flight. Once its attempt has reported, `active_task` is
+    /// `None` while its capability still works for the live launch; it is
+    /// still a worker, and no roster or Lessons card of its is ever put up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_worker_that_has_settled_still_cannot_propose_a_roster_or_lessons_change() {
+        use crate::orchestration::tests::{run, running_worker, settled_worker};
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let run = run(&store);
+        let running = running_worker(&store, &run).worker_chat_key;
+        let settled = settled_worker(&store, &run, None).worker_chat_key;
+        // A key of the old kind: only the ledger says it is a worker's.
+        let legacy = settled_worker(&store, &run, Some("chat:legacy-worker")).worker_chat_key;
+        assert!(store.active_task(&running).unwrap().is_some());
+        for key in [&settled, &legacy] {
+            assert!(store.active_task(key).unwrap().is_none(), "{key}");
+        }
+
+        let mut chats = crate::agent_chat::ChatManager::default();
+        chats.orchestrations = store.clone();
+        let chats = Arc::new(chats);
+        let wiring = crate::handover::Wiring::scratch();
+        let team = wiring.team.clone();
+        let potato = crate::team::save(
+            &team,
+            crate::team::TeamDraft {
+                id: None,
+                name: "Potato".into(),
+                role: "Leads.".into(),
+                agent: crate::agent_chat::ChatAgent::Claude,
+                model: "opus".into(),
+                effort: None,
+                access: None,
+                project_id: None,
+                reports_to: None,
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap();
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        let (_ctx, base) = test_server_handing_over(cfg, chats.clone(), store, wiring).await;
+        let call = |chat: &str, action: &str, args: Value| json!({ "chatKey": chat, "action": action, "args": args });
+        // Each a change the person would be asked about: nothing but the
+        // caller being a worker stands between it and a card.
+        let changes = || {
+            [
+                (
+                    "register",
+                    json!({ "name": "Nova", "provider": "codex", "model": "gpt-5.5" }),
+                ),
+                (
+                    "update",
+                    json!({ "agent": "Potato", "role": "Leads more." }),
+                ),
+                ("delete", json!({ "agent": "Potato" })),
+                ("policy_update", json!({ "policy": "Use worktrees." })),
+            ]
+        };
+
+        for key in [&running, &settled, &legacy] {
+            let cap = chats.test_launch(key);
+            for (action, args) in changes() {
+                let (status, answer) =
+                    post_hook(&base, "agents", None, Some(&cap), call(key, action, args)).await;
+                assert_eq!(status, 400, "{key} {action}: {answer}");
+                assert_eq!(
+                    answer["outcome"]["reasonClass"], "scope-refused",
+                    "{key} {action}: {answer}"
+                );
+                assert_eq!(
+                    answer["error"],
+                    "An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead.",
+                    "{key} {action}"
+                );
+            }
+            // Its own Lessons wait on the same card, behind the same check.
+            let lessons = json!({ "chatKey": key, "action": "agent_memory_lessons", "args": {
+                "lessons": "- Keep it short.",
+            } });
+            let (status, answer) = post_hook(&base, "vault", None, Some(&cap), lessons).await;
+            assert_eq!(status, 400, "{key}: {answer}");
+            assert_eq!(
+                answer["outcome"]["reasonClass"], "scope-refused",
+                "{answer}"
+            );
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("An orchestration worker cannot rewrite its Lessons."),
+                "{key}: {answer}"
+            );
+            // Refused before anyone was asked: no card of this chat's waits.
+            let waiting = serde_json::to_string(&crate::permission::pending()).unwrap();
+            assert!(!waiting.contains(key.as_str()), "{key}: {waiting}");
+            // Reading the roster stays open to it.
+            let (status, answer) = post_hook(
+                &base,
+                "agents",
+                None,
+                Some(&cap),
+                call(key, "list", json!({})),
+            )
+            .await;
+            assert_eq!(status, 200, "{key}: {answer}");
+            assert_eq!(answer["result"]["agents"][0]["name"], "Potato");
+            chats.test_end(key);
+        }
+        assert_eq!(crate::team::list(&team, None, true).unwrap(), vec![potato]);
+        assert_eq!(crate::team::policy(&team).unwrap().text, "");
+
+        // An ordinary lead chat is past that check for every one of them:
+        // what answers it is the roster's own rules, never its identity.
+        let lead = chats.test_launch("chat:lead");
+        for (action, args, said) in [
+            (
+                "register",
+                json!({ "name": "potato", "provider": "codex", "model": "gpt-5.5" }),
+                "Another agent is already called potato.",
+            ),
+            (
+                "update",
+                json!({ "agent": "Nobody", "role": "x" }),
+                "No agent is called Nobody. Call agent_list for the ids.",
+            ),
+            (
+                "delete",
+                json!({ "agent": "Nobody" }),
+                "No agent is called Nobody. Call agent_list for the ids.",
+            ),
+            (
+                "policy_update",
+                json!({ "policy": "" }),
+                "That is already the shared agent policy.",
+            ),
+        ] {
+            let (status, answer) = post_hook(
+                &base,
+                "agents",
+                None,
+                Some(&lead),
+                call("chat:lead", action, args),
+            )
+            .await;
+            assert_eq!(status, 400, "{action}: {answer}");
+            assert_eq!(answer["error"], said, "{action}");
+            assert_eq!(answer["outcome"]["reasonClass"], "validation", "{answer}");
+        }
         chats.test_end("chat:lead");
     }
 

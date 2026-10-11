@@ -9,7 +9,8 @@
 //! (`permission::ask`). Only their Allow writes it, through
 //! `team::save_unchanged` (or `team::delete_unchanged` for a removal), so what
 //! is saved is exactly the change they were shown, made to the version of the
-//! agent they were shown it against.
+//! agent they were shown it against. A removal also moves other agents, so it
+//! is held to everything its card said about the chart (`team::Removal`).
 //!
 //! The card is one-off: "Always" would wave through the next agent this chat
 //! invents, which is not a decision anybody can make in advance.
@@ -23,7 +24,7 @@ use serde_json::{json, Value};
 use crate::agent_chat::{Access, ChatAgent};
 use crate::outcome::{ReasonClass, Refusal};
 use crate::permission::Answer;
-use crate::team::{AgentPolicy, AgentTeam, TeamAgent, TeamDraft};
+use crate::team::{AgentPolicy, AgentTeam, Removal, TeamAgent, TeamDraft};
 use crate::workspaces::Workspace;
 
 /// The shortest and longest an agent may ask the person's card to stay up.
@@ -135,6 +136,17 @@ impl Roster {
             front_desk: crate::team::front_desk(team)?.map(|agent| agent.id),
             policy: crate::team::policy(team)?,
         })
+    }
+
+    /// What removing `id` would do to this roster: what its card states, and
+    /// what the person's Allow is held to.
+    pub fn removal(&self, id: &str) -> Option<Removal> {
+        crate::team::removal(
+            &self.agents,
+            self.head.as_deref(),
+            self.front_desk.as_deref(),
+            id,
+        )
     }
 
     fn project_name(&self, id: Option<&str>) -> String {
@@ -473,9 +485,15 @@ pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
 
 /// The removal in words, for the card: who goes, with the fields that tell
 /// one agent from another, and what the removal does to the rest of the
-/// chart — the reports that move up, the head or front desk seat that empties.
-/// The memory note is not touched, and the card says so.
-pub fn describe_delete(roster: &Roster, gone: &TeamAgent) -> String {
+/// chart — the head or front desk seat that empties, the reports that move
+/// up. The seats come first: the list of reports has no bound, and the page
+/// shows only the start of a long card. The memory note is not touched, and
+/// the card says so.
+///
+/// `shown` is `Roster::removal` of the same roster: everything said here about
+/// the chart is read from it, and it is what the person's Allow is held to
+/// (`team::delete_unchanged`).
+pub fn describe_delete(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> String {
     let mut text = format!("Remove the agent {}.\n", gone.name);
     for (label, value) in fields(roster, gone) {
         if label == "Name" {
@@ -483,10 +501,16 @@ pub fn describe_delete(roster: &Roster, gone: &TeamAgent) -> String {
         }
         text.push_str(&format!("\n{label}: {value}"));
     }
+    if shown.head {
+        text.push_str("\n\nIt is the head: the cross-project conversation will have no head until another is chosen.");
+    }
+    if shown.front_desk {
+        text.push_str("\n\nIt is the front desk: incoming requests will have no front desk until another is chosen.");
+    }
     let reports: Vec<&str> = roster
         .agents
         .iter()
-        .filter(|a| a.reports_to.as_deref() == Some(gone.id.as_str()))
+        .filter(|a| shown.reports.contains(&a.id))
         .map(|a| a.name.as_str())
         .collect();
     if !reports.is_empty() {
@@ -498,17 +522,8 @@ pub fn describe_delete(roster: &Roster, gone: &TeamAgent) -> String {
                 format!("{} direct reports", reports.len())
             },
             reports.join(", "),
-            match gone.reports_to.as_deref() {
-                None => "the person".to_string(),
-                Some(id) => roster.agent_name(Some(id)),
-            }
+            roster.agent_name(shown.reports_to.as_deref())
         ));
-    }
-    if roster.head.as_deref() == Some(gone.id.as_str()) {
-        text.push_str("\n\nIt is the head: the cross-project conversation will have no head until another is chosen.");
-    }
-    if roster.front_desk.as_deref() == Some(gone.id.as_str()) {
-        text.push_str("\n\nIt is the front desk: incoming requests will have no front desk until another is chosen.");
     }
     text.push_str("\n\nIts memory note in the vault is kept.");
     text
@@ -635,8 +650,10 @@ pub fn deleted_text(gone: &TeamAgent) -> Value {
 }
 
 /// Propose removing an agent, put it to the person, and remove it only on
-/// their Allow, against the version of the agent they were shown. Its reports
-/// move up to its manager (`team::delete`); its memory note stays.
+/// their Allow, and only while the removal still does what the card said: the
+/// same version of the agent, the same manager, the same direct reports, the
+/// same seats (`team::Removal`). Its reports move up to its manager
+/// (`team::delete`); its memory note stays.
 pub async fn propose_delete<A, F>(
     roster: &Roster,
     team: &Path,
@@ -655,17 +672,20 @@ where
         ));
     }
     let gone = agent(roster, &proposal.agent).map_err(invalid)?.clone();
+    let shown = roster
+        .removal(&gone.id)
+        .ok_or_else(|| invalid("That agent no longer exists.".into()))?;
     let wait = wait_for(proposal.wait_seconds);
     let request = crate::permission::Request {
         chat_key: Some(chat_key.to_string()),
         tool_name: Some("mcp__octiq__agent_delete".into()),
-        tool_input: Some(json!({ "change": describe_delete(roster, &gone) })),
+        tool_input: Some(json!({ "change": describe_delete(roster, &gone, &shown) })),
         once: true,
         answer_within_secs: Some(wait.as_secs()),
         ..Default::default()
     };
     approved(&ask(request).await, wait)?;
-    crate::team::delete_unchanged(team, &gone.id, gone.updated_at).map_err(Refusal::from)
+    crate::team::delete_unchanged(team, &gone.id, &shown).map_err(Refusal::from)
 }
 
 /// Propose a new shared agent policy, put it to the person, and save it only
@@ -1584,5 +1604,307 @@ mod tests {
         );
         assert!(shown.lock().unwrap().is_empty());
         assert_eq!(stored(&team).len(), 2);
+    }
+
+    fn register_under(team: &Path, name: &str, manager: &TeamAgent) -> TeamAgent {
+        crate::team::save(
+            team,
+            TeamDraft {
+                id: None,
+                name: name.into(),
+                role: "Writes code.".into(),
+                agent: ChatAgent::Claude,
+                model: "sonnet".into(),
+                effort: Some("high".into()),
+                access: Some(Access::Auto),
+                project_id: None,
+                reports_to: Some(manager.id.clone()),
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap()
+    }
+
+    /// Move `agent` under `manager` (the person, with `None`), as the Settings
+    /// form would.
+    fn move_under(team: &Path, agent: &TeamAgent, manager: Option<&TeamAgent>) -> TeamAgent {
+        crate::team::save(
+            team,
+            TeamDraft {
+                id: Some(agent.id.clone()),
+                name: agent.name.clone(),
+                role: agent.role.clone(),
+                agent: agent.agent,
+                model: agent.model.clone(),
+                effort: agent.effort.clone(),
+                access: Some(agent.access),
+                project_id: agent.project_id.clone(),
+                reports_to: manager.map(|m| m.id.clone()),
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap()
+    }
+
+    /// An asker for a card that waits while `meanwhile` happens to the
+    /// roster, and is then allowed: the card it was shown comes back.
+    fn allowed_after(
+        meanwhile: impl FnOnce(),
+    ) -> (
+        Arc<Mutex<Vec<crate::permission::Request>>>,
+        impl FnOnce(crate::permission::Request) -> std::future::Ready<Answer>,
+    ) {
+        let shown = Arc::new(Mutex::new(Vec::new()));
+        let seen = shown.clone();
+        (shown, move |request| {
+            seen.lock().unwrap().push(request);
+            meanwhile();
+            std::future::ready(answer("allow", "you allowed it"))
+        })
+    }
+
+    fn card_of(shown: &Arc<Mutex<Vec<crate::permission::Request>>>) -> String {
+        shown.lock().unwrap().pop().unwrap().tool_input.unwrap()["change"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn remove(spec: &str) -> DeleteProposal {
+        DeleteProposal {
+            agent: spec.into(),
+            wait_seconds: Some(50),
+        }
+    }
+
+    /// agent_delete review, H1: the person's Allow is held to everything the
+    /// card said about the chart, not only to the removed agent's own
+    /// version. Each of these changes the chart while the card waits without
+    /// touching the agent the card names; each is refused and removes nobody.
+    #[tokio::test]
+    async fn a_removal_is_refused_when_the_chart_is_no_longer_what_its_card_said() {
+        async fn refused(
+            team: &Path,
+            spec: &str,
+            meanwhile: impl FnOnce(),
+            said: &str,
+            what: &str,
+        ) -> String {
+            let (shown, allow) = allowed_after(meanwhile);
+            let stale = propose_delete(&roster(team), team, "chat:lead", remove(spec), allow)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                stale.message,
+                format!("{spec} was changed while this waited for approval, so nothing was removed: {what}. Read it again and propose the removal again."),
+            );
+            let card = card_of(&shown);
+            assert!(card.contains(said), "{card}");
+            card
+        }
+
+        // A report added during the wait: it was never on the card.
+        let (_dir, team) = temp_team();
+        let lead = register(&team, "Lead", None);
+        let dev = register(&team, "Dev", None);
+        let card = refused(
+            &team,
+            "Lead",
+            || {
+                move_under(&team, &dev, Some(&lead));
+            },
+            "Remove the agent Lead.",
+            "its direct reports are not the ones the card listed",
+        )
+        .await;
+        assert!(!card.contains("Dev"), "{card}");
+        let left = stored(&team);
+        assert_eq!(left.len(), 2);
+        // Nothing moved: Dev still reports to Lead, as it did before Allow.
+        let dev = left.iter().find(|a| a.id == dev.id).unwrap().clone();
+        assert_eq!(dev.reports_to.as_deref(), Some(lead.id.as_str()));
+
+        // A report moved away during the wait: the card promised a move that
+        // would not happen.
+        let before = stored(&team);
+        refused(
+            &team,
+            "Lead",
+            || {
+                move_under(&team, &dev, None);
+            },
+            "Its direct report (Dev) will report to the person.",
+            "its direct reports are not the ones the card listed",
+        )
+        .await;
+        assert_eq!(stored(&team).len(), before.len());
+
+        // Made the head during the wait: the card had no seat warning.
+        let card = refused(
+            &team,
+            "Lead",
+            || {
+                crate::team::set_head(&team, Some(&lead.id)).unwrap();
+            },
+            "Remove the agent Lead.",
+            "it is now the head",
+        )
+        .await;
+        assert!(!card.contains("It is the head"), "{card}");
+        assert_eq!(
+            crate::team::head(&team).unwrap().map(|a| a.id),
+            Some(lead.id.clone())
+        );
+
+        // Made the front desk during the wait.
+        let card = refused(
+            &team,
+            "Dev",
+            || {
+                crate::team::set_front_desk(&team, Some(&dev.id)).unwrap();
+            },
+            "Remove the agent Dev.",
+            "it is now the front desk",
+        )
+        .await;
+        assert!(!card.contains("It is the front desk"), "{card}");
+        assert_eq!(
+            crate::team::front_desk(&team).unwrap().map(|a| a.id),
+            Some(dev.id.clone())
+        );
+        assert_eq!(stored(&team).len(), 2);
+
+        // Its manager removed during the wait: the card names a manager its
+        // reports can no longer be sent to.
+        let (_dir, team) = temp_team();
+        let manager = register(&team, "Manager", None);
+        let lead = register_under(&team, "Lead", &manager);
+        let dev = register_under(&team, "Dev", &lead);
+        let (shown, allow) = allowed_after(|| crate::team::delete(&team, &manager.id).unwrap());
+        let stale = propose_delete(&roster(&team), &team, "chat:lead", remove("Lead"), allow)
+            .await
+            .unwrap_err();
+        assert!(
+            card_of(&shown).contains("Its direct report (Dev) will report to Manager."),
+            "the card"
+        );
+        // Lead itself moved up when Manager went, so it is a later version.
+        assert_eq!(
+            stale.message,
+            "Lead was changed while this waited for approval, so nothing was removed. Read it again and propose the removal again."
+        );
+        let left = stored(&team);
+        assert_eq!(left.len(), 2);
+        let dev = left.iter().find(|a| a.id == dev.id).unwrap();
+        assert_eq!(dev.reports_to.as_deref(), Some(lead.id.as_str()));
+    }
+
+    /// The other half of H1: a chart that is still what the card said is
+    /// removed from, its reports go to exactly who the card named, and each
+    /// report that moved is a new version, so a card still waiting on one of
+    /// them is refused instead of being saved over the move.
+    #[tokio::test]
+    async fn an_unchanged_removal_moves_the_reports_the_card_named_and_makes_them_new_versions() {
+        let (_dir, team) = temp_team();
+        let manager = register(&team, "Manager", None);
+        let lead = register_under(&team, "Lead", &manager);
+        let dev = register_under(&team, "Dev", &lead);
+        let ops = register_under(&team, "Ops", &lead);
+        let other = register_under(&team, "Other", &manager);
+        // Cards made for a child before its manager goes.
+        let earlier = roster(&team);
+
+        let (shown, allow) = allowed_after(|| ());
+        let gone = propose_delete(&roster(&team), &team, "chat:lead", remove("Lead"), allow)
+            .await
+            .unwrap();
+        assert_eq!(gone.id, lead.id);
+        assert!(
+            card_of(&shown).contains("Its 2 direct reports (Dev, Ops) will report to Manager."),
+            "the card"
+        );
+        let left = stored(&team);
+        assert_eq!(left.len(), 4);
+        let now = |id: &str| left.iter().find(|a| a.id == id).unwrap().clone();
+        for moved in [&dev, &ops] {
+            let after = now(&moved.id);
+            assert_eq!(after.reports_to.as_deref(), Some(manager.id.as_str()));
+            assert!(after.updated_at > moved.updated_at, "{}", moved.name);
+        }
+        // Nobody else was touched.
+        assert_eq!(now(&manager.id), manager);
+        assert_eq!(now(&other.id), other);
+
+        // A stale card for a child, made while it still reported to Lead.
+        let (shown, allow) = allowed_after(|| ());
+        let stale = propose_delete(&earlier, &team, "chat:lead", remove("Dev"), allow)
+            .await
+            .unwrap_err();
+        assert!(card_of(&shown).contains("Reports to: Lead"), "the card");
+        assert_eq!(
+            stale.message,
+            "Dev was changed while this waited for approval, so nothing was removed. Read it again and propose the removal again."
+        );
+        let (_, allow) = allowed_after(|| ());
+        let stale = propose(
+            &earlier,
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Ops".into()),
+                reports_to: Some(String::new()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            stale.message,
+            "Ops was changed while this waited for approval, so nothing was saved. Read it again and propose the change again."
+        );
+        assert_eq!(stored(&team), left);
+    }
+
+    /// agent_delete review, M2: the page shows only the start of a long card,
+    /// and the list of reports has no bound, so the seat that empties is said
+    /// before it.
+    #[test]
+    fn a_removal_card_names_the_seat_that_empties_before_its_reports() {
+        let (_dir, team) = temp_team();
+        let lead = register(&team, "Lead", None);
+        crate::team::set_head(&team, Some(&lead.id)).unwrap();
+        let mut roster = roster(&team);
+        for n in 0..300 {
+            roster.agents.push(TeamAgent {
+                id: format!("agent_report{n:03}"),
+                name: format!("Report {n:03} with a name as long as a name may be, sixty in all"),
+                reports_to: Some(lead.id.clone()),
+                ..lead.clone()
+            });
+        }
+        // The front desk has no reports, so that sentence is checked on a
+        // roster of its own below; here it is the head with 300 of them.
+        let shown = roster.removal(&lead.id).unwrap();
+        assert_eq!(shown.reports.len(), 300);
+        let text = describe_delete(&roster, &lead, &shown);
+        assert!(text.chars().count() > 16_000, "{}", text.chars().count());
+        let head = text.find("It is the head").unwrap();
+        assert!(head < 2_000, "{head}");
+        assert!(head < text.find("Its 300 direct reports (").unwrap());
+        assert!(text.ends_with("\n\nIts memory note in the vault is kept."));
+
+        let desk = crate::team::create_front_desk(&team, Default::default()).unwrap();
+        let roster = self::roster(&team);
+        let text = describe_delete(&roster, &desk, &roster.removal(&desk.id).unwrap());
+        assert!(
+            text.ends_with("\n\nIt is the front desk: incoming requests will have no front desk until another is chosen.\n\nIts memory note in the vault is kept."),
+            "{text}"
+        );
     }
 }

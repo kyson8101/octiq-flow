@@ -349,7 +349,7 @@ started with.
 
 ### Registering agents from a chat
 
-An agent can be asked to hire or adjust agents, through four MCP tools
+An agent can be asked to hire, adjust or remove agents, through five MCP tools
 (`team_tools.rs`, `POST /hook/agents`):
 
 - `agent_list` reads the roster, the peer-help teams and the projects, with
@@ -359,10 +359,16 @@ An agent can be asked to hire or adjust agents, through four MCP tools
   managers and teams may be named by id or by name. An update keeps every
   field it does not name, and `""` clears one that may be empty.
 - `agent_delete` only **proposes** removing one agent, by id or name. The
-  card names the agent with its role, project and manager, lists the direct
-  reports that will move up to its manager, says when it is the head or the
-  front desk, and that its memory note is kept. It is removed with
-  `team::delete_unchanged`, so an agent edited meanwhile is not removed.
+  card names the agent with its role, project and manager, says when it is
+  the head or the front desk, lists the direct reports that will move up to
+  its manager, and says that its memory note is kept. It is removed with
+  `team::delete_unchanged`, which holds the person's Allow to everything the
+  card said about the chart (`team::Removal`): the agent's version, its
+  manager, the set of its direct reports, and whether it is the head or the
+  front desk. If any of them changed while the card waited, nothing is
+  removed and the agent is told to propose it again. A report that moves up
+  becomes a new version of itself, so a card still waiting on that report is
+  refused too.
 - `agent_policy_update` only **proposes** a whole new agent policy (`""`
   clears it), on the same card. It is saved with `team::set_policy_unchanged`,
   so a policy edited meanwhile is not overwritten.
@@ -386,7 +392,9 @@ agent is told which of these happened. The card stays up for three minutes in
 a Claude chat. In a Codex chat it stays up for 50 seconds, because Codex gives
 an MCP call about a minute; a longer wait could save a change the agent had
 already been told failed. An orchestration worker may list agents but not
-change them, and a front desk may do neither. Every save, from a chat or from
+change them, and stays a worker for this after its attempt has settled: the
+host refuses by the chat's worker identity, before any card is put up. A
+front desk may do neither. Every save, from a chat or from
 Settings, sends `team-changed`, and every open page reads the roster again.
 
 ## Teams and peer help

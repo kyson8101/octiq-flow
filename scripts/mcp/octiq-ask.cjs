@@ -2233,7 +2233,7 @@ const AGENT_APPROVAL =
   " The person approves or declines it on a card in this chat; only a result with status saved means it was saved. " +
   "A refusal, a decline or an unanswered card changes nothing: say so, and propose again only when the person asks. " +
   "Make one change per call, and only on the person's instruction.";
-const AGENT_LIST = agentTool("list", "Agents mode: list the person's registered agents (id, name, role, persistentPrompt, provider, model, effort, access, project, manager, team), with the projects and peer-help teams an agent can be put in, and agentPolicy, the shared policy every agent's brief starts with. Call it before agent_register, agent_update or agent_policy_update.", {
+const AGENT_LIST = agentTool("list", "Agents mode: list the person's registered agents (id, name, role, persistentPrompt, provider, model, effort, access, project, manager, team), with the projects and peer-help teams an agent can be put in, and agentPolicy, the shared policy every agent's brief starts with. Call it before agent_register, agent_update, agent_delete or agent_policy_update: a removal is proposed against the roster as you last read it.", {
   project: { type: "string", description: "Only the agents this project sees: its own and the global ones. A project id or name." },
 }, [], true);
 const AGENT_REGISTER = agentTool("register", "Agents mode: propose registering a new agent, with the same fields and the same validation as Settings → Agents." + AGENT_APPROVAL, AGENT_FIELDS, ["name", "provider", "model"], false);

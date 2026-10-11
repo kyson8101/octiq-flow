@@ -528,6 +528,15 @@ scope clarification needs no gate.
   `command` carries the line in an environment variable on Windows instead.
   The ceiling that remains is Windows' own 32,767 characters for the agent's
   command line, so a prompt that keeps growing belongs in a file.
+- **A hook that can write refuses workers by durable identity, never by
+  `active_task`.** `orchestrations.active_task(chat_key)` is `None` once an
+  attempt has settled, while the worker's capability still works for its live
+  launch, so a check built on it lets a worker that has reported, failed or
+  been reopened through. Ask `orchestrations.is_worker_chat` /
+  `require_user_chat` (a `chat:orch-` key, or an attempt on record:
+  `worker_coordinator`), the way `access_handler` and `agents_hook` do. Hiding
+  a tool in the MCP server is not authorization. A review of such a hook
+  covers the window after a worker settles.
 - **The `src-tauri/` folder name is historical.** There is no Tauri in it. It
   was left alone so paths, the service plist and muscle memory keep working;
   renaming it is a separate job.
