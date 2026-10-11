@@ -422,6 +422,39 @@ or a policy may itself hold a line that reads `Access: edits → full`.
   `Persistent prompt` and `Policy` can be.
 - Every value is the whole text with its newlines. A label is one of a fixed
   set and appears once in a card.
+- A plain row may also carry **`summary`**: what the row comes to, as one
+  line of at most 160 characters (`team_tools::SUMMARY_MAX`), with no line
+  break in it. It is for a card too folded to show the value: the page shows
+  the summary whole there and never cuts a piece out of `value`, whose end
+  need not say anything (the last 60 characters of 300 names are names). The
+  key is absent, never empty or `null`, when the host has nothing shorter to
+  say than the value, and a row without it is sent exactly as it was before
+  the key existed. `value` is unchanged by it and still whole.
+
+One row carries a summary today, the reports row of `agent_delete`:
+
+```json
+{
+  "label": "Direct reports",
+  "value": "Dev, Ops will report to Potato.",
+  "summary": "2 direct reports will report to Potato"
+}
+```
+
+It reads `N direct reports will report to X`, or `1 direct report will report
+to X` (`team_tools.rs` `reports_summary`). `N` is counted from the roster and
+`X` is the manager as the `change` text words it, `the person` included;
+neither is read out of `value`. A manager's name too long for the line keeps
+its start and ends in `…`, and the count and `will report to` are never cut;
+a name saved through OctiqFlow is at most 60 characters and always fits. A
+line break or other control character in a name is a space in the summary. A
+removal that moves nobody has no reports row. `Head`, `Front desk` and
+`Memory note` are short sentences and carry none, and no row of the other
+cards does.
+
+A page's check of `changeFacts` is all or nothing, an unknown key included
+(`web/src/lib/askDetail.ts`), so a page that does not know `summary` shows the
+`change` text for a card that carries one, never rows with a part left out.
 
 Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
 `policy_facts`, built from the same values as the text):

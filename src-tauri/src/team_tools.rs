@@ -443,7 +443,10 @@ fn fields(roster: &Roster, agent: &TeamAgent) -> Vec<(&'static str, String)> {
 pub enum FactRow {
     Plain {
         label: &'static str,
-        value: String,
+        /// Sent as the row's own `value`, and `summary` beside it when it
+        /// has one.
+        #[serde(flatten)]
+        value: Stated,
     },
     Move {
         label: &'static str,
@@ -451,6 +454,30 @@ pub enum FactRow {
         after: String,
     },
 }
+
+/// What a plain row states: the value whole and, when the host has something
+/// shorter to say than that, what it comes to in one line (`summary`). A
+/// folded card has no room for a value with no bound, such as every name
+/// that moves, and a page never cuts one out of the other: it shows the
+/// summary whole. A row with no summary is sent as `label` and `value` and
+/// nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Stated {
+    #[serde(rename = "value")]
+    whole: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+}
+
+/// The value whole, as the card's text shows it.
+impl std::fmt::Display for Stated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.whole)
+    }
+}
+
+/// The most a row's `summary` holds, in characters, on one line.
+pub const SUMMARY_MAX: usize = 160;
 
 /// A card's change as data, sent as `changeFacts` next to its `change` text
 /// and built from the same values, so a page draws rows without reading the
@@ -465,8 +492,40 @@ pub struct ChangeFacts {
 fn plain(label: &'static str, value: impl Into<String>) -> FactRow {
     FactRow::Plain {
         label,
-        value: value.into(),
+        value: Stated {
+            whole: value.into(),
+            summary: None,
+        },
     }
+}
+
+/// A plain row that also says what it comes to in one line of at most
+/// `SUMMARY_MAX` characters. Whoever words the summary keeps it to that:
+/// only they know which of its words may be shortened.
+fn summed(label: &'static str, value: impl Into<String>, summary: String) -> FactRow {
+    debug_assert!(
+        !summary.is_empty()
+            && summary.chars().count() <= SUMMARY_MAX
+            && !summary.chars().any(char::is_control),
+        "{summary:?}"
+    );
+    FactRow::Plain {
+        label,
+        value: Stated {
+            whole: value.into(),
+            summary: Some(summary),
+        },
+    }
+}
+
+/// `text`, or its start and an ellipsis when it is longer than `max`
+/// characters.
+fn clipped(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.into();
+    }
+    let start: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", start.trim_end())
 }
 
 /// A text that is set, replaced or cleared, as a row: the persistent prompt
@@ -651,11 +710,32 @@ pub fn describe_delete(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> St
     text
 }
 
+/// A removal's reports row in one line: how many move up, and to whom. The
+/// number is the roster's count and `to` the manager as the text words it;
+/// neither is cut out of the row's value. A manager's name too long for the
+/// line loses its end to an ellipsis, and the count and "will report to"
+/// stay whole.
+fn reports_summary(count: usize, to: &str) -> String {
+    let said = format!(
+        "{count} direct report{} will report to ",
+        if count == 1 { "" } else { "s" }
+    );
+    // Nothing refuses a name with a line break in it, and the summary is one
+    // line whatever the name holds.
+    let to: String = to
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let room = SUMMARY_MAX.saturating_sub(said.chars().count());
+    said + &clipped(&to, room)
+}
+
 /// `describe_delete` as rows, in the same order: a plain row for each field
 /// but the name, which the lead carries, then what the removal does to the
 /// chart as plain rows of their own — `Head` and `Front desk` when that seat
 /// empties, `Direct report(s)` naming who moves up and to whom — and `Memory
-/// note` last.
+/// note` last. The reports row names every one of them, so it also carries
+/// `reports_summary`.
 pub fn delete_facts(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> ChangeFacts {
     let mut rows: Vec<FactRow> = fields(roster, gone)
         .into_iter()
@@ -670,17 +750,15 @@ pub fn delete_facts(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> Chang
     }
     let reports = reports_of(roster, shown);
     if !reports.is_empty() {
-        rows.push(plain(
+        let to = roster.agent_name(shown.reports_to.as_deref());
+        rows.push(summed(
             if reports.len() == 1 {
                 "Direct report"
             } else {
                 "Direct reports"
             },
-            format!(
-                "{} will report to {}.",
-                reports.join(", "),
-                roster.agent_name(shown.reports_to.as_deref())
-            ),
+            format!("{} will report to {to}.", reports.join(", ")),
+            reports_summary(reports.len(), &to),
         ));
     }
     rows.push(plain("Memory note", "Kept in the vault."));
@@ -2112,7 +2190,9 @@ mod tests {
     /// What every card's rows owe its text: the same first sentence, and
     /// every value the text shows. A field reads `label: value` there, and a
     /// field that moves `label: before → after`; a text that is replaced or
-    /// cleared shows only what it becomes.
+    /// cleared shows only what it becomes. A row with a `summary` is a
+    /// removal's reports, which the text says in a sentence
+    /// (`the_reports_row_says_what_the_text_says`); no other row carries one.
     fn rows_say_what_the_text_says(input: &Value) {
         let change = input["change"].as_str().unwrap();
         let facts = &input["changeFacts"];
@@ -2123,6 +2203,10 @@ mod tests {
         );
         for row in facts["rows"].as_array().unwrap() {
             let label = row["label"].as_str().unwrap();
+            if row.get("summary").is_some() {
+                the_reports_row_says_what_the_text_says(change, row);
+                continue;
+            }
             let text = label == "Persistent prompt" || label == "Policy";
             match (row.get("value"), row.get("before"), row.get("after")) {
                 (Some(value), None, None) if text => {
@@ -2146,6 +2230,74 @@ mod tests {
                 }
                 _ => panic!("a row is a value, or a before and an after: {row}"),
             }
+        }
+    }
+
+    /// The row a removal's reports are told in, against the sentence the text
+    /// tells them in: `Its 2 direct reports (Dev, Ops) will report to Potato.`
+    /// The value is that sentence's names and manager, whole. The summary is
+    /// its count and its manager on one line of at most `SUMMARY_MAX`
+    /// characters; a manager is shortened only when it would not fit, and is
+    /// then still the start of the text's.
+    fn the_reports_row_says_what_the_text_says(change: &str, row: &Value) {
+        let (label, value, summary) = (
+            row["label"].as_str().unwrap(),
+            row["value"].as_str().unwrap(),
+            row["summary"].as_str().unwrap(),
+        );
+        assert_eq!(row.as_object().unwrap().len(), 3, "{row}");
+
+        // The sentence is the last thing the text says before the memory note.
+        let said = change
+            .strip_suffix("\n\nIts memory note in the vault is kept.")
+            .and_then(|text| text.rsplit("\n\nIts ").next())
+            .unwrap_or_else(|| panic!("no reports sentence in:\n{change}"));
+        let (counted, rest) = said.split_once("(").unwrap();
+        let count: usize = match counted {
+            "direct report " => 1,
+            several => several
+                .strip_suffix(" direct reports ")
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("{said}")),
+        };
+        assert!(count > 0, "{said}");
+        let names = value
+            .rsplit_once(" will report to ")
+            .unwrap_or_else(|| panic!("{value}"))
+            .0;
+        let to = rest
+            .strip_prefix(names)
+            .and_then(|rest| rest.strip_prefix(") will report to "))
+            .and_then(|rest| rest.strip_suffix("."))
+            .unwrap_or_else(|| panic!("{names:?} are not the names in: {said}"));
+        assert_eq!(value, format!("{names} will report to {to}."));
+        assert_eq!(
+            label,
+            if count == 1 {
+                "Direct report"
+            } else {
+                "Direct reports"
+            }
+        );
+
+        assert!(summary.chars().count() <= SUMMARY_MAX, "{summary}");
+        assert!(!summary.chars().any(char::is_control), "{summary:?}");
+        let counts = format!(
+            "{count} direct report{} will report to ",
+            if count == 1 { "" } else { "s" }
+        );
+        let goes_to = summary
+            .strip_prefix(&counts)
+            .unwrap_or_else(|| panic!("{summary:?} does not start {counts:?}"));
+        match goes_to.strip_suffix('…') {
+            Some(start) => {
+                assert!(
+                    counts.chars().count() + to.chars().count() > SUMMARY_MAX,
+                    "a name that fits is not cut: {summary}"
+                );
+                assert!(!start.is_empty() && to.starts_with(start), "{summary}");
+            }
+            None => assert_eq!(goes_to, to, "{summary}"),
         }
     }
 
@@ -2398,7 +2550,11 @@ mod tests {
                     { "label": "Available in", "value": "every project" },
                     { "label": "Reports to", "value": "Potato" },
                     { "label": "Team", "value": "none" },
-                    { "label": "Direct reports", "value": "Dev, Ops will report to Potato." },
+                    {
+                        "label": "Direct reports",
+                        "value": "Dev, Ops will report to Potato.",
+                        "summary": "2 direct reports will report to Potato",
+                    },
                     { "label": "Memory note", "value": "Kept in the vault." },
                 ],
             })
@@ -2408,13 +2564,14 @@ mod tests {
             change.ends_with("\n\nIts 2 direct reports (Dev, Ops) will report to Potato.\n\nIts memory note in the vault is kept."),
             "{change}"
         );
-        // The fields are rows the text shows too; what the removal does to
-        // the chart is a sentence there, checked above and below.
+        // The fields are rows the text shows too, and so are the reports,
+        // whose count and manager the summary repeats. The memory note is a
+        // sentence there, checked above.
         let mut fields = input.clone();
         fields["changeFacts"]["rows"]
             .as_array_mut()
             .unwrap()
-            .truncate(8);
+            .truncate(9);
         rows_say_what_the_text_says(&fields);
 
         // The head, with one report: the seat that empties is a row, before
@@ -2432,10 +2589,15 @@ mod tests {
                     "label": "Head",
                     "value": "The cross-project conversation will have no head until another is chosen.",
                 }),
-                json!({ "label": "Direct report", "value": "Cto will report to the person." }),
+                json!({
+                    "label": "Direct report",
+                    "value": "Cto will report to the person.",
+                    "summary": "1 direct report will report to the person",
+                }),
                 json!({ "label": "Memory note", "value": "Kept in the vault." }),
             ]
         );
+        the_reports_row_says_what_the_text_says(input["change"].as_str().unwrap(), &rows[9]);
         let change = input["change"].as_str().unwrap();
         assert!(
             change.contains("\n\nIt is the head: the cross-project conversation will have no head until another is chosen.\n\nIts direct report (Cto) will report to the person."),
@@ -2463,6 +2625,242 @@ mod tests {
         assert!(input["change"].as_str().unwrap().contains(
             "\n\nIt is the front desk: incoming requests will have no front desk until another is chosen."
         ));
+    }
+
+    /// A roster of `lead`, `count` agents that report to it, and nothing
+    /// else, with the lead reporting to `manager`.
+    fn roster_of_reports(
+        team: &Path,
+        count: usize,
+        manager: Option<&TeamAgent>,
+    ) -> (Roster, TeamAgent) {
+        let lead = match manager {
+            Some(manager) => register_under(team, "Lead", manager),
+            None => register(team, "Lead", None),
+        };
+        let mut roster = roster(team);
+        for n in 0..count {
+            roster.agents.push(TeamAgent {
+                id: format!("agent_report{n:03}"),
+                name: format!("Report {n:03}"),
+                reports_to: Some(lead.id.clone()),
+                ..lead.clone()
+            });
+        }
+        (roster, lead)
+    }
+
+    /// The reports row of a removal card, as the page is sent it, and the
+    /// card's text beside it.
+    fn reports_row(roster: &Roster, gone: &TeamAgent) -> (Value, String) {
+        let shown = roster.removal(&gone.id).unwrap();
+        let facts = serde_json::to_value(delete_facts(roster, gone, &shown)).unwrap();
+        let rows: Vec<&Value> = facts["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["label"].as_str().unwrap().starts_with("Direct report"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{facts}");
+        (rows[0].clone(), describe_delete(roster, gone, &shown))
+    }
+
+    /// Compact decision cards review, H2: a folded removal card showed the
+    /// end of the reports row's value, so neither how many agents move nor,
+    /// behind a long name, that they move at all. The row now says both in a
+    /// line of its own, counted from the roster, and still names every one of
+    /// them in its value.
+    #[test]
+    fn a_removal_cards_reports_row_says_how_many_move_and_to_whom_in_one_line() {
+        for (count, label, summary) in [
+            (1, "Direct report", "1 direct report will report to Manager"),
+            (
+                2,
+                "Direct reports",
+                "2 direct reports will report to Manager",
+            ),
+            (
+                300,
+                "Direct reports",
+                "300 direct reports will report to Manager",
+            ),
+        ] {
+            let (_dir, team) = temp_team();
+            let manager = register(&team, "Manager", None);
+            let (roster, lead) = roster_of_reports(&team, count, Some(&manager));
+            let (row, text) = reports_row(&roster, &lead);
+            assert_eq!(row["label"], label);
+            assert_eq!(row["summary"], summary);
+            let names: Vec<String> = (0..count).map(|n| format!("Report {n:03}")).collect();
+            assert_eq!(
+                row["value"],
+                format!("{} will report to Manager.", names.join(", ")),
+                "every name is still in the value"
+            );
+            the_reports_row_says_what_the_text_says(&text, &row);
+        }
+
+        // Nobody above the one that goes: its reports move up to the person,
+        // in the words the text uses for that.
+        let (_dir, team) = temp_team();
+        let (roster, lead) = roster_of_reports(&team, 300, None);
+        let (row, text) = reports_row(&roster, &lead);
+        assert_eq!(
+            row["summary"],
+            "300 direct reports will report to the person"
+        );
+        assert!(row["value"].as_str().unwrap().chars().count() > 3_000);
+        assert!(text.contains(") will report to the person.\n\n"), "{text}");
+        the_reports_row_says_what_the_text_says(&text, &row);
+    }
+
+    /// A summary is one line of at most `SUMMARY_MAX` characters. A name may
+    /// be 60 when it is saved, which always fits, but the roster is a file:
+    /// a manager's name too long for the line loses its end, and the count
+    /// and "will report to" stay whole.
+    #[test]
+    fn a_reports_summary_shortens_a_long_managers_name_and_nothing_else() {
+        let counts = "2 direct reports will report to ";
+        let room = SUMMARY_MAX - counts.chars().count();
+        let summary_under = |name: &str| {
+            let (_dir, team) = temp_team();
+            let manager = register(&team, "Manager", None);
+            let (mut roster, lead) = roster_of_reports(&team, 2, Some(&manager));
+            roster
+                .agents
+                .iter_mut()
+                .find(|a| a.id == manager.id)
+                .unwrap()
+                .name = name.into();
+            let (row, text) = reports_row(&roster, &lead);
+            assert_eq!(
+                row["value"],
+                format!("Report 000, Report 001 will report to {name}."),
+                "the value keeps the name whole"
+            );
+            assert!(
+                text.contains(&format!(") will report to {name}.")),
+                "{text}"
+            );
+            if !name.chars().any(char::is_control) {
+                the_reports_row_says_what_the_text_says(&text, &row);
+            }
+            row["summary"].as_str().unwrap().to_string()
+        };
+
+        // As long as the line has room for: said whole.
+        let fits = "M".repeat(room);
+        let summary = summary_under(&fits);
+        assert_eq!(summary, format!("{counts}{fits}"));
+        assert_eq!(summary.chars().count(), SUMMARY_MAX);
+
+        // One more, and far more: the name ends in an ellipsis at the limit.
+        for long in [room + 1, 4_000] {
+            let summary = summary_under(&"M".repeat(long));
+            assert_eq!(
+                summary,
+                format!("{counts}{}…", "M".repeat(room - 1)),
+                "{long}"
+            );
+            assert_eq!(summary.chars().count(), SUMMARY_MAX);
+        }
+
+        // Counted in characters, and cut between them.
+        let summary = summary_under(&"管".repeat(400));
+        assert_eq!(summary, format!("{counts}{}…", "管".repeat(room - 1)));
+        assert_eq!(summary.chars().count(), SUMMARY_MAX);
+
+        // No space is left hanging before the ellipsis.
+        let spaced = format!("{} {}", "M".repeat(room - 2), "M".repeat(40));
+        assert_eq!(
+            summary_under(&spaced),
+            format!("{counts}{}…", "M".repeat(room - 2))
+        );
+
+        // One line, whatever the name holds.
+        assert_eq!(
+            summary_under("Line one\nLine two"),
+            format!("{counts}Line one Line two")
+        );
+
+        // The count is never what gives way.
+        let summary = reports_summary(usize::MAX, &"M".repeat(400));
+        assert!(
+            summary.starts_with(&format!("{} direct reports will report to M", usize::MAX)),
+            "{summary}"
+        );
+        assert_eq!(summary.chars().count(), SUMMARY_MAX);
+    }
+
+    /// A removal that moves nobody has no reports row, and no other row of
+    /// any card carries a summary: the host has nothing shorter to say than
+    /// the value.
+    #[test]
+    fn a_card_with_no_reports_to_move_carries_no_summary() {
+        let (_dir, team) = temp_team();
+        let (mut roster, lead) = roster_of_reports(&team, 0, None);
+        roster.head = Some(lead.id.clone());
+        let shown = roster.removal(&lead.id).unwrap();
+        assert!(shown.head && shown.reports.is_empty());
+        let facts = serde_json::to_value(delete_facts(&roster, &lead, &shown)).unwrap();
+        let rows = facts["rows"].as_array().unwrap();
+        assert_eq!(
+            rows.iter().map(|row| &row["label"]).collect::<Vec<_>>(),
+            [
+                "Role",
+                "Provider",
+                "Model",
+                "Effort",
+                "Access",
+                "Available in",
+                "Reports to",
+                "Team",
+                "Head",
+                "Memory note"
+            ]
+        );
+        for row in rows {
+            assert_eq!(row.as_object().unwrap().len(), 2, "label and value: {row}");
+        }
+    }
+
+    /// A row with no summary is sent as it was before rows could carry one,
+    /// to the byte; a summary is one more key, after the value.
+    #[test]
+    fn a_row_without_a_summary_is_sent_as_it_always_was() {
+        let sent = |row: &FactRow| serde_json::to_string(row).unwrap();
+        assert_eq!(
+            sent(&plain("Role", "Writes code.\nAccess: edits → danger")),
+            r#"{"label":"Role","value":"Writes code.\nAccess: edits → danger"}"#
+        );
+        assert_eq!(
+            sent(&FactRow::Move {
+                label: "Access",
+                before: "edits".into(),
+                after: "auto".into(),
+            }),
+            r#"{"label":"Access","before":"edits","after":"auto"}"#
+        );
+        assert_eq!(
+            sent(&text_row("Policy", "Never push.", "").unwrap()),
+            r#"{"label":"Policy","before":"Never push.","after":""}"#
+        );
+        assert_eq!(
+            sent(&summed(
+                "Direct reports",
+                "Dev, Ops will report to Potato.",
+                reports_summary(2, "Potato"),
+            )),
+            r#"{"label":"Direct reports","value":"Dev, Ops will report to Potato.","summary":"2 direct reports will report to Potato"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ChangeFacts {
+                lead: "Remove the agent Cto.".into(),
+                rows: vec![plain("Memory note", "Kept in the vault.")],
+            })
+            .unwrap(),
+            r#"{"lead":"Remove the agent Cto.","rows":[{"label":"Memory note","value":"Kept in the vault."}]}"#
+        );
     }
 
     #[tokio::test]
