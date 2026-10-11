@@ -58,8 +58,10 @@ const sidebar = (value: PendingActionsView, over: Partial<Parameters<typeof Side
 function row(html: string, id: string): string {
   const start = html.indexOf(`>Chat ${id}<`);
   if (start < 0) return "";
-  const open = html.lastIndexOf('<li class="chat-row">', start);
-  const next = html.indexOf('<li class="chat-row">', start);
+  // A row carries its chat's id (`data-row`), which is how a row that changes
+  // place is followed.
+  const open = html.lastIndexOf('<li data-row="', start);
+  const next = html.indexOf('<li data-row="', start);
   return html.slice(open, next < 0 ? undefined : next);
 }
 
