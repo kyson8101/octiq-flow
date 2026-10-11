@@ -409,7 +409,7 @@ impl OrchestrationStore {
                 return Ok(task.clone());
             }
             let now = now_ms();
-            if task.parent_task_id.is_none()
+            if approval_parent(task).is_none()
                 && task.approved_at.is_some()
                 && task.approval_rollback.is_none()
             {
@@ -418,13 +418,15 @@ impl OrchestrationStore {
             task.size = Some(size);
             task.updated_at = now;
             let changed = task.clone();
-            if changed.parent_task_id.is_none() && changed.approved_at.is_some() {
+            if approval_parent(&changed).is_none() && changed.approved_at.is_some() {
                 if let Some(plan) = data
                     .runs
                     .get_mut(&changed.run_id)
                     .and_then(|run| run.plan_approval.as_mut())
                 {
-                    data.tasks.get_mut(task_id).expect("read above").approved_at = None;
+                    let task = data.tasks.get_mut(task_id).expect("read above");
+                    task.approved_at = None;
+                    task.approved = None;
                     if plan.status != PlanStatus::Pending {
                         plan.status = PlanStatus::Pending;
                         plan.requested_at = now;
@@ -501,10 +503,9 @@ impl OrchestrationStore {
                         )?
                     } else {
                         // A manager, for a subtask it split: one of its own
-                        // attempts at the parent task.
-                        let parent = task
-                            .parent_task_id
-                            .as_deref()
+                        // attempts at the parent task. A task the coordinator
+                        // put under that parent is not its split to accept.
+                        let parent = approval_parent(&task)
                             .and_then(|id| data.tasks.get(id))
                             .filter(|parent| {
                                 data.attempts.values().any(|a| {
@@ -1068,6 +1069,27 @@ pub(crate) mod tests {
         assert_eq!(
             store.level_profile("agent_ada", 0).unwrap().progress.xp,
             150
+        );
+
+        // A task the COORDINATOR put under her task is not her split, and
+        // she does not accept it (review of 018a40a, H2: a parent id alone
+        // is no authority).
+        let planted = assigned(&store, &run, "chat:master", ada(), Some(parent.id.clone()));
+        let planted_work = start(&store, "chat:master", &planted);
+        settle(&store, &planted_work, WorkerOutcome::Completed);
+        let refused = store
+            .accept_task(
+                AcceptActor::Chat {
+                    chat_key: &managing.worker_chat_key,
+                    lead: None,
+                },
+                &planted.id,
+                &planted_work.id,
+            )
+            .unwrap_err();
+        assert!(
+            refused.contains("the manager who split this task"),
+            "{refused}"
         );
 
         // Nobody accepts their own task from their own chat.

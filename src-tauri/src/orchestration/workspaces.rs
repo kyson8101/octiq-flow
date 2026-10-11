@@ -56,6 +56,9 @@ pub struct TaskWorkspace {
     pub validation_paths: Vec<String>,
 }
 
+/// How many reopens a task keeps (`Task::reopens`), newest last.
+const MAX_REOPENS_KEPT: usize = 12;
+
 /// What the host WILL allocate for a task that has no workspace yet, worked
 /// out read-only when the task is created, so the person approves an exact
 /// branch and path rather than "pending". It is never a workspace: no branch,
@@ -857,12 +860,28 @@ impl OrchestrationStore {
         .inspect(|t| announce(&t.run_id, "workspace_refreshed"))
     }
 
+    /// Give a completed task new instructions and make it ready again, in
+    /// the workspace it kept. The person's decision of 2026-10-11: this needs
+    /// no new approval, so `approved_at` stays, and with it everything the
+    /// approval fixed (`approval::Approved`): the reopened task starts as the
+    /// same worker, for the same assignee, in the same place, or not at all.
+    /// Only the words change, and they are never changed out of sight:
+    ///
+    /// - the task keeps each reopen (`Task::reopens`: who, when, for which
+    ///   attempt, the instructions before and after);
+    /// - the coordinator's chat gets one durable `octiq_task_reopened` event
+    ///   in its transcript, stamped by the host, which the page draws as a
+    ///   line the person can open to read the new instructions.
+    ///
+    /// A peer request is not reopened at all.
     pub fn reopen_task(&self, actor: &str, task_id: &str, spec: String) -> Result<Task, String> {
         let spec = required_text("follow-up instructions", spec, 40_000)?;
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        let mut told: Option<(String, serde_json::Value)> = None;
         self.mutate(|data| {
             let task = data.tasks.get(task_id).ok_or("Task does not exist.")?.clone();
             let run = coordinator(data, &task.run_id, actor)?;
+            let coordinator_chat = run.coordinator_chat_key.clone();
             // What the person approved was this request's own words. New
             // instructions on it would be work nobody approved, started by an
             // agent: a lead chat coordinates its own requests.
@@ -884,12 +903,37 @@ impl OrchestrationStore {
                     dependent.status = TaskStatus::Pending;
                 }
             }
+            let attempt = data.attempts.values().filter(|a| a.task_id == task_id).count().saturating_add(1) as u32;
+            let now = now_ms();
             let task = data.tasks.get_mut(task_id).unwrap();
-            task.spec = spec; task.status = TaskStatus::Ready; task.result = None; task.updated_at = now_ms();
+            let previous_spec = std::mem::replace(&mut task.spec, spec);
+            task.status = TaskStatus::Ready; task.result = None; task.updated_at = now;
+            told = Some((coordinator_chat, json!({
+                "type": "octiq_task_reopened",
+                "runId": task.run_id,
+                "taskId": task.id,
+                "title": task.title,
+                "assignee": task.assignee,
+                "attempt": attempt,
+                "spec": task.spec,
+                "previousSpecChars": previous_spec.chars().count(),
+                "at": now,
+            })));
+            task.reopens.push(TaskReopen { by_chat_key: actor.to_owned(), at: now, attempt, previous_spec, spec: task.spec.clone() });
+            // Both texts of each are kept whole, so the list has an end.
+            let over = task.reopens.len().saturating_sub(MAX_REOPENS_KEPT);
+            task.reopens.drain(..over);
             let result = task.clone();
             recompute_run(data, &result.run_id);
             Ok(result)
-        }).inspect(|t| announce(&t.run_id, "task_reopened"))
+        }).inspect(|t| {
+            announce(&t.run_id, "task_reopened");
+            // After the write, so the transcript never tells of a reopen the
+            // ledger refused. Synced: it is the person's only notice.
+            if let Some((chat, event)) = told.take() {
+                crate::agent_chat::record_chat_event_synced(&chat, event);
+            }
+        })
     }
 
     pub fn cleanup_workspace(
@@ -2299,6 +2343,98 @@ pub(super) mod tests {
             refused.contains("has not approved this task yet"),
             "{refused}"
         );
+    }
+
+    /// Review H5, and the person's decision of 2026-10-11: a reopened task
+    /// keeps its approval and starts on its new instructions, as the same
+    /// worker and nothing else. The task keeps a record of each reopen, and
+    /// the coordinator's transcript gets exactly one event for each.
+    #[test]
+    fn a_reopened_task_keeps_its_approval_and_its_shape_and_says_what_it_was_told() {
+        let reopened_in = |chat: &str, task_id: &str| -> Vec<serde_json::Value> {
+            crate::transcript::since(chat, 0)
+                .into_iter()
+                .map(|item| item.event)
+                .filter(|event| {
+                    event["type"] == "octiq_task_reopened" && event["taskId"] == task_id
+                })
+                .collect()
+        };
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+        store.require_plan_approval(&run.id).unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        let approved = store.owned_task("chat:master", &task.id).unwrap().1;
+        // Not finished yet: nothing is reopened, recorded or told.
+        let early = store
+            .reopen_task("chat:master", &task.id, "Too soon".into())
+            .unwrap_err();
+        assert!(early.contains("Only a completed task"), "{early}");
+        assert!(reopened_in("chat:master", &task.id).is_empty());
+        report(&store, &first, WorkerOutcome::Completed);
+
+        let reopened = store
+            .reopen_task("chat:master", &task.id, "Address review".into())
+            .unwrap();
+        assert_eq!(reopened.approved_at, approved.approved_at);
+        assert_eq!(reopened.approved, approved.approved);
+        assert_eq!(reopened.spec, "Address review");
+        assert_eq!(reopened.reopens.len(), 1);
+        let record = &reopened.reopens[0];
+        assert_eq!(record.by_chat_key, "chat:master");
+        assert_eq!(record.attempt, 2);
+        assert_eq!(record.previous_spec, "Make the requested change");
+        assert_eq!(record.spec, "Address review");
+        let told = reopened_in("chat:master", &task.id);
+        assert_eq!(told.len(), 1, "one event for one reopen");
+        assert_eq!(
+            told[0],
+            json!({
+                "type": "octiq_task_reopened",
+                "runId": run.id,
+                "taskId": task.id,
+                "title": "Implement",
+                "assignee": null,
+                "attempt": 2,
+                "spec": "Address review",
+                "previousSpecChars": 25,
+                "at": record.at,
+            })
+        );
+
+        // Another access than the one it was approved with: refused, and no
+        // attempt is made of it. As approved, it starts where it worked.
+        let refused = prepare(&store, &task, Access::Full).unwrap_err();
+        assert!(refused.contains("full access instead of auto"), "{refused}");
+        let next = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!((next.number, next.cwd.as_str()), (2, first.cwd.as_str()));
+        report(&store, &next, WorkerOutcome::Completed);
+
+        // A second reopen is a second record and a second event, each whole.
+        let again = store
+            .reopen_task("chat:master", &task.id, "And the 测试 too".into())
+            .unwrap();
+        assert_eq!(again.reopens.len(), 2);
+        assert_eq!(again.reopens[1].attempt, 3);
+        assert_eq!(again.reopens[1].previous_spec, "Address review");
+        let told = reopened_in("chat:master", &task.id);
+        assert_eq!(told.len(), 2);
+        assert_eq!(told[1]["attempt"], 3);
+        assert_eq!(told[1]["spec"], "And the 测试 too");
+        assert_eq!(
+            told[1]["previousSpecChars"], 14,
+            "characters, not UTF-16 units"
+        );
+        // Only its own coordinator reopens it, and the stranger's chat is
+        // told nothing.
+        assert!(store
+            .reopen_task("chat:other", &task.id, "Mine now".into())
+            .is_err());
+        assert!(reopened_in("chat:other", &task.id).is_empty());
+        assert_eq!(reopened_in("chat:master", &task.id).len(), 2);
     }
 
     /// agent_delete review, M3: a workspace the host is preparing or

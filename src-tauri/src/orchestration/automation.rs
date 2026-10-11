@@ -17,7 +17,7 @@ pub struct WorkerDefaults {
     pub recovery: Option<execution::RecoveryPolicy>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerSettings {
     pub agent: ChatAgent,
@@ -86,7 +86,13 @@ impl WorkerDefaults {
         Ok(self)
     }
 
+    /// A task whose shape an approval fixed runs as that, whatever these
+    /// defaults have become since and whatever its last start left on it
+    /// (a recovery on the fallback model, say).
     fn settings_for(&self, task: &Task) -> Result<Option<WorkerSettings>, String> {
+        if let Some(approved) = approval::worker_of(task) {
+            return Ok(Some(approved.clone()));
+        }
         let settings = task.worker.clone().or_else(|| {
             self.agent.map(|agent| WorkerSettings {
                 agent,
@@ -102,6 +108,9 @@ impl WorkerDefaults {
 
 /// The worker a task will get: its own selection, or the run's defaults.
 pub(super) fn settings_for_task(run: &Run, task: &Task) -> Result<Option<WorkerSettings>, String> {
+    if let Some(approved) = approval::worker_of(task) {
+        return Ok(Some(approved.clone()));
+    }
     match &run.worker_defaults {
         Some(defaults) => defaults.settings_for(task),
         None => task
@@ -113,6 +122,11 @@ pub(super) fn settings_for_task(run: &Run, task: &Task) -> Result<Option<WorkerS
 }
 
 impl OrchestrationStore {
+    /// Set, change or clear the run's worker defaults. They reach only
+    /// tasks the person has not approved yet: an approved task carries the
+    /// worker that was in effect at its approval (`approval::Approved`), and
+    /// its dispatch, its recovery policy and every start of it read that.
+    /// While a plan waits, a change here moves its revision (`plan_scope`).
     pub fn configure_automation(
         &self,
         actor: &str,
@@ -231,7 +245,8 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
         // Unassigned legacy tasks must not consume capacity or inherit a CLI
         // default. The coordinator can still dispatch them explicitly.
         .filter(|t| {
-            t.worker.is_some()
+            approval::worker_of(t).is_some()
+                || t.worker.is_some()
                 || run
                     .worker_defaults
                     .as_ref()
@@ -252,9 +267,8 @@ fn mission_writer_free(run: &Run, task: &Task, writing: &mut BTreeSet<String>) -
     if run.workspace_mode != crate::git_ops::workflow::WorkspaceMode::Mission {
         return true;
     }
-    let access = task
-        .worker
-        .as_ref()
+    let access = approval::worker_of(task)
+        .or(task.worker.as_ref())
         .map(|w| w.access)
         .or_else(|| run.worker_defaults.as_ref().map(|d| d.access));
     if access == Some(Access::Read) {

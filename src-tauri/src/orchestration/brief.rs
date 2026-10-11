@@ -45,6 +45,16 @@ pub fn brief(view: &mut Value) {
             for &text in texts {
                 empty(item, text);
             }
+            // Both texts of every reopen, each as long as a spec.
+            for reopen in item
+                .get_mut("reopens")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                empty(reopen, "spec");
+                empty(reopen, "previousSpec");
+            }
             // A worker's last progress line, which no page draws at all.
             if let Some(execution) = item.get_mut("execution").filter(|e| e.is_object()) {
                 empty(execution, "lastProgress");

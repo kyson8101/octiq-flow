@@ -371,6 +371,11 @@ fn compact(
                             "updatedAt",
                             "peerRequest",
                             "heldByPlan",
+                            // What a start of it must ask for, and the two
+                            // reasons one is refused whatever it asks for.
+                            "approved",
+                            "supersededBy",
+                            "stopped",
                         ]
                     };
                     let mut item = pick(&full, keys);

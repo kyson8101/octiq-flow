@@ -879,6 +879,7 @@ impl OrchestrationStore {
                 assignee: Some(teammate.clone()),
                 destination: destination.clone(),
                 approved_at: None,
+                approved: None,
                 approval_rollback: None,
                 card: None,
                 size: Some(TaskSize::default()),
@@ -887,6 +888,7 @@ impl OrchestrationStore {
                 workspace_proposal: Some(proposal.clone()),
                 depends_on: Vec::new(),
                 parent_task_id: None,
+                split_by: None,
                 status: TaskStatus::Ready,
                 active_attempt_id: None,
                 result: None,
@@ -895,6 +897,8 @@ impl OrchestrationStore {
                 verdict: None,
                 handoffs: Vec::new(),
                 superseded_by: None,
+                reopens: Vec::new(),
+                stopped: None,
                 peer_request: Some(PeerRequest {
                     requested_by: current.requester.clone(),
                     requester_chat_key: actor.to_owned(),
@@ -3354,12 +3358,15 @@ pub(crate) mod tests {
                 failed.execution.next_retry_at = Some(now_ms() - 1);
                 // Where its retry would run is gone, so the start reserves
                 // an attempt and launches no process: the test's stand-in
-                // for a launch.
-                data.tasks.get_mut(&other.task_id).unwrap().destination = Some(TaskDestination {
+                // for a launch. Written as what was approved too, or the
+                // retry would be refused for asking for another destination.
+                let task = data.tasks.get_mut(&other.task_id).unwrap();
+                task.destination = Some(TaskDestination {
                     project_id: "gone".into(),
                     project_name: "Gone".into(),
                     repository: "/nowhere".into(),
                 });
+                task.approved.as_mut().unwrap().destination = task.destination.clone();
                 Ok(())
             })
             .unwrap();
@@ -3563,20 +3570,19 @@ pub(crate) mod tests {
         let worker = worker_ada(&store, &run);
         let made = from_worker(&store, &worker, work("bo")).unwrap();
         let peer = approved_and_started(&store, &made.task_id);
-        // The run's recovery policy names a fallback model, which is not the
-        // identity the person approved for this peer.
+        // Its recovery policy names a fallback model, which is not the
+        // identity the person approved for this peer. A policy is read from
+        // what was approved, so the ledger is made to say it was.
         store
             .mutate(|data| {
-                data.tasks
-                    .get_mut(&made.task_id)
-                    .unwrap()
-                    .worker
-                    .as_mut()
-                    .unwrap()
-                    .recovery = Some(execution::RecoveryPolicy {
+                let task = data.tasks.get_mut(&made.task_id).unwrap();
+                let policy = Some(execution::RecoveryPolicy {
                     fallback_model: Some("gpt-5.5".into()),
                     ..execution::RecoveryPolicy::default()
                 });
+                task.worker.as_mut().unwrap().recovery = policy.clone();
+                let approved = task.approved.as_mut().unwrap();
+                approved.worker.as_mut().unwrap().recovery = policy;
                 Ok(())
             })
             .unwrap();

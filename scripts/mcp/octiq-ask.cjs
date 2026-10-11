@@ -1779,7 +1779,7 @@ const ORCHESTRATION_TASK_CREATE = {
       title: { type: "string", description: "Short task label." },
       spec: { type: "string", description: "Bounded worker assignment with outcome and checks." },
       dependsOn: { type: "array", items: { type: "string" }, description: "Task IDs that must complete first. Defaults to none." },
-      parentTaskId: { type: "string", description: "Optional decomposition parent; not an execution dependency." },
+      parentTaskId: { type: "string", description: "Optional decomposition parent; not an execution dependency. From the run's coordinator it is a label and nothing more: the task is new work, waits on the plan card and is approved by the person on its own. Only a manager's split of its own task goes by its parent's approval." },
       worker: { type: "object", description: "The main agent's selection for this task, used by automatic dispatch. Required when workerDefaults has no agent and no assignee is given. Explain the choice briefly in spec.", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
       assignee: { type: "string", description: "Agents mode only: the id of one of your direct reports, as listed in your brief. The host applies that agent's provider, model, effort and access; do not also pass worker. A worker that manages agents splits its own task by passing its task id as parentTaskId." },
       project: { type: "string", description: "Where the task runs: a registered project's id or name, from orchestration_destinations. Required in the cross-project lead conversation unless the assignee works in only one project. Omit to use the run's own checkout (or the parent task's destination for a subtask)." },
@@ -1910,7 +1910,13 @@ const ORCHESTRATION_WORKER_START = {
     "Start an authoritative Claude, Codex or Antigravity worker for a ready task. The host applies the run workspace policy " +
     "and reuses every retry workspace. With automatic dispatch enabled, the host starts ready waves. Failed or " +
     "blocked tasks may be retried; the new attempt becomes authoritative and late older " +
-    "workers cannot settle it.",
+    "workers cannot settle it. On a task the person approved, agent, model, effort, access and " +
+    "baseBranch must be the ones it was approved with: read them from the task's `approved` in " +
+    "orchestration_snapshot with taskId (the fallback model of its approved recovery policy " +
+    "passes too). A start that asks for anything else is refused before an attempt is made, and " +
+    "names what differs; a change goes back to the person on the plan card, through " +
+    "orchestration_task_reassign or a new task. A task that was replaced does not start again, " +
+    "and one whose worker the person stopped is started again only by them.",
   inputSchema: {
     type: "object",
     properties: {
@@ -2133,7 +2139,7 @@ const ORCHESTRATION_RUN_STOP = {
 };
 
 const WORKSPACE_TOOLS = [
-  { name: "orchestration_automation_configure", description: "Enable host dispatch with workerDefaults={access:'auto'} using the main agent's per-task worker selections, or pause ready-wave dispatch with workerDefaults=null. Transient provider recovery uses each task's recovery policy; worker-reported failures and blocks still need explicit retries. Coordinator only.",
+  { name: "orchestration_automation_configure", description: "Enable host dispatch with workerDefaults={access:'auto'} using the main agent's per-task worker selections, or pause ready-wave dispatch with workerDefaults=null. Transient provider recovery uses each task's recovery policy; worker-reported failures and blocks still need explicit retries. The defaults reach only tasks the person has not approved yet: an approved task runs with the worker and recovery policy that were in effect when it was approved. Coordinator only.",
     inputSchema: { type: "object", properties: { runId: { type: "string" }, workerDefaults: WORKER_DEFAULTS_SCHEMA }, required: ["runId", "workerDefaults"] } },
   { name: "orchestration_dispatch_ready", description: "Immediately dispatch the configured run's full ready wave up to its capacity. Repeated calls do not duplicate active workers. The scheduler also does this automatically. While a plan revision waits for the person, the wave is the ready tasks they have already approved: a task they have not approved, and whatever depends on it, is left out and shows heldByPlan in orchestration_snapshot.",
     inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
@@ -2141,7 +2147,7 @@ const WORKSPACE_TOOLS = [
     inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "orchestration_mission_refresh", description: "Ask Git where each of a mission's worktrees stands: merged into its base branch (by PR, or already in the remote base), and released by the project's release check. Records it on the run. Closing a mission is the person's, from the run panel; never claim one is merged or released from anything but this.",
     inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
-  { name: "orchestration_task_reopen", description: "Reopen a completed task for review fixes in its retained workspace. The next attempt gets a new ID. Merged, cleaned, abandoned workspaces and already-started dependants prevent reopening. A peer request is never reopened: its follow-up is a new orchestration_peer_request, which the person approves.",
+  { name: "orchestration_task_reopen", description: "Reopen a completed task for review fixes in its retained workspace. The next attempt gets a new ID. It keeps the person's approval, so it starts without a new plan card and only as what was approved: the same worker, assignee, destination and base branch. Only its instructions change, and the person is shown each reopen in your chat, where they can read the new instructions and stop the task. Merged, cleaned, abandoned workspaces and already-started dependants prevent reopening. A peer request is never reopened: its follow-up is a new orchestration_peer_request, which the person approves.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, spec: { type: "string" } }, required: ["taskId", "spec"] } },
   { name: "orchestration_task_accept", description: "Agents mode: accept a report's completed task after you have checked its result against the task's acceptance criteria. This is what pays the assignee the task's XP, once per task. Only the run's lead, or the manager who split a subtask, may accept; never your own task. Pass the completed attempt you reviewed; if it is no longer the current one, review again. A worker saying it finished is not acceptance.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, attemptId: { type: "string", description: "The completed attempt whose result you reviewed." } }, required: ["taskId", "attemptId"] } },

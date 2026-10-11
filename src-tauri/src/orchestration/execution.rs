@@ -77,7 +77,7 @@ impl Execution {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RecoveryPolicy {
     pub max_retries: u32,
@@ -124,12 +124,18 @@ impl RecoveryPolicy {
     }
 }
 
-/// The recovery policy an attempt runs under: its task's own, else the run's
-/// defaults, else the host's. A peer-request task takes nothing from the
+/// The recovery policy an attempt runs under: the one its task was approved
+/// with, else its task's own, else the run's defaults, else the host's. A peer-request task takes nothing from the
 /// run's defaults (`reserve_attempt_for`): they are the coordinator's to
 /// change after the person approved the request.
 fn policy(data: &Stored, attempt: &Attempt) -> RecoveryPolicy {
     let task = data.tasks.get(&attempt.task_id);
+    // An approved task recovers under the policy it was approved with, and
+    // under the host's own when that named none: the run's defaults may
+    // have gained a fallback model since.
+    if let Some(approved) = task.and_then(approval::worker_of) {
+        return approved.recovery.clone().unwrap_or_default();
+    }
     task.and_then(|t| t.worker.as_ref())
         .and_then(|w| w.recovery.clone())
         .or_else(|| {

@@ -2072,6 +2072,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             }
             Ok(Value::Null)
         }
+        // The person stops ONE task's worker; the run goes on. Socket-only:
+        // no hook action maps here, so no agent stops a teammate's work with
+        // it. The task is then held for the person to start again.
+        "orchestration_task_stop" => {
+            let (task, worker) = svc
+                .orchestrations
+                .stop_task(&arg::<String>(&args, "taskId")?, arg(&args, "reason")?)?;
+            let _ = crate::agent_chat::chat_stop_impl(&svc.chats, worker);
+            to_value(Ok::<_, String>(task))
+        }
 
         // ---- git ----------------------------------------------------------
         cmd if cmd.starts_with("pr_") => pull_requests::dispatch(svc, cmd, args),

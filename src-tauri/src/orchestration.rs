@@ -25,6 +25,9 @@ use crate::workspaces::{Workspace, WorkspaceState};
 
 pub mod agent_view;
 pub mod agent_work;
+pub mod approval;
+#[cfg(test)]
+mod approval_tests;
 mod archive;
 pub mod automation;
 pub mod bridge;
@@ -364,6 +367,13 @@ pub struct Task {
     /// again, so new or re-routed work never rides an earlier approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_at: Option<i64>,
+    /// What that approval fixed: the worker, the assignee, the destination
+    /// and the base branch, as they were in effect when it was given
+    /// (`approval.rs`). Every start is compared with it and none writes it.
+    /// Cleared with `approved_at`, and taken again by the next approval. A
+    /// manager's subtask has one from its split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved: Option<approval::Approved>,
     /// The state the person approved before a resize or reassignment put this
     /// task back in front of them. Approving the amendment discards it;
     /// rejecting the amendment restores it. Persisted because the decision
@@ -398,6 +408,14 @@ pub struct Task {
     pub depends_on: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_task_id: Option<String>,
+    /// Set only by the split path of `create_task_full`: the attempt of the
+    /// parent task's own manager that made this subtask, after the host
+    /// checked that it was that manager's live task and routed the subtask
+    /// to one of its direct reports. It is what lets a subtask go by its
+    /// parent's approval (`approval_parent`). A task the coordinator creates
+    /// under a parent has none: it is an ordinary task of the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_by: Option<String>,
     pub status: TaskStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_attempt_id: Option<String>,
@@ -424,6 +442,16 @@ pub struct Task {
     /// so it stops counting as blocked (feedback 6b0870f9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+    /// Every time a completed task was given new instructions and made ready
+    /// again, oldest first (`reopen_task`). The approval is kept across a
+    /// reopen, so this is the record of what the task was told since.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reopens: Vec<TaskReopen>,
+    /// The person stopped this task's worker from the page (`stop_task`).
+    /// While it is set only the person starts the task again: their Start,
+    /// or their approval of a plan it is put back on. Both clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<TaskStop>,
     /// Set on a task a teammate asked for (`peer_request.rs`): who asked,
     /// the result they expect back and the time it may take. Fixed from
     /// creation; it is what makes the task a peer request.
@@ -447,6 +475,10 @@ pub struct Task {
 #[serde(rename_all = "camelCase")]
 struct TaskApprovalRollback {
     approved_at: i64,
+    /// Absent on a rollback kept from before approvals fixed a shape; the
+    /// restored task then takes one from the ledger (`approval::backfill`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approved: Option<approval::Approved>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     worker: Option<automation::WorkerSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,6 +499,7 @@ impl TaskApprovalRollback {
     fn capture(task: &Task) -> Option<Self> {
         Some(Self {
             approved_at: task.approved_at?,
+            approved: task.approved.clone(),
             worker: task.worker.clone(),
             assignee: task.assignee.clone(),
             destination: task.destination.clone(),
@@ -480,6 +513,7 @@ impl TaskApprovalRollback {
 
     fn restore(self, task: &mut Task, now: i64) {
         task.approved_at = Some(self.approved_at);
+        task.approved = self.approved;
         task.worker = self.worker;
         task.assignee = self.assignee;
         task.destination = self.destination;
@@ -563,6 +597,31 @@ pub struct TaskHandoff {
     pub to: TaskAssignee,
     pub reason: String,
     pub at: i64,
+}
+
+/// One reopen of a completed task: who gave it new instructions, when, for
+/// which attempt, and both texts whole.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReopen {
+    /// The chat that reopened it: the run's coordinator.
+    pub by_chat_key: String,
+    pub at: i64,
+    /// The number of the attempt these instructions are for: the next one.
+    pub attempt: u32,
+    pub previous_spec: String,
+    pub spec: String,
+}
+
+/// The person's stop of one task (`OrchestrationStore::stop_task`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStop {
+    pub at: i64,
+    /// The attempt that was stopped.
+    pub attempt_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// A task as a plan shows it: why, what, and how it is judged done.
@@ -890,13 +949,25 @@ pub struct WorkerLaunch {
 /// which no hook action maps to).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartedBy<'a> {
-    /// The run's coordinator, or the host's own automatic dispatch: its
-    /// settings are its own choice, the manual override.
+    /// The run's coordinator, or the host's own automatic dispatch. On a
+    /// task nobody approved (a run with no plan) its settings are its own
+    /// choice. On an approved task it chooses nothing: the start is refused
+    /// unless it asks for what the approval fixed (`approval::keeps_to`).
     Coordinator,
     /// The host recovering this failed attempt after a transient failure.
     Recovery(&'a str),
     /// A page's Start retry, naming the attempt it showed. The page may hold
     /// a snapshot older than the task's latest handoff.
+    ///
+    /// This is the person, and it is said here what that lets it do that
+    /// no agent's start may: start a task the person stopped
+    /// (`Task::stopped`), and say the base branch of a peer request, where
+    /// an agent's start may name none (`PEERS_BASE`); the branch it says is
+    /// still the approved one. It changes nothing an approval fixed. The page sends
+    /// the settings of the attempt it retries, and a start that asks for
+    /// another provider, model, effort, access or base branch is refused
+    /// like anyone's: a click on a row is not a new approval, and a changed
+    /// shape goes back to the plan card.
     Page { retry_of: Option<&'a str> },
 }
 
@@ -1042,6 +1113,9 @@ impl OrchestrationStore {
         // Repair that state before applying the next mutation so a newly
         // inserted task can never be mistaken for part of the old decision.
         backfill_legacy_plan_approvals(&mut next);
+        // And an approval without the shape it fixed: taken now, before the
+        // change, so a start in this very write is compared with it.
+        approval::backfill(&mut next);
         let result = change(&mut next)?;
         levels::stamp_scoring_since(&mut next, now_ms());
         // In the same write as the change, so no reader ever sees a plan
@@ -1848,10 +1922,33 @@ impl OrchestrationStore {
                 .ok_or("The replacing task does not exist.")?;
             let run_id = replacement.run_id.clone();
             supersedable(data, actor_chat_key, &run_id, old)?;
+            let now = now_ms();
             let task = data.tasks.get_mut(old).expect("checked above");
             task.superseded_by = Some(new.to_string());
-            task.updated_at = now_ms();
-            Ok(task.clone())
+            task.updated_at = now;
+            let task = task.clone();
+            // A retry the host had scheduled for it is the old work starting
+            // again beside its replacement. It is taken back here, and no
+            // later start of the task is accepted (`reserve_attempt_for`).
+            let mut cancelled = false;
+            for attempt in data.attempts.values_mut().filter(|a| a.task_id == task.id) {
+                if attempt.execution.next_retry_at.take().is_some() {
+                    attempt.execution.retry_model = None;
+                    attempt.execution.current_operation =
+                        Some(format!("Retry cancelled: replaced by task {new}"));
+                    attempt.updated_at = now;
+                    cancelled = true;
+                }
+            }
+            // It was blocked only while that retry was owed (`execution::fail`).
+            if cancelled {
+                let task = data.tasks.get_mut(old).expect("checked above");
+                task.status = TaskStatus::Failed;
+                let task = task.clone();
+                recompute_run(data, &run_id);
+                return Ok(task);
+            }
+            Ok(task)
         })?;
         announce(&task.run_id, "task_superseded");
         Ok(task)
@@ -1882,6 +1979,8 @@ impl OrchestrationStore {
             .map(automation::WorkerSettings::normalized)
             .transpose()?;
         let run_id_for_event = run_id.clone();
+        // The manager's attempt, when this is its split of its own task.
+        let mut split_by: Option<String> = None;
         let mut created_under: Option<String> = None;
         let mut reopened_plan = false;
         // The workspace plan is read from Git before the store is locked and
@@ -1901,12 +2000,13 @@ impl OrchestrationStore {
                     let Some(parent) = parent_task_id.as_deref() else {
                         return Err(not_coordinator);
                     };
-                    let mine = active_task_for_actor(data, actor_chat_key)
-                        .is_some_and(|task| task.id == parent);
                     let parent_task = data.tasks.get(parent).ok_or("The parent task does not exist.")?;
-                    if !mine || parent_task.assignee.is_none() {
+                    let manager = active_attempt_for_actor(data, actor_chat_key)
+                        .filter(|attempt| attempt.task_id == parent);
+                    let Some(manager) = manager.filter(|_| parent_task.assignee.is_some()) else {
                         return Err(not_coordinator);
-                    }
+                    };
+                    split_by = Some(manager.id.clone());
                     if parent_task.parent_task_id.is_some() {
                         return Err("This task is already a subtask. Delegation goes no deeper; do it yourself.".into());
                     }
@@ -1961,7 +2061,7 @@ impl OrchestrationStore {
                     .get(dependency)
                     .is_some_and(releases_dependants)
             });
-            let task = Task {
+            let mut task = Task {
                 id,
                 run_id: run_id.clone(),
                 title,
@@ -1970,6 +2070,7 @@ impl OrchestrationStore {
                 assignee,
                 destination,
                 approved_at: None,
+                approved: None,
                 approval_rollback: None,
                 card,
                 size: Some(size.unwrap_or_default()),
@@ -1978,6 +2079,7 @@ impl OrchestrationStore {
                 workspace_proposal: proposal,
                 depends_on,
                 parent_task_id,
+                split_by: split_by.clone(),
                 status: if ready {
                     TaskStatus::Ready
                 } else {
@@ -1990,11 +2092,24 @@ impl OrchestrationStore {
                 verdict: None,
                 handoffs: Vec::new(),
                 superseded_by: None,
+                reopens: Vec::new(),
+                stopped: None,
                 peer_request: None,
                 held_by_plan: false,
                 created_at: now,
                 updated_at: now,
             };
+            // A manager's subtask is never on the plan card, so no approval
+            // will fix what it runs as. The split does: the worker the host
+            // routed it to, its assignee and its destination.
+            if split_by.is_some() {
+                task.approved = Some(approval::Approved::of(
+                    run.worker_defaults.as_ref(),
+                    &task,
+                    approval::FixedBy::Split,
+                    now,
+                ));
+            }
             let created = task.clone();
             // Anything still waiting on the manager's task waits for its
             // subtasks too, so the manager may settle as soon as it has split.
@@ -2092,7 +2207,7 @@ impl OrchestrationStore {
             if run_has_ended(run) || run.archived_at.is_some() {
                 return Err("This run has ended.".into());
             }
-            if task.parent_task_id.is_some() {
+            if approval_parent(task).is_some() {
                 return Err("This is a manager's subtask; its manager hands it on.".into());
             }
             if task.peer_request.is_some() {
@@ -2140,6 +2255,7 @@ impl OrchestrationStore {
                 task.workspace_proposal = Some(proposal);
             }
             task.approved_at = None;
+            task.approved = None;
             task.status = if ready { TaskStatus::Ready } else { TaskStatus::Pending };
             task.updated_at = now;
             let task = task.clone();
@@ -2218,7 +2334,7 @@ impl OrchestrationStore {
             if !run.awaiting_plan_approval() || run_has_ended(run) {
                 return Err("Only a plan still waiting for the person's approval can be revised. Add a new task instead; the plan goes back to them.".into());
             }
-            if task.parent_task_id.is_some() || task.approved_at.is_some() {
+            if approval_parent(task).is_some() || task.approved_at.is_some() {
                 return Err("This task is already approved and fixed. Add a new task instead.".into());
             }
             if task.active_attempt_id.is_some()
@@ -2354,7 +2470,7 @@ impl OrchestrationStore {
             if seen_revision != current {
                 return Err(format!("The plan changed to revision {current} while you were reading it. Look it over and choose again."));
             }
-            if task.parent_task_id.is_some() || task.approved_at.is_some() {
+            if approval_parent(task).is_some() || task.approved_at.is_some() {
                 return Err("This task is already approved and fixed.".into());
             }
             if task.active_attempt_id.is_some()
@@ -2441,6 +2557,16 @@ impl OrchestrationStore {
             if let Some(waiting) = held_by_plan(&run, &task, &|id| data.tasks.get(id)) {
                 return Err(plan_hold_reason(&task, waiting));
             }
+            // The person stopped it, so the person starts it again.
+            match (&task.stopped, by) {
+                (Some(_), StartedBy::Page { .. }) | (None, _) => {}
+                (Some(_), _) => return Err(STOPPED_BY_PERSON.into()),
+            }
+            // A replaced task is owed nothing more: its replacement is the
+            // work now, and both running would be two answers to one job.
+            if let Some(replacement) = &task.superseded_by {
+                return Err(superseded_reason(data, replacement));
+            }
             // Checked here, under the lock that writes `task.worker` below, so
             // a start the handoff overtook can neither run nor record the
             // replaced owner's settings as the new owner's.
@@ -2465,28 +2591,45 @@ impl OrchestrationStore {
             {
                 return Err(peer_request::PEERS_BASE.into());
             }
-            // The run's defaults are the coordinator's to change at any
-            // time, and a recovery policy names a fallback model in words of
-            // its choosing. A peer request takes none of them: what was
-            // approved with the task, or the host's own default.
-            let defaults = run
-                .worker_defaults
-                .as_ref()
-                .filter(|_| task.peer_request.is_none());
-            worker.recovery = task
-                .worker
-                .as_ref()
-                .and_then(|w| w.recovery.clone())
-                .or_else(|| defaults.and_then(|w| w.recovery.clone()));
-            let recovery_agent = task
-                .worker
-                .as_ref()
-                .filter(|w| w.recovery.is_some())
-                .map(|w| w.agent)
-                .or_else(|| defaults.and_then(|w| w.agent));
-            if recovery_agent.is_some_and(|agent| agent != worker.agent) {
-                if let Some(policy) = &mut worker.recovery {
-                    policy.fallback_model = None;
+            // What the person approved is what runs: the worker, the
+            // assignee, the destination and the base branch that were in
+            // effect at the approval (`approval::Approved`). Asked of every
+            // start alike: the coordinator's, the host's own dispatch and
+            // recovery, and the page's Start, which retries an attempt with
+            // that attempt's settings and is the person changing nothing.
+            // Refused here, before anything is reserved or written.
+            if let Some(approved) = &task.approved {
+                approval::keeps_to(approved, &task, &worker, &launch.base_branch)?;
+            }
+            match task.approved.as_ref().and_then(|a| a.worker.as_ref()) {
+                // The approved recovery policy, or none: never one the run's
+                // defaults gained after the approval.
+                Some(approved) => worker.recovery = approved.recovery.clone(),
+                None => {
+                    // The run's defaults are the coordinator's to change at
+                    // any time, and a recovery policy names a fallback model
+                    // in words of its choosing. A peer request takes none of
+                    // them: what came with the task, or the host's default.
+                    let defaults = run
+                        .worker_defaults
+                        .as_ref()
+                        .filter(|_| task.peer_request.is_none());
+                    worker.recovery = task
+                        .worker
+                        .as_ref()
+                        .and_then(|w| w.recovery.clone())
+                        .or_else(|| defaults.and_then(|w| w.recovery.clone()));
+                    let recovery_agent = task
+                        .worker
+                        .as_ref()
+                        .filter(|w| w.recovery.is_some())
+                        .map(|w| w.agent)
+                        .or_else(|| defaults.and_then(|w| w.agent));
+                    if recovery_agent.is_some_and(|agent| agent != worker.agent) {
+                        if let Some(policy) = &mut worker.recovery {
+                            policy.fallback_model = None;
+                        }
+                    }
                 }
             }
             worker = worker.normalized()?;
@@ -2641,7 +2784,17 @@ impl OrchestrationStore {
             if number == 1 && reserved_task.size.is_none() {
                 reserved_task.size = Some(TaskSize::default());
             }
+            // Approved with no worker chosen at all (`Approved::worker`):
+            // this first start is the choice, and every later one keeps it.
+            if let Some(approved) = reserved_task
+                .approved
+                .as_mut()
+                .filter(|approved| approved.worker.is_none())
+            {
+                approved.worker = Some(worker.clone());
+            }
             reserved_task.worker = Some(worker);
+            reserved_task.stopped = None;
             reserved_task.active_attempt_id = Some(id);
             reserved_task.result = None;
             reserved_task.updated_at = now;
@@ -3929,7 +4082,111 @@ impl OrchestrationStore {
         })
         .inspect(|_| announce(&run_id_for_event, "run_stopped"))
     }
+
+    /// The person stops ONE task's worker and leaves the run going. The
+    /// page's command (`orchestration_task_stop`), which no hook action maps
+    /// to: a coordinator stops its whole run, or interrupts a worker with a
+    /// message, and neither is this.
+    ///
+    /// The task's unsettled attempt is cancelled, with any decision it was
+    /// waiting on and any retry the host owed it, and its worker's chat is
+    /// named back for the caller to stop. The task is left failed with the
+    /// stop as its result and its workspace kept, and is held
+    /// (`Task::stopped`): no agent and no host recovery starts it again.
+    /// The person does, with Start on its row (`orchestration_worker_start`,
+    /// `retryOf` the stopped attempt), or by approving a plan it is put
+    /// back on.
+    pub fn stop_task(
+        &self,
+        task_id: &str,
+        reason: Option<String>,
+    ) -> Result<(Task, String), String> {
+        let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        let reason = reason
+            .map(|reason| reason.trim().to_string())
+            .filter(|reason| !reason.is_empty())
+            .map(|reason| required_text("stop reason", reason, 500))
+            .transpose()?;
+        let mut run_id = String::new();
+        self.mutate(|data| {
+            let task = data.tasks.get(task_id).ok_or("The task does not exist.")?.clone();
+            let run = data.runs.get(&task.run_id).ok_or("The run does not exist.")?;
+            run_id = run.id.clone();
+            let coordinator_chat = run.coordinator_chat_key.clone();
+            let attempt = task
+                .active_attempt_id
+                .as_deref()
+                .and_then(|id| data.attempts.get(id))
+                .filter(|attempt| attempt_is_unsettled(data, attempt))
+                .cloned()
+                .ok_or("No worker is running on this task, so there is nothing to stop.")?;
+            let now = now_ms();
+            let stopped = data.attempts.get_mut(&attempt.id).expect("read above");
+            stopped.status = AttemptStatus::Cancelled;
+            stopped.execution.state = execution::ExecutionState::Cancelled;
+            stopped.execution.current_operation = None;
+            stopped.execution.next_retry_at = None;
+            stopped.finished_at.get_or_insert(now);
+            stopped.summary = Some(STOPPED_RESULT.into());
+            stopped.updated_at = now;
+            for gate in data.gates.values_mut().filter(|gate| {
+                gate.task_id.as_deref() == Some(task_id) && gate.status == GateStatus::Open
+            }) {
+                gate.close(GateStatus::Cancelled, now);
+            }
+            let changed = data.tasks.get_mut(task_id).expect("read above");
+            changed.status = TaskStatus::Failed;
+            changed.result = Some(match &reason {
+                Some(reason) => format!("{STOPPED_RESULT} Their reason: {reason}"),
+                None => STOPPED_RESULT.into(),
+            });
+            changed.stopped = Some(TaskStop {
+                at: now,
+                attempt_id: attempt.id.clone(),
+                reason: reason.clone(),
+            });
+            changed.updated_at = now;
+            if let Some(workspace) = &mut changed.workspace {
+                if workspace.state != workspaces::WorkspaceState::Preparing {
+                    workspace.state = workspaces::WorkspaceState::Retained;
+                }
+            }
+            let changed = changed.clone();
+            let why = reason
+                .as_deref()
+                .map(|reason| format!(" Their reason was: “{reason}”"))
+                .unwrap_or_default();
+            inbox::enqueue(
+                data,
+                &run_id,
+                "host",
+                &coordinator_chat,
+                format!("task-stopped:{}", attempt.id),
+                "task_stopped",
+                format!(
+                    "The person stopped the worker on task \"{}\" ({task_id}, attempt {}).{why} The run goes on. The task is held: only the person starts it again. This records their decision; it is not an instruction to start or replace the task.",
+                    changed.title, attempt.id
+                ),
+            );
+            peer_request::tell_requester(
+                data,
+                &changed,
+                format!("peer-report:{}", attempt.id),
+                "the person stopped it, so it has no result. Carry on without it unless they start it again.",
+            );
+            recompute_run(data, &run_id);
+            Ok((changed, attempt.worker_chat_key))
+        })
+        .inspect(|_| announce(&run_id, "task_stopped"))
+    }
 }
+
+/// What a task and its attempt say after `stop_task`.
+const STOPPED_RESULT: &str = "Stopped by the person.";
+
+/// Why an agent's or the host's start of a task the person stopped is
+/// refused.
+const STOPPED_BY_PERSON: &str = "The person stopped this task's worker, so only they start it again: Start on its row in the run panel, or their approval of a plan it is put back on. Nothing was started.";
 
 fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec<String> {
     for notification in data.notifications.values_mut().filter(|notification| {
@@ -4193,13 +4450,23 @@ fn task_is_withdrawable_from_plan(data: &Stored, task: &Task) -> bool {
         ) && !task_has_attempt(data, &task.id))
 }
 
+/// The parent whose approval `task` goes by: only for a subtask its
+/// parent's own manager split off (`Task::split_by`). A parent id alone
+/// proves nothing: the coordinator can put one on any task it creates, and
+/// that task is new work the person has not seen. It waits on the plan card
+/// like any other.
+pub(crate) fn approval_parent(task: &Task) -> Option<&str> {
+    task.split_by.as_ref().and(task.parent_task_id.as_deref())
+}
+
 /// The tasks a plan approval covers: the lead's own, not yet approved, and
-/// still in the plan.
+/// still in the plan. A task the coordinator made under a parent is one of
+/// them; a manager's split is not.
 fn awaiting_approval<'a>(data: &'a Stored, run_id: &'a str) -> impl Iterator<Item = &'a Task> {
     data.tasks.values().filter(move |task| {
         task.run_id == run_id
             && task.approved_at.is_none()
-            && task.parent_task_id.is_none()
+            && approval_parent(task).is_none()
             && task.status != TaskStatus::Cancelled
             && task_is_withdrawable_from_plan(data, task)
     })
@@ -4215,7 +4482,8 @@ fn awaiting_approval<'a>(data: &'a Stored, run_id: &'a str) -> impl Iterator<Ite
 /// to what it covered (`reassign_task`, `set_task_size`), so a task made or
 /// changed since the last approval waits, and so does whatever depends on
 /// one, however far down. A manager's subtask is never on the card: it goes
-/// by its parent's approval.
+/// by its parent's approval (`approval_parent`). A task the coordinator
+/// created under a parent is not one, and is held like any new task.
 ///
 /// A run whose plan is not pending holds nothing here, as before.
 pub(crate) fn held_by_plan<'a>(
@@ -4232,7 +4500,7 @@ pub(crate) fn held_by_plan<'a>(
         if !seen.insert(task.id.as_str()) {
             continue;
         }
-        let decided = match task.parent_task_id.as_deref() {
+        let decided = match approval_parent(task) {
             Some(parent) => find(parent),
             None => Some(task),
         };
@@ -4246,12 +4514,24 @@ pub(crate) fn held_by_plan<'a>(
     None
 }
 
+/// Why a start, a retry or a recovery of a replaced task is refused, naming
+/// the task that replaced it.
+fn superseded_reason(data: &Stored, replacement: &str) -> String {
+    let title = data
+        .tasks
+        .get(replacement)
+        .map_or("another task", |task| task.title.as_str());
+    format!(
+        "This task was replaced by \"{title}\" ({replacement}) and no longer starts. Start that task instead; this one keeps its history."
+    )
+}
+
 /// Why a start of `task` is refused, naming `waiting`: the task
 /// `held_by_plan` found.
 fn plan_hold_reason(task: &Task, waiting: &Task) -> String {
     if waiting.id == task.id {
         "The person has not approved this task yet: it is waiting on the plan card. Workers start on it once they do.".into()
-    } else if task.parent_task_id.as_deref() == Some(waiting.id.as_str()) {
+    } else if approval_parent(task) == Some(waiting.id.as_str()) {
         format!(
             "This is part of \"{}\", which the person has not approved yet: it is waiting on the plan card. This task starts once they do.",
             waiting.title
@@ -4379,9 +4659,19 @@ fn decide_plan_in(
             }
             plan.consent = Some(consent);
             run.updated_at = now;
+            // What this approval fixes for each task, from the values in
+            // effect now: the run's defaults as the plan card showed them.
+            let defaults = run.worker_defaults.clone();
             for task in data.tasks.values_mut() {
                 if waiting.contains(&task.id) {
                     task.approved_at = Some(now);
+                    task.stopped = None;
+                    task.approved = Some(approval::Approved::of(
+                        defaults.as_ref(),
+                        task,
+                        approval::FixedBy::Plan,
+                        now,
+                    ));
                     task.approval_rollback = None;
                 }
             }
@@ -4601,16 +4891,21 @@ fn refresh_plan_revisions(data: &mut Stored) -> bool {
     !changed.is_empty()
 }
 
+/// The unsettled attempt `actor_chat_key` is the worker of, while it is its
+/// task's authoritative one.
+fn active_attempt_for_actor<'a>(data: &'a Stored, actor_chat_key: &str) -> Option<&'a Attempt> {
+    data.attempts.values().find(|attempt| {
+        attempt.worker_chat_key == actor_chat_key
+            && attempt_is_unsettled(data, attempt)
+            && data
+                .tasks
+                .get(&attempt.task_id)
+                .is_some_and(|task| task.active_attempt_id.as_deref() == Some(attempt.id.as_str()))
+    })
+}
+
 fn active_task_for_actor(data: &Stored, actor_chat_key: &str) -> Option<Task> {
-    data.attempts
-        .values()
-        .find(|attempt| {
-            attempt.worker_chat_key == actor_chat_key
-                && attempt_is_unsettled(data, attempt)
-                && data.tasks.get(&attempt.task_id).is_some_and(|task| {
-                    task.active_attempt_id.as_deref() == Some(attempt.id.as_str())
-                })
-        })
+    active_attempt_for_actor(data, actor_chat_key)
         .and_then(|attempt| data.tasks.get(&attempt.task_id))
         .cloned()
 }
@@ -4627,8 +4922,9 @@ fn attempt_has_open_gate(data: &Stored, attempt: &Attempt) -> bool {
 /// The worker a handoff names, while nobody has started under it yet: no
 /// attempt of the task's current assignee began at or after the last handoff.
 /// Those are the settings the person approved with the new owner, and the
-/// first start after it must keep to them. Later starts are the coordinator's
-/// own choice again, as before any handoff.
+/// first start after it must keep to them. Later starts are held to them
+/// too, by the approval itself (`approval::keeps_to`); this guard is the one
+/// that says a start came from before the handoff.
 fn unstarted_handoff<'a>(data: &Stored, task: &'a Task) -> Option<&'a automation::WorkerSettings> {
     let handoff = task.handoffs.last()?;
     (!handoff_started(data, task, handoff))
@@ -5472,7 +5768,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn assigned(
+    pub(super) fn assigned(
         store: &OrchestrationStore,
         run: &Run,
         actor: &str,
@@ -5684,14 +5980,14 @@ pub(crate) mod tests {
         assert!(!store.snapshot(None).unwrap().runs[0].awaiting_plan_approval());
     }
 
-    fn pending_plan(store: &OrchestrationStore) -> (Run, Task) {
+    pub(super) fn pending_plan(store: &OrchestrationStore) -> (Run, Task) {
         let run = run(store);
         store.require_plan_approval(&run.id).unwrap();
         let task = task(store, &run, Vec::new());
         (run, task)
     }
 
-    fn plan_of(store: &OrchestrationStore, run_id: &str) -> PlanApproval {
+    pub(super) fn plan_of(store: &OrchestrationStore, run_id: &str) -> PlanApproval {
         store
             .snapshot(Some(run_id))
             .unwrap()
@@ -5703,7 +5999,7 @@ pub(crate) mod tests {
 
     /// A plan the person approved with `count` ready tasks on it, oldest
     /// first.
-    fn approved_plan(store: &OrchestrationStore, count: usize) -> (Run, Vec<Task>) {
+    pub(super) fn approved_plan(store: &OrchestrationStore, count: usize) -> (Run, Vec<Task>) {
         let (run, first) = pending_plan(store);
         let mut tasks = vec![first];
         tasks.extend((1..count).map(|_| task(store, &run, Vec::new())));
@@ -5722,7 +6018,7 @@ pub(crate) mod tests {
         (run, tasks)
     }
 
-    fn held(store: &OrchestrationStore, run_id: &str) -> BTreeSet<String> {
+    pub(super) fn held(store: &OrchestrationStore, run_id: &str) -> BTreeSet<String> {
         store
             .snapshot(Some(run_id))
             .unwrap()
@@ -5733,7 +6029,7 @@ pub(crate) mod tests {
             .collect()
     }
 
-    fn wave(store: &OrchestrationStore, run_id: &str) -> Vec<String> {
+    pub(super) fn wave(store: &OrchestrationStore, run_id: &str) -> Vec<String> {
         let snapshot = store.snapshot(Some(run_id)).unwrap();
         automation::ready_wave(&snapshot, &snapshot.runs[0])
             .into_iter()
@@ -5741,7 +6037,7 @@ pub(crate) mod tests {
             .collect()
     }
 
-    fn ids(tasks: &[&Task]) -> BTreeSet<String> {
+    pub(super) fn ids(tasks: &[&Task]) -> BTreeSet<String> {
         tasks.iter().map(|task| task.id.clone()).collect()
     }
 
@@ -5883,36 +6179,62 @@ pub(crate) mod tests {
     }
 
     /// A manager's subtask is never on the plan card: it goes by the
-    /// approval of the task it is part of.
+    /// approval of the task it is part of. Only a split by that task's own
+    /// manager is one (`Task::split_by`); the review of 018a40a (H2) made a
+    /// "subtask" here as the coordinator, which is new work and is tested
+    /// in `approval_tests`.
     #[test]
     fn a_subtask_goes_by_its_parents_approval() {
         let store = OrchestrationStore::default();
-        let (run, approved) = approved_plan(&store, 1);
-        let part = store
-            .create_task(
-                "chat:master",
-                run.id.clone(),
-                "Part".into(),
-                "One part of it".into(),
-                Vec::new(),
-                Some(approved[0].id.clone()),
-                None,
-            )
+        let run = run(&store);
+        store.require_plan_approval(&run.id).unwrap();
+        let managed = assigned(&store, &run, "chat:master", None, Vec::new()).unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
             .unwrap();
+        let manager = start_task(&store, &managed.id);
+        let part = assigned(
+            &store,
+            &run,
+            &manager.worker_chat_key,
+            Some(managed.id.clone()),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(part.split_by.as_deref(), Some(manager.id.as_str()));
+        assert!(part.approved_at.is_none());
+        assert!(
+            plan_of(&store, &run.id).status == PlanStatus::Approved,
+            "a split does not put the plan back"
+        );
         task(&store, &run, Vec::new());
         assert!(plan_of(&store, &run.id).status == PlanStatus::Pending);
         assert!(!held(&store, &run.id).contains(&part.id));
         assert!(wave(&store, &run.id).contains(&part.id));
-        // Its parent's approval withdrawn, it waits with it.
+        // Its parent's approval withdrawn (the manager stopped, and the task
+        // changed hands), it waits with it.
+        finish_attempt(&store, manager, WorkerOutcome::Blocked);
         store
-            .set_task_size(&approved[0].id, TaskSize::Large)
+            .reassign_task(
+                "chat:master",
+                &managed.id,
+                (
+                    None,
+                    Some(TaskAssignee {
+                        id: "agent_bo".into(),
+                        name: "Bo".into(),
+                    }),
+                    None,
+                ),
+                "Bo takes it over.".into(),
+            )
             .unwrap();
         assert!(held(&store, &run.id).contains(&part.id));
         let refused = store
             .reserve_attempt("chat:master", &launch_for(&part.id))
             .unwrap_err();
         assert!(
-            refused.contains("part of \"Implement\", which the person has not approved yet"),
+            refused.contains("part of \"Part\", which the person has not approved yet"),
             "{refused}"
         );
     }
@@ -6039,7 +6361,9 @@ pub(crate) mod tests {
         let added = task(&store, &run, Vec::new());
         enable_automatic_dispatch(&store, &run.id);
         // Where each would run is gone, so a start reserves an attempt and
-        // launches no process: the test's stand-in for a launch.
+        // launches no process: the test's stand-in for a launch. Written as
+        // what was approved too, or the start would be refused for asking
+        // for a destination the person never saw.
         store
             .mutate(|data| {
                 for task in data.tasks.values_mut() {
@@ -6048,6 +6372,9 @@ pub(crate) mod tests {
                         project_name: "Gone".into(),
                         repository: "/nowhere".into(),
                     });
+                    if let Some(approved) = &mut task.approved {
+                        approved.destination = task.destination.clone();
+                    }
                 }
                 Ok(())
             })
@@ -6774,18 +7101,24 @@ pub(crate) mod tests {
             .unwrap();
         finish_attempt(&store, attempt, WorkerOutcome::Blocked);
 
-        // Once the new owner has started, the coordinator's own choice of
-        // settings for a retry is back, as before any handoff.
-        let (_, task, _, _) = store
+        // Once the new owner has started, the handoff's own guard is spent,
+        // and the approval still holds every later start to what the person
+        // approved with the new owner (review of 018a40a, H1).
+        let refused = store
             .reserve_attempt(
                 "chat:master",
                 &WorkerLaunch {
                     access: Access::Edits,
-                    ..noah
+                    ..noah.clone()
                 },
             )
-            .unwrap();
-        assert_eq!(task.worker.unwrap().access, Access::Edits);
+            .unwrap_err();
+        assert!(
+            refused.contains("edits access instead of read"),
+            "{refused}"
+        );
+        let (_, task, _, _) = store.reserve_attempt("chat:master", &noah).unwrap();
+        assert_eq!(task.worker.unwrap().access, Access::Read);
     }
 
     #[test]
@@ -6920,12 +7253,21 @@ pub(crate) mod tests {
                 .unwrap();
             finish_attempt(&store, retried, WorkerOutcome::Blocked);
 
-            // The coordinator's explicit start stays its manual override, no
-            // retryOf needed, even for settings no page would send.
-            let (_, task, _, _) = store
+            // The coordinator's explicit start needs no retryOf. It is held
+            // to what the person approved with Noah all the same: the
+            // replaced owner's provider and access are not its to bring back.
+            let refused = store
                 .reserve_attempt_for("chat:master", &old, StartedBy::Coordinator)
+                .unwrap_err();
+            assert!(
+                refused.contains("claude:opus instead of codex:terra")
+                    && refused.contains("full access instead of read"),
+                "{refused}"
+            );
+            let (_, task, _, _) = store
+                .reserve_attempt_for("chat:master", &noah_launch, StartedBy::Coordinator)
                 .unwrap();
-            assert_eq!(task.worker.unwrap().access, Access::Full);
+            assert_eq!(task.worker.unwrap().access, Access::Read);
         }
     }
 
@@ -7306,7 +7648,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn start_task(store: &OrchestrationStore, task_id: &str) -> Attempt {
+    pub(super) fn start_task(store: &OrchestrationStore, task_id: &str) -> Attempt {
         let (_, _, attempt, _) = store
             .reserve_attempt("chat:master", &launch_for(task_id))
             .unwrap();
@@ -7315,7 +7657,39 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    fn finish_attempt(store: &OrchestrationStore, attempt: Attempt, outcome: WorkerOutcome) {
+    /// The launch the host's own dispatch makes for a task: the settings in
+    /// effect for it, which for an approved task are the approved ones.
+    pub(super) fn host_launch(store: &OrchestrationStore, task_id: &str) -> WorkerLaunch {
+        let snapshot = store.snapshot(None).unwrap();
+        let task = snapshot.tasks.iter().find(|t| t.id == task_id).unwrap();
+        let run = snapshot.runs.iter().find(|r| r.id == task.run_id).unwrap();
+        match automation::settings_for_task(run, task).unwrap() {
+            Some(settings) => WorkerLaunch {
+                agent: settings.agent,
+                model: settings.model,
+                effort: settings.effort,
+                access: settings.access,
+                ..launch_for(task_id)
+            },
+            None => launch_for(task_id),
+        }
+    }
+
+    /// Start a task as the host's dispatch would.
+    pub(super) fn start_as_planned(store: &OrchestrationStore, task_id: &str) -> Attempt {
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &host_launch(store, task_id))
+            .unwrap();
+        store
+            .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
+            .unwrap()
+    }
+
+    pub(super) fn finish_attempt(
+        store: &OrchestrationStore,
+        attempt: Attempt,
+        outcome: WorkerOutcome,
+    ) {
         store
             .report_worker(
                 &attempt.worker_chat_key,
@@ -7330,7 +7704,7 @@ pub(crate) mod tests {
             .unwrap();
     }
 
-    fn enable_automatic_dispatch(store: &OrchestrationStore, run_id: &str) {
+    pub(super) fn enable_automatic_dispatch(store: &OrchestrationStore, run_id: &str) {
         store
             .configure_automation(
                 "chat:master",
@@ -7706,7 +8080,7 @@ pub(crate) mod tests {
                 Some(plan.revision),
             )
             .unwrap();
-        let first_attempt = start_task(&store, &first.id);
+        let first_attempt = start_as_planned(&store, &first.id);
         store
             .reassign_task(
                 "chat:master",

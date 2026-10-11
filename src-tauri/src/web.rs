@@ -3074,6 +3074,20 @@ mod tests {
         chats.test_end("chat:plain");
     }
 
+    /// The person's stop of one task (`orchestration_task_stop`) is their
+    /// socket's and nobody else's: no hook action maps to it under any name,
+    /// and the socket does not refuse it.
+    #[test]
+    fn no_hook_action_reaches_the_persons_stop_of_one_task() {
+        for name in ["task_stop", "worker_stop", "orchestration_task_stop"] {
+            assert_eq!(orchestration_hook_command(name), None);
+        }
+        assert!(!ORCHESTRATION_HOOK_ACTIONS
+            .iter()
+            .any(|(_, command)| *command == "orchestration_task_stop"));
+        assert_eq!(socket_refusal("orchestration_task_stop"), None);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_reads_the_roster_but_changes_nothing_the_person_did_not_approve() {
         let store = Arc::new(crate::orchestration::OrchestrationStore::default());
