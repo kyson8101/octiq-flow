@@ -152,6 +152,211 @@ fn refresh_lead_turn(svc: &Services, key: &str, text: String) -> Result<String, 
     crate::team::refresh_turn_brief(&crate::team::default_path(), key, text, &projects)
 }
 
+/// The first message of a chat that is being started.
+enum FirstTurn {
+    /// What the person typed, if anything.
+    Person(Option<String>),
+    /// The host's wrap-up, for a completion of a chat with no process.
+    WrapUp(String),
+}
+
+/// Start a chat's agent from the page's start settings (`args`: `cwd`,
+/// `agent`, `model`, `access`, `resume`, `extraDirs`, `env`, `effort`,
+/// `lite`, `useSandbox`, `fallbackCwd`). `chat_start` and a completion of a
+/// chat that is not running both come through here, so both put a removed
+/// folder back first and both start under what that holds.
+fn start_chat(
+    svc: &Services,
+    key: &str,
+    args: &Value,
+    first: FirstTurn,
+    turn_id: String,
+) -> Result<(), String> {
+    let mut cwd: String = arg(args, "cwd")?;
+    let resume: Option<String> = arg(args, "resume")?;
+    // A chat outlives the worktree it ran in. Put the folder back, or
+    // move the chat to one that exists, before anything reads it: the
+    // sandbox below and the launch both need a real directory. It is
+    // refused before it changes anything, and what it holds (the
+    // workspace lifecycle lock and its claim on the chat) is kept
+    // until the chat has been started, further down.
+    let held = crate::chat_recover::recover(
+        &svc.chats,
+        &svc.workspaces,
+        key,
+        &cwd,
+        arg::<Option<String>>(args, "fallbackCwd")?.as_deref(),
+    )?;
+    if let Some(held) = &held {
+        cwd = held.recovery.cwd.clone();
+    }
+    crate::sandbox::Store::profile().select(
+        key,
+        &cwd,
+        arg(args, "useSandbox")?,
+        resume.is_some(),
+    )?;
+    if let Some(held) = &held {
+        held.settle(
+            key,
+            arg(args, "agent")?,
+            resume.as_deref(),
+            arg::<Option<std::collections::BTreeMap<String, String>>>(args, "env")?.as_ref(),
+        );
+    }
+    let (prompt, handoff, images, safety_block) = match first {
+        FirstTurn::Person(prompt) => {
+            if let Some(words) = &prompt {
+                svc.chats.note_person_turn(
+                    key,
+                    &turn_id,
+                    words,
+                    arg::<Option<_>>(args, "seenPlans")?.unwrap_or_default(),
+                );
+            }
+            (
+                prompt
+                    .map(|text| refresh_lead_turn(svc, key, text))
+                    .transpose()?,
+                arg(args, "handoff")?,
+                arg(args, "images")?,
+                // An outage card's retry: its card stays up until this start
+                // has taken the turn (`safety_block::person_turn`).
+                arg(args, "safetyBlock")?,
+            )
+        }
+        // The host's own words: no evidence of the person's, no roster
+        // brief, nothing attached.
+        FirstTurn::WrapUp(text) => (Some(text), None, None, None),
+    };
+    let started = crate::agent_chat::chat_start_answering_impl(
+        svc.chats.clone(),
+        key.to_string(),
+        cwd,
+        arg(args, "agent")?,
+        arg(args, "model")?,
+        arg(args, "access")?,
+        prompt,
+        handoff,
+        resume,
+        arg(args, "extraDirs")?,
+        arg(args, "env")?,
+        arg(args, "effort")?,
+        images,
+        arg(args, "lite")?,
+        Some(turn_id),
+        safety_block,
+    );
+    drop(held);
+    started
+}
+
+/// Why a chat cannot be completed, for the kinds that never can: a worker's
+/// chat ends with its task, a front desk only routes, and a second voice in
+/// a chat is not the chat. By durable identity, like every hook that writes.
+fn completion_refusal(svc: &Services, key: &str) -> Result<Option<&'static str>, String> {
+    completion_refusal_in(
+        &svc.orchestrations,
+        &svc.chats,
+        &crate::team::default_path(),
+        key,
+    )
+}
+
+fn completion_refusal_in(
+    orchestrations: &OrchestrationStore,
+    chats: &ChatManager,
+    team: &std::path::Path,
+    key: &str,
+) -> Result<Option<&'static str>, String> {
+    if orchestrations.is_worker_chat(key)? {
+        return Ok(Some(
+            "A worker's chat ends with its task. Complete the main chat that coordinates it.",
+        ));
+    }
+    if crate::team::is_front_desk_chat(team, key) {
+        return Ok(Some(
+            "A front desk only routes. There is nothing in it to complete.",
+        ));
+    }
+    if !crate::agent_chat::is_own_voice(chats, key) {
+        return Ok(Some("Only a chat's own agent can be completed."));
+    }
+    let listed = key.strip_prefix("chat:").is_some_and(|id| {
+        crate::chat_index::list()
+            .iter()
+            .any(|chat| chat.id == id && chat.deleted_at.is_none())
+    });
+    Ok((!listed).then_some("This chat is not in the active chat index."))
+}
+
+/// The runs a chat coordinates that have not ended, and whether it is a
+/// registered agent's: the two things the wrap-up's wording turns on.
+fn completion_wrap_up(svc: &Services, key: &str) -> Result<String, String> {
+    if let Some(refusal) = completion_refusal(svc, key)? {
+        return Err(refusal.into());
+    }
+    let runs: Vec<String> = svc
+        .orchestrations
+        .coordinated_runs(key)?
+        .into_iter()
+        .filter(|run| run.live)
+        .map(|run| run.run_id)
+        .collect();
+    let registered = crate::team::identity(&crate::team::default_path(), key, None).is_ok();
+    Ok(crate::agent_chat::wrap_up_message(registered, &runs))
+}
+
+/// `chat_complete_preview`: what the host knows about a chat before its
+/// completion is confirmed. Git is asked through `chat_task`; nothing is
+/// asked of the agent and nothing goes on the network.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompletionPreview {
+    chat_key: String,
+    /// Why this chat cannot be completed. Absent when it can.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refusal: Option<String>,
+    /// The wrap-up turn of a completion already under way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completing_turn_id: Option<String>,
+    /// The chat has a live process. Without one `chat_complete` needs `start`.
+    running: bool,
+    /// A registered agent's chat: the wrap-up asks it to save its memory.
+    registered_agent: bool,
+    /// Branch, worktree or primary checkout, changed files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace: Option<crate::chat_task::Workspace>,
+    /// Target branch, uncommitted files, merged or not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery: Option<crate::chat_task::Delivery>,
+    /// The runs this chat coordinates: still running, or a mission not yet
+    /// closed, each with whether Close would go through.
+    runs: Vec<crate::orchestration::mission::CoordinatedRun>,
+}
+
+fn completion_preview(svc: &Services, key: &str) -> Result<CompletionPreview, String> {
+    let refusal = completion_refusal(svc, key)?.map(str::to_string);
+    let status = key.strip_prefix("chat:").and_then(|id| {
+        crate::chat_task::chat_task_impl(id.to_string(), true)
+            .inspect_err(|error| eprintln!("[chat] no task status for {key}: {error}"))
+            .ok()
+    });
+    let (workspace, delivery) = status
+        .map(|status| (status.workspace, status.delivery))
+        .unwrap_or_default();
+    Ok(CompletionPreview {
+        chat_key: key.to_string(),
+        refusal,
+        completing_turn_id: svc.chats.completing_turn(key),
+        running: svc.chats.has_process(key),
+        registered_agent: crate::team::identity(&crate::team::default_path(), key, None).is_ok(),
+        workspace,
+        delivery,
+        runs: svc.orchestrations.coordinated_runs(key)?,
+    })
+}
+
 /// Run one command. `Err` is the message the client shows, so it is written for
 /// a person rather than a log.
 /// Who a task goes to and where it runs, as the host decides it from what
@@ -502,74 +707,50 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         "chat_start" => {
             let key: String = arg(&args, "key")?;
-            let mut cwd: String = arg(&args, "cwd")?;
-            let resume: Option<String> = arg(&args, "resume")?;
-            // A chat outlives the worktree it ran in. Put the folder back, or
-            // move the chat to one that exists, before anything reads it: the
-            // sandbox below and the launch both need a real directory. It is
-            // refused before it changes anything, and what it holds (the
-            // workspace lifecycle lock and its claim on the chat) is kept
-            // until the chat has been started, further down.
-            let held = crate::chat_recover::recover(
-                &svc.chats,
-                &svc.workspaces,
-                &key,
-                &cwd,
-                arg::<Option<String>>(&args, "fallbackCwd")?.as_deref(),
-            )?;
-            if let Some(held) = &held {
-                cwd = held.recovery.cwd.clone();
-            }
-            crate::sandbox::Store::profile().select(
-                &key,
-                &cwd,
-                arg(&args, "useSandbox")?,
-                resume.is_some(),
-            )?;
-            if let Some(held) = &held {
-                held.settle(
-                    &key,
-                    arg(&args, "agent")?,
-                    resume.as_deref(),
-                    arg::<Option<std::collections::BTreeMap<String, String>>>(&args, "env")?
-                        .as_ref(),
-                );
-            }
             let turn_id = crate::agent_chat::fresh_turn_id(arg(&args, "turnId")?);
             let prompt: Option<String> = arg(&args, "prompt")?;
-            if let Some(words) = &prompt {
-                svc.chats.note_person_turn(
-                    &key,
-                    &turn_id,
-                    words,
-                    arg::<Option<_>>(&args, "seenPlans")?.unwrap_or_default(),
-                );
+            unit(start_chat(
+                svc,
+                &key,
+                &args,
+                FirstTurn::Person(prompt),
+                turn_id,
+            ))
+        }
+        // Complete a chat: the host's wrap-up turn, then done and stopped
+        // (`agent_chat::chat_complete_impl`). The page's command and nobody
+        // else's: no hook routes here and the MCP server has no such tool.
+        "chat_complete" => {
+            let key: String = arg(&args, "chatKey")?;
+            let text = completion_wrap_up(svc, &key)?;
+            if let Some(completing) =
+                crate::agent_chat::chat_complete_impl(&svc.chats, &key, &text)?
+            {
+                return to_value(Ok::<_, String>(completing));
             }
-            let prompt = prompt
-                .map(|text| refresh_lead_turn(svc, &key, text))
-                .transpose()?;
-            let started = crate::agent_chat::chat_start_answering_impl(
-                svc.chats.clone(),
-                key,
-                cwd,
-                arg(&args, "agent")?,
-                arg(&args, "model")?,
-                arg(&args, "access")?,
-                prompt,
-                arg(&args, "handoff")?,
-                resume,
-                arg(&args, "extraDirs")?,
-                arg(&args, "env")?,
-                arg(&args, "effort")?,
-                arg(&args, "images")?,
-                arg(&args, "lite")?,
-                Some(turn_id),
-                // An outage card's retry: its card stays up until this start
-                // has taken the turn (`safety_block::person_turn`).
-                arg(&args, "safetyBlock")?,
-            );
-            drop(held);
-            unit(started)
+            // No process: start the chat with the wrap-up as its first
+            // message, the way a send to a chat that is not running starts
+            // it, removed folder and all. The page sends the settings it
+            // would start the chat with, under `start`.
+            let start = args
+                .get("start")
+                .filter(|start| start.is_object())
+                .ok_or_else(|| crate::agent_chat::completion_needs_start(&key))?;
+            if let Some(resume) = arg::<Option<String>>(start, "resume")? {
+                svc.chats.require_user_resume(&resume)?;
+            }
+            let turn_id = svc.chats.claim_completion(&key)?;
+            let started = start_chat(svc, &key, start, FirstTurn::WrapUp(text), turn_id.clone());
+            svc.chats
+                .settle_claimed_completion(&key, &turn_id, &started);
+            started?;
+            Ok(json!({ "turnId": turn_id, "state": "started" }))
+        }
+        // What the host already knows about a chat that is about to be
+        // completed, for the page's confirm dialog. Read-only.
+        "chat_complete_preview" => {
+            let key: String = arg(&args, "chatKey")?;
+            to_value(completion_preview(svc, &key))
         }
         "chat_send" => {
             let key: String = arg(&args, "key")?;
@@ -2047,5 +2228,169 @@ mod tests {
         let err = dispatch(&svc, "no_such_command", json!({})).unwrap_err();
         assert!(err.contains("no_such_command"), "{err}");
         assert!(err.contains("not available on this backend"), "{err}");
+    }
+
+    /// A chat the index lists, removed again when the test ends.
+    struct ListedChat {
+        id: String,
+        key: String,
+    }
+
+    impl ListedChat {
+        fn new() -> Self {
+            let id = format!("dispatch-complete-{}", uuid::Uuid::new_v4().simple());
+            crate::chat_index::upsert(
+                serde_json::from_value(json!({ "id": id, "projectId": "p1", "updatedAt": 100 }))
+                    .unwrap(),
+            )
+            .unwrap();
+            Self {
+                key: format!("chat:{id}"),
+                id,
+            }
+        }
+    }
+
+    impl Drop for ListedChat {
+        fn drop(&mut self) {
+            let _ = crate::chat_index::remove(&self.id);
+            crate::transcript::forget(&self.key);
+        }
+    }
+
+    #[test]
+    fn the_chats_that_can_never_be_completed_are_refused_by_what_they_are() {
+        use crate::orchestration::tests::{run, running_worker, settled_worker};
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let chats = ChatManager::default();
+        let dir = crate::test_dir::TestDir::new("complete-refusal");
+        let team = dir.0.join("team.json");
+        std::fs::write(
+            &team,
+            r#"{"agents":[],"front_desk_chats":[{"chatKey":"chat:desk","agentId":"a1","sessionIds":[],"createdAt":1}]}"#,
+        )
+        .unwrap();
+        let refusal = |key: &str| completion_refusal_in(&store, &chats, &team, key).unwrap();
+
+        // A worker, in a task or long settled, under a key of either kind.
+        let running = running_worker(&store, &run).worker_chat_key;
+        let settled = settled_worker(&store, &run, Some("chat:legacy-worker")).worker_chat_key;
+        for key in [running.as_str(), settled.as_str(), "chat:orch-never-seen"] {
+            assert!(refusal(key).unwrap().contains("worker"), "{key}");
+        }
+        assert!(refusal("chat:desk").unwrap().contains("front desk"));
+        // A second voice: its process names another chat.
+        chats.test_seat("chat:room#second", "chat:room");
+        assert_eq!(
+            refusal("chat:room#second"),
+            Some("Only a chat's own agent can be completed.")
+        );
+        // A chat nothing lists has nothing to tick.
+        assert_eq!(
+            refusal("chat:no-such-chat"),
+            Some("This chat is not in the active chat index.")
+        );
+
+        // An ordinary chat, running or not, and the coordinator of a run.
+        let chat = ListedChat::new();
+        assert_eq!(refusal(&chat.key), None);
+        chats.test_launch(&chat.key);
+        assert_eq!(refusal(&chat.key), None);
+        chats.test_end(&chat.key);
+    }
+
+    #[test]
+    fn completing_a_chat_is_routed_refused_and_queued_through_dispatch() {
+        let svc = Services::load();
+        let refused = dispatch(
+            &svc,
+            "chat_complete",
+            json!({ "chatKey": "chat:orch-some-worker" }),
+        )
+        .unwrap_err();
+        assert!(refused.contains("worker"), "{refused}");
+
+        // No process and nothing to start one with: the page asks again
+        // with `start`, and nothing was left completing.
+        let chat = ListedChat::new();
+        let idle = dispatch(&svc, "chat_complete", json!({ "chatKey": chat.key })).unwrap_err();
+        assert_eq!(idle, format!("chat '{}' is not running", chat.key));
+        assert_eq!(svc.chats.completing_turn(&chat.key), None);
+
+        // A start that cannot happen leaves it not completing either.
+        let failed = dispatch(
+            &svc,
+            "chat_complete",
+            json!({ "chatKey": chat.key, "start": { "agent": "claude" } }),
+        )
+        .unwrap_err();
+        assert!(failed.contains("cwd"), "{failed}");
+        assert_eq!(svc.chats.completing_turn(&chat.key), None);
+
+        // A running chat: the wrap-up waits behind the turn in flight.
+        svc.chats.test_launch(&chat.key);
+        svc.chats.test_busy(&chat.key, true);
+        let out = dispatch(&svc, "chat_complete", json!({ "chatKey": chat.key })).unwrap();
+        assert_eq!(out["state"], "queued");
+        let turn_id = out["turnId"].as_str().unwrap().to_string();
+        assert!(turn_id.starts_with(crate::agent_chat::COMPLETION_TURN_PREFIX));
+        assert_eq!(svc.chats.completing_turn(&chat.key), Some(turn_id.clone()));
+        // It is the host's wording that was queued, not anything the page sent.
+        let recorded = crate::transcript::since(&chat.key, 0);
+        assert_eq!(
+            recorded[0].event["message"]["content"][0]["text"],
+            crate::agent_chat::wrap_up_message(false, &[])
+        );
+        let again = dispatch(&svc, "chat_complete", json!({ "chatKey": chat.key })).unwrap_err();
+        assert_eq!(again, "This chat is already completing.");
+
+        let preview = dispatch(
+            &svc,
+            "chat_complete_preview",
+            json!({ "chatKey": chat.key }),
+        )
+        .unwrap();
+        assert_eq!(preview["chatKey"], chat.key.as_str());
+        assert_eq!(preview["completingTurnId"], turn_id.as_str());
+        assert_eq!(preview["running"], true);
+        assert_eq!(preview["registeredAgent"], false);
+        assert_eq!(preview["runs"], json!([]));
+        assert!(preview.get("refusal").is_none(), "{preview}");
+
+        // The ✕ on the queued wrap-up, through the page's own command.
+        assert_eq!(
+            dispatch(
+                &svc,
+                "chat_cancel_queued",
+                json!({ "key": chat.key, "turnId": turn_id }),
+            ),
+            Ok(json!(true))
+        );
+        assert_eq!(svc.chats.completing_turn(&chat.key), None);
+        svc.chats.test_end(&chat.key);
+
+        let worker = dispatch(
+            &svc,
+            "chat_complete_preview",
+            json!({ "chatKey": "chat:orch-some-worker" }),
+        )
+        .unwrap();
+        assert!(worker["refusal"].as_str().unwrap().contains("worker"));
+    }
+
+    /// Completing a chat is the person's own action, like closing a mission.
+    /// No hook may call it and the MCP server offers no such tool.
+    #[test]
+    fn no_hook_and_no_mcp_tool_can_complete_a_chat() {
+        for (name, source) in [
+            ("web.rs", include_str!("web.rs")),
+            (
+                "octiq-ask.cjs",
+                include_str!("../../scripts/mcp/octiq-ask.cjs"),
+            ),
+        ] {
+            assert!(!source.contains("chat_complete"), "{name}");
+        }
     }
 }

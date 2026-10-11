@@ -498,6 +498,78 @@ on disk, the client's send path already starts a chat it has no process for with
 - Why it is worth having: a chat costs ~480 MB — the agent plus its own copy of
   every MCP server it starts. Nine left open overnight held 4.3 GB.
 
+### Completing a chat
+
+Complete is the person saying "I am finished with this one": the agent is
+asked to wrap up, and when that turn ends the host ticks the chat done and
+stops its process. The chat stays readable and is **not locked**; the next
+message starts it again and takes the tick away.
+
+- **It is the page's command and nobody else's.** `chat_complete { chatKey,
+  start? }` and `chat_complete_preview { chatKey }` are `dispatch.rs` arms. No
+  hook routes to them and the MCP server has no such tool, the same way
+  `orchestration_mission_close` has none. The wrap-up asks the agent to stop a
+  run it coordinates; closing the mission stays the person's.
+- **The wording is the host's** (`agent_chat::wrap_up_message`), never the
+  page's. Two steps are left out when they cannot apply: saving agent memory
+  (a registered agent's chat only) and stopping a run (only when the chat
+  coordinates one that has not ended, named by id).
+- **The wrap-up waits; it never interrupts.** It is an ordinary recorded user
+  turn whose id starts with `octiq-complete-`. With a turn in flight, or
+  anything queued, it joins `ChatManager::queued_turns` like any message, so
+  the queued bubble's ✕ (`chat_cancel_queued`) takes the completion back and
+  "send this one now" (`chat_start_queued`) is the person's own interrupt.
+  That prefix is not a person's turn id, so the queue never folds a message
+  into the wrap-up or the wrap-up into a message.
+- **A chat with no process is started with the wrap-up as its first
+  message**, through the same `start_chat` path as `chat_start` (removed
+  folder put back first, lifecycle lock before the short session locks). The
+  page passes the settings it would start the chat with as `start`. Without
+  them the answer is `chat '<key>' is not running`, and nothing is left
+  completing.
+- **Refused, by what the chat is:** a worker's chat (`is_worker_chat`, so a
+  settled worker too), a front desk, a process key that is not the chat's own
+  voice, a chat the index does not list, and a chat already completing.
+- **`ChatManager::completing` maps a chat to its wrap-up turn id.** It is
+  decided at the full stop of exactly that turn (`session.answering` is its
+  id), under the session lock the turn ends with and BEFORE the queue moves
+  (`end_turn_locked`):
+  - clean, queue empty → once the full stop is in the transcript, the process
+    is taken out of the session table and the chat ticked
+    (`conclude_completion`, then what `chat_stop` does). The check is made
+    again in one step with the removal: a message that reached the agent or
+    the queue in between, or a newer process under the key, wins.
+  - failed, refused, or anything queued behind it → no tick, the process is
+    left, and the queued message is handed over as usual.
+  - Stop on the wrap-up ends the completion at the Stop, not at the cut-off
+    turn's `result`, so Antigravity (whose Stop ends the process) and a killed
+    command-line process can never tick a chat. A Stop on the turn AHEAD of a
+    queued wrap-up leaves the completion alone: Stop keeps the queue.
+  - A process ended on purpose (`end_process`), a wrap-up dropped from the
+    queue, or a stream that closes before the wrap-up's full stop also ends
+    it.
+- **"Clean" is the provider's own word, read once** (`ended_cleanly`): Claude
+  `result` with no error and subtype `success`; Codex `turn.completed` with
+  status `completed`; Antigravity `result` status `SUCCESS` with no refusal
+  added this turn. A process that resumed an Antigravity conversation cannot
+  tell old refusals from new, and reads the first as new: no tick.
+- **The tick holds against the page's own clock.** `updated_at` is stamped by
+  every open tab when it sees a turn end, a moment after the host ticked the
+  chat for that same turn, which would retire the tick at once. So a
+  completion's tick is `chat_index::complete`, which sets `done_held`: a save
+  then moves `done_at` up with the activity it carries, and the next
+  `start_session` of the chat clears tick and hold together
+  (`chat_index::reopen`), whichever of the page's save and the start lands
+  first. A tick made by hand (`set_done`) is never held.
+- **Events:** `chat-completing { chatKey, turnId, state: "started" | "queued" }`
+  and `chat-completed { chatKey, ok, doneAt?, reason? }`, where `reason` is
+  `cancelled`, `stopped`, `failed`, `superseded` or `ended`. A reloaded page
+  reads the same state from `chat_queue_state` (`completingTurnId`) and
+  `chat_activity` (`completing`).
+- **The state is in memory only.** A server restart mid-completion forgets it:
+  the wrap-up turn is in the transcript, the chat is simply not ticked, and
+  the person ticks it by hand or completes it again.
+
 ### Attention alerts
 
 `pty.rs` scans PTY output for OSC 9 / OSC 777 / OSC 99 (Kitty) "notify"

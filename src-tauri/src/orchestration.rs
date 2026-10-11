@@ -2710,6 +2710,7 @@ impl OrchestrationStore {
             read_at: None,
             pinned: false,
             done_at: None,
+            done_held: false,
             deleted_at: None,
             generation: 0,
             launch: None,
