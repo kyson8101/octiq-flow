@@ -544,9 +544,17 @@ what `chat_interrupt` is for. Two things hold it up:
   (`ChatManager::unwinding`). Until the cut-off turn's own full stop has been
   read, a message waits in the queue and is handed over on it; written at
   once, it would be the turn that late full stop ends, with the agent working
-  on and the session read as idle. A cut-off turn that never sends one holds
-  the queue for 30 seconds (`grace_ran_out`). See **Completing a chat** for
-  how a full stop is told from the next turn's.
+  on and the session read as idle.
+- **A Stop the agent does not honour ends its process.** A persistent agent
+  that has not sent the cut-off turn's full stop within `UNWIND_GRACE` (30 s)
+  is ended (`grace_ran_out`), the way the idle sweeper ends a chat: the
+  transcript is on disk and the next process resumes the conversation by id.
+  Nothing is written to it first. The queue is kept: its first message starts
+  in that next process at once and the rest wait behind it, so Stop still
+  keeps the queue, 30 seconds later than usual. With nothing queued the live
+  dot goes off and the next message resumes the chat. No prompt is ever
+  written to a process that still owes a full stop (`CutOff`,
+  `write_user_message_locked`); see **Completing a chat** for why.
 
 - **A one-shot provider's queued turn is written to the transcript at enqueue**
   (`QueuedTurn::recorded`) because Codex never echoes a prompt back. Claude's
@@ -615,14 +623,32 @@ message starts it again and takes the tick away.
   - The stream does not say which turn a full stop ends, so the session does
     (`CutOff`, read in `end_turn_locked`): after a Stop the next full stop is
     the cut-off turn's, and `answering` is still that turn.
+  - **Nothing is written while that full stop is owed, by anyone.** The mark
+    is the session's own, set and cleared under its lock and gone with the
+    process; no clock lifts it. Every prompt goes through
+    `write_user_message_locked`, which refuses a session that carries it.
   - A cut-off turn that never sends one holds the queue for `UNWIND_GRACE`
-    (30 s) and no longer: `grace_ran_out` then hands the first queued message
-    over. That is all it does. The grace never ticks a chat and never stops
-    a process; a wrap-up it hands over is decided by its own full stop.
-  - If the cut-off turn's full stop turns up after that, it is told from the
-    later turn's own by the agent's acknowledgement
-    (`acknowledge_user_turn`): an agent cannot end a turn it has not taken
-    up. Such a full stop ends nothing and decides nothing.
+    (30 s) and no longer: the Stop was not honoured, so `grace_ran_out` ends
+    the process. It writes nothing to it. A turn written to an agent that had
+    not stopped was answered by Codex with the turn it was already in, and
+    the one full stop that followed could not be told from the stopped
+    turn's, so nothing tells them apart any more: there is only ever one
+    turn a full stop can end.
+  - **A wrap-up waiting behind that Stop is not carried into the next
+    process.** It was asked of the one that is gone: the completion ends once
+    with `ok: false` and a sentence the person can act on (the agent did not
+    stop, its process was ended, complete the chat again), and nothing is
+    ticked. Messages queued around it are kept and the first starts in the
+    next process, as after any Stop.
+  - A host notification that was waiting meets a chat with no process, as
+    after any exit: the person's chat is started again with it, and a
+    worker's attempt has failed with its process.
+  - Whatever the ended process still says ends no turn, decides no
+    completion and moves no queue (`CutOff::Ended`); those are the next
+    process's.
+  - The thread that waits out the grace acts for the Stop it was started for
+    and no other (`CutOff::Owed` names the unwind). A second Stop inside the
+    wait starts no second thread and moves no deadline.
   - Antigravity and every command-line agent have no unwind: their Stop ends
     the process, so a Complete after it starts the chat with the wrap-up, in
     a process no older turn's full stop can reach.
@@ -696,8 +722,9 @@ message starts it again and takes the tick away.
   matches an end to the completion it belongs to. `doneAt` comes with `ok:
   true` and `reason` with `ok: false`: `cancelled`, `stopped`, `failed`,
   `superseded` or `ended`, or else a sentence of the host's own (the wrap-up
-  could not be handed over, the start that carried it failed, or the chat
-  could not be marked done), which the page shows as given. A reloaded page
+  could not be handed over, the start that carried it failed, the chat could
+  not be marked done, or the agent did not stop and its process was ended),
+  which the page shows as given. A reloaded page
   reads the same state from `chat_queue_state` (`completingTurnId`) and
   `chat_activity` (`completing`).
 - **A completion's `chat-completing` always reaches the bus before its
