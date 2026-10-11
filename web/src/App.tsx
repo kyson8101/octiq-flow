@@ -170,7 +170,7 @@ import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type 
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar, TasksButton } from "./components/ChatWorkflowBar";
 import { taskColumnCounts } from "./lib/runPanel";
-import { dismissStrip, parseDismissed, runProgress, stripHidden, stripRun } from "./lib/runProgress";
+import { chatStrip, dismissStrip, parseDismissed, stripHidden } from "./lib/runProgress";
 import { RunProgressStrip } from "./components/RunProgressStrip";
 import { besideHeld as heldBesideTask, holdsRunColumn, knownToStore, parseKnown } from "./lib/runColumn";
 import { ChatPlanCards } from "./components/ChatPlanCards";
@@ -4793,9 +4793,9 @@ export default function App() {
   const [stripDismissed, setStripDismissed] = useState(() => parseDismissed(recall(STRIP_KEY)));
   const runStrip = useMemo(() => {
     if (workerChat || !conversationId) return null;
-    const run = stripRun(currentWorkflow.runs);
-    const strip = run && runProgress(currentWorkflow, run, Date.now(), pendingTasks).strip;
-    return run && strip ? { run, strip } : null;
+    // One line for the chat, whichever of its runs it has to be about: a
+    // run that waits on the person is never behind a newer one that runs.
+    return chatStrip(currentWorkflow, Date.now(), pendingTasks);
   }, [workerChat, conversationId, currentWorkflow, pendingTasks]);
   const stripShown = !!runStrip && !stripHidden(stripDismissed, runStrip.strip);
   const hideStrip = () => {

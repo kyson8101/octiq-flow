@@ -9,9 +9,10 @@ const run = (id: string, coordinatorChatKey: string, extra: Partial<Orchestratio
 const task = (id: string, status: OrchestrationTask["status"], extra: Partial<OrchestrationTask> = {}): OrchestrationTask => ({
   id, runId: "a", title: id, spec: "", dependsOn: [], status, createdAt: 1, updatedAt: 1, ...extra,
 });
-const gate = (id: string, taskId?: string): OrchestrationGate => ({
+/** An open gate the host says waits on the person, unless told otherwise. */
+const gate = (id: string, taskId?: string, awaits: OrchestrationGate["awaits"] | null = "person"): OrchestrationGate => ({
   id, runId: "a", taskId, createdByChatKey: "chat:w", targetChatKey: "chat:main", question: "?", options: [],
-  status: "open", createdAt: 1, updatedAt: 1,
+  status: "open", createdAt: 1, updatedAt: 1, ...(awaits ? { awaits } : {}),
 });
 
 describe("run tabs", () => {
@@ -32,6 +33,17 @@ describe("run attention", () => {
     const attention = runAttention(a, tasks, [], [gate("g", "gated")]);
     expect(attention).toEqual({ decisions: 2, blocked: 1, total: 3 });
     expect(attentionLabel(attention, true)).toBe("2 to decide");
+  });
+
+  it("counts as a decision only a gate that is the person's", () => {
+    const a = run("a", "chat:main");
+    const tasks = [task("gated", "blocked"), task("fine", "running")];
+    for (const awaits of ["coordinator", "nobody", null] as const) {
+      // Not a decision of the person's, and not a stuck task either: it is
+      // waiting on a gate that is open.
+      expect(runAttention(a, tasks, [], [gate("g", "gated", awaits)]), String(awaits)).toEqual({ decisions: 0, blocked: 0, total: 0 });
+    }
+    expect(runAttention(a, tasks, [], [gate("g", "gated", "person"), gate("h", undefined, "coordinator")]).decisions).toBe(1);
   });
 
   it("owes nothing for a blocked task the coordinator replaced (feedback 6b0870f9)", () => {

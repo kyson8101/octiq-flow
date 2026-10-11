@@ -21,9 +21,10 @@ const attempt = (id: string, runId: string, taskId: string, chat: string, number
   id, runId, taskId, number, workerChatKey: `chat:${chat}`, agent: "claude", access: "auto", status: "running",
   cwd: "/r", branch: "b", isWorktree: true, filesModified: [], createdAt: number, updatedAt: number,
 });
+/** An open gate the host says waits on the person, unless told otherwise. */
 const gate = (id: string, runId: string, over: Partial<OrchestrationGate> = {}): OrchestrationGate => ({
   id, runId, createdByChatKey: "chat:w1", targetChatKey: "chat:main", question: "Which?", options: [],
-  status: "open", createdAt: 1, updatedAt: 1, ...over,
+  status: "open", awaits: "person", createdAt: 1, updatedAt: 1, ...over,
 });
 
 /** A main chat with two runs: r1 still running with worker w1, r2 older and
@@ -61,6 +62,20 @@ describe("pending actions", () => {
     // The finished run's worker keeps its own task for the task row.
     expect(actions[0]).toMatchObject({ runId: "r2", taskId: "t2", openChatId: "main" });
     expect(actions.find((a) => a.kind === "gate")).toMatchObject({ surface: "run", openChatId: "main", taskId: "t1" });
+  });
+
+  it("badges a gate only when it is the person's: not the coordinator's, nobody's, or one the host put no name to", () => {
+    const keys = (over: Partial<OrchestrationGate>, tasks?: OrchestrationTask[]) =>
+      pendingActions(input(ledger({ gates: [gate("g1", "r1", { taskId: "t1", ...over })], ...(tasks ? { tasks } : {}) }))).map((a) => a.key);
+    expect(keys({ awaits: "person" })).toEqual(["gate:g1"]);
+    expect(keys({ awaits: "coordinator" })).toEqual([]);
+    expect(keys({ awaits: "nobody" })).toEqual([]);
+    // A host that does not say: not counted as the person's.
+    expect(keys({ awaits: undefined })).toEqual([]);
+    // A gate on a peer request is answered by the person and by no agent,
+    // on any host.
+    const peer = task("t1", "r1", { peerRequest: { requestedBy: { id: "a", name: "A" }, requesterChatKey: "chat:x", output: "o", maxMinutes: 5, requestedAt: 1 } });
+    expect(keys({ awaits: undefined }, [peer, task("t2", "r2", { status: "completed" })])).toEqual(["gate:g1"]);
   });
 
   it("asks for a review of a refused action, never an approval", () => {

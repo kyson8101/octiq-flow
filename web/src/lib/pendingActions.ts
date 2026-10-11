@@ -19,7 +19,9 @@
 //   failed or could not be confirmed) is never re-sent on its own — only the
 //   card's Retry or Cancel closes it — so it is an action, but a different
 //   one: its answers are in, and it is never called unanswered;
-// - an open decision gate, keyed by gate id;
+// - an open decision gate the host says waits on the person, keyed by gate
+//   id. A gate the run's coordinator is dealing with, one nobody can answer,
+//   and one the host put no name to are not the person's (`lib/runWaits`);
 // - a plan waiting for approval, keyed by run AND revision, so a plan the lead
 //   changes after approval comes back as a new action rather than the old one.
 //
@@ -30,7 +32,7 @@
 // its chat was ever opened, and costs no request of its own.
 import { waitsOnPerson } from "./handover";
 import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
-import { planTasks } from "./planReview";
+import { gateWaitsOn, planWaits } from "./runWaits";
 import type { Question } from "../components/UserQuestion";
 
 export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "plan" | "handover";
@@ -100,7 +102,6 @@ export type PendingActionInput = {
   handovers?: readonly { id: string; sourceChatKey: string; status: string; error?: string; kind?: string }[];
 };
 
-const LIVE_RUNS = new Set(["planning", "running", "waiting"]);
 const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, outage: 2, question: 3, delivery: 4, gate: 5, plan: 6, handover: 7 };
 
 const chatId = (chatKey: string | undefined) => chatKey?.startsWith("chat:") ? chatKey.slice(5) || null : null;
@@ -161,6 +162,7 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
     const run = runs.get(gate.runId);
     const coordinator = chatId(run?.coordinatorChatKey);
     if (gate.status !== "open" || !run || !coordinator || run.archivedAt != null) continue;
+    if (gateWaitsOn(gate, orchestration.tasks) !== "person") continue;
     add({
       key: `gate:${gate.id}`, kind: "gate", rowId: rowOf(coordinator), openChatId: coordinator,
       surface: "run", runId: run.id, taskId: gate.taskId,
@@ -168,13 +170,10 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
   }
   for (const run of orchestration.runs) {
     const coordinator = chatId(run.coordinatorChatKey);
-    if (!coordinator || run.planApproval?.status !== "pending" || !LIVE_RUNS.has(run.status) || run.archivedAt != null) continue;
     // An empty plan cannot be approved yet: the lead is still writing it.
-    if (planTasks(orchestration.tasks.filter((task) => task.runId === run.id)).length === 0) continue;
-    add({
-      key: `plan:${run.id}:${run.planApproval.revision ?? 0}`, kind: "plan", rowId: rowOf(coordinator),
-      openChatId: coordinator, surface: "chat", runId: run.id,
-    });
+    const plan = coordinator ? planWaits(run, orchestration.tasks) : null;
+    if (!coordinator || !plan) continue;
+    add({ key: plan, kind: "plan", rowId: rowOf(coordinator), openChatId: coordinator, surface: "chat", runId: run.id });
   }
   for (const handover of input.handovers ?? []) {
     const source = chatId(handover.sourceChatKey);

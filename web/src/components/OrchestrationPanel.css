@@ -623,6 +623,12 @@
   font-weight: 650;
 }
 
+/* A gate that is not the person's: shown, in no decision colour. Whose it is
+   takes the warning colour only when the coordinator has it. */
+.orch-decisions.is-others { border-color: var(--border); background: transparent; }
+.orch-gate > .orch-gate-waits { margin: 0 0 2px; color: var(--fg-2); font-size: 11.5px; font-weight: 600; }
+.orch-gate > .orch-gate-waits[data-on="coordinator"] { color: var(--warn); }
+
 .orch-gate + .orch-gate { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 /* The task a decision belongs to is a label, not a second paragraph. */
 .orch-gate > .orch-gate-task { margin: 6px 0 2px; overflow: hidden; color: var(--fg-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }

@@ -3,8 +3,9 @@
 // agent, and none of an agent's own words: the Agents panel explains, and a
 // click on the line opens it.
 //
-// One thing moves, and only while the run is live: the texture over the part
-// still to do. Nothing here counts seconds.
+// One thing moves, and only while a turn is in flight (`strip.live`): the
+// texture over the part still to do. The accent is on only then too. Nothing
+// here counts seconds.
 import type { CSSProperties } from "react";
 import type { RunStrip, StripSide } from "../lib/runProgress";
 import "./RunProgress.css";
@@ -21,6 +22,12 @@ export function stripSpoken(strip: RunStrip): string {
   return [`Run: ${strip.word}`, `${strip.done} of ${strip.total} tasks done`, ...strip.side.map((item) => item.text)].join(", ");
 }
 
+/** The tooltip: what a click does, then what the line leaves out, whole.
+ *  Waits that are not the person's are said here and never on the line. */
+export function stripTitle(strip: RunStrip): string {
+  return ["Show the agents", ...strip.notes].join("\n");
+}
+
 export function RunProgressStrip({ strip, onOpen, onHide }: {
   strip: RunStrip;
   /** Show the Agents panel. */
@@ -32,7 +39,7 @@ export function RunProgressStrip({ strip, onOpen, onHide }: {
   return (
     <div className="run-strip" data-state={strip.state} data-live={strip.live || undefined} role="group" aria-label="Run progress">
       <button type="button" className="run-strip-open" onClick={onOpen}
-        aria-label={`${stripSpoken(strip)}. Show the agents`} title="Show the agents">
+        aria-label={[`${stripSpoken(strip)}.`, ...strip.notes, "Show the agents"].join(" ")} title={stripTitle(strip)}>
         <span className="run-strip-dot" aria-hidden="true" />
         <span className="run-strip-word">{strip.word}</span>
         <span className="run-strip-meter" style={{ "--at": `${strip.percent}%` } as CSSProperties} aria-hidden="true">

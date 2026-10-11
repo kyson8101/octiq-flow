@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { RunProgressStrip, stripSpoken } from "./RunProgressStrip";
+import { RunProgressStrip, stripSpoken, stripTitle } from "./RunProgressStrip";
 import type { RunStrip } from "../lib/runProgress";
 import css from "./RunProgress.css?raw";
 
 const strip = (over: Partial<RunStrip> = {}): RunStrip => ({
   state: "running", word: "Running", done: 13, total: 22, percent: 59, label: "Tasks 13/22",
-  side: [{ text: "4 working", strong: false }], live: true, signature: "run_1:running:13/22:0:0", ...over,
+  side: [{ text: "4 working", strong: false }], live: true, needs: 0, planOnly: false, failed: 0, working: 4, runs: 1,
+  notes: [], signature: "run_1:running:13/22:0:0", ...over,
 });
 
 const render = (value: RunStrip) => renderToStaticMarkup(<RunProgressStrip strip={value} onOpen={() => {}} onHide={() => {}} />);
@@ -74,6 +75,32 @@ describe("the run's line above the composer", () => {
     expect(html).toContain('aria-label="Hide until something changes"');
     expect(stripSpoken(strip({ side: [] }))).toBe("Run: Running, 13 of 22 tasks done");
   });
+
+  it("is drawn still, and without the live mark, while no turn is in flight", () => {
+    const html = render(strip({ live: false, working: 0, side: [] }));
+    expect(html).toContain('<div class="run-strip" data-state="running" role="group"');
+    expect(html).not.toContain("data-live");
+  });
+
+  it("says a wait that is not the person's in the tooltip and to a screen reader, never on the line", () => {
+    const notes = ["1 waiting on the coordinator.", "1 open decision: the host does not say who it waits on."];
+    const html = render(strip({ notes }));
+    expect(stripTitle(strip({ notes }))).toBe(`Show the agents\n${notes.join("\n")}`);
+    expect(html).toContain(`title="Show the agents\n${notes.join("\n")}"`);
+    expect(html).toContain(`aria-label="Run: Running, 13 of 22 tasks done, 4 working. ${notes.join(" ")} Show the agents"`);
+    // Not a word of it between the tags.
+    expect(html.replace(/<[^>]*>/g, "")).not.toMatch(/coordinator|host/);
+    expect(stripTitle(strip())).toBe("Show the agents");
+  });
+
+  it("says how many runs the chat has live beside the reason for its state", () => {
+    const html = render(strip({
+      state: "needs", word: "Needs you", live: false, needs: 3, runs: 2,
+      side: [{ text: "3 decisions", strong: true }, { text: "2 runs", strong: false }],
+    }));
+    expect(html).toContain('<b class="run-strip-reason">3 decisions</b>');
+    expect(html).toContain('<span class="run-strip-then"> · 2 runs</span>');
+  });
 });
 
 /* The rules the person set, against the sheet that draws both surfaces. */
@@ -90,7 +117,9 @@ describe("the run progress sheet", () => {
 
   it("uses the decision colour for what waits on the person, and amber only for a worker in trouble", () => {
     const warn = rules.filter((rule) => /--warn/.test(rule.body)).map((rule) => rule.selector);
-    expect(warn).toEqual(['.run-row-note[data-tone="warn"]']);
+    // The row's bar and its word, of a worker in trouble or a wait the
+    // coordinator has. Nothing of the strip, and nothing that only asks.
+    expect(warn).toEqual(['.orch-task.run-row[data-tone="warn"]', '.run-row-note[data-tone="warn"]']);
     for (const selector of ['.run-strip[data-state="needs"] .run-strip-dot', '.run-strip[data-state="needs"] .run-strip-fill',
       '.run-strip[data-state="needs"] .run-strip-reason', '.run-group[data-group="needs"] > .run-group-head', '.run-row-note[data-tone="decide"]']) {
       const found = rules.filter((rule) => rule.selector === selector);
@@ -101,10 +130,24 @@ describe("the run progress sheet", () => {
 
   it("never fills anything with the accent: it is a tint, or a dot", () => {
     for (const rule of rules.filter((item) => /background(-color)?:[^;]*--accent\b/.test(item.body))) {
-      if (rule.selector === '.run-strip[data-state="running"] .run-strip-dot') continue;
+      if (rule.selector === ".run-strip[data-live] .run-strip-dot") continue;
       expect(rule.body, rule.selector).toMatch(/color-mix\(in srgb, var\(--accent\) \d+%|var\(--accent-tint\)/);
     }
     expect(code).not.toMatch(/background(-color)?:\s*var\(--(ok|danger|decide|warn)\)\s*;[^}]*color:/);
+  });
+
+  it("puts the accent on a turn in flight and on nothing else", () => {
+    // A run that is all planned, or whose only worker has stalled, is
+    // "Running" too: its state alone must reach no accent.
+    const accent = rules.filter((rule) => /var\(--accent\)/.test(rule.body)).map((rule) => rule.selector);
+    expect(accent).toEqual([
+      ".run-strip[data-live] .run-strip-dot", ".run-strip[data-live] .run-strip-fill", ".orch-task.run-row[data-flight]",
+    ]);
+    expect(code).not.toMatch(/data-state="running"\][^{]*\{[^}]*--accent/);
+    // What is left without it is the page's own grey.
+    expect(rules.find((rule) => rule.selector === ".run-strip-dot")!.body).toMatch(/background: var\(--fg-3\)/);
+    expect(rules.find((rule) => rule.selector === ".run-strip-fill")!.body).toMatch(/color-mix\(in srgb, var\(--fg-3\)/);
+    expect(rules.find((rule) => rule.selector === ".orch-task.run-row")!.body).toMatch(/--row-color: var\(--fg-3\)/);
   });
 
   it("moves one thing, and stops it for reduced motion", () => {

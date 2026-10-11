@@ -1,6 +1,7 @@
 import type { Conversation } from "./store";
 import { workerArchiveChatList } from "./workerArchive";
 import { EMPTY_ORCHESTRATION, isStuck, type OrchestrationSnapshot, type OrchestrationRun } from "./orchestration";
+import { gateWaitsOn } from "./runWaits";
 
 export const isActiveRun = (run: OrchestrationRun) => ["planning", "running", "waiting"].includes(run.status);
 
@@ -10,7 +11,11 @@ export function chatSnapshot(snapshot: OrchestrationSnapshot, coordinatorKey: st
   const runs = snapshot.runs.filter((run) => run.coordinatorChatKey === coordinatorKey)
     .sort((a, b) => Number(isActiveRun(b)) - Number(isActiveRun(a)) || b.createdAt - a.createdAt);
   const ids = new Set(runs.map((run) => run.id));
+  // Everything `lib/runWaits` reads for these runs is kept, so a scoped read
+  // and the panel's whole one see the same facts: the native decisions were
+  // left out once, and the strip said Running where the panel said Needs you.
   return { runs, reports: snapshot.reports, tasks: snapshot.tasks.filter((task) => ids.has(task.runId)),
+    ...(snapshot.nativeDecisions ? { nativeDecisions: snapshot.nativeDecisions.filter((decision) => ids.has(decision.runId)) } : {}),
     attempts: snapshot.attempts.filter((attempt) => ids.has(attempt.runId)),
     gates: snapshot.gates.filter((gate) => ids.has(gate.runId)),
     messages: snapshot.messages.filter((message) => ids.has(message.runId)),
@@ -21,8 +26,11 @@ export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRu
   const tasks = snapshot.tasks.filter((task) => task.runId === run.id);
   const gates = snapshot.gates.filter((gate) => gate.runId === run.id && gate.status === "open");
   const progress = `${tasks.filter((task) => task.status === "completed").length}/${tasks.length} done`;
-  if (gates.length) return `Needs decision · ${progress}`;
-  if (tasks.some(isStuck) && isActiveRun(run)) return `Needs attention · ${progress}`;
+  // A decision is said only of a gate that is the person's (`lib/runWaits`).
+  // A task parked on any other open gate is waiting, not stuck.
+  if (gates.some((gate) => gateWaitsOn(gate, tasks) === "person")) return `Needs decision · ${progress}`;
+  const gated = new Set(gates.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
+  if (tasks.some((task) => isStuck(task) && !gated.has(task.id)) && isActiveRun(run)) return `Needs attention · ${progress}`;
   const label = run.status.charAt(0).toUpperCase() + run.status.slice(1);
   return `${label} · ${progress}`;
 }

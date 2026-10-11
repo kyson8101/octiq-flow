@@ -199,6 +199,10 @@ export type OrchestrationTask = {
   handoffs?: { from?: { id: string; name: string }; to: { id: string; name: string }; reason: string; at: number }[];
   /** The task the coordinator created to replace this blocked or failed one. */
   supersededBy?: string;
+  /** A start of it would be refused because the person has not approved
+   *  it. Absent on a host that does not say: the run's own approval is then
+   *  all the page has (`lib/agentsDashboard`, `lib/mission`). */
+  heldByPlan?: boolean;
   /** Set on a task a teammate asked for (orchestration/peer_request.rs): who
    *  asked, the result they expect back, and `maxMinutes` of working time
    *  (waiting for a decision does not count, and it is not extended). */
@@ -316,7 +320,14 @@ export type OrchestrationGate = {
   /** When it was resolved or cancelled. Absent while open, and on a gate
    *  closed before this was recorded. */
   closedAt?: number;
+  /** Who an open gate waits on, as the host says. Absent on a host that does
+   *  not say, and then the page does not guess (`lib/runWaits`). */
+  awaits?: Awaits;
 };
+
+/** Who a decision waits on: the person, the run's coordinator, or nobody at
+ *  all (a refusal no one can approve). */
+export type Awaits = "person" | "coordinator" | "nobody";
 
 export type OrchestrationMessage = {
   id: string;
@@ -428,6 +439,9 @@ export type NativeDecision = {
   kind?: "safety" | "outage";
   /** The outage card this refusal was grouped on. */
   groupId?: string | null;
+  /** Who a pending one waits on, as the host says. Absent on a host that
+   *  does not say (`lib/runWaits`). */
+  awaits?: Awaits;
 };
 
 export type RuntimeService = {

@@ -40,9 +40,10 @@ import { RunBridges } from "./RunBridges";
 import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import {
-  figuresLabel, GROUP_FOLDED, GROUP_SHOWN, minutesLabel, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
+  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, minutesLabel, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
+import { gateWaitsOn, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
 import "./RunProgress.css";
 
 import {
@@ -692,6 +693,11 @@ function NewRun({
  *  Needs you, Running, Finished (folded), Planned. */
 const TAB_LABELS: Record<RunTab, string> = { tasks: "Tasks", notifications: "Notifications", log: "Coordination log" };
 
+/** Whose an open gate is, when it is not the person's. */
+const GATE_WAITS: Record<WaitsOn, string> = {
+  person: "Waiting on you", coordinator: COORDINATOR_WORD, nobody: "Nobody can answer this", unsaid: "Open",
+};
+
 /** How much of each history the tabs keep on screen. The ledger keeps more
  *  for a live run and prunes a finished one to its latest six messages. */
 const NOTIFICATIONS_SHOWN = 20;
@@ -920,12 +926,21 @@ function RunDetail({
         </div>
       )}
 
-      {openGates.length > 0 && (
-        <section className="orch-decisions" aria-labelledby={`${tabsId}-decisions`} data-attention tabIndex={-1}>
-          <h3 id={`${tabsId}-decisions`}>Needs you</h3>
-          {openGates.map((gate) => (
+      {/* A gate is "Needs you" only when it is the person's (`lib/runWaits`).
+          The others are shown, each saying whose it is, in no decision
+          colour: the person may still write to the main chat about one. */}
+      {[true, false].map((mine) => {
+        const listed = openGates.filter((gate) => (gateWaitsOn(gate, tasks) === "person") === mine);
+        if (!listed.length) return null;
+        const headId = `${tabsId}-${mine ? "decisions" : "open"}`;
+        return <section key={headId} className={`orch-decisions${mine ? "" : " is-others"}`} aria-labelledby={headId}
+          data-attention={mine || undefined} tabIndex={-1}>
+          <h3 id={headId}>{mine ? "Needs you" : "Open decisions"}</h3>
+          {listed.map((gate) => (
             <article className="orch-gate" key={gate.id} data-pending-keys={`gate:${gate.id}`} tabIndex={-1}>
               <p className="orch-gate-task" title={gate.taskId ? taskNames.get(gate.taskId) : undefined}>{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This mission"}</p>
+              {!mine && <p className="orch-gate-waits" data-on={gateWaitsOn(gate, tasks)}
+                title={gateWaitsOn(gate, tasks) === "unsaid" ? UNSAID_NOTE : undefined}>{GATE_WAITS[gateWaitsOn(gate, tasks)]}</p>}
               <p>{gate.question}</p>
               {!readOnly && gate.options.length > 0 && (
                 <div className="orch-gate-options">
@@ -945,8 +960,8 @@ function RunDetail({
               </div>}
             </article>
           ))}
-        </section>
-      )}
+        </section>;
+      })}
 
       <div className="orch-tabs-row">
         <div className="orch-tabs" role="tablist" aria-label="Mission details" onKeyDown={onTabKey}>
@@ -1229,11 +1244,22 @@ function RunGroup({ group, holds, children }: {
   const [open, setOpen] = useState(!folds || holds >= 0);
   const [all, setAll] = useState(false);
   const bodyId = useId();
+  const restId = useId();
+  const bodyRef = useRef<HTMLDivElement>(null);
   // Opening a task from elsewhere brings its row into view here too.
   useEffect(() => {
     if (holds >= 0) setOpen(true);
   }, [holds]);
   const { rows, more } = shownRows(group, all || holds >= GROUP_SHOWN[group.key]);
+  // "N more" goes when it is pressed, so the keyboard is put on the first
+  // row it showed instead of being dropped on the page.
+  const revealedFrom = useRef<number | null>(null);
+  useEffect(() => {
+    const from = revealedFrom.current;
+    if (!all || from === null) return;
+    revealedFrom.current = null;
+    bodyRef.current?.querySelectorAll<HTMLElement>(":scope > .run-row .orch-task-summary")[from]?.focus();
+  }, [all]);
   const label = `${group.label} · ${group.rows.length}`;
   return <section className="run-group" data-group={group.key} aria-label={`${group.label}, ${group.rows.length}`}>
     {folds
@@ -1244,13 +1270,17 @@ function RunGroup({ group, holds, children }: {
       : <h3 className="run-group-head">{label}</h3>}
     {/* Every row stays mounted, folded or behind the line: a row keeps what
         the person opened in it, and nothing is rebuilt to show it again. */}
-    <div className="run-group-rows" id={bodyId} hidden={!open}>
+    <div className="run-group-rows" id={bodyId} ref={bodyRef} hidden={!open}>
       {rows.map(children)}
       {more > 0 && <>
-        <button type="button" className="run-group-more" onClick={() => setAll(true)}>
+        {/* A disclosure like the group's own: it says the rows it controls
+            are folded, and which they are. */}
+        <button type="button" className="run-group-more" aria-expanded={false} aria-controls={restId}
+          aria-label={`${more} more ${group.label.toLowerCase()} ${more === 1 ? "task" : "tasks"}`}
+          onClick={() => { revealedFrom.current = rows.length; setAll(true); }}>
           <span className="run-row-face is-none" aria-hidden="true">…</span>{more} more
         </button>
-        <div className="run-group-rest" hidden>{group.rows.slice(rows.length).map(children)}</div>
+        <div className="run-group-rest" id={restId} hidden>{group.rows.slice(rows.length).map(children)}</div>
       </>}
     </div>
   </section>;
@@ -1319,7 +1349,10 @@ function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, ga
   // on something or went wrong, else how far its checklist has got.
   const note = row.why ?? (row.steps ? stepsLabel(row.steps) : null);
   const figures = figuresLabel(row);
-  const stateWord = taskStateLabel(task, attempt, snapshot.nativeDecisions);
+  // "Awaiting approval" is said only of a row whose wait is the person's
+  // (`lib/runWaits`): a decision the coordinator has, or one nobody can
+  // approve, leaves the worker's own state word.
+  const stateWord = taskStateLabel(task, attempt, row.state === "needs" ? snapshot.nativeDecisions : []);
   const provider = attempt?.agent ?? task.worker?.agent;
   const who = assigneeFace?.name ?? task.assignee?.name ?? (provider ? AGENT_NAME[provider] : null);
   const branch = task.workspace?.plan.branch || attempt?.branch;
@@ -1341,12 +1374,14 @@ function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, ga
   const decision = task.activeAttemptId === attempt?.id ? pendingDecision(attempt, snapshot.nativeDecisions) : undefined;
 
   return (
-    <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""} run-row`} data-status={task.status} data-state={row.state}>
+    <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""} run-row`} data-status={task.status} data-state={row.state}
+      data-flight={row.flight || undefined} data-tone={row.tone ?? undefined}>
       <div className="orch-task-heading">
         <button type="button" className="orch-task-summary" disabled={!attempt} data-attention={owed || undefined}
           aria-current={open || beside ? "page" : undefined}
           aria-label={`Open task chat: ${task.title}`}
-          title={attempt ? `Open task chat: ${task.title}` : "No worker chat yet"}
+          title={[attempt ? `Open task chat: ${task.title}` : "No worker chat yet", row.hint].filter(Boolean).join("\n")}
+          aria-description={row.hint ?? undefined}
           onClick={() => attempt && onOpenChat(attempt.workerChatKey)}>
           <span className={`run-row-face${task.assignee || provider ? "" : " is-none"}`} aria-hidden="true">
             {task.assignee
@@ -1373,7 +1408,7 @@ function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, ga
           </span>
           {note && <span className="run-row-nums">
             <span className="run-row-note" data-tone={row.tone ?? undefined}
-              title={steps ? `${stateWord} · ${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}` : stateWord}>{note}</span>
+              title={[steps ? `${stateWord} · ${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}` : stateWord, row.hint].filter(Boolean).join("\n")}>{note}</span>
             {figures && <span className="run-row-figures">{figures}</span>}
           </span>}
           {row.percent !== null && <span className="orch-task-track run-row-bar" aria-hidden="true"><span style={{ width: `${row.percent}%` }} /></span>}

@@ -29,7 +29,14 @@ describe("chat workflow navigation", () => {
   it("distinguishes a reported block from an open decision", () => {
     expect(runSummary(snapshot, snapshot.runs[0])).toBe("Needs attention · 0/1 done");
     const gate = { id: "gate", runId: "run", createdByChatKey: "chat:second", targetChatKey: "chat:main", question: "Choose", options: [], status: "open" as const, createdAt: 1, updatedAt: 1 };
-    expect(runSummary({ ...snapshot, gates: [gate] }, snapshot.runs[0])).toBe("Needs decision · 0/1 done");
+    // A decision is said only of a gate the host says is the person's.
+    expect(runSummary({ ...snapshot, gates: [{ ...gate, awaits: "person" as const }] }, snapshot.runs[0])).toBe("Needs decision · 0/1 done");
+    // The coordinator's, or one the host put no name to, is not: the task
+    // it parks is waiting, and a block beside it is still a block.
+    const parked = { ...gate, taskId: snapshot.tasks[0].id };
+    expect(runSummary({ ...snapshot, gates: [{ ...parked, awaits: "coordinator" as const }] }, snapshot.runs[0])).toBe("Running · 0/1 done");
+    expect(runSummary({ ...snapshot, gates: [parked] }, snapshot.runs[0])).toBe("Running · 0/1 done");
+    expect(runSummary({ ...snapshot, gates: [gate] }, snapshot.runs[0])).toBe("Needs attention · 0/1 done");
     expect(runSummary(snapshot, { ...snapshot.runs[0], status: "stopped" })).toBe("Stopped · 0/1 done");
   });
   it("says how many tasks a chat has had in all only when its runs hold more than the one on show", () => {

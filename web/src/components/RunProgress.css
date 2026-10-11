@@ -1,12 +1,13 @@
 /* Run progress: the line above the composer and the Agents panel's rows.
 
-   Colour is state and nothing else. The accent marks work in flight, as a
-   tint; `--decide` is something waiting on the person; `--ok` is done;
+   Colour is state and nothing else. The accent marks a turn in flight
+   (`data-live`), as a tint, and nothing else: a run that is all planned, or
+   whose only worker has stalled, is drawn in the page's own greys; `--decide` is something waiting on the person; `--ok` is done;
    `--danger` is a failure; `--warn` is a worker in trouble. Nothing here is
    amber for emphasis, and nothing draws text on a solid fill.
 
    One thing moves: the texture over the part of the strip still to do, while
-   the run is live. Rows do not animate. */
+   a turn is in flight. Rows do not animate. */
 
 /* ---- The strip above the composer --------------------------------------- */
 
@@ -54,7 +55,7 @@
   background: var(--fg-3);
 }
 
-.run-strip[data-state="running"] .run-strip-dot { background: var(--accent); }
+.run-strip[data-live] .run-strip-dot { background: var(--accent); }
 .run-strip[data-state="needs"] .run-strip-dot { background: var(--decide); }
 .run-strip[data-state="done"] .run-strip-dot { background: var(--ok); }
 .run-strip[data-state="failed"] .run-strip-dot { background: var(--danger); }
@@ -81,9 +82,11 @@
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--accent) 22%, var(--bg-2));
+  background: color-mix(in srgb, var(--fg-3) 30%, var(--bg-2));
   transition: width 200ms ease-out;
 }
+
+.run-strip[data-live] .run-strip-fill { background: color-mix(in srgb, var(--accent) 22%, var(--bg-2)); }
 
 .run-strip[data-state="needs"] .run-strip-fill { background: color-mix(in srgb, var(--decide) 30%, var(--bg-2)); }
 .run-strip[data-state="done"] .run-strip-fill { background: color-mix(in srgb, var(--ok) 30%, var(--bg-2)); }
@@ -102,7 +105,7 @@
   white-space: nowrap;
 }
 
-/* The one moving thing: the part still to do, while the run is live. */
+/* The one moving thing: the part still to do, while a turn is in flight. */
 .run-strip[data-live] .run-strip-meter::after {
   content: "";
   position: absolute;
@@ -271,8 +274,13 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
 .orch-task.run-row {
   --task-control: 24px;
   --task-pad: 9px;
-  --row-color: color-mix(in srgb, var(--accent) 60%, var(--bg-2));
+  --row-color: var(--fg-3);
 }
+
+/* The accent is a turn in flight and nothing else: a row that is preparing,
+   parked or stalled keeps the grey, and a warning has its own colour. */
+.orch-task.run-row[data-flight] { --row-color: color-mix(in srgb, var(--accent) 60%, var(--bg-2)); }
+.orch-task.run-row[data-tone="warn"] { --row-color: var(--warn); }
 
 .orch-task.run-row[data-state="needs"] { --row-color: var(--decide); }
 .orch-task.run-row[data-state="failed"] { --row-color: var(--danger); }

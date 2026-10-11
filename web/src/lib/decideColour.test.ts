@@ -330,7 +330,7 @@ describe("a run's own surfaces", () => {
 
   it("keeps amber, on the run progress sheet, for a worker in trouble and nothing else", () => {
     const amber = rules(runProgressCss, "RunProgress.css").filter((rule) => /--warn\b/.test(rule.body));
-    expect(amber.map((rule) => rule.selector)).toEqual(['.run-row-note[data-tone="warn"]']);
+    expect(amber.map((rule) => rule.selector)).toEqual(['.orch-task.run-row[data-tone="warn"]', '.run-row-note[data-tone="warn"]']);
   });
 
   it("draws a task that is stuck in amber, which is a problem, and not in the decision colour", () => {

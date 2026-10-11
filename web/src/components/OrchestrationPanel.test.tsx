@@ -14,6 +14,8 @@ import { AgentRosterContext } from "../lib/agentRoster";
 import { boardCounts, EXECUTION_LABELS } from "../lib/agentTaskBoard";
 import type { ExecutionState } from "../lib/orchestration";
 import { OrchestrationPanel, retryLaunchArgs, type OrchestrationSnapshot } from "./OrchestrationPanel";
+import { PendingActionsContext } from "./PendingActionBadge";
+import type { PendingAction } from "../lib/pendingActions";
 
 const snapshot: OrchestrationSnapshot = {
   runs: [{
@@ -63,6 +65,9 @@ const snapshot: OrchestrationSnapshot = {
     question: "Use the durable schema?",
     options: ["Yes", "No"],
     status: "open",
+    // The host says this one is the person's. Who a gate waits on when it
+    // does not say is `who a run waits on`, below.
+    awaits: "person",
     createdAt: 1,
     updatedAt: 2,
   }],
@@ -301,14 +306,18 @@ describe("OrchestrationPanel", () => {
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
 
-    // What is owed, what is running, what settled (cancelled last), then
-    // what is planned, a task that can start before one still waiting.
+    // What failed leads what is running (a block with no decision open and
+    // a failure are not "Needs you", and have no group of their own), then
+    // what settled (cancelled last), then what is planned, a task that can
+    // start before one still waiting.
     expect([...html.matchAll(/<span class="orch-task-title">(.*?)<\/span>/g)].map((match) => match[1])).toEqual([
       "Task 5", "Task 7", "Task 2", "Task 6", "Task 0", "Task 8", "Task 3", "Task 4", "Task 1",
     ]);
     expect([...html.matchAll(/<section class="run-group" data-group="([a-z]+)" aria-label="([^"]+)"/g)].map((match) => match[2])).toEqual([
-      "Needs you, 2", "Running, 2", "Finished, 3", "Planned, 2",
+      "Running, 4", "Finished, 3", "Planned, 2",
     ]);
+    expect(html).not.toContain("Needs you");
+    expect([...html.matchAll(/data-state="failed" data-tone="danger"/g)]).toHaveLength(2);
     // Finished is the one group that folds, and it starts folded.
     expect(html.match(/class="run-group-head" aria-expanded="false"/g)).toHaveLength(1);
     expect(html).toMatch(/aria-expanded="false"[^>]*>(<svg.*?<\/svg>)?Finished · 3<\/button><div class="run-group-rows" id="[^"]+" hidden=""/);
@@ -823,5 +832,94 @@ describe("compact run panel", () => {
   it("draws no mission board for a run from before missions", () => {
     const done = { ...snapshot, runs: [{ ...snapshot.runs[0], status: "stopped" as const }], gates: [] };
     expect(agents(done)).not.toContain("mission-track");
+  });
+});
+
+/* "Needs you" is said only of a wait that is the person's (`lib/runWaits`):
+   the panel reads the same function the strip does. */
+describe("who a run waits on", () => {
+  const panel = (current: OrchestrationSnapshot, held: PendingAction[] = []) => renderToStaticMarkup(
+    <PendingActionsContext.Provider value={{ forRow: () => [], forTask: (id) => held.filter((action) => action.taskId === id), reveal: () => {} }}>
+      <OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+        initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />
+    </PendingActionsContext.Provider>);
+  const groups = (html: string) => [...html.matchAll(/<section class="run-group" data-group="([a-z]+)" aria-label="([^"]+)"/g)].map((match) => match[2]);
+  const gateOf = (over: object): OrchestrationSnapshot => ({ ...snapshot, gates: [{ ...snapshot.gates[0], awaits: undefined, ...over }] });
+  /** A worker that is executing, with a refusal the ledger recorded. */
+  const refused = (over: object): OrchestrationSnapshot => ({
+    ...snapshot, gates: [],
+    runs: [{ ...snapshot.runs[0], status: "running" }],
+    tasks: [{ ...snapshot.tasks[0], status: "running" }],
+    attempts: [{ ...snapshot.attempts[0], agent: "claude", status: "running", execution: { state: "executing", retryCount: 0 } }],
+    nativeDecisions: [{
+      id: "nd_1", runId: "run_1", taskId: "task_1", attemptId: "attempt_1", chatKey: "chat:worker", reason: "Refused",
+      blockedAction: "rm -rf build", status: "pending", continuation: "unavailable", recovery: "", observedAt: 1, ...over,
+    }],
+  });
+
+  it("keeps a gate the host says is the person's under Needs you, in the decision colour", () => {
+    const html = panel(gateOf({ awaits: "person" }));
+    expect(groups(html)).toEqual(["Needs you, 1"]);
+    expect(html).toMatch(/<section class="orch-decisions" aria-labelledby="[^"]+" data-attention="true" tabindex="-1"><h3 id="[^"]+">Needs you<\/h3>/);
+    expect(html).toContain('data-tone="decide"');
+    expect(html).toContain(">Asks a decision</span>");
+    expect(html).toContain("1 decision waiting");
+  });
+
+  it("lists a gate the coordinator has under Running, as a warning, and never as Needs you", () => {
+    const html = panel(gateOf({ awaits: "coordinator" }));
+    expect(groups(html)).toEqual(["Running, 1"]);
+    expect(html).not.toContain("Needs you");
+    expect(html).not.toContain("decision waiting");
+    expect(html).toMatch(/<article class="orch-task[^"]*run-row" data-status="blocked" data-state="running" data-tone="warn">/);
+    expect(html).toMatch(/<span class="run-row-note" data-tone="warn"[^>]*>Waiting on the coordinator<\/span>/);
+    // The gate is still shown, saying whose it is, outside the decision box.
+    expect(html).toMatch(/<section class="orch-decisions is-others" aria-labelledby="[^"]+" tabindex="-1"><h3 id="[^"]+">Open decisions<\/h3>/);
+    expect(html).toContain('<p class="orch-gate-waits" data-on="coordinator">Waiting on the coordinator</p>');
+    expect(html).toContain("Use the durable schema?");
+  });
+
+  it("does not guess on a host that does not say who a gate waits on, and says so in the tooltip", () => {
+    const html = panel(gateOf({}));
+    expect(groups(html)).toEqual(["Running, 1"]);
+    expect(html).not.toContain("Needs you");
+    expect(html).not.toContain("decision waiting");
+    // No colour of a decision, a warning or a failure: it is open, no more.
+    expect(html).toMatch(/<article class="orch-task[^"]*run-row" data-status="blocked" data-state="running">/);
+    expect(html).toMatch(/<span class="run-row-note" title="Blocked\nThe host does not say who this waits on\.">Asks a decision<\/span>/);
+    expect(html).toContain('<p class="orch-gate-waits" data-on="unsaid" title="The host does not say who this waits on.">Open</p>');
+    expect(html).toContain('aria-description="The host does not say who this waits on."');
+  });
+
+  it.each([{ awaits: "nobody" }, {}])("never says Awaiting approval for a refusal nobody can approve (%j)", (over) => {
+    const html = panel(refused(over));
+    expect(groups(html)).toEqual(["Running, 1"]);
+    expect(html).not.toContain("Needs you");
+    expect(html).not.toContain("Awaiting approval");
+    expect(html).not.toContain("Awaiting review");
+    expect(html).toMatch(/data-state="running" data-flight="true">/);
+    // What the ledger holds is still behind the row's disclosure.
+    expect(html).toContain("Decision recorded · cannot resume");
+  });
+
+  it("says Needs you for that refusal once the page holds its card, or the host says it is the person's", () => {
+    const card: PendingAction = { key: "safety:nd_1", kind: "safety", rowId: "master", openChatId: "master", surface: "chat", runId: "run_1", taskId: "task_1" };
+    for (const html of [panel(refused({}), [card]), panel(refused({ awaits: "person" }))]) {
+      expect(groups(html)).toEqual(["Needs you, 1"]);
+      expect(html).toMatch(/<span class="run-row-note" data-tone="decide"[^>]*>Awaiting review<\/span>/);
+    }
+  });
+
+  it("gives the line that shows the rest of a group the semantics of a disclosure", () => {
+    const many: OrchestrationSnapshot = {
+      ...snapshot, gates: [], attempts: [],
+      tasks: Array.from({ length: 6 }, (_, index) => ({ ...snapshot.tasks[0], id: `task_${index}`, title: `Task ${index}`, status: "pending" as const, activeAttemptId: undefined })),
+    };
+    const html = panel(many);
+    const more = /<button type="button" class="run-group-more" aria-expanded="false" aria-controls="([^"]+)" aria-label="3 more planned tasks">/.exec(html);
+    expect(more).not.toBeNull();
+    // It controls the rows it will show, which are in the page and folded.
+    expect(html).toContain(`<div class="run-group-rest" id="${more![1]}" hidden="">`);
+    expect(html).toMatch(/…<\/span>3 more<\/button>/);
   });
 });

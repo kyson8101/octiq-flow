@@ -1,4 +1,5 @@
 import { executionNeedsAttention } from "./agentTaskBoard";
+import { gateWaitsOn } from "./runWaits";
 import {
   isStuck, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationSnapshot,
   type OrchestrationTask,
@@ -46,7 +47,9 @@ export function runAttention(
   const blocked = run.status === "stopped" ? 0 : tasks.filter((task) => task.runId === run.id && !gated.has(task.id)
     && (isStuck(task)
       || executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId)))).length;
-  const decisions = open.length + plan;
+  // Only what the host says is the person's: a gate the coordinator is
+  // dealing with is no decision of theirs (`lib/runWaits`).
+  const decisions = open.filter((gate) => gateWaitsOn(gate, tasks) === "person").length + plan;
   return { decisions, blocked, total: decisions + blocked };
 }
 

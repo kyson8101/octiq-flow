@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  contextPercent, dismissStrip, figuresLabel, GROUP_FOLDED, minutesLabel, parseDismissed, runProgress, shownRows, stepsLabel,
-  stripHidden, stripRun, tasksLabel, tokensLabel, usageTotal, type ProgressRow,
+  chatStrip, contextPercent, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, minutesLabel, parseDismissed, runProgress, shownRows,
+  stepsLabel, stripHidden, stripRun, tasksLabel, tokensLabel, usageTotal, type ProgressRow, type Waiting,
 } from "./runProgress";
+import { chatSnapshot } from "./chatWorkflow";
+import { UNSAID_NOTE } from "./runWaits";
 import type {
-  OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask,
+  Awaits, NativeDecision, OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask,
 } from "./orchestration";
 import type { TaskReport } from "./chatTask";
 
@@ -61,10 +63,22 @@ function ledger(parts: { task: OrchestrationTask; attempt?: OrchestrationAttempt
   };
 }
 
-const gate = (taskId: string | undefined, status: OrchestrationGate["status"] = "open"): OrchestrationGate => ({
+/** An open gate the host says is the person's, unless told otherwise.
+ *  `null` is a host that does not say who a gate waits on. */
+const gate = (taskId: string | undefined, status: OrchestrationGate["status"] = "open", awaits: Awaits | null = "person"): OrchestrationGate => ({
   id: `gate_${taskId ?? "run"}`, runId: "run_1", taskId, createdByChatKey: "chat:w", targetChatKey: "chat:main",
-  question: "Which way?", options: [], status, createdAt: START, updatedAt: START,
+  question: "Which way?", options: [], status, createdAt: START, updatedAt: START, ...(awaits ? { awaits } : {}),
 });
+
+const native = (part: { task: OrchestrationTask; attempt: OrchestrationAttempt }, over: Partial<NativeDecision> = {}): NativeDecision => ({
+  id: `nd_${part.task.id}`, runId: part.task.runId, taskId: part.task.id, attemptId: part.attempt.id, chatKey: part.attempt.workerChatKey,
+  reason: "Refused by the provider's review", blockedAction: "rm -rf build", status: "pending", continuation: "unavailable",
+  recovery: "", observedAt: START, ...over,
+});
+
+/** The cards the page holds for one task, as `pendingByTask` hands them over. */
+const cards = (taskId: string, ...held: [kind: string, id: string][]): Waiting =>
+  new Map([[taskId, held.map(([kind, id]) => ({ kind, key: `${kind === "outage" ? "safety" : kind}:${id}` }))]]);
 
 describe("elapsed time", () => {
   it("is minutes, then hours and minutes", () => {
@@ -194,11 +208,175 @@ describe("the groups", () => {
 });
 
 describe("the Running group", () => {
+  const executing = (title: string) => going(title, "running", "running", { attempt: { execution: { state: "executing", retryCount: 0 } } });
+
   it("puts a worker in trouble ahead of the ones that are simply going", () => {
-    const fine = going("fine", "running", "running", { attempt: { execution: { state: "executing", retryCount: 0 } } });
+    const fine = executing("fine");
     const stalled = going("stalled", "running", "running", { attempt: { execution: { state: "stalled", retryCount: 0 } } });
     const made = ledger([fine, stalled]);
     expect(runProgress(made.snapshot, made.run, NOW).groups[0].rows.map((row) => row.task.title)).toEqual(["stalled", "fine"]);
+  });
+
+  it("lists what failed first, in the danger colour, then a worker in trouble, then the rest", () => {
+    const fine = executing("fine");
+    const stalled = going("stalled", "running", "running", { attempt: { execution: { state: "stalled", retryCount: 0 } } });
+    const broke = going("broke", "failed", "failed");
+    const stuck = going("stuck", "blocked", "blocked");
+    const check = going("check", "completed", "completed", { task: { kind: "review", verdict: "fail" } });
+    const made = ledger([fine, stalled, broke, stuck, check]);
+    const { groups } = runProgress(made.snapshot, made.run, NOW);
+    // One group: nothing here waits on the person.
+    expect(groups.map((group) => group.key)).toEqual(["running"]);
+    expect(groups[0].rows.map((row) => [row.task.title, row.tone, row.why])).toEqual([
+      ["broke", "danger", "Failed"], ["stuck", "danger", "Blocked"], ["check", "danger", "Check failed"],
+      ["stalled", "warn", "Stalled"], ["fine", null, null],
+    ]);
+  });
+
+  it("marks a turn in flight on the row whose worker is executing, and on no other", () => {
+    const parts = [
+      executing("executing"),
+      going("tool", "running", "running", { attempt: { execution: { state: "waiting_tool", retryCount: 0 } } }),
+      going("stalled", "running", "running", { attempt: { execution: { state: "stalled", retryCount: 0 } } }),
+      going("preparing", "running", "preparing"),
+      going("broke", "failed", "failed"),
+      going("done", "completed", "completed"),
+      { task: task("later", "pending") },
+    ];
+    const made = ledger(parts);
+    const flying = runProgress(made.snapshot, made.run, NOW).rows.filter((row) => row.flight).map((row) => row.task.title);
+    expect(flying).toEqual(["executing", "tool"]);
+  });
+});
+
+/* The reviewer's shapes (review of e3e5e0f): who a wait is on is a fact the
+   host sent or a card the page holds, and never a guess. */
+describe("who a row waits on", () => {
+  const worker = () => going("W · Build", "running", "running", { attempt: { execution: { state: "executing", retryCount: 0 } } });
+  const read = (part: ReturnType<typeof worker>, over: Partial<OrchestrationSnapshot> = {}, waiting?: Waiting) => {
+    const made = ledger([part], over);
+    const progress = runProgress(made.snapshot, made.run, NOW, waiting);
+    return { row: progress.rows[0], strip: progress.strip!, groups: progress.groups.map((group) => group.key) };
+  };
+
+  it("a refusal nobody can approve stays Running with the worker's own word: no decision, never Awaiting approval", () => {
+    const part = worker();
+    const { row, strip, groups } = read(part, { nativeDecisions: [native(part, { awaits: "nobody" })] });
+    expect(row).toMatchObject({ state: "running", group: "running", why: null, tone: null, decisions: 0, hint: null, flight: true });
+    expect(groups).toEqual(["running"]);
+    expect(strip).toMatchObject({ state: "running", needs: 0, side: [{ text: "1 working", strong: false }], notes: [] });
+    expect(JSON.stringify([row.why, strip.side])).not.toMatch(/approval|decision/i);
+    // The same on a worker whose turn ended on it and reported blocked: the
+    // refusal is no open decision, so the block is the task's own.
+    const gaveUp = going("W", "blocked", "blocked");
+    expect(read(gaveUp, { nativeDecisions: [native(gaveUp, { awaits: "nobody" })] }).row)
+      .toMatchObject({ state: "failed", group: "running", why: "Blocked", tone: "danger" });
+  });
+
+  it("the same refusal from a host that does not say who it waits on is not the person's, and the tooltip says why", () => {
+    const part = worker();
+    const { row, strip, groups } = read(part, { nativeDecisions: [native(part)] });
+    expect(row).toMatchObject({ state: "running", group: "running", why: null, decisions: 0, hint: UNSAID_NOTE });
+    expect(groups).toEqual(["running"]);
+    expect(strip).toMatchObject({ state: "running", needs: 0, side: [{ text: "1 working" }] });
+    expect(strip.notes).toEqual(["1 open decision: the host does not say who it waits on."]);
+  });
+
+  it("a card the page holds for that same decision is the person's, once", () => {
+    const part = worker();
+    const decision = native(part);
+    // The safety card and the ledger's record of it are one thing.
+    const { row, strip } = read(part, { nativeDecisions: [decision] }, cards(part.task.id, ["safety", decision.id]));
+    expect(row).toMatchObject({ state: "needs", group: "needs", why: "Awaiting review", tone: "decide", decisions: 1, hint: null });
+    expect(strip).toMatchObject({ state: "needs", needs: 1, side: [{ text: "1 decision", strong: true }], notes: [] });
+    // An outage's refusals sit on one card, under the group's id.
+    const outage = read(part, { nativeDecisions: [native(part, { id: "r1", groupId: "g1" }), native(part, { id: "r2", groupId: "g1" })] },
+      cards(part.task.id, ["outage", "g1"]));
+    expect(outage.row).toMatchObject({ state: "needs", why: "Safety check was down", decisions: 1 });
+    expect(outage.strip.needs).toBe(1);
+  });
+
+  it("a gate the coordinator has stays under Running, as a warning, with the host's word", () => {
+    const part = going("W", "blocked", "blocked");
+    const { row, strip, groups } = read(part, { gates: [gate(part.task.id, "open", "coordinator")] });
+    expect(row).toMatchObject({ state: "running", group: "running", why: "Waiting on the coordinator", tone: "warn", decisions: 0, flight: false });
+    expect(groups).toEqual(["running"]);
+    expect(strip).toMatchObject({ state: "running", needs: 0, failed: 0, side: [], live: false });
+    expect(strip.notes).toEqual(["1 waiting on the coordinator."]);
+    // A native decision the coordinator was told to read is the same.
+    const running = worker();
+    expect(read(running, { nativeDecisions: [native(running, { awaits: "coordinator" })] }).row)
+      .toMatchObject({ state: "running", why: "Waiting on the coordinator", tone: "warn" });
+  });
+
+  it("a gate from a host that does not say is shown as open, counted as nobody's, and explained", () => {
+    const part = going("W", "blocked", "blocked");
+    const { row, strip, groups } = read(part, { gates: [gate(part.task.id, "open", null)] });
+    expect(row).toMatchObject({ state: "running", group: "running", why: "Asks a decision", tone: null, decisions: 0, hint: UNSAID_NOTE });
+    expect(groups).toEqual(["running"]);
+    expect(strip).toMatchObject({ state: "running", needs: 0, failed: 0 });
+    expect(strip.notes).toEqual(["1 open decision: the host does not say who it waits on."]);
+    // Of the run itself, and two of them.
+    const runLevel = ledger([worker()], { gates: [gate(undefined, "open", null), { ...gate(undefined, "open", null), id: "gate_2" }] });
+    expect(runProgress(runLevel.snapshot, runLevel.run, NOW).strip).toMatchObject({
+      state: "running", needs: 0, notes: ["2 open decisions: the host does not say who they wait on."],
+    });
+  });
+
+  it("a gate on a peer request is the person's on any host: only their page can answer it", () => {
+    const part = going("W", "blocked", "blocked", { task: { peerRequest: {
+      requestedBy: { id: "a", name: "Asker" }, requesterChatKey: "chat:x", output: "o", maxMinutes: 30, requestedAt: START,
+    } } });
+    expect(read(part, { gates: [gate(part.task.id, "open", null)] }).row).toMatchObject({ state: "needs", why: "Asks a decision", decisions: 1 });
+  });
+
+  it("counts decisions per card and not per row: two cards of one worker are two", () => {
+    const part = going("W", "running", "running", { attempt: { execution: { state: "waiting_tool", retryCount: 0 } } });
+    const { row, strip } = read(part, {}, cards(part.task.id, ["permission", "p1"], ["permission", "p2"]));
+    expect(row).toMatchObject({ state: "needs", decisions: 2 });
+    expect(strip).toMatchObject({ state: "needs", needs: 2, side: [{ text: "2 decisions", strong: true }] });
+    // A gate and a card of the same task are two; the same card twice is one.
+    const mixed = read(part, { gates: [gate(part.task.id)] }, cards(part.task.id, ["permission", "p1"], ["permission", "p1"]));
+    expect(mixed.row.decisions).toBe(2);
+    expect(mixed.strip.side[0]).toEqual({ text: "2 decisions", strong: true });
+    // The plan and a card: two decisions, and no longer "Plan to approve".
+    const planned = ledger([part], {}, run({ status: "running", planApproval: { status: "pending", requestedAt: START } }));
+    expect(runProgress(planned.snapshot, planned.run, NOW, cards(part.task.id, ["permission", "p1"])).strip!.side[0].text).toBe("2 decisions");
+  });
+
+  it("says Failed only while a failed row exists and nothing waits on the person", () => {
+    const broke = going("broke", "failed", "failed");
+    const asks = going("asks", "blocked", "blocked");
+    const alone = ledger([broke, worker()]);
+    expect(runProgress(alone.snapshot, alone.run, NOW).strip).toMatchObject({
+      state: "failed", word: "Failed", side: [{ text: "1 failed", strong: true }, { text: "1 working", strong: false }],
+    });
+    const both = ledger([broke, asks], { gates: [gate(asks.task.id)] });
+    expect(runProgress(both.snapshot, both.run, NOW).strip).toMatchObject({ state: "needs", side: [{ text: "1 decision" }, { text: "1 failed" }] });
+    // A gate that is not the person's does not hide the failure.
+    const theirs = ledger([broke, asks], { gates: [gate(asks.task.id, "open", "coordinator")] });
+    expect(runProgress(theirs.snapshot, theirs.run, NOW).strip).toMatchObject({ state: "failed", needs: 0 });
+    // Replaced, the failure is history and the strip is not Failed.
+    const replaced = ledger([{ ...broke, task: { ...broke.task, supersededBy: "task_new" } }, worker()]);
+    expect(runProgress(replaced.snapshot, replaced.run, NOW).strip).toMatchObject({ state: "running", failed: 0 });
+  });
+
+  it("reads the same from the chat's scoped snapshot as from the whole ledger", () => {
+    const part = worker();
+    for (const awaits of ["person", "coordinator", "nobody", undefined] as const) {
+      const whole = ledger([part], { nativeDecisions: [native(part, awaits ? { awaits } : {})] });
+      const scoped = chatSnapshot(whole.snapshot, whole.run.coordinatorChatKey);
+      expect(scoped.nativeDecisions).toHaveLength(1);
+      const full = runProgress(whole.snapshot, whole.run, NOW);
+      const mine = runProgress(scoped, scoped.runs[0], NOW);
+      expect(mine.strip).toEqual(full.strip);
+      expect(mine.rows.map((row) => [row.state, row.why, row.decisions, row.hint])).toEqual(full.rows.map((row) => [row.state, row.why, row.decisions, row.hint]));
+    }
+    // Another chat's decisions do not come along.
+    const whole = ledger([part], { nativeDecisions: [native(part, { awaits: "person" }), native(part, { id: "other", runId: "run_other" })] });
+    expect(chatSnapshot(whole.snapshot, "chat:main").nativeDecisions!.map((item) => item.id)).toEqual([`nd_${part.task.id}`]);
+    // A host that sends none keeps the field absent, not empty.
+    expect("nativeDecisions" in chatSnapshot(ledger([part]).snapshot, "chat:main")).toBe(false);
   });
 });
 
@@ -215,21 +393,24 @@ describe("one row", () => {
     expect(rowOf(part, { gates: [gate(part.task.id, "resolved")] })).toMatchObject({ state: "failed", why: "Blocked", tone: "danger" });
   });
 
-  it("is Needs you for a card the host holds for the person, and for a native decision", () => {
+  it("is Needs you for a card the page holds for the person, and for a native decision the host says is theirs", () => {
     const part = going("D", "running", "running", { attempt: { execution: { state: "waiting_tool", retryCount: 0 } } });
     const made = ledger([part]);
-    const waiting = new Map([[part.task.id, [{ kind: "permission" }]]]);
-    expect(runProgress(made.snapshot, made.run, NOW, waiting).rows[0]).toMatchObject({ state: "needs", why: "Awaiting approval" });
-    expect(runProgress(made.snapshot, made.run, NOW, new Map([[part.task.id, [{ kind: "question" }]]])).rows[0].why).toBe("Asks a question");
-    const native = { id: "nd", runId: "run_1", taskId: part.task.id, attemptId: part.attempt.id, chatKey: "c", reason: "", blockedAction: null, status: "pending", continuation: "", recovery: "", observedAt: 1 };
-    expect(rowOf(part, { nativeDecisions: [native] })).toMatchObject({ state: "needs", why: "Awaiting approval" });
-    expect(rowOf(part, { nativeDecisions: [{ ...native, status: "resolved" }] }).state).toBe("running");
+    expect(runProgress(made.snapshot, made.run, NOW, cards(part.task.id, ["permission", "p1"])).rows[0])
+      .toMatchObject({ state: "needs", why: "Awaiting approval", decisions: 1 });
+    expect(runProgress(made.snapshot, made.run, NOW, cards(part.task.id, ["question", "q1"])).rows[0].why).toBe("Asks a question");
+    expect(rowOf(part, { nativeDecisions: [native(part, { awaits: "person" })] })).toMatchObject({ state: "needs", why: "Awaiting review", tone: "decide" });
+    expect(rowOf(part, { nativeDecisions: [native(part, { awaits: "person", status: "resolved" })] }).state).toBe("running");
   });
 
-  it("is failed for a failure, a block nobody is asked about, and a check that said fail", () => {
-    expect(rowOf(going("x", "failed", "failed"))).toMatchObject({ state: "failed", group: "needs", why: "Failed", tone: "danger" });
-    expect(rowOf(going("x", "blocked", "blocked"))).toMatchObject({ state: "failed", why: "Blocked" });
-    expect(rowOf(going("x", "completed", "completed", { task: { kind: "review", verdict: "fail" } }))).toMatchObject({ state: "failed", why: "Check failed", verdict: "fail" });
+  it("is failed, under Running, for a failure, a block with no decision open, and a check that said fail", () => {
+    // The person's decision: these are not "Needs you", and there is no
+    // fifth group for them.
+    expect(rowOf(going("x", "failed", "failed"))).toMatchObject({ state: "failed", group: "running", why: "Failed", tone: "danger", decisions: 0 });
+    expect(rowOf(going("x", "blocked", "blocked"))).toMatchObject({ state: "failed", group: "running", why: "Blocked", tone: "danger" });
+    expect(rowOf(going("x", "completed", "completed", { task: { kind: "review", verdict: "fail" } })))
+      .toMatchObject({ state: "failed", group: "running", why: "Check failed", tone: "danger", verdict: "fail" });
+    expect(GROUP_ORDER).toEqual(["needs", "running", "finished", "planned"]);
   });
 
   it("is history once it was replaced or cancelled, and owes nothing", () => {
@@ -425,6 +606,106 @@ describe("the strip", () => {
     const made = ledger(mix(2, 2, 6));
     const text = JSON.stringify(runProgress(made.snapshot, made.run, NOW).strip);
     for (const word of ["opus", "feature/x", "/repo", "Ship it", "/Users/"]) expect(text).not.toContain(word);
+  });
+
+  it("moves, and takes the accent, only while a turn is in flight", () => {
+    // All planned: the run is live, and nothing is running.
+    const allPlanned = ledger(mix(0, 0, 3));
+    expect(runProgress(allPlanned.snapshot, allPlanned.run, NOW).strip).toMatchObject({ state: "running", live: false, working: 0, side: [] });
+    // Its only worker has stalled.
+    const stalled = going("x", "running", "running", { attempt: { execution: { state: "stalled", retryCount: 0 } } });
+    const onlyStalled = ledger([stalled]);
+    expect(runProgress(onlyStalled.snapshot, onlyStalled.run, NOW).strip).toMatchObject({ state: "running", live: false, working: 0, side: [] });
+    // A failed check reopened as ready: nothing failed, nothing running.
+    const reopened = ledger([{ task: task("review", "ready", { kind: "review" }) }]);
+    expect(runProgress(reopened.snapshot, reopened.run, NOW).strip).toMatchObject({ state: "running", live: false, failed: 0 });
+    // Preparing a workspace is the host's work, not a turn.
+    const preparing = ledger([going("x", "running", "preparing")]);
+    expect(runProgress(preparing.snapshot, preparing.run, NOW).strip).toMatchObject({ state: "running", live: false, working: 0 });
+    // One attempt executing is enough, beside any number that are not.
+    const one = ledger([stalled, ...mix(0, 1, 4)]);
+    expect(runProgress(one.snapshot, one.run, NOW).strip).toMatchObject({ state: "running", live: true, working: 1, side: [{ text: "1 working" }] });
+    // Never while it asks, failed or finished, whoever is still working.
+    const asking = going("D", "blocked", "blocked");
+    const asks = ledger([...mix(0, 2, 2), asking], { gates: [gate(asking.task.id)] });
+    expect(runProgress(asks.snapshot, asks.run, NOW).strip).toMatchObject({ state: "needs", live: false, working: 2 });
+    const broke = ledger([...mix(0, 2, 2), going("x", "failed", "failed")]);
+    expect(runProgress(broke.snapshot, broke.run, NOW).strip).toMatchObject({ state: "failed", live: false });
+    // A run that ended keeps nothing moving even if a record says executing.
+    const ended = ledger(mix(0, 1, 1), {}, run({ status: "completed" }));
+    expect(runProgress(ended.snapshot, ended.run, NOW).strip!.live).toBe(false);
+  });
+
+  describe("for a chat that coordinates several runs", () => {
+    const inRun = (runId: string, part: ReturnType<typeof working>) => ({
+      task: { ...part.task, runId }, attempt: { ...part.attempt, runId },
+    });
+    /** Two live runs of one chat, the newer one first as `chatSnapshot` sorts. */
+    const two = (older: ReturnType<typeof working>[], newer: ReturnType<typeof working>[], over: Partial<OrchestrationSnapshot> = {}) => {
+      const runs = [run({ id: "run_new", createdAt: START + 10 }), run({ id: "run_old", createdAt: START })];
+      const parts = [...newer.map((part) => inRun("run_new", part)), ...older.map((part) => inRun("run_old", part))];
+      const whole: OrchestrationSnapshot = {
+        runs: [...runs].reverse(), tasks: parts.map((part) => part.task), attempts: parts.map((part) => part.attempt), gates: [], messages: [], ...over,
+      };
+      return chatSnapshot(whole, "chat:main");
+    };
+
+    it("puts a run that waits on the person ahead of a newer one that is running, and says how many runs", () => {
+      const asking = going("old asks", "blocked", "blocked");
+      const snapshot = two([asking, finished("old done")], [working("new 1"), working("new 2")],
+        { gates: [{ ...gate(asking.task.id), runId: "run_old" }] });
+      // What the strip did before: the newest live run, and the wait unseen.
+      expect(stripRun(snapshot.runs)?.id).toBe("run_new");
+      const line = chatStrip(snapshot, NOW)!;
+      expect(line.run.id).toBe("run_old");
+      expect(line.strip).toMatchObject({
+        state: "needs", word: "Needs you", label: "Tasks 1/2", runs: 2, live: false,
+        side: [{ text: "1 decision", strong: true }, { text: "2 runs", strong: false }],
+      });
+      expect(line.strip.notes[0]).toBe("The bar is one of 2 live runs of this chat, the one that waits on you.");
+    });
+
+    it("counts what waits in every run, so the one it draws no bar for is not hidden", () => {
+      const a = going("a", "blocked", "blocked");
+      const b = going("b", "blocked", "blocked");
+      const c = going("c", "running", "running", { attempt: { execution: { state: "waiting_tool", retryCount: 0 } } });
+      const snapshot = two([a], [b, c], { gates: [{ ...gate(a.task.id), runId: "run_old" }, { ...gate(b.task.id), runId: "run_new" }] });
+      const line = chatStrip(snapshot, NOW, cards(c.task.id, ["permission", "p1"], ["permission", "p2"]))!;
+      // The first that asks, in the order the chat lists its runs.
+      expect(line.run.id).toBe("run_new");
+      expect(line.strip).toMatchObject({ state: "needs", needs: 4, side: [{ text: "4 decisions", strong: true }, { text: "2 runs" }] });
+      expect(line.strip.notes).toContain("1 decision in the other run.");
+    });
+
+    it("puts a failure ahead of plain progress, and a run in flight ahead of an idle one", () => {
+      const failing = chatStrip(two([going("broke", "failed", "failed")], [working("new")]), NOW)!;
+      expect(failing.run.id).toBe("run_old");
+      expect(failing.strip).toMatchObject({ state: "failed", side: [{ text: "1 failed", strong: true }, { text: "2 runs" }] });
+      const idleNew = chatStrip(two([working("old")], [{ ...working("x"), ...going("planned later", "ready", "completed") }]), NOW)!;
+      expect(idleNew.run.id).toBe("run_old");
+      expect(idleNew.strip).toMatchObject({ state: "running", live: true, side: [{ text: "1 working" }, { text: "2 runs" }] });
+    });
+
+    it("says nothing of runs when one is live, and reads exactly as that run does", () => {
+      const made = ledger(mix(1, 1, 3));
+      const scoped = chatSnapshot(made.snapshot, "chat:main");
+      expect(chatStrip(scoped, NOW)!.strip).toEqual(runProgress(made.snapshot, made.run, NOW).strip);
+      // A finished run beside a live one is history, not a second run.
+      const snapshot = chatSnapshot({
+        ...made.snapshot, runs: [made.run, run({ id: "run_done", status: "completed", createdAt: START - 5 })],
+        tasks: [...made.snapshot.tasks, { ...finished("old").task, runId: "run_done" }],
+      }, "chat:main");
+      expect(chatStrip(snapshot, NOW)!.strip).toMatchObject({ runs: 1, side: [{ text: "1 working" }], notes: [] });
+      expect(chatStrip(chatSnapshot({ runs: [], tasks: [], attempts: [], gates: [], messages: [] }, "chat:main"), NOW)).toBeNull();
+    });
+
+    it("comes back, once hidden, when another run starts to wait", () => {
+      const asking = going("old asks", "blocked", "blocked");
+      const quiet = chatStrip(two([asking], [working("new")]), NOW)!;
+      const hidden = dismissStrip([], quiet.strip.signature);
+      const asks = chatStrip(two([asking], [working("new")], { gates: [{ ...gate(asking.task.id), runId: "run_old" }] }), NOW)!;
+      expect(stripHidden(hidden, asks.strip)).toBe(false);
+    });
   });
 
   it("picks the run in flight, else the latest that is not put away", () => {
