@@ -156,7 +156,7 @@ import {
   newChatLead,
 } from "./lib/frontDesk";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
-import { personaFor, senderName, type Persona } from "./lib/agentPersona";
+import { keepAssignees, personaFor, senderName, type Assignees, type Persona } from "./lib/agentPersona";
 import type { LaunchPlan } from "./lib/taskEnvironment";
 import { AgentRosterContext, ChatPersonaContext } from "./lib/agentRoster";
 
@@ -2110,6 +2110,13 @@ export default function App() {
   );
   // The registered agent a chat belongs to — its lead, or the assignee of the
   // task a worker chat runs. It is the voice of every reply in that chat.
+  //
+  // Kept by content (`keepAssignees`): the ledger changes with every step a
+  // worker takes, who has which task almost never does, and a new map each
+  // time rebuilt the persona of the chat on screen and drew its transcript
+  // again for a change it shows nothing of. Folding the same ledger in twice
+  // keeps the same map, so writing the ref during this render is safe.
+  const assigneesHeld = useRef<Assignees>(new Map());
   const workerAssignees = useMemo(() => {
     const byChat = new Map<string, { id: string; name: string }>();
     const tasks = new Map(orchestration.tasks.map((task) => [task.id, task]));
@@ -2117,7 +2124,8 @@ export default function App() {
       const assignee = tasks.get(attempt.taskId)?.assignee;
       if (assignee) byChat.set(attempt.workerChatKey, assignee);
     }
-    return byChat;
+    assigneesHeld.current = keepAssignees(assigneesHeld.current, byChat);
+    return assigneesHeld.current;
   }, [orchestration]);
   const personaForChat = useCallback(
     (chatKey: string) => (agentsMode ? personaFor(chatKey, leads, roster, workerAssignees) : null),

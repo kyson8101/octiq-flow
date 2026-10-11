@@ -55,6 +55,26 @@ export function personaFor(
   };
 }
 
+export type Assignees = ReadonlyMap<string, { id: string; name: string }>;
+
+/** `before` when `next` says the same thing, else `next`.
+ *
+ *  Who each worker chat belongs to is rebuilt from the whole ledger, and the
+ *  ledger changes with every step a worker takes while who has which task
+ *  almost never does. A new map each time made a new persona for the chat on
+ *  screen, and its transcript was drawn again for every such step: 22 times
+ *  for 500 updates, where a chat with no persona was drawn once. Keeping the
+ *  map that already says it lets everything built from it stay as it is. */
+export function keepAssignees(before: Assignees, next: Assignees): Assignees {
+  if (before === next) return before;
+  if (before.size !== next.size) return next;
+  for (const [chatKey, assignee] of next) {
+    const held = before.get(chatKey);
+    if (!held || held.id !== assignee.id || held.name !== assignee.name) return next;
+  }
+  return before;
+}
+
 /** Up to two letters for the fallback tile: "Potato Juice" → "PJ". */
 export function personaInitials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
