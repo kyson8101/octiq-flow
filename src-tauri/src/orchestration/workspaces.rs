@@ -60,7 +60,7 @@ pub struct TaskWorkspace {
 const MAX_REOPENS_KEPT: usize = 12;
 
 /// Why a reopened task does not start yet (`reserve_attempt_for`).
-pub(super) const REOPEN_NOT_TOLD: &str = "This task was reopened with new instructions, and the notice of that is not in the coordinator's chat yet, so it does not start: the person is shown every reopen before its work begins. The host keeps trying to write the notice and to confirm it on disk, and the task starts once it has (heldByReopen in orchestration_snapshot). If it stays held, the coordinator's chat was deleted or its transcript cannot be written or synced to disk.";
+pub(super) const REOPEN_NOT_TOLD: &str = "This task was reopened with new instructions, and the notice of that in the coordinator's chat has not been confirmed as saved to disk yet, so it does not start: the person is shown every reopen before its work begins, and a notice the disk does not hold yet could still be lost. The notice may already be on screen in that chat. The host keeps trying to write it and to confirm it on disk, and the task starts once it has (heldByReopen in orchestration_snapshot). If it stays held, the coordinator's chat was deleted or its transcript cannot be written or synced to disk.";
 
 /// The reopen of `task` the person has not been shown yet, if any.
 pub(super) fn untold_reopen(task: &Task) -> Option<&TaskReopen> {
@@ -85,37 +85,60 @@ fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
 
 /// Whether the host holds a durability receipt for each of `events` in
 /// `chat`'s transcript, in their order. One that is not there yet is
-/// appended, and its receipt is that append's own.
+/// appended.
 ///
-/// **A readable line is not a receipt.** One of these events already in
-/// the transcript is the line of an append that answered no receipt, or
-/// was never heard from: read back, it says the OS holds it and nothing
-/// about the disk. So it is never written again, and it counts only once
-/// what its append had to do to be believed has been done and has
-/// succeeded (`transcript::confirm_synced`: the file synced, then its
-/// folder). Until then the chat gets nothing recorded and nothing new
-/// written this pass, and its tasks stay held.
+/// **The rule, with no path exempt:** a notice counts only after the host
+/// has, in this pass and under the append lock, synced the record as it is
+/// now and then the folder it is in, and both succeeded
+/// (`transcript::confirm_synced`). Every `true` this answers comes after
+/// that one call, the last thing done here, whichever way the line got
+/// into the record:
+///
+/// - **found there.** A readable line is not a receipt: it is the line of
+///   an append that answered none, or was never heard from, and read back
+///   it says the OS holds it and nothing about the disk. It is never
+///   written again.
+/// - **appended now.** That append's own answer is not one either. It
+///   syncs the folder only for a file it made, and "the file was there"
+///   says nothing of the folder entry: most records are made by an
+///   ordinary append that syncs nothing, and a compacted one is a new file
+///   under the old name (`transcript::rewrite_numbered`).
+///
+/// While the record holds a notice that cannot be confirmed, nothing new
+/// is written into it: a second line there would be as unproven as the
+/// first. With no receipt the chat gets nothing recorded this pass and its
+/// tasks stay held.
 ///
 /// The transcript is read once, for the reopen events alone.
 fn notice_receipts(chat: &str, events: &[serde_json::Value]) -> Vec<bool> {
+    let none = || vec![false; events.len()];
+    let confirmed = || crate::transcript::confirm_synced(chat).is_some();
     let there = crate::transcript::of_type(chat, "octiq_task_reopened");
-    let is_there = |event: &serde_json::Value| {
-        there.iter().any(|other| {
-            ["type", "taskId", "attempt", "at"]
-                .iter()
-                .all(|key| other[key] == event[key])
-        })
-    };
-    if events.iter().any(is_there) && crate::transcript::confirm_synced(chat).is_none() {
-        return vec![false; events.len()];
-    }
-    events
+    let found: Vec<bool> = events
         .iter()
         .map(|event| {
-            is_there(event)
-                || crate::agent_chat::record_chat_event_synced(chat, event.clone()).is_some()
+            there.iter().any(|other| {
+                ["type", "taskId", "attempt", "at"]
+                    .iter()
+                    .all(|key| other[key] == event[key])
+            })
         })
-        .collect()
+        .collect();
+    if found.contains(&true) && found.contains(&false) && !confirmed() {
+        return none();
+    }
+    let written: Vec<bool> = events
+        .iter()
+        .zip(&found)
+        .map(|(event, found)| {
+            *found || crate::agent_chat::record_chat_event_synced(chat, event.clone()).is_some()
+        })
+        .collect();
+    if written.contains(&true) && confirmed() {
+        written
+    } else {
+        none()
+    }
 }
 
 /// How long a chat whose transcript gave no receipt is left alone before
@@ -1042,8 +1065,9 @@ impl OrchestrationStore {
     ///
     /// A notice already in the transcript is never written again: that is
     /// the notice of a write whose confirmation was lost, to a server that
-    /// stopped or a folder that would not sync. It is recorded only once
-    /// the host holds the receipt that write did not give
+    /// stopped or a folder that would not sync. Found there or written in
+    /// this pass, it is recorded only once the record and its folder have
+    /// been synced after it, in this pass, and both succeeded
     /// (`notice_receipts`). The event is made from the reopen as the ledger
     /// keeps it, so every try writes the same one and the page knows it by
     /// task, attempt and time.
@@ -2800,7 +2824,7 @@ pub(super) mod tests {
             .start(&task)
             .expect_err("a reopen the person was not shown");
         assert!(
-            held.starts_with("This task was reopened with new instructions, and the notice of that is not in the coordinator's chat yet"),
+            held.starts_with("This task was reopened with new instructions, and the notice of that in the coordinator's chat has not been confirmed as saved to disk yet"),
             "{held}"
         );
         assert_eq!(held, REOPEN_NOT_TOLD);
@@ -3067,6 +3091,167 @@ pub(super) mod tests {
         assert_eq!(specs, [json!("Fix the first"), json!("Fix the second")]);
         work.start(&first).unwrap();
         work.start(&second).unwrap();
+    }
+
+    /// A task reopened while no folder will sync, then looked at ten times
+    /// with the fault still on, then once with it lifted. The notice's line
+    /// is written once and is no receipt: the task stays held and the line
+    /// is never written again. Lifted, one pass confirms the line that is
+    /// there, and the task starts on one event.
+    fn held_until_the_folder_syncs(work: &Reopenable, task: &Task, fault: NoFolderSync) {
+        let reopened = work.reopen(task, "Folder sync still failing").unwrap();
+        assert!(
+            !reopened.reopens[0].notice_delivered,
+            "delivered on a line whose folder never synced"
+        );
+        assert_eq!(work.start(task).unwrap_err(), REOPEN_NOT_TOLD);
+        assert_eq!(work.told().len(), 1, "the line is there, unproven");
+        for pass in 1..=10 {
+            assert_eq!(
+                work.store.deliver_reopen_notices_now(),
+                Ok(0),
+                "pass {pass}"
+            );
+            assert_eq!(
+                work.start(task)
+                    .expect_err("started on a notice nothing confirmed"),
+                REOPEN_NOT_TOLD,
+                "pass {pass}"
+            );
+            assert_eq!(work.told().len(), 1, "pass {pass}: never written twice");
+        }
+        let held = work.store.owned_task(&work.key, &task.id).unwrap().1;
+        assert!(!held.reopens[0].notice_delivered);
+        // Whoever asks: the coordinator, the person's Start, the host's own
+        // recovery. And there is nothing of it for the person to stop.
+        let launch = super::super::tests::launch_for(&task.id);
+        for by in [
+            StartedBy::Coordinator,
+            StartedBy::Page { retry_of: None },
+            StartedBy::Recovery("attempt_before"),
+        ] {
+            let refused = work.store.reserve_attempt_for(&work.key, &launch, by);
+            assert_eq!(refused.map(|_| ()).unwrap_err(), REOPEN_NOT_TOLD);
+        }
+        assert!(work.store.stop_task(&task.id, None).is_err());
+
+        drop(fault);
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        let told = work.told();
+        assert_eq!(told.len(), 1, "one event in the transcript: {told:?}");
+        assert_eq!(told[0]["spec"], "Folder sync still failing");
+        assert_eq!(work.start(task).unwrap().number, 2);
+        assert_eq!(work.told().len(), 1);
+    }
+
+    /// Review of 0c0ad0b, H5b, the reviewer's first probe: the usual case.
+    /// The coordinator's record was made by an ordinary append, so nothing
+    /// ever synced its folder entry, and the notice is a fresh line in it.
+    /// That the file was already there says nothing about its folder: the
+    /// notice is delivered only once file and folder have both synced.
+    #[test]
+    fn a_notice_appended_to_a_record_whose_folder_never_synced_is_not_taken_as_delivered() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let fault = NoFolderSync::begin();
+        let said = json!({ "type": "assistant", "message": { "content": "Earlier text" } });
+        assert!(crate::transcript::append(&work.key, &said).is_some());
+        held_until_the_folder_syncs(&work, &task, fault);
+    }
+
+    /// Review of 0c0ad0b, H5b, the reviewer's second probe: the record had
+    /// a full receipt once, file and folder. Then it was compacted, which
+    /// puts a new file under the old name and syncs no folder, and the
+    /// notice is a fresh line in that new file. A receipt for the file that
+    /// was there is none for the one that is there now.
+    #[test]
+    fn a_notice_appended_to_a_record_that_was_rewritten_is_not_taken_as_delivered() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let picture = json!({ "type": "user", "message": { "content": [{
+            "type": "tool_result",
+            "tool_use_id": "shot",
+            "content": [{ "type": "image", "source": { "type": "base64", "data": "A".repeat(10_000) } }],
+        }] } });
+        assert!(crate::transcript::append_synced(&work.key, &picture).is_some());
+        assert_eq!(crate::transcript::confirm_synced(&work.key), Some(()));
+        let before = fs::metadata(work.transcript()).unwrap().len();
+        let fault = NoFolderSync::begin();
+        let freed = crate::record_trim::compact_record(&work.transcript()).unwrap();
+        assert!(freed.is_some(), "the record was rewritten");
+        assert!(fs::metadata(work.transcript()).unwrap().len() < before);
+        held_until_the_folder_syncs(&work, &task, fault);
+    }
+
+    /// A line that is not UTF-8 (a write cut inside a character) hides no
+    /// notice after it: the notice is found, confirmed, and not written a
+    /// second time.
+    #[test]
+    fn a_notice_behind_a_line_that_is_not_utf8_is_found_and_not_written_again() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        fs::write(
+            work.transcript(),
+            b"{\"type\":\"assistant\",\"text\":\"\xE4\xB8\n",
+        )
+        .unwrap();
+        let reopened = work.reopen(&task, "Behind a torn line").unwrap();
+        assert!(reopened.reopens[0].notice_delivered);
+        // The ledger forgets it was told, as a server stopped between the
+        // transcript's write and the ledger's would on its way up.
+        work.store
+            .mutate(|data| {
+                data.tasks.get_mut(&task.id).unwrap().reopens[0].notice_delivered = false;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1), "found");
+        let record = fs::read(work.transcript()).unwrap();
+        let notices = record
+            .split(|byte| *byte == b'\n')
+            .filter(|line| String::from_utf8_lossy(line).contains("octiq_task_reopened"))
+            .count();
+        assert_eq!(notices, 1, "written a second time");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+    }
+
+    /// A reopen kept in the ledger with no `noticeDelivered` at all, as the
+    /// build that first kept reopens wrote it, is one nothing confirmed:
+    /// the rule has no exception for a record that does not say. Its task
+    /// is held until a pass finds the line and confirms it, or writes it
+    /// once when it is not there.
+    #[test]
+    fn a_reopen_recorded_without_the_field_is_held_until_its_notice_is_confirmed() {
+        for line_kept in [true, false] {
+            let work = Reopenable::new();
+            let task = work.completed_task();
+            let reopened = work.reopen(&task, "Kept by an older build").unwrap();
+            assert!(reopened.reopens[0].notice_delivered);
+            let path = work.dir.0.join("orchestrations.json");
+            let mut ledger: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let kept = ledger["tasks"][&task.id]["reopens"][0]
+                .as_object_mut()
+                .unwrap();
+            assert_eq!(kept.remove("noticeDelivered"), Some(json!(true)));
+            fs::write(&path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+            if !line_kept {
+                crate::transcript::forget(&work.key);
+            }
+            let work = work.restarted();
+
+            assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+            let fault = NoFolderSync::begin();
+            assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+            assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+            drop(fault);
+            assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+            let told = work.told();
+            assert_eq!(told.len(), 1, "line kept: {line_kept}: {told:?}");
+            assert_eq!(told[0]["spec"], "Kept by an older build");
+            assert_eq!(work.start(&task).unwrap().number, 2);
+        }
     }
 
     /// The scheduler reads a chat's transcript once a pass for all the

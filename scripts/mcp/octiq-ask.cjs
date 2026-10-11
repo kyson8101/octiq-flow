@@ -1892,8 +1892,8 @@ const ORCHESTRATION_SNAPSHOT = {
     "independent of task completion; verify application health before use. heldByPlan true on a task means a start " +
     "of it is refused for now: the plan card is waiting for the person and their approval does not cover that " +
     "task, or one it depends on; tasks they have already approved keep starting and say false. heldByReopen means " +
-    "the task was reopened and the notice of that is not in the coordinator's chat yet: the host writes it and the " +
-    "task starts then. A peer request's worker is shown its " +
+    "the task was reopened and the notice of that is not confirmed as saved to disk in the coordinator's chat yet " +
+    "(it may already show there): the host writes and confirms it, and the task starts then. A peer request's worker is shown its " +
     "own task only, in full, and is refused another runId or taskId.",
   inputSchema: {
     type: "object",

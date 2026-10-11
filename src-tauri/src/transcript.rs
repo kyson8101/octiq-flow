@@ -144,16 +144,21 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     Some(seq)
 }
 
-/// The receipt `append_synced` gives, asked for lines that are already in the
-/// record: the file is synced, and its folder entry too. `None` when either
-/// cannot be, and then nothing in the record is confirmed.
+/// A receipt for the lines that are in the record now: the file as it is
+/// is synced, and then its folder entry, whatever was done before. `None`
+/// when either cannot be, and then nothing in the record is confirmed.
 ///
 /// For a line whose own append answered `None` after it was written, or was
-/// never heard from at all (the server stopped). That the line can be read
-/// back says the OS holds it, not that the disk does. Nothing is written
-/// again; the one byte this may add is the newline a last line is missing,
-/// under the append lock, because an ordinary append would be glued onto
-/// such a line and take it with it.
+/// never heard from at all (the server stopped): that the line can be read
+/// back says the OS holds it, not that the disk does. And for a line
+/// `append_synced` answered for in a file that was already there: that
+/// answer says nothing of the folder entry, which nobody synced when an
+/// ordinary `append` made the file or `rewrite_numbered` put a new one
+/// under its name.
+///
+/// Nothing is written again; the one byte this may add is the newline a
+/// last line is missing, under the append lock, because an ordinary append
+/// would be glued onto such a line and take it with it.
 pub fn confirm_synced(key: &str) -> Option<()> {
     let path = path_for(key)?;
     let _appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
@@ -177,19 +182,32 @@ pub fn confirm_synced(key: &str) -> Option<()> {
 /// host events in a 100 MB conversation does not build every frame of it.
 /// Every writer of a record serializes with `serde_json`, which writes an
 /// ASCII name as it is, so a line of that type always holds it.
+///
+/// Read by bytes, a line at a time: a line that is not UTF-8 (a write cut
+/// inside a character) is one line skipped, as one that will not parse is.
+/// `lines()` would end the whole read there and hide every event after it.
 pub(crate) fn of_type(key: &str, kind: &str) -> Vec<Value> {
     #[cfg(test)]
     READS_BY_TYPE.with(|reads| reads.set(reads.get() + 1));
     let Some(file) = path_for(key).and_then(|path| File::open(path).ok()) else {
         return Vec::new();
     };
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter(|line| line.contains(kind))
-        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-        .filter(|event| event["type"] == kind)
-        .collect()
+    let mut reader = BufReader::new(file);
+    let (mut line, mut found) = (Vec::new(), Vec::new());
+    while reader
+        .read_until(b'\n', &mut line)
+        .is_ok_and(|read| read > 0)
+    {
+        found.extend(
+            std::str::from_utf8(&line)
+                .ok()
+                .filter(|text| text.contains(kind))
+                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                .filter(|event| event["type"] == kind),
+        );
+        line.clear();
+    }
+    found
 }
 
 /// Start a chat's record with `events`, but only a record that has nothing in
@@ -1123,6 +1141,31 @@ mod tests {
             [
                 json!({ "type": "octiq_x", "n": 1 }),
                 json!({ "type": "octiq_x", "n": 3 })
+            ]
+        );
+        forget(&key);
+    }
+
+    /// A line that is not UTF-8 (a write cut inside a character) is one
+    /// line skipped, like one that will not parse: the events after it are
+    /// still found.
+    #[test]
+    fn a_line_that_is_not_utf8_hides_no_event_of_a_type_after_it() {
+        let key = unique_key("of-type-utf8");
+        append(&key, &json!({ "type": "octiq_x", "n": 1 }));
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(path_for(&key).unwrap())
+            .unwrap();
+        file.write_all(b"{\"type\":\"octiq_x\",\"text\":\"\xE4\xB8\n")
+            .unwrap();
+        drop(file);
+        append(&key, &json!({ "type": "octiq_x", "n": 2 }));
+        assert_eq!(
+            of_type(&key, "octiq_x"),
+            [
+                json!({ "type": "octiq_x", "n": 1 }),
+                json!({ "type": "octiq_x", "n": 2 })
             ]
         );
         forget(&key);

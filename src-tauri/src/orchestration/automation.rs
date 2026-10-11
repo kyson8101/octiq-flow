@@ -242,8 +242,8 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
             let find = |id: &str| snapshot.tasks.iter().find(|other| other.id == id);
             super::held_by_plan(run, t, &find).is_none()
         })
-        // Nor one that was reopened and whose notice is not in the
-        // coordinator's chat yet: its start would be refused.
+        // Nor one that was reopened and whose notice is not confirmed on
+        // disk in the coordinator's chat yet: its start would be refused.
         .filter(|t| super::workspaces::untold_reopen(t).is_none())
         // Unassigned legacy tasks must not consume capacity or inherit a CLI
         // default. The coordinator can still dispatch them explicitly.

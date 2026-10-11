@@ -472,7 +472,7 @@ pub struct Task {
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub held_by_plan: Option<bool>,
     /// A start of this task would be refused because it was reopened and
-    /// the notice of that is not in the coordinator's chat yet
+    /// the notice of that is not confirmed on disk in the coordinator's chat
     /// (`TaskReopen::notice_delivered`). Derived for each read in
     /// `snapshot`; present only while it holds.
     #[serde(
@@ -630,15 +630,14 @@ pub struct TaskReopen {
     /// the host holds a receipt that it is on disk (a line that can be
     /// read is not one). `false` from the reopen until then, and the task
     /// does not start meanwhile (`reserve_attempt_for`); the host keeps
-    /// trying (`deliver_reopen_notices`). A reopen recorded before this was
-    /// kept reads as delivered: nothing says otherwise, and its task is not
-    /// held on a guess.
-    #[serde(default = "delivered")]
+    /// trying (`deliver_reopen_notices`). A record that does not say reads
+    /// as `false`, like any other the host holds no receipt for: the next
+    /// pass finds its line and confirms it, or writes it once. It read as
+    /// delivered until the review of 0c0ad0b, which left the rule no
+    /// exception; only builds of the branch that added reopens ever wrote
+    /// one without it.
+    #[serde(default)]
     pub notice_delivered: bool,
-}
-
-fn delivered() -> bool {
-    true
 }
 
 /// The person's stop of one task (`OrchestrationStore::stop_task`).
@@ -2715,7 +2714,7 @@ impl OrchestrationStore {
             }
             // A reopen changes what a task is told to do without a new
             // approval, so the person is shown each one first: nothing
-            // starts on instructions whose notice is not in their chat yet,
+            // starts on instructions whose notice is not confirmed on disk yet,
             // whoever asks (`workspaces::REOPEN_NOT_TOLD`).
             if workspaces::untold_reopen(&task).is_some() {
                 return Err(workspaces::REOPEN_NOT_TOLD.into());
