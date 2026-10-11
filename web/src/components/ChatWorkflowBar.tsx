@@ -7,6 +7,10 @@ import { OpenBesideButton } from "./OpenBesideButton";
 import { ReadOnlyBadge } from "./ReadOnlyBadge";
 import "./ChatWorkflowBar.css";
 
+/** What a held title holds its line with: a no-break space, made from its
+ *  code so no invisible character sits in this file. */
+const HELD_TITLE = String.fromCharCode(160);
+
 /** The line over a chat that has work in a run: its title and Tasks/Chat.
  *  Progress and approvals stay in the task details. A chat with no run draws
  *  nothing here; the agent decides how to work, and a run exists only once
@@ -50,7 +54,7 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
     </button>}
     {onOpenBeside && <OpenBesideButton className="is-bar" title={besideTitle} onClick={onOpenBeside} />}
     {held && !run
-      ? <div className="workflow-heading" aria-hidden="true"><h1 className="workflow-title">{" "}</h1></div>
+      ? <div className="workflow-heading" aria-hidden="true"><h1 className="workflow-title">{HELD_TITLE}</h1></div>
       : <RunTitle text={run?.objective ?? "New mission"} />}
     {readOnly && <ReadOnlyBadge className="workflow-read-only" />}
   </>;
