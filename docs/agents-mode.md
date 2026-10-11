@@ -672,7 +672,12 @@ extended. The host (`orchestration/peer_request.rs`):
   registration replaces the one of the same name), `orchestration_validation_create`
   for it (the coordinator removes a leftover checkout only once the
   teammate's attempt has settled), and a `orchestration_worker_start` that
-  names a `baseBranch`. What the coordinator can still do to the task changes
+  names a `baseBranch`. The run's worker defaults
+  (`orchestration_automation_configure`) are the coordinator's to change at
+  any time, and their recovery policy names a fallback model in up to 64
+  characters of its choosing, so a peer request takes nothing from them: it
+  recovers under what was approved with the task, or the host's own default,
+  as the identity it has. What the coordinator can still do to the task changes
   a status, a time or an id and carries no words: start or stop it, confirm
   the teammate's own held closing words with an outcome and a verdict, accept
   the result, refresh what git says of its branch, replace it with a new

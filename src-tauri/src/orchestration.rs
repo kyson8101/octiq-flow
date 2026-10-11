@@ -2440,21 +2440,25 @@ impl OrchestrationStore {
             {
                 return Err(peer_request::PEERS_BASE.into());
             }
+            // The run's defaults are the coordinator's to change at any
+            // time, and a recovery policy names a fallback model in words of
+            // its choosing. A peer request takes none of them: what was
+            // approved with the task, or the host's own default.
+            let defaults = run
+                .worker_defaults
+                .as_ref()
+                .filter(|_| task.peer_request.is_none());
             worker.recovery = task
                 .worker
                 .as_ref()
                 .and_then(|w| w.recovery.clone())
-                .or_else(|| {
-                    run.worker_defaults
-                        .as_ref()
-                        .and_then(|w| w.recovery.clone())
-                });
+                .or_else(|| defaults.and_then(|w| w.recovery.clone()));
             let recovery_agent = task
                 .worker
                 .as_ref()
                 .filter(|w| w.recovery.is_some())
                 .map(|w| w.agent)
-                .or_else(|| run.worker_defaults.as_ref().and_then(|w| w.agent));
+                .or_else(|| defaults.and_then(|w| w.agent));
             if recovery_agent.is_some_and(|agent| agent != worker.agent) {
                 if let Some(policy) = &mut worker.recovery {
                     policy.fallback_model = None;

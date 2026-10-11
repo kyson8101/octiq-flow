@@ -124,14 +124,18 @@ impl RecoveryPolicy {
     }
 }
 
+/// The recovery policy an attempt runs under: its task's own, else the run's
+/// defaults, else the host's. A peer-request task takes nothing from the
+/// run's defaults (`reserve_attempt_for`): they are the coordinator's to
+/// change after the person approved the request.
 fn policy(data: &Stored, attempt: &Attempt) -> RecoveryPolicy {
-    data.tasks
-        .get(&attempt.task_id)
-        .and_then(|t| t.worker.as_ref())
+    let task = data.tasks.get(&attempt.task_id);
+    task.and_then(|t| t.worker.as_ref())
         .and_then(|w| w.recovery.clone())
         .or_else(|| {
             data.runs
                 .get(&attempt.run_id)
+                .filter(|_| task.is_none_or(|t| t.peer_request.is_none()))
                 .and_then(|r| r.worker_defaults.as_ref())
                 .and_then(|w| w.recovery.clone())
         })

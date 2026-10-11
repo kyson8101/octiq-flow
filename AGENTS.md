@@ -771,7 +771,9 @@ read of the ledger that an agent can start goes through it too. What it reads
 there is written by itself, by the host or by the person and by nobody else:
 the run's coordinator registers no service for the task, makes no validation
 checkout for it and names no base branch for its start
-(`peer_request::PEERS_SERVICE`, `PEERS_VALIDATION`, `PEERS_BASE`). A new
+(`peer_request::PEERS_SERVICE`, `PEERS_VALIDATION`, `PEERS_BASE`), and the
+run's worker defaults, recovery policy and fallback model included, are not
+copied onto it. A new
 field on a task, an attempt, a gate or a service that a coordinator's command
 can fill with text needs the same refusal before it ships. Its `maxMinutes` is working time, and a wait is
 free only while the host can verify that nothing is running: between two of
