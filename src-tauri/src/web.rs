@@ -1778,7 +1778,7 @@ async fn agents_hook(
     use crate::outcome::{ReasonClass, Refusal};
     use crate::team_tools::{Kind, Roster};
     let kind = match action {
-        "list" | "policy_update" => None,
+        "list" | "policy_update" | "delete" => None,
         "register" => Some(Kind::Register),
         "update" => Some(Kind::Update),
         _ => {
@@ -1812,6 +1812,18 @@ async fn agents_hook(
     // A worker settles its own attempt; who is on the team is not its call.
     if ctx.services.orchestrations.active_task(chat_key)?.is_some() {
         return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead."));
+    }
+    if action == "delete" {
+        let gone = crate::team_tools::propose_delete(
+            &roster,
+            &team,
+            chat_key,
+            serde_json::from_value(args).map_err(invalid)?,
+            crate::permission::ask,
+        )
+        .await?;
+        crate::bus::emit("team-changed", json!({ "id": gone.id, "removed": true }));
+        return Ok(crate::team_tools::deleted_text(&gone));
     }
     let Some(kind) = kind else {
         let saved = crate::team_tools::propose_policy(

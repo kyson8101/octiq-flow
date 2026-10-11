@@ -637,6 +637,17 @@ fn apply(
 /// Remove one agent. Its reports move up to its own manager, so the chart
 /// never points at someone who is gone.
 pub fn delete(path: &Path, id: &str) -> Result<(), String> {
+    delete_checked(path, id, None).map(|_| ())
+}
+
+/// `delete`, refused when the agent has changed since `expected` (its
+/// `updated_at` when the removal was proposed), as `save_unchanged` is. The
+/// removed agent comes back, so the caller can say who went.
+pub fn delete_unchanged(path: &Path, id: &str, expected: i64) -> Result<TeamAgent, String> {
+    delete_checked(path, id, Some(expected))
+}
+
+fn delete_checked(path: &Path, id: &str, expected: Option<i64>) -> Result<TeamAgent, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut stored = read(path)?;
     let gone = stored
@@ -645,6 +656,12 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
         .find(|a| a.id == id)
         .cloned()
         .ok_or("That agent no longer exists.")?;
+    if expected.is_some_and(|expected| expected != gone.updated_at) {
+        return Err(format!(
+            "{} was changed while this waited for approval, so nothing was removed. Read it again and propose the removal again.",
+            gone.name
+        ));
+    }
     stored.agents.retain(|a| a.id != id);
     if stored.head.as_deref() == Some(id) {
         stored.head = None;
@@ -657,7 +674,8 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
             agent.reports_to = gone.reports_to.clone();
         }
     }
-    write(path, &stored)
+    write(path, &stored)?;
+    Ok(gone)
 }
 
 /// The shared agent policy, empty when the person has written none.

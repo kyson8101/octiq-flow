@@ -358,6 +358,11 @@ An agent can be asked to hire or adjust agents, through four MCP tools
 - `agent_register` and `agent_update` only **propose** a change. Projects,
   managers and teams may be named by id or by name. An update keeps every
   field it does not name, and `""` clears one that may be empty.
+- `agent_delete` only **proposes** removing one agent, by id or name. The
+  card names the agent with its role, project and manager, lists the direct
+  reports that will move up to its manager, says when it is the head or the
+  front desk, and that its memory note is kept. It is removed with
+  `team::delete_unchanged`, so an agent edited meanwhile is not removed.
 - `agent_policy_update` only **proposes** a whole new agent policy (`""`
   clears it), on the same card. It is saved with `team::set_policy_unchanged`,
   so a policy edited meanwhile is not overwritten.

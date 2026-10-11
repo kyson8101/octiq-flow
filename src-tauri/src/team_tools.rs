@@ -1,13 +1,15 @@
 //! What an agent may do to the person's registered agents through its MCP:
-//! `agent_list`, `agent_register`, `agent_update` and `agent_policy_update`.
+//! `agent_list`, `agent_register`, `agent_update`, `agent_delete` and
+//! `agent_policy_update`.
 //!
 //! Reading the roster is free. A change is only ever PROPOSED by the agent.
 //! The host builds the whole draft itself, runs it through every rule the
 //! Settings → Agents form is held to (`team::check`), and then asks the person
 //! on the same permission card a provider's own tool call raises
 //! (`permission::ask`). Only their Allow writes it, through
-//! `team::save_unchanged`, so what is saved is exactly the change they were
-//! shown, made to the version of the agent they were shown it against.
+//! `team::save_unchanged` (or `team::delete_unchanged` for a removal), so what
+//! is saved is exactly the change they were shown, made to the version of the
+//! agent they were shown it against.
 //!
 //! The card is one-off: "Always" would wave through the next agent this chat
 //! invents, which is not a decision anybody can make in advance.
@@ -72,6 +74,16 @@ pub struct Proposal {
     pub persistent_prompt: Option<String>,
     /// How long the person's card may stay up, in seconds. The MCP sets it
     /// from what its provider will wait for a tool call; the host clamps it.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+/// `agent_delete`'s arguments: the agent to remove, by id or name.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteProposal {
+    pub agent: String,
+    /// As `Proposal::wait_seconds`.
     #[serde(default)]
     pub wait_seconds: Option<u64>,
 }
@@ -459,6 +471,49 @@ pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
     text
 }
 
+/// The removal in words, for the card: who goes, with the fields that tell
+/// one agent from another, and what the removal does to the rest of the
+/// chart — the reports that move up, the head or front desk seat that empties.
+/// The memory note is not touched, and the card says so.
+pub fn describe_delete(roster: &Roster, gone: &TeamAgent) -> String {
+    let mut text = format!("Remove the agent {}.\n", gone.name);
+    for (label, value) in fields(roster, gone) {
+        if label == "Name" {
+            continue;
+        }
+        text.push_str(&format!("\n{label}: {value}"));
+    }
+    let reports: Vec<&str> = roster
+        .agents
+        .iter()
+        .filter(|a| a.reports_to.as_deref() == Some(gone.id.as_str()))
+        .map(|a| a.name.as_str())
+        .collect();
+    if !reports.is_empty() {
+        text.push_str(&format!(
+            "\n\nIts {} ({}) will report to {}.",
+            if reports.len() == 1 {
+                "direct report".to_string()
+            } else {
+                format!("{} direct reports", reports.len())
+            },
+            reports.join(", "),
+            match gone.reports_to.as_deref() {
+                None => "the person".to_string(),
+                Some(id) => roster.agent_name(Some(id)),
+            }
+        ));
+    }
+    if roster.head.as_deref() == Some(gone.id.as_str()) {
+        text.push_str("\n\nIt is the head: the cross-project conversation will have no head until another is chosen.");
+    }
+    if roster.front_desk.as_deref() == Some(gone.id.as_str()) {
+        text.push_str("\n\nIt is the front desk: incoming requests will have no front desk until another is chosen.");
+    }
+    text.push_str("\n\nIts memory note in the vault is kept.");
+    text
+}
+
 /// The policy change in words, for the card: the whole text it would become.
 pub fn describe_policy(before: &AgentPolicy, after: &str) -> String {
     if after.is_empty() {
@@ -567,6 +622,50 @@ where
         None => crate::team::save(team, change.draft),
     }
     .map_err(Refusal::from)
+}
+
+/// What a removal answers with: the agent that is gone, as `agent_list` last
+/// showed it.
+pub fn deleted_text(gone: &TeamAgent) -> Value {
+    json!({
+        "status": "saved",
+        "text": format!("The person approved it: {} is removed.", gone.name),
+        "agent": public(gone),
+    })
+}
+
+/// Propose removing an agent, put it to the person, and remove it only on
+/// their Allow, against the version of the agent they were shown. Its reports
+/// move up to its manager (`team::delete`); its memory note stays.
+pub async fn propose_delete<A, F>(
+    roster: &Roster,
+    team: &Path,
+    chat_key: &str,
+    proposal: DeleteProposal,
+    ask: A,
+) -> Result<TeamAgent, Refusal>
+where
+    A: FnOnce(crate::permission::Request) -> F,
+    F: Future<Output = Answer>,
+{
+    let invalid = |error: String| Refusal::new(ReasonClass::Validation, error);
+    if proposal.agent.trim().is_empty() {
+        return Err(invalid(
+            "Name the agent to remove, by id or name from agent_list.".into(),
+        ));
+    }
+    let gone = agent(roster, &proposal.agent).map_err(invalid)?.clone();
+    let wait = wait_for(proposal.wait_seconds);
+    let request = crate::permission::Request {
+        chat_key: Some(chat_key.to_string()),
+        tool_name: Some("mcp__octiq__agent_delete".into()),
+        tool_input: Some(json!({ "change": describe_delete(roster, &gone) })),
+        once: true,
+        answer_within_secs: Some(wait.as_secs()),
+        ..Default::default()
+    };
+    approved(&ask(request).await, wait)?;
+    crate::team::delete_unchanged(team, &gone.id, gone.updated_at).map_err(Refusal::from)
 }
 
 /// Propose a new shared agent policy, put it to the person, and save it only
@@ -1319,5 +1418,171 @@ mod tests {
             long.message
         );
         assert!(shown.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_agent_is_removed_only_on_the_persons_allow_against_the_version_shown() {
+        let (_dir, team) = temp_team();
+        let potato = register(&team, "Potato", None);
+        let cto = crate::team::save(
+            &team,
+            TeamDraft {
+                id: None,
+                name: "Cto".into(),
+                role: "Leads Octiq.".into(),
+                agent: ChatAgent::Claude,
+                model: "opus".into(),
+                effort: Some("high".into()),
+                access: Some(Access::Auto),
+                project_id: Some("p2".into()),
+                reports_to: Some(potato.id.clone()),
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap();
+        let dev = crate::team::save(
+            &team,
+            TeamDraft {
+                id: None,
+                name: "Dev".into(),
+                role: "Writes code.".into(),
+                agent: ChatAgent::Codex,
+                model: "gpt-5.6-sol".into(),
+                effort: None,
+                access: Some(Access::Auto),
+                project_id: Some("p2".into()),
+                reports_to: Some(cto.id.clone()),
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap();
+        crate::team::set_head(&team, Some(&potato.id)).unwrap();
+        let proposal = |spec: &str| DeleteProposal {
+            agent: spec.into(),
+            wait_seconds: Some(50),
+        };
+
+        // The card: who goes, and what it does to the chart. A Deny removes
+        // nobody.
+        let (shown, deny) = asker("deny", "you denied it");
+        let refused = propose_delete(&roster(&team), &team, "chat:lead", proposal("cto"), deny)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.outcome,
+            crate::outcome::Outcome::host(ReasonClass::ApprovalDenied)
+        );
+        assert_eq!(stored(&team).len(), 3);
+        let card = shown.lock().unwrap().pop().unwrap();
+        assert_eq!(card.tool_name.as_deref(), Some("mcp__octiq__agent_delete"));
+        assert!(card.once);
+        assert_eq!(card.answer_within_secs, Some(50));
+        assert_eq!(
+            card.tool_input.unwrap()["change"],
+            "Remove the agent Cto.\n\nRole: Leads Octiq.\nProvider: Claude\nModel: opus\nEffort: high\nAccess: auto\nAvailable in: Octiq\nReports to: Potato\nTeam: none\n\nIts direct report (Dev) will report to Potato.\n\nIts memory note in the vault is kept."
+        );
+
+        // The head's card says the seat empties.
+        let (shown, deny) = asker("deny", "you denied it");
+        propose_delete(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            proposal(&potato.id),
+            deny,
+        )
+        .await
+        .unwrap_err();
+        let change = shown.lock().unwrap().pop().unwrap().tool_input.unwrap()["change"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(change.contains("It is the head"), "{change}");
+        assert!(
+            change.contains("Its direct report (Cto) will report to the person."),
+            "{change}"
+        );
+
+        // Proposed against one version, approved after another was saved.
+        let before = roster(&team);
+        let edited = TeamDraft {
+            id: Some(cto.id.clone()),
+            name: "Cto".into(),
+            role: "Leads Octiq and more.".into(),
+            agent: ChatAgent::Claude,
+            model: "opus".into(),
+            effort: Some("high".into()),
+            access: Some(Access::Auto),
+            project_id: Some("p2".into()),
+            reports_to: Some(potato.id.clone()),
+            avatar: None,
+            team_id: None,
+            persistent_prompt: None,
+        };
+        crate::team::save(&team, edited).unwrap();
+        let (_, allow) = asker("allow", "you allowed it");
+        let stale = propose_delete(&before, &team, "chat:lead", proposal("Cto"), allow)
+            .await
+            .unwrap_err();
+        assert!(
+            stale.message.contains("changed while this waited"),
+            "{}",
+            stale.message
+        );
+        assert_eq!(stored(&team).len(), 3);
+
+        // Allowed: gone, the report moved up, the answer names who went.
+        let (_, allow) = asker("allow", "you allowed it");
+        let gone = propose_delete(&roster(&team), &team, "chat:lead", proposal("Cto"), allow)
+            .await
+            .unwrap();
+        assert_eq!(gone.id, cto.id);
+        assert_eq!(deleted_text(&gone)["status"], "saved");
+        assert_eq!(
+            deleted_text(&gone)["text"],
+            "The person approved it: Cto is removed."
+        );
+        let left = stored(&team);
+        assert_eq!(left.len(), 2);
+        assert_eq!(
+            left.iter()
+                .find(|a| a.id == dev.id)
+                .unwrap()
+                .reports_to
+                .as_deref(),
+            Some(potato.id.as_str())
+        );
+
+        // The refusals that never reach the person.
+        let (shown, allow) = asker("allow", "you allowed it");
+        let missing = propose_delete(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            proposal("Nobody"),
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            missing.message.contains("No agent is called Nobody"),
+            "{}",
+            missing.message
+        );
+        let (_, allow) = asker("allow", "you allowed it");
+        let blank = propose_delete(&roster(&team), &team, "chat:lead", proposal("  "), allow)
+            .await
+            .unwrap_err();
+        assert!(
+            blank.message.contains("Name the agent"),
+            "{}",
+            blank.message
+        );
+        assert!(shown.lock().unwrap().is_empty());
+        assert_eq!(stored(&team).len(), 2);
     }
 }

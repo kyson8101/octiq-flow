@@ -28,7 +28,7 @@ const agentTools = result => result.tools.filter(tool => tool.name.startsWith("a
 test("agent tools are offered to both providers, list-only for a worker, none outside a chat", async () => {
   for (const flags of [[], ["--disable-ask-user"]]) {
     const listed = await call({ OCTIQ_CHAT_KEY: "chat:lead" }, "tools/list", {}, flags);
-    assert.deepEqual(agentTools(listed), ["agent_list", "agent_register", "agent_update", "agent_policy_update"]);
+    assert.deepEqual(agentTools(listed), ["agent_list", "agent_register", "agent_update", "agent_delete", "agent_policy_update"]);
     for (const tool of listed.tools.filter(tool => tool.name.startsWith("agent_"))) {
       assert.equal(tool.inputSchema.additionalProperties, false);
       // Identity and the card's deadline are never the agent's to say.
@@ -83,6 +83,10 @@ test("agent calls go to /hook/agents with only documented fields and the provide
 
   await call(env, "tools/call", { name: "agent_policy_update", arguments: { policy: "Use worktrees.", agent: "Nova" } });
   assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "policy_update", args: { policy: "Use worktrees.", waitSeconds: 180 } });
+
+  // A removal names only the agent; nothing else crosses the hook.
+  await call(env, "tools/call", { name: "agent_delete", arguments: { agent: "Nova", role: "x" } });
+  assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "delete", args: { agent: "Nova", waitSeconds: 180 } });
 
   await call(env, "tools/call", { name: "agent_list", arguments: { project: "Starfall" } });
   assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "list", args: { project: "Starfall" } });

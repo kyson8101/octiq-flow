@@ -604,7 +604,7 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__vault_agent_memory_lessons \\
                      mcp__octiq__handover mcp__octiq__handover_ask mcp__octiq__handover_outcome \\
                      mcp__octiq__agent_list mcp__octiq__agent_register mcp__octiq__agent_update \\
-                     mcp__octiq__agent_policy_update mcp__octiq__request_access",
+                     mcp__octiq__agent_delete mcp__octiq__agent_policy_update mcp__octiq__request_access",
                 ),
                 sh_quote(&with_preferences(
                     &format!(
@@ -2005,6 +2005,7 @@ pub(crate) mod tests {
             "agent_list",
             "agent_register",
             "agent_update",
+            "agent_delete",
             "agent_policy_update",
             // An agent's own Lessons, likewise on the host's one-off card
             // (`memory_lessons`).
