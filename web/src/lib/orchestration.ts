@@ -276,8 +276,10 @@ export function taskHeldByPlan(
   return run?.planApproval?.status === "pending";
 }
 
-export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy">): boolean {
-  return (task.status === "blocked" || task.status === "failed") && !task.supersededBy;
+export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy" | "stopped">): boolean {
+  // A task the person stopped is left failed by the host and did not fail:
+  // they held it themselves, and its row says so (`lib/taskHold`).
+  return (task.status === "blocked" || task.status === "failed") && !task.supersededBy && !task.stopped;
 }
 
 export type OrchestrationAttempt = {

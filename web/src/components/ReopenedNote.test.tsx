@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ReopenedNote } from "./ReopenedNote";
+import { ReopenedLine, ReopenedNote } from "./ReopenedNote";
 import { LiveArrivals } from "./Arrive";
 import { emptyChat, reduceChat, type ChatState } from "../lib/chat";
-import { readTaskReopened, reopenedFoldLabel, reopenedHeadline } from "../lib/taskReopened";
+import {
+  readTaskReopened, reopenedFoldLabel, reopenedHeadline, stopConfirm, STOPPED_NOTE, type ReopenedStop,
+} from "../lib/taskReopened";
 import css from "./ReopenedNote.css?raw";
+import source from "./ReopenedNote.tsx?raw";
+import app from "../App.tsx?raw";
 
 const SPEC = ["Fix the two findings below.", "", "1. The gate must be read from the ledger.", "2. Add the regression test.", "", "Do not touch the Allow gate."].join("\n");
 
@@ -18,6 +22,9 @@ const event = (over: Record<string, unknown> = {}) => ({
 const reopened = (over: Record<string, unknown> = {}) => readTaskReopened(event(over))!;
 const draw = (over: Record<string, unknown> = {}, startOpen = false, live = false) => renderToStaticMarkup(
   <LiveArrivals.Provider value={{ current: live }}><ReopenedNote reopened={reopened(over)} startOpen={startOpen} /></LiveArrivals.Provider>);
+/** The line as it is drawn for one reading of the ledger. */
+const line = (stop: ReopenedStop, startOpen = true, over: { busy?: boolean; error?: string } = {}) => renderToStaticMarkup(
+  <ReopenedLine reopened={reopened()} stop={stop} startOpen={startOpen} {...over} />);
 /** What is between the tags. */
 const words = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 
@@ -134,8 +141,51 @@ describe("the reopened line", () => {
     expect(html).not.toContain("New instructions");
   });
 
-  it("offers no Stop: the page has no command for it in the contract", () => {
-    expect(draw({}, true)).not.toMatch(/>\s*Stop/);
+  it("offers Stop on the opened line only, never on the folded one", () => {
+    expect(draw(), "folded").not.toMatch(/Stop/);
+    expect(line({ state: "can" }, false), "folded, with a worker to stop").not.toMatch(/Stop/);
+    const opened = line({ state: "can" });
+    expect(opened).toContain('<button type="button" class="reopened-note-stop">Stop this task…</button>');
+    // Below what was opened: the instructions, then the control.
+    expect(opened.indexOf("reopened-note-spec")).toBeLessThan(opened.indexOf("reopened-note-stop"));
+    expect(opened).toContain('<div class="reopened-note-actions" data-stop="can">');
+  });
+
+  it("keeps Stop off, with the reason beside it, when there is no worker to stop", () => {
+    const reason = "No worker is running on this task yet, so there is nothing to stop.";
+    const html = line({ state: "cannot", reason });
+    expect(html).toMatch(/<button type="button" class="reopened-note-stop" aria-disabled="true" aria-describedby="([^"]+)">Stop this task…<\/button><span id="\1" class="reopened-note-why">No worker is running on this task yet, so there is nothing to stop\.<\/span>/);
+    // Before the ledger is read the line says so, and guesses nothing.
+    expect(draw({}, true)).toContain("The run&#x27;s ledger has not been read yet.");
+    expect(draw({}, true)).toContain('aria-disabled="true"');
+  });
+
+  it("says what a stop left, in place of the control", () => {
+    const html = line({ state: "stopped", note: STOPPED_NOTE });
+    expect(html).not.toContain("<button type=\"button\" class=\"reopened-note-stop\"");
+    expect(words(html)).toContain("Stopped by you. Only your Start starts it again: Start is on its row in the run panel.");
+    expect(html).toContain('<p class="reopened-note-held" role="status">');
+  });
+
+  it("shows the host's own words when a stop is refused, and says it is working while it asks", () => {
+    const refused = line({ state: "can" }, true, { error: "No worker is running on this task, so there is nothing to stop." });
+    expect(refused).toContain('<p class="reopened-note-error" role="alert">No worker is running on this task, so there is nothing to stop.</p>');
+    expect(line({ state: "can" }, true, { busy: true })).toContain('<button type="button" class="reopened-note-stop" disabled="">Stopping…</button>');
+  });
+
+  it("asks before it stops, in the app's own dialog and in words that say what follows", () => {
+    expect(stopConfirm(reopened())).toEqual({
+      title: "Stop this task's worker?",
+      body: "L · Run progress: its worker is stopped and the run goes on. The task is then held, and only your Start starts it again.",
+      confirmLabel: "Stop worker", cancelLabel: "Keep it running", danger: true,
+    });
+    // Never the browser's own box.
+    expect(source).not.toMatch(/window\.confirm|\bconfirm\(\s*["'`]/);
+    expect(source).toContain("await confirm(stopConfirm(reopened))");
+    // The command is the page's own, handed down by the app.
+    expect(source).toContain("await stopTask(reopened.taskId)");
+    expect(app).toContain('await bridge.invoke("orchestration_task_stop", { taskId });');
+    expect(app).toContain("<TaskStopContext.Provider value={taskStopping}>");
   });
 
   it("enters once as it is said, and is drawn still when the chat is read back", () => {

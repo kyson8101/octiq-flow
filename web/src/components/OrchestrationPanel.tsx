@@ -1359,6 +1359,8 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   // start of it would be refused (`lib/taskHold`).
   const stateWord = row.hold?.label ?? taskStateLabel(task, attempt, row.state === "needs" ? parkedOn : []);
   const hint = [row.hold?.detail, row.hint].filter(Boolean).join("\n") || null;
+  // The attempt the person stopped: the only one their Start retries.
+  const stoppedAttempt = row.hold?.kind === "stopped" ? attempts.find((candidate) => candidate.id === task.stopped?.attemptId) : undefined;
   const provider = attempt?.agent ?? task.worker?.agent;
   const who = assigneeFace?.name ?? task.assignee?.name ?? (provider ? AGENT_NAME[provider] : null);
   const branch = task.workspace?.plan.branch || attempt?.branch;
@@ -1380,7 +1382,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
 
   return (
     <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""} run-row`} data-status={task.status} data-state={row.state}
-      data-flight={row.flight || undefined} data-tone={row.tone ?? undefined}>
+      data-flight={row.flight || undefined} data-tone={row.tone ?? undefined} data-hold={row.hold?.kind}>
       <div className="orch-task-heading">
         <button type="button" className="orch-task-summary" disabled={!attempt} data-attention={owed || undefined}
           aria-current={open || beside ? "page" : undefined}
@@ -1460,6 +1462,13 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
         </div>
         {/* Why a task that could start does not, in the host's own words. */}
         {row.hold && <p className="orch-task-hold" data-hold={row.hold.kind} data-tone={row.hold.tone ?? undefined}>{row.hold.detail}</p>}
+        {/* The one start of a task the person stopped: theirs, and of the
+            attempt they stopped, as that attempt ran (`retryOf`). */}
+        {stoppedAttempt && !readOnly && run.status !== "stopped" && run.status !== "closed" && run.archivedAt == null && (
+          <div className="orch-task-start">
+            <button type="button" disabled={busy} onClick={() => onRetry(task, stoppedAttempt)}>Start it again</button>
+          </div>
+        )}
         {/* The standard plan card: where it runs (planned until the host
             prepares it), who owns it on which model, and what done means. */}
         <TaskPlanCard task={task} run={run} attempt={attempt} projectName={projectName} />

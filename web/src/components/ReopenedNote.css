@@ -35,3 +35,45 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* What the opened line offers: stop the task's worker. A plain bordered
+   control in the line's own ink, because the line asks nothing; the confirm
+   it opens is where the weight is. Off, it keeps its place and the reason
+   stands beside it. */
+.reopened-note-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 0 8px;
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.reopened-note-stop {
+  flex: 0 0 auto;
+  min-height: var(--control-sm);
+  padding: 2px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+  color: var(--fg-0);
+  font: inherit;
+  cursor: pointer;
+}
+
+.reopened-note-stop:hover { background: var(--border); }
+
+.reopened-note-stop[aria-disabled="true"],
+.reopened-note-stop:disabled {
+  border-color: var(--border);
+  background: none;
+  color: var(--fg-3);
+  cursor: default;
+}
+
+.reopened-note-why { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.reopened-note-held,
+.reopened-note-error { flex: 1 1 100%; margin: 0; overflow-wrap: anywhere; }
+.reopened-note-held { color: var(--fg-1); }

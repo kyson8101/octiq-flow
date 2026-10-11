@@ -187,6 +187,8 @@ import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type
 const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
+import { orchestrationFeed } from "./lib/orchestrationFeed";
+import { TaskStopContext, type TaskStopping } from "./components/ReopenedNote";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
@@ -4829,6 +4831,17 @@ export default function App() {
       reveal: revealPending,
     };
   }, [pendingList, pendingTasks, pendingHeld, revealPending]);
+  // What a reopened task's line needs to offer its Stop (`ReopenedNote`):
+  // the ledger, and the page's own command. The host announces the stop;
+  // the read is asked for anyway, so the line does not wait on an event to
+  // say what it left.
+  const taskStopping = useMemo<TaskStopping>(() => ({
+    snapshot: orchestrationState.snapshot,
+    stop: async (taskId) => {
+      await bridge.invoke("orchestration_task_stop", { taskId });
+      await orchestrationFeed.refresh().catch(() => {});
+    },
+  }), [orchestrationState.snapshot]);
   const taskCounts = useMemo(() => taskColumnCounts(runWorkflow, pendingHeld), [runWorkflow, pendingHeld]);
 
   // The run's one line above the composer, for the chat that coordinates it.
@@ -5000,6 +5013,7 @@ export default function App() {
     <AgentRosterContext.Provider value={agentsMode ? roster : NO_ROSTER}>
     <ChatPersonaContext.Provider value={personaForChat}>
     <PendingActionsContext.Provider value={pendingView}>
+    <TaskStopContext.Provider value={taskStopping}>
     <div
       ref={projectSwipeRef}
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
@@ -5937,6 +5951,7 @@ export default function App() {
       )}
 
     </div>
+    </TaskStopContext.Provider>
     </PendingActionsContext.Provider>
     </ChatPersonaContext.Provider>
     </AgentRosterContext.Provider>
