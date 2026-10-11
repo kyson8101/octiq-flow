@@ -90,6 +90,10 @@ export type Conversation = {
   /** Server-owned lifecycle generation. Incremented when a deleted chat is
    *  restored, so an older delete retry cannot hide it again. */
   generation?: number;
+  /** The host's word, on the chat list, that this chat coordinates a live
+   *  run (`IndexEntry.coordinatesRun`). It only ever holds the run column's
+   *  place before the ledger is read. */
+  coordinatesRun?: boolean;
 };
 
 const KEY = "octiq.v2.conversations";
@@ -346,6 +350,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       !!held.pinned === !!c.pinned &&
       (held.doneAt ?? null) === (c.doneAt ?? null) &&
       (held.generation ?? 0) === (c.generation ?? 0) &&
+      !!held.coordinatesRun === !!c.coordinatesRun &&
       !!held.launch === !!c.launch &&
       !!held.synced === !!c.synced
     );

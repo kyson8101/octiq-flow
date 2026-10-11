@@ -623,8 +623,14 @@ export default function App() {
   const [knownRunChats] = useState(() => parseKnown(recall(RUN_CHATS_KEY)));
   const heldBeside = ledgerRead || orchestrationState.error ? null
     : heldBesideTask(beside, conversationId, (id) => conversations.some((item) => item.id === id));
+  // The host's own word on the chat's entry, which is read with the chat
+  // list and so before the ledger. A host that does not send it leaves a
+  // plain coordinating chat, opened cold for the first time, to split once.
+  const entryCoordinates = !ledgerRead && !!conversationId
+    && conversations.some((item) => item.id === conversationId && item.coordinatesRun === true);
   const holdsRun = holdsRunColumn({
     ledgerRead, ledgerFailed: !!orchestrationState.error, chatId: conversationId, besideTask: heldBeside, known: knownRunChats,
+    coordinates: entryCoordinates,
   });
   const ledgerRuns = orchestrationState.snapshot?.runs;
   useEffect(() => {

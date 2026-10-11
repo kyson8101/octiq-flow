@@ -51,6 +51,16 @@ describe("sameIndex", () => {
     expect(sameIndex([chat({ pinned: true })], [chat({ pinned: true })])).toBe(true);
   });
 
+  it("is false when the host starts or stops saying a chat coordinates a run", () => {
+    // What holds the run column's place at first paint: it has to arrive,
+    // and it has to go when the run is over. A host that never says it is
+    // the same as one that says no.
+    expect(sameIndex([chat()], [chat({ coordinatesRun: true })])).toBe(false);
+    expect(sameIndex([chat({ coordinatesRun: true })], [chat()])).toBe(false);
+    expect(sameIndex([chat({ coordinatesRun: true })], [chat({ coordinatesRun: true })])).toBe(true);
+    expect(sameIndex([chat()], [chat({ coordinatesRun: false })])).toBe(true);
+  });
+
   it("is false when a chat is renamed elsewhere", () => {
     expect(sameIndex([chat()], [chat({ title: "renamed on the phone" })])).toBe(false);
   });

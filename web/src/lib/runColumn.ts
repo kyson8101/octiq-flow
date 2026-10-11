@@ -5,12 +5,19 @@
 // and everything already drawn jumped sideways. So the split is decided from
 // what the page knows at first paint, and the ledger only fills it in.
 //
-// Three things say a chat has a run before the ledger does: the chat is a
-// task chat (the reserved `orch-` id), a task chat is open beside it (the
-// route or the remembered choice names one), or this browser saw the chat
-// coordinate a run the last time it read the ledger. None of them decides
-// anything but where the columns are: what a chat may do is still the
-// ledger's, and a wrong guess is put right when it arrives.
+// Four things say a chat has a run before the ledger does: the host says so
+// on the chat's own entry (`coordinatesRun`, which the page reads with the
+// chat list, before the ledger), the chat is a task chat (the reserved
+// `orch-` id), a task chat is open beside it (the route or the remembered
+// choice names one), or this browser saw the chat coordinate a run the last
+// time it read the ledger. None of them decides anything but where the
+// columns are: what a chat may do is still the ledger's, and a wrong guess
+// is put right when it arrives.
+//
+// The first is the only one that covers a plain coordinating chat opened
+// cold in a browser that has never seen it. A host that does not send the
+// field leaves that one case as it was: the first cold open still splits
+// the page once, when the ledger arrives.
 import type { OrchestrationSnapshot } from "./orchestration";
 import type { Beside } from "./chatBeside";
 
@@ -62,7 +69,10 @@ export function holdsRunColumn(input: {
   chatId: string | null;
   besideTask: string | null;
   known: ReadonlySet<string>;
+  /** The chat's own entry says it coordinates a run (`coordinatesRun`).
+   *  Absent on a host that does not say. */
+  coordinates?: boolean;
 }): boolean {
   if (input.ledgerRead || input.ledgerFailed || !input.chatId) return false;
-  return input.chatId.startsWith(WORKER) || !!input.besideTask || input.known.has(input.chatId);
+  return input.coordinates === true || input.chatId.startsWith(WORKER) || !!input.besideTask || input.known.has(input.chatId);
 }

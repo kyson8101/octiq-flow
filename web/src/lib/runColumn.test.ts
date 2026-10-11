@@ -44,6 +44,17 @@ describe("holding the run column before the ledger is read", () => {
     expect(holdsRunColumn({ ...base, known: new Set(["lead"]) })).toBe(true);
   });
 
+  it("holds it for a chat whose own entry says it coordinates a run, in a browser that never saw it", () => {
+    expect(holdsRunColumn({ ...base, coordinates: true })).toBe(true);
+    // A host that does not say, or says no, changes nothing.
+    expect(holdsRunColumn({ ...base, coordinates: false })).toBe(false);
+    expect(holdsRunColumn({ ...base, coordinates: undefined })).toBe(false);
+    // And the ledger still has the last word.
+    expect(holdsRunColumn({ ...base, coordinates: true, ledgerRead: true })).toBe(false);
+    expect(holdsRunColumn({ ...base, coordinates: true, ledgerFailed: true })).toBe(false);
+    expect(holdsRunColumn({ ...base, coordinates: true, chatId: null })).toBe(false);
+  });
+
   it("holds nothing for a chat nothing is known about, or for no chat", () => {
     expect(holdsRunColumn(base)).toBe(false);
     expect(holdsRunColumn({ ...base, known: new Set(["other"]) })).toBe(false);
