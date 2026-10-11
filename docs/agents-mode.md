@@ -1249,6 +1249,20 @@ here, so the task waits for it:
   sync fails the task stays held, and no other notice is written into a
   transcript that holds an unconfirmed one. On Windows there is no folder
   sync to ask for, so the file's own sync is the whole confirmation there.
+- That confirmation is for the transcript the notice was seen in. Clearing
+  the coordinator's chat (`/clear`) removes its transcript, and the next
+  thing said there starts a new one under the same name, which syncs and
+  holds no notice. So the host notes which transcript the chat has before it
+  reads it (`transcript::generation`, moved whenever the host removes one),
+  and a confirmation asked for after that transcript was removed is refused:
+  the task stays held for that pass, and the next try (four seconds later,
+  as after any pass that got no confirmation) writes the notice, once, into
+  the transcript you now see. A compaction keeps every notice
+  and costs nothing. What this does not promise: once a notice has been
+  delivered, clearing the chat removes it with the rest of that chat's
+  history, which is your own act and is not undone; the task stays as it
+  is and the notice is not written again. The host also does not see a
+  transcript file removed by another program.
 - A notice is written only into a chat you can open: one the chat list has
   and that is not in the trash. When the coordinator's chat is not such a
   chat, the reopen is refused outright and nothing is recorded: `The

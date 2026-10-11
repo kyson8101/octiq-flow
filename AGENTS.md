@@ -936,7 +936,18 @@ page's. Nothing but an approval writes it. So:
   (`workspaces::notice_receipts`, whose every `true` follows one
   `transcript::confirm_synced`). That holds for a line just written and
   for one found there, for a file that existed and for one compaction
-  replaced: `append_synced` syncs the folder only for a file it made. A
+  replaced: `append_synced` syncs the folder only for a file it made. **A
+  receipt is for the record the line was seen in**: the page's `/clear`
+  (`chat_forget`) removes a record whose chat stays listed, and the next
+  line said there makes a file that syncs and holds no notice. So
+  `notice_receipts` takes the record's `transcript::Generation` before it
+  reads, `confirm_synced` refuses one that has moved, and the next pass
+  writes the notice once into the record that is there. Whatever removes a
+  record, or replaces a host event's line in one, goes through
+  `transcript::forget`, `forget_file` or `rewrite_numbered`, which move the
+  generation under the append lock; a new path that deletes or truncates a
+  record file does the same, never a bare `remove_file`. A `/clear` after
+  delivery removes the notice with the chat's history and is not undone. A
   reopen whose coordinator
   chat the person cannot open (not in the chat list, or in the trash) is
   refused. A write whose receipt says whether it held
