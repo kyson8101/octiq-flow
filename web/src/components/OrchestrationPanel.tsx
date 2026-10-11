@@ -1232,6 +1232,10 @@ function RunTiles({ tiles }: { tiles: RunTilesData }) {
   </dl>;
 }
 
+/** Where the keyboard is put on a row: its summary when that opens a chat,
+ *  else its details disclosure, which every row has and is never disabled. */
+export const ROW_FOCUS = ".orch-task-summary:not(:disabled), .orch-task-expand";
+
 /** One group of rows under its count. Finished is the only one that folds,
  *  and starts folded; a long quiet group shows its first rows and a line for
  *  the rest. `holds` is where the task on screen sits in it, or -1. */
@@ -1252,13 +1256,16 @@ function RunGroup({ group, holds, children }: {
   }, [holds]);
   const { rows, more } = shownRows(group, all || holds >= GROUP_SHOWN[group.key]);
   // "N more" goes when it is pressed, so the keyboard is put on the first
-  // row it showed instead of being dropped on the page.
+  // row it showed instead of being dropped on the page: on that row's first
+  // control that can take it. A planned task has no worker chat to open, so
+  // its summary button is disabled and its details disclosure is the one.
   const revealedFrom = useRef<number | null>(null);
   useEffect(() => {
     const from = revealedFrom.current;
     if (!all || from === null) return;
     revealedFrom.current = null;
-    bodyRef.current?.querySelectorAll<HTMLElement>(":scope > .run-row .orch-task-summary")[from]?.focus();
+    bodyRef.current?.querySelectorAll<HTMLElement>(":scope > .run-row")[from]
+      ?.querySelector<HTMLElement>(ROW_FOCUS)?.focus();
   }, [all]);
   // What the heading counts is said with it (`groupHeading`).
   const { label, spoken } = groupHeading(group);

@@ -13,7 +13,7 @@ import type { TaskWorkspace } from "../lib/orchestration";
 import { AgentRosterContext } from "../lib/agentRoster";
 import { boardCounts, EXECUTION_LABELS } from "../lib/agentTaskBoard";
 import type { ExecutionState } from "../lib/orchestration";
-import { OrchestrationPanel, retryLaunchArgs, type OrchestrationSnapshot } from "./OrchestrationPanel";
+import { OrchestrationPanel, retryLaunchArgs, ROW_FOCUS, type OrchestrationSnapshot } from "./OrchestrationPanel";
 import { PendingActionsContext } from "./PendingActionBadge";
 import type { PendingAction } from "../lib/pendingActions";
 
@@ -921,5 +921,23 @@ describe("who a run waits on", () => {
     // It controls the rows it will show, which are in the page and folded.
     expect(html).toContain(`<div class="run-group-rest" id="${more![1]}" hidden="">`);
     expect(html).toMatch(/…<\/span>3 more<\/button>/);
+  });
+
+  it("gives every row a control the keyboard can be put on after N more, a planned one included", () => {
+    const many: OrchestrationSnapshot = {
+      ...snapshot, gates: [], attempts: [],
+      tasks: Array.from({ length: 6 }, (_, index) => ({ ...snapshot.tasks[0], id: `task_${index}`, title: `Task ${index}`, status: "pending" as const, activeAttemptId: undefined })),
+    };
+    const html = panel(many);
+    // The rows behind the line: a planned task has no worker chat, so its
+    // summary cannot take focus and its details disclosure does.
+    const rest = html.slice(html.indexOf('class="run-group-rest"'));
+    const first = rest.slice(rest.indexOf("<article"), rest.indexOf("</article>"));
+    expect(first).toMatch(/<button type="button" class="orch-task-summary" disabled=""/);
+    expect(first).toMatch(/<button type="button" class="orch-task-expand" aria-expanded="false"/);
+    expect(first).not.toMatch(/class="orch-task-expand"[^>]*disabled/);
+    // The effect asks for exactly that: the summary when it is enabled,
+    // else the disclosure.
+    expect(ROW_FOCUS).toBe(".orch-task-summary:not(:disabled), .orch-task-expand");
   });
 });
