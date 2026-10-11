@@ -498,7 +498,18 @@ fn collect(
 }
 
 fn scan_claude() -> Vec<HistorySession> {
-    collect(claude_root(), 1, parse_claude)
+    once_per_session(collect(claude_root(), 1, parse_claude))
+}
+
+/// One row per session id, the most recently written first. A session whose
+/// chat was moved to another folder is the same file under two folder names
+/// (`chat_recover::carry_claude_session`), and it is one conversation.
+fn once_per_session(sessions: Vec<HistorySession>) -> Vec<HistorySession> {
+    let mut seen = std::collections::HashSet::new();
+    sessions
+        .into_iter()
+        .filter(|session| seen.insert(session.session_id.clone()))
+        .collect()
 }
 
 fn scan_codex() -> Vec<HistorySession> {
@@ -853,6 +864,19 @@ mod tests {
             effort: None,
             origin: None,
         }
+    }
+
+    #[test]
+    fn a_session_filed_under_two_folders_is_listed_once() {
+        let mut newer = listed("claude", "s1");
+        newer.updated_at = 9;
+        newer.cwd = "/repos/app".into();
+        let older = listed("claude", "s1");
+        let other = listed("claude", "s2");
+        assert_eq!(
+            once_per_session(vec![newer.clone(), older, other.clone()]),
+            vec![newer, other]
+        );
     }
 
     fn desk(

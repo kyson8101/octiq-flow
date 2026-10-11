@@ -11,9 +11,9 @@
 //!
 //! 1. **Rebuild the worktree at the SAME path.** From its branch when the
 //!    branch still exists, else by making the branch again at the commit that
-//!    was remembered for it. The same path is the point: Claude files a
-//!    session under its working directory, so `--resume` only finds it from
-//!    there, and a chat's sandbox is bound to the folder it was made for.
+//!    was remembered for it. The same path is the point: a chat's sandbox is
+//!    bound to the folder it was made for, and Claude files each session
+//!    under its working directory.
 //!    What the worktree was is read from two places, because either can be
 //!    the one that survived: git's own record of it (`git worktree list`,
 //!    which keeps a removed worktree until the next prune) and the last
@@ -22,7 +22,10 @@
 //!    only a subfolder went, else the repository's primary checkout, else the
 //!    folder the chat was planned in, else the project's folder the page
 //!    names. The index is told, and a Claude session is carried to the new
-//!    folder's session directory. Codex resumes by id from anywhere.
+//!    folder's session directory. Claude Code 2.1.292 was seen to resume by
+//!    id from any folder, with its session file left under the removed
+//!    folder's name, so the carry is for a CLI that only looks under the
+//!    folder it is started in. Codex resumes by id from anywhere.
 //! 3. **Say why not**, in words a person can act on, instead of the OS error.
 //!
 //! Every repository change is `git_ops`'s to make. Nothing here deletes or
@@ -126,6 +129,14 @@ pub(crate) fn recover(
     fallback: Option<&str>,
 ) -> Result<Option<Recovery>, String> {
     if cwd.trim().is_empty() || Path::new(cwd).is_dir() {
+        return Ok(None);
+    }
+    // One at a time. Two tabs sending into the same chat would otherwise both
+    // try to rebuild the worktree, and the loser, refused by git, would move
+    // the chat to the primary checkout under the winner's feet.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    if Path::new(cwd).is_dir() {
         return Ok(None);
     }
     let chat_id = key.strip_prefix("chat:").unwrap_or(key);
@@ -469,10 +480,11 @@ pub(crate) fn claude_project_folder(cwd: &Path) -> Option<String> {
     (name.len() <= 200).then_some(name)
 }
 
-/// Make a Claude session findable from `new_cwd`: `--resume <id>` only looks
-/// in the session folder of the directory it is started in. The file is
-/// hard-linked there, or copied when a link cannot be made; the original
-/// stays where it was.
+/// Make a Claude session findable from `new_cwd`, for a CLI whose
+/// `--resume <id>` looks only in the session folder of the directory it is
+/// started in. The file is hard-linked there, so both names stay one
+/// conversation, or copied when a link cannot be made; the original stays
+/// where it was.
 pub(crate) fn carry_claude_session(
     projects: &Path,
     session: &str,
@@ -702,6 +714,43 @@ mod tests {
         );
         assert_eq!(git(&scene.worktree, &["rev-parse", "HEAD"]), scene.head);
         assert!(recovery.notice.contains("made again"));
+    }
+
+    #[test]
+    fn a_rebuilt_worktree_is_the_folder_the_chats_sandbox_belongs_to() {
+        let scene = scene("sandbox");
+        let scratch = crate::test_dir::TestDir::new("recover-sandbox-store");
+        let sandboxes = crate::sandbox::Store::at(scratch.join("sandboxes"));
+        let cwd = Scene::text(&scene.worktree);
+        sandboxes
+            .select("chat:sandboxed", &cwd, Some(true), false)
+            .expect("a sandbox bound to the worktree");
+        scene.remove_worktree();
+
+        // What the person used to be shown.
+        let raw = sandboxes
+            .select("chat:sandboxed", &cwd, None, true)
+            .unwrap_err();
+        assert!(raw.starts_with("Chat folder is unavailable"), "{raw}");
+
+        let recovery = restore(&cwd, &scene.remembered()).expect("recovered");
+        assert_eq!(recovery.cwd, cwd);
+        sandboxes
+            .select("chat:sandboxed", &recovery.cwd, None, true)
+            .expect("the same folder, so the same sandbox");
+
+        // Ownership is not loosened for a chat that had to move instead.
+        scene.remove_worktree();
+        git(&scene.repo, &["switch", "-q", "task/one"]);
+        let moved = restore(&cwd, &scene.remembered()).expect("recovered");
+        assert_eq!(moved.kind, Kind::Moved);
+        let refused = sandboxes
+            .select("chat:sandboxed", &moved.cwd, None, true)
+            .unwrap_err();
+        assert!(
+            refused.contains("belongs to a different folder"),
+            "{refused}"
+        );
     }
 
     #[test]
