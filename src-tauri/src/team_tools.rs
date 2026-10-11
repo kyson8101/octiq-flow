@@ -18,7 +18,7 @@ use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::agent_chat::{Access, ChatAgent};
@@ -434,36 +434,108 @@ fn fields(roster: &Roster, agent: &TeamAgent) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// One row of a card's `changeFacts`: a field stated whole, or one that moves.
+/// A value keeps its newlines. A move whose `after` is empty clears the field;
+/// only the persistent prompt and the policy can be cleared, and `before` is
+/// never empty: a text set where there was none is a plain row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum FactRow {
+    Plain {
+        label: &'static str,
+        value: String,
+    },
+    Move {
+        label: &'static str,
+        before: String,
+        after: String,
+    },
+}
+
+/// A card's change as data, sent as `changeFacts` next to its `change` text
+/// and built from the same values, so a page draws rows without reading the
+/// text back apart: a role may itself hold a line that reads `Access: a → b`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChangeFacts {
+    /// The card's first sentence: what is being done, and to whom.
+    pub lead: String,
+    pub rows: Vec<FactRow>,
+}
+
+fn plain(label: &'static str, value: impl Into<String>) -> FactRow {
+    FactRow::Plain {
+        label,
+        value: value.into(),
+    }
+}
+
+/// A text that is set, replaced or cleared, as a row: the persistent prompt
+/// and the policy. None when it does not change.
+fn text_row(label: &'static str, was: &str, now: &str) -> Option<FactRow> {
+    if was == now {
+        None
+    } else if was.is_empty() {
+        Some(plain(label, now))
+    } else {
+        Some(FactRow::Move {
+            label,
+            before: was.into(),
+            after: now.into(),
+        })
+    }
+}
+
+/// The first sentence of a register or update card.
+fn lead(change: &Draft, after: &TeamAgent) -> String {
+    match &change.before {
+        None => format!("Register a new agent, {}.", after.name),
+        Some(before) => format!("Change the agent {}.", before.name),
+    }
+}
+
+/// The fields that differ between two versions of an agent, as the card
+/// reads them: label, before, after.
+fn moves(
+    roster: &Roster,
+    before: &TeamAgent,
+    after: &TeamAgent,
+) -> Vec<(&'static str, String, String)> {
+    fields(roster, before)
+        .into_iter()
+        .zip(fields(roster, after))
+        .filter(|((_, was), (_, now))| was != now)
+        .map(|((label, was), (_, now))| (label, was, now))
+        .collect()
+}
+
+/// The persistent prompt an agent had before this change; none for a new one.
+fn prompt_before(change: &Draft) -> &str {
+    change
+        .before
+        .as_ref()
+        .map_or("", |before| before.persistent_prompt.as_str())
+}
+
 /// The change in words, for the card: every field of a new agent, and only
 /// what moves on an existing one. The persistent prompt is never listed with
 /// the other fields, and appears only when this change sets or clears it:
 /// the person approves exactly the text that would be saved.
 pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
-    let mut text = match &change.before {
+    let mut text = lead(change, after);
+    text.push('\n');
+    match &change.before {
         None => {
-            let mut text = format!("Register a new agent, {}.\n", after.name);
             for (label, value) in fields(roster, after) {
                 text.push_str(&format!("\n{label}: {value}"));
             }
-            text
         }
         Some(before) => {
-            let mut text = format!("Change the agent {}.\n", before.name);
-            for ((label, was), (_, now)) in fields(roster, before)
-                .into_iter()
-                .zip(fields(roster, after))
-            {
-                if was != now {
-                    text.push_str(&format!("\n{label}: {was} → {now}"));
-                }
+            for (label, was, now) in moves(roster, before, after) {
+                text.push_str(&format!("\n{label}: {was} → {now}"));
             }
-            text
         }
-    };
-    let was = change
-        .before
-        .as_ref()
-        .map_or("", |before| before.persistent_prompt.as_str());
+    }
+    let was = prompt_before(change);
     if was != after.persistent_prompt {
         if after.persistent_prompt.is_empty() {
             text.push_str("\nPersistent prompt: cleared");
@@ -481,6 +553,61 @@ pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
         }
     }
     text
+}
+
+/// `describe` as rows: a plain row for every field of a new agent, a move for
+/// each field that changes on an existing one, and the persistent prompt as a
+/// last row when this change sets, replaces or clears it. A replaced or
+/// cleared prompt carries the one it had in `before`, which the text leaves
+/// out.
+pub fn facts(roster: &Roster, change: &Draft, after: &TeamAgent) -> ChangeFacts {
+    let mut rows: Vec<FactRow> = match &change.before {
+        None => fields(roster, after)
+            .into_iter()
+            .map(|(label, value)| plain(label, value))
+            .collect(),
+        Some(before) => moves(roster, before, after)
+            .into_iter()
+            .map(|(label, before, after)| FactRow::Move {
+                label,
+                before,
+                after,
+            })
+            .collect(),
+    };
+    rows.extend(text_row(
+        "Persistent prompt",
+        prompt_before(change),
+        &after.persistent_prompt,
+    ));
+    ChangeFacts {
+        lead: lead(change, after),
+        rows,
+    }
+}
+
+/// What a removal card says of a seat that empties, after "It is the head: "
+/// in the text and as the row's own sentence.
+const NO_HEAD: &str = "the cross-project conversation will have no head until another is chosen.";
+const NO_FRONT_DESK: &str = "incoming requests will have no front desk until another is chosen.";
+
+/// A sentence that starts another's clause, with its capital.
+fn sentence(clause: &str) -> String {
+    let mut letters = clause.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => String::new(),
+    }
+}
+
+/// The direct reports a removal moves up, by name, in roster order.
+fn reports_of<'a>(roster: &'a Roster, shown: &Removal) -> Vec<&'a str> {
+    roster
+        .agents
+        .iter()
+        .filter(|a| shown.reports.contains(&a.id))
+        .map(|a| a.name.as_str())
+        .collect()
 }
 
 /// The removal in words, for the card: who goes, with the fields that tell
@@ -502,17 +629,12 @@ pub fn describe_delete(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> St
         text.push_str(&format!("\n{label}: {value}"));
     }
     if shown.head {
-        text.push_str("\n\nIt is the head: the cross-project conversation will have no head until another is chosen.");
+        text.push_str(&format!("\n\nIt is the head: {NO_HEAD}"));
     }
     if shown.front_desk {
-        text.push_str("\n\nIt is the front desk: incoming requests will have no front desk until another is chosen.");
+        text.push_str(&format!("\n\nIt is the front desk: {NO_FRONT_DESK}"));
     }
-    let reports: Vec<&str> = roster
-        .agents
-        .iter()
-        .filter(|a| shown.reports.contains(&a.id))
-        .map(|a| a.name.as_str())
-        .collect();
+    let reports = reports_of(roster, shown);
     if !reports.is_empty() {
         text.push_str(&format!(
             "\n\nIts {} ({}) will report to {}.",
@@ -529,16 +651,81 @@ pub fn describe_delete(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> St
     text
 }
 
+/// `describe_delete` as rows, in the same order: a plain row for each field
+/// but the name, which the lead carries, then what the removal does to the
+/// chart as plain rows of their own — `Head` and `Front desk` when that seat
+/// empties, `Direct report(s)` naming who moves up and to whom — and `Memory
+/// note` last.
+pub fn delete_facts(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> ChangeFacts {
+    let mut rows: Vec<FactRow> = fields(roster, gone)
+        .into_iter()
+        .filter(|(label, _)| *label != "Name")
+        .map(|(label, value)| plain(label, value))
+        .collect();
+    if shown.head {
+        rows.push(plain("Head", sentence(NO_HEAD)));
+    }
+    if shown.front_desk {
+        rows.push(plain("Front desk", sentence(NO_FRONT_DESK)));
+    }
+    let reports = reports_of(roster, shown);
+    if !reports.is_empty() {
+        rows.push(plain(
+            if reports.len() == 1 {
+                "Direct report"
+            } else {
+                "Direct reports"
+            },
+            format!(
+                "{} will report to {}.",
+                reports.join(", "),
+                roster.agent_name(shown.reports_to.as_deref())
+            ),
+        ));
+    }
+    rows.push(plain("Memory note", "Kept in the vault."));
+    ChangeFacts {
+        lead: format!("Remove the agent {}.", gone.name),
+        rows,
+    }
+}
+
+/// The first sentence of a policy card.
+fn policy_lead(before: &AgentPolicy, after: &str) -> String {
+    format!(
+        "{} the shared agent policy that every agent's brief starts with.",
+        if after.is_empty() {
+            "Clear"
+        } else if before.text.is_empty() {
+            "Set"
+        } else {
+            "Replace"
+        }
+    )
+}
+
 /// The policy change in words, for the card: the whole text it would become.
 pub fn describe_policy(before: &AgentPolicy, after: &str) -> String {
+    let lead = policy_lead(before, after);
     if after.is_empty() {
-        return "Clear the shared agent policy that every agent's brief starts with.".into();
+        return lead;
     }
     format!(
-        "{} the shared agent policy that every agent's brief starts with.\n\nNew policy ({} characters):\n{after}",
-        if before.text.is_empty() { "Set" } else { "Replace" },
+        "{lead}\n\nNew policy ({} characters):\n{after}",
         after.chars().count()
     )
+}
+
+/// `describe_policy` as rows: one `Policy` row, plain when a policy is set
+/// where there was none, a move from the current text when it is replaced or
+/// cleared. The text leaves the current policy out.
+pub fn policy_facts(before: &AgentPolicy, after: &str) -> ChangeFacts {
+    ChangeFacts {
+        lead: policy_lead(before, after),
+        rows: text_row("Policy", &before.text, after)
+            .into_iter()
+            .collect(),
+    }
 }
 
 /// How the person answered, as the agent reads it. `Ok` only on an Allow.
@@ -624,7 +811,10 @@ where
     let request = crate::permission::Request {
         chat_key: Some(chat_key.to_string()),
         tool_name: Some(kind.tool().into()),
-        tool_input: Some(json!({ "change": describe(roster, &change, &after) })),
+        tool_input: Some(json!({
+            "change": describe(roster, &change, &after),
+            "changeFacts": facts(roster, &change, &after),
+        })),
         once: true,
         answer_within_secs: Some(wait.as_secs()),
         ..Default::default()
@@ -679,7 +869,10 @@ where
     let request = crate::permission::Request {
         chat_key: Some(chat_key.to_string()),
         tool_name: Some("mcp__octiq__agent_delete".into()),
-        tool_input: Some(json!({ "change": describe_delete(roster, &gone, &shown) })),
+        tool_input: Some(json!({
+            "change": describe_delete(roster, &gone, &shown),
+            "changeFacts": delete_facts(roster, &gone, &shown),
+        })),
         once: true,
         answer_within_secs: Some(wait.as_secs()),
         ..Default::default()
@@ -710,7 +903,10 @@ where
     let request = crate::permission::Request {
         chat_key: Some(chat_key.to_string()),
         tool_name: Some("mcp__octiq__agent_policy_update".into()),
-        tool_input: Some(json!({ "change": describe_policy(&roster.policy, &text) })),
+        tool_input: Some(json!({
+            "change": describe_policy(&roster.policy, &text),
+            "changeFacts": policy_facts(&roster.policy, &text),
+        })),
         once: true,
         answer_within_secs: Some(wait.as_secs()),
         ..Default::default()
@@ -1905,6 +2101,444 @@ mod tests {
         assert!(
             text.ends_with("\n\nIt is the front desk: incoming requests will have no front desk until another is chosen.\n\nIts memory note in the vault is kept."),
             "{text}"
+        );
+    }
+
+    /// The whole `tool_input` of the card an asker was shown.
+    fn input_of(shown: &Arc<Mutex<Vec<crate::permission::Request>>>) -> Value {
+        shown.lock().unwrap().pop().unwrap().tool_input.unwrap()
+    }
+
+    /// What every card's rows owe its text: the same first sentence, and
+    /// every value the text shows. A field reads `label: value` there, and a
+    /// field that moves `label: before → after`; a text that is replaced or
+    /// cleared shows only what it becomes.
+    fn rows_say_what_the_text_says(input: &Value) {
+        let change = input["change"].as_str().unwrap();
+        let facts = &input["changeFacts"];
+        assert_eq!(
+            facts["lead"].as_str().unwrap(),
+            change.lines().next().unwrap(),
+            "the lead is the card's first sentence"
+        );
+        for row in facts["rows"].as_array().unwrap() {
+            let label = row["label"].as_str().unwrap();
+            let text = label == "Persistent prompt" || label == "Policy";
+            match (row.get("value"), row.get("before"), row.get("after")) {
+                (Some(value), None, None) if text => {
+                    assert!(change.ends_with(value.as_str().unwrap()), "{row}")
+                }
+                (Some(value), None, None) => {
+                    let line = format!("\n{label}: {}", value.as_str().unwrap());
+                    assert!(change.contains(&line), "{line:?} missing from:\n{change}");
+                }
+                (None, Some(before), Some(after)) if text => {
+                    assert_ne!(before, "", "{row}");
+                    assert!(change.ends_with(after.as_str().unwrap()) || after == "");
+                }
+                (None, Some(before), Some(after)) => {
+                    let line = format!(
+                        "\n{label}: {} → {}",
+                        before.as_str().unwrap(),
+                        after.as_str().unwrap()
+                    );
+                    assert!(change.contains(&line), "{line:?} missing from:\n{change}");
+                }
+                _ => panic!("a row is a value, or a before and an after: {row}"),
+            }
+        }
+    }
+
+    /// UI cards review, P2: a page that read the card's text back into rows
+    /// took a line of a role for a field of its own. The card now carries its
+    /// rows as data, and a role that holds `Access: edits → danger` on a line
+    /// of its own is one Role row, next to the one real Access row.
+    #[tokio::test]
+    async fn a_registration_card_carries_every_field_as_one_row() {
+        let (_dir, team) = temp_team();
+        register(&team, "Potato", None);
+        let role = "New role.\nAccess: edits → danger";
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Register,
+            Proposal {
+                name: Some("Nova".into()),
+                role: Some(role.into()),
+                provider: Some(ChatAgent::Codex),
+                model: Some("gpt-5.5".into()),
+                effort: Some("medium".into()),
+                access: Some(Access::Edits),
+                project: Some("starfall".into()),
+                reports_to: Some("potato".into()),
+                persistent_prompt: Some("Stand up daily.\nTeam: none".into()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Register a new agent, Nova.",
+                "rows": [
+                    { "label": "Name", "value": "Nova" },
+                    { "label": "Role", "value": role },
+                    { "label": "Provider", "value": "Codex" },
+                    { "label": "Model", "value": "gpt-5.5" },
+                    { "label": "Effort", "value": "medium" },
+                    { "label": "Access", "value": "edits" },
+                    { "label": "Available in", "value": "Starfall" },
+                    { "label": "Reports to", "value": "Potato" },
+                    { "label": "Team", "value": "none" },
+                    { "label": "Persistent prompt", "value": "Stand up daily.\nTeam: none" },
+                ],
+            })
+        );
+        rows_say_what_the_text_says(&input);
+        // The text is what it was before the rows came with it.
+        assert_eq!(
+            input["change"],
+            format!("Register a new agent, Nova.\n\nName: Nova\nRole: {role}\nProvider: Codex\nModel: gpt-5.5\nEffort: medium\nAccess: edits\nAvailable in: Starfall\nReports to: Potato\nTeam: none\n\nPersistent prompt (26 characters):\nStand up daily.\nTeam: none")
+        );
+        assert_eq!(
+            input.as_object().unwrap().len(),
+            2,
+            "change and changeFacts, nothing else: {input}"
+        );
+
+        // No prompt proposed, no prompt row; an empty role reads as it does
+        // in the text.
+        let (shown, deny) = asker("deny", "you denied it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Register,
+            Proposal {
+                name: Some("Bare".into()),
+                provider: Some(ChatAgent::Claude),
+                model: Some("opus".into()),
+                ..Proposal::default()
+            },
+            deny,
+        )
+        .await
+        .unwrap_err();
+        let input = input_of(&shown);
+        let rows = input["changeFacts"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 9, "{rows:?}");
+        assert_eq!(rows[1], json!({ "label": "Role", "value": "(none)" }));
+        assert_eq!(rows[4], json!({ "label": "Effort", "value": "default" }));
+        assert_eq!(
+            rows[6],
+            json!({ "label": "Available in", "value": "every project" })
+        );
+        assert_eq!(
+            rows[7],
+            json!({ "label": "Reports to", "value": "the person" })
+        );
+        rows_say_what_the_text_says(&input);
+    }
+
+    #[tokio::test]
+    async fn an_update_card_carries_only_the_fields_that_move_as_rows() {
+        let (_dir, team) = temp_team();
+        let potato = register(&team, "Potato", None);
+        let role = "New role.\nAccess: edits → danger";
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some(potato.id.clone()),
+                role: Some(role.into()),
+                access: Some(Access::Edits),
+                // Named, and the same as it was: not a row.
+                model: Some("sonnet".into()),
+                persistent_prompt: Some("Stand up daily.".into()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Change the agent Potato.",
+                "rows": [
+                    { "label": "Role", "before": "Writes code.", "after": role },
+                    { "label": "Access", "before": "auto", "after": "edits" },
+                    // Set where there was none: a plain row.
+                    { "label": "Persistent prompt", "value": "Stand up daily." },
+                ],
+            })
+        );
+        rows_say_what_the_text_says(&input);
+        assert_eq!(
+            input["change"],
+            format!("Change the agent Potato.\n\nRole: Writes code. → {role}\nAccess: auto → edits\n\nPersistent prompt (15 characters):\nStand up daily.")
+        );
+
+        // Replaced: a move from the prompt it had, which the text leaves out.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Potato".into()),
+                persistent_prompt: Some("Ship on Fridays.\nNever on Mondays.".into()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Change the agent Potato.",
+                "rows": [{
+                    "label": "Persistent prompt",
+                    "before": "Stand up daily.",
+                    "after": "Ship on Fridays.\nNever on Mondays.",
+                }],
+            })
+        );
+        rows_say_what_the_text_says(&input);
+        assert!(
+            !input["change"]
+                .as_str()
+                .unwrap()
+                .contains("Stand up daily."),
+            "the text still shows only the new prompt"
+        );
+
+        // Cleared: a move to nothing.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Potato".into()),
+                effort: Some("".into()),
+                persistent_prompt: Some(String::new()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["changeFacts"]["rows"],
+            json!([
+                { "label": "Effort", "before": "high", "after": "default" },
+                {
+                    "label": "Persistent prompt",
+                    "before": "Ship on Fridays.\nNever on Mondays.",
+                    "after": "",
+                },
+            ])
+        );
+        rows_say_what_the_text_says(&input);
+        assert!(input["change"]
+            .as_str()
+            .unwrap()
+            .ends_with("\nPersistent prompt: cleared"));
+    }
+
+    #[tokio::test]
+    async fn a_removal_card_carries_who_goes_and_what_it_does_to_the_chart_as_rows() {
+        let (_dir, team) = temp_team();
+        let potato = register(&team, "Potato", None);
+        let cto = crate::team::save(
+            &team,
+            TeamDraft {
+                name: "Cto".into(),
+                id: None,
+                role: "Leads Octiq.\nReports to: nobody".into(),
+                reports_to: Some(potato.id.clone()),
+                ..redraft(&potato)
+            },
+        )
+        .unwrap();
+        register_under(&team, "Dev", &cto);
+        register_under(&team, "Ops", &cto);
+        crate::team::set_head(&team, Some(&potato.id)).unwrap();
+
+        let (shown, deny) = asker("deny", "you denied it");
+        propose_delete(&roster(&team), &team, "chat:lead", remove("cto"), deny)
+            .await
+            .unwrap_err();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Remove the agent Cto.",
+                "rows": [
+                    { "label": "Role", "value": "Leads Octiq.\nReports to: nobody" },
+                    { "label": "Provider", "value": "Claude" },
+                    { "label": "Model", "value": "sonnet" },
+                    { "label": "Effort", "value": "high" },
+                    { "label": "Access", "value": "auto" },
+                    { "label": "Available in", "value": "every project" },
+                    { "label": "Reports to", "value": "Potato" },
+                    { "label": "Team", "value": "none" },
+                    { "label": "Direct reports", "value": "Dev, Ops will report to Potato." },
+                    { "label": "Memory note", "value": "Kept in the vault." },
+                ],
+            })
+        );
+        let change = input["change"].as_str().unwrap();
+        assert!(
+            change.ends_with("\n\nIts 2 direct reports (Dev, Ops) will report to Potato.\n\nIts memory note in the vault is kept."),
+            "{change}"
+        );
+        // The fields are rows the text shows too; what the removal does to
+        // the chart is a sentence there, checked above and below.
+        let mut fields = input.clone();
+        fields["changeFacts"]["rows"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(8);
+        rows_say_what_the_text_says(&fields);
+
+        // The head, with one report: the seat that empties is a row, before
+        // the report that moves up to the person.
+        let (shown, deny) = asker("deny", "you denied it");
+        propose_delete(&roster(&team), &team, "chat:lead", remove("Potato"), deny)
+            .await
+            .unwrap_err();
+        let input = input_of(&shown);
+        let rows = input["changeFacts"]["rows"].as_array().unwrap();
+        assert_eq!(
+            rows[8..],
+            [
+                json!({
+                    "label": "Head",
+                    "value": "The cross-project conversation will have no head until another is chosen.",
+                }),
+                json!({ "label": "Direct report", "value": "Cto will report to the person." }),
+                json!({ "label": "Memory note", "value": "Kept in the vault." }),
+            ]
+        );
+        let change = input["change"].as_str().unwrap();
+        assert!(
+            change.contains("\n\nIt is the head: the cross-project conversation will have no head until another is chosen.\n\nIts direct report (Cto) will report to the person."),
+            "{change}"
+        );
+
+        // The front desk, which has no reports.
+        let desk = crate::team::create_front_desk(&team, Default::default()).unwrap();
+        let (shown, deny) = asker("deny", "you denied it");
+        propose_delete(&roster(&team), &team, "chat:lead", remove(&desk.id), deny)
+            .await
+            .unwrap_err();
+        let input = input_of(&shown);
+        let rows = input["changeFacts"]["rows"].as_array().unwrap();
+        assert_eq!(
+            rows[8..],
+            [
+                json!({
+                    "label": "Front desk",
+                    "value": "Incoming requests will have no front desk until another is chosen.",
+                }),
+                json!({ "label": "Memory note", "value": "Kept in the vault." }),
+            ]
+        );
+        assert!(input["change"].as_str().unwrap().contains(
+            "\n\nIt is the front desk: incoming requests will have no front desk until another is chosen."
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_policy_card_carries_the_policy_as_one_row() {
+        let (_dir, team) = temp_team();
+        let proposal = |text: &str| PolicyProposal {
+            policy: text.into(),
+            wait_seconds: Some(50),
+        };
+
+        // Set where there was none: a plain row.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose_policy(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            proposal("Use worktrees.\nAccess: edits → danger"),
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Set the shared agent policy that every agent's brief starts with.",
+                "rows": [{ "label": "Policy", "value": "Use worktrees.\nAccess: edits → danger" }],
+            })
+        );
+        rows_say_what_the_text_says(&input);
+        assert_eq!(
+            input["change"],
+            "Set the shared agent policy that every agent's brief starts with.\n\nNew policy (37 characters):\nUse worktrees.\nAccess: edits → danger"
+        );
+
+        // Replaced: a move from the current policy, which the text leaves out.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose_policy(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            proposal("Never push."),
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Replace the shared agent policy that every agent's brief starts with.",
+                "rows": [{
+                    "label": "Policy",
+                    "before": "Use worktrees.\nAccess: edits → danger",
+                    "after": "Never push.",
+                }],
+            })
+        );
+        rows_say_what_the_text_says(&input);
+
+        // Cleared: a move to nothing.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose_policy(&roster(&team), &team, "chat:lead", proposal(""), allow)
+            .await
+            .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Clear the shared agent policy that every agent's brief starts with.",
+                "rows": [{ "label": "Policy", "before": "Never push.", "after": "" }],
+            })
+        );
+        assert_eq!(
+            input["change"],
+            "Clear the shared agent policy that every agent's brief starts with."
         );
     }
 }

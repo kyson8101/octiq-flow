@@ -61,8 +61,49 @@ describe("PlanReview", () => {
     const empty = render([], true);
     expect(empty).toContain("Drafting the plan");
     expect(empty).toContain("Tasks appear here as the main agent writes them.");
-    expect(empty).toMatch(/<button[^>]*disabled=""[^>]*>Approve plan/);
-    expect(empty).toMatch(/<button[^>]*disabled=""[^>]*>Reject/);
+    // Nothing to approve is nothing to offer: no answers at all, not greyed ones.
+    expect(empty).not.toContain("Approve plan");
+    expect(empty).not.toContain(">Reject<");
+  });
+
+  it("is one line while the plan is being drafted: no ghost rows, no answers", () => {
+    const html = render([], true);
+    expect(html).toMatch(/<section class="plan-review"[^>]*data-drafting="true"[^>]*data-compact="true"/);
+    expect(html).toContain('aria-labelledby="plan-review-title-run_1"');
+    expect(html).toContain('data-plan="run_1"');
+    expect(html).toMatch(/<h3 id="plan-review-title-run_1">Drafting the plan…<\/h3>/);
+    expect(html).toContain('<span class="plan-review-id">Plan 1</span>');
+    expect(html).toMatch(/<p class="plan-review-sub" role="status" aria-live="polite">Tasks appear here/);
+    expect(html).not.toContain("plan-review-ghost");
+    expect(html).not.toContain("plan-review-actions");
+    expect(html).not.toContain("plan-stages");
+    expect(html).not.toContain("What should change?");
+    expect(html).not.toContain("<button");
+  });
+
+  it("says so in one line when there are no tasks and nobody is writing any", () => {
+    const html = render([]);
+    expect(html).toContain("No tasks yet");
+    expect(html).toContain("Ask the main agent for a plan in Chat.");
+    expect(html).toMatch(/data-compact="true"/);
+    expect(html).not.toContain("data-drafting");
+    expect(html).not.toContain("Plan ready for review");
+    // Not a live region: nothing is on its way.
+    expect(html).not.toContain('role="status"');
+    expect(html).not.toContain("<button");
+  });
+
+  it("leaves the chat's own hint out of an empty plan too", () => {
+    const hint = "Reply approve to start it.";
+    const card = (tasks: OrchestrationTask[]) => renderToStaticMarkup(
+      <PlanReview run={run} tasks={tasks} drafting chatHint={hint} surface="chat" onRequestChanges={() => {}} />);
+    expect(card([])).not.toContain(hint);
+    const ready = card([task("a")]);
+    expect(ready).toContain(hint);
+    expect(ready).toContain("Approve plan");
+    expect(ready).not.toContain("data-compact");
+    // Drawn full from the start, there is nothing to open from.
+    expect(ready).not.toContain("data-arrived");
   });
 
   it("shows where each task runs: its destination, else the run's own checkout", () => {

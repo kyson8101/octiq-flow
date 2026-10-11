@@ -1,6 +1,7 @@
 /* Plan mode, inside the Run panel. One quiet column: a state line, the stages
-   as a numbered rail, and the two answers pinned under them. The accent is a
-   tint, and moves only while the main agent is still writing. */
+   as a numbered rail, and the two answers pinned under them. A plan is a
+   decision, so its dot and its Approve are the decision colour (`--decide`),
+   as a tint; the dot moves only while the main agent is still writing. */
 .plan-review {
   display: grid;
   width: 100%;
@@ -16,22 +17,25 @@
 .plan-review-state { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .plan-review-state h3 { margin: 0; color: var(--fg-0); font-size: 15px; font-weight: 650; }
 .plan-review-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); }
-.plan-review[data-drafting] .plan-review-dot { background: var(--accent); animation: plan-review-pulse 1.4s ease-in-out infinite; }
+.plan-review[data-drafting] .plan-review-dot { background: var(--decide); animation: plan-review-pulse 1.4s ease-in-out infinite; }
 @keyframes plan-review-pulse { 50% { opacity: 0.25; } }
 .plan-review-meta { margin: 0; color: var(--fg-2); font-size: 12px; font-variant-numeric: tabular-nums; }
 
-/* Nothing written yet: three ghost rows hold the place the tasks will take. */
-.plan-review-empty { display: grid; gap: 8px; padding: 16px 0 4px; border-top: 1px solid var(--border); }
-.plan-review-empty p { margin: 4px 0 0; color: var(--fg-2); font-size: 12px; }
-.plan-review-ghost {
-  height: 34px; border-radius: var(--r-sm);
-  background: linear-gradient(90deg, var(--bg-1), var(--bg-2), var(--bg-1));
-  background-size: 200% 100%;
-  animation: plan-review-shimmer 1.6s ease-in-out infinite;
-}
-.plan-review-ghost:nth-child(2) { width: 82%; }
-.plan-review-ghost:nth-child(3) { width: 64%; }
-@keyframes plan-review-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+/* Nothing written yet: the state line and one line under it, nothing else.
+   The line sits under the heading's words, clear of the dot. */
+.plan-review[data-compact] { gap: 3px; }
+.plan-review-sub { margin: 0; padding-left: 17px; color: var(--fg-2); font-size: 12px; line-height: 1.4; }
+
+/* The tasks and the answers under them. When they arrive under the one-line
+   card it opens to them rather than jumping: `0fr → 1fr` is a height nobody
+   had to measure. `clip`, not `hidden`, so the answers still pin to the
+   panel's own scroll. A card that starts out full is drawn as it always was. */
+.plan-review-body { display: grid; grid-template-rows: 1fr; min-width: 0; }
+.plan-review-body-in { display: grid; gap: 18px; min-width: 0; }
+.plan-review-body[data-arrived] { overflow-y: clip; animation: plan-review-open 220ms ease-out; }
+.plan-review-body[data-arrived] > .plan-review-body-in { min-height: 0; animation: plan-review-arrive 220ms ease-out; }
+@keyframes plan-review-open { from { grid-template-rows: 0fr; } }
+@keyframes plan-review-arrive { from { opacity: 0; } }
 
 /* Stages: a number on a rail, the tasks hanging off it. */
 .plan-stages { min-width: 0; max-width: 100%; margin: 0; padding: 0; list-style: none; display: grid; }
@@ -70,8 +74,8 @@
 }
 .plan-task summary { cursor: pointer; transition: background 130ms ease-out; }
 .plan-task summary::-webkit-details-marker { display: none; }
-.plan-task summary:hover { background: var(--accent-tint); }
-.plan-task summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.plan-task summary:hover { background: color-mix(in srgb, var(--fg-1) 6%, transparent); }
+.plan-task summary:focus-visible { outline: 2px solid var(--focus, var(--decide)); outline-offset: -2px; }
 .plan-task-num { flex: 0 0 auto; min-width: 18px; color: var(--fg-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .plan-task-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .plan-task-title { min-width: 0; color: var(--fg-0); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -86,7 +90,7 @@
 .plan-task-repo { color: var(--fg-1); }
 .plan-task-new {
   flex: 0 0 auto; padding: 1px 6px; border-radius: 999px;
-  background: var(--accent-tint); color: var(--fg-1); font-size: 10.5px;
+  background: color-mix(in srgb, var(--fg-1) 9%, transparent); color: var(--fg-1); font-size: 10.5px;
 }
 .plan-task-owner {
   flex: 0 1 auto; min-width: 0; max-width: 40%;
@@ -120,10 +124,10 @@
   transition: background-color 150ms ease-out, border-color 150ms ease-out;
 }
 .plan-command-approval-options label[data-checked] {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--decide);
+  background: var(--decide-tint);
 }
-.plan-command-approval-options input { margin: 0; accent-color: var(--accent); }
+.plan-command-approval-options input { margin: 0; accent-color: var(--decide); }
 .plan-command-approval-note { margin: 6px 0 0; color: var(--fg-2); font-size: 11.5px; line-height: 1.45; }
 .plan-command-approval-error { margin: 6px 0 0; color: var(--danger, var(--warn)); font-size: 11.5px; }
 @media (pointer: coarse) {
@@ -162,7 +166,7 @@
   background: var(--bg-0, transparent); color: var(--fg-0);
   font: inherit; font-size: 12.5px; line-height: 1.4;
 }
-.plan-review-change textarea:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.plan-review-change textarea:focus { outline: none; border-color: var(--decide); }
 .plan-review-quiet {
   flex: 0 0 auto; min-height: 34px; padding: 0 12px;
   border: 1px solid var(--border); border-radius: var(--r-sm);
@@ -170,7 +174,7 @@
   font: inherit; font-size: 12.5px; cursor: pointer;
   transition: border-color 130ms ease-out, color 130ms ease-out;
 }
-.plan-review-quiet:hover:not(:disabled) { border-color: var(--accent); color: var(--fg-0); }
+.plan-review-quiet:hover:not(:disabled) { border-color: var(--decide); color: var(--fg-0); }
 .plan-review-quiet:disabled { opacity: 0.45; cursor: default; }
 .plan-review-reject-confirm { display: flex; align-items: center; gap: 8px; }
 .plan-review-reject-confirm input {
@@ -187,6 +191,17 @@
 .plan-review-reject:hover:not(:disabled) { border-color: color-mix(in srgb, var(--danger, var(--warn)) 55%, var(--border)); color: var(--danger, var(--warn)); }
 .plan-review-reject:disabled { opacity: 0.45; cursor: default; }
 .plan-review-approve { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 14px; }
+/* Approve, as every decision card's primary answer is drawn: the decision
+   colour as a tint under its own outline. The Run panel's other primaries
+   (`.orch-primary`) keep the accent. */
+.plan-review-approve .orch-primary {
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--fg-0);
+}
+@media (hover: hover) {
+  .plan-review-approve .orch-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--decide) 28%, var(--bg-1)); }
+}
 /* In the lead's own chat the message box is right below: say how to answer
    there instead of offering a second box. */
 .plan-review-chat-hint { margin: 0; color: var(--fg-2); font-size: 12px; }
@@ -202,5 +217,5 @@
   .plan-review-reject-confirm input { flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .plan-review, .plan-review-dot, .plan-review-ghost { animation: none !important; }
+  .plan-review, .plan-review-dot, .plan-review-body, .plan-review-body-in { animation: none !important; }
 }

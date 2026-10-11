@@ -10465,17 +10465,44 @@ body.is-ultra .eff {
 }
 
 /* ---- Permission question -----------------------------------------------
-   The agent is blocked until this is answered, so it is the one card allowed
-   to be loud. Amber rather than red: nothing is wrong, something is waiting. */
+   The agent is blocked until this is answered. Nothing is wrong, something is
+   waiting on a decision: the card is the decision colour, never amber, which
+   is kept for a warning (`.safety-card` below is the one that stays amber). */
 .ask-card {
   flex: 0 0 auto;
   max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 10px;
   padding: 13px 15px;
-  border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border));
+  border: 1px solid var(--decide);
   border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  background: var(--decide-tint);
+}
+
+/* The cards that wait on the person's decision share a tinted surface, and
+   the quietest text does not hold 4.5:1 on a tint in every mode. On these
+   cards it takes one step up. */
+:is(.ask-card:not(.safety-card), .qa-card, .handover-card.is-pending, .chat-plan[data-pending]) {
+  --fg-3: var(--fg-2);
+}
+
+/* The answer a decision card leads with: the decision colour as a tint under
+   its own outline, never a solid block and never the accent, which here is
+   the model's colour. */
+:is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary {
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+:is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary:hover {
+  background: color-mix(in srgb, var(--decide) 28%, var(--bg-1));
+  filter: none;
+}
+
+:is(.permission-card, .access-card, .qa-card) .ask-btn:focus-visible {
+  outline-color: var(--decide);
 }
 
 .ask-card-head {
@@ -10490,7 +10517,7 @@ body.is-ultra .eff {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--warn);
+  background: var(--decide);
   animation: chat-pulse 1.4s ease-in-out infinite;
 }
 
@@ -10561,6 +10588,205 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
+/* A word about a thing, as a label: an outlined pill, 20px high, after
+   `.read-only-badge`. Never a control (`.chip` is an attached file,
+   `.level-chip` a button). The route card's settings (`.handover-chip`) and
+   the permission card's server and tool id are this one rule. */
+.label-pill,
+.handover-chip {
+  display: inline-flex; align-items: center; min-width: 0; max-width: 100%;
+  height: 20px; padding: 0 8px;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--bg-1); color: var(--fg-2);
+  font-size: 11px; font-weight: 520; line-height: 1; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* An id, to the letter. */
+.label-pill.is-mono {
+  font-family: var(--mono);
+  font-weight: 400;
+}
+
+/* The permission card itself, read top to bottom in three rows: what is
+   asked, what it would do, the answer. The rows are set apart by space, and
+   the shared `.ask-card-*` rules above are left as the other cards use them. */
+.permission-card {
+  padding: 13px 14px;
+}
+
+/* A title that wraps (a phone, a long tool name) keeps its dot and icon on
+   the first line rather than floating between two. */
+.permission-card .ask-card-head {
+  align-items: flex-start;
+}
+
+.permission-card .ask-card-dot {
+  margin-top: 6.5px;
+}
+
+.permission-card .ask-card-title {
+  min-width: 0;
+  row-gap: 4px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.permission-card .ask-card-title > strong {
+  min-width: 0;
+}
+
+.ask-card-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A change the host worded as a sentence and its fields. */
+.ask-change {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ask-change-lead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg-1);
+  overflow-wrap: anywhere;
+}
+
+/* One grid for every row, so the names share a column as wide as the longest
+   of them, and never more than two fifths of the card: a name is whatever the
+   host sent, and on a phone a long one would leave its value no room. A long
+   list scrolls in place, as the text it replaces did. */
+.ask-change-rows {
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 3px 12px;
+  min-width: 0;
+  margin: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ask-change-rows > div {
+  display: contents;
+}
+
+.ask-change-rows dt {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-3);
+  overflow-wrap: anywhere;
+}
+
+/* A value is the whole text, with the lines it came with: a role or a prompt
+   over several lines is one row, never one row a line. */
+.ask-change-rows dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* What it was, quietly; what it becomes, in weight. No red and green: nothing
+   here is right or wrong until the person says so. */
+.ask-change-was {
+  color: var(--fg-2);
+}
+
+.ask-change-arrow {
+  color: var(--fg-3);
+}
+
+.ask-change-now {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+/* A field left empty: the word, set apart from a text that reads the same. */
+.ask-change-now.is-cleared {
+  color: var(--fg-1);
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* A long move reads down, not across: what it was on its own line, then the
+   arrow beside what it becomes. */
+.ask-change-rows dd.is-stacked {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 6px;
+}
+
+.ask-change-rows dd.is-stacked .ask-change-was {
+  grid-column: 1 / -1;
+}
+
+.ask-change-rows dd.is-stacked .ask-change-arrow {
+  white-space: normal;
+}
+
+/* What holds the agent on the left, the answer on the right. On a narrow card
+   the note takes its own line above and the three answers keep one row. */
+.ask-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 14px;
+  margin-top: 12px;
+}
+
+.ask-card-wait {
+  flex: 1 1 240px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-2);
+}
+
+/* Changes every second, so it keeps its width and does not move the line. */
+.ask-card-clock {
+  color: var(--fg-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ask-card-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.ask-card-actions .ask-btn {
+  white-space: nowrap;
+}
+
+/* Deny is always there and seldom the answer: words, no plate. */
+.ask-card-actions .ask-btn.is-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--fg-1);
+}
+
+.ask-card-actions .ask-btn.is-quiet:hover {
+  background: color-mix(in srgb, var(--fg-1) 9%, transparent);
+  color: var(--fg-0);
+}
+
 /* An agent asking for more access: the two levels side by side, then why. */
 .access-card-levels {
   display: flex;
@@ -10597,9 +10823,12 @@ body.is-ultra .eff {
 
 /* A tool call that the Codex safety reviewer already stopped. It shares the
    permission card's shape, while the small context row makes it immediately
-   clear that Codex — not OctiqFlow — raised the warning. */
+   clear that Codex — not OctiqFlow — raised the warning. A refusal IS a
+   warning, so this is the one card of that shape that stays amber. */
 .safety-card {
   padding: 14px 15px 13px;
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
 }
 
 .safety-card-context {
@@ -11033,17 +11262,18 @@ body.is-ultra .eff {
 }
 
 /* ---- A question from the agent -----------------------------------------
-   Blue rather than amber: a permission prompt is a risk to weigh, this is
-   simply a decision only you can make. */
+   A decision only you can make, in the decision colour like the permission
+   card: every rule below reads `--decide`, never the accent, which is the
+   model's colour here and can be gold. */
 .qa-card {
   flex: 0 0 auto;
   max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 10px;
   padding: 13px 15px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border: 1px solid var(--decide);
   border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: var(--decide-tint);
 }
 
 .qa-head {
@@ -11056,9 +11286,9 @@ body.is-ultra .eff {
 /* The answer you already gave, so stepping back does not look like starting
    over. A fill, never an edge stripe. */
 .qa-option.is-on {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
+  background: var(--decide);
+  border-color: var(--decide);
+  color: var(--decide-fg);
 }
 
 .qa-questions {
@@ -11117,7 +11347,7 @@ body.is-ultra .eff {
   gap: 10px;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-top: 1px solid color-mix(in srgb, var(--decide) 18%, var(--border));
 }
 
 .qa-page-arrow {
@@ -11125,7 +11355,7 @@ body.is-ultra .eff {
   width: 26px;
   height: 26px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--decide) 30%, var(--border));
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-2);
@@ -11164,7 +11394,7 @@ body.is-ultra .eff {
   width: 7px;
   height: 7px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--decide) 45%, var(--border));
   border-radius: 50%;
   background: transparent;
   cursor: pointer;
@@ -11186,20 +11416,20 @@ body.is-ultra .eff {
 
 .qa-page-dot.is-done {
   border-color: transparent;
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--decide) 55%, transparent);
 }
 
 .qa-page-dot.is-here {
   transform: scale(1.45);
-  border-color: var(--accent);
+  border-color: var(--decide);
 }
 
 .qa-page-dot.is-here.is-done {
-  background: var(--accent);
+  background: var(--decide);
 }
 
 .qa-page-dot:hover:not(:disabled):not(.is-here) {
-  border-color: var(--accent);
+  border-color: var(--decide);
 }
 
 .qa-page-dot:disabled {
@@ -11256,7 +11486,7 @@ body.is-ultra .eff {
   gap: 9px;
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--decide) 22%, var(--border));
   border-radius: var(--r-sm);
   background: transparent;
   color: inherit;
@@ -11269,8 +11499,8 @@ body.is-ultra .eff {
 }
 
 .qa-review-row:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 10%, transparent);
 }
 
 .qa-review-row:disabled {
@@ -11354,7 +11584,7 @@ body.is-ultra .eff {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--decide);
   animation: chat-pulse 1.4s ease-in-out infinite;
 }
 
@@ -11400,8 +11630,8 @@ body.is-ultra .eff {
 }
 
 .qa-option:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--accent-tint);
+  border-color: var(--decide);
+  background: var(--decide-tint);
 }
 
 .qa-option:disabled {
@@ -11414,15 +11644,16 @@ body.is-ultra .eff {
    looks chosen is a default wearing a disguise. Scoped away from `.is-on` so
    that once you pick, your choice owns the look. */
 .qa-option.is-tip:not(.is-on) {
-  border-color: var(--accent-soft-border, var(--accent));
-  background: var(--accent-tint-faint, var(--bg-1));
+  border-color: var(--decide);
+  background: var(--bg-1);
 }
 
+/* At full strength: the word is small, and faded it would not hold 4.5:1 in
+   every mode. */
 .qa-tip {
   margin-left: 7px;
   font-size: 11px;
-  color: var(--accent);
-  opacity: 0.85;
+  color: var(--decide);
 }
 
 .qa-option.is-on .qa-tip {
@@ -11451,7 +11682,7 @@ body.is-ultra .eff {
 }
 
 .qa-input:focus {
-  border-color: var(--accent);
+  border-color: var(--decide);
 }
 
 /* ---- A question that takes a set ---------------------------------------
@@ -11600,7 +11831,7 @@ body.is-ultra .eff {
 }
 
 .qa-restore:hover {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--decide) 8%, transparent);
 }
 
 .qa-min-copy {
@@ -11633,7 +11864,7 @@ body.is-ultra .eff {
 .qa-min-cue {
   flex: 0 0 auto;
   font-size: 11.5px;
-  color: var(--accent);
+  color: var(--decide);
 }
 
 

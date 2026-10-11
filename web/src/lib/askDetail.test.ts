@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { askDetail } from "./askDetail";
+import { askDetail, changeFacts } from "./askDetail";
 
 describe("askDetail", () => {
   it("shows a command in full, because what it runs is the whole question", () => {
@@ -71,5 +71,110 @@ describe("askDetail", () => {
       body: "",
       limit: 1200,
     });
+  });
+});
+
+describe("changeFacts", () => {
+  const lead = "Change the agent Nova.";
+
+  it("takes the host's rows as they are: a field stated whole, or one that moves", () => {
+    const facts = {
+      lead,
+      rows: [
+        { label: "Access", before: "edits", after: "auto" },
+        { label: "Persistent prompt", value: "Stand up daily.\nShip on Fridays." },
+      ],
+    };
+    expect(changeFacts(facts)).toEqual(facts);
+    // Through JSON, as it arrives.
+    expect(changeFacts(JSON.parse(JSON.stringify(facts)))).toEqual(facts);
+  });
+
+  it("keeps a value whole, lines and arrows and all", () => {
+    // The line a text parser took for a second field. Here it is one value of
+    // one row, because nothing reads the text apart.
+    const role = "New role.\nAccess: edits → danger";
+    const facts = changeFacts({ lead, rows: [{ label: "Role", value: role }] });
+    expect(facts?.rows).toEqual([{ label: "Role", value: role }]);
+    const moved = changeFacts({ lead, rows: [{ label: "Role", before: "a → b", after: "c\nd → e" }] });
+    expect(moved?.rows).toEqual([{ label: "Role", before: "a → b", after: "c\nd → e" }]);
+  });
+
+  it("has no list of names it knows: any label the host sends is a row", () => {
+    const facts = changeFacts({ lead: "Remove the agent Nova.", rows: [
+      { label: "Direct reports", value: "A, B will report to OCTIQ HEAD." },
+      { label: "Something new", value: "x" },
+      { label: "__proto__", value: "x" },
+    ] });
+    expect(facts?.rows.map((row) => row.label)).toEqual(["Direct reports", "Something new", "__proto__"]);
+  });
+
+  it("reads an empty after as a field being cleared", () => {
+    expect(changeFacts({ lead, rows: [{ label: "Policy", before: "Be careful", after: "" }] })?.rows).toEqual([
+      { label: "Policy", before: "Be careful", after: "" },
+    ]);
+  });
+
+  it("is nothing when the host sent no rows, as an older one does", () => {
+    for (const absent of [undefined, null, "", 0, false, "Change the agent Nova.\n\nAccess: edits → auto"]) {
+      expect(changeFacts(absent)).toBeNull();
+    }
+  });
+
+  it("is nothing unless the sentence and the rows are both there", () => {
+    const rows = [{ label: "Access", before: "edits", after: "auto" }];
+    expect(changeFacts({ rows })).toBeNull();
+    expect(changeFacts({ lead: "", rows })).toBeNull();
+    expect(changeFacts({ lead: "  \n", rows })).toBeNull();
+    expect(changeFacts({ lead: 7, rows })).toBeNull();
+    expect(changeFacts({ lead })).toBeNull();
+    expect(changeFacts({ lead, rows: [] })).toBeNull();
+    expect(changeFacts({ lead, rows: "Access: edits → auto" })).toBeNull();
+    expect(changeFacts({ lead, rows: { 0: rows[0], length: 1 } })).toBeNull();
+    expect(changeFacts([lead, rows])).toBeNull();
+  });
+
+  it("is nothing when any one row is not a row: all or nothing", () => {
+    const good = { label: "Access", before: "edits", after: "auto" };
+    const bad: unknown[] = [
+      null, "Access: edits → auto", 3, [], ["Access", "auto"], {},
+      { label: "Access" },
+      { value: "auto" },
+      { label: "", value: "auto" },
+      { label: " ", value: "auto" },
+      { label: 3, value: "auto" },
+      { label: "Access", value: 3 },
+      { label: "Access", value: "" },
+      { label: "Access", value: null },
+      { label: "Access", value: ["auto"] },
+      { label: "Access", before: "edits" },
+      { label: "Access", after: "auto" },
+      { label: "Access", before: "", after: "auto" },
+      { label: "Access", before: "edits", after: null },
+      { label: "Access", before: "edits", after: 3 },
+      { label: "Access", before: "edits", after: "  " },
+      // Both shapes at once: which half is the change?
+      { label: "Access", value: "auto", before: "edits", after: "auto" },
+    ];
+    for (const row of bad) {
+      expect(changeFacts({ lead, rows: [good, row] }), JSON.stringify(row)).toBeNull();
+    }
+    expect(changeFacts({ lead, rows: [good, good] })?.rows).toHaveLength(2);
+  });
+
+  it("is nothing when there is a key the card would not draw", () => {
+    // The rows are drawn INSTEAD of the text. A key this page does not know
+    // would be approved unseen, so the text is shown.
+    const row = { label: "Access", before: "edits", after: "auto" };
+    expect(changeFacts({ lead, rows: [{ ...row, note: "also grants push" }] })).toBeNull();
+    expect(changeFacts({ lead, rows: [{ label: "Access", value: "auto", note: "x" }] })).toBeNull();
+    expect(changeFacts({ lead, rows: [row], warning: "x" })).toBeNull();
+  });
+
+  it("does not take an inherited key for the host's", () => {
+    const rows = [{ label: "Access", value: "auto" }];
+    expect(changeFacts(Object.create({ lead, rows }))).toBeNull();
+    expect(changeFacts({ lead, rows: [Object.create({ label: "Access", value: "auto" })] })).toBeNull();
+    expect(changeFacts(JSON.parse(`{"lead":"x","rows":[{"label":"a","value":"b"}],"__proto__":{"x":1}}`))).toBeNull();
   });
 });

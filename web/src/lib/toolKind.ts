@@ -450,6 +450,36 @@ export function mcpLabel(name: string): string {
   return match ? `mcp(${match[1]}:${match[2]})` : "";
 }
 
+/** The servers a person knows by another name than the one in the tool id.
+ *  Ours is `octiq`, and `octiqflow_octiq` where Antigravity names it
+ *  (`antigravityEvents`). A Map, because the name looked up is whatever a
+ *  server called itself: on a plain object `__proto__` answers with an object
+ *  and `constructor` with a function, and neither is a label. */
+const MCP_SERVERS: ReadonlyMap<string, string> = new Map([
+  ["octiq", "OctiqFlow"],
+  ["octiqflow_octiq", "OctiqFlow"],
+]);
+
+export type McpParts = { server: string; tool: string; serverLabel: string };
+
+/** The two halves of an MCP callable, from the provider's own name
+ *  (`mcp__octiq__agent_update`) or the compact one (`mcp(octiq:agent_update)`).
+ *  A server name may hold single underscores (`claude_ai_Gmail`), so the split
+ *  is on the first DOUBLE underscore. Null for anything else. */
+export function mcpParts(name: string): McpParts | null {
+  const match = name.match(/^mcp__(.+?)__(.+)$/i) ?? name.match(/^mcp\((.+?):(.+)\)$/i);
+  if (!match) return null;
+  const [, server, tool] = match;
+  return { server, tool, serverLabel: MCP_SERVERS.get(server.toLowerCase()) ?? server };
+}
+
+/** A tool id as words: `agent_update` → `Agent update`. For a card that asks
+ *  a person about the call; the id itself stays beside it. */
+export function toolWords(tool: string): string {
+  const words = tool.replace(/[_-]+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : tool;
+}
+
 export function toolLook(name: string, args: unknown): ToolLook {
   const raw = name || "";
   const lower = raw.toLowerCase();
@@ -498,7 +528,8 @@ export function toolLook(name: string, args: unknown): ToolLook {
     return { kind: "mcp", label: mcpLabel(raw) || raw };
   }
 
-  const kind = FAMILY[lower] ?? "other";
+  // Its own entry only: a tool named `constructor` is not one of ours.
+  const kind = Object.hasOwn(FAMILY, lower) ? FAMILY[lower] : "other";
   if (kind === "read" || kind === "edit") {
     const file = argumentFile(args);
     if (file) return { kind, label: `${kind}(${file})` };

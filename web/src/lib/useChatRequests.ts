@@ -6,6 +6,7 @@ import { askSummary, type Ask } from "../components/PermissionAsk";
 import type { SafetyBlockNotice } from "../components/SafetyBlock";
 import type { Question } from "../components/UserQuestion";
 import { accessRequestTitle, type AccessRequest } from "./accessRequest";
+import { keepArrivals, stampArrival } from "./askClock";
 
 import { PendingRequests, requestConversation, type PendingRequest, type RequestState } from "./pendingRequests";
 type Announce = (key: string, kind: NoticeKind, id: string, detail: string) => void;
@@ -46,10 +47,14 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
   // than no card at all.
   useEffect(() => {
     if (conn !== "open") return;
-    function refill<T extends PendingRequest>(collection: ReturnType<typeof usePendingRequests<T>>, command: string) {
+    function refill<T extends PendingRequest>(
+      collection: ReturnType<typeof usePendingRequests<T>>, command: string,
+      // What the page knows about a request that the host's list does not say.
+      known?: (list: readonly T[] | null, current: RequestState<T>) => T[],
+    ) {
       const token = collection.store.begin();
       bridge.invoke<T[]>(command).then((list) => {
-        const reconciled = collection.store.finish(token, list);
+        const reconciled = collection.store.finish(token, known ? known(list, collection.store.current) : list);
         if (reconciled) collection.publish(reconciled);
       }).catch(() => {
         // Older servers may lack the command; live events still work.
@@ -58,7 +63,9 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       return () => collection.store.cancel(token);
     }
     const cancel = [
-      refill(permissions, "permission_pending"),
+      // A question seen arriving keeps its clock across a reconnect; one first
+      // met in this list has no known age (`lib/askClock`).
+      refill(permissions, "permission_pending", keepArrivals),
       refill(safety, "safety_block_pending"),
       refill(prompts, "question_pending"),
       refill(raises, "access_request_pending"),
@@ -71,7 +78,7 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       const id = ask ? requestConversation(ask) : null;
       if (!id || !ask.id) return;
       notice.current(ask.id, "permission", id, askSummary(ask));
-      permissions.publish(permissions.store.add(ask));
+      permissions.publish(permissions.store.add(stampArrival(ask, permissions.store.current, Date.now())));
     });
     // Nobody answered in time, so the server said no on our behalf. The card
     // must go: leaving it would offer a choice that no longer exists.

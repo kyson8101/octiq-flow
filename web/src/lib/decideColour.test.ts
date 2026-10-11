@@ -1,0 +1,259 @@
+// The decision colour, against the files that carry it.
+//
+// A card that waits on the person (a permission, a question, a handover, a
+// route, a plan) is drawn in `--decide`: a calm blue-teal that every mode
+// states outright. It used to be `--warn` on one card and `--accent` on the
+// rest, and inside the composer the accent is the model's colour, so a
+// question came up gold: the colour that means a problem. Two things can
+// undo that quietly, and neither throws: a palette that names no `--decide`
+// (the fallback is Dark's, unreadable on a light page), and a rule on one of
+// these cards that reaches for the accent again. Both are checked here,
+// against the stylesheets themselves.
+import { describe, expect, it } from "vitest";
+
+import designSystemCss from "../design-system.css?raw";
+import stylesCss from "../styles.css?raw";
+import mangaSheet from "../manga.css?raw";
+import chatPlanCss from "../components/ChatPlanCards.css?raw";
+import handoverCss from "../components/HandoverCards.css?raw";
+import planReviewCss from "../components/PlanReview.css?raw";
+import { MANAGED, mapTokens, parseOklch, parseThemeCss } from "./theme";
+import { BUILT_IN, THEMES } from "./themeStore";
+
+/* ---- Colour, enough of it to measure contrast -------------------------- */
+
+type Rgb = [number, number, number];
+
+function fromOklch(l: number, c: number, h: number): Rgb {
+  const a = c * Math.cos((h * Math.PI) / 180);
+  const b = c * Math.sin((h * Math.PI) / 180);
+  const l3 = (l + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m3 = (l - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s3 = (l - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  const linear = [
+    4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+    -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+    -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
+  ];
+  return linear.map((v) => {
+    const clipped = Math.max(0, Math.min(1, v));
+    return 255 * (clipped <= 0.0031308 ? 12.92 * clipped : 1.055 * clipped ** (1 / 2.4) - 0.055);
+  }) as Rgb;
+}
+
+/** A solid colour as the palette files write one: `#rrggbb` or `oklch()`. */
+function solid(value: string): Rgb {
+  const hex = /^#([0-9a-f]{6})$/i.exec(value.trim());
+  if (hex) return [0, 2, 4].map((at) => parseInt(hex[1].slice(at, at + 2), 16)) as Rgb;
+  const lch = parseOklch(value);
+  if (lch) return fromOklch(lch.l, lch.c, lch.h);
+  throw new Error(`not a colour this test can read: ${value}`);
+}
+
+/** A tint as the palette files write one: `rgb(r g b / a%)`. */
+function tint(value: string): { rgb: Rgb; alpha: number } {
+  const m = /^rgb\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\/\s*([\d.]+)%\s*\)$/.exec(value.trim());
+  if (!m) throw new Error(`not a tint this test can read: ${value}`);
+  return { rgb: [Number(m[1]), Number(m[2]), Number(m[3])], alpha: Number(m[4]) / 100 };
+}
+
+const over = (top: Rgb, alpha: number, under: Rgb): Rgb =>
+  top.map((v, i) => v * alpha + under[i] * (1 - alpha)) as Rgb;
+
+function luminance(rgb: Rgb): number {
+  const [r, g, b] = rgb.map((v) => {
+    const s = v / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** WCAG contrast of two solid colours. */
+function contrast(a: Rgb, b: Rgb): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** Hue in degrees and how much colour there is (0 for a grey). */
+function hue(rgb: Rgb): { h: number; chroma: number } {
+  const [r, g, b] = rgb.map((v) => v / 255);
+  const max = Math.max(r, g, b);
+  const chroma = max - Math.min(r, g, b);
+  if (chroma === 0) return { h: 0, chroma };
+  const h = max === r ? ((g - b) / chroma) % 6 : max === g ? (b - r) / chroma + 2 : (r - g) / chroma + 4;
+  return { h: (h * 60 + 360) % 360, chroma };
+}
+
+/* ---- The five modes, as the page gets them ----------------------------- */
+
+type Mode = { id: string; vars: Record<string, string>; declared: Record<string, string> };
+
+/** Dark is the stylesheet's own `:root`; the rest are their palette files
+ *  through the real mapping. */
+const builtIn = parseThemeCss(designSystemCss).light;
+const MODES: Mode[] = THEMES.map((theme) => theme.id === BUILT_IN
+  ? { id: theme.id, vars: Object.fromEntries(Object.entries(builtIn).map(([k, v]) => [`--${k}`, v])), declared: builtIn }
+  : { id: theme.id, vars: mapTokens(theme.tokens!), declared: theme.tokens! });
+
+const each = MODES.map((mode) => [mode.id, mode] as const);
+
+describe("the decision colour in every mode", () => {
+  it("is a managed variable, so leaving a mode leaves none of it behind", () => {
+    for (const name of ["--decide", "--decide-fg", "--decide-tint"]) expect(MANAGED).toContain(name);
+  });
+
+  it.each(each)("%s states its own, outright", (id, mode) => {
+    // A fallback would be Dark's teal, which a light page cannot read. And
+    // nothing may be worked out from another variable: the accent is the
+    // model's colour inside the composer.
+    const names = id === BUILT_IN ? ["decide", "decide-fg", "decide-tint"] : ["decide", "decide-foreground", "decide-tint"];
+    for (const name of names) {
+      expect(mode.declared[name], `${id} names no --${name}`).toBeTruthy();
+      expect(mode.declared[name]).not.toMatch(/var\(|color-mix|accent|primary/);
+    }
+    expect(() => solid(mode.vars["--decide"])).not.toThrow();
+    expect(() => tint(mode.vars["--decide-tint"])).not.toThrow();
+  });
+
+  it.each(each)("%s keeps it away from amber, and from its own accent", (id, mode) => {
+    const decide = solid(mode.vars["--decide"]);
+    const { h, chroma } = hue(decide);
+    if (id === "manga") {
+      // Monochrome: the decision colour is ink, like everything that is not
+      // a meaning colour.
+      expect(chroma).toBe(0);
+      return;
+    }
+    // Blue-teal: clear of yellow, amber and gold (about 30 to 70 degrees),
+    // of red and cinnabar, and of the green that means "fine".
+    expect(chroma, `${id} has no hue`).toBeGreaterThan(0.1);
+    expect(h, `${id} --decide is at hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(165);
+    expect(h, `${id} --decide is at hue ${h.toFixed(0)}`).toBeLessThanOrEqual(215);
+    expect(mode.vars["--decide"]).not.toBe(mode.vars["--accent"]);
+    expect(mode.vars["--decide"]).not.toBe(mode.vars["--warn"]);
+  });
+
+  it.each(each)("%s can be read on it, and it can be seen on its card", (id, mode) => {
+    const page = solid(mode.vars["--bg-0"]);
+    const decide = solid(mode.vars["--decide"]);
+    const wash = tint(mode.vars["--decide-tint"]);
+    // A decision card is the tint over the page.
+    const card = over(wash.rgb, wash.alpha, page);
+    // The label on a fill (a chosen answer).
+    expect(contrast(solid(mode.vars["--decide-fg"]), decide), `${id}: --decide-fg on --decide`).toBeGreaterThanOrEqual(4.5);
+    // The border and the dot, against the card and against the page round it.
+    expect(contrast(decide, card), `${id}: --decide on its card`).toBeGreaterThanOrEqual(3);
+    expect(contrast(decide, page), `${id}: --decide on the page`).toBeGreaterThanOrEqual(3);
+    // The same colour as small text (the "Suggested" word).
+    expect(contrast(decide, card), `${id}: --decide as text on its card`).toBeGreaterThanOrEqual(4.5);
+    // Reading text on the tint: the page's own, and the quietest step these
+    // cards use (`--fg-2`; `--fg-3` is raised to it on them, styles.css).
+    expect(contrast(solid(mode.vars["--fg-0"]), card), `${id}: --fg-0 on the tint`).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(solid(mode.vars["--fg-2"]), card), `${id}: --fg-2 on the tint`).toBeGreaterThanOrEqual(4.5);
+    // The tint is a wash, not a block: the card stays close to the page.
+    expect(contrast(card, page), `${id}: the tint is too strong`).toBeLessThan(1.35);
+    expect(wash.alpha).toBeLessThanOrEqual(0.14);
+  });
+});
+
+/* ---- The rules that draw the cards ------------------------------------- */
+
+type Rule = { selector: string; body: string; file: string };
+
+/** Every innermost `selector { declarations }` of a stylesheet. */
+function rules(css: string, file: string): Rule[] {
+  const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  return [...code.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+    selector: m[1].trim().replace(/\s+/g, " "),
+    body: m[2],
+    file,
+  }));
+}
+
+const RULES = [
+  ...rules(stylesCss, "styles.css"),
+  ...rules(handoverCss, "HandoverCards.css"),
+  ...rules(planReviewCss, "PlanReview.css"),
+  ...rules(chatPlanCss, "ChatPlanCards.css"),
+  ...rules(mangaSheet, "manga.css"),
+];
+
+/** Colours a decision card must not take: amber means a problem, and the
+ *  accent is the model's colour wherever the composer rebinds it. */
+const NOT_A_DECISION = /--(warn|accent|composer-accent|composer-ink)\b/;
+
+const named = (selector: string) => RULES.filter((rule) => rule.selector === selector);
+
+/** The border, the dot and the primary answer of each card that asks. */
+const DECISION_RULES = [
+  // Permission and access request.
+  ".ask-card",
+  ".ask-card-dot",
+  ":is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary",
+  ":is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary:hover",
+  // A question from the agent.
+  ".qa-card",
+  ".qa-dot",
+  ".qa-option.is-on",
+  // Handover and route (a route card is a pending handover card).
+  ".handover-card.is-pending",
+  ".handover-card.is-pending .handover-mark",
+  ".handover-go",
+  ".handover-go:hover:not(:disabled)",
+  // The plan waiting for approval.
+  ".chat-plan[data-pending]",
+  ".chat-plan[data-pending] .plan-review-dot",
+  ".plan-review[data-drafting] .plan-review-dot",
+  ".plan-review-approve .orch-primary",
+];
+
+describe("the cards that wait on a decision", () => {
+  it.each(DECISION_RULES)("%s is drawn in the decision colour", (selector) => {
+    const found = named(selector);
+    expect(found.length, `no rule for ${selector}`).toBeGreaterThan(0);
+    expect(found.some((rule) => /var\(--decide(-fg|-tint)?\)/.test(rule.body)), `${selector} does not read --decide`).toBe(true);
+    for (const rule of found) expect(rule.body, `${rule.file}: ${selector}`).not.toMatch(NOT_A_DECISION);
+  });
+
+  it("has no rule of the question card left on the accent or on amber", () => {
+    const question = RULES.filter((rule) => rule.file === "styles.css" && /(^|[\s,(>+~])\.qa-/.test(rule.selector));
+    expect(question.length).toBeGreaterThan(40);
+    for (const rule of question) expect(rule.body, rule.selector).not.toMatch(NOT_A_DECISION);
+  });
+
+  it("has no rule of the permission, handover, route or pending-plan card on amber or on the accent, focus rings apart", () => {
+    const card = /\.ask-card(?![\w-]*safety)|\.permission-card|\.access-card|\.handover-card\.is-pending|\.handover-go|\.route-card|\.chat-plan\[data-pending\]|\.plan-review-(dot|approve|quiet|change)|\.plan-command-approval-options/;
+    const mine = RULES.filter((rule) => card.test(rule.selector) && !rule.selector.includes(".safety-card"));
+    expect(mine.length).toBeGreaterThan(20);
+    for (const rule of mine) {
+      // An outline is the keyboard's focus ring, the same on every control.
+      const drawn = rule.body.split(";").filter((line) => !/^\s*outline/.test(line)).join(";");
+      expect(drawn, `${rule.file}: ${rule.selector}`).not.toMatch(NOT_A_DECISION);
+    }
+  });
+
+  it("puts the label on a fill in --decide-fg, never a colour written out", () => {
+    const fills = RULES.filter((rule) => /background:\s*var\(--decide\)\s*(;|$)/m.test(rule.body) && /(^|;)\s*color:/m.test(rule.body));
+    expect(fills.map((rule) => rule.selector)).toContain(".qa-option.is-on");
+    for (const rule of fills) expect(rule.body, rule.selector).toMatch(/(^|;)\s*color:\s*var\(--decide-fg\)/m);
+  });
+
+  it("keeps amber on the card that is a warning, and red on what destroys", () => {
+    // A refused call is a problem: the safety card shares the permission
+    // card's shape and is the one that stays amber.
+    const safety = named(".safety-card");
+    expect(safety.some((rule) => /border-color:[^;]*var\(--warn\)/.test(rule.body))).toBe(true);
+    expect(safety.some((rule) => /background:[^;]*var\(--warn\)/.test(rule.body))).toBe(true);
+    // A stage that can never start is a warning inside a plan.
+    expect(named(".plan-stage[data-blocked] .plan-stage-title").some((rule) => /--warn/.test(rule.body))).toBe(true);
+    expect(named(".ask-btn.is-primary.is-danger").some((rule) => /--danger/.test(rule.body))).toBe(true);
+  });
+
+  it("raises the quietest text one step on a tinted card", () => {
+    const raised = RULES.filter((rule) => /--fg-3:\s*var\(--fg-2\)/.test(rule.body));
+    expect(raised).toHaveLength(1);
+    for (const card of [".ask-card:not(.safety-card)", ".qa-card", ".handover-card.is-pending", ".chat-plan[data-pending]"]) {
+      expect(raised[0].selector).toContain(card);
+    }
+  });
+});

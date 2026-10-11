@@ -9,10 +9,13 @@
 // a disclosure, like every other piece of agent prose.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
-  askBackSummary, canDiscussInstead, chatIdOf, handoverHeadline, isRoute, latestOutcome, noticeLine, outcomeText, placeLine,
-  routeHeadline, routePlaceLine, settingsLine, waitsOnPerson,
+  askBackSummary, canDiscussInstead, chatIdOf, handoverHeadline, homeShort, isRoute, latestOutcome, noticeLine, outcomeText, placeLine,
+  routeHeadline, routePlace, settingsLine, settingsParts, waitsOnPerson,
   type Handover, type HandoverAction, type HandoverAsk, type handoverLayout,
 } from "../lib/handover";
+import { useRosterAgent } from "../lib/agentRoster";
+import { briefRuns } from "../lib/briefRuns";
+import { AgentAvatar } from "./AgentAvatar";
 import "./HandoverCards.css";
 
 type Open = (chatKey: string, projectId: string | null) => void;
@@ -177,11 +180,22 @@ function leafName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 }
 
+/** A brief as prose: its ids, paths and branches in mono, the words round
+ *  them as written. */
+function BriefProse({ text }: { text: string }) {
+  return (
+    <p className="route-brief-text">
+      {briefRuns(text).map((run, index) => run.mono ? <code key={index}>{run.text}</code> : run.text)}
+    </p>
+  );
+}
+
 /** The front desk's proposal: which agent, in which project, with the brief
  *  it will receive. Confirming is the only thing that opens the chat; the
- *  page then goes there. The brief is shown whole, since it is what the
- *  person is agreeing to send; the exact first message, file paths and all,
- *  is one click further. */
+ *  page then goes there. Read top to bottom it answers who (the face, and the
+ *  chat's settings as chips), where, and what: the brief is shown whole, since
+ *  it is what the person is agreeing to send; the exact first message, file
+ *  paths and all, is one click further. */
 export function RouteCard({ handover, onDecide }: {
   handover: Handover;
   onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
@@ -206,6 +220,10 @@ export function RouteCard({ handover, onDecide }: {
   const unreadable = route?.unreadable ?? [];
   const failed = error ?? handover.error;
   const discussInstead = canDiscussInstead(handover);
+  const face = useRosterAgent(handover.to.agentId);
+  const place = routePlace(handover);
+  // A head's conversation spans every project, so it has no one folder.
+  const repository = route?.crossProject ? "" : handover.destination.repository;
   return (
     <section
       className={`handover-card route-card is-${handover.status}`}
@@ -213,20 +231,46 @@ export function RouteCard({ handover, onDecide }: {
       data-status={handover.status}
       data-kind="route"
     >
-      <header className="handover-head">
-        <span className="handover-mark" aria-hidden="true" />
-        <h3>{routeHeadline(handover)}</h3>
+      <header className="handover-head route-head">
+        <AgentAvatar
+          name={face?.name ?? handover.to.name}
+          avatar={face?.avatar}
+          id={handover.to.agentId ?? handover.to.name}
+          size={28}
+          decorative
+        />
+        <div className="route-title">
+          <h3>{routeHeadline(handover)}</h3>
+          <ul className="route-chips" aria-label="Chat settings">
+            {settingsParts(handover.settings).map((part) => (
+              <li key={part.kind} className="handover-chip" data-chip={part.kind}>{part.label}</li>
+            ))}
+          </ul>
+        </div>
       </header>
-      <dl className="handover-facts">
-        <div><dt>Agent</dt><dd>{handover.to.name} <span className="handover-dim">· {settingsLine(handover.settings)}</span></dd></div>
-        <div><dt>Project</dt><dd>{routePlaceLine(handover)}</dd></div>
+      <dl className="handover-facts route-facts">
+        <div>
+          <dt>Project</dt>
+          <dd>
+            <span className="route-project">{place.project}</span>
+            {place.notes.map((note) => <span key={note} className="route-scope"> · {note}</span>)}
+            {repository && <span className="route-repo" title={repository}>{homeShort(repository)}</span>}
+          </dd>
+        </div>
         {files.length > 0 && (
-          <div><dt>Files</dt><dd>{files.map((file) => file.name).join(", ")}</dd></div>
+          <div>
+            <dt>Files</dt>
+            <dd className="route-files">
+              {files.map((file) => (
+                <span key={file.path} className="chip"><span className="chip-name">{file.name}</span></span>
+              ))}
+            </dd>
+          </div>
         )}
       </dl>
       <div className="route-brief">
-        <h4>Brief</h4>
-        <p className="route-brief-text">{handover.brief.objective}</p>
+        <h4>Brief{handover.from.name && <span className="route-brief-from"> · from {handover.from.name}</span>}</h4>
+        <BriefProse text={handover.brief.objective} />
       </div>
       {unreadable.length > 0 && (
         <ul className="route-unreadable" role="alert" aria-label="Not passed on">

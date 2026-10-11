@@ -397,6 +397,50 @@ host refuses by the chat's worker identity, before any card is put up. A
 front desk may do neither. Every save, from a chat or from
 Settings, sends `team-changed`, and every open page reads the roster again.
 
+### The card's change as rows (`changeFacts`)
+
+The card's `tool_input` carries the change twice: `change`, the text above,
+and `changeFacts`, the same change as data. A page draws its rows from
+`changeFacts` and never reads `change` back apart, because a role, a prompt
+or a policy may itself hold a line that reads `Access: edits → full`.
+`change` is unchanged, and it is all an older page or a saved transcript has.
+
+```json
+"changeFacts": {
+  "lead": "Change the agent Nova.",
+  "rows": [
+    { "label": "Access", "before": "edits", "after": "auto" },
+    { "label": "Persistent prompt", "value": "Stand up daily.\nShip on Fridays." }
+  ]
+}
+```
+
+- `lead` is the card's first sentence: what is being done, and to whom.
+- A **plain row** is `label` and `value`: a field stated whole.
+- A **move** is `label`, `before` and `after`: a field that changes. `before`
+  is never empty. An empty `after` means the field is cleared, which only
+  `Persistent prompt` and `Policy` can be.
+- Every value is the whole text with its newlines. A label is one of a fixed
+  set and appears once in a card.
+
+Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
+`policy_facts`, built from the same values as the text):
+
+| Card | Rows |
+| --- | --- |
+| `agent_register` | A plain row for each of `Name`, `Role`, `Provider`, `Model`, `Effort`, `Access`, `Available in`, `Reports to`, `Team`, then `Persistent prompt` when one is proposed. |
+| `agent_update` | A move for each of those fields that changes, and no row for one that stays. `Persistent prompt` comes last when the change touches it: plain when it is set where there was none, a move when it is replaced or cleared. |
+| `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, and `Memory note` last. |
+| `agent_policy_update` | One `Policy` row: plain when a policy is set where there was none, a move when it is replaced or cleared. |
+
+A replaced or cleared prompt or policy carries the current text in `before`.
+The `change` text leaves that out, so this is the one place the rows say more
+than the text.
+
+`changeFacts` is all or nothing. A card whose change cannot be told whole as
+rows is sent without the key, and the page shows `change` as text. The
+Lessons card (`vault_agent_memory_lessons`) is sent that way today.
+
 ## Teams and peer help
 
 A **team** is a named group of agents who may ask each other questions while

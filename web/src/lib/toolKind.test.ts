@@ -12,8 +12,10 @@ import {
   ghOperations,
   gitSubcommand,
   mcpLabel,
+  mcpParts,
   shellCommandCount,
   toolLook,
+  toolWords,
 } from "./toolKind";
 
 describe("commandTool", () => {
@@ -77,6 +79,87 @@ describe("mcpLabel", () => {
 
   it("leaves an unqualified name alone", () => {
     expect(mcpLabel("ask_user")).toBe("");
+  });
+});
+
+describe("mcpParts", () => {
+  it("splits the provider's name into its server and its tool", () => {
+    expect(mcpParts("mcp__octiq__agent_update")).toEqual({
+      server: "octiq", tool: "agent_update", serverLabel: "OctiqFlow",
+    });
+  });
+
+  it("reads the compact name the chat's cards use the same way", () => {
+    expect(mcpParts("mcp(octiq:agent_update)")).toEqual(mcpParts("mcp__octiq__agent_update"));
+    expect(mcpParts(mcpLabel("mcp__workspace_prod__get_ticket"))).toEqual({
+      server: "workspace_prod", tool: "get_ticket", serverLabel: "workspace_prod",
+    });
+  });
+
+  it("keeps the single underscores inside a server's own name", () => {
+    expect(mcpParts("mcp__claude_ai_Gmail__send_message")).toEqual({
+      server: "claude_ai_Gmail", tool: "send_message", serverLabel: "claude_ai_Gmail",
+    });
+    // The tool keeps whatever follows the first double underscore.
+    expect(mcpParts("mcp__docs__read__page")?.tool).toBe("read__page");
+  });
+
+  it("names the servers a person knows by another name", () => {
+    expect(mcpParts("mcp__OCTIQ__ask_user")?.serverLabel).toBe("OctiqFlow");
+    expect(mcpParts("mcp__octiqflow_octiq__ask_user")?.serverLabel).toBe("OctiqFlow");
+  });
+
+  it("shows a server it has no other name for as the server wrote it", () => {
+    // A server names itself. Looked up on a plain object, `__proto__` answers
+    // with an object (which React cannot draw: the card and its buttons went
+    // with it) and `constructor` with a function (an empty chip).
+    expect(mcpParts("mcp(__proto__:x)")).toEqual({ server: "__proto__", tool: "x", serverLabel: "__proto__" });
+    expect(mcpParts("mcp__constructor__x")).toEqual({ server: "constructor", tool: "x", serverLabel: "constructor" });
+    expect(mcpParts("mcp__toString__x")).toEqual({ server: "toString", tool: "x", serverLabel: "toString" });
+    for (const server of ["constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "prototype"]) {
+      for (const name of [`mcp__${server}__x`, `mcp(${server}:x)`]) {
+        expect(mcpParts(name), name).toEqual({ server, tool: "x", serverLabel: server });
+      }
+    }
+    // The provider's own form splits on the first double underscore, so it
+    // cannot carry `__proto__` whole. Whatever it carries is still a string.
+    expect(mcpParts("mcp____proto____x")).toEqual({ server: "__proto", tool: "__x", serverLabel: "__proto" });
+    expect(mcpParts("mcp__CONSTRUCTOR__x")?.serverLabel).toBe("CONSTRUCTOR");
+  });
+
+  it("is nothing for a tool that is not an MCP callable", () => {
+    expect(mcpParts("Bash")).toBeNull();
+    expect(mcpParts("ask_user")).toBeNull();
+    expect(mcpParts("")).toBeNull();
+  });
+});
+
+describe("a tool named like something every object has", () => {
+  it("is one this app does not know, not whatever the object answers", () => {
+    for (const name of ["__proto__", "constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect(toolLook(name, {}), name).toEqual({ kind: "other", label: name });
+    }
+    expect(toolLook("Constructor", { file_path: "/tmp/a" })).toEqual({ kind: "other", label: "Constructor" });
+  });
+});
+
+describe("toolWords", () => {
+  it("writes a tool id as words", () => {
+    expect(toolWords("agent_update")).toBe("Agent update");
+    expect(toolWords("send_message")).toBe("Send message");
+    expect(toolWords("read__page")).toBe("Read page");
+    expect(toolWords("get-ticket")).toBe("Get ticket");
+  });
+
+  it("leaves capitals a tool chose alone", () => {
+    expect(toolWords("API_call")).toBe("API call");
+    expect(toolWords("")).toBe("");
+  });
+});
+
+describe("the chat's own name for an MCP call", () => {
+  it("stays the compact one: the words are for the permission card", () => {
+    expect(toolLook("mcp__octiq__agent_update", {})).toEqual({ kind: "mcp", label: "mcp(octiq:agent_update)" });
   });
 });
 
