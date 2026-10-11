@@ -1806,15 +1806,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             )?;
             to_value(Ok(gate))
         }
-        "orchestration_gate_resolve" => {
+        // Two doors, as for a worker start. A coordinator's answer comes only
+        // through `/hook/orchestration` as `_in_chat`, which the person's
+        // socket refuses; the person's comes only through the socket. A
+        // peer request's gate takes the person's and no other.
+        "orchestration_gate_resolve" | "orchestration_gate_resolve_in_chat" => {
             let actor: String = arg(&args, "actorChatKey")?;
             let resolution: String = arg(&args, "resolution")?;
             let resume_target = arg::<Option<bool>>(&args, "resumeTarget")?.unwrap_or(false);
+            let by = if cmd == "orchestration_gate_resolve_in_chat" {
+                crate::orchestration::ResolvedBy::Coordinator
+            } else {
+                crate::orchestration::ResolvedBy::Person
+            };
             let gate = svc.orchestrations.resolve_gate_and_resume(
                 &actor,
                 arg(&args, "gateId")?,
                 resolution,
                 resume_target,
+                by,
             )?;
             to_value(Ok(gate))
         }

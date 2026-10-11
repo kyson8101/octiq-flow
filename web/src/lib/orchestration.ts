@@ -217,6 +217,16 @@ export type OrchestrationTask = {
 /** Blocked or failed and not replaced: something someone still has to deal
  *  with. A task the coordinator replaced keeps its history but is owed
  *  nothing, so it never counts as blocked (feedback 6b0870f9). */
+/** Whether a gate belongs to a peer request. The host takes that gate's
+ *  answer from the person's page and from no agent, so the page sends it to
+ *  the host instead of through the main chat. */
+export function isPeerRequestGate(
+  gate: Pick<OrchestrationGate, "taskId">,
+  tasks: readonly Pick<OrchestrationTask, "id" | "peerRequest">[],
+): boolean {
+  return !!gate.taskId && tasks.some((task) => task.id === gate.taskId && !!task.peerRequest);
+}
+
 export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy">): boolean {
   return (task.status === "blocked" || task.status === "failed") && !task.supersededBy;
 }

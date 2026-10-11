@@ -888,6 +888,20 @@ pub enum StartedBy<'a> {
     Page { retry_of: Option<&'a str> },
 }
 
+/// Who answers a gate. As with [`StartedBy`], the two reach the host by
+/// different doors and no argument can claim the other: the coordinator only
+/// through `/hook/orchestration` (`gate_resolve` →
+/// `orchestration_gate_resolve_in_chat`, which the person's socket refuses),
+/// the person only through their socket (`orchestration_gate_resolve`, which
+/// no hook action maps to).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedBy {
+    /// The run's coordinator, an agent.
+    Coordinator,
+    /// The person, on the page.
+    Person,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerReport {
@@ -3434,6 +3448,13 @@ impl OrchestrationStore {
                 {
                     return Err("A worker may open a gate only for its own task.".into());
                 }
+                // A coordinator's gate would put its own question, and its
+                // own answer, in the brief of the teammate's next attempt.
+                if task.peer_request.is_some()
+                    && owned_task.as_ref().map(|task| task.id.as_str()) != Some(requested)
+                {
+                    return Err(peer_request::TEAMMATES_GATE.into());
+                }
             }
             let now = now_ms();
             let gate = Gate {
@@ -3469,9 +3490,24 @@ impl OrchestrationStore {
                 run.updated_at = now;
             }
             data.gates.insert(gate.id.clone(), gate.clone());
+            // A peer request's gate is the person's to answer: whoever asked
+            // for the work hears that it waits, and is not asked to decide.
+            let peer_task = gate
+                .task_id
+                .as_ref()
+                .and_then(|id| data.tasks.get(id))
+                .filter(|task| task.peer_request.is_some())
+                .cloned();
             if gate.created_by_chat_key != gate.target_chat_key {
+                let body = match &peer_task {
+                    Some(task) => peer_request::gate_notice(task, &gate),
+                    None => format!("Worker needs a decision for gate {}.\n\n{}\n\nRead orchestration_snapshot and resolve through orchestration_gate_resolve. Only ask the person if their decision is needed.", gate.id, gate.question),
+                };
                 inbox::enqueue(data, &gate.run_id, &gate.created_by_chat_key, &gate.target_chat_key,
-                    format!("gate:{}", gate.id), "decision", format!("Worker needs a decision for gate {}.\n\n{}\n\nRead orchestration_snapshot and resolve through orchestration_gate_resolve. Only ask the person if their decision is needed.", gate.id, gate.question));
+                    format!("gate:{}", gate.id), "decision", body);
+            }
+            if let Some(task) = &peer_task {
+                peer_request::tell_requester_of_gate(data, task, &gate);
             }
             Ok(gate)
         })
@@ -3485,15 +3521,20 @@ impl OrchestrationStore {
         gate_id: String,
         resolution: String,
     ) -> Result<Gate, String> {
-        self.resolve_gate_and_resume(actor, gate_id, resolution, false)
+        self.resolve_gate_and_resume(actor, gate_id, resolution, false, ResolvedBy::Coordinator)
     }
 
+    /// Answer an open gate as the run's coordinator, or as the person on the
+    /// page acting in that coordinator's place (`by`). A gate of a
+    /// peer-request task is the person's alone: an agent's answer is free
+    /// text, and would add to a job the person approved in other words.
     pub fn resolve_gate_and_resume(
         &self,
         actor_chat_key: &str,
         gate_id: String,
         resolution: String,
         resume_target: bool,
+        by: ResolvedBy,
     ) -> Result<Gate, String> {
         let resolution = required_text("gate resolution", resolution, 10_000)?;
         let mut event_run_id = String::new();
@@ -3506,6 +3547,14 @@ impl OrchestrationStore {
             let run_id = coordinator(data, &gate.run_id, actor_chat_key)?.id.clone();
             if gate.status != GateStatus::Open {
                 return Err("This gate has already settled.".into());
+            }
+            let peer_request = gate
+                .task_id
+                .as_ref()
+                .and_then(|id| data.tasks.get(id))
+                .is_some_and(|task| task.peer_request.is_some());
+            if peer_request && by != ResolvedBy::Person {
+                return Err(peer_request::PERSONS_GATE.into());
             }
             let now = now_ms();
             let gate_mut = data
@@ -3554,8 +3603,12 @@ impl OrchestrationStore {
             event_run_id = run_id.clone();
             recompute_run(data, &run_id);
             if resume_target || resolved.created_by_chat_key != actor_chat_key {
+                let said = match by {
+                    ResolvedBy::Person => format!("The person answered gate {} on the page.", resolved.id),
+                    ResolvedBy::Coordinator => format!("Gate {} was resolved.", resolved.id),
+                };
                 inbox::enqueue(data, &run_id, actor_chat_key, &resolved.created_by_chat_key, format!("resolved:{}", resolved.id), "resolution",
-                    format!("Gate {} was resolved.\n\nQuestion: {}\nDecision: {}\n\nContinue the assigned task using this decision. Report the exact attempt when it settles.", resolved.id, resolved.question, resolved.resolution.as_deref().unwrap_or_default()));
+                    format!("{said}\n\nQuestion: {}\nDecision: {}\n\nContinue the assigned task using this decision. Report the exact attempt when it settles.", resolved.question, resolved.resolution.as_deref().unwrap_or_default()));
             }
             Ok(resolved)
         });
@@ -3616,6 +3669,12 @@ impl OrchestrationStore {
                     .tasks
                     .get(&attempt.task_id)
                     .ok_or("The target attempt's task does not exist.")?;
+                // Whoever asked for a peer request is the worker's teammate,
+                // not its manager, and a message is words nobody approved:
+                // none of any kind is delivered, to any attempt of the task.
+                if task.peer_request.is_some() {
+                    return Err(peer_request::NO_INSTRUCTIONS.into());
+                }
                 if task.active_attempt_id.as_deref() != Some(attempt.id.as_str()) {
                     return Err("The target attempt is stale; a newer attempt owns the task.".into());
                 }

@@ -572,6 +572,15 @@ as a turn. A worker cannot tell from a tool result whether such an instruction
 came from the person, and a gate leaves the decision with them. An ordinary
 scope clarification needs no gate.
 
+**A peer request is one approved job, and nobody but the person adds to it.**
+Whoever asked is the worker's teammate, not its manager, so the host delivers
+a peer-request worker no coordinator's message (`record_message` refuses every
+kind, from a chat and from the page) and a gate on its task is answered only
+by the person on the page (`ResolvedBy::Person`: the socket's
+`orchestration_gate_resolve`, which no hook action maps to). A new path that
+puts an agent's words in a worker's inbox, or continues a worker, asks
+`task.peer_request` first.
+
 ## Conventions & gotchas
 
 - **Keep closing replies natural and concise.** Do not append `Task Completed`,

@@ -633,8 +633,19 @@ extended. The host (`orchestration/peer_request.rs`):
   otherwise unchanged.
 - **is one approved job.** A finished request is not reopened
   (`orchestration_task_reopen` is refused, from a chat and from the page): a
-  follow-up is a new request, which the person approves. The teammate's brief
-  says the same of a message or a decision that asks for more than the request.
+  follow-up is a new request, which the person approves.
+- **gives whoever asked no instruction channel.** The requester is the
+  worker's teammate, not its manager, so no agent's words reach the worker
+  once it runs: `orchestration_message_send` to its attempt is refused for
+  every kind of message, from a chat and from the page acting as the
+  coordinator, and a coordinator opens no gate on the task. The teammate still
+  writes to its coordinator, and its report comes back as before.
+- **leaves its gates to the person.** A gate the teammate opens is answered
+  only by the person, on the task board: the page sends the socket's
+  `orchestration_gate_resolve`, which no hook action maps to, and a
+  coordinator's `gate_resolve` (`orchestration_gate_resolve_in_chat`) is
+  refused for it. The coordinator, and a requesting worker, are told that it
+  waits on the person. The teammate's brief states both rules as fact.
 - **never touches the roster.** Nothing in it reads `reportsTo` as changed or
   writes `team.json`; the store method is not given the file.
 

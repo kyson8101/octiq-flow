@@ -1964,7 +1964,8 @@ const ORCHESTRATION_GATE_RESOLVE = {
   name: "orchestration_gate_resolve",
   description:
     "Resolve an open gate as the run's master after the person or coordinator made the " +
-    "decision. OctiqFlow records the resolution and resumes the blocked worker.",
+    "decision. OctiqFlow records the resolution and resumes the blocked worker. Refused for " +
+    "a gate on a peer-request task: only the person answers that one, on the task board.",
   inputSchema: {
     type: "object",
     properties: { gateId: { type: "string" }, resolution: { type: "string" } },
@@ -1985,7 +1986,8 @@ const ORCHESTRATION_MESSAGE_SEND = {
     "The result's interrupt says interrupted, delivered (the worker already read it), " +
     "idle (delivered between turns), unsupported " +
     "(this provider can only be stopped by ending the attempt) or failed. " +
-    "This is coordination, not task completion.",
+    "This is coordination, not task completion. Refused for the worker of a peer-request " +
+    "task: that is one approved job, and anything more is a new request.",
   inputSchema: {
     type: "object",
     properties: {
@@ -2094,7 +2096,8 @@ const ORCHESTRATION_PEER_REQUEST = {
     "request, and only the person can start a failed one again. Refused: someone off your team (the " +
     "refusal names your teammates), yourself, a teammate on a lead-only model, a project or " +
     "repository the teammate or you may not work in, a front desk, and an additional agent " +
-    "in a room. A peer-request task cannot be split, revised or passed on, and its worker " +
+    "in a room. A peer-request task cannot be split, revised or passed on, you cannot send " +
+    "its worker a message or answer its gates (only the person does), and its worker " +
     "cannot make a peer request. For a question, use orchestration_peer_ask.",
   inputSchema: {
     type: "object",
