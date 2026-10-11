@@ -1221,8 +1221,9 @@ of 931b5f0). The notice is the one thing that stands in for an approval
 here, so the task waits for it:
 
 - Each entry of `reopens` carries `noticeDelivered`. It is `false` from the
-  reopen until that event is in the coordinator's transcript, on disk. An
-  entry kept before this field existed reads as `true`.
+  reopen until that event is in the coordinator's transcript and the host
+  holds a confirmed sync of it to disk. An entry kept before this field
+  existed reads as `true`.
 - While any is `false`, no start of the task is accepted, by the
   coordinator, the host's own dispatch and recovery, or the page: `This task
   was reopened with new instructions, and the notice of that is not in the
@@ -1231,11 +1232,18 @@ here, so the task waits for it:
   in every view. The key is left out otherwise.
 - The host writes the notice right after the ledger, and again on every pass
   of the scheduler (about every two seconds) until it holds
-  (`deliver_reopen_notices`). A restart changes nothing: the ledger
+  (`deliver_reopen_notices`). A transcript that gives no confirmation is
+  asked again after 4 seconds, then 8, doubling to a minute, so a fault
+  that lasts costs one read a minute. A restart changes nothing: the ledger
   remembers what is owed.
 - It is exactly one event. Every try writes the same one, made from the
   entry in `reopens`, so `taskId`, `attempt` and `at` never change; and a
-  notice already in the transcript is recorded, never written again.
+  notice already in the transcript is never written again.
+- A notice that can be read back is not yet a confirmed one. The line of a
+  write that was never confirmed (its folder would not sync, or the server
+  stopped) is recorded only after the host has synced the transcript's file
+  and its folder, and both succeeded. While either fails the task stays
+  held, and no other notice is written into that transcript.
 - A notice is written only into a chat you can open: one the chat list has
   and that is not in the trash. When the coordinator's chat is not such a
   chat, the reopen is refused outright and nothing is recorded: `The
