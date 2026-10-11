@@ -96,6 +96,7 @@ import { AgentRail, RailButton } from "./components/AgentRail";
 import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
+import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
 import { backgroundCalls } from "./lib/background";
 import { MOBILE, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
@@ -205,7 +206,7 @@ import {
   provesLiveTurn,
   type ChatQueueState,
 } from "./lib/recovery";
-import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
+import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage, unconfirmedSend } from "./lib/messageQueue";
 import { canDiscussUnsent, DISCUSS_NOTICE } from "./lib/writerConflict";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
@@ -3578,12 +3579,7 @@ export default function App() {
       );
       sendingTurns.current.add(turnId);
       const fail = (err: unknown) =>
-        patch(id, (s) => ({
-          ...s,
-          busy: runningRef.current.has(id) ? s.busy : false,
-          messages: s.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
-            ? { ...m, delivery: "unknown", queueError: String((err as Error).message ?? err) } : m),
-        }));
+        patch(id, (s) => unconfirmedSend(s, turnId, err, runningRef.current.has(id)));
       try {
         const held = conversationsRef.current.find((c) => c.id === id);
         const recordedCwd = held?.cwd ?? chatsRef.current[id]?.cwd;
@@ -3751,6 +3747,9 @@ export default function App() {
           await bridge.invoke("chat_start", {
             key: keyFor(id),
             cwd: launchCwd,
+            // Where the host may continue this chat when `cwd` has been removed
+            // and cannot be rebuilt (`chat_recover.rs`).
+            fallbackCwd: targetProject.primary_path ?? null,
             useSandbox: held ? false : plan ? plan.useSandbox : (sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? null),
             // A project can group several folders, and the chat starts in only
             // one of them. The rest are named here so the agent can reach the
@@ -5397,6 +5396,14 @@ export default function App() {
                 </a>
               )}
             </div>
+          )}
+
+          {conversationId && !workerChat && (
+            <RemovedFolderBanner
+              chatId={conversationId}
+              connected={conn === "open"}
+              projectPath={project?.primary_path ?? undefined}
+            />
           )}
 
           {conversationId && visibleNotices.length > 0 && (
