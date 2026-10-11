@@ -10,7 +10,9 @@ const { spawn } = require("node:child_process");
 function call(root, chatKey, method, params, flags = []) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...flags], {
-      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: chatKey }, stdio: ["pipe", "pipe", "pipe"],
+      // Run from a worker's chat, this process carries that chat's attempt:
+      // inherited, it would make the server under test a worker's.
+      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: chatKey }, stdio: ["pipe", "pipe", "pipe"],
     });
     const timer = setTimeout(() => { child.kill(); reject(new Error("MCP timed out")); }, 5000);
     let out = "";
@@ -136,7 +138,7 @@ test("an agent's memory append names only its words, and the host alone says whe
 test("an orchestration worker is not offered the Lessons rewrite", async () => {
   const run = (method, params) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs")], {
-      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ROOT: "", OCTIQ_CHAT_KEY: "chat:worker", OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" },
+      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_FRONT_DESK: "", OCTIQ_ROOT: "", OCTIQ_CHAT_KEY: "chat:worker", OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let out = "";

@@ -11,7 +11,7 @@ const setup = (t) => { const root = fs.mkdtempSync(path.join(os.tmpdir(), "octiq
 
 function mcp(root, key, method, params, scriptArgs = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...scriptArgs], { env: { ...process.env, OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: key }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...scriptArgs], { env: { ...process.env, OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: key }, stdio: ["pipe", "pipe", "pipe"] });
     let out = ""; let errors = "";
     child.stdout.on("data", chunk => { out += chunk; if (out.includes("\n")) { resolve(JSON.parse(out.split("\n")[0])); child.stdin.end(); } });
     child.stderr.on("data", chunk => errors += chunk);

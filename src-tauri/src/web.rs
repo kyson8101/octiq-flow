@@ -3372,7 +3372,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_handover_hook_records_it_pending_and_only_the_persons_confirm_starts_its_chat() {
         use crate::handover::tests::{
-            git, is_waiting, mend_store, project, register, repo, scratch, FakeHost,
+            eventually, git, is_waiting, mend_store, project, register, repo, scratch, FakeHost,
         };
         use crate::handover::Status;
         let root = scratch("hook");
@@ -3448,17 +3448,30 @@ mod tests {
                 async move { post_hook(&base, "handover", None, Some(&first), body).await },
             )
         };
-        let mut recorded = Vec::new();
-        for _ in 0..300 {
-            recorded = crate::handover::list(&store_path).unwrap();
-            if recorded.first().is_some_and(|h| is_waiting(&h.id)) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        // Two things the hook does on its own task, with no signal for either:
+        // it records the handover, then registers its wait on it. An answer
+        // before both means the call was not held, and fails at once.
+        let id = eventually("the hook recording its handover", || {
+            let recorded = crate::handover::list(&store_path).unwrap();
+            let id = recorded.first().map(|h| h.id.clone());
+            assert!(
+                id.is_some() || !asking.is_finished(),
+                "the hook answered, recording nothing"
+            );
+            id
+        })
+        .await;
+        eventually("the hook's call being held open on its handover", || {
+            let held = is_waiting(&id);
+            assert!(
+                held || !asking.is_finished(),
+                "the hook answered without waiting"
+            );
+            held.then_some(())
+        })
+        .await;
+        let recorded = crate::handover::list(&store_path).unwrap();
         assert_eq!(recorded.len(), 1, "one handover recorded");
-        let id = recorded[0].id.clone();
-        assert!(is_waiting(&id), "the call is held open");
         // Pending, on disk, and nothing exists for it yet.
         let raw: Value = serde_json::from_slice(&std::fs::read(&store_path).unwrap()).unwrap();
         assert_eq!(raw["handovers"][&id]["status"], json!("pending"));
