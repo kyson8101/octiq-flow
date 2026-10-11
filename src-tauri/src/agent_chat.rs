@@ -11744,13 +11744,29 @@ mod completion_tests {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// The next line a stand-in was sent on its stdin, which is the Stop.
+    fn stop_sent(written: &mut impl std::io::BufRead) {
+        let mut line = String::new();
+        written.read_line(&mut line).expect("the stand-in's echo");
+        let sent: Value = serde_json::from_str(&line).expect("a line of JSON");
+        assert_eq!(sent["request"]["subtype"], "interrupt", "{line}");
+    }
+
     /// Everything `written` still holds, to the end of the stream: the lines
     /// a stand-in was sent on its stdin and had not been read back yet.
+    ///
+    /// Only what it was sent, which is always a JSON object. A stand-in whose
+    /// stdin closes a moment before it is killed gets as far as the test
+    /// harness's own closing lines, and those are not.
     fn rest_of(written: &mut impl std::io::BufRead) -> Vec<Value> {
         let mut lines = Vec::new();
         let mut line = String::new();
         while written.read_line(&mut line).expect("the stand-in's echo") > 0 {
-            lines.push(serde_json::from_str(&line).expect("a line of JSON"));
+            if let Ok(sent) = serde_json::from_str::<Value>(&line) {
+                if sent.is_object() {
+                    lines.push(sent);
+                }
+            }
             line.clear();
         }
         lines
@@ -11935,6 +11951,7 @@ mod completion_tests {
         let chat = Listed::with(session);
         chat.session.lock().unwrap().answering = Some("user-0".into());
         chat.stop();
+        stop_sent(&mut written);
         chat.send("do this instead", "user-9");
         chat.send("/status", "user-10");
         assert_eq!(chat.queued(), ["user-9", "user-10"]);
@@ -11951,10 +11968,9 @@ mod completion_tests {
         assert!(chat.runs(&next), "it starts in the chat's next process");
         assert_eq!(chat.queued(), ["user-10"], "the rest wait behind it");
         assert!(!chat.manager.handoffs.lock().unwrap().contains(&chat.key));
-        // All the old process was ever sent after the Stop is the Stop.
+        // The old process was sent nothing after the Stop.
         let sent = rest_of(&mut written);
-        assert_eq!(sent.len(), 1, "{sent:?}");
-        assert_eq!(sent[0]["request"]["subtype"], "interrupt");
+        assert!(sent.is_empty(), "{sent:?}");
         assert_eq!(chat.answering().as_deref(), Some("user-0"));
 
         // Whatever the ended process still says ends nothing here: the
@@ -12285,6 +12301,7 @@ mod completion_tests {
         let chat = Listed::with(session);
         chat.session.lock().unwrap().answering = Some("user-0".into());
         chat.stop();
+        stop_sent(&mut written);
 
         let note = Notification {
             id: format!("{RECEIPT_PREFIX}1"),
@@ -12343,8 +12360,7 @@ mod completion_tests {
         }
         assert!(exited(&chat.session));
         let sent = rest_of(&mut written);
-        assert_eq!(sent.len(), 1, "{sent:?}");
-        assert_eq!(sent[0]["request"]["subtype"], "interrupt");
+        assert!(sent.is_empty(), "{sent:?}");
     }
 
     /// The full stop and the end of the grace take the same session lock,
