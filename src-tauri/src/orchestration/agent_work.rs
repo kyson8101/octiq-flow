@@ -201,9 +201,23 @@ fn in_progress(
 /// ledger's (`OrchestrationStore::inner`). `team::delete_checked` takes the
 /// first and calls `leave`, which takes the second and holds it across the
 /// roster's write. `reserve_attempt_for` takes only the second. Nothing
-/// that holds the ledger's lock calls into `team.rs`, and the chats are
-/// asked with `try_lock` alone (`ChatManager::turn_may_be_in_flight`), so no
-/// third lock is ever waited for here.
+/// that holds the ledger's lock calls into `team.rs`.
+///
+/// The chats' locks come after both and are never waited for from here.
+/// `leave` sets the agent's mark in the chat manager's table before it takes
+/// the ledger (a leaf lock, held for the insert alone), and under the ledger
+/// it asks each conversation with `try_lock` only (`LeavingMark::working`):
+/// the session table, the queue, the session. A chat that writes a prompt
+/// holds its session's lock and reads the mark there; a chat that starts
+/// holds the session table's and reads the manager's table. Whatever else
+/// a chat holds or waits for meanwhile, the removal waits for none of it: a
+/// chat lock that is taken answers "working", the removal is refused, and
+/// its two locks are let go. So nothing here can wait in a ring.
+///
+/// So a removal and a turn in one of the agent's own conversations exclude
+/// each other too (`agent_chat::Leaving`): the turn first, and the removal
+/// finds it in flight and is refused; the removal first, and the prompt
+/// finds the mark and is refused.
 ///
 /// So a removal and a start of the agent's work exclude each other, and
 /// whichever takes the ledger first wins. The start first: its attempt is
@@ -241,8 +255,16 @@ impl crate::team::Leave for Departure<'_> {
         chats: &[crate::team::OwnChat],
         write: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
-        let in_flight = |key: &str| self.chats.turn_may_be_in_flight(key);
-        self.store.leave(agent, chats, &in_flight, write)
+        // Mark first, then look (`agent_chat::Leaving`): from here no
+        // process is started for one of the agent's conversations, and each
+        // live one takes the mark in the look that finds it idle. Dropped on
+        // any refusal or failure below, which calls it off.
+        let keys: Vec<String> = chats.iter().map(|chat| chat.chat_key.clone()).collect();
+        let mark = self.chats.mark_leaving(&agent.name, &keys);
+        self.store
+            .leave(agent, chats, &|key: &str| mark.working(key), write)?;
+        mark.gone();
+        Ok(())
     }
 }
 

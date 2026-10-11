@@ -421,6 +421,139 @@ struct ChatSession {
     /// full stop has not been read yet. Set and cleared under this session's
     /// lock, and gone with the process: nothing else records an unwind.
     cut_off: CutOff,
+    /// The removal of the registered agent whose conversation this is, once
+    /// one has looked at this process (`LeavingMark::working`). Set under
+    /// this session's lock, which every prompt is written under.
+    leaving: Option<Arc<Leaving>>,
+}
+
+/// The removal of a registered agent, as its own conversations see it.
+///
+/// **A prompt and a removal never both go through** (review of 931b5f0,
+/// H4). The removal marks first and looks second: it puts this on every
+/// conversation the agent speaks in as itself (`ChatManager::mark_leaving`),
+/// and only then reads whether one of them is working
+/// (`LeavingMark::working`), under that session's own lock, where it also
+/// leaves the mark. Every prompt is written under the same lock by
+/// `write_user_message_locked`, which refuses a session that carries the
+/// mark, and a process is put in the session table by `start_session`, which
+/// refuses a chat the manager holds a mark for. So a write that came first
+/// had the lock first and the removal saw its turn; a write that came second
+/// saw the mark.
+///
+/// A removal that is refused or fails calls the mark off, and the
+/// conversation carries on. One that is made leaves it for good: the agent
+/// is gone, and nothing more is asked of it in its name. It is kept in
+/// memory only, so a restart forgets it.
+#[derive(Debug)]
+struct Leaving {
+    name: String,
+    state: std::sync::atomic::AtomicU8,
+}
+
+impl Leaving {
+    const UNDER_WAY: u8 = 0;
+    const GONE: u8 = 1;
+    const CALLED_OFF: u8 = 2;
+
+    fn state(&self) -> u8 {
+        self.state.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Why nothing is written or started, or `None` once it was called off.
+    fn refusal(&self) -> Option<String> {
+        let name = &self.name;
+        match self.state() {
+            Self::UNDER_WAY => Some(format!(
+                "{name} is being removed, so this conversation takes no message right now. Nothing was sent. Send it again in a moment: if the removal is refused, the conversation carries on."
+            )),
+            Self::GONE => Some(format!(
+                "{name} was removed, and this was {name}'s conversation: it takes no more messages. Nothing was sent. Start a new conversation with another agent."
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// A removal's hold on the agent's own conversations
+/// (`ChatManager::mark_leaving`). Dropped without `gone`, it calls the mark
+/// off: whatever stopped the removal, its chats take messages again.
+pub(crate) struct LeavingMark<'a> {
+    manager: &'a ChatManager,
+    keys: Vec<String>,
+    mark: Arc<Leaving>,
+}
+
+impl LeavingMark<'_> {
+    /// Whether the conversation `key` may be working, asked AFTER the mark
+    /// was set. A process that is idle is marked right here, under its own
+    /// lock, so the answer cannot go stale: nothing is written to it after
+    /// this said it was idle.
+    ///
+    /// Nothing is waited for. The caller holds the roster's lock and the
+    /// ledger's, so the session table, the queue and the session are tried;
+    /// one that is busy answers `true`, as does a turn in flight, a stopped
+    /// turn whose full stop is still owed, anything queued, and a one-shot
+    /// process being replaced. In doubt the agent is working, and the
+    /// removal is refused and asked again.
+    pub(crate) fn working(&self, key: &str) -> bool {
+        let Ok(sessions) = self.manager.sessions.try_lock() else {
+            return true;
+        };
+        if self
+            .manager
+            .handoffs
+            .try_lock()
+            .map_or(true, |handoffs| handoffs.contains(key))
+            || self.manager.queued_turns.try_lock().map_or(true, |queued| {
+                queued.get(key).is_some_and(|q| !q.is_empty())
+            })
+        {
+            return true;
+        }
+        let Some(session) = sessions.get(key) else {
+            return false;
+        };
+        let Ok(mut session) = session.try_lock() else {
+            return true;
+        };
+        if session.busy || session.cut_off != CutOff::No {
+            return true;
+        }
+        session.leaving = Some(self.mark.clone());
+        false
+    }
+
+    /// The removal was made. The mark stays, and says so.
+    pub(crate) fn gone(self) {
+        self.mark
+            .state
+            .store(Leaving::GONE, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for LeavingMark<'_> {
+    fn drop(&mut self) {
+        if self.mark.state() != Leaving::UNDER_WAY {
+            return;
+        }
+        self.mark
+            .state
+            .store(Leaving::CALLED_OFF, std::sync::atomic::Ordering::SeqCst);
+        let mut marks = self
+            .manager
+            .leaving
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for key in &self.keys {
+            if marks
+                .get(key)
+                .is_some_and(|mark| Arc::ptr_eq(mark, &self.mark))
+            {
+                marks.remove(key);
+            }
+        }
+    }
 }
 
 /// A turn that was cut short still sends a full stop of its own, and the
@@ -496,6 +629,19 @@ impl ChatSession {
     /// How long this has been sitting still, or `None` while it is working.
     fn still_for(&self) -> Option<Duration> {
         (!self.busy).then(|| self.last_active.elapsed())
+    }
+
+    /// Refuse while the agent whose conversation this is is being removed,
+    /// or was (`Leaving`). A mark whose removal was called off is let go.
+    fn not_leaving(&mut self) -> Result<(), String> {
+        match self.leaving.as_ref().map(|mark| mark.refusal()) {
+            Some(Some(refusal)) => Err(refusal),
+            Some(None) => {
+                self.leaving = None;
+                Ok(())
+            }
+            None => Ok(()),
+        }
     }
 }
 
@@ -794,6 +940,10 @@ pub struct ChatManager {
     /// — see `chat_complete_impl`. In memory only: a server restart forgets
     /// it and the chat is simply not ticked.
     completing: Mutex<HashMap<String, String>>,
+    /// Conversations whose registered agent is being removed, or was, by
+    /// chat key — see `Leaving`. A leaf: held for one lookup or one change
+    /// and never across another lock.
+    leaving: Mutex<HashMap<String, Arc<Leaving>>>,
 }
 
 /// One start's hold on a chat that has no process yet
@@ -1328,6 +1478,46 @@ impl ChatManager {
         sessions
             .get(key)
             .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
+    }
+
+    /// Mark the conversations the registered agent `name` speaks in as
+    /// itself (`keys`) as its removal begins: from here no process is
+    /// started for one of them (`leaving_refusal`). The removal then asks
+    /// each one whether it is working (`LeavingMark::working`), which is
+    /// where a live process takes the mark. See `Leaving` for why the order
+    /// is mark, then look.
+    ///
+    /// A conversation of an agent that is already gone keeps the mark it
+    /// has.
+    pub(crate) fn mark_leaving(&self, name: &str, keys: &[String]) -> LeavingMark<'_> {
+        let mark = Arc::new(Leaving {
+            name: name.to_owned(),
+            state: std::sync::atomic::AtomicU8::new(Leaving::UNDER_WAY),
+        });
+        let mut marks = self.leaving.lock().unwrap_or_else(|e| e.into_inner());
+        for key in keys {
+            if marks
+                .get(key)
+                .is_none_or(|held| held.state() != Leaving::GONE)
+            {
+                marks.insert(key.clone(), mark.clone());
+            }
+        }
+        LeavingMark {
+            manager: self,
+            keys: keys.to_vec(),
+            mark,
+        }
+    }
+
+    /// Why the conversation `key` takes no message and starts no process:
+    /// its registered agent is being removed, or was. `None` otherwise.
+    pub(crate) fn leaving_refusal(&self, key: &str) -> Option<String> {
+        self.leaving
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .and_then(|mark| mark.refusal())
     }
 
     /// Note the program a just-started process runs, as the PATH lookup the
@@ -2849,6 +3039,11 @@ pub(crate) fn start_session(
     {
         return Err(format!("chat '{session_key}' is already running"));
     }
+    // Said before anything is prepared; decided below, under the lock the
+    // process goes into the table with.
+    if let Some(leaving) = manager.leaving_refusal(&session_key) {
+        return Err(leaving);
+    }
     // A front-desk chat only routes (`handover::route`): it is launched
     // read-only with no tool but `route_chat`, whatever its registration
     // says, on every start, resume and relaunch alike.
@@ -2918,6 +3113,13 @@ pub(crate) fn start_session(
                 .contains(&session_key))
     {
         return Err(format!("chat '{session_key}' is already running"));
+    }
+    // No process for a conversation whose registered agent is being
+    // removed, or was (`Leaving`). Under the session table's lock, held
+    // until the process is in the table: a removal that looks afterwards
+    // finds it there, with its first turn in flight.
+    if let Some(leaving) = manager.leaving_refusal(&session_key) {
+        return Err(leaving);
     }
 
     let (prompt, visible_prompt) = match (prompt, manager.background.continuation(&key)) {
@@ -3233,6 +3435,7 @@ pub(crate) fn start_session(
         busy: has_prompt && (!prompt.trim().is_empty() || !images.is_empty()),
         last_active: Instant::now(),
         cut_off: CutOff::No,
+        leaving: None,
     }));
     sessions.insert(session_key.clone(), session.clone());
     manager.remember_binary(&session_key, provider.bin());
@@ -3958,6 +4161,9 @@ fn write_user_message_locked(
     if session.cut_off != CutOff::No {
         return Err(STILL_STOPPING.into());
     }
+    // And the invariant of `Leaving`, for the same reason: a registered
+    // agent that is being removed, or was, is not given another turn.
+    session.not_leaving()?;
     let payload = if let Some(codex) = session.codex.as_mut() {
         let id = codex.request_id("turn");
         let text = if codex.has_octiq_mcp {
@@ -4550,6 +4756,12 @@ fn chat_send_with_user_turn(
                 .map_err(|e| e.to_string())?
                 .contains(&session_key)
             {
+                // The process this would ride is not started for an agent
+                // that is being removed (`start_session`), so it is not
+                // queued for one either.
+                if let Some(leaving) = manager.leaving_refusal(&session_key) {
+                    return Err(leaving);
+                }
                 queue_waiting_turn(
                     &manager,
                     &session_key,
@@ -4581,6 +4793,10 @@ fn chat_send_with_user_turn(
         // for that full stop like anything else queued.
         {
             let mut guard = session.lock().map_err(|e| e.to_string())?;
+            // Before the message is written down or queued: an agent that
+            // is being removed takes none (`Leaving`). The write below
+            // would refuse it too, after the bubble was on record.
+            guard.not_leaving()?;
             let one_shot = !provider_for(guard.agent)
                 .capabilities()
                 .input
@@ -6047,6 +6263,7 @@ impl ChatManager {
                 busy: false,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                leaving: None,
             })),
         );
         secret
@@ -8149,6 +8366,7 @@ mod tests {
                 busy,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                leaving: None,
             }))
         };
         // No live process: nothing can be in a turn.
@@ -8213,6 +8431,7 @@ mod tests {
                 busy: false,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                leaving: None,
             })),
         );
 
@@ -8246,6 +8465,7 @@ mod tests {
                 busy: true,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                leaving: None,
             })),
         );
 
@@ -8509,6 +8729,7 @@ mod tests {
             busy,
             last_active: Instant::now(),
             cut_off: CutOff::No,
+            leaving: None,
         }))
     }
 
@@ -8535,6 +8756,7 @@ mod tests {
                 busy: true,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                leaving: None,
             })),
             stdout,
         )
@@ -9379,6 +9601,7 @@ mod tests {
             busy: true,
             last_active: Instant::now(),
             cut_off: CutOff::No,
+            leaving: None,
         }));
         manager
             .sessions
@@ -9471,6 +9694,7 @@ mod tests {
                 busy: true,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                leaving: None,
             })),
         );
 
@@ -9587,6 +9811,7 @@ mod tests {
             busy: true,
             last_active: Instant::now(),
             cut_off: CutOff::No,
+            leaving: None,
         }));
         manager
             .sessions
@@ -9829,6 +10054,7 @@ mod idle_tests {
                 .checked_sub(ago)
                 .expect("a clock with some run-up behind it"),
             cut_off: CutOff::No,
+            leaving: None,
         }))
     }
 
@@ -10307,6 +10533,7 @@ mod question_delivery_tests {
                 busy: true,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                leaving: None,
             })),
         );
         let request = serde_json::from_value(json!({ "chatKey": key, "launchId": "launch-1", "questions": [{"question":"Which database?"}] })).unwrap();
@@ -10500,6 +10727,7 @@ mod question_delivery_tests {
                 busy: false,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                leaving: None,
             })),
         );
         let (id, _rx) = manager
@@ -11077,6 +11305,7 @@ mod completion_tests {
             busy,
             last_active: Instant::now(),
             cut_off: CutOff::No,
+            leaving: None,
         }))
     }
 
@@ -12595,5 +12824,367 @@ mod completion_tests {
         assert!(exited(&chat.session));
         assert_eq!(chat.session.lock().unwrap().cut_off, CutOff::Ended);
         assert_eq!(waits_asked(&chat), 3);
+    }
+}
+
+/// A registered agent's own conversation and its removal (review of
+/// 931b5f0, H4): a prompt and a removal never both go through.
+#[cfg(test)]
+mod leaving_tests {
+    use super::tests::{capturing_claude_session, hold};
+    use super::*;
+    use crate::orchestration::agent_work::Departure;
+    use crate::orchestration::OrchestrationStore;
+
+    /// A lead registered in a roster of its own, with one conversation it
+    /// leads: a live stand-in Claude that is idle, and what it is sent.
+    struct Led {
+        _dir: crate::test_dir::TestDir,
+        roster: PathBuf,
+        lead: crate::team::TeamAgent,
+        manager: Arc<ChatManager>,
+        store: OrchestrationStore,
+        key: String,
+        session: Arc<Mutex<ChatSession>>,
+        written: std::io::BufReader<std::process::ChildStdout>,
+    }
+
+    impl Led {
+        fn new() -> Self {
+            let dir = crate::test_dir::TestDir::new("m2-leaving");
+            let roster = dir.0.join("team.json");
+            let lead = crate::team::save(
+                &roster,
+                serde_json::from_value(json!({
+                    "name": "Lead", "role": "Leads", "agent": "claude", "model": "sonnet",
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let key = format!("chat:leaving-{}", uuid::Uuid::new_v4().simple());
+            crate::team::record_lead(&roster, &key, &lead, "workspace", false).unwrap();
+            let (session, written) = capturing_claude_session();
+            session.lock().unwrap().busy = false;
+            let manager = Arc::new(ChatManager::default());
+            hold(&manager, &key, session.clone());
+            Self {
+                _dir: dir,
+                roster,
+                lead,
+                manager,
+                store: OrchestrationStore::default(),
+                key,
+                session,
+                written,
+            }
+        }
+
+        fn departure(&self) -> Departure<'_> {
+            Departure {
+                store: &self.store,
+                chats: &self.manager,
+            }
+        }
+
+        fn send(&self, text: &str, id: &str) -> Result<(), String> {
+            chat_send_user_impl(
+                self.manager.clone(),
+                self.key.clone(),
+                text.into(),
+                None,
+                None,
+                Some(id.into()),
+                None,
+            )
+        }
+
+        fn registered(&self) -> bool {
+            !crate::team::list(&self.roster, None, true)
+                .unwrap()
+                .is_empty()
+        }
+
+        /// Every prompt the stand-in was ever sent. Its input is closed, not
+        /// the process killed, so it echoes what it still holds and ends.
+        fn sent(mut self) -> Vec<String> {
+            drop(self.session.lock().unwrap().stdin.take());
+            let mut texts = Vec::new();
+            let mut line = String::new();
+            while std::io::BufRead::read_line(&mut self.written, &mut line).unwrap_or(0) > 0 {
+                if let Ok(sent) = serde_json::from_str::<Value>(&line) {
+                    if let Some(text) = sent.pointer("/message/content/0/text") {
+                        texts.push(text.as_str().unwrap_or_default().to_owned());
+                    }
+                }
+                line.clear();
+            }
+            texts
+        }
+    }
+
+    impl Drop for Led {
+        fn drop(&mut self) {
+            let _ = end_process(&self.manager, &self.key);
+            crate::transcript::forget(&self.key);
+        }
+    }
+
+    /// A removal that does something of the test's after the agent's chats
+    /// were looked at and found idle, and before the roster is written.
+    struct Midway<'a, F: Fn()> {
+        departure: Departure<'a>,
+        then: F,
+    }
+
+    impl<F: Fn()> crate::team::Leave for Midway<'_, F> {
+        fn leave(
+            &self,
+            agent: &crate::team::TeamAgent,
+            chats: &[crate::team::OwnChat],
+            write: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<(), String> {
+            crate::team::Leave::leave(&self.departure, agent, chats, &mut || {
+                (self.then)();
+                write()
+            })
+        }
+    }
+
+    /// The reviewer's probe. The removal has looked at the lead's chat and
+    /// found it idle; before the roster is written, the person's message
+    /// arrives on another thread through the real send. It is refused in
+    /// words that say why, nothing reaches the agent, and no turn is in
+    /// flight in a conversation whose agent is gone.
+    #[test]
+    fn a_message_that_arrives_inside_a_removal_is_refused_and_nothing_is_written() {
+        let led = Led::new();
+        let answer = Mutex::new(None);
+        let midway = Midway {
+            departure: led.departure(),
+            then: || {
+                let sent = thread::scope(|scope| {
+                    scope
+                        .spawn(|| led.send("Previously prepared turn", "user-1"))
+                        .join()
+                        .unwrap()
+                });
+                *answer.lock().unwrap() = Some(sent);
+            },
+        };
+        crate::team::delete_idle(&led.roster, &led.lead.id, &midway)
+            .expect("the chat was idle when the removal looked");
+        let refused = answer
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the message was sent inside the removal")
+            .expect_err("a prompt written inside a removal");
+        assert_eq!(
+            refused,
+            "Lead is being removed, so this conversation takes no message right now. Nothing was sent. Send it again in a moment: if the removal is refused, the conversation carries on."
+        );
+        assert!(!led.registered(), "the removal went through");
+        assert!(!led.manager.turn_in_flight(&led.key));
+        assert!(!led.session.lock().unwrap().busy);
+        // Gone, the conversation is the agent's no longer: nothing more is
+        // written to it, and no process is started for it.
+        let gone = "Lead was removed, and this was Lead's conversation: it takes no more messages. Nothing was sent. Start a new conversation with another agent.";
+        assert_eq!(led.send("And another", "user-2"), Err(gone.into()));
+        assert_eq!(led.manager.leaving_refusal(&led.key).as_deref(), Some(gone));
+        assert_eq!(led.sent(), Vec::<String>::new());
+    }
+
+    /// The other order: the message first. Its turn is in flight when the
+    /// removal looks, so the removal is the one refused, the agent stays,
+    /// and the conversation goes on taking messages.
+    #[test]
+    fn a_turn_that_started_first_refuses_the_removal_and_the_chat_carries_on() {
+        let led = Led::new();
+        led.send("Do this", "user-1").unwrap();
+        let refused =
+            crate::team::delete_idle(&led.roster, &led.lead.id, &led.departure()).unwrap_err();
+        assert_eq!(
+            refused,
+            format!(
+                "Lead is in the middle of a turn in a conversation it leads ({}). Nothing was removed. Stop that turn or wait for it to end, then remove Lead.",
+                led.key
+            )
+        );
+        assert!(led.registered());
+        assert_eq!(led.manager.leaving_refusal(&led.key), None, "called off");
+        // The turn ends; the next message is written like any other.
+        {
+            let mut running = led.session.lock().unwrap();
+            end_turn_locked(&led.manager, &led.key, &led.key, &mut running, true);
+        }
+        led.send("And this", "user-2").unwrap();
+        assert_eq!(led.sent(), ["Do this", "And this"]);
+    }
+
+    /// A removal that fails after it marked and looked (here the roster
+    /// cannot be written) calls the mark off: the idle chat it had marked
+    /// takes the next message.
+    #[test]
+    fn a_removal_that_fails_leaves_the_chat_taking_messages() {
+        struct Failing<'a>(Departure<'a>);
+        impl crate::team::Leave for Failing<'_> {
+            fn leave(
+                &self,
+                agent: &crate::team::TeamAgent,
+                chats: &[crate::team::OwnChat],
+                _write: &mut dyn FnMut() -> Result<(), String>,
+            ) -> Result<(), String> {
+                crate::team::Leave::leave(&self.0, agent, chats, &mut || {
+                    Err("No space left on device".into())
+                })
+            }
+        }
+        let led = Led::new();
+        let refused =
+            crate::team::delete_idle(&led.roster, &led.lead.id, &Failing(led.departure()))
+                .unwrap_err();
+        assert!(
+            refused.starts_with("Lead was not removed: the roster could not be written"),
+            "{refused}"
+        );
+        assert!(led.registered());
+        assert_eq!(led.manager.leaving_refusal(&led.key), None);
+        led.send("Still here", "user-1").unwrap();
+        assert!(led.manager.turn_in_flight(&led.key));
+        assert_eq!(led.sent(), ["Still here"]);
+    }
+
+    /// What the removal's look calls working, beyond a turn in flight: a
+    /// stopped turn whose full stop is owed, and anything queued. In doubt
+    /// the agent is working and stays.
+    #[test]
+    fn a_stopped_turn_or_a_queued_message_counts_as_working() {
+        let led = Led::new();
+        led.send("Do this", "user-1").unwrap();
+        led.send("Then this", "user-2").unwrap();
+        chat_interrupt_impl(&led.manager, led.key.clone()).expect("Stop");
+        assert!(!led.session.lock().unwrap().busy, "a Stop reads idle");
+        let mark = led.manager.mark_leaving("Lead", &[led.key.clone()]);
+        assert!(mark.working(&led.key));
+        drop(mark);
+        assert_eq!(led.manager.leaving_refusal(&led.key), None);
+        let refused =
+            crate::team::delete_idle(&led.roster, &led.lead.id, &led.departure()).unwrap_err();
+        assert!(
+            refused.starts_with("Lead is in the middle of a turn"),
+            "{refused}"
+        );
+        assert!(led.registered());
+    }
+
+    /// Every way a prompt reaches an agent meets the mark: the one function
+    /// they all write through, a message, a queued message handed over at a
+    /// full stop, a host notification, a completion's wrap-up, and the start
+    /// of a process. Nothing is written by any of them.
+    #[test]
+    fn every_writer_of_a_prompt_meets_the_mark() {
+        use crate::orchestration::inbox::{DeliveryState, Notification, RECEIPT_PREFIX};
+
+        let led = Led::new();
+        let mark = led.manager.mark_leaving("Lead", &[led.key.clone()]);
+        assert!(!mark.working(&led.key), "idle, so it is marked");
+        let leaving = "Lead is being removed, so this conversation takes no message right now. Nothing was sent. Send it again in a moment: if the removal is refused, the conversation carries on.";
+
+        // The write point itself.
+        {
+            let mut session = led.session.lock().unwrap();
+            assert_eq!(
+                write_user_message_locked(&mut session, "anything", &[], Some("user-0")),
+                Err(leaving.into())
+            );
+            assert!(!session.busy);
+            assert_eq!(session.answering, None);
+        }
+        // A message from the person.
+        assert_eq!(led.send("A message", "user-1"), Err(leaving.into()));
+        assert!(
+            !durable_user_turn_exists(&led.key, "user-1"),
+            "refused before it was written down"
+        );
+        // A message that was already waiting when a turn reached its full
+        // stop: handed over there, and refused there.
+        led.manager
+            .queue_turn(
+                &led.key,
+                QueuedTurn {
+                    text: "A queued message".into(),
+                    images: Vec::new(),
+                    turn_id: Some("user-2".into()),
+                    appended_turn_ids: Vec::new(),
+                    recorded: false,
+                    context: led.manager.queue_context(&led.key),
+                },
+            )
+            .unwrap();
+        {
+            let mut session = led.session.lock().unwrap();
+            let (_, refused) =
+                end_turn_locked(&led.manager, &led.key, &led.key, &mut session, true);
+            assert_eq!(refused.as_deref(), Some(leaving));
+            assert!(!session.busy);
+        }
+        // A host notification.
+        let note = Notification {
+            id: format!("{RECEIPT_PREFIX}leaving"),
+            run_id: "run_1".into(),
+            from_chat_key: "chat:other".into(),
+            target_chat_key: led.key.clone(),
+            source: "test".into(),
+            kind: "instruction".into(),
+            body: "Something happened.".into(),
+            state: DeliveryState::Delivering,
+            attempts: 0,
+            coalesced: 0,
+            created_at: 0,
+            updated_at: 0,
+            next_attempt_at: 0,
+            last_error: None,
+        };
+        assert_eq!(
+            deliver_orchestration_notification(led.manager.clone(), &note, Default::default()),
+            Err(leaving.into())
+        );
+        // A completion's wrap-up: the completion ends with the reason.
+        assert_eq!(
+            chat_complete_impl(&led.manager, &led.key, "wrap up").map(|_| ()),
+            Err(leaving.into())
+        );
+        assert_eq!(led.manager.completing_turn(&led.key), None);
+        // The start of a process for it, which a carried queue rides after
+        // a Stop that was not honoured: refused before anything is spawned.
+        let _ = end_process(&led.manager, &led.key);
+        let started = start_session(
+            led.manager.clone(),
+            Voice {
+                session_key: led.key.clone(),
+                stream_key: led.key.clone(),
+            },
+            "/tmp".into(),
+            ChatAgent::Claude,
+            None,
+            None,
+            Some("A carried message".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("user-3".into()),
+            true,
+            None,
+        );
+        assert_eq!(started, Err(leaving.into()));
+        assert!(!led.manager.has_process(&led.key));
+
+        // Called off, all of it goes through again.
+        drop(mark);
+        assert_eq!(led.manager.leaving_refusal(&led.key), None);
+        assert_eq!(led.sent(), Vec::<String>::new());
     }
 }
