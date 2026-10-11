@@ -36,6 +36,8 @@ pub mod consent;
 pub mod destination;
 pub mod environments;
 pub mod execution;
+#[cfg(test)]
+mod facts_tests;
 pub mod inbox;
 pub mod levels;
 pub mod lifecycle;
@@ -724,8 +726,44 @@ pub struct Attempt {
     /// needs beyond the stamps already here (`peer_request::PeerClock`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_clock: Option<peer_request::PeerClock>,
+    /// The tokens this attempt's worker chat has used, as counted for it
+    /// (`agent_usage.rs`). Read for each snapshot the host hands out
+    /// (`Snapshot::with_usage`), never stored here, and absent until the
+    /// provider has reported any: never a row of zeros.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::agent_usage::TokenUsage>,
+    /// What the worker's session holds of its model's context, and that
+    /// model's window. Like `usage`: read for each snapshot, absent until
+    /// the provider has reported both, never estimated.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub context: Option<AttemptContext>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// See `Attempt::context`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptContext {
+    pub tokens: u64,
+    pub window: u64,
+}
+
+impl Snapshot {
+    /// Put on each attempt what the host has counted for its worker's chat:
+    /// the tokens used, and the context held. A chat nothing was counted
+    /// for gets neither field. What the snapshot holds decides whose
+    /// figures these are: a peer-request worker's holds its own task's
+    /// attempts and no other (`snapshot_for_agent`).
+    pub fn with_usage(mut self, counted: &crate::agent_usage::Store) -> Self {
+        for attempt in &mut self.attempts {
+            attempt.usage = counted.of_chat(&attempt.worker_chat_key);
+            attempt.context = counted
+                .context_of(&attempt.worker_chat_key)
+                .map(|(tokens, window)| AttemptContext { tokens, window });
+        }
+        self
+    }
 }
 
 /// What a read-only worker said last, offered to its coordinator as a report.
@@ -807,6 +845,47 @@ pub struct Gate {
     /// the host sees nothing running under it (`peer_request::Wait`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<i64>,
+    /// Who an OPEN gate waits for (`gate_awaits`). Derived for each read in
+    /// `snapshot` from what the ledger already holds, like `heldByPlan`:
+    /// never stored, so it cannot go stale, and never an agent's to set.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub awaits: Option<Awaits>,
+}
+
+/// Whose move a wait is, as far as the host can know.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Awaits {
+    /// The host knows the person has to answer: nobody else can.
+    Person,
+    /// The run's coordinator may answer it. Whether it asks the person
+    /// first is its own judgment, which the host cannot see.
+    Coordinator,
+    /// Nobody can answer it. It is a record, and nothing waits on it.
+    Nobody,
+}
+
+/// Who an open gate waits for. The person, when the host knows only they
+/// can answer: a gate on a peer-request task, which no agent resolves
+/// (`PERSONS_GATE`), and a gate the run's coordinator opened itself, which
+/// is that coordinator asking for a decision it will not make alone. Any
+/// other gate is a worker's question to its coordinator, which may resolve
+/// it.
+fn gate_awaits(data: &Stored, gate: &Gate) -> Awaits {
+    let peer_request = gate
+        .task_id
+        .as_ref()
+        .and_then(|id| data.tasks.get(id))
+        .is_some_and(|task| task.peer_request.is_some());
+    let by_coordinator = data
+        .runs
+        .get(&gate.run_id)
+        .is_some_and(|run| run.coordinator_chat_key == gate.created_by_chat_key);
+    if peer_request || by_coordinator {
+        Awaits::Person
+    } else {
+        Awaits::Coordinator
+    }
 }
 
 impl Gate {
@@ -1184,6 +1263,9 @@ impl OrchestrationStore {
             .cloned()
             .collect();
         gates.sort_by_key(|gate| (gate.created_at, gate.id.clone()));
+        for gate in &mut gates {
+            gate.awaits = (gate.status == GateStatus::Open).then(|| gate_awaits(&inner.data, gate));
+        }
         let mut messages: Vec<_> = inner
             .data
             .messages
@@ -1292,6 +1374,27 @@ impl OrchestrationStore {
             .values()
             .find(|run| run.coordinator_chat_key == chat_key && !run_has_ended(run))
             .map(|run| run.objective.clone()))
+    }
+
+    /// Every chat that coordinates a run the person has not archived,
+    /// finished or not: the chats whose page shows a run beside them. For
+    /// the chat list, which the page reads before the ledger and holds the
+    /// run column open on (`coordinatesRun`). Empty when the ledger cannot
+    /// be read: the list is still drawn, and the ledger says why.
+    pub fn coordinating_chats(&self) -> BTreeSet<String> {
+        let Ok(inner) = self.inner.lock() else {
+            return BTreeSet::new();
+        };
+        if inner.load_error.is_some() {
+            return BTreeSet::new();
+        }
+        inner
+            .data
+            .runs
+            .values()
+            .filter(|run| run.archived_at.is_none())
+            .map(|run| run.coordinator_chat_key.clone())
+            .collect()
     }
 
     /// The chat an attempt's worker runs in, when the attempt exists.
@@ -2786,6 +2889,8 @@ impl OrchestrationStore {
                 archived_at: None,
                 proposed_report: None,
                 peer_clock,
+                usage: None,
+                context: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -3682,6 +3787,7 @@ impl OrchestrationStore {
                 created_at: now,
                 updated_at: now,
                 closed_at: None,
+                awaits: None,
             };
             if let Some(task) = gate.task_id.as_ref().and_then(|id| data.tasks.get_mut(id)) {
                 task.status = TaskStatus::Blocked;

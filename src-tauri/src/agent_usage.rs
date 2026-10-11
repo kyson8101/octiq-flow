@@ -358,11 +358,92 @@ pub struct AgentUsage {
     pub reasoning_reported: bool,
 }
 
+/// What a chat's session holds of its model's context, and how much that
+/// model can hold, each as the provider last reported it. Either may be
+/// unknown: a figure is never worked out from anything else.
+///
+/// Read off the same events, by the same rules, as the meter beside Send
+/// (`web/src/lib/chat.ts`), so the run panel and a worker's own chat cannot
+/// show two answers:
+///
+/// - Claude: `tokens` from the newest `assistant` message of the MAIN agent
+///   (a subagent holds a context of its own), its input, cache reads, cache
+///   writes and output together; `window` from `result.modelUsage`, the
+///   largest any model of the turn reported.
+/// - Codex: both from `token_count`.
+/// - Antigravity: `tokens` from each model call's step. It reports no
+///   window, so no chat of its ever has both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContextHeld {
+    pub tokens: Option<u64>,
+    pub window: Option<u64>,
+}
+
+fn positive(value: Option<&Value>) -> Option<u64> {
+    value.and_then(Value::as_u64).filter(|n| *n > 0)
+}
+
+/// What one stream event says of the context, if anything.
+pub fn context_in(agent: ChatAgent, event: &Value) -> ContextHeld {
+    let mut held = ContextHeld::default();
+    match agent {
+        ChatAgent::Antigravity => {
+            if let Some(reading) = antigravity_step(event) {
+                held.tokens = Some(reading.usage.total()).filter(|n| *n > 0);
+            }
+        }
+        ChatAgent::Claude => match event.get("type").and_then(Value::as_str) {
+            Some("assistant") if event.get("parent_tool_use_id").is_none_or(Value::is_null) => {
+                let usage = event.pointer("/message/usage");
+                let total: u64 = [
+                    "input_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                    "output_tokens",
+                ]
+                .iter()
+                .map(|key| n(usage.and_then(|usage| usage.get(key))))
+                .sum();
+                held.tokens = Some(total).filter(|n| *n > 0);
+            }
+            Some("result") => {
+                held.window = event
+                    .get("modelUsage")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|models| models.values())
+                    .filter_map(|model| positive(model.get("contextWindow")))
+                    .max();
+            }
+            _ => {}
+        },
+        ChatAgent::Codex => {
+            if event.get("type").and_then(Value::as_str) == Some("token_count") {
+                let info = event.get("info");
+                let of = |key: &str| {
+                    info.and_then(|info| info.get(key))
+                        .filter(|value| !value.is_null())
+                        .or_else(|| event.get(key))
+                };
+                held.window = positive(of("context_window"));
+                held.tokens =
+                    positive(of("total_token_usage").and_then(|total| total.get("input_tokens")));
+            }
+        }
+        ChatAgent::Pi => {}
+    }
+    held
+}
+
 #[derive(Default)]
 pub struct Store {
     path: Option<PathBuf>,
     data: Mutex<Stored>,
     load_error: Option<String>,
+    /// The context each chat's session holds, by chat key. In memory only:
+    /// it describes a live session, and a session does not outlive the
+    /// server that started it.
+    context: Mutex<BTreeMap<String, ContextHeld>>,
 }
 
 impl Store {
@@ -453,6 +534,42 @@ impl Store {
         self.persist(&next)?;
         *data = next;
         Ok(true)
+    }
+
+    /// Keep what an event said of a chat's context (`context_in`). A figure
+    /// the event did not carry stays as it was. The window only grows, as
+    /// on the page: a turn that changed model reports both, and the roomier
+    /// one is where the conversation now lives.
+    pub fn note_context(&self, chat_key: &str, said: ContextHeld) {
+        if said == ContextHeld::default() {
+            return;
+        }
+        let Ok(mut context) = self.context.lock() else {
+            return;
+        };
+        let held = context.entry(chat_key.to_owned()).or_default();
+        if said.tokens.is_some() {
+            held.tokens = said.tokens;
+        }
+        if said.window > held.window {
+            held.window = said.window;
+        }
+    }
+
+    /// The tokens a chat's session holds and its model's window, once the
+    /// provider has reported both. `None` until then: never one without the
+    /// other, never a zero.
+    pub fn context_of(&self, chat_key: &str) -> Option<(u64, u64)> {
+        let held = *self.context.lock().ok()?.get(chat_key)?;
+        Some((held.tokens?, held.window?))
+    }
+
+    /// What one chat has used, as counted so far. `None` for a chat nothing
+    /// was counted for: one that reported no usage yet, or one that runs as
+    /// no registered agent, which this store does not record.
+    pub fn of_chat(&self, chat_key: &str) -> Option<TokenUsage> {
+        let data = self.data.lock().ok()?;
+        data.chats.get(chat_key).map(|chat| chat.usage)
     }
 
     /// Everything counted for one agent, across its own chats only.
@@ -836,5 +953,133 @@ mod tests {
         assert!(Meter::default()
             .observe(ChatAgent::Claude, &events[2])
             .is_none());
+    }
+
+    /// The context a session holds, read off each provider's own events by
+    /// the rules the meter beside Send uses, and known only when the
+    /// provider said it: no figure is filled in or worked out.
+    #[test]
+    fn the_context_a_chat_holds_is_what_its_provider_last_reported() {
+        let held = |tokens, window| ContextHeld { tokens, window };
+        let assistant = |parent: Value| {
+            json!({
+                "type": "assistant", "parent_tool_use_id": parent,
+                "message": { "usage": {
+                    "input_tokens": 12, "cache_creation_input_tokens": 3_000,
+                    "cache_read_input_tokens": 87_000, "output_tokens": 983,
+                } },
+            })
+        };
+        // Claude: the newest main-agent message is what is held; a
+        // subagent's is a context of its own. The window is on the result.
+        assert_eq!(
+            context_in(ChatAgent::Claude, &assistant(Value::Null)),
+            held(Some(90_995), None)
+        );
+        assert_eq!(
+            context_in(ChatAgent::Claude, &assistant(json!("toolu_task"))),
+            held(None, None)
+        );
+        let result = claude_result(json!({
+            "haiku": { "contextWindow": 200_000 },
+            "opus": { "contextWindow": 1_000_000 },
+        }));
+        assert_eq!(
+            context_in(ChatAgent::Claude, &result),
+            held(None, Some(1_000_000))
+        );
+        // A result that names no window says nothing: none is assumed.
+        assert_eq!(
+            context_in(ChatAgent::Claude, &claude_result(json!({}))),
+            held(None, None)
+        );
+        // Codex: both on one event, and a window of null is not a window.
+        let count = |window: Value| {
+            json!({ "type": "token_count", "info": {
+                "total_token_usage": { "input_tokens": 41_000, "output_tokens": 900 },
+                "context_window": window,
+            } })
+        };
+        assert_eq!(
+            context_in(ChatAgent::Codex, &count(json!(272_000))),
+            held(Some(41_000), Some(272_000))
+        );
+        assert_eq!(
+            context_in(ChatAgent::Codex, &count(Value::Null)),
+            held(Some(41_000), None)
+        );
+        // Another provider's event is not read as this one's.
+        assert_eq!(
+            context_in(ChatAgent::Codex, &assistant(Value::Null)),
+            held(None, None)
+        );
+
+        let store = Store::default();
+        assert_eq!(store.context_of("chat:w"), None);
+        assert_eq!(store.of_chat("chat:w"), None);
+        store.note_context(
+            "chat:w",
+            context_in(ChatAgent::Claude, &assistant(Value::Null)),
+        );
+        assert_eq!(
+            store.context_of("chat:w"),
+            None,
+            "tokens alone are not both"
+        );
+        store.note_context("chat:w", context_in(ChatAgent::Claude, &result));
+        assert_eq!(store.context_of("chat:w"), Some((90_995, 1_000_000)));
+        // The next message replaces what is held; the window stays.
+        store.note_context("chat:w", held(Some(12_000), None));
+        store.note_context("chat:w", held(None, Some(200_000)));
+        assert_eq!(store.context_of("chat:w"), Some((12_000, 1_000_000)));
+        assert_eq!(store.context_of("chat:other"), None);
+
+        // Usage, per chat, is what was counted for it and nothing before.
+        let reading = Reading {
+            usage: TokenUsage {
+                input: 90_012,
+                cached_input: 87_000,
+                cache_write: 3_000,
+                output: 983,
+                reasoning: 0,
+            },
+            thread_total: None,
+        };
+        store
+            .record("chat:w", ChatAgent::Claude, &reading, 1, || {
+                Some(who("ada"))
+            })
+            .unwrap();
+        assert_eq!(store.of_chat("chat:w"), Some(reading.usage));
+        assert_eq!(
+            serde_json::to_value(store.of_chat("chat:w")).unwrap(),
+            json!({
+                "input": 90_012, "cachedInput": 87_000, "cacheWrite": 3_000,
+                "output": 983, "reasoning": 0,
+            })
+        );
+        // A chat that runs as no registered agent is not recorded at all.
+        store
+            .record("chat:plain", ChatAgent::Claude, &reading, 1, || None)
+            .unwrap();
+        assert_eq!(store.of_chat("chat:plain"), None);
+    }
+
+    /// An Antigravity model call says what it holds and never how much it
+    /// could, so a chat of its has no context to show.
+    #[test]
+    fn antigravity_reports_what_it_holds_and_no_window() {
+        let events =
+            crate::agent_provider::tests::agy_events(crate::agent_provider::tests::AGY_THREE_TURNS);
+        let store = Store::default();
+        let mut said_tokens = false;
+        for event in &events {
+            let said = context_in(ChatAgent::Antigravity, event);
+            assert_eq!(said.window, None);
+            said_tokens |= said.tokens.is_some();
+            store.note_context("chat:agy", said);
+        }
+        assert!(said_tokens);
+        assert_eq!(store.context_of("chat:agy"), None);
     }
 }

@@ -879,7 +879,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "key")?,
             arg(&args, "before")?,
         )),
-        "chat_index_list" => Ok(json!(crate::agent_chat::chat_index_list())),
+        // The list the page draws first, before it has read the ledger. A
+        // chat that coordinates a run the person has not archived says so
+        // (`coordinatesRun: true`), so the page can hold the run column
+        // open from its first paint. Derived here from the ledger for each
+        // answer; the index stores nothing of it, and `chat_index_save`
+        // ignores it coming back.
+        "chat_index_list" => {
+            let coordinating = svc.orchestrations.coordinating_chats();
+            let mut chats = json!(crate::agent_chat::chat_index_list());
+            for chat in chats.as_array_mut().into_iter().flatten() {
+                let coordinates = chat["id"]
+                    .as_str()
+                    .is_some_and(|id| coordinating.contains(&format!("chat:{id}")));
+                if coordinates {
+                    chat["coordinatesRun"] = json!(true);
+                }
+            }
+            Ok(chats)
+        }
         "chat_index_deleted" => Ok(json!(crate::agent_chat::chat_index_deleted())),
         // Where this chat is and what became of its work. The report half is
         // whatever the agent last said; everything else is checked with git on
@@ -1158,7 +1176,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             // tab, so it gets the compact view; the browser, which names no
             // actor, keeps the whole store.
             let Some(actor) = arg::<Option<String>>(&args, "actorChatKey")? else {
-                let snapshot = svc.orchestrations.snapshot(run_id.as_deref());
+                // What each attempt's worker has used and holds, as counted
+                // by the host: read here, for this answer, and not kept.
+                let snapshot = svc
+                    .orchestrations
+                    .snapshot(run_id.as_deref())
+                    .map(|snapshot| snapshot.with_usage(&svc.chats.usage));
                 // The tab's whole-ledger read can leave finished runs' long
                 // text out; its run panel asks for one run whole (`brief.rs`).
                 let brief = arg::<Option<bool>>(&args, "brief")?.unwrap_or(false);
@@ -1178,6 +1201,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 run_id.as_deref(),
                 task_id.as_deref(),
             )?;
+            // After the cut above: a peer request's worker gets its own
+            // attempts' figures and nobody else's.
+            let snapshot = snapshot.with_usage(&svc.chats.usage);
             let task_id = own_task.clone().or(task_id);
             let full = snapshot.clone();
             let mut view = crate::orchestration::agent_view::agent_snapshot(

@@ -4826,4 +4826,79 @@ pub(crate) mod tests {
             .unwrap();
         assert!(!made.note.contains("only after your attempt settles"));
     }
+
+    /// A peer request's gate is the person's alone to answer, and the
+    /// snapshot says so, to the page and in the teammate's own read. What
+    /// that teammate reads of usage is its own attempt's, and no other's.
+    #[test]
+    fn a_peer_requests_gate_waits_for_the_person_and_its_figures_are_its_own() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = worker_ada(&store, &run);
+        let made = from_worker(&store, &worker, work("bo")).unwrap();
+        let peer = approved_and_started(&store, &made.task_id);
+        let gate = store
+            .create_gate(
+                &peer.worker_chat_key,
+                run.id.clone(),
+                None,
+                "Which volume?".into(),
+                vec![],
+            )
+            .unwrap();
+        let page = store.snapshot(Some(&run.id)).unwrap();
+        let read = page.gates.iter().find(|g| g.id == gate.id).unwrap();
+        assert_eq!(read.awaits, Some(Awaits::Person));
+
+        let counted = crate::agent_usage::Store::default();
+        for (chat, who) in [
+            (&worker.worker_chat_key, "ada"),
+            (&peer.worker_chat_key, "bo"),
+        ] {
+            counted
+                .record(
+                    chat,
+                    ChatAgent::Codex,
+                    &crate::agent_usage::Reading {
+                        usage: crate::agent_usage::TokenUsage {
+                            input: 1_200,
+                            cached_input: 1_000,
+                            cache_write: 0,
+                            output: 80,
+                            reasoning: 30,
+                        },
+                        thread_total: None,
+                    },
+                    1,
+                    || {
+                        Some(crate::agent_usage::Attribution {
+                            agent_id: who.into(),
+                            agent_name: who.to_uppercase(),
+                            role: crate::agent_usage::ChatRole::Worker,
+                            task_id: None,
+                            run_id: Some(run.id.clone()),
+                        })
+                    },
+                )
+                .unwrap();
+        }
+        let (own, task) = store
+            .snapshot_for_agent(&peer.worker_chat_key, None, None)
+            .unwrap();
+        assert_eq!(task.as_deref(), Some(made.task_id.as_str()));
+        let own = own.with_usage(&counted);
+        assert_eq!(own.gates.len(), 1);
+        assert_eq!(own.gates[0].awaits, Some(Awaits::Person));
+        assert!(!own.attempts.is_empty());
+        assert!(own
+            .attempts
+            .iter()
+            .all(|a| a.task_id == made.task_id && a.usage.is_some()));
+        // The page, which reads the whole run, has the asker's too.
+        let page = store.snapshot(Some(&run.id)).unwrap().with_usage(&counted);
+        assert!(page
+            .attempts
+            .iter()
+            .any(|a| a.id == worker.id && a.usage.is_some()));
+    }
 }

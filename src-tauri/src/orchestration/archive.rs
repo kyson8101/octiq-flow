@@ -339,6 +339,7 @@ mod tests {
                                     created_at: 1,
                                     updated_at: 1,
                                     closed_at: None,
+                                    awaits: None,
                                 },
                             );
                         }

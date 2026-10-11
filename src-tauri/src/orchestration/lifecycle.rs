@@ -31,6 +31,12 @@ pub struct NativeDecision {
     /// count. None for a safety refusal.
     #[serde(default)]
     pub group_id: Option<String>,
+    /// Who a PENDING decision waits for, derived for each read
+    /// (`refresh_decision_views`) and never stored: the person, while their
+    /// answer on the card can still start a new turn in a live attempt;
+    /// nobody otherwise. No coordinator answers a provider's own card.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub awaits: Option<Awaits>,
 }
 
 /// The recovery text for a Claude safety refusal: strict, with no retry.
@@ -333,6 +339,19 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
                 decision.recovery = "The person saved a project-scoped authorization for this kind of action; it reaches the agent's next launch as instructions, not as a resumed call.".into();
             }
         }
+        // Whose move it is, for a card still up. Only one kind of card
+        // holds a worker until the person answers: a provider's block whose
+        // decision can start a new turn in this attempt, which is what
+        // `continuation` says above. A Claude refusal nobody can approve, an
+        // outage the worker was told to carry on past, and a card whose
+        // attempt has gone wait for nobody.
+        decision.awaits = (decision.status == "pending").then(|| {
+            if decision.continuation == "new_turn_same_attempt" {
+                Awaits::Person
+            } else {
+                Awaits::Nobody
+            }
+        });
     }
 }
 
@@ -406,6 +425,7 @@ impl OrchestrationStore {
                     status: "pending".into(), continuation: "unverified".into(),
                     recovery: String::new(), observed_at: card.at.unwrap_or_else(now_ms),
                     kind: card.kind.as_str().into(), group_id: card.group_id.clone(),
+                    awaits: None,
                 };
                 data.native_decisions.insert(id.clone(), decision);
                 // An outage group is one notice, not one per refusal.
@@ -631,6 +651,59 @@ mod tests {
         }
     }
 
+    /// Who an open gate waits for, as the run panel reads it: the
+    /// coordinator for a worker's question, the person for a gate the
+    /// coordinator opened itself. Derived for the read, gone once the gate
+    /// has settled, never stored, and never taken from JSON that says so.
+    #[test]
+    fn an_open_gate_says_who_it_waits_for_and_nobody_can_set_it() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let ask = |from: &str, question: &str| {
+            store
+                .create_gate(from, run.id.clone(), None, question.into(), vec![])
+                .unwrap()
+        };
+        let asked = ask(&attempt.worker_chat_key, "Which sprite size?");
+        let wide = ask("chat:master", "Ship today?");
+        assert!(asked.awaits.is_none() && wide.awaits.is_none());
+        let awaits = |gate: &Gate| {
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            let read = snapshot.gates.iter().find(|g| g.id == gate.id).unwrap();
+            let json = serde_json::to_value(read).unwrap();
+            assert_eq!(
+                json.get("awaits").cloned(),
+                read.awaits.map(|who| serde_json::to_value(who).unwrap())
+            );
+            (read.awaits, json.get("awaits").cloned())
+        };
+        assert_eq!(
+            awaits(&asked),
+            (Some(Awaits::Coordinator), Some(json!("coordinator")))
+        );
+        assert_eq!(awaits(&wide), (Some(Awaits::Person), Some(json!("person"))));
+        store
+            .resolve_gate("chat:master", asked.id.clone(), "96 by 96".into())
+            .unwrap();
+        assert_eq!(
+            awaits(&asked),
+            (None, None),
+            "a settled gate waits for nobody"
+        );
+        assert!(store
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .gates
+            .values()
+            .all(|gate| gate.awaits.is_none()));
+        let mut forged = serde_json::to_value(&wide).unwrap();
+        forged["awaits"] = json!("nobody");
+        let read: Gate = serde_json::from_value(forged).unwrap();
+        assert_eq!(read.awaits, None);
+    }
+
     #[test]
     fn native_decision_visibility_is_scoped_and_does_not_invent_action_or_approval() {
         let store = OrchestrationStore::default();
@@ -644,6 +717,9 @@ mod tests {
         assert_eq!(decision.reason, "Upload requires a decision.");
         assert_eq!(decision.continuation, "new_turn_same_attempt");
         assert!(decision.blocked_action.is_none());
+        // The worker is held until the person answers this card: theirs.
+        assert_eq!(decision.awaits, Some(Awaits::Person));
+        assert_eq!(serde_json::to_value(decision).unwrap()["awaits"], "person");
         let view = agent_view::agent_snapshot(
             snapshot,
             &agent_view::AgentRead {
@@ -665,6 +741,25 @@ mod tests {
         // How it went, not merely that it went: a new message superseded it.
         assert_eq!(snapshot.native_decisions[0].status, "superseded");
         assert_eq!(snapshot.native_decisions[0].continuation, "unavailable");
+        // No longer pending: it waits for nobody and says nothing of it.
+        assert_eq!(snapshot.native_decisions[0].awaits, None);
+        assert!(serde_json::to_value(&snapshot.native_decisions[0])
+            .unwrap()
+            .get("awaits")
+            .is_none());
+        // Derived for the read, never kept, and not an agent's to say.
+        assert!(store
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .native_decisions
+            .values()
+            .all(|decision| decision.awaits.is_none()));
+        let mut forged = serde_json::to_value(&snapshot.native_decisions[0]).unwrap();
+        forged["awaits"] = json!("person");
+        let read: NativeDecision = serde_json::from_value(forged).unwrap();
+        assert_eq!(read.awaits, None);
         assert!(snapshot.native_decisions[0]
             .recovery
             .contains("does not prove approval"));
@@ -721,6 +816,9 @@ mod tests {
         );
         // Honest: the card cannot continue anything, and says what can.
         assert_eq!(decision.continuation, "unavailable");
+        // A refusal no one can approve waits for no one, the card still up.
+        assert_eq!(decision.awaits, Some(Awaits::Nobody));
+        assert_eq!(serde_json::to_value(decision).unwrap()["awaits"], "nobody");
         assert!(
             decision.recovery.contains("cannot approve it"),
             "{}",
@@ -778,6 +876,7 @@ mod tests {
                         observed_at: 1,
                         kind: "safety".into(),
                         group_id: None,
+                        awaits: None,
                     },
                 );
                 inbox::enqueue(
@@ -903,6 +1002,8 @@ mod tests {
             assert_eq!(d.group_id.as_deref(), Some(group.as_str()));
             assert_eq!(d.attempt_id, attempt.id);
             assert_eq!(d.continuation, "unavailable");
+            // The worker was told to carry on past it: nothing waits.
+            assert_eq!(d.awaits, Some(Awaits::Nobody));
             // The same words as the card and the worker prompt.
             assert_eq!(d.recovery, crate::safety_block::outage_guidance());
             assert!(

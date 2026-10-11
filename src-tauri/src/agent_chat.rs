@@ -3407,6 +3407,10 @@ pub(crate) fn start_session(
                         {
                             eprintln!("orchestration: cannot record provider event: {error}");
                         }
+                        reading.usage.note_context(
+                            &key,
+                            crate::agent_usage::context_in(stream_provider.kind(), &event),
+                        );
                         if let Some(used) = usage_meter.observe(stream_provider.kind(), &event) {
                             if let Err(error) = reading.usage.record(
                                 &key,
