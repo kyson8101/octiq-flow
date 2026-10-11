@@ -109,10 +109,25 @@ fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
 /// first. With no receipt the chat gets nothing recorded this pass and its
 /// tasks stay held.
 ///
+/// **A receipt is for the record the line was seen in.** The chat's record
+/// can be removed and made again under the same name between the look
+/// here and the receipt: the person clears the chat (`/clear`, the
+/// socket's `chat_forget`) and the next thing said in it starts a new
+/// file, which syncs perfectly well and holds no notice. So which record
+/// the chat has is taken before anything is read (`transcript::generation`)
+/// and handed to every `confirm_synced`, which answers none once the host
+/// has removed that record. Then nothing is recorded, the tasks stay held,
+/// and the next pass reads the record that is there, does not find the
+/// line and writes it, once. A compaction keeps every host event and is
+/// not a new record.
+///
 /// The transcript is read once, for the reopen events alone.
 fn notice_receipts(chat: &str, events: &[serde_json::Value]) -> Vec<bool> {
     let none = || vec![false; events.len()];
-    let confirmed = || crate::transcript::confirm_synced(chat).is_some();
+    let Some(record) = crate::transcript::generation(chat) else {
+        return none();
+    };
+    let confirmed = || crate::transcript::confirm_synced(chat, record).is_some();
     let there = crate::transcript::of_type(chat, "octiq_task_reopened");
     let found: Vec<bool> = events
         .iter()
@@ -134,11 +149,24 @@ fn notice_receipts(chat: &str, events: &[serde_json::Value]) -> Vec<bool> {
             *found || crate::agent_chat::record_chat_event_synced(chat, event.clone()).is_some()
         })
         .collect();
+    #[cfg(test)]
+    if let Some(meanwhile) = BEFORE_RECEIPT.with(|slot| slot.take()) {
+        meanwhile(chat);
+    }
     if written.contains(&true) && confirmed() {
         written
     } else {
         none()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What happens to a chat on this thread between the next
+    /// `notice_receipts` reading or writing its record and asking for the
+    /// receipt, once: the window another thread's work lands in.
+    static BEFORE_RECEIPT: std::cell::RefCell<Option<Box<dyn FnOnce(&str)>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// How long a chat whose transcript gave no receipt is left alone before
@@ -3175,13 +3203,228 @@ pub(super) mod tests {
             "content": [{ "type": "image", "source": { "type": "base64", "data": "A".repeat(10_000) } }],
         }] } });
         assert!(crate::transcript::append_synced(&work.key, &picture).is_some());
-        assert_eq!(crate::transcript::confirm_synced(&work.key), Some(()));
+        let record = crate::transcript::generation(&work.key).unwrap();
+        assert_eq!(
+            crate::transcript::confirm_synced(&work.key, record),
+            Some(())
+        );
         let before = fs::metadata(work.transcript()).unwrap().len();
         let fault = NoFolderSync::begin();
         let freed = crate::record_trim::compact_record(&work.transcript()).unwrap();
         assert!(freed.is_some(), "the record was rewritten");
         assert!(fs::metadata(work.transcript()).unwrap().len() < before);
         held_until_the_folder_syncs(&work, &task, fault);
+    }
+
+    /// What the next `notice_receipts` on this thread finds done to its
+    /// chat between its last look at the record and asking for the receipt.
+    fn before_the_receipt(meanwhile: impl FnOnce(&str) + 'static) {
+        BEFORE_RECEIPT.with(|slot| *slot.borrow_mut() = Some(Box::new(meanwhile)));
+    }
+
+    /// The person clears the chat (the page's `/clear`, which sends the
+    /// socket's `chat_forget` for a chat that stays in the list), and the
+    /// host then writes something ordinary to it, which makes its record
+    /// again.
+    fn cleared_then_written_to(chat: &str) {
+        let services = crate::dispatch::Services {
+            workspaces: Arc::new(crate::workspaces::WorkspaceState::with_projects(vec![])),
+            chats: Arc::new(ChatManager::default()),
+            watch: Arc::new(crate::file_watch::FileWatchState::default()),
+            git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
+            orchestrations: Arc::new(OrchestrationStore::default()),
+            ptys: Arc::new(crate::pty::PtyManager::default()),
+            handovers: crate::handover::Wiring::scratch(),
+        };
+        crate::dispatch::dispatch(&services, "chat_forget", json!({ "key": chat })).unwrap();
+        let said = json!({ "type": "assistant", "message": { "content": "After the clear" } });
+        assert!(crate::agent_chat::record_chat_event(chat, said).is_some());
+    }
+
+    /// The types of the events in a chat's record, in order.
+    fn recorded_types(chat: &str) -> Vec<String> {
+        crate::transcript::since(chat, 0)
+            .iter()
+            .map(|item| item.event["type"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// Review of ca4d902, H5c, the reviewer's first probe: the notice is a
+    /// fresh line, and before the host asks for its receipt the person
+    /// clears the chat and the host writes to it again. The record that is
+    /// there now is not the one the notice went into, so a sync of it is no
+    /// receipt: the task is held for that pass, and the next writes the
+    /// notice once into the record the person now sees.
+    #[test]
+    fn a_notice_appended_to_a_record_cleared_before_its_receipt_is_not_taken_as_delivered() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        // The usual record: made by an ordinary append, so the notice's own
+        // append syncs no folder and no receipt was ever given for it.
+        let said = json!({ "type": "assistant", "message": { "content": "Earlier text" } });
+        assert!(crate::transcript::append(&work.key, &said).is_some());
+        before_the_receipt(cleared_then_written_to);
+        let reopened = work.reopen(&task, "Cleared before the receipt").unwrap();
+        assert!(
+            !reopened.reopens[0].notice_delivered,
+            "delivered on a record that does not hold the notice"
+        );
+        assert_eq!(recorded_types(&work.key), ["assistant"]);
+        assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        assert_eq!(
+            recorded_types(&work.key),
+            ["assistant", "octiq_task_reopened"],
+            "one notice, in the record the person now sees"
+        );
+        assert_eq!(work.told()[0]["spec"], "Cleared before the receipt");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+        assert_eq!(work.told().len(), 1);
+    }
+
+    /// Review of ca4d902, H5c, the reviewer's second probe: the notice's
+    /// line was already in the record, unconfirmed, and a pass found it
+    /// there. Before that pass asks for the receipt the chat is cleared and
+    /// written to again. Same answer: no receipt for a record the line was
+    /// not seen in.
+    #[test]
+    fn a_notice_found_in_a_record_cleared_before_its_receipt_is_not_taken_as_delivered() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let fault = NoFolderSync::begin();
+        let reopened = work.reopen(&task, "Found, then cleared").unwrap();
+        drop(fault);
+        assert!(!reopened.reopens[0].notice_delivered);
+        assert_eq!(work.told().len(), 1, "the line is there, unproven");
+
+        before_the_receipt(cleared_then_written_to);
+        assert_eq!(
+            work.store.deliver_reopen_notices_now(),
+            Ok(0),
+            "delivered on a record that does not hold the notice"
+        );
+        let held = work.store.owned_task(&work.key, &task.id).unwrap().1;
+        assert!(!held.reopens[0].notice_delivered);
+        assert_eq!(recorded_types(&work.key), ["assistant"]);
+        let launch = super::super::tests::launch_for(&task.id);
+        for by in [
+            StartedBy::Coordinator,
+            StartedBy::Page { retry_of: None },
+            StartedBy::Recovery("attempt_before"),
+        ] {
+            let refused = work.store.reserve_attempt_for(&work.key, &launch, by);
+            assert_eq!(refused.map(|_| ()).unwrap_err(), REOPEN_NOT_TOLD);
+        }
+
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        assert_eq!(
+            recorded_types(&work.key),
+            ["assistant", "octiq_task_reopened"]
+        );
+        assert_eq!(work.told()[0]["spec"], "Found, then cleared");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+        assert_eq!(work.told().len(), 1);
+    }
+
+    /// Two notices owed in one chat, one found there and one written now,
+    /// and the chat is cleared before the receipt. Neither is delivered on
+    /// the record that is left; the next pass leaves both in it, once each.
+    #[test]
+    fn a_clear_before_the_receipt_holds_every_notice_owed_in_that_chat() {
+        let work = Reopenable::new();
+        let (first, second) = (work.completed_task(), work.completed_task());
+        let fault = NoFolderSync::begin();
+        work.reopen(&first, "Fix the first").unwrap();
+        work.reopen(&second, "Fix the second").unwrap();
+        drop(fault);
+        assert_eq!(work.told().len(), 1, "the first, unproven, and no other");
+
+        before_the_receipt(cleared_then_written_to);
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+        assert!(work.start(&first).is_err() && work.start(&second).is_err());
+
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(2));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        let mut specs: Vec<_> = work
+            .told()
+            .iter()
+            .map(|event| event["spec"].as_str().unwrap().to_string())
+            .collect();
+        specs.sort();
+        assert_eq!(specs, ["Fix the first", "Fix the second"], "once each");
+        work.start(&first).unwrap();
+        work.start(&second).unwrap();
+    }
+
+    /// What the rule does not promise: once a notice was delivered, the
+    /// person clearing the chat removes it with the rest of that history.
+    /// That is their own act. Nothing about the task changes, and the
+    /// notice is not written again.
+    #[test]
+    fn clearing_the_chat_after_a_notice_was_delivered_changes_nothing_about_the_task() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let reopened = work.reopen(&task, "Delivered, then cleared").unwrap();
+        assert!(reopened.reopens[0].notice_delivered);
+        assert_eq!(work.told().len(), 1);
+
+        cleared_then_written_to(&work.key);
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+        assert_eq!(
+            recorded_types(&work.key),
+            ["assistant"],
+            "not written again"
+        );
+        let kept = work.store.owned_task(&work.key, &task.id).unwrap().1;
+        assert!(kept.reopens[0].notice_delivered);
+        assert_eq!(kept.spec, "Delivered, then cleared");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+        assert!(work.told().is_empty());
+    }
+
+    /// A compaction in the same window is not a clear. It puts a new file
+    /// under the record's name and keeps every line of it, the notice
+    /// among them, so the receipt asked for afterwards is for a record that
+    /// holds the line: delivered in that pass, written once. For a line
+    /// written now and for one found there.
+    #[test]
+    fn a_compaction_before_the_receipt_still_confirms_the_notice() {
+        let picture = json!({ "type": "user", "message": { "content": [{
+            "type": "tool_result",
+            "tool_use_id": "shot",
+            "content": [{ "type": "image", "source": { "type": "base64", "data": "A".repeat(10_000) } }],
+        }] } });
+        let compacted = |chat: &str| {
+            let path = crate::transcript::path_for(chat).unwrap();
+            let before = fs::metadata(&path).unwrap().len();
+            let freed = crate::record_trim::compact_record(&path).unwrap();
+            assert!(freed.is_some(), "the record was rewritten");
+            assert!(fs::metadata(&path).unwrap().len() < before);
+        };
+        for found in [false, true] {
+            let work = Reopenable::new();
+            let task = work.completed_task();
+            assert!(crate::transcript::append(&work.key, &picture).is_some());
+            if found {
+                let fault = NoFolderSync::begin();
+                let reopened = work.reopen(&task, "Compacted in the window").unwrap();
+                drop(fault);
+                assert!(!reopened.reopens[0].notice_delivered);
+                before_the_receipt(compacted);
+                assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+            } else {
+                before_the_receipt(compacted);
+                let reopened = work.reopen(&task, "Compacted in the window").unwrap();
+                assert!(reopened.reopens[0].notice_delivered, "found: {found}");
+            }
+            assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+            assert_eq!(recorded_types(&work.key), ["user", "octiq_task_reopened"]);
+            assert_eq!(work.told()[0]["spec"], "Compacted in the window");
+            assert_eq!(work.start(&task).unwrap().number, 2);
+        }
     }
 
     /// A line that is not UTF-8 (a write cut inside a character) hides no

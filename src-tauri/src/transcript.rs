@@ -75,9 +75,14 @@ pub(crate) fn path_for(key: &str) -> Option<PathBuf> {
     if !safe {
         return None;
     }
+    Some(chats_dir()?.join(file_name(key)))
+}
+
+/// The name of a chat's record in the chats folder.
+fn file_name(key: &str) -> String {
     // ':' is legal on macOS but reads badly in a shell, and is the one
     // character our keys use that is not already file-safe everywhere.
-    Some(chats_dir()?.join(format!("{}.jsonl", key.replace(':', "_"))))
+    format!("{}.jsonl", key.replace(':', "_"))
 }
 
 /// The next sequence number for each chat, so appending does not have to count.
@@ -87,6 +92,74 @@ pub(crate) fn path_for(key: &str) -> Option<PathBuf> {
 /// thousands of lines thousands of times. The file is read once, on the first
 /// append after startup, and counted in memory after that.
 static NEXT_SEQ: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+
+/// The append lock, held. Asked for by what reads or moves a record's
+/// generation, so neither can be done without it.
+type Appending<'a> = std::sync::MutexGuard<'a, Option<HashMap<String, u64>>>;
+
+/// Which record a chat's file holds now.
+///
+/// A chat can lose its record and get another under the same name while
+/// the server runs: the person clears it (`forget`) and the next thing said
+/// in it makes the file again. So "this record is synced" is a receipt only
+/// for the lines of the record that is there now, and whoever saw a line in
+/// a record, or wrote one into it, says which record that was
+/// (`generation`) when asking for the receipt (`confirm_synced`).
+///
+/// It moves, under the append lock, whenever the host does something to a
+/// record that can take a line out of it:
+///
+/// - `forget` and `forget_file` remove it;
+/// - `rewrite_numbered` replaces a host event's line (`HOST_EVENT`). A
+///   rewrite keeps every line in its place, and what it changes today is
+///   stream pieces and tool results (`record_trim`), which leaves the
+///   generation alone: a compaction is not a new record.
+///
+/// Nothing else the host does removes, empties or replaces a record file.
+/// By the file's path, since that is what a record is, and kept in memory:
+/// a restart begins every record anew, and nobody holds a receipt across
+/// one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Generation(u64);
+
+/// How many times each record has moved on, by its file. One that never did
+/// is not here. Read and written only with the append lock held.
+static GENERATIONS: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
+
+/// The spelling a host event's line holds: a `type` this app made up.
+/// Records are written compactly by `serde_json`, and a quote inside a
+/// string is escaped, so these bytes are a key and its value, not text.
+const HOST_EVENT: &[u8] = br#""type":"octiq_"#;
+
+fn generation_of(_appending: &Appending, path: &Path) -> Generation {
+    let generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    Generation(
+        generations
+            .as_ref()
+            .and_then(|moved| moved.get(path))
+            .copied()
+            .unwrap_or(0),
+    )
+}
+
+/// The record at `path` is not the one it was: every receipt asked for
+/// with the generation it had is refused.
+fn next_generation(_appending: &Appending, path: &Path) {
+    let mut generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    *generations
+        .get_or_insert_with(HashMap::new)
+        .entry(path.to_path_buf())
+        .or_insert(0) += 1;
+}
+
+/// Which record `key` has now, to be handed to `confirm_synced` with what
+/// is read from it or written to it afterwards. `None` for a key that
+/// names no record.
+pub fn generation(key: &str) -> Option<Generation> {
+    let path = path_for(key)?;
+    let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    Some(generation_of(&appending, &path))
+}
 
 /// Record an event and return its sequence number.
 ///
@@ -148,6 +221,11 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
 /// is synced, and then its folder entry, whatever was done before. `None`
 /// when either cannot be, and then nothing in the record is confirmed.
 ///
+/// And `None` when the record is not the one `seen`: the caller read its
+/// lines, or wrote them, in a record that has since been removed, and the
+/// file under that name now is another that need not hold them. Syncing it
+/// would confirm lines nobody looked for in it. The caller reads again.
+///
 /// For a line whose own append answered `None` after it was written, or was
 /// never heard from at all (the server stopped): that the line can be read
 /// back says the OS holds it, not that the disk does. And for a line
@@ -159,9 +237,12 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
 /// Nothing is written again; the one byte this may add is the newline a
 /// last line is missing, under the append lock, because an ordinary append
 /// would be glued onto such a line and take it with it.
-pub fn confirm_synced(key: &str) -> Option<()> {
+pub fn confirm_synced(key: &str, seen: Generation) -> Option<()> {
     let path = path_for(key)?;
-    let _appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    if generation_of(&appending, &path) != seen {
+        return None;
+    }
     let mut file = OpenOptions::new()
         .append(true)
         .read(true)
@@ -702,16 +783,42 @@ fn page_forward(
 
 /// Forget a chat's record. Called when its conversation is deleted — the point
 /// of deleting a chat is that it is gone.
+///
+/// Also what the page's `/clear` sends for a chat that stays in the list,
+/// so the next thing said in it makes the record again. The lock is taken
+/// before the file goes, and the generation moves before the lock is let
+/// go: an append cannot land between the two, and a receipt asked for with
+/// the old record's generation is refused whenever it is asked.
 pub fn forget(key: &str) {
+    let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(path) = path_for(key) {
-        let _ = fs::remove_file(path);
+        remove_record(&appending, &path);
     }
     // Drop the counter too, or a chat started again under the same key would
     // number its first event as though the deleted one were still there.
-    let mut guard = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(counts) = guard.as_mut() {
+    if let Some(counts) = appending.as_mut() {
         counts.remove(key);
     }
+}
+
+/// `forget` for a record known by its file alone: one no chat points at
+/// (`chat_index::reconcile`). True when a file was removed.
+pub(crate) fn forget_file(path: &Path) -> bool {
+    let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    let removed = remove_record(&appending, path);
+    let name = path.file_name().and_then(|name| name.to_str());
+    if let Some(counts) = appending.as_mut() {
+        counts.retain(|key, _| Some(file_name(key).as_str()) != name);
+    }
+    removed
+}
+
+/// Take a record's file away and move its generation on, whether or not
+/// there was a file: what is there afterwards is not what was.
+fn remove_record(appending: &Appending, path: &Path) -> bool {
+    let removed = fs::remove_file(path).is_ok();
+    next_generation(appending, path);
+    removed
 }
 
 /// Rewrite a record line by line. `edit` returns a replacement for a line, or
@@ -737,8 +844,11 @@ pub(crate) fn rewrite_numbered(
     path: &Path,
     mut edit: impl FnMut(u64, &[u8]) -> Option<String>,
 ) -> std::io::Result<bool> {
-    let _appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     let temp = path.with_extension("jsonl.rewrite");
+    // Whether a line this replaced was a host event's: one a receipt may
+    // be owed for, which the new record then no longer holds as it was.
+    let mut host_event_replaced = false;
     let written = (|| {
         let mut reader = BufReader::new(File::open(path)?);
         let mut out = BufWriter::new(File::create(&temp)?);
@@ -756,6 +866,7 @@ pub(crate) fn rewrite_numbered(
                         out.write_all(b"\n")?;
                     }
                     changed = true;
+                    host_event_replaced |= memchr::memmem::find(body, HOST_EVENT).is_some();
                 }
                 _ => out.write_all(&line)?,
             }
@@ -765,7 +876,13 @@ pub(crate) fn rewrite_numbered(
         Ok(changed)
     })();
     match written {
-        Ok(true) => fs::rename(&temp, path).map(|_| true),
+        Ok(true) => {
+            fs::rename(&temp, path)?;
+            if host_event_replaced {
+                next_generation(&appending, path);
+            }
+            Ok(true)
+        }
         other => {
             let _ = fs::remove_file(&temp);
             other
@@ -1092,6 +1209,7 @@ mod tests {
     #[test]
     fn lines_already_in_a_record_are_confirmed_only_by_a_sync_that_succeeds() {
         let key = unique_key("confirm");
+        let confirm_synced = |key: &str| confirm_synced(key, generation(key).unwrap());
         assert_eq!(confirm_synced(&key), None, "no record, nothing to confirm");
         FAIL_DIR_SYNC.with(|f| f.set(true));
         let unproven = append_synced(&key, &json!({ "n": 1 }));
@@ -1235,6 +1353,102 @@ mod tests {
         assert_eq!(since(&key, 0).len(), 1);
         forget(&key);
         assert!(since(&key, 0).is_empty());
+    }
+
+    /// A receipt is for the record a line was seen in. A chat that was
+    /// forgotten and spoken in again has a file under the old name that
+    /// syncs perfectly well and holds none of what the old one did: the
+    /// receipt asked for with the old record's generation is refused, and
+    /// one asked for with the new record's is given.
+    #[test]
+    fn a_receipt_is_refused_for_a_record_that_was_forgotten_and_made_again() {
+        let key = unique_key("generation");
+        assert_eq!(generation("not/a key"), None);
+        append(&key, &json!({ "n": 1 }));
+        let seen = generation(&key).unwrap();
+        assert_eq!(confirm_synced(&key, seen), Some(()));
+        assert_eq!(generation(&key), Some(seen), "a receipt moves nothing");
+
+        forget(&key);
+        assert_ne!(generation(&key), Some(seen));
+        assert_eq!(confirm_synced(&key, seen), None, "no record at all");
+        append(&key, &json!({ "n": 2 }));
+        assert_eq!(
+            confirm_synced(&key, seen),
+            None,
+            "the record there now is not the one that was seen"
+        );
+        let now = generation(&key).unwrap();
+        assert_eq!(confirm_synced(&key, now), Some(()));
+
+        // Forgetting a chat that has no record moves it on as well: what
+        // is written afterwards is not what a look before it saw.
+        forget(&key);
+        let none_there = generation(&key).unwrap();
+        forget(&key);
+        append(&key, &json!({ "n": 3 }));
+        assert_eq!(confirm_synced(&key, none_there), None);
+        forget(&key);
+    }
+
+    /// A record removed by its file alone (startup's tidy of transcripts no
+    /// chat points at) is forgotten the same way: its generation moves and
+    /// its count goes, so the next record under that name starts at one.
+    #[test]
+    fn a_record_removed_by_its_file_is_forgotten_like_any_other() {
+        let key = unique_key("forget-file");
+        append(&key, &json!({ "n": 1 }));
+        assert_eq!(append(&key, &json!({ "n": 2 })), Some(2));
+        let seen = generation(&key).unwrap();
+        let path = path_for(&key).unwrap();
+        assert!(forget_file(&path));
+        assert!(!path.exists());
+        assert!(!forget_file(&path), "nothing left to remove");
+        assert_eq!(append(&key, &json!({ "n": 3 })), Some(1));
+        assert_eq!(confirm_synced(&key, seen), None);
+        forget(&key);
+    }
+
+    /// A rewrite keeps every line in its place, so the record it leaves is
+    /// the same record: a compaction between a look and its receipt costs
+    /// nothing. Unless it replaced a host event's line, which a receipt may
+    /// be owed for: then the record is no longer the one that was seen.
+    #[test]
+    fn a_rewrite_is_the_same_record_unless_it_replaced_a_host_event() {
+        let key = unique_key("rewrite-generation");
+        // Text that quotes a host event's spelling is not one: the quotes
+        // inside a string are escaped in the record.
+        let quoted = json!({ "type": "user", "text": r#"long "type":"octiq_task_reopened""# });
+        append(&key, &quoted);
+        append(
+            &key,
+            &json!({ "type": "octiq_task_reopened", "taskId": "t" }),
+        );
+        let path = path_for(&key).unwrap();
+        let seen = generation(&key).unwrap();
+
+        let shorter = r#"{"type":"user","text":"short"}"#;
+        let changed = rewrite_lines(&path, |line| {
+            line.contains("long").then(|| shorter.to_string())
+        });
+        assert!(changed.unwrap());
+        assert!(
+            !rewrite_lines(&path, |_| None).unwrap(),
+            "nothing to change"
+        );
+        assert_eq!(generation(&key), Some(seen));
+        assert_eq!(confirm_synced(&key, seen), Some(()));
+        assert_eq!(of_type(&key, "octiq_task_reopened").len(), 1);
+
+        let emptied = r#"{"type":"octiq_compacted","into":1}"#;
+        let changed = rewrite_lines(&path, |line| {
+            line.contains("taskId").then(|| emptied.to_string())
+        });
+        assert!(changed.unwrap());
+        assert!(of_type(&key, "octiq_task_reopened").is_empty());
+        assert_ne!(generation(&key), Some(seen));
+        assert_eq!(confirm_synced(&key, seen), None);
+        forget(&key);
     }
 
     /// A resumed session's history becomes the start of the chat's record, so

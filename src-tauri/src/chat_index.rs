@@ -840,7 +840,10 @@ pub fn reconcile() -> usize {
 
     let mut removed = 0;
     for path in orphans {
-        if fs::remove_file(path).is_ok() {
+        // Through the record's own door, like every removal of one, so
+        // nothing that looked at this record takes the next file under its
+        // name for it.
+        if crate::transcript::forget_file(&path) {
             removed += 1;
         }
     }
@@ -1526,11 +1529,20 @@ pub(crate) mod tests {
         crate::transcript::append(&format!("chat:{orphan}"), &serde_json::json!({ "n": 1 }));
 
         assert!(!crate::transcript::since(&format!("chat:{orphan}"), 0).is_empty());
+        let records = || {
+            [kept, orphan].map(|id| crate::transcript::generation(&format!("chat:{id}")).unwrap())
+        };
+        let before = records();
         reconcile();
 
         // The orphan is gone; the one still in the list is untouched.
         assert!(crate::transcript::since(&format!("chat:{orphan}"), 0).is_empty());
         assert!(!crate::transcript::since(&format!("chat:{kept}"), 0).is_empty());
+        // And the orphan's record is a removed one to whoever looked at it:
+        // no receipt for it is given on the next file under its name.
+        let after = records();
+        assert_eq!(after[0], before[0]);
+        assert_ne!(after[1], before[1]);
 
         // An entry whose transcript is missing is NOT dropped: it still holds
         // the session id that continues the conversation.
