@@ -418,29 +418,44 @@ struct ChatSession {
     /// false, so it means "still since".
     last_active: Instant,
     /// Whether a Stop cut a turn of this process short and that turn's own
-    /// full stop has not been read yet.
+    /// full stop has not been read yet. Set and cleared under this session's
+    /// lock, and gone with the process: nothing else records an unwind.
     cut_off: CutOff,
 }
 
 /// A turn that was cut short still sends a full stop of its own, and the
 /// stream does not say which turn a full stop ends. This is how the reader
-/// knows (`end_turn_locked`).
+/// knows (`end_turn_locked`): after a Stop the next full stop read is the
+/// cut-off turn's, because nothing else has been written in between.
 ///
-/// A Stop marks the session idle at once, so until that full stop has been
-/// read nothing new is written to the agent: a message, and a completion's
-/// wrap-up, wait in the queue behind it and are handed over on it
-/// (`ChatManager::unwinding`). Only one that never comes lets a later turn
-/// in, when the grace runs out (`grace_ran_out`).
+/// **The invariant: no prompt is ever written to a process that still owes
+/// the full stop of a turn that was cut short.** A Stop marks the session
+/// idle at once, so until that full stop has been read a message, a
+/// completion's wrap-up and a host notification all wait
+/// (`chat_send_with_user_turn`, `chat_complete_impl`,
+/// `deliver_orchestration_notification`), and are handed over on it. Every
+/// prompt goes through `write_user_message_locked`, which refuses while this
+/// is anything but `No`, whoever asks.
+///
+/// A full stop that never comes is not waited for longer than the grace and
+/// is not guessed at either: the process is ended (`grace_ran_out`), and the
+/// conversation goes on in the next one, which resumes it by id. Written to
+/// instead, an agent that had not stopped answered a second `turn/start`
+/// with the turn it was already in, and the one full stop that followed
+/// could not be told from the cut-off turn's (review of 8cbcd0b, H2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum CutOff {
     #[default]
     No,
-    /// The next full stop read is the cut-off turn's.
-    Owed,
-    /// It never came within the grace, and a later turn has been written to
-    /// the agent since. A full stop read before the agent has taken that
-    /// turn up is still the cut-off turn's.
-    Overtaken,
+    /// The next full stop read is the cut-off turn's. The number names this
+    /// unwind (`ChatManager::next_unwind`): the thread waiting out its grace
+    /// acts for this one and for no later Stop of the same chat.
+    Owed(u64),
+    /// The Stop was not honoured within the grace and the process has been
+    /// ended. Whatever its reader still reads ends no turn, decides no
+    /// completion and moves no queue: all three belong to the chat's next
+    /// process.
+    Ended,
 }
 
 #[derive(Debug)]
@@ -481,12 +496,6 @@ impl ChatSession {
     /// How long this has been sitting still, or `None` while it is working.
     fn still_for(&self) -> Option<Duration> {
         (!self.busy).then(|| self.last_active.elapsed())
-    }
-
-    /// Whether the turn last written to the agent is still waiting for the
-    /// agent to take it up (`acknowledge_user_turn`).
-    fn awaits_acknowledgement(&self) -> bool {
-        self.answering.is_some() && self.user_turn_id == self.answering
     }
 }
 
@@ -772,9 +781,12 @@ pub struct ChatManager {
     /// "<chat>\n<task>" for each orchestration writer a chat has been told it
     /// writes beside (`admit_beside_writers`), so it is said once, not per send.
     writer_notices: Mutex<std::collections::HashSet<String>>,
-    /// Chats whose turn was interrupted and whose own full stop has not come
-    /// back yet, with when — see `ChatManager::unwinding`.
-    unwinding: Mutex<HashMap<String, Instant>>,
+    /// How many turns a Stop has cut short, which names each unwind — see
+    /// `CutOff::Owed`.
+    unwinds: std::sync::atomic::AtomicU64,
+    /// What a test sets and reads about the wait behind a Stop.
+    #[cfg(test)]
+    unwind_probe: UnwindProbe,
     /// Chats whose removed folder is being put back, each with the thread
     /// doing it — see `ChatManager::claim_start`.
     start_claims: Mutex<HashMap<String, thread::ThreadId>>,
@@ -802,9 +814,23 @@ impl Drop for StartClaim<'_> {
 }
 
 /// How long an interrupted turn may take to send its own full stop before
-/// host notifications stop waiting for it. Claude and Codex answer an
+/// its process is ended (`grace_ran_out`). Claude and Codex answer an
 /// interrupt in well under a second; this only covers one that never does.
+#[cfg_attr(test, allow(dead_code))]
 const UNWIND_GRACE: Duration = Duration::from_secs(30);
+
+/// The wait behind a Stop, as a test steers and counts it. With no grace set
+/// a Stop starts no thread, and the test plays the end of the grace itself
+/// (`grace_ran_out`).
+#[cfg(test)]
+#[derive(Default)]
+struct UnwindProbe {
+    grace: Mutex<Option<Duration>>,
+    /// Waits a Stop asked for.
+    asked: std::sync::atomic::AtomicUsize,
+    /// Waits that ran to the end of their grace, whatever they then found.
+    over: std::sync::atomic::AtomicUsize,
+}
 
 /// The secret one launch of one agent proves itself with on
 /// `/hook/orchestration`, handed to it as `OCTIQ_CHAT_CAPABILITY`.
@@ -1104,37 +1130,41 @@ impl ChatManager {
     /// `chat_complete_impl`) and are handed over on its full stop like any
     /// queued message. A wrap-up written straight in was decided by that
     /// full stop instead of its own (review of 2fd3231, H2).
+    ///
+    /// The mark is the session's own (`CutOff`), so it does not run out with
+    /// a clock: it goes on the full stop, or with the process. This takes
+    /// the session table and tries the session, and a session somebody else
+    /// holds reads as unwinding, which only ever makes a notification wait
+    /// for the next pass. A caller holding either lock reads
+    /// `ChatSession::cut_off` itself.
     fn unwinding(&self, key: &str) -> bool {
-        let Ok(mut unwinding) = self.unwinding.lock() else {
+        let Ok(sessions) = self.sessions.lock() else {
             return true;
         };
-        match unwinding.get(key) {
-            Some(at) if at.elapsed() < UNWIND_GRACE => true,
-            Some(_) => {
-                unwinding.remove(key);
-                false
-            }
-            None => false,
-        }
+        sessions.get(key).is_some_and(|session| {
+            session
+                .try_lock()
+                .map(|session| session.cut_off != CutOff::No)
+                .unwrap_or(true)
+        })
     }
 
-    fn set_unwinding(&self, key: &str, on: bool) {
-        if let Ok(mut unwinding) = self.unwinding.lock() {
-            if on {
-                unwinding.insert(key.to_string(), Instant::now());
-            } else {
-                unwinding.remove(key);
-            }
-        }
+    /// A name for the unwind a Stop is about to begin (`CutOff::Owed`).
+    fn next_unwind(&self) -> u64 {
+        self.unwinds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
     }
 
-    /// How much of the grace an unwinding chat has left; `None` once it has
-    /// run out or the full stop came.
-    fn unwind_left(&self, key: &str) -> Option<Duration> {
-        let unwinding = self.unwinding.lock().ok()?;
-        UNWIND_GRACE
-            .checked_sub(unwinding.get(key)?.elapsed())
-            .filter(|left| !left.is_zero())
+    /// How long the thread behind a Stop waits before ending a process that
+    /// has not stopped. `None` starts no thread, which only a test does.
+    fn unwind_grace(&self) -> Option<Duration> {
+        #[cfg(test)]
+        {
+            *self.unwind_probe.grace.lock().unwrap()
+        }
+        #[cfg(not(test))]
+        Some(UNWIND_GRACE)
     }
 
     /// Tell the orchestration ledger about one line of a chat's stream.
@@ -1143,15 +1173,17 @@ impl ChatManager {
     /// short (Stop, or a coordinator's interrupt) as a failed `result`. The
     /// ledger is told the cut was ours, so the worker's attempt waits for the
     /// message behind the interrupt instead of failing. Call this before the
-    /// full stop clears the mark.
+    /// full stop clears the mark, with the session whose stream it is.
     fn observe_for_orchestration(
         &self,
-        session_key: &str,
+        session: &Mutex<ChatSession>,
         key: &str,
         event: &Value,
     ) -> Result<(), String> {
         let interrupted = event.get("type").and_then(Value::as_str) == Some("result")
-            && self.unwinding(session_key);
+            && session
+                .lock()
+                .is_ok_and(|session| session.cut_off != CutOff::No);
         self.orchestrations
             .observe_worker_turn_event(key, event, interrupted)
     }
@@ -1651,6 +1683,22 @@ impl ChatManager {
             // A wrap-up that will never run completes nothing.
             self.fail_completion_of(key, &turn, COMPLETION_ENDED);
         }
+    }
+
+    /// A completion whose wrap-up is still waiting in the queue will not be
+    /// run: the wrap-up is taken out, marked as not sent, and the completion
+    /// ends with `reason`. Messages around it stay where they are. Callers
+    /// hold the session table, like every change to the queue.
+    fn fail_queued_wrap_up(&self, key: &str, stream_key: &str, reason: &str) {
+        let Some(wrap_up) = self.completing_turn(key) else {
+            return;
+        };
+        if let Some(turn) = self.cancel_queued_turn(key, &wrap_up) {
+            for turn_id in turn.turn_ids() {
+                record_delivery(stream_key, Some(turn_id), "failed");
+            }
+        }
+        self.fail_completion_when(key, reason, |id| id == wrap_up);
     }
 
     /// Everything waiting, taken out in one go.
@@ -2511,8 +2559,22 @@ fn start_queued_command_turn(
     stream_key: &str,
     turn: QueuedTurn,
 ) -> Result<(), String> {
-    let result =
-        start_queued_command_turn_inner(manager.clone(), session_key, stream_key, turn.clone());
+    carry_queued_turn(&manager, session_key, stream_key, turn, |turn| {
+        start_queued_turn(manager.clone(), session_key, stream_key, turn, true)
+    })
+}
+
+/// The handoff around starting a queued turn in a chat's next process: the
+/// caller took `turn` off the queue and marked the key as handed off under
+/// the session table, and `start` is what starts it.
+fn carry_queued_turn(
+    manager: &ChatManager,
+    session_key: &str,
+    stream_key: &str,
+    turn: QueuedTurn,
+    start: impl FnOnce(QueuedTurn) -> Result<(), String>,
+) -> Result<(), String> {
+    let result = start(turn.clone());
     // Failure cleanup belongs to this handoff, before a new send can start.
     let _sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     if result.is_err() {
@@ -2530,16 +2592,22 @@ fn start_queued_command_turn(
     result
 }
 
-fn start_queued_command_turn_inner(
+/// Start a process for `session_key` with a queued turn as its first
+/// message, resuming the conversation it remembers. `command_line_only` is
+/// the reaper's and a one-shot Stop's: their provider was command-line when
+/// the turn was queued, and a chat since moved to another kind is not theirs
+/// to start.
+fn start_queued_turn(
     manager: Arc<ChatManager>,
     session_key: &str,
     stream_key: &str,
     turn: QueuedTurn,
+    command_line_only: bool,
 ) -> Result<(), String> {
     let start = manager
         .start_context(session_key)
         .ok_or_else(|| format!("nothing here knows how to resume '{session_key}'"))?;
-    if !relaunches_to_continue(start.agent) {
+    if command_line_only && !relaunches_to_continue(start.agent) {
         return Err(format!("'{session_key}' no longer uses command-line turns"));
     }
     let QueuedTurn {
@@ -3320,8 +3388,7 @@ pub(crate) fn start_session(
                                 event = normalized;
                             }
                         }
-                        if let Err(error) =
-                            reading.observe_for_orchestration(&session_key, &key, &event)
+                        if let Err(error) = reading.observe_for_orchestration(&asking, &key, &event)
                         {
                             eprintln!("orchestration: cannot record provider event: {error}");
                         }
@@ -3867,6 +3934,11 @@ fn write_user_message_locked(
     images: &[String],
     turn_id: Option<&str>,
 ) -> Result<(), String> {
+    // The invariant of `CutOff`, kept here because every prompt comes
+    // through here: an agent that has not stopped is not given another turn.
+    if session.cut_off != CutOff::No {
+        return Err(STILL_STOPPING.into());
+    }
     let payload = if let Some(codex) = session.codex.as_mut() {
         let id = codex.request_id("turn");
         let text = if codex.has_octiq_mcp {
@@ -3908,13 +3980,13 @@ fn write_user_message_locked(
     session.user_turn_id = turn_id.map(str::to_string);
     session.answering = turn_id.map(str::to_string);
     session.turn_started();
-    // Written while a cut-off turn still owes its full stop, which only the
-    // grace running out allows: the reader has to tell the two apart.
-    if session.cut_off == CutOff::Owed {
-        session.cut_off = CutOff::Overtaken;
-    }
     Ok(())
 }
+
+/// Why `write_user_message_locked` refuses a process whose cut-off turn has
+/// not reached its full stop. Every caller checks first and queues instead,
+/// so nobody is meant to read this.
+const STILL_STOPPING: &str = "this chat is still stopping its last turn";
 
 /// A turn reached its full stop: end it, decide a completion whose wrap-up
 /// it was, and hand over the next queued message, all under the session lock
@@ -3929,12 +4001,12 @@ fn write_user_message_locked(
 /// (`CutOff`). After a Stop the next full stop is the cut-off turn's, and
 /// nothing else has been written to the agent in between: `answering` is
 /// still that turn, so no wrap-up can be decided by it, and what waited
-/// behind it is handed over here. The one exception is a cut-off turn that
-/// stayed silent past the grace and was overtaken (`grace_ran_out`). Its
-/// full stop can still arrive late, and it is told from the later turn's
-/// own by the agent's acknowledgement: an agent cannot end a turn it has
-/// not taken up. Such a full stop ends nothing and decides nothing; the
-/// later turn stays in flight until its own.
+/// behind it is handed over here. There is no later turn it could be taken
+/// for, because none is written until this has been read.
+///
+/// A process ended for not stopping (`CutOff::Ended`) may still have a full
+/// stop in its pipe. It ends nothing here: the queue and any completion are
+/// the next process's by then.
 fn end_turn_locked(
     manager: &ChatManager,
     session_key: &str,
@@ -3942,93 +4014,163 @@ fn end_turn_locked(
     session: &mut ChatSession,
     clean: bool,
 ) -> (Option<WrapUpEnded>, Option<String>) {
+    if session.cut_off == CutOff::Ended {
+        return (None, None);
+    }
     if let Some(codex) = session.codex.as_mut() {
         codex.active_turn_id = None;
     }
-    manager.set_unwinding(session_key, false);
-    let cut_off = std::mem::take(&mut session.cut_off);
-    if cut_off == CutOff::Overtaken && session.awaits_acknowledgement() {
-        return (None, None);
-    }
+    session.cut_off = CutOff::No;
     session.turn_ended();
     let wrap_up = manager.completion_at_full_stop(session_key, session, clean);
     let refused = dispatch_next_persistent_turn(manager, session_key, stream_key, session);
     (wrap_up, refused)
 }
 
-/// The cut-off turn of `session` never sent its full stop and the grace is
-/// over. Whatever waited behind it is handed over now, the way that full
-/// stop would have: the first queued message is written under the session
-/// lock, the rest stay queued. With nothing waiting, the session simply
-/// reads idle again.
+/// Why a completion whose wrap-up was still waiting behind a stopped turn
+/// is off when that turn's process is ended (`grace_ran_out`). A sentence of
+/// the host's, which the page shows as given.
+const COMPLETION_STOP_NOT_HONOURED: &str =
+    "The agent did not stop, so its process was ended and the chat was not completed. Complete it again.";
+
+/// The cut-off turn of `session` never sent its full stop and the grace of
+/// unwind `unwind` is over: the Stop was not honoured, so the process is
+/// ended. Nothing is written to it. An agent that has not stopped cannot be
+/// given a turn whose full stop could be told from the one it still owes.
 ///
-/// This hands a turn over and nothing more. A wrap-up it writes is still
-/// decided only by its own full stop, so the grace by itself never ticks a
-/// chat and never stops a process.
+/// It is the idle sweeper's ending and a one-shot provider's Stop: the
+/// transcript is on disk and the next process resumes the conversation by
+/// id. What waited behind the stopped turn:
+///
+/// - **Messages are kept, and the first one starts in that next process**
+///   straight away, the way a one-shot provider's queue is carried across
+///   its Stop (`interrupt_session`). The rest stay queued behind it. Stop
+///   still keeps the queue; it has only taken the grace longer.
+/// - **A completion's wrap-up is not carried.** It was asked of the process
+///   that is gone, so the completion fails once, in words the person can act
+///   on, and nothing is ticked.
+/// - **A host notification was never handed over** (`notification_ready`),
+///   so it meets a chat with no process, as after any exit: the person's
+///   chat is started again with it, and a worker's attempt has already
+///   failed with its process (`worker_disconnected`).
+///
+/// One step under the session table and the session, like the full stop it
+/// stands in for: whichever of the two takes the session first is the only
+/// one that acts. Answers whether this call ended the process.
 fn grace_ran_out(
+    manager: &Arc<ChatManager>,
+    session_key: &str,
+    stream_key: &str,
+    session: &Arc<Mutex<ChatSession>>,
+    unwind: u64,
+) -> bool {
+    grace_ran_out_with(manager, session_key, stream_key, session, unwind, |turn| {
+        start_queued_turn(manager.clone(), session_key, stream_key, turn, false)
+    })
+}
+
+/// `grace_ran_out`, with how the first waiting message is started in the
+/// next process left to the caller.
+fn grace_ran_out_with(
     manager: &ChatManager,
     session_key: &str,
     stream_key: &str,
     session: &Arc<Mutex<ChatSession>>,
-) {
-    let (agent, refused) = {
-        // The session map first, like every send: a ✕ on a queued message
-        // holds it, and the queue is not to change under this.
-        let Ok(sessions) = manager.sessions.lock() else {
-            return;
+    unwind: u64,
+    start: impl FnOnce(QueuedTurn) -> Result<(), String>,
+) -> bool {
+    let (agent, next) = {
+        // The session table first, like every send and every start: nothing
+        // joins or leaves the queue, and no process takes this key, while
+        // this one is taken out.
+        let Ok(mut sessions) = manager.sessions.lock() else {
+            return false;
         };
         if !sessions
             .get(session_key)
             .is_some_and(|current| Arc::ptr_eq(current, session))
         {
-            return;
+            return false;
         }
         let Ok(mut guard) = session.lock() else {
-            return;
+            return false;
         };
-        // The full stop came after all, or another Stop restarted the wait.
-        if guard.cut_off != CutOff::Owed || manager.unwinding(session_key) {
-            return;
+        // The full stop came after all, or this is a later Stop's unwind
+        // with a wait of its own.
+        if guard.cut_off != CutOff::Owed(unwind) {
+            return false;
         }
-        guard.turn_ended();
-        (
-            guard.agent,
-            dispatch_next_persistent_turn(manager, session_key, stream_key, &mut guard),
-        )
+        guard.cut_off = CutOff::Ended;
+        manager.fail_queued_wrap_up(session_key, stream_key, COMPLETION_STOP_NOT_HONOURED);
+        let next = manager.take_queued_turn(session_key);
+        if next.is_some() {
+            manager
+                .handoffs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session_key.to_string());
+        }
+        sessions.remove(session_key);
+        drop(sessions);
+        stop_process(manager, session_key, &mut guard);
+        (guard.agent, next)
     };
-    if let Some(why) = refused {
-        manager.forget_queued_turns(session_key);
-        emit_status(
-            agent,
-            ChatStatus {
-                key: stream_key.to_string(),
-                kind: "error".into(),
-                text: format!("could not send queued message: {why}"),
-                code: None,
-            },
-        );
+    println!("[chat] {session_key} ended: its agent did not stop within the grace of a Stop");
+    if let Some(turn) = next {
+        if let Err(why) = carry_queued_turn(manager, session_key, stream_key, turn, start) {
+            // The process this ended had a successor on the way, so its own
+            // reaper may have stayed quiet: say both things here.
+            for (kind, text) in [
+                ("error", format!("could not resume queued message: {why}")),
+                ("exit", String::new()),
+            ] {
+                emit_status(
+                    agent,
+                    ChatStatus {
+                        key: stream_key.to_string(),
+                        kind: kind.into(),
+                        text,
+                        code: None,
+                    },
+                );
+            }
+        }
     }
+    true
 }
 
 /// Wait out the grace of the Stop that just cut a turn of `session` short,
-/// then hand over what waits behind it if its full stop never came
-/// (`grace_ran_out`). One per unwind: a second Stop inside it only moves the
-/// deadline this is already waiting for.
-fn hand_over_when_grace_runs_out(
+/// then end the process if that turn's full stop never came
+/// (`grace_ran_out`). One per unwind, and it acts for that unwind only: a
+/// second Stop inside it starts no second wait and moves no deadline, and a
+/// later Stop of the same chat has a number of its own.
+fn end_process_when_grace_runs_out(
     manager: &Arc<ChatManager>,
     session_key: &str,
     stream_key: &str,
     session: &Arc<Mutex<ChatSession>>,
+    unwind: u64,
 ) {
+    #[cfg(test)]
+    manager
+        .unwind_probe
+        .asked
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let Some(grace) = manager.unwind_grace() else {
+        return;
+    };
     let manager = manager.clone();
     let session = session.clone();
     let session_key = session_key.to_string();
     let stream_key = stream_key.to_string();
     thread::spawn(move || {
-        while let Some(left) = manager.unwind_left(&session_key) {
-            thread::sleep(left + Duration::from_millis(20));
-        }
-        grace_ran_out(&manager, &session_key, &stream_key, &session);
+        thread::sleep(grace);
+        grace_ran_out(&manager, &session_key, &stream_key, &session, unwind);
+        #[cfg(test)]
+        manager
+            .unwind_probe
+            .over
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     });
 }
 
@@ -4265,7 +4407,7 @@ pub(crate) fn deliver_orchestration_notification(
             // Read under the session lock, which the interrupt that sets it
             // and the full stop that clears it both hold.
             if session.busy
-                || manager.unwinding(key)
+                || session.cut_off != CutOff::No
                 || !provider_for(session.agent)
                     .capabilities()
                     .input
@@ -4414,7 +4556,7 @@ fn chat_send_with_user_turn(
         // `has_queued_turns`, which is what a Stop leaves behind.
         //
         // A Stop leaves one more thing behind: a turn that reads idle and has
-        // not sent its own full stop yet (`ChatManager::unwinding`). Written
+        // not sent its own full stop yet (`CutOff`). Written
         // now, this message would be the turn that full stop ends, and the
         // agent would work on it with the session read as idle. It waits
         // for that full stop like anything else queued.
@@ -4426,7 +4568,7 @@ fn chat_send_with_user_turn(
                 .accepts_stdin();
             if one_shot
                 || guard.busy
-                || manager.unwinding(&session_key)
+                || guard.cut_off != CutOff::No
                 || manager.has_queued_turns(&session_key)
             {
                 // Every provider gets the same durable queue envelope. Native
@@ -4703,6 +4845,10 @@ fn interrupt_persistent_turn(session: &mut ChatSession) -> Result<(), String> {
 /// `turn_finished`), under the lock that ends the turn, so it cannot jump
 /// ahead of anything. A one-shot provider has no reader to do it, so this
 /// carries the queue across the process replacement by hand.
+///
+/// A persistent agent that does not honour the Stop within `UNWIND_GRACE`
+/// has its process ended, and the queue's first message starts in the next
+/// one (`grace_ran_out`).
 fn interrupt_session(
     manager: &Arc<ChatManager>,
     session_key: &str,
@@ -4753,23 +4899,18 @@ fn interrupt_session(
     }
 
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    // Marked before the interrupt goes out, so nothing slips into the gap:
-    // no notification, no message and no wrap-up is written until the reader
-    // has seen the cut-off turn's full stop and cleared this. A second Stop
-    // inside that wait, with nothing in flight, is no reason to end it.
+    // Marked under the lock the interrupt goes out with, so nothing slips
+    // into the gap: no notification, no message and no wrap-up is written
+    // until the reader has seen the cut-off turn's full stop and cleared
+    // this. A second Stop inside that wait is the same unwind: it asks the
+    // agent again, and neither ends the wait nor starts another.
     let was_busy = guard.busy;
     let owed = guard.cut_off != CutOff::No;
-    if was_busy || !owed {
-        manager.set_unwinding(session_key, was_busy);
-    }
-    interrupt_persistent_turn(&mut guard).inspect_err(|_| {
-        if !owed {
-            manager.set_unwinding(session_key, false);
-        }
-    })?;
+    interrupt_persistent_turn(&mut guard)?;
     if was_busy && !owed {
-        guard.cut_off = CutOff::Owed;
-        hand_over_when_grace_runs_out(manager, session_key, stream_key, &session);
+        let unwind = manager.next_unwind();
+        guard.cut_off = CutOff::Owed(unwind);
+        end_process_when_grace_runs_out(manager, session_key, stream_key, &session, unwind);
     }
     // The cut-off wrap-up's own full stop finds no completion left to
     // decide, so a Stop can never tick a chat.
@@ -5509,12 +5650,15 @@ pub fn chat_complete_impl(
                     .input
                     .accepts_stdin();
                 // A turn that was stopped and has not sent its own full stop
-                // yet reads idle (`ChatManager::unwinding`). The wrap-up
+                // yet reads idle (`CutOff`). The wrap-up
                 // waits behind it like behind any turn: written now, that
                 // late full stop would be taken for the wrap-up's, and a
                 // clean one would tick the chat and stop an agent that had
                 // not wrapped anything up (review of 2fd3231, H2).
-                if one_shot || guard.busy || manager.unwinding(key) || manager.has_queued_turns(key)
+                if one_shot
+                    || guard.busy
+                    || guard.cut_off != CutOff::No
+                    || manager.has_queued_turns(key)
                 {
                     queue()?;
                     guard.turn_started();
@@ -6030,14 +6174,20 @@ fn end_process_when(
         return Ok(false);
     };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    if let Err(error) = manager.background.interrupt(key, &guard.launch_id,
+    stop_process(manager, key, &mut guard);
+    Ok(true)
+}
+
+/// End the process of a session that has been taken out of the session
+/// table. Called with the session held.
+fn stop_process(manager: &ChatManager, key: &str, session: &mut ChatSession) {
+    if let Err(error) = manager.background.interrupt(key, &session.launch_id,
         "The provider session was ended or switched. Background work is no longer attached; inspect retained output before retrying.") {
         eprintln!("chat: cannot record interrupted background work: {error}");
     }
     // Closing stdin asks persistent providers to finish; kill is the backstop.
-    guard.stdin.take();
-    let _ = guard.child.kill();
-    Ok(true)
+    session.stdin.take();
+    let _ = session.child.kill();
 }
 
 /// The chats that have been sitting still for longer than timeout.
@@ -8323,7 +8473,7 @@ mod tests {
         }))
     }
 
-    fn capturing_claude_session() -> (
+    pub(super) fn capturing_claude_session() -> (
         Arc<Mutex<ChatSession>>,
         std::io::BufReader<std::process::ChildStdout>,
     ) {
@@ -8804,7 +8954,7 @@ mod tests {
             "the cut-off turn has not sent its full stop yet"
         );
         // The reader clears it on that full stop.
-        manager.set_unwinding(&key, false);
+        end_turn_locked(&manager, &key, &key, &mut session.lock().unwrap(), false);
         assert!(manager.notification_ready(&key));
         assert_eq!(
             interrupt_worker_turn(&manager, &key),
@@ -8813,12 +8963,24 @@ mod tests {
         );
         assert!(manager.notification_ready(&key));
 
-        // A full stop that never comes holds delivery only for the grace.
-        manager.unwinding.lock().unwrap().insert(
-            key.clone(),
-            Instant::now()
-                .checked_sub(UNWIND_GRACE + Duration::from_secs(1))
-                .expect("a clock with some run-up behind it"),
+        // A full stop that never comes holds delivery for the grace, and no
+        // clock lets a notification into a process that has not stopped:
+        // the grace ends the process, and the notification then meets a chat
+        // with none, as after any exit.
+        session.lock().unwrap().busy = true;
+        assert_eq!(
+            interrupt_worker_turn(&manager, &key),
+            Ok(WorkerInterrupt::Interrupted)
+        );
+        let CutOff::Owed(unwind) = session.lock().unwrap().cut_off else {
+            panic!("the Stop is being waited out");
+        };
+        assert!(!manager.notification_ready(&key));
+        assert!(grace_ran_out(&manager, &key, &key, &session, unwind));
+        assert!(!manager.has_process(&key));
+        assert!(
+            session.lock().unwrap().stdin.is_none(),
+            "nothing more goes in"
         );
         assert!(manager.notification_ready(&key));
 
@@ -8867,7 +9029,7 @@ mod tests {
             .expect("the cut-off turn's full stop");
         for event in &events[..=called] {
             manager
-                .observe_for_orchestration(&key, &key, event)
+                .observe_for_orchestration(&session, &key, event)
                 .unwrap();
         }
         assert_eq!(attempt().execution.pending_tools.len(), 1, "mid tool call");
@@ -8894,7 +9056,7 @@ mod tests {
         // What Claude then says: the cancelled call, and a failed `result`.
         for event in &events[called + 1..=cut] {
             manager
-                .observe_for_orchestration(&key, &key, event)
+                .observe_for_orchestration(&session, &key, event)
                 .unwrap();
         }
         let after = attempt();
@@ -8915,7 +9077,7 @@ mod tests {
         );
 
         // The reader clears the mark on that full stop; the message goes in.
-        manager.set_unwinding(&key, false);
+        end_turn_locked(&manager, &key, &key, &mut session.lock().unwrap(), false);
         assert_eq!(
             deliver_orchestration_notification(manager.clone(), &note, Default::default()),
             Ok(true)
@@ -8929,12 +9091,12 @@ mod tests {
         // failure in it is no longer excused by the interrupt before it.
         for event in &events[cut + 1..] {
             manager
-                .observe_for_orchestration(&key, &key, event)
+                .observe_for_orchestration(&session, &key, event)
                 .unwrap();
         }
         assert_eq!(attempt().status, AttemptStatus::Running);
         manager
-            .observe_for_orchestration(&key, &key, &events[cut])
+            .observe_for_orchestration(&session, &key, &events[cut])
             .unwrap();
         assert_eq!(
             attempt().status,
@@ -8944,7 +9106,7 @@ mod tests {
         let mut broke = events[cut].clone();
         broke.as_object_mut().unwrap().remove("terminal_reason");
         manager
-            .observe_for_orchestration(&key, &key, &broke)
+            .observe_for_orchestration(&session, &key, &broke)
             .unwrap();
         assert_eq!(attempt().status, AttemptStatus::Failed);
 
@@ -11524,86 +11686,96 @@ mod completion_tests {
         assert!(running(&chat.session));
     }
 
-    /// The Stop's grace is over for this chat, as far as the clock goes.
-    fn let_the_grace_run_out(chat: &Listed) {
-        chat.manager.unwinding.lock().unwrap().insert(
-            chat.key.clone(),
-            Instant::now()
-                .checked_sub(UNWIND_GRACE + Duration::from_secs(1))
-                .expect("a clock with some run-up behind it"),
+    /// The unwind the last Stop left `process` in.
+    fn owed(process: &Arc<Mutex<ChatSession>>) -> u64 {
+        match process.lock().unwrap().cut_off {
+            CutOff::Owed(unwind) => unwind,
+            other => panic!("no Stop is being waited out: {other:?}"),
+        }
+    }
+
+    /// What the end of a Stop's grace did (`grace_ran_out`).
+    struct Grace {
+        /// Whether this call ended the process.
+        ended: bool,
+        /// The queued turn the chat's next process was started with, and
+        /// that process.
+        carried: Option<(QueuedTurn, Arc<Mutex<ChatSession>>)>,
+    }
+
+    /// What the thread a Stop leaves behind does when it wakes, for the
+    /// unwind it is given, with a stand-in where `start_session` would spawn
+    /// the chat's next process.
+    fn grace_runs_out_on(chat: &Listed, process: &Arc<Mutex<ChatSession>>, unwind: u64) -> Grace {
+        let mut carried = None;
+        let ended = grace_ran_out_with(
+            &chat.manager,
+            &chat.key,
+            &chat.key,
+            process,
+            unwind,
+            |turn| {
+                // What a start leaves behind for a queued turn: a process
+                // under the key, in that turn.
+                let next = claude_session(true);
+                {
+                    let mut starting = next.lock().unwrap();
+                    starting.answering = turn.turn_id.clone();
+                    starting.user_turn_id = turn.turn_id.clone();
+                }
+                chat.start(next.clone())?;
+                carried = Some((turn, next));
+                Ok(())
+            },
         );
+        Grace { ended, carried }
     }
 
-    /// What the thread a Stop leaves behind does when it wakes.
-    fn grace_ran_out_for(chat: &Listed) {
-        grace_ran_out(&chat.manager, &chat.key, &chat.key, &chat.session);
+    /// The grace of the Stop this chat's process is waiting out is over.
+    fn grace_runs_out(chat: &Listed) -> Grace {
+        grace_runs_out_on(chat, &chat.session, owed(&chat.session))
     }
 
-    /// The agent echoed the turn it was last given: it has taken it up.
-    fn taken_up(chat: &Listed) {
-        chat.session.lock().unwrap().user_turn_id = None;
+    /// How many waits Stops have asked for on this chat's manager.
+    fn waits_asked(chat: &Listed) -> usize {
+        chat.manager
+            .unwind_probe
+            .asked
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// H2. A cut-off turn whose full stop never comes holds the wrap-up for
-    /// the grace and no longer. The grace hands the wrap-up over; it ticks
-    /// nothing and stops nothing, and a full stop that turns up late is
-    /// still not the wrap-up's.
-    #[test]
-    fn a_cut_off_turn_that_never_ends_holds_the_wrap_up_only_for_the_grace() {
-        let chat = Listed::new(true);
-        chat.session.lock().unwrap().answering = Some("user-0".into());
-        let tap = Tap::on(&chat.id);
-        chat.stop();
-        let completing = chat.complete();
-        assert_eq!(completing.state, "queued");
+    /// Everything `written` still holds, to the end of the stream: the lines
+    /// a stand-in was sent on its stdin and had not been read back yet.
+    fn rest_of(written: &mut impl std::io::BufRead) -> Vec<Value> {
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        while written.read_line(&mut line).expect("the stand-in's echo") > 0 {
+            lines.push(serde_json::from_str(&line).expect("a line of JSON"));
+            line.clear();
+        }
+        lines
+    }
 
-        // Inside the grace nothing moves.
-        grace_ran_out_for(&chat);
-        assert_eq!(chat.answering().as_deref(), Some("user-0"));
-        assert_eq!(chat.queued(), [completing.turn_id.clone()]);
-
-        let_the_grace_run_out(&chat);
-        grace_ran_out_for(&chat);
-
-        // Handed over, and only handed over.
-        assert_eq!(chat.answering(), Some(completing.turn_id.clone()));
-        assert!(chat.busy());
-        assert!(chat.queued().is_empty());
-        assert_eq!(chat.completing(), Some(completing.turn_id.clone()));
-        assert!(!chat.row().is_done());
-        assert!(chat.live());
-        assert!(running(&chat.session));
-        assert_eq!(said(&tap), ["completing queued"]);
-
-        // The cut-off turn's full stop turns up after all, before the agent
-        // has taken the wrap-up up. It ends nothing and decides nothing.
-        assert_eq!(chat.full_stop(true), None);
-        assert_eq!(chat.completing(), Some(completing.turn_id.clone()));
-        assert_eq!(chat.answering(), Some(completing.turn_id.clone()));
-        assert!(chat.busy(), "the wrap-up is still in flight");
-        assert!(!chat.row().is_done());
-        assert!(chat.live());
-        assert_eq!(said(&tap), ["completing queued"]);
-
-        // The agent takes the wrap-up up, and its own full stop decides.
-        taken_up(&chat);
-        assert_eq!(chat.full_stop(true), Some(true));
-        assert!(chat.row().is_done());
-        assert!(!chat.live());
-
-        // One that never turns up at all: the next full stop read is the
-        // wrap-up's own, which the agent had taken up by then.
-        let chat = Listed::new(true);
-        chat.session.lock().unwrap().answering = Some("user-0".into());
-        chat.stop();
-        let completing = chat.complete();
-        let_the_grace_run_out(&chat);
-        grace_ran_out_for(&chat);
-        assert_eq!(chat.answering(), Some(completing.turn_id));
-        taken_up(&chat);
-        assert_eq!(chat.full_stop(false), Some(false), "and it failed");
-        assert!(!chat.row().is_done());
-        assert!(chat.live());
+    /// A Codex app-server stand-in with a turn in flight.
+    fn codex_session() -> Arc<Mutex<ChatSession>> {
+        let session = claude_session(true);
+        {
+            let mut codex = session.lock().unwrap();
+            codex.agent = ChatAgent::Codex;
+            codex.codex = Some(CodexAppSession {
+                thread_id: "thread-1".into(),
+                active_turn_id: Some("turn-1".into()),
+                interrupt_when_started: false,
+                next_request: 0,
+                model: None,
+                effort: None,
+                access: Some(Access::Read),
+                cwd: "/tmp".into(),
+                workspace_roots: vec!["/tmp".into()],
+                has_octiq_mcp: false,
+            });
+        }
+        session
     }
 
     /// H2. Stop, Complete, then ✕ on the queued wrap-up: the completion is
@@ -11632,18 +11804,20 @@ mod completion_tests {
         assert!(chat.live());
         assert_eq!(said(&tap).len(), 2);
 
-        // And where that full stop never comes, the grace lets the chat read
-        // idle again: the wait for a turn to hand over is all that kept it.
+        // And where that full stop never comes, the completion that was
+        // taken back is not failed a second time when the process is ended.
         let chat = Listed::new(true);
+        let tap = Tap::on(&chat.id);
         chat.stop();
         let completing = chat.complete();
         chat_cancel_queued_impl(&chat.manager, chat.key.clone(), completing.turn_id).unwrap();
         assert!(chat.busy());
-        let_the_grace_run_out(&chat);
-        grace_ran_out_for(&chat);
-        assert!(!chat.busy());
-        assert!(chat.live());
+        let grace = grace_runs_out(&chat);
+        assert!(grace.ended);
+        assert!(grace.carried.is_none());
+        assert!(!chat.live());
         assert!(!chat.row().is_done());
+        assert_eq!(said(&tap), ["completing queued", "completed cancelled"]);
     }
 
     /// H2, the same exposure in an ordinary send: written into the gap, the
@@ -11749,5 +11923,622 @@ mod completion_tests {
             assert_eq!(said(&tap), ["completing started", "index", "completed ok"]);
             assert_eq!(turns_named(&tap), [turn_id.clone(), turn_id]);
         }
+    }
+
+    /// H2 (review of 8cbcd0b). A Stop the agent does not honour within the
+    /// grace ends its process. Nothing is written to it: the first queued
+    /// message starts in the chat's next process and the rest wait behind
+    /// it, so Stop still keeps the queue.
+    #[test]
+    fn a_stop_the_agent_does_not_honour_ends_its_process_and_the_queue_starts_in_the_next() {
+        let (session, mut written) = super::tests::capturing_claude_session();
+        let chat = Listed::with(session);
+        chat.session.lock().unwrap().answering = Some("user-0".into());
+        chat.stop();
+        chat.send("do this instead", "user-9");
+        chat.send("/status", "user-10");
+        assert_eq!(chat.queued(), ["user-9", "user-10"]);
+        let unwind = owed(&chat.session);
+
+        let grace = grace_runs_out(&chat);
+
+        assert!(grace.ended);
+        assert!(exited(&chat.session), "the process that did not stop");
+        assert_eq!(chat.session.lock().unwrap().cut_off, CutOff::Ended);
+        let (turn, next) = grace.carried.expect("the first queued message");
+        assert_eq!(turn.turn_id.as_deref(), Some("user-9"));
+        assert_eq!(turn.text, "do this instead");
+        assert!(chat.runs(&next), "it starts in the chat's next process");
+        assert_eq!(chat.queued(), ["user-10"], "the rest wait behind it");
+        assert!(!chat.manager.handoffs.lock().unwrap().contains(&chat.key));
+        // All the old process was ever sent after the Stop is the Stop.
+        let sent = rest_of(&mut written);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["request"]["subtype"], "interrupt");
+        assert_eq!(chat.answering().as_deref(), Some("user-0"));
+
+        // Whatever the ended process still says ends nothing here: the
+        // queue is its successor's.
+        for clean in [false, true] {
+            assert_eq!(chat.full_stop(clean), None);
+        }
+        assert_eq!(chat.queued(), ["user-10"]);
+        assert!(next.lock().unwrap().busy);
+        assert_eq!(next.lock().unwrap().answering.as_deref(), Some("user-9"));
+
+        // The next process's own full stop hands the rest over.
+        {
+            let mut running = next.lock().unwrap();
+            assert_eq!(
+                end_turn_locked(&chat.manager, &chat.key, &chat.key, &mut running, true),
+                (None, None)
+            );
+            assert_eq!(running.answering.as_deref(), Some("user-10"));
+            assert!(running.busy);
+        }
+        assert!(chat.queued().is_empty());
+
+        // One unwind, one ending.
+        assert!(!grace_runs_out_on(&chat, &chat.session, unwind).ended);
+        assert!(chat.runs(&next));
+        assert!(running(&next));
+    }
+
+    /// With nothing waiting, the process is ended and that is all: the chat
+    /// reads as any chat whose process has gone, and the next message is the
+    /// page's to start it with.
+    #[test]
+    fn a_stop_that_is_not_honoured_with_nothing_waiting_only_ends_the_process() {
+        let chat = Listed::new(true);
+        chat.stop();
+        assert!(chat.manager.unwinding(&chat.key));
+
+        let grace = grace_runs_out(&chat);
+
+        assert!(grace.ended);
+        assert!(grace.carried.is_none());
+        assert!(!chat.live());
+        assert!(exited(&chat.session));
+        assert!(!chat.manager.handoffs.lock().unwrap().contains(&chat.key));
+        assert!(
+            !chat.manager.unwinding(&chat.key),
+            "the mark went with the process"
+        );
+        assert!(chat.manager.notification_ready(&chat.key));
+        assert_eq!(
+            chat_send_user_impl(
+                chat.manager.clone(),
+                chat.key.clone(),
+                "hello again".into(),
+                None,
+                None,
+                Some("user-1".into()),
+                None,
+            ),
+            Err("no such chat".into())
+        );
+        assert!(chat.queued().is_empty());
+    }
+
+    /// The real start, for a chat nothing knows how to resume: the queue is
+    /// not left waiting on a process that will never come, and the page is
+    /// told the chat has none.
+    #[test]
+    fn a_queue_that_cannot_be_started_in_the_next_process_is_not_left_waiting() {
+        let chat = Listed::new(true);
+        let tap = Tap::on(&chat.id);
+        chat.stop();
+        chat.send("do this instead", "user-9");
+        chat.send("/status", "user-10");
+
+        assert!(grace_ran_out(
+            &chat.manager,
+            &chat.key,
+            &chat.key,
+            &chat.session,
+            owed(&chat.session)
+        ));
+
+        assert!(!chat.live());
+        assert!(chat.queued().is_empty());
+        assert!(!chat.manager.handoffs.lock().unwrap().contains(&chat.key));
+        let statuses: Vec<String> = tap
+            .heard()
+            .into_iter()
+            .filter(|(event, _)| event == "chat-status")
+            .map(|(_, payload)| payload["kind"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(statuses, ["error", "exit"]);
+        let record = crate::transcript::since(&chat.key, 0);
+        for turn in ["user-9", "user-10"] {
+            assert!(
+                record.iter().any(|frame| {
+                    frame.event["type"] == "octiq_user_turn_delivery"
+                        && frame.event["uuid"] == turn
+                        && frame.event["state"] == "failed"
+                }),
+                "{turn} is told as not sent"
+            );
+        }
+    }
+
+    /// A wrap-up waiting behind a stopped turn is not carried into the next
+    /// process: it was asked of the one that is gone. The completion fails
+    /// once, in words the person can act on, and the messages around it are
+    /// kept.
+    #[test]
+    fn a_wrap_up_waiting_behind_a_stop_that_is_not_honoured_fails_once_and_is_not_carried() {
+        let chat = Listed::new(true);
+        chat.session.lock().unwrap().answering = Some("user-0".into());
+        let tap = Tap::on(&chat.id);
+        chat.stop();
+        chat.send("first this", "user-1");
+        let completing = chat.complete();
+        chat.send("then this", "user-2");
+        assert_eq!(completing.state, "queued");
+        assert_eq!(
+            chat.queued(),
+            ["user-1", completing.turn_id.as_str(), "user-2"]
+        );
+
+        let grace = grace_runs_out(&chat);
+
+        assert!(grace.ended);
+        let off = format!("completed {COMPLETION_STOP_NOT_HONOURED}");
+        assert_eq!(said(&tap), ["completing queued", off.as_str()]);
+        assert_eq!(
+            turns_named(&tap),
+            [completing.turn_id.clone(), completing.turn_id.clone()]
+        );
+        assert_eq!(chat.completing(), None);
+        assert_eq!(chat.row().done_at, None);
+        assert!(!chat.row().is_done());
+        let (turn, next) = grace.carried.expect("the message ahead of the wrap-up");
+        assert_eq!(turn.turn_id.as_deref(), Some("user-1"));
+        assert_eq!(chat.queued(), ["user-2"], "the wrap-up went, alone");
+        assert!(
+            crate::transcript::since(&chat.key, 0).iter().any(|frame| {
+                frame.event["type"] == "octiq_user_turn_delivery"
+                    && frame.event["uuid"] == completing.turn_id.as_str()
+                    && frame.event["state"] == "failed"
+            }),
+            "the wrap-up is told as not sent"
+        );
+
+        // The stopped turn's own clean full stop, read late, and its stream
+        // closing say nothing more about it.
+        assert_eq!(chat.full_stop(true), None);
+        {
+            let stopped = chat.session.lock().unwrap();
+            chat.manager
+                .completion_cut_short(&chat.key, &stopped, COMPLETION_ENDED);
+        }
+        assert_eq!(said(&tap).len(), 2);
+        assert!(!chat.row().is_done());
+        assert!(chat.runs(&next));
+
+        // Completing again is a new completion, of the process running now.
+        let again = chat.complete();
+        assert_eq!(again.state, "queued");
+        assert_ne!(again.turn_id, completing.turn_id);
+        assert_eq!(chat.queued(), ["user-2", again.turn_id.as_str()]);
+
+        // A wrap-up with nothing around it: the process is ended, nothing is
+        // carried, and the chat can be completed again from no process.
+        let chat = Listed::new(true);
+        chat.session.lock().unwrap().answering = Some("user-0".into());
+        let tap = Tap::on(&chat.id);
+        chat.stop();
+        let completing = chat.complete();
+        let grace = grace_runs_out(&chat);
+        assert!(grace.ended);
+        assert!(grace.carried.is_none());
+        assert!(!chat.live());
+        assert!(chat.queued().is_empty());
+        assert_eq!(said(&tap), ["completing queued", off.as_str()]);
+        assert_eq!(
+            turns_named(&tap),
+            [completing.turn_id.clone(), completing.turn_id]
+        );
+        assert_eq!(chat.row().done_at, None);
+        assert_eq!(
+            chat_complete_impl(&chat.manager, &chat.key, "wrap up"),
+            Ok(None)
+        );
+    }
+
+    /// The review's first counter-example. A turn written after the grace
+    /// into a Codex that had not stopped was answered with the turn it was
+    /// already in, and the one full stop that followed was dropped as the
+    /// stopped turn's: the session stayed busy and the chat Completing for
+    /// good. Nothing is written now, so that full stop has nothing to be
+    /// mistaken for, whichever agent sends it and however it ended.
+    #[test]
+    fn the_only_full_stop_after_the_grace_leaves_nothing_busy_and_nothing_completing() {
+        for codex in [false, true] {
+            let stopped = || {
+                let chat = Listed::with(if codex {
+                    codex_session()
+                } else {
+                    claude_session(true)
+                });
+                chat.session.lock().unwrap().answering = Some("user-0".into());
+                chat.stop();
+                chat
+            };
+            for clean in [false, true] {
+                // A message.
+                let chat = stopped();
+                chat.send("do this instead", "user-9");
+                let (_, next) = grace_runs_out(&chat).carried.expect("the message");
+                assert_eq!(chat.full_stop(clean), None, "codex {codex}, clean {clean}");
+                assert!(next.lock().unwrap().busy, "its own turn is in flight");
+                assert_eq!(next.lock().unwrap().answering.as_deref(), Some("user-9"));
+                // Its own full stop ends it, and the chat takes the next
+                // message at once: nothing is left queueing behind a turn
+                // that will never end.
+                {
+                    let mut running = next.lock().unwrap();
+                    end_turn_locked(&chat.manager, &chat.key, &chat.key, &mut running, true);
+                    assert!(!running.busy);
+                }
+                chat.send("and then", "user-11");
+                assert_eq!(next.lock().unwrap().answering.as_deref(), Some("user-11"));
+                assert!(chat.queued().is_empty());
+
+                // A Complete.
+                let chat = stopped();
+                let tap = Tap::on(&chat.id);
+                chat.complete();
+                assert!(grace_runs_out(&chat).ended);
+                assert_eq!(chat.full_stop(clean), None, "codex {codex}, clean {clean}");
+                assert!(!chat.live());
+                assert_eq!(chat.completing(), None);
+                assert!(chat.queued().is_empty());
+                assert!(!chat.row().is_done());
+                assert_eq!(said(&tap).len(), 2, "{:?}", said(&tap));
+            }
+        }
+    }
+
+    /// The review's second counter-example. The stopped turn's clean full
+    /// stop, arriving after the grace, closed a completion whose wrap-up had
+    /// never run. It decides nothing now: not the completion that was
+    /// waiting, and not one the person started afterwards.
+    #[test]
+    fn a_clean_full_stop_of_the_stopped_turn_after_the_grace_ticks_nothing() {
+        let chat = Listed::new(true);
+        chat.session.lock().unwrap().answering = Some("user-0".into());
+        let tap = Tap::on(&chat.id);
+        chat.stop();
+        let first = chat.complete();
+        assert!(grace_runs_out(&chat).ended);
+
+        // The person completes it again: no process, so the chat is started
+        // with a new wrap-up as its first message.
+        assert_eq!(
+            chat_complete_impl(&chat.manager, &chat.key, "wrap up"),
+            Ok(None)
+        );
+        let turn_id = chat.manager.claim_completion(&chat.key).expect("a claim");
+        let newer = claude_session(true);
+        newer.lock().unwrap().answering = Some(turn_id.clone());
+        chat.start(newer.clone())
+            .expect("the start it was claimed for");
+
+        // The old process's clean full stop, and its stream closing.
+        assert_eq!(chat.full_stop(true), None);
+        {
+            let stopped = chat.session.lock().unwrap();
+            chat.manager
+                .completion_cut_short(&chat.key, &stopped, COMPLETION_ENDED);
+        }
+        assert_eq!(chat.completing(), Some(turn_id.clone()));
+        assert!(!chat.row().is_done());
+        assert!(chat.runs(&newer));
+        assert!(running(&newer));
+        assert!(newer.lock().unwrap().busy);
+
+        // Only the new wrap-up's own full stop, in the process that ran it.
+        let (wrap_up, _) = {
+            let mut running = newer.lock().unwrap();
+            end_turn_locked(&chat.manager, &chat.key, &chat.key, &mut running, true)
+        };
+        assert!(settle_wrap_up(
+            &chat.manager,
+            &chat.key,
+            &newer,
+            wrap_up.expect("the wrap-up's own full stop")
+        ));
+        assert!(chat.row().is_done());
+        let off = format!("completed {COMPLETION_STOP_NOT_HONOURED}");
+        assert_eq!(
+            said(&tap),
+            [
+                "completing queued",
+                off.as_str(),
+                "completing started",
+                "index",
+                "completed ok"
+            ]
+        );
+        assert_eq!(
+            turns_named(&tap),
+            [
+                first.turn_id.clone(),
+                first.turn_id,
+                turn_id.clone(),
+                turn_id
+            ]
+        );
+    }
+
+    /// The invariant itself: while a stopped turn's full stop is owed, no
+    /// way of giving the agent a prompt writes one. A message, a wrap-up, a
+    /// host continuation and a host notification all wait, and the one
+    /// function every prompt goes through refuses whoever asks.
+    #[test]
+    fn nothing_is_written_to_a_process_that_still_owes_a_full_stop() {
+        use crate::orchestration::inbox::{DeliveryState, Notification, RECEIPT_PREFIX};
+
+        let (session, mut written) = super::tests::capturing_claude_session();
+        let chat = Listed::with(session);
+        chat.session.lock().unwrap().answering = Some("user-0".into());
+        chat.stop();
+
+        let note = Notification {
+            id: format!("{RECEIPT_PREFIX}1"),
+            run_id: "run_1".into(),
+            from_chat_key: "chat:other".into(),
+            target_chat_key: chat.key.clone(),
+            source: "test".into(),
+            kind: "instruction".into(),
+            body: "Something happened.".into(),
+            state: DeliveryState::Delivering,
+            attempts: 0,
+            coalesced: 0,
+            created_at: 0,
+            updated_at: 0,
+            next_attempt_at: 0,
+            last_error: None,
+        };
+        assert!(!chat.manager.notification_ready(&chat.key));
+        assert_eq!(
+            deliver_orchestration_notification(chat.manager.clone(), &note, Default::default()),
+            Ok(false)
+        );
+        chat.send("a message", "user-1");
+        assert_eq!(chat.complete().state, "queued");
+        chat_continue_internal_impl(
+            chat.manager.clone(),
+            chat.key.clone(),
+            "a continuation".into(),
+        )
+        .expect("it waits like the rest");
+        assert_eq!(
+            deliver_orchestration_notification(chat.manager.clone(), &note, Default::default()),
+            Ok(false),
+            "nor ahead of what is waiting"
+        );
+        for turn in [Some("user-x"), None] {
+            let mut stopping = chat.session.lock().unwrap();
+            assert_eq!(
+                write_user_message_locked(&mut stopping, "anything", &[], turn),
+                Err(STILL_STOPPING.into())
+            );
+        }
+        assert_eq!(chat.answering().as_deref(), Some("user-0"));
+        assert_eq!(chat.queued().len(), 2, "the continuation has no bubble");
+        assert!(chat.manager.has_queued_turns(&chat.key));
+
+        // Nor once the grace has run out: the process is ended instead, and
+        // an ended process is refused the same way.
+        assert!(grace_runs_out(&chat).ended);
+        {
+            let mut ended = chat.session.lock().unwrap();
+            assert_eq!(
+                write_user_message_locked(&mut ended, "anything", &[], Some("user-y")),
+                Err(STILL_STOPPING.into())
+            );
+        }
+        assert!(exited(&chat.session));
+        let sent = rest_of(&mut written);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["request"]["subtype"], "interrupt");
+    }
+
+    /// The full stop and the end of the grace take the same session lock,
+    /// so at the boundary exactly one of them acts: the waiting message is
+    /// handed to the process that stopped after all, or that process is
+    /// ended and the message carried to the next. Never both, never neither.
+    #[test]
+    fn a_full_stop_at_the_end_of_the_grace_is_one_outcome_never_a_dispatch_and_an_ending() {
+        const ROUNDS: usize = 500;
+        let manager = Arc::new(ChatManager::default());
+        let run = uuid::Uuid::new_v4().simple().to_string();
+        let (mut handed_over, mut ended) = (0, 0);
+        for round in 0..ROUNDS {
+            let key = format!("chat:boundary-{run}-{round}");
+            let session = claude_session(true);
+            session.lock().unwrap().answering = Some("user-0".into());
+            hold(&manager, &key, session.clone());
+            chat_interrupt_impl(&manager, key.clone()).expect("Stop");
+            chat_send_user_impl(
+                manager.clone(),
+                key.clone(),
+                "do this instead".into(),
+                None,
+                None,
+                Some("user-1".into()),
+                None,
+            )
+            .expect("a message behind the Stop");
+            let unwind = owed(&session);
+
+            // A third of the rounds each: a plain race, which the grace
+            // mostly loses the session to having the session table to take
+            // first, and one side or the other stepping back a little.
+            let start = std::sync::Barrier::new(2);
+            let (full_stop, (grace_ended, carried)) = thread::scope(|scope| {
+                let reader = scope.spawn(|| {
+                    start.wait();
+                    if round % 3 == 1 {
+                        thread::yield_now();
+                    }
+                    let mut running = session.lock().unwrap();
+                    end_turn_locked(&manager, &key, &key, &mut running, true)
+                });
+                let sleeper = scope.spawn(|| {
+                    start.wait();
+                    if round % 3 == 2 {
+                        thread::yield_now();
+                    }
+                    let mut carried = None;
+                    let ended =
+                        grace_ran_out_with(&manager, &key, &key, &session, unwind, |turn| {
+                            carried = Some(turn);
+                            Ok(())
+                        });
+                    (ended, carried)
+                });
+                (reader.join().unwrap(), sleeper.join().unwrap())
+            });
+
+            assert_eq!(full_stop, (None, None), "round {round}");
+            assert!(!manager.has_queued_turns(&key), "round {round}: taken once");
+            {
+                let after = session.lock().unwrap();
+                if grace_ended {
+                    ended += 1;
+                    let carried = carried.expect("the message goes to the next process");
+                    assert_eq!(carried.turn_id.as_deref(), Some("user-1"), "round {round}");
+                    assert_eq!(after.cut_off, CutOff::Ended, "round {round}");
+                    assert_eq!(
+                        after.answering.as_deref(),
+                        Some("user-0"),
+                        "round {round}: nothing was written to the process that was ended"
+                    );
+                    assert!(after.stdin.is_none(), "round {round}");
+                    assert!(!manager.has_process(&key), "round {round}");
+                } else {
+                    handed_over += 1;
+                    assert!(carried.is_none(), "round {round}: not carried as well");
+                    assert_eq!(after.cut_off, CutOff::No, "round {round}");
+                    assert_eq!(after.answering.as_deref(), Some("user-1"), "round {round}");
+                    assert!(after.busy, "round {round}");
+                    assert!(after.stdin.is_some(), "round {round}: not ended as well");
+                    assert!(manager.has_process(&key), "round {round}");
+                }
+            }
+            let _ = end_process(&manager, &key);
+            crate::transcript::forget(&key);
+        }
+        assert_eq!(handed_over + ended, ROUNDS);
+    }
+
+    /// A second Stop inside an unwind is the same unwind: no second wait, no
+    /// moved deadline, and the queue is kept.
+    #[test]
+    fn a_second_stop_inside_an_unwind_starts_no_second_wait() {
+        let chat = Listed::new(true);
+        chat.stop();
+        let unwind = owed(&chat.session);
+        // With nothing in flight, and again with a message waiting, which
+        // reads as work in flight.
+        chat.stop();
+        chat.send("do this instead", "user-1");
+        assert!(chat.busy());
+        chat.stop();
+
+        assert_eq!(owed(&chat.session), unwind, "still the first Stop's unwind");
+        assert_eq!(waits_asked(&chat), 1);
+        assert_eq!(chat.queued(), ["user-1"], "Stop keeps the queue");
+
+        // And it is ended once.
+        assert!(grace_runs_out_on(&chat, &chat.session, unwind).ended);
+        assert!(!grace_runs_out_on(&chat, &chat.session, unwind).ended);
+    }
+
+    /// The wait behind one Stop does nothing for a later Stop of the same
+    /// chat, in the same process or in the one after it.
+    #[test]
+    fn the_wait_behind_one_stop_does_nothing_for_a_later_stop_of_the_same_chat() {
+        // The same process: Stop, its full stop, a new turn, Stop again.
+        let chat = Listed::new(true);
+        chat.stop();
+        let first = owed(&chat.session);
+        assert_eq!(chat.full_stop(false), None);
+        chat.send("again", "user-1");
+        assert!(chat.busy());
+        chat.stop();
+        let second = owed(&chat.session);
+        assert_ne!(first, second);
+        assert_eq!(waits_asked(&chat), 2);
+        // The first Stop's thread wakes late. It is not its unwind.
+        assert!(!grace_runs_out_on(&chat, &chat.session, first).ended);
+        assert!(chat.runs(&chat.session));
+        assert!(running(&chat.session));
+        assert_eq!(owed(&chat.session), second);
+        // The second Stop's own does act, once.
+        assert!(grace_runs_out_on(&chat, &chat.session, second).ended);
+        assert!(!grace_runs_out_on(&chat, &chat.session, second).ended);
+        assert!(!chat.live());
+
+        // Another process: Stop, the grace, the chat started again, Stop.
+        let chat = Listed::new(true);
+        chat.stop();
+        let first = owed(&chat.session);
+        assert!(grace_runs_out(&chat).ended);
+        let restarted = chat.start_again().expect("the next message starts it");
+        chat.stop();
+        let second = owed(&restarted);
+        assert_ne!(first, second);
+        // Nothing the first wait could still name ends the new process.
+        assert!(!grace_runs_out_on(&chat, &chat.session, first).ended);
+        assert!(!grace_runs_out_on(&chat, &restarted, first).ended);
+        assert!(chat.runs(&restarted));
+        assert!(running(&restarted));
+        assert_eq!(owed(&restarted), second);
+        assert!(grace_runs_out_on(&chat, &restarted, second).ended);
+        assert!(!chat.live());
+    }
+
+    /// The thread a Stop really leaves behind, on a grace short enough to
+    /// wait for: it ends the process of a Stop that is not honoured, and
+    /// when the full stop came in time it wakes to nothing of its own, even
+    /// with the same process waiting out a later Stop by then.
+    #[test]
+    fn the_thread_behind_a_stop_acts_once_and_only_for_its_own_unwind() {
+        use std::sync::atomic::Ordering;
+        let chat = Listed::new(true);
+        let over = || chat.manager.unwind_probe.over.load(Ordering::SeqCst);
+        let wait = |grace: Option<Duration>| {
+            *chat.manager.unwind_probe.grace.lock().unwrap() = grace;
+        };
+
+        // Honoured: the full stop comes inside the grace, and a later Stop
+        // (with no thread of its own here) is waiting when the first wakes.
+        wait(Some(Duration::from_secs(1)));
+        chat.stop();
+        assert_eq!(chat.full_stop(false), None);
+        chat.send("again", "user-1");
+        wait(None);
+        chat.stop();
+        let later = owed(&chat.session);
+        until("the first Stop's wait is over", || over() == 1);
+        assert!(chat.runs(&chat.session));
+        assert!(running(&chat.session));
+        assert_eq!(owed(&chat.session), later);
+
+        // Not honoured: its own thread ends the process.
+        assert_eq!(chat.full_stop(false), None);
+        chat.send("and again", "user-2");
+        wait(Some(Duration::from_millis(20)));
+        chat.stop();
+        until("the Stop's wait is over", || over() == 2);
+        assert!(!chat.live());
+        assert!(exited(&chat.session));
+        assert_eq!(chat.session.lock().unwrap().cut_off, CutOff::Ended);
+        assert_eq!(waits_asked(&chat), 3);
     }
 }
