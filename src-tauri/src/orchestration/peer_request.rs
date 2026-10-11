@@ -908,6 +908,7 @@ impl OrchestrationStore {
                     requested_at: now,
                 }),
                 held_by_plan: false,
+                held_by_reopen: false,
                 created_at: now,
                 updated_at: now,
             };

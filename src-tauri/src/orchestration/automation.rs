@@ -242,6 +242,9 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
             let find = |id: &str| snapshot.tasks.iter().find(|other| other.id == id);
             super::held_by_plan(run, t, &find).is_none()
         })
+        // Nor one that was reopened and whose notice is not in the
+        // coordinator's chat yet: its start would be refused.
+        .filter(|t| super::workspaces::untold_reopen(t).is_none())
         // Unassigned legacy tasks must not consume capacity or inherit a CLI
         // default. The coordinator can still dispatch them explicitly.
         .filter(|t| {
@@ -313,6 +316,11 @@ pub fn start_scheduler(
         }
         if let Err(error) = store.recover_due_workers(chats.clone(), &workspaces, now_ms()) {
             eprintln!("orchestration: worker monitoring failed: {error}");
+        }
+        // Before the ready wave below: a reopened task joins it once its
+        // notice is in the coordinator's chat.
+        if let Err(error) = store.deliver_reopen_notices() {
+            eprintln!("orchestration: reopen notices failed: {error}");
         }
         if let Err(error) = super::inbox::deliver_pending(&chats, &workspaces) {
             eprintln!("orchestration: notification delivery failed: {error}");

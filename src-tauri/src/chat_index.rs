@@ -286,6 +286,17 @@ fn write(index: &Index) -> Result<(), String> {
     fs::rename(&temp, &path).map_err(|e| e.to_string())
 }
 
+/// Whether the list has the chat `id` and it is not in the trash: the only
+/// chats a person can open. An index that cannot be read is an error, never
+/// "no": what is unknown is not gone.
+pub fn listed(id: &str) -> Result<bool, String> {
+    let index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    Ok(index
+        .chats
+        .iter()
+        .any(|chat| chat.id == id && chat.deleted_at.is_none()))
+}
+
 /// Every chat, pinned ones first and then most recently active — the order the
 /// task-oriented sidebar shows them in.
 pub fn list() -> Vec<ChatMeta> {

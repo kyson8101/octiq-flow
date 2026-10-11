@@ -59,6 +59,42 @@ pub struct TaskWorkspace {
 /// How many reopens a task keeps (`Task::reopens`), newest last.
 const MAX_REOPENS_KEPT: usize = 12;
 
+/// Why a reopened task does not start yet (`reserve_attempt_for`).
+pub(super) const REOPEN_NOT_TOLD: &str = "This task was reopened with new instructions, and the notice of that is not in the coordinator's chat yet, so it does not start: the person is shown every reopen before its work begins. The host keeps trying to write the notice and the task starts once it is there (heldByReopen in orchestration_snapshot). If it stays held, the coordinator's chat was deleted or its transcript cannot be written.";
+
+/// The reopen of `task` the person has not been shown yet, if any.
+pub(super) fn untold_reopen(task: &Task) -> Option<&TaskReopen> {
+    task.reopens.iter().find(|reopen| !reopen.notice_delivered)
+}
+
+/// The one event that tells the person of a reopen, made from what the
+/// ledger keeps of it: the same on every try.
+fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
+    json!({
+        "type": "octiq_task_reopened",
+        "runId": task.run_id,
+        "taskId": task.id,
+        "title": task.title,
+        "assignee": task.assignee,
+        "attempt": reopen.attempt,
+        "spec": reopen.spec,
+        "previousSpecChars": reopen.previous_spec.chars().count(),
+        "at": reopen.at,
+    })
+}
+
+/// Whether a line written to the chat `chat_key` is one the person can
+/// read: the chat list has it and it is not in the trash. A transcript
+/// nothing lists cannot be opened, and is removed when the server next
+/// starts (`chat_index::reconcile`).
+fn shown_to_the_person(chat_key: &str) -> Result<(), String> {
+    match crate::chat_index::listed(chat_key.strip_prefix("chat:").unwrap_or(chat_key)) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("The coordinator's chat no longer exists, so the person could not be shown this reopen. Nothing was reopened. Create a new task for the follow-up work, from a chat that exists.".into()),
+        Err(error) => Err(format!("Whether the coordinator's chat still exists could not be checked ({error}), so the person could not be shown this reopen. Nothing was reopened. Try again.")),
+    }
+}
+
 /// What the host WILL allocate for a task that has no workspace yet, worked
 /// out read-only when the task is created, so the person approves an exact
 /// branch and path rather than "pending". It is never a workspace: no branch,
@@ -874,11 +910,19 @@ impl OrchestrationStore {
     ///   line the person can open to read the new instructions.
     ///
     /// A peer request is not reopened at all.
+    ///
+    /// **The reopened task does not start until that event is in the
+    /// transcript, on disk** (review of 931b5f0, H5). The reopen is recorded
+    /// with its notice owed (`TaskReopen::notice_delivered`), every start
+    /// of the task is refused while it is (`REOPEN_NOT_TOLD`), and the
+    /// notice is written right after the ledger is, and again on every pass
+    /// of the scheduler until it holds (`deliver_reopen_notices`). A reopen
+    /// with nowhere to be shown is refused outright: the coordinator's chat
+    /// has to be one the person can open.
     pub fn reopen_task(&self, actor: &str, task_id: &str, spec: String) -> Result<Task, String> {
         let spec = required_text("follow-up instructions", spec, 40_000)?;
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
-        let mut told: Option<(String, serde_json::Value)> = None;
-        self.mutate(|data| {
+        let reopened = self.mutate(|data| {
             let task = data.tasks.get(task_id).ok_or("Task does not exist.")?.clone();
             let run = coordinator(data, &task.run_id, actor)?;
             let coordinator_chat = run.coordinator_chat_key.clone();
@@ -898,6 +942,9 @@ impl OrchestrationStore {
             if data.tasks.values().any(|t| t.depends_on.contains(&task.id) && t.active_attempt_id.is_some()) {
                 return Err("A dependent task already started. Create a separate follow-up task instead.".into());
             }
+            // The person is shown every reopen in the coordinator's chat.
+            // With no chat of theirs to show it in, there is no reopen.
+            shown_to_the_person(&coordinator_chat)?;
             for dependent in data.tasks.values_mut() {
                 if dependent.depends_on.iter().any(|id| id == task_id) && dependent.status == TaskStatus::Ready {
                     dependent.status = TaskStatus::Pending;
@@ -908,32 +955,105 @@ impl OrchestrationStore {
             let task = data.tasks.get_mut(task_id).unwrap();
             let previous_spec = std::mem::replace(&mut task.spec, spec);
             task.status = TaskStatus::Ready; task.result = None; task.updated_at = now;
-            told = Some((coordinator_chat, json!({
-                "type": "octiq_task_reopened",
-                "runId": task.run_id,
-                "taskId": task.id,
-                "title": task.title,
-                "assignee": task.assignee,
-                "attempt": attempt,
-                "spec": task.spec,
-                "previousSpecChars": previous_spec.chars().count(),
-                "at": now,
-            })));
-            task.reopens.push(TaskReopen { by_chat_key: actor.to_owned(), at: now, attempt, previous_spec, spec: task.spec.clone() });
+            task.reopens.push(TaskReopen { by_chat_key: actor.to_owned(), at: now, attempt, previous_spec, spec: task.spec.clone(), notice_delivered: false });
             // Both texts of each are kept whole, so the list has an end.
             let over = task.reopens.len().saturating_sub(MAX_REOPENS_KEPT);
             task.reopens.drain(..over);
             let result = task.clone();
             recompute_run(data, &result.run_id);
             Ok(result)
-        }).inspect(|t| {
-            announce(&t.run_id, "task_reopened");
-            // After the write, so the transcript never tells of a reopen the
-            // ledger refused. Synced: it is the person's only notice.
-            if let Some((chat, event)) = told.take() {
-                crate::agent_chat::record_chat_event_synced(&chat, event);
+        })?;
+        announce(&reopened.run_id, "task_reopened");
+        // After the ledger's write, so the transcript never tells of a
+        // reopen the ledger refused. A notice that cannot be written now
+        // leaves the task held, and the scheduler's next pass tries again.
+        if let Err(error) = self.tell_reopens() {
+            eprintln!("orchestration: a reopen's notice could not be written yet: {error}");
+        }
+        Ok(self
+            .owned_task(actor, task_id)
+            .map_or(reopened, |(_, task)| task))
+    }
+
+    /// Write the notice of every reopen that has none yet, and record each
+    /// one that is now in its coordinator's transcript, on disk. Answers how
+    /// many were recorded. Run by the scheduler on every pass.
+    pub fn deliver_reopen_notices(&self) -> Result<usize, String> {
+        let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        self.tell_reopens()
+    }
+
+    /// `deliver_reopen_notices`, for a caller that holds `workspace_ops`.
+    /// That lock is what makes a notice exactly one event: nobody else
+    /// looks for it and writes it between this look and this write.
+    ///
+    /// A notice already in the transcript is recorded, never written again:
+    /// that is the notice of a write whose confirmation was lost, to a
+    /// server that stopped or a folder that would not sync. The event is
+    /// made from the reopen as the ledger keeps it, so every try writes the
+    /// same one and the page knows it by task, attempt and time.
+    fn tell_reopens(&self) -> Result<usize, String> {
+        let owed: Vec<(String, serde_json::Value)> = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(error) = &inner.load_error {
+                return Err(error.clone());
             }
-        })
+            let data = &inner.data;
+            let mut tasks: Vec<&Task> = data
+                .tasks
+                .values()
+                .filter(|task| untold_reopen(task).is_some())
+                .collect();
+            tasks.sort_by_key(|task| (task.updated_at, task.id.clone()));
+            tasks
+                .into_iter()
+                .filter_map(|task| Some((data.runs.get(&task.run_id)?, task)))
+                .flat_map(|(run, task)| {
+                    task.reopens
+                        .iter()
+                        .filter(|reopen| !reopen.notice_delivered)
+                        .map(|reopen| {
+                            (run.coordinator_chat_key.clone(), reopen_event(task, reopen))
+                        })
+                })
+                .collect()
+        };
+        let mut told = 0;
+        for (chat, event) in owed {
+            let same = |other: &serde_json::Value| {
+                ["type", "taskId", "attempt", "at"]
+                    .iter()
+                    .all(|key| other[key] == event[key])
+            };
+            // Only in a chat the person can open: a notice in the transcript
+            // of a deleted chat has been shown to nobody. Asked first, and
+            // it is the cheap question.
+            if shown_to_the_person(&chat).is_err() {
+                continue;
+            }
+            // And only "written" once the line is synced.
+            let written = crate::transcript::since(&chat, 0)
+                .iter()
+                .any(|frame| same(&frame.event))
+                || crate::agent_chat::record_chat_event_synced(&chat, event.clone()).is_some();
+            if !written {
+                continue;
+            }
+            let task_id = event["taskId"].as_str().unwrap_or_default().to_owned();
+            let (attempt, at) = (event["attempt"].clone(), event["at"].clone());
+            let run_id = self.mutate(|data| {
+                let task = data.tasks.get_mut(&task_id).ok_or("Task disappeared.")?;
+                for reopen in &mut task.reopens {
+                    if json!(reopen.attempt) == attempt && json!(reopen.at) == at {
+                        reopen.notice_delivered = true;
+                    }
+                }
+                Ok(task.run_id.clone())
+            })?;
+            announce(&run_id, "task_reopen_told");
+            told += 1;
+        }
+        Ok(told)
     }
 
     pub fn cleanup_workspace(
@@ -1147,6 +1267,15 @@ pub(super) mod tests {
     use super::*;
     use crate::git_ops::workflow::tests::Repo;
     fn setup(repo: &Repo, mode: WorkspaceMode) -> (OrchestrationStore, Run, Task) {
+        // The coordinator is a chat the person can open: a reopen is told
+        // there, and refused without it.
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({
+                "id": "master", "projectId": "project", "title": "Lead chat", "updatedAt": 100,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let store = OrchestrationStore::default();
         let run = store
             .create_run_with_mode(
@@ -2435,6 +2564,334 @@ pub(super) mod tests {
             .is_err());
         assert!(reopened_in("chat:other", &task.id).is_empty());
         assert_eq!(reopened_in("chat:master", &task.id).len(), 2);
+    }
+
+    /// A run whose coordinator is a chat the index lists, in a ledger of its
+    /// own: what a reopen needs to tell the person about. The chat and its
+    /// transcript are forgotten again on drop.
+    struct Reopenable {
+        dir: crate::test_dir::TestDir,
+        id: String,
+        key: String,
+        store: OrchestrationStore,
+        run: Run,
+    }
+
+    impl Reopenable {
+        fn new() -> Self {
+            let dir = crate::test_dir::TestDir::new("m2-reopen");
+            let id = format!("reopen-{}", uuid::Uuid::new_v4().simple());
+            let key = format!("chat:{id}");
+            crate::chat_index::upsert(
+                serde_json::from_value(json!({
+                    "id": id, "projectId": "project", "title": "Lead chat", "updatedAt": 100,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let store = OrchestrationStore::load(dir.0.join("orchestrations.json"));
+            let run = store
+                .create_run(
+                    key.clone(),
+                    "Build feature".into(),
+                    "project".into(),
+                    dir.0.to_string_lossy().into_owned(),
+                    Some(4),
+                )
+                .unwrap();
+            Self {
+                dir,
+                id,
+                key,
+                store,
+                run,
+            }
+        }
+
+        /// A task that ran once, completed, and kept its workspace.
+        fn completed_task(&self) -> Task {
+            let task = self
+                .store
+                .create_task(
+                    &self.key,
+                    self.run.id.clone(),
+                    "Implement".into(),
+                    "Make the requested change".into(),
+                    vec![],
+                    None,
+                    None,
+                )
+                .unwrap();
+            let attempt = self.start(&task).unwrap();
+            let root = self.dir.0.to_string_lossy().into_owned();
+            self.store
+                .mutate(|data| {
+                    let task = data.tasks.get_mut(&task.id).unwrap();
+                    task.status = TaskStatus::Completed;
+                    task.result = Some("Done".into());
+                    task.workspace = Some(TaskWorkspace {
+                        plan: workflow::plan(&root, "", &task.id, WorkspaceMode::Direct)?,
+                        state: WorkspaceState::Retained,
+                        lease_attempt_id: Some(attempt.id.clone()),
+                        delivery: None,
+                        validation_paths: vec![],
+                        cleanup_intent: None,
+                        abandoned: false,
+                    });
+                    data.attempts.get_mut(&attempt.id).unwrap().status = AttemptStatus::Completed;
+                    Ok(())
+                })
+                .unwrap();
+            task
+        }
+
+        fn reopen(&self, task: &Task, spec: &str) -> Result<Task, String> {
+            self.store.reopen_task(&self.key, &task.id, spec.into())
+        }
+
+        fn start(&self, task: &Task) -> Result<Attempt, String> {
+            self.store
+                .reserve_attempt(&self.key, &super::super::tests::launch_for(&task.id))
+                .map(|(_, _, attempt, _)| attempt)
+        }
+
+        /// The reopens the coordinator's transcript tells of, oldest first.
+        fn told(&self) -> Vec<serde_json::Value> {
+            crate::transcript::since(&self.key, 0)
+                .into_iter()
+                .map(|item| item.event)
+                .filter(|event| event["type"] == "octiq_task_reopened")
+                .collect()
+        }
+
+        fn transcript(&self) -> std::path::PathBuf {
+            crate::transcript::path_for(&self.key).unwrap()
+        }
+
+        /// The transcript cannot be appended to: a folder is where its file
+        /// goes. Nothing was in it yet.
+        fn break_transcript(&self) {
+            let _ = fs::remove_file(self.transcript());
+            fs::create_dir(self.transcript()).unwrap();
+        }
+
+        fn mend_transcript(&self) {
+            fs::remove_dir(self.transcript()).unwrap();
+        }
+
+        /// The server is stopped and started: the ledger is read again.
+        fn restarted(mut self) -> Self {
+            let path = self.dir.0.join("orchestrations.json");
+            self.store = OrchestrationStore::load(path);
+            self
+        }
+    }
+
+    impl Drop for Reopenable {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir(self.transcript());
+            let _ = crate::chat_index::remove(&self.id);
+            crate::transcript::forget(&self.key);
+        }
+    }
+
+    /// Review of 931b5f0, H5, the reviewer's probe: the coordinator's
+    /// transcript cannot be written when a task is reopened. The reopen is
+    /// on record, and its task does not start: the person is shown every
+    /// reopen before its work begins.
+    #[test]
+    fn a_reopened_task_does_not_start_until_its_notice_is_in_the_coordinators_chat() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        work.break_transcript();
+        let reopened = work.reopen(&task, "Entirely new instructions").unwrap();
+        assert_eq!(reopened.reopens.len(), 1);
+        assert_eq!(reopened.status, TaskStatus::Ready);
+        assert!(work.told().is_empty(), "nothing could be written");
+        let held = work
+            .start(&task)
+            .expect_err("a reopen the person was not shown");
+        assert!(
+            held.starts_with("This task was reopened with new instructions, and the notice of that is not in the coordinator's chat yet"),
+            "{held}"
+        );
+        assert_eq!(held, REOPEN_NOT_TOLD);
+        // The reopen is on record as not yet shown, and the snapshot says
+        // why the task waits, in every view.
+        assert!(!reopened.reopens[0].notice_delivered);
+        let waiting = |store: &OrchestrationStore| {
+            let snapshot = store.snapshot(Some(&work.run.id)).unwrap();
+            let full = serde_json::to_value(&snapshot).unwrap();
+            let compact = agent_view::agent_snapshot(
+                snapshot.clone(),
+                &agent_view::AgentRead {
+                    actor: &work.key,
+                    run_id: Some(&work.run.id),
+                    task_id: None,
+                    message_limit: 12,
+                },
+            )
+            .unwrap();
+            let wave = automation::ready_wave(&snapshot, &snapshot.runs[0]).len();
+            (
+                full["tasks"][0]["heldByReopen"].clone(),
+                compact["tasks"][0]["heldByReopen"].clone(),
+                full["tasks"][0]["reopens"][0]["noticeDelivered"].clone(),
+                wave,
+            )
+        };
+        assert_eq!(
+            waiting(&work.store),
+            (json!(true), json!(true), json!(false), 0)
+        );
+        // The scheduler's pass tries again and fails again: still held.
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(0));
+        assert!(work.start(&task).is_err());
+
+        // The fault is lifted. The next pass writes the notice, once, and
+        // the task starts on its new instructions.
+        work.mend_transcript();
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(0), "once");
+        let told = work.told();
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert_eq!(
+            told[0],
+            json!({
+                "type": "octiq_task_reopened",
+                "runId": work.run.id,
+                "taskId": task.id,
+                "title": "Implement",
+                "assignee": null,
+                "attempt": 2,
+                "spec": "Entirely new instructions",
+                "previousSpecChars": 25,
+                "at": reopened.reopens[0].at,
+            })
+        );
+        assert_eq!(
+            waiting(&work.store),
+            (
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                json!(true),
+                1
+            )
+        );
+        let next = work.start(&task).expect("shown, so it starts");
+        assert_eq!(next.number, 2);
+        assert_eq!(work.told().len(), 1, "one event for one reopen");
+    }
+
+    /// Two reopens whose notices could not be written are two events once
+    /// they can be, one each, in the order they were made. And a notice
+    /// that reached the transcript without the ledger hearing of it (the
+    /// server stopped in between) is recorded, not written a second time.
+    #[test]
+    fn every_reopen_is_told_exactly_once_however_often_it_is_tried() {
+        let work = Reopenable::new();
+        let (first, second) = (work.completed_task(), work.completed_task());
+        work.break_transcript();
+        let one = work.reopen(&first, "Fix the first").unwrap();
+        let two = work.reopen(&second, "Fix the second").unwrap();
+        assert!(work.start(&first).is_err() && work.start(&second).is_err());
+        work.mend_transcript();
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(2));
+        let specs: Vec<String> = work
+            .told()
+            .iter()
+            .map(|event| event["spec"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(specs.len(), 2, "{specs:?}");
+        assert!(specs.contains(&"Fix the first".to_owned()));
+        assert!(specs.contains(&"Fix the second".to_owned()));
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(0));
+        work.start(&first).unwrap();
+        work.start(&second).unwrap();
+        assert_ne!(one.reopens[0].at, 0);
+        assert_ne!(two.id, one.id);
+
+        // A reopen written with no fault is told in the same call, and the
+        // task it returns says so.
+        let third = work.completed_task();
+        let told = work.reopen(&third, "Fix the third").unwrap();
+        assert!(told.reopens[0].notice_delivered);
+        assert_eq!(work.told().len(), 3);
+        // The ledger forgets it was told: what a server stopped between
+        // the transcript's write and the ledger's would read on its way up.
+        work.store
+            .mutate(|data| {
+                data.tasks.get_mut(&third.id).unwrap().reopens[0].notice_delivered = false;
+                Ok(())
+            })
+            .unwrap();
+        let work = work.restarted();
+        assert!(work.start(&third).is_err(), "held until it is checked");
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(1), "recorded");
+        assert_eq!(work.told().len(), 3, "and not written again");
+        work.start(&third).unwrap();
+    }
+
+    /// A restart with a notice still owed: the ledger remembers, the task
+    /// stays held in the new process, and the first pass that can write the
+    /// notice writes it once.
+    #[test]
+    fn a_notice_still_owed_at_a_restart_holds_the_task_until_it_is_written() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        work.break_transcript();
+        work.reopen(&task, "After the restart").unwrap();
+        let work = work.restarted();
+        assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(0));
+        work.mend_transcript();
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(1));
+        let told = work.told();
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0]["spec"], "After the restart");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+    }
+
+    /// With no chat of the person's to show it in, there is no reopen: the
+    /// task keeps its result and its instructions, and nothing is recorded.
+    /// A chat in the trash is such a chat; restored, the reopen is made.
+    #[test]
+    fn a_reopen_is_refused_when_the_coordinators_chat_is_gone() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let meta = crate::chat_index::list()
+            .into_iter()
+            .find(|chat| chat.id == work.id)
+            .unwrap();
+        assert!(crate::chat_index::trash(&work.id, None, Some(meta)).unwrap());
+        let refused = work.reopen(&task, "Too late").unwrap_err();
+        assert!(
+            refused.starts_with("The coordinator's chat no longer exists, so the person could not be shown this reopen. Nothing was reopened."),
+            "{refused}"
+        );
+        let kept = work.store.owned_task(&work.key, &task.id).unwrap().1;
+        assert_eq!(kept.status, TaskStatus::Completed);
+        assert_eq!(kept.spec, "Make the requested change");
+        assert!(kept.reopens.is_empty());
+        assert!(work.told().is_empty());
+
+        // And a chat deleted after the reopen was recorded gets no notice
+        // written into a transcript nobody can open: the task stays held.
+        crate::chat_index::restore(&work.id).unwrap();
+        work.break_transcript();
+        work.reopen(&task, "In time").unwrap();
+        work.mend_transcript();
+        let meta = crate::chat_index::list()
+            .into_iter()
+            .find(|chat| chat.id == work.id)
+            .unwrap();
+        assert!(crate::chat_index::trash(&work.id, None, Some(meta)).unwrap());
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(0));
+        assert!(work.told().is_empty());
+        assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+        crate::chat_index::restore(&work.id).unwrap();
+        assert_eq!(work.store.deliver_reopen_notices(), Ok(1));
+        assert_eq!(work.start(&task).unwrap().number, 2);
     }
 
     /// agent_delete review, M3: a workspace the host is preparing or

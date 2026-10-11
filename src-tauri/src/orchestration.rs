@@ -469,6 +469,16 @@ pub struct Task {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub held_by_plan: bool,
+    /// A start of this task would be refused because it was reopened and
+    /// the notice of that is not in the coordinator's chat yet
+    /// (`TaskReopen::notice_delivered`). Derived for each read in
+    /// `snapshot`; present only while it holds.
+    #[serde(
+        default,
+        skip_deserializing,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub held_by_reopen: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -613,6 +623,19 @@ pub struct TaskReopen {
     pub attempt: u32,
     pub previous_spec: String,
     pub spec: String,
+    /// Whether the person has been shown this reopen: its
+    /// `octiq_task_reopened` event is in the coordinator's transcript, on
+    /// disk. `false` from the reopen until that is confirmed, and the task
+    /// does not start meanwhile (`reserve_attempt_for`); the host keeps
+    /// trying (`deliver_reopen_notices`). A reopen recorded before this was
+    /// kept reads as delivered: nothing says otherwise, and its task is not
+    /// held on a guess.
+    #[serde(default = "delivered")]
+    pub notice_delivered: bool,
+}
+
+fn delivered() -> bool {
+    true
 }
 
 /// The person's stop of one task (`OrchestrationStore::stop_task`).
@@ -1248,6 +1271,8 @@ impl OrchestrationStore {
             ) && inner.data.runs.get(&task.run_id).is_some_and(|run| {
                 held_by_plan(run, task, &|id| inner.data.tasks.get(id)).is_some()
             });
+            // And the other thing that holds a task whatever asks for it.
+            task.held_by_reopen = workspaces::untold_reopen(task).is_some();
         }
         let mut attempts: Vec<_> = inner
             .data
@@ -2209,6 +2234,7 @@ impl OrchestrationStore {
                 stopped: None,
                 peer_request: None,
                 held_by_plan: false,
+                held_by_reopen: false,
                 created_at: now,
                 updated_at: now,
             };
@@ -2669,6 +2695,13 @@ impl OrchestrationStore {
             // approved.
             if let Some(waiting) = held_by_plan(&run, &task, &|id| data.tasks.get(id)) {
                 return Err(plan_hold_reason(&task, waiting));
+            }
+            // A reopen changes what a task is told to do without a new
+            // approval, so the person is shown each one first: nothing
+            // starts on instructions whose notice is not in their chat yet,
+            // whoever asks (`workspaces::REOPEN_NOT_TOLD`).
+            if workspaces::untold_reopen(&task).is_some() {
+                return Err(workspaces::REOPEN_NOT_TOLD.into());
             }
             // No start for an agent that is gone. A removal writes this in
             // the same hold of this lock that it checks the agent's work in
