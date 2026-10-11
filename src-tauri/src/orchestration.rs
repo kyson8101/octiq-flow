@@ -626,8 +626,9 @@ pub struct TaskReopen {
     pub previous_spec: String,
     pub spec: String,
     /// Whether the person has been shown this reopen: its
-    /// `octiq_task_reopened` event is in the coordinator's transcript, on
-    /// disk. `false` from the reopen until that is confirmed, and the task
+    /// `octiq_task_reopened` event is in the coordinator's transcript, and
+    /// the host holds a receipt that it is on disk (a line that can be
+    /// read is not one). `false` from the reopen until then, and the task
     /// does not start meanwhile (`reserve_attempt_for`); the host keeps
     /// trying (`deliver_reopen_notices`). A reopen recorded before this was
     /// kept reads as delivered: nothing says otherwise, and its task is not
@@ -1042,6 +1043,10 @@ pub struct OrchestrationStore {
     path: Option<PathBuf>,
     inner: Mutex<Inner>,
     workspace_ops: Mutex<()>,
+    /// Coordinator chats whose transcript gave no receipt for a reopen's
+    /// notice: how often in a row, and when it is next worth asking
+    /// (`workspaces::notice_wait`). In memory only; a restart asks at once.
+    reopen_waits: Mutex<BTreeMap<String, (u32, i64)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1128,6 +1133,7 @@ impl Default for OrchestrationStore {
             path: None,
             inner: Mutex::new(Inner::default()),
             workspace_ops: Mutex::new(()),
+            reopen_waits: Mutex::default(),
         }
     }
 }
@@ -1179,6 +1185,7 @@ impl OrchestrationStore {
             path: Some(path),
             inner: Mutex::new(inner),
             workspace_ops: Mutex::new(()),
+            reopen_waits: Mutex::default(),
         };
         if recovered {
             let result = store

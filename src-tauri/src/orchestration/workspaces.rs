@@ -60,7 +60,7 @@ pub struct TaskWorkspace {
 const MAX_REOPENS_KEPT: usize = 12;
 
 /// Why a reopened task does not start yet (`reserve_attempt_for`).
-pub(super) const REOPEN_NOT_TOLD: &str = "This task was reopened with new instructions, and the notice of that is not in the coordinator's chat yet, so it does not start: the person is shown every reopen before its work begins. The host keeps trying to write the notice and the task starts once it is there (heldByReopen in orchestration_snapshot). If it stays held, the coordinator's chat was deleted or its transcript cannot be written.";
+pub(super) const REOPEN_NOT_TOLD: &str = "This task was reopened with new instructions, and the notice of that is not in the coordinator's chat yet, so it does not start: the person is shown every reopen before its work begins. The host keeps trying to write the notice and to confirm it on disk, and the task starts once it has (heldByReopen in orchestration_snapshot). If it stays held, the coordinator's chat was deleted or its transcript cannot be written or synced to disk.";
 
 /// The reopen of `task` the person has not been shown yet, if any.
 pub(super) fn untold_reopen(task: &Task) -> Option<&TaskReopen> {
@@ -81,6 +81,48 @@ fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
         "previousSpecChars": reopen.previous_spec.chars().count(),
         "at": reopen.at,
     })
+}
+
+/// Whether the host holds a durability receipt for each of `events` in
+/// `chat`'s transcript, in their order. One that is not there yet is
+/// appended, and its receipt is that append's own.
+///
+/// **A readable line is not a receipt.** One of these events already in
+/// the transcript is the line of an append that answered no receipt, or
+/// was never heard from: read back, it says the OS holds it and nothing
+/// about the disk. So it is never written again, and it counts only once
+/// what its append had to do to be believed has been done and has
+/// succeeded (`transcript::confirm_synced`: the file synced, then its
+/// folder). Until then the chat gets nothing recorded and nothing new
+/// written this pass, and its tasks stay held.
+///
+/// The transcript is read once, for the reopen events alone.
+fn notice_receipts(chat: &str, events: &[serde_json::Value]) -> Vec<bool> {
+    let there = crate::transcript::of_type(chat, "octiq_task_reopened");
+    let is_there = |event: &serde_json::Value| {
+        there.iter().any(|other| {
+            ["type", "taskId", "attempt", "at"]
+                .iter()
+                .all(|key| other[key] == event[key])
+        })
+    };
+    if events.iter().any(is_there) && crate::transcript::confirm_synced(chat).is_none() {
+        return vec![false; events.len()];
+    }
+    events
+        .iter()
+        .map(|event| {
+            is_there(event)
+                || crate::agent_chat::record_chat_event_synced(chat, event.clone()).is_some()
+        })
+        .collect()
+}
+
+/// How long a chat whose transcript gave no receipt is left alone before
+/// it is asked again, after that many tries in a row: 4 s, doubling to a
+/// minute. A fault that lasts costs a read a minute, not one every pass.
+pub(super) fn notice_wait(failures: u32) -> i64 {
+    (2_000_i64 << failures.min(5)).min(60_000)
 }
 
 /// Whether a line written to the chat `chat_key` is one the person can
@@ -965,9 +1007,9 @@ impl OrchestrationStore {
         })?;
         announce(&reopened.run_id, "task_reopened");
         // After the ledger's write, so the transcript never tells of a
-        // reopen the ledger refused. A notice that cannot be written now
-        // leaves the task held, and the scheduler's next pass tries again.
-        if let Err(error) = self.tell_reopens() {
+        // reopen the ledger refused. A notice that cannot be written and
+        // confirmed now leaves the task held, and the scheduler tries again.
+        if let Err(error) = self.tell_reopens(None) {
             eprintln!("orchestration: a reopen's notice could not be written yet: {error}");
         }
         Ok(self
@@ -976,23 +1018,36 @@ impl OrchestrationStore {
     }
 
     /// Write the notice of every reopen that has none yet, and record each
-    /// one that is now in its coordinator's transcript, on disk. Answers how
-    /// many were recorded. Run by the scheduler on every pass.
-    pub fn deliver_reopen_notices(&self) -> Result<usize, String> {
+    /// one the host now holds a durability receipt for. Answers how many
+    /// were recorded. Run by the scheduler on every pass, with the time: a
+    /// chat whose transcript gave no receipt is not asked again until its
+    /// wait is over (`notice_wait`).
+    pub fn deliver_reopen_notices(&self, now: i64) -> Result<usize, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
-        self.tell_reopens()
+        self.tell_reopens(Some(now))
+    }
+
+    /// `deliver_reopen_notices` with no wait honoured: every owed notice is
+    /// tried.
+    #[cfg(test)]
+    pub fn deliver_reopen_notices_now(&self) -> Result<usize, String> {
+        let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        self.tell_reopens(None)
     }
 
     /// `deliver_reopen_notices`, for a caller that holds `workspace_ops`.
     /// That lock is what makes a notice exactly one event: nobody else
     /// looks for it and writes it between this look and this write.
+    /// `due_at` is the scheduler's time; `None` tries a waiting chat too.
     ///
-    /// A notice already in the transcript is recorded, never written again:
-    /// that is the notice of a write whose confirmation was lost, to a
-    /// server that stopped or a folder that would not sync. The event is
-    /// made from the reopen as the ledger keeps it, so every try writes the
-    /// same one and the page knows it by task, attempt and time.
-    fn tell_reopens(&self) -> Result<usize, String> {
+    /// A notice already in the transcript is never written again: that is
+    /// the notice of a write whose confirmation was lost, to a server that
+    /// stopped or a folder that would not sync. It is recorded only once
+    /// the host holds the receipt that write did not give
+    /// (`notice_receipts`). The event is made from the reopen as the ledger
+    /// keeps it, so every try writes the same one and the page knows it by
+    /// task, attempt and time.
+    fn tell_reopens(&self, due_at: Option<i64>) -> Result<usize, String> {
         let owed: Vec<(String, serde_json::Value)> = {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
             if let Some(error) = &inner.load_error {
@@ -1018,42 +1073,75 @@ impl OrchestrationStore {
                 })
                 .collect()
         };
-        let mut told = 0;
+        // One chat's notices together, in the order they are owed: its
+        // transcript is read once a pass, however many it owes.
+        let mut chats: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
         for (chat, event) in owed {
-            let same = |other: &serde_json::Value| {
-                ["type", "taskId", "attempt", "at"]
-                    .iter()
-                    .all(|key| other[key] == event[key])
-            };
+            match chats.iter_mut().find(|(key, _)| *key == chat) {
+                Some((_, events)) => events.push(event),
+                None => chats.push((chat, vec![event])),
+            }
+        }
+        let mut told = 0;
+        for (chat, events) in chats {
             // Only in a chat the person can open: a notice in the transcript
             // of a deleted chat has been shown to nobody. Asked first, and
             // it is the cheap question.
             if shown_to_the_person(&chat).is_err() {
                 continue;
             }
-            // And only "written" once the line is synced.
-            let written = crate::transcript::since(&chat, 0)
-                .iter()
-                .any(|frame| same(&frame.event))
-                || crate::agent_chat::record_chat_event_synced(&chat, event.clone()).is_some();
-            if !written {
+            if due_at.is_some_and(|now| self.notice_waits(&chat, now)) {
                 continue;
             }
-            let task_id = event["taskId"].as_str().unwrap_or_default().to_owned();
-            let (attempt, at) = (event["attempt"].clone(), event["at"].clone());
-            let run_id = self.mutate(|data| {
-                let task = data.tasks.get_mut(&task_id).ok_or("Task disappeared.")?;
-                for reopen in &mut task.reopens {
-                    if json!(reopen.attempt) == attempt && json!(reopen.at) == at {
-                        reopen.notice_delivered = true;
+            let receipts = notice_receipts(&chat, &events);
+            self.notice_tried(
+                &chat,
+                receipts.iter().all(|held| *held),
+                due_at.unwrap_or_else(now_ms),
+            );
+            for (event, _) in events.iter().zip(&receipts).filter(|(_, held)| **held) {
+                let task_id = event["taskId"].as_str().unwrap_or_default().to_owned();
+                let (attempt, at) = (event["attempt"].clone(), event["at"].clone());
+                let run_id = self.mutate(|data| {
+                    let task = data.tasks.get_mut(&task_id).ok_or("Task disappeared.")?;
+                    for reopen in &mut task.reopens {
+                        if json!(reopen.attempt) == attempt && json!(reopen.at) == at {
+                            reopen.notice_delivered = true;
+                        }
                     }
-                }
-                Ok(task.run_id.clone())
-            })?;
-            announce(&run_id, "task_reopen_told");
-            told += 1;
+                    Ok(task.run_id.clone())
+                })?;
+                announce(&run_id, "task_reopen_told");
+                told += 1;
+            }
         }
         Ok(told)
+    }
+
+    /// Whether `chat`'s transcript gave no receipt lately and is not due
+    /// to be asked again at `now`.
+    fn notice_waits(&self, chat: &str, now: i64) -> bool {
+        let waits = self.reopen_waits.lock().unwrap_or_else(|e| e.into_inner());
+        waits.get(chat).is_some_and(|(_, next)| now < *next)
+    }
+
+    /// Record a try at `chat`'s notices: receipts for all of them end its
+    /// wait, and anything less makes the next one longer.
+    fn notice_tried(&self, chat: &str, all_held: bool, now: i64) {
+        let mut waits = self.reopen_waits.lock().unwrap_or_else(|e| e.into_inner());
+        if all_held {
+            waits.remove(chat);
+            return;
+        }
+        let failures = waits
+            .get(chat)
+            .map_or(1, |(failures, _)| failures.saturating_add(1));
+        let wait = notice_wait(failures);
+        waits.insert(chat.to_owned(), (failures, now + wait));
+        eprintln!(
+            "orchestration: no durability receipt for a reopen notice in {chat} (try {failures}); asking again in {} s",
+            wait / 1_000
+        );
     }
 
     pub fn cleanup_workspace(
@@ -2745,14 +2833,14 @@ pub(super) mod tests {
             (json!(true), json!(true), json!(false), 0)
         );
         // The scheduler's pass tries again and fails again: still held.
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(0));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
         assert!(work.start(&task).is_err());
 
         // The fault is lifted. The next pass writes the notice, once, and
         // the task starts on its new instructions.
         work.mend_transcript();
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(1));
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(0), "once");
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
         let told = work.told();
         assert_eq!(told.len(), 1, "{told:?}");
         assert_eq!(
@@ -2796,7 +2884,7 @@ pub(super) mod tests {
         let two = work.reopen(&second, "Fix the second").unwrap();
         assert!(work.start(&first).is_err() && work.start(&second).is_err());
         work.mend_transcript();
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(2));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(2));
         let specs: Vec<String> = work
             .told()
             .iter()
@@ -2805,7 +2893,7 @@ pub(super) mod tests {
         assert_eq!(specs.len(), 2, "{specs:?}");
         assert!(specs.contains(&"Fix the first".to_owned()));
         assert!(specs.contains(&"Fix the second".to_owned()));
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(0));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
         work.start(&first).unwrap();
         work.start(&second).unwrap();
         assert_ne!(one.reopens[0].at, 0);
@@ -2827,7 +2915,7 @@ pub(super) mod tests {
             .unwrap();
         let work = work.restarted();
         assert!(work.start(&third).is_err(), "held until it is checked");
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(1), "recorded");
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1), "recorded");
         assert_eq!(work.told().len(), 3, "and not written again");
         work.start(&third).unwrap();
     }
@@ -2843,9 +2931,9 @@ pub(super) mod tests {
         work.reopen(&task, "After the restart").unwrap();
         let work = work.restarted();
         assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(0));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
         work.mend_transcript();
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
         let told = work.told();
         assert_eq!(told.len(), 1);
         assert_eq!(told[0]["spec"], "After the restart");
@@ -2886,12 +2974,151 @@ pub(super) mod tests {
             .find(|chat| chat.id == work.id)
             .unwrap();
         assert!(crate::chat_index::trash(&work.id, None, Some(meta)).unwrap());
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(0));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
         assert!(work.told().is_empty());
         assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
         crate::chat_index::restore(&work.id).unwrap();
-        assert_eq!(work.store.deliver_reopen_notices(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
         assert_eq!(work.start(&task).unwrap().number, 2);
+    }
+
+    /// Every folder sync on this thread is refused until this is dropped,
+    /// a failed assertion included.
+    struct NoFolderSync;
+
+    impl NoFolderSync {
+        fn begin() -> Self {
+            crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(true));
+            Self
+        }
+    }
+
+    impl Drop for NoFolderSync {
+        fn drop(&mut self) {
+            crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(false));
+        }
+    }
+
+    /// Review of 4603eb4, H5, the reviewer's probe: the notice's line was
+    /// appended but its folder would not sync, so the host holds no receipt
+    /// for it. A line that can be read is not one. While the fault lasts
+    /// the task stays held, however often the scheduler looks, and the line
+    /// is never written a second time; the first pass after the fault is
+    /// lifted confirms the line that is there and the task starts.
+    #[test]
+    fn a_notice_that_was_written_but_never_confirmed_is_not_taken_as_delivered() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let fault = NoFolderSync::begin();
+        let reopened = work.reopen(&task, "Storage sync still failing").unwrap();
+        assert!(!reopened.reopens[0].notice_delivered, "no receipt");
+        assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+        assert_eq!(work.told().len(), 1, "the line is there, unproven");
+        for pass in 1..=10 {
+            assert_eq!(
+                work.store.deliver_reopen_notices_now(),
+                Ok(0),
+                "pass {pass}: a readable line was taken for a receipt"
+            );
+            assert_eq!(
+                work.start(&task)
+                    .expect_err("started on a notice nothing confirmed"),
+                REOPEN_NOT_TOLD,
+                "pass {pass}"
+            );
+            assert_eq!(work.told().len(), 1, "pass {pass}: never written twice");
+        }
+        let held = work.store.owned_task(&work.key, &task.id).unwrap().1;
+        assert!(!held.reopens[0].notice_delivered);
+
+        // The fault is lifted: one pass confirms the line already there.
+        drop(fault);
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        let told = work.told();
+        assert_eq!(told.len(), 1, "one event in the transcript: {told:?}");
+        assert_eq!(told[0]["spec"], "Storage sync still failing");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+        assert_eq!(work.told().len(), 1);
+    }
+
+    /// While a chat's transcript holds a notice nothing confirmed, no
+    /// other notice is written into it either: the fault is the
+    /// transcript's, and a second line there would be as unproven as the
+    /// first. Lifted, one pass confirms the one and writes the other.
+    #[test]
+    fn a_chat_with_an_unconfirmed_notice_takes_no_new_notice_until_it_is_confirmed() {
+        let work = Reopenable::new();
+        let (first, second) = (work.completed_task(), work.completed_task());
+        let fault = NoFolderSync::begin();
+        work.reopen(&first, "Fix the first").unwrap();
+        work.reopen(&second, "Fix the second").unwrap();
+        assert_eq!(work.told().len(), 1, "the first, unproven, and no other");
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+        assert_eq!(work.told().len(), 1);
+        assert!(work.start(&first).is_err() && work.start(&second).is_err());
+        drop(fault);
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(2));
+        let specs: Vec<_> = work
+            .told()
+            .iter()
+            .map(|event| event["spec"].clone())
+            .collect();
+        assert_eq!(specs, [json!("Fix the first"), json!("Fix the second")]);
+        work.start(&first).unwrap();
+        work.start(&second).unwrap();
+    }
+
+    /// The scheduler reads a chat's transcript once a pass for all the
+    /// notices it owes there, and leaves a chat that gave no receipt alone
+    /// for longer each time: 4 s, doubling to a minute. A wait is the
+    /// chat's; a receipt ends it.
+    #[test]
+    fn a_transcript_is_read_once_a_pass_and_less_often_while_it_gives_no_receipt() {
+        assert_eq!(
+            [1, 2, 3, 4, 5, 6, 40].map(notice_wait),
+            [4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]
+        );
+        let reads = || crate::transcript::READS_BY_TYPE.with(|reads| reads.get());
+        let work = Reopenable::new();
+        let (first, second) = (work.completed_task(), work.completed_task());
+        work.break_transcript();
+        work.reopen(&first, "Fix the first").unwrap();
+        work.reopen(&second, "Fix the second").unwrap();
+        let wait = || {
+            let waits = work.store.reopen_waits.lock().unwrap();
+            waits.get(&work.key).copied()
+        };
+        let (tries, next) = wait().expect("no receipt, so the chat waits");
+        assert_eq!(tries, 2, "one try for each reopen as it was made");
+
+        // Inside the wait nothing is read, though the fault is lifted.
+        work.mend_transcript();
+        let before = reads();
+        assert_eq!(work.store.deliver_reopen_notices(next - 1), Ok(0));
+        assert_eq!(reads(), before, "not asked before its time");
+        assert_eq!(work.start(&first).unwrap_err(), REOPEN_NOT_TOLD);
+
+        // Due, and the fault is back: one read for both notices, and the
+        // next wait is longer.
+        work.break_transcript();
+        assert_eq!(work.store.deliver_reopen_notices(next), Ok(0));
+        assert_eq!(reads(), before + 1, "one read for two notices");
+        assert_eq!(wait(), Some((3, next + 16_000)));
+        assert_eq!(work.store.deliver_reopen_notices(next + 15_999), Ok(0));
+        assert_eq!(reads(), before + 1);
+
+        // Due again with the fault gone: one read, both written, no wait.
+        work.mend_transcript();
+        assert_eq!(work.store.deliver_reopen_notices(next + 16_000), Ok(2));
+        assert_eq!(reads(), before + 2, "one read for two notices");
+        assert_eq!(wait(), None);
+        assert_eq!(work.told().len(), 2);
+        work.start(&first).unwrap();
+        work.start(&second).unwrap();
+        // Nothing owed: nothing read.
+        assert_eq!(work.store.deliver_reopen_notices(next + 16_001), Ok(0));
+        assert_eq!(reads(), before + 2);
     }
 
     /// agent_delete review, M3: a workspace the host is preparing or

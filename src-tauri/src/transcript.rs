@@ -144,6 +144,54 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     Some(seq)
 }
 
+/// The receipt `append_synced` gives, asked for lines that are already in the
+/// record: the file is synced, and its folder entry too. `None` when either
+/// cannot be, and then nothing in the record is confirmed.
+///
+/// For a line whose own append answered `None` after it was written, or was
+/// never heard from at all (the server stopped). That the line can be read
+/// back says the OS holds it, not that the disk does. Nothing is written
+/// again; the one byte this may add is the newline a last line is missing,
+/// under the append lock, because an ordinary append would be glued onto
+/// such a line and take it with it.
+pub fn confirm_synced(key: &str) -> Option<()> {
+    let path = path_for(key)?;
+    let _appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = OpenOptions::new()
+        .append(true)
+        .read(true)
+        .open(&path)
+        .ok()?;
+    if !ends_in_newline(&mut file) {
+        file.write_all(b"\n").ok()?;
+    }
+    file.sync_data().ok()?;
+    // Whether the folder entry was ever made durable is not known here: the
+    // sync that should have done it is the one that failed or was lost.
+    sync_dir(path.parent()?).ok()
+}
+
+/// The events of one `type` in a chat's record, oldest first.
+///
+/// Only a line that holds the type's name is parsed, so looking for a few
+/// host events in a 100 MB conversation does not build every frame of it.
+/// Every writer of a record serializes with `serde_json`, which writes an
+/// ASCII name as it is, so a line of that type always holds it.
+pub(crate) fn of_type(key: &str, kind: &str) -> Vec<Value> {
+    #[cfg(test)]
+    READS_BY_TYPE.with(|reads| reads.set(reads.get() + 1));
+    let Some(file) = path_for(key).and_then(|path| File::open(path).ok()) else {
+        return Vec::new();
+    };
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter(|line| line.contains(kind))
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter(|event| event["type"] == kind)
+        .collect()
+}
+
 /// Start a chat's record with `events`, but only a record that has nothing in
 /// it yet. True when they were written; false when the chat already has a
 /// record, which is never written over or added to here.
@@ -227,6 +275,8 @@ pub(crate) fn forget_count(key: &str) {
 thread_local! {
     /// Refuse every folder sync on this thread, as a failing disk would.
     pub(crate) static FAIL_DIR_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many records `of_type` has read on this thread.
+    pub(crate) static READS_BY_TYPE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Whether the file is empty or its last byte ends a line.
@@ -1015,6 +1065,66 @@ mod tests {
         let all = since(&key, 0);
         assert_eq!(all.len(), 2, "the first line is on disk all the same");
         assert_eq!(all[0].seq, 1);
+        forget(&key);
+    }
+
+    /// A line that is in the record is confirmed by the syncs its append
+    /// had to make, and by nothing less: no file, or a folder that will not
+    /// sync, is no receipt. Asking writes no event.
+    #[test]
+    fn lines_already_in_a_record_are_confirmed_only_by_a_sync_that_succeeds() {
+        let key = unique_key("confirm");
+        assert_eq!(confirm_synced(&key), None, "no record, nothing to confirm");
+        FAIL_DIR_SYNC.with(|f| f.set(true));
+        let unproven = append_synced(&key, &json!({ "n": 1 }));
+        let refused = confirm_synced(&key);
+        FAIL_DIR_SYNC.with(|f| f.set(false));
+        assert_eq!((unproven, refused), (None, None));
+        assert_eq!(confirm_synced(&key), Some(()));
+        assert_eq!(since(&key, 0).len(), 1, "confirming appends nothing");
+
+        // A last line with no line end is given one, so the next ordinary
+        // append is its own line and the confirmed one stays readable.
+        let path = path_for(&key).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "{{\"n\":2}}").unwrap();
+        drop(file);
+        // The process died there; the next one counts the file afresh.
+        forget_count(&key);
+        assert_eq!(confirm_synced(&key), Some(()));
+        assert_eq!(append(&key, &json!({ "n": 3 })), Some(3));
+        let all: Vec<Value> = since(&key, 0).into_iter().map(|r| r.event).collect();
+        assert_eq!(
+            all,
+            [json!({ "n": 1 }), json!({ "n": 2 }), json!({ "n": 3 })]
+        );
+        forget(&key);
+    }
+
+    /// `of_type` answers the events of that type and no other line: not one
+    /// that only mentions the name, not a torn one.
+    #[test]
+    fn the_events_of_one_type_are_found_without_the_rest() {
+        let key = unique_key("of-type");
+        assert!(of_type(&key, "octiq_x").is_empty(), "no record");
+        append(&key, &json!({ "type": "user", "text": "about octiq_x" }));
+        append(&key, &json!({ "type": "octiq_x", "n": 1 }));
+        append(&key, &json!({ "type": "octiq_xy", "n": 2 }));
+        append(&key, &json!({ "type": "assistant", "text": "plain" }));
+        append(&key, &json!({ "type": "octiq_x", "n": 3 }));
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(path_for(&key).unwrap())
+            .unwrap();
+        write!(file, "{{\"type\":\"octiq_x\",\"n\":").unwrap();
+        drop(file);
+        assert_eq!(
+            of_type(&key, "octiq_x"),
+            [
+                json!({ "type": "octiq_x", "n": 1 }),
+                json!({ "type": "octiq_x", "n": 3 })
+            ]
+        );
         forget(&key);
     }
 

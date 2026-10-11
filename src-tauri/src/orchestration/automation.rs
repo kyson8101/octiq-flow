@@ -319,7 +319,7 @@ pub fn start_scheduler(
         }
         // Before the ready wave below: a reopened task joins it once its
         // notice is in the coordinator's chat.
-        if let Err(error) = store.deliver_reopen_notices() {
+        if let Err(error) = store.deliver_reopen_notices(now_ms()) {
             eprintln!("orchestration: reopen notices failed: {error}");
         }
         if let Err(error) = super::inbox::deliver_pending(&chats, &workspaces) {
