@@ -938,7 +938,10 @@ for <assignee> · attempt N` through the shared `CardFold`, with the new
 instructions behind it, whole when opened. They are the coordinator's
 prose, so they are folded by default and never on the strip. The line
 enters once as it is said, is not replayed when the chat is read back, and
-the same event read twice draws once (one line per attempt of a task).
+the same event read twice draws once. A line is one reopening (the task,
+the attempt it starts and the host's stamp): the host numbers the attempt a
+reopening will start, so a task reopened twice before it is dispatched says
+the same attempt both times and still draws two lines.
 
 **A chat row that changes place moves there** (`lib/rowMotion`): the list is
 sorted by activity, and a row that only changed position used to be

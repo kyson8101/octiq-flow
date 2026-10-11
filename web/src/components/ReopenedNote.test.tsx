@@ -8,10 +8,12 @@ import css from "./ReopenedNote.css?raw";
 
 const SPEC = ["Fix the two findings below.", "", "1. The gate must be read from the ledger.", "2. Add the regression test.", "", "Do not touch the Allow gate."].join("\n");
 
+const AT = Date.UTC(2026, 9, 11, 13, 5);
+
 /** The event as the contract writes it. */
 const event = (over: Record<string, unknown> = {}) => ({
   type: "octiq_task_reopened", runId: "run_1", taskId: "task_7", title: "L · Run progress", assignee: "OCTIQ FE",
-  attempt: 2, spec: SPEC, previousSpecChars: 8000, at: Date.UTC(2026, 9, 11, 13, 5), ...over,
+  attempt: 2, spec: SPEC, previousSpecChars: 8000, at: AT, ...over,
 });
 const reopened = (over: Record<string, unknown> = {}) => readTaskReopened(event(over))!;
 const draw = (over: Record<string, unknown> = {}, startOpen = false, live = false) => renderToStaticMarkup(
@@ -22,14 +24,21 @@ const words = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " 
 describe("the event a host writes when a coordinator reopens a task", () => {
   it("is read as the contract sends it", () => {
     expect(reopened()).toEqual({
-      id: "reopened-task_7-2", runId: "run_1", taskId: "task_7", title: "L · Run progress", assignee: "OCTIQ FE", attempt: 2,
+      id: `reopened-task_7-2-${AT}`, runId: "run_1", taskId: "task_7", title: "L · Run progress", assignee: "OCTIQ FE", attempt: 2,
       spec: SPEC, previousSpecChars: 8000, at: Date.UTC(2026, 9, 11, 13, 5),
     });
   });
 
   it("takes the assignee and the attempt as the ledger says them too", () => {
     expect(reopened({ assignee: { id: "agent_1", name: "OCTIQ BE" }, attempt: { id: "attempt_x", number: 3 } }))
-      .toMatchObject({ assignee: "OCTIQ BE", attempt: 3, id: "reopened-task_7-3" });
+      .toMatchObject({ assignee: "OCTIQ BE", attempt: 3, id: `reopened-task_7-3-${AT}` });
+    // The host's own test event (`orchestration/workspaces.rs`): a task
+    // with no registered assignee is `null`, and the line names nobody.
+    const sent = readTaskReopened({ type: "octiq_task_reopened", runId: "run_1", taskId: "task_1", title: "Implement", assignee: null,
+      attempt: 2, spec: "Address review", previousSpecChars: 25, at: 1_700_000_000_000 })!;
+    expect(sent).toMatchObject({ title: "Implement", assignee: null, attempt: 2, spec: "Address review", previousSpecChars: 25 });
+    expect(reopenedHeadline(sent)).toBe("Reopened Implement · attempt 2");
+    expect(reopenedFoldLabel(sent)).toBe("New instructions · 1 line · was 25 characters");
     expect(readTaskReopened({ run_id: "r", task_id: "t", previous_spec_chars: 12 })).toMatchObject({ runId: "r", taskId: "t", previousSpecChars: 12 });
   });
 
@@ -63,7 +72,7 @@ describe("the chat's record of it", () => {
   it("is one line of its own in the transcript, where it happened", () => {
     const state = fold(emptyChat(), event());
     expect(state.messages).toHaveLength(1);
-    expect(state.messages[0]).toMatchObject({ id: "reopened-task_7-2", role: "assistant", streaming: false });
+    expect(state.messages[0]).toMatchObject({ id: `reopened-task_7-2-${AT}`, role: "assistant", streaming: false });
     expect(lines(state)).toEqual([{ kind: "reopened", reopened: reopened() }]);
   });
 
@@ -73,6 +82,12 @@ describe("the chat's record of it", () => {
     // The very same state: nothing for the transcript to draw again.
     expect(reduceChat(once, event())).toBe(once);
     expect(lines(fold(once, event({ attempt: 3 })))).toHaveLength(2);
+    // Reopened again before it was dispatched: the host numbers the attempt
+    // the reopening will start, so both say attempt 2. The second set of
+    // instructions is a second line, never folded into the first.
+    const twice = fold(once, event({ at: AT + 60_000, spec: "And one more thing." }));
+    expect(lines(twice)).toHaveLength(2);
+    expect(lines(twice).map((block) => block.kind === "reopened" && block.reopened.spec)).toEqual([SPEC, "And one more thing."]);
     expect(lines(fold(emptyChat(), event({ taskId: "task_8" }), event()))).toHaveLength(2);
   });
 

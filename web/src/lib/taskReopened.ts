@@ -13,7 +13,7 @@
 import { count, digits, lineCount } from "./cardFold";
 
 export type TaskReopened = {
-  /** One line per attempt of a task: the same event read twice draws once. */
+  /** One line per reopening: the same event read twice draws once. */
   id: string;
   runId: string;
   taskId: string;
@@ -49,9 +49,12 @@ export function readTaskReopened(event: Record<string, unknown>): TaskReopened |
   const attempt = whole(tried) ?? (tried && typeof tried === "object" ? whole((tried as { number?: unknown }).number) : null);
   const at = whole(event.at);
   return {
-    // The attempt names the reopening; a host that sent none is told apart
-    // by when it happened.
-    id: `reopened-${taskId}-${attempt && attempt > 0 ? attempt : `at${at ?? 0}`}`,
+    // One line per reopening, which is the task, the attempt it starts and
+    // when the host stamped it. The attempt alone is not enough: the host
+    // numbers the attempt a reopening WILL start, so a task reopened twice
+    // before it is dispatched says the same number both times, and the
+    // second set of instructions has to be shown as much as the first.
+    id: `reopened-${taskId}-${attempt && attempt > 0 ? attempt : 0}-${at ?? 0}`,
     runId, taskId,
     title: text(event.title).trim() || "a task",
     assignee: assignee.trim() || null,
