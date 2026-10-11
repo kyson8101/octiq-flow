@@ -936,6 +936,253 @@ pub fn delete_team(path: &Path, id: &str) -> Result<(), String> {
     write(path, &stored)
 }
 
+/// What an agent's team tool asks for (`team_tools`), with the team and every
+/// agent already an id. It names the team and who joins or leaves it, and
+/// nothing else: a team made this way is global, and the project a team
+/// belongs to is changed in Settings only.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TeamRequest {
+    /// The team to change; `None` makes a new one.
+    pub id: Option<String>,
+    /// Its name: required for a new team, a rename of an existing one.
+    pub name: Option<String>,
+    pub add: Vec<String>,
+    pub remove: Vec<String>,
+}
+
+/// One agent a team card names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamMember {
+    pub id: String,
+    pub name: String,
+}
+
+/// An agent a change puts on the team. One team per agent, so joining takes
+/// it off the team it is on: `leaves` is that team's name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamJoining {
+    pub id: String,
+    pub name: String,
+    pub leaves: Option<String>,
+}
+
+/// Everything a team card states: the team's name before and after, who is on
+/// it before and after, and which team each agent it adds leaves. `team_change`
+/// is the one place it is worked out, for the card and again for the check
+/// when the person answers (`change_team_unchanged`). Members are in
+/// registration order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamChange {
+    pub id: Option<String>,
+    /// The team's name now; `None` for a team that does not exist yet.
+    pub was: Option<String>,
+    pub name: String,
+    pub project_id: Option<String>,
+    pub before: Vec<TeamMember>,
+    pub after: Vec<TeamMember>,
+    pub joining: Vec<TeamJoining>,
+    pub leaving: Vec<TeamMember>,
+}
+
+impl TeamChange {
+    /// What is different in `now`, in the card's terms; `None` when the
+    /// change would do exactly what was shown.
+    fn changed(&self, now: &TeamChange) -> Option<&'static str> {
+        if self.was != now.was || self.name != now.name || self.project_id != now.project_id {
+            return Some(": the team is not the one the card showed");
+        }
+        if self.before != now.before {
+            return Some(": its members are not the ones the card listed");
+        }
+        if self.joining != now.joining || self.leaving != now.leaving || self.after != now.after {
+            return Some(": an agent the card names has changed");
+        }
+        None
+    }
+}
+
+/// What `request` would do among `agents` and `teams`, every rule checked: the
+/// name rules of `save_team`, the membership rule of `can_join`, and that each
+/// agent it adds or removes is one it can add or remove.
+pub fn team_change(
+    agents: &[TeamAgent],
+    teams: &[AgentTeam],
+    request: &TeamRequest,
+) -> Result<TeamChange, String> {
+    let team = match request.id.as_deref() {
+        None => None,
+        Some(id) => Some(
+            teams
+                .iter()
+                .find(|t| t.id == id)
+                .ok_or("That team no longer exists.")?,
+        ),
+    };
+    let name = match (request.name.as_deref().map(str::trim), team) {
+        (Some(name), _) if !name.is_empty() => name.to_owned(),
+        (None, Some(team)) => team.name.clone(),
+        _ => return Err("Give the team a name.".into()),
+    };
+    if name.chars().count() > 60 {
+        return Err("The team's name is longer than 60 characters.".into());
+    }
+    let project_id = team.and_then(|t| t.project_id.clone());
+    let clash = teams.iter().any(|other| {
+        Some(other.id.as_str()) != request.id.as_deref()
+            && other.name.eq_ignore_ascii_case(&name)
+            && (other.project_id.is_none()
+                || project_id.is_none()
+                || other.project_id == project_id)
+    });
+    if clash {
+        return Err(format!("Another team is already called {name}."));
+    }
+    let on_team = |agent: &TeamAgent| {
+        request.id.is_some() && agent.team_id.as_deref() == request.id.as_deref()
+    };
+    let named = |id: &String| {
+        agents
+            .iter()
+            .find(|a| &a.id == id)
+            .ok_or("An agent this names no longer exists.")
+    };
+    let mut joining: Vec<TeamJoining> = Vec::new();
+    for id in &request.add {
+        let agent = named(id)?;
+        if joining.iter().any(|j| &j.id == id) {
+            continue;
+        }
+        if request.remove.contains(id) {
+            return Err(format!(
+                "{} cannot be both added to and removed from {name}.",
+                agent.name
+            ));
+        }
+        if on_team(agent) {
+            return Err(format!("{} is already on {name}.", agent.name));
+        }
+        if !can_join(agent.project_id.as_deref(), project_id.as_deref()) {
+            return Err(format!(
+                "{} cannot be on {name}: that team belongs to another project.",
+                agent.name
+            ));
+        }
+        joining.push(TeamJoining {
+            id: agent.id.clone(),
+            name: agent.name.clone(),
+            leaves: agent
+                .team_id
+                .as_deref()
+                .and_then(|other| teams.iter().find(|t| t.id == other))
+                .map(|t| t.name.clone()),
+        });
+    }
+    let mut leaving: Vec<TeamMember> = Vec::new();
+    for id in &request.remove {
+        let agent = named(id)?;
+        if leaving.iter().any(|m| &m.id == id) {
+            continue;
+        }
+        if !on_team(agent) {
+            return Err(format!("{} is not on {name}.", agent.name));
+        }
+        leaving.push(TeamMember {
+            id: agent.id.clone(),
+            name: agent.name.clone(),
+        });
+    }
+    let was = team.map(|t| t.name.clone());
+    if joining.is_empty() && leaving.is_empty() && was.as_deref() == Some(name.as_str()) {
+        return Err(format!(
+            "Say what to change about {name}: a new name, or members to add or remove."
+        ));
+    }
+    let member = |a: &TeamAgent| TeamMember {
+        id: a.id.clone(),
+        name: a.name.clone(),
+    };
+    Ok(TeamChange {
+        id: request.id.clone(),
+        was,
+        name,
+        project_id,
+        before: agents.iter().filter(|a| on_team(a)).map(member).collect(),
+        after: agents
+            .iter()
+            .filter(|a| {
+                joining.iter().any(|j| j.id == a.id)
+                    || (on_team(a) && !leaving.iter().any(|m| m.id == a.id))
+            })
+            .map(member)
+            .collect(),
+        joining,
+        leaving,
+    })
+}
+
+/// Make or change a team as `request` says, refused unless it would do
+/// exactly what `shown` says (`team_change` of the roster the card was made
+/// from): the same team under the same name, the same members before and
+/// after, and each agent it adds leaving the team the card said. What the
+/// person approved is that change, never one the roster has since turned
+/// into. Each agent that joins or leaves becomes a new version of itself, so
+/// a card still waiting on that agent is refused too.
+pub fn change_team_unchanged(
+    path: &Path,
+    request: &TeamRequest,
+    shown: &TeamChange,
+) -> Result<AgentTeam, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    let stale = match team_change(&stored.agents, &stored.teams, request) {
+        Ok(now) => shown.changed(&now).map(str::to_owned),
+        Err(why) => Some(format!(": {}", why.trim_end_matches('.'))),
+    };
+    if let Some(what) = stale {
+        let who = match &shown.was {
+            Some(was) => format!("The team {was} or its members changed"),
+            None => format!("The teams or the agents {} names changed", shown.name),
+        };
+        return Err(format!(
+            "{who} while this waited for approval, so nothing was saved{what}. Read agent_list again and propose it again."
+        ));
+    }
+    let now = now_ms();
+    let team = match &request.id {
+        Some(id) => {
+            let existing = stored
+                .teams
+                .iter_mut()
+                .find(|t| &t.id == id)
+                .ok_or("That team no longer exists.")?;
+            existing.name = shown.name.clone();
+            existing.updated_at = now.max(existing.updated_at + 1);
+            existing.clone()
+        }
+        None => {
+            let team = AgentTeam {
+                id: format!("team_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+                name: shown.name.clone(),
+                project_id: None,
+                created_at: now,
+                updated_at: now,
+            };
+            stored.teams.push(team.clone());
+            team
+        }
+    };
+    for agent in &mut stored.agents {
+        let joins = shown.joining.iter().any(|j| j.id == agent.id);
+        if !joins && !shown.leaving.iter().any(|m| m.id == agent.id) {
+            continue;
+        }
+        agent.team_id = joins.then(|| team.id.clone());
+        agent.updated_at = now.max(agent.updated_at + 1);
+    }
+    write(path, &stored)?;
+    Ok(team)
+}
+
 /// The other members of `me`'s team, in registration order. Empty when it
 /// is on no team, or its team no longer exists.
 pub fn teammates<'a>(
@@ -958,11 +1205,14 @@ pub fn teammates<'a>(
 
 /// What a worker is told about its team: who it may ask and how. `None`
 /// when it has no teammate who may look at work in `project_id`.
+/// `may_request` is false for the worker of a peer request, which may ask a
+/// question but cannot hand work on (`orchestration::peer_request`).
 pub fn peer_brief(
     agents: &[TeamAgent],
     teams: &[AgentTeam],
     me: &TeamAgent,
     project_id: &str,
+    may_request: bool,
 ) -> Option<String> {
     let team = teams
         .iter()
@@ -979,10 +1229,58 @@ pub fn peer_brief(
         .map(|a| describe(a, agents, false, None))
         .collect::<Vec<_>>()
         .join("\n");
+    let request = if may_request {
+        peer_request_brief(
+            crate::orchestration::peer_request::MAX_REQUESTS_PER_ATTEMPT,
+            "per attempt",
+        )
+    } else {
+        String::new()
+    };
     Some(format!(
-        "You are on the team {}. Your teammates:\n{rows}\n\nPeers answer questions; they do not do the work. When a teammate's role fits a question you are stuck on, call orchestration_peer_ask with their id as teammateId, one self-contained question, and optionally contextPaths (files in your workspace, relative to it) they should read first. The host runs their answer as that teammate, read-only in your workspace, and returns it as the tool result. At most {} asks per attempt. The answer is advice: you still own the task, and you verify before acting on it.",
+        "You are on the team {}. Your teammates:\n{rows}\n\nA question is orchestration_peer_ask. Peers answer questions; they do not do the work. When a teammate's role fits a question you are stuck on, call it with their id as teammateId, one self-contained question, and optionally contextPaths (files in your workspace, relative to it) they should read first. The host runs their answer as that teammate, read-only in your workspace, and returns it as the tool result. At most {} asks per attempt. The answer is advice: you still own the task, and you verify before acting on it.{request}",
         team.name,
         crate::orchestration::peer::MAX_ASKS_PER_ATTEMPT
+    ))
+}
+
+/// How a peer request is described in a brief: the same words for a worker
+/// and a lead, with the limit that applies to each.
+fn peer_request_brief(limit: usize, per: &str) -> String {
+    use crate::orchestration::peer_request::{DEFAULT_MINUTES, MAX_MINUTES, MAX_REQUEST_CHARS};
+    format!(
+        " Work is orchestration_peer_request: one bounded piece of work a teammate fits better than you, with a defined result. Pass peer (their id or name), title, request (the work, at most {MAX_REQUEST_CHARS} characters), output (the result you expect back), and optionally project, repository and maxMinutes (default {DEFAULT_MINUTES}, at most {MAX_MINUTES}). It becomes one task for that teammate, running as their own registered agent where they may work, and it waits on the plan card: nothing starts until the person approves it. Their report comes back to you and stays on the task in orchestration_snapshot. It changes nobody's manager. At most {limit} {per}; a peer request cannot be split or passed on."
+    )
+}
+
+/// What a lead is told about its team in its own chat: who its peers are,
+/// and that it may ask them a question or hand one a bounded piece of work.
+/// `None` when it is on no team, or alone on it.
+pub fn lead_peer_brief(
+    agents: &[TeamAgent],
+    teams: &[AgentTeam],
+    me: &TeamAgent,
+) -> Option<String> {
+    let team = teams
+        .iter()
+        .find(|t| Some(t.id.as_str()) == me.team_id.as_deref())?;
+    let peers = teammates(agents, teams, me);
+    if peers.is_empty() {
+        return None;
+    }
+    let rows = peers
+        .iter()
+        .map(|a| describe(a, agents, false, None))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "You are on the team {}. These are your peers, not your reports; orchestration_task_create still takes only your direct reports:\n{rows}\n\nA question is orchestration_peer_ask: call it with a peer's id as teammateId and one self-contained question. The host answers as that peer, reading this chat's folder read-only, and returns the answer as the tool result. At most {} asks from this chat in any hour. The answer is advice.{}",
+        team.name,
+        crate::orchestration::peer::MAX_LEAD_ASKS_PER_HOUR,
+        peer_request_brief(
+            crate::orchestration::peer_request::MAX_OPEN_REQUESTS_PER_LEAD_CHAT,
+            "open at once from this chat"
+        )
     ))
 }
 
@@ -1554,6 +1852,7 @@ pub fn assignee_brief(
     path: &Path,
     assignee_id: &str,
     project_id: &str,
+    may_request: bool,
 ) -> Option<(TeamAgent, String)> {
     let team = list(path, None, true).ok()?;
     let me = team.iter().find(|a| a.id == assignee_id)?.clone();
@@ -1563,7 +1862,7 @@ pub fn assignee_brief(
     text.push_str(&memory_brief(&me, &team));
     // Who it may ask for help, and that they only answer.
     let teams = teams(path).unwrap_or_default();
-    if let Some(peers) = peer_brief(&team, &teams, &me, project_id) {
+    if let Some(peers) = peer_brief(&team, &teams, &me, project_id, may_request) {
         text.push_str("\n\n");
         text.push_str(&peers);
     }
@@ -2533,7 +2832,20 @@ Your direct reports:\n{roster}"
         )
     };
     record_lead(path, chat_key, &lead, project_id, cross_project)?;
-    Ok(format!("{text}\n\n{}", memory_brief(&lead, &team)))
+    // Its peers are whoever shares its team, wherever they work: the whole
+    // roster, not the project's slice of it.
+    let peers = lead_peers(path, &lead)
+        .map(|peers| format!("\n\n{peers}"))
+        .unwrap_or_default();
+    Ok(format!("{text}\n\n{}{peers}", memory_brief(&lead, &team)))
+}
+
+/// [`lead_peer_brief`] read from the store. A roster that cannot be read
+/// leaves the brief without it rather than failing the chat.
+fn lead_peers(path: &Path, lead: &TeamAgent) -> Option<String> {
+    let everyone = list(path, None, true).ok()?;
+    let teams = teams(path).ok()?;
+    lead_peer_brief(&everyone, &teams, lead)
 }
 
 /// Append current host-authorized roster context to a lead's later turn. The
@@ -2594,8 +2906,11 @@ pub fn refresh_turn_brief(
             "Your currently eligible direct reports are listed below. This host-authorized roster supersedes any older roster or instruction saying that no agent reports to you. You may create an orchestration run when passing on or splitting the person's task; the host still validates every direct-report edge and project destination.\n\n{rows}"
         )
     };
+    let peers = lead_peers(path, &lead)
+        .map(|peers| format!("\n\n{peers}"))
+        .unwrap_or_default();
     Ok(format!(
-        "{text}{BRIEF_MARK}Current roster for {}\n\n{roster}",
+        "{text}{BRIEF_MARK}Current roster for {}\n\n{roster}{peers}",
         lead.name
     ))
 }
@@ -2848,7 +3163,7 @@ mod tests {
         save(&path, draft("Di", None)).unwrap();
         let everyone = list(&path, None, true).unwrap();
         let all_teams = teams(&path).unwrap();
-        let brief = peer_brief(&everyone, &all_teams, &ada, "p1").unwrap();
+        let brief = peer_brief(&everyone, &all_teams, &ada, "p1", true).unwrap();
         assert!(brief.contains("You are on the team Web."));
         assert!(brief.contains("Bo — builds things"));
         assert!(brief.contains(&format!("id `{}`", agent_named(&path, "Bo").id)));
@@ -2861,11 +3176,68 @@ mod tests {
         assert!(!brief.contains("Cy —"));
         // No brief at all without anyone to ask.
         let di = agent_named(&path, "Di");
-        assert!(peer_brief(&everyone, &all_teams, &di, "p1").is_none());
+        assert!(peer_brief(&everyone, &all_teams, &di, "p1", true).is_none());
         let cy = agent_named(&path, "Cy");
-        assert!(peer_brief(&everyone, &all_teams, &cy, "p2")
+        assert!(peer_brief(&everyone, &all_teams, &cy, "p2", true)
             .unwrap()
             .contains("Ada —"));
+        // Work is the other tool, with its own bounds; the worker of a peer
+        // request is told how to ask and never how to hand work on.
+        assert!(brief.contains("Work is orchestration_peer_request"));
+        assert!(brief.contains("nothing starts until the person approves it"));
+        assert!(brief.contains("At most 2 per attempt"));
+        assert!(brief.contains("It changes nobody's manager."));
+        let asks_only = peer_brief(&everyone, &all_teams, &ada, "p1", false).unwrap();
+        assert!(asks_only.contains("orchestration_peer_ask"));
+        assert!(!asks_only.contains("orchestration_peer_request"));
+    }
+
+    #[test]
+    fn a_lead_is_told_who_its_peers_are_in_its_first_brief_and_on_later_turns() {
+        let path = temp();
+        let leads = save_team(&path, team_draft("Leads", None)).unwrap();
+        let ada = save(&path, on(&leads, "Ada", None)).unwrap();
+        let bo = save(&path, on(&leads, "Bo", Some("p2"))).unwrap();
+        let cy = save(&path, draft("Cy", None)).unwrap();
+        let everyone = list(&path, None, true).unwrap();
+        let all_teams = teams(&path).unwrap();
+        let peers = lead_peer_brief(&everyone, &all_teams, &ada).unwrap();
+        assert!(
+            peers.starts_with("You are on the team Leads. These are your peers, not your reports")
+        );
+        // Every teammate, wherever it works: a request goes to its project.
+        assert!(peers.contains(&format!("id `{}` · Bo —", bo.id)), "{peers}");
+        assert!(!peers.contains("Cy —") && !peers.contains("Ada —"));
+        assert!(peers.contains("orchestration_peer_ask"));
+        assert!(peers.contains("At most 5 asks from this chat in any hour"));
+        assert!(peers.contains("Work is orchestration_peer_request"));
+        assert!(peers.contains("At most 3 open at once from this chat"));
+        assert!(peers.contains("orchestration_task_create still takes only your direct reports"));
+        // Alone on its team, or on none, there is nothing to say.
+        assert!(lead_peer_brief(&everyone, &all_teams, &cy).is_none());
+        assert!(lead_peer_brief(&everyone[..1], &all_teams, &ada).is_none());
+
+        // The first brief of a lead's chat carries it, and so does a later
+        // turn's roster, so a chat older than the team still learns of it.
+        let first = brief(
+            &path,
+            "chat:ada",
+            "p1",
+            &ada.id,
+            "Check the NAS",
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(first.contains("You are on the team Leads."), "{first}");
+        let later = refresh_turn_brief(&path, "chat:ada", "And now?".into(), &[]).unwrap();
+        assert!(later.contains("You are on the team Leads."), "{later}");
+        assert!(later.contains("orchestration_peer_request"));
+        let no_team = brief(&path, "chat:cy", "p1", &cy.id, "Check the NAS", false, &[]).unwrap();
+        assert!(!no_team.contains("orchestration_peer_request"));
+        // Neither brief wrote anything about who reports to whom.
+        assert_eq!(agent_named(&path, "Bo").reports_to, None);
+        assert_eq!(agent_named(&path, "Ada").updated_at, ada.updated_at);
     }
 
     fn temp() -> crate::test_dir::TestPath {
@@ -4210,14 +4582,14 @@ mod tests {
         let path = temp();
         set_policy(&path, POLICY).unwrap();
         let ada = save(&path, standing("Ada", None, STANDING)).unwrap();
-        let (me, text) = assignee_brief(&path, &ada.id, "p1").unwrap();
+        let (me, text) = assignee_brief(&path, &ada.id, "p1", true).unwrap();
         assert_eq!(me.id, ada.id);
         in_order(&text, "You are Ada, the registered OctiqFlow agent");
         assert!(
             at(&text, "Your role: builds things.") < at(&text, "vault_agent_memory_read"),
             "{text}"
         );
-        assert!(assignee_brief(&path, "agent_gone", "p1").is_none());
+        assert!(assignee_brief(&path, "agent_gone", "p1", true).is_none());
     }
 
     /// Wherever an agent is listed to ANOTHER agent, only its role shows.
@@ -4268,7 +4640,7 @@ mod tests {
         let team = list(&path, None, true).unwrap();
         let teams = teams(&path).unwrap();
         let mid = team.iter().find(|a| a.id == manager.id).unwrap();
-        let peers = peer_brief(&team, &teams, mid, "p1").unwrap();
+        let peers = peer_brief(&team, &teams, mid, "p1", true).unwrap();
         assert!(peers.contains("Report — builds things"), "{peers}");
         for text in [&lead_text, &later, &split, &peers] {
             assert!(!text.contains(hidden), "{text}");

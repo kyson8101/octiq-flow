@@ -199,6 +199,16 @@ export type OrchestrationTask = {
   handoffs?: { from?: { id: string; name: string }; to: { id: string; name: string }; reason: string; at: number }[];
   /** The task the coordinator created to replace this blocked or failed one. */
   supersededBy?: string;
+  /** Set on a task a teammate asked for (orchestration/peer_request.rs): who
+   *  asked, the result they expect back and how long its attempt may run. */
+  peerRequest?: {
+    requestedBy: { id: string; name: string };
+    requesterChatKey: string;
+    requesterAttemptId?: string;
+    output: string;
+    maxMinutes: number;
+    requestedAt: number;
+  };
   createdAt: number;
   updatedAt: number;
 };
@@ -344,13 +354,16 @@ export type OrchestrationSnapshot = {
   briefRuns?: string[];
 };
 
-/** One worker's question to a teammate and the answer (orchestration/peer.rs).
- *  Advice inside an approved task: it hands nothing over and needs no gate. */
+/** One question to a teammate and the answer (orchestration/peer.rs). Advice:
+ *  it hands nothing over and needs no gate. A worker's names its run, task
+ *  and attempt. A lead's own chat has no attempt: its ask names the chat
+ *  (`askerChatKey`) and, when the chat coordinates a live run, that run. */
 export type PeerAsk = {
   id: string;
-  runId: string;
-  taskId: string;
-  attemptId: string;
+  runId?: string;
+  taskId?: string;
+  attemptId?: string;
+  askerChatKey?: string;
   asker: { id: string; name: string };
   helper: { id: string; name: string };
   helperAgent: "claude" | "codex" | "pi" | "antigravity";

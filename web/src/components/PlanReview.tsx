@@ -266,6 +266,10 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
       </span>
     </span>
     {added && <span className="plan-task-new">New</span>}
+    {/* A peer request: a teammate asked for it, not the owner's manager. */}
+    {task.peerRequest && (
+      <span className="plan-task-after">requested by <bdi>{task.peerRequest.requestedBy.name}</bdi> · {task.peerRequest.maxMinutes} min</span>
+    )}
     <span className="plan-task-owner" title={[owner.label, model].filter(Boolean).join(" · ")}>
       {task.assignee
         ? <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={16} decorative />

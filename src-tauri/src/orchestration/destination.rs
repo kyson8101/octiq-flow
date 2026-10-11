@@ -204,11 +204,35 @@ fn scoped_project<'a>(team: &'a [TeamAgent], who: &str) -> Result<Option<&'a str
 /// rules; every refusal says what to pass instead, and is OctiqFlow's scope
 /// refusal wherever it is shown (`outcome`).
 pub fn route(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Routed, String> {
-    resolve(team, projects, req)
+    resolve(team, projects, req, false)
         .map_err(|error| crate::outcome::refuse(crate::outcome::ReasonClass::ScopeRefused, error))
 }
 
-fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Routed, String> {
+/// [`route`] for a peer request (`peer_request.rs`): `req.manager` is the
+/// REQUESTER and `req.who` a teammate of it, so the direct-report rule does
+/// not apply. Everything else does: only a registered project and repository,
+/// only where the requester may send work, only where the teammate may work,
+/// and never a lead-only model. That `who` is on the requester's team is the
+/// caller's check (`peer::choose_helper`); this is the one path a task takes
+/// to an agent that does not report to whoever asked for it.
+pub fn route_lateral(
+    team: &[TeamAgent],
+    projects: &[Workspace],
+    req: &Route,
+) -> Result<Routed, String> {
+    resolve(team, projects, req, true)
+        .map_err(|error| crate::outcome::refuse(crate::outcome::ReasonClass::ScopeRefused, error))
+}
+
+fn resolve(
+    team: &[TeamAgent],
+    projects: &[Workspace],
+    req: &Route,
+    lateral: bool,
+) -> Result<Routed, String> {
+    // Whose direct reports `who` must be among. A teammate reports to no one
+    // here; it was chosen from the requester's own team.
+    let reports_to = if lateral { None } else { req.manager };
     let manager = match req.manager {
         Some(id) => Some(
             team.iter()
@@ -273,7 +297,7 @@ fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Ro
             );
         }
         let assignee = who
-            .map(|who| team::resolve_in(team, req.run_project, who, req.manager, &name_of))
+            .map(|who| team::resolve_in(team, req.run_project, who, reports_to, &name_of))
             .transpose()?;
         return Ok(Routed {
             assignee,
@@ -301,7 +325,7 @@ fn resolve(team: &[TeamAgent], projects: &[Workspace], req: &Route) -> Result<Ro
         ));
     }
     let assignee = who
-        .map(|who| team::resolve_in(team, &project.id, who, req.manager, &name_of))
+        .map(|who| team::resolve_in(team, &project.id, who, reports_to, &name_of))
         .transpose()?;
     Ok(Routed {
         assignee,

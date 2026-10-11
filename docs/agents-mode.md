@@ -349,12 +349,17 @@ started with.
 
 ### Registering agents from a chat
 
-An agent can be asked to hire, adjust or remove agents, through five MCP tools
-(`team_tools.rs`, `POST /hook/agents`):
+An agent can be asked to hire, adjust or remove agents, and to make or change
+a peer-help team, through seven MCP tools (`team_tools.rs`,
+`POST /hook/agents`):
 
 - `agent_list` reads the roster, the peer-help teams and the projects, with
   their ids, each agent's `persistentPrompt`, and the `agentPolicy`. It needs
-  no approval.
+  no approval. Each agent row carries `teamId` and `team`, its team's id and
+  name, both `null` when it is on no team. Each entry of `teams` is
+  `{ id, name, projectId, members }`, with `members` the names of the agents
+  on it in registration order. A listing scoped to one project still names
+  every member of a team.
 - `agent_register` and `agent_update` only **propose** a change. Projects,
   managers and teams may be named by id or by name. An update keeps every
   field it does not name, and `""` clears one that may be empty.
@@ -372,6 +377,9 @@ An agent can be asked to hire, adjust or remove agents, through five MCP tools
 - `agent_policy_update` only **proposes** a whole new agent policy (`""`
   clears it), on the same card. It is saved with `team::set_policy_unchanged`,
   so a policy edited meanwhile is not overwritten.
+- `team_create` and `team_update` only **propose** a peer-help team or a
+  change to one, on the same card. See
+  [Teams from a chat](#teams-from-a-chat).
 
 The card lists an agent's role with its other fields, never its persistent
 prompt, except when the proposal itself sets or clears it: then the card shows
@@ -432,6 +440,12 @@ Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
 | `agent_update` | A move for each of those fields that changes, and no row for one that stays. `Persistent prompt` comes last when the change touches it: plain when it is set where there was none, a move when it is replaced or cleared. |
 | `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, and `Memory note` last. |
 | `agent_policy_update` | One `Policy` row: plain when a policy is set where there was none, a move when it is replaced or cleared. |
+| `team_create` | Plain rows `Available in` (always `every project`) and `Members` (the names, or `none`), then `Other teams` when a member is on another team. |
+| `team_update` | `Name` as a move when the team is renamed. When its members change: plain rows `Added` and `Removed`, each only when there are any, then `Members` as a move from every member before to every member after (`none` for an empty team). `Other teams` last, when an agent it adds is on another team. |
+
+`Other teams` holds one sentence for each agent that leaves a team to join
+this one: `Bo leaves Ops. Cy leaves Web.` The team rows are `team_tools.rs`
+`team_rows`, and the `change` text is those rows, one to a line.
 
 A replaced or cleared prompt or policy carries the current text in `before`.
 The `change` text leaves that out, so this is the one place the rows say more
@@ -457,34 +471,174 @@ Stored with the agents in `team.json` (`teams`, and `teamId` on each agent).
 Commands: `agent_team_list`, `agent_team_save`, `agent_team_delete`. A
 `team_save` with no `teamId` keeps the agent's team; `""` takes it off.
 
-**Peer help is a question and an answer, not a handoff.** A worker whose task
-was handed to a registered agent is told in its brief who its teammates are
-(name, role, id, and those who may look at the task's project only) and that
-peers answer questions and do not do the work. It asks with the MCP tool
-`orchestration_peer_ask` (`teammateId`, `question`, optional `contextPaths`
-inside its workspace). The host (`orchestration/peer.rs`):
+### Teams from a chat
 
-- accepts the call only from the chat of a running attempt, and only for a
-  registered member of the asker's own team who may work in the task's
-  project; asking itself, someone off the team or an unknown agent is refused
-  with a message naming who it can ask;
-- allows 5 asks per attempt (answered or not) and questions of up to 4000
-  characters, and cuts answers at 8000;
+An agent that may propose an agent may propose a team, with two MCP tools on
+the same hook and the same one-off card as `agent_register`
+([Registering agents from a chat](#registering-agents-from-a-chat)):
+
+- `team_create` takes `name` and optional `members`, each an agent id or
+  name. The new team is global, so it can hold any agent. It may start empty.
+- `team_update` takes `team` (id or name) and any of `name` (a rename),
+  `addMembers` and `removeMembers`.
+
+What they can and cannot do:
+
+- **Membership only.** They never change an agent's manager, access, provider,
+  model or project, and `team_update` cannot change the project a team belongs
+  to; neither tool has a field for any of these, and an unknown field is
+  refused. A team's project, and removing a team, stay in Settings.
+- **One team per agent, and a move is said on the card.** Adding an agent that
+  is on another team takes it off that team. The proposal is not refused; the
+  card's `Other teams` row names the agent and the team it leaves, and that is
+  part of what the person approves.
+- **The rules of Settings apply before anyone is asked.** An empty or
+  over-long name, a name another team has where the two overlap, an agent
+  nobody is called, an agent already on the team, one to remove that is not on
+  it, and a project agent on another project's team are each refused without
+  a card. So is an update that names nothing to change.
+- **The card is the only gate, at every access level.** The call changes
+  nothing. `permission::host_bookkeeping` lists both tools, which only keeps
+  Claude's plan mode from putting its own card in front of the host's. A
+  decline, no answer, or nobody having OctiqFlow open saves nothing.
+- **Allow is held to what the card said.** `team::team_change` works out
+  everything the card states (`team::TeamChange`: the team's name before and
+  after, its members before and after, and the team each added agent leaves),
+  from the roster the agent's call read. On Allow,
+  `team::change_team_unchanged` works it out again under the store's lock and
+  saves only when the two are equal. A member who joined or left in Settings
+  meanwhile, an added agent that changed teams or was renamed or removed, a
+  renamed or removed team, or a name taken meanwhile each refuse it, and the
+  agent is told to read `agent_list` and propose again.
+- **A saved change is one write.** The team and every agent that joined or
+  left are written together. Each of those agents becomes a new version of
+  itself, so an `agent_update` or `agent_delete` card still waiting on one is
+  refused. The reply is `{ status: "saved", text, team }`, with `team` as
+  `agent_list` shows it, and every open page is sent `team-changed`.
+- **Who may call.** The same chats as `agent_register`: an orchestration
+  worker is refused by its worker identity, also after its attempt has
+  settled, before any card is put up, and its MCP does not offer the tools. A
+  front desk is refused at the hook.
+
+A teammate helps in two ways, with two tools: a **question**
+(`orchestration_peer_ask`) and one bounded piece of **work**
+(`orchestration_peer_request`). Neither changes who reports to whom.
+
+**Who may use them.** Two kinds of chat, by what the chat's capability proves
+and never by an argument:
+
+- the chat of a **running attempt** whose task was handed to a registered
+  agent (a worker);
+- a **registered lead's own agents-mode chat** (the chat `team.json` records a
+  lead for).
+
+A chat with no registered agent, a front desk, and an additional agent in a
+room (a seat: its capability proves the chat, not the chat's agent) are
+refused both tools. A lead is told who its peers are in its first brief and
+again on every later turn (`team::lead_peer_brief`), a worker in its task
+brief (`team::peer_brief`).
+
+### A question: `orchestration_peer_ask`
+
+**Peer help is a question and an answer, not a handoff.** The asker's brief
+lists its teammates (name, role, id; for a worker, those who may look at the
+task's project) and says that peers answer questions and do not do the work.
+It asks with `teammateId`, `question` and optional `contextPaths` inside its
+workspace. The host (`orchestration/peer.rs`):
+
+- accepts the call only for a registered member of the asker's own team who
+  may work in the project (the task's, or a lead chat's); asking itself,
+  someone off the team or an unknown agent is refused with a message naming
+  who it can ask;
+- allows 5 asks per worker attempt (`MAX_ASKS_PER_ATTEMPT`) and 5 from a lead
+  chat in any rolling hour (`MAX_LEAD_ASKS_PER_HOUR`), answered or not, takes
+  questions of up to 4000 characters, and cuts answers at 8000;
 - runs the answer as the teammate's registered provider, model and effort
   (a Fable or Astra teammate may answer: answering is not working a task) in a
-  one-shot process in the asker's workspace with read tools only (Claude:
-  `--tools Read,Grep,Glob`, no MCP; Codex: `-s read-only`,
-  `--ignore-user-config`), none of the chat's `OCTIQ_*` variables and a
-  10-minute deadline, so it cannot write, reach the orchestration hook, or ask
-  a peer of its own;
-- records every ask in the run's ledger (`peerAsks` in the snapshot: question,
+  one-shot process in the asker's workspace, or a lead chat's folder, with
+  read tools only (Claude: `--tools Read,Grep,Glob`, no MCP; Codex:
+  `-s read-only`, `--ignore-user-config`), none of the chat's `OCTIQ_*`
+  variables and a 10-minute deadline, so it cannot write, reach the
+  orchestration hook, or ask a peer of its own. A lead's ask gets exactly the
+  same process;
+- records every ask in the ledger (`peerAsks` in the snapshot: question,
   answer or error, asker, helper, times, tokens) before the teammate starts,
   and settles it after; an ask cut off by a restart is marked failed on load.
+  A worker's record names its run, task and attempt. A lead chat has no
+  attempt: its record names the chat (`askerChatKey`) and, when the chat
+  coordinates a live run, that run; `taskId` and `attemptId` are absent, and
+  `runId` too when it coordinates none (the whole-ledger read still lists it).
 
-The answer comes back as the tool result. The task view shows the exchange
-under the task's row (Peer help). No gate is involved: the ask sits inside a
-task the person already approved. Read-only means no writes: a Codex
-teammate's sandbox can still read outside the workspace.
+The answer comes back as the tool result. The task view shows a worker's
+exchange under the task's row (Peer help); a lead chat's ask has no task row
+to sit under yet. No gate is involved: an ask reads and advises. Read-only
+means no writes: a Codex teammate's sandbox can still read outside the
+workspace.
+
+### A piece of work: `orchestration_peer_request`
+
+**A peer request is bounded delegation between teammates, approved by the
+person.** It is how a lead hands a peer one piece of work without becoming its
+manager. Arguments: `peer` (id or name), `title`, `request` (the work, at most
+4000 characters), `output` (the result expected back, at most 1000), optional
+`project` / `repository`, and `maxMinutes` (default 30, at most 120). The host
+(`orchestration/peer_request.rs`):
+
+- **records one ordinary task and starts nothing.** The task is assigned to
+  the teammate and carries `peerRequest` (`requestedBy`, `requesterChatKey`,
+  `requesterAttemptId` for a worker, `output`, `maxMinutes`). It waits on the
+  **normal plan card**, like any task added to an approved plan: the plan goes
+  back to pending, its revision covers who asked and the bounds, and no worker
+  starts before the person approves. A run that never asked for approval asks
+  from then on. There is no new card type.
+- **puts the task where the requester's work is.** A worker's request joins
+  the worker's own run, and that run's coordinator is told. A lead chat's
+  joins the live run the chat coordinates; when it coordinates none, the host
+  opens one for it ("Peer requests from <lead>", a mission like any run a lead
+  opens, with automatic dispatch on) in the same write as the task.
+- **asks only a teammate.** Anyone off the requester's team, the requester
+  itself, or an unknown agent is refused with a reason naming its teammates.
+- **sends work only where it may go** (`destination::route_lateral`): a
+  registered project and repository, where the teammate may work and where the
+  requester may send work. With no `project`, it is the requester's task
+  destination or chat project; a teammate confined to one project works in
+  that one. A teammate that cannot work there, an unregistered project, and a
+  teammate on a lead-only model are each refused with the reason. This is the
+  one path a task takes to an agent that does not report to whoever asked;
+  `orchestration_task_create` keeps its direct-report rule untouched.
+- **runs the teammate as itself**, under the destination's ordinary workspace
+  policy: its registered provider, model, effort and access are copied onto
+  the task, and any start with other settings (a coordinator's manual start, a
+  page retry, a recovery with a fallback model) is refused.
+- **bounds it** (named constants): 2 requests per worker attempt
+  (`MAX_REQUESTS_PER_ATTEMPT`), 3 open at once per lead chat
+  (`MAX_OPEN_REQUESTS_PER_LEAD_CHAT`), and `maxMinutes` of running time. The
+  scheduler's own pass (`expire_peer_requests`, no timer per request) ends an
+  attempt past its time as **failed** with the reason `peer request time
+  limit`, never retried; the same pass stops its process. The clock is the
+  attempt's and starts again when a gate it waited on is resolved.
+- **keeps it one level deep.** A peer-request task cannot be split (no
+  `parentTaskId` under it, by its worker or the coordinator), revised or
+  reassigned (it can be withdrawn), and its worker cannot make a peer request.
+  It may still ask a question. The lead → report → report's report rule is
+  otherwise unchanged.
+- **never touches the roster.** Nothing in it reads `reportsTo` as changed or
+  writes `team.json`; the store method is not given the file.
+
+**The report comes back to the requester.** When the teammate's attempt
+settles, the run's coordinator gets the ordinary durable report notice, which
+for a lead requester is the requester; the notice says it is a peer request. A
+requesting **worker** gets a `peer_report` notice of its own, delivered
+between its turns or in the answer to its next call to the host
+(`coordinatorMessages`), only while its attempt is still running; it also
+hears when the person rejects the request or the time limit ends it. Either
+way the report stays on the task (`result`, with `peerRequest.requestedBy` and
+`status`) in `orchestration_snapshot`, and the run's coordinator accepts the
+task as usual.
+
+A mission has one writer per repository at a time, so a writing worker's
+request into its own repository starts only after that worker settles; the
+tool's result says so, and the report then goes to the coordinator.
 
 ## Chain of command
 
