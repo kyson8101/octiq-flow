@@ -52,6 +52,7 @@ import { parsePeerMessages, type PeerMessage } from "./peerMessage";
 import { readChatServiceResumed } from "./carryOn";
 import { readRelay } from "./relay";
 import { mergeMemoryActivity, readMemoryActivity, type MemoryActivity } from "./memoryActivity";
+import { readTaskReopened, type TaskReopened } from "./taskReopened";
 import { taskLabel, type BackgroundTask } from "./background";
 import { outcomeOfResult, readOutcome, type ToolOutcome } from "./toolOutcome";
 
@@ -112,6 +113,10 @@ export type Block =
    *  away with the calls, and it does not depend on anything the agent said.
    *  See lib/memoryActivity. */
   | { kind: "memory"; activity: MemoryActivity }
+  /** The host's record, in a coordinator's chat, of a task it reopened with
+   *  new instructions and no new approval. One folded line; the instructions
+   *  are behind it (`components/ReopenedNote`). */
+  | { kind: "reopened"; reopened: TaskReopened }
   | { kind: "thinking"; text: string }
   | {
       kind: "tool";
@@ -1155,6 +1160,21 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
           blocks: [{ kind: "notice", text }],
           streaming: false,
         },
+      ],
+    };
+  }
+
+  // The coordinator reopened a task with new instructions. No approval was
+  // asked for it, so the host says it in the coordinator's own transcript,
+  // once per attempt, and the chat draws one folded line (`lib/taskReopened`).
+  if (type === "octiq_task_reopened") {
+    const reopened = readTaskReopened(e);
+    if (!reopened || state.messages.some((m) => m.id === reopened.id)) return state;
+    return {
+      ...state,
+      messages: [
+        ...state.messages,
+        { id: reopened.id, role: "assistant", blocks: [{ kind: "reopened", reopened }], streaming: false },
       ],
     };
   }

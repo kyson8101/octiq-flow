@@ -23,6 +23,7 @@ import type { Persona } from "../lib/agentPersona";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
+import { ReopenedNote } from "./ReopenedNote";
 import { LiveArrivals, useLiveEntry } from "./Arrive";
 import { useLiveAppend } from "../lib/useArrival";
 import { useRunningCalls } from "./Background";
@@ -278,6 +279,7 @@ function BlockView({
   if (block.kind === "notice") return <Notice text={block.text} />;
   if (block.kind === "peer") return <PeerNote block={block} />;
   if (block.kind === "memory") return <MemoryNote activity={block.activity} />;
+  if (block.kind === "reopened") return <ReopenedNote reopened={block.reopened} />;
   // Thinking is watched live above the composer and left out of the transcript;
   // `groupRows` drops it, so this is only ever the belt to that braces.
   if (block.kind === "thinking") return null;
@@ -871,7 +873,7 @@ function TurnView({
   // the top of that names the one participant who did not.
   const allEvent =
     blocks.length > 0 &&
-    blocks.every((b) => b.kind === "compacted" || b.kind === "notice" || b.kind === "peer" || b.kind === "memory");
+    blocks.every((b) => b.kind === "compacted" || b.kind === "notice" || b.kind === "peer" || b.kind === "memory" || b.kind === "reopened");
 
   // What was attached to this turn. Taken across the messages the turn is made
   // of, and de-duplicated by path: the agent echoes a user turn back, so the
