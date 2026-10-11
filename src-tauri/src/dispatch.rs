@@ -527,7 +527,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 resume.is_some(),
             )?;
             if let Some(held) = &held {
-                held.recovery.clone().settle(
+                held.settle(
                     &key,
                     arg(&args, "agent")?,
                     resume.as_deref(),

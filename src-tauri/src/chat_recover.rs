@@ -41,12 +41,13 @@
 //!   sent, and "/" is a directory too: it may choose among the vouched
 //!   folders and adds none. A filesystem root and the home folder are never
 //!   moved into, and a folder that merely sits where a worktree used to is
-//!   not that worktree (`still_checkout_of`).
+//!   not that worktree, whoever offers it: a known worktree root is gone to
+//!   only while git still calls it that repository's checkout (`Former`).
 //! - **Nothing is deleted or overwritten.** Every repository change is
 //!   `git_ops`'s to make: a path that exists is never rebuilt over, and git
 //!   refuses a branch another worktree holds, which falls through to step 2.
-//!   A session file is carried without writing through either of its names
-//!   (`carry_file`).
+//!   A session file is carried without writing through either of its names,
+//!   one carry at a time (`carry_file`, `Carrying`).
 //!
 //! What happened is written into the chat as a durable notice
 //! (`octiq_chat_recovered`), and the agent is told on its next prompt: its
@@ -283,7 +284,8 @@ fn restore_where(
     admitted: &dyn Fn(&str) -> bool,
 ) -> Result<Recovery, String> {
     let vouched = known.vouched();
-    let lost = lost_worktree(cwd, known, &vouched);
+    let listed = Listed::under(&vouched);
+    let lost = lost_worktree(cwd, known, &listed);
     let mut why_not = String::new();
     if let Some(lost) = lost.as_ref().filter(|lost| !Path::new(&lost.root).exists()) {
         match crate::git_ops::restore_worktree(&lost.primary, &lost.root, &lost.branch, &lost.head)
@@ -294,49 +296,104 @@ fn restore_where(
     }
 
     // Where the chat can go instead. The worktree it was in comes first, when
-    // only a folder inside it went, and only while git still calls it that
-    // repository's checkout: a folder somebody made where a worktree used to
-    // be is a directory and nothing more.
+    // only a folder inside it went. Whether it is still that worktree is
+    // asked below, of it and of every other folder alike.
     let stored = known.workspace.as_ref();
     let mut candidates: Vec<String> = Vec::new();
-    if let Some(lost) = &lost {
-        if still_checkout_of(&lost.root, &lost.primary) {
-            candidates.push(lost.root.clone());
-        }
+    if let Some(lost) = lost.as_ref().filter(|lost| Path::new(&lost.root).is_dir()) {
+        candidates.push(lost.root.clone());
     }
     if let Some(workspace) = stored {
-        if still_checkout_of(&workspace.repo_root, &workspace.primary_root) {
-            candidates.push(workspace.repo_root.clone());
+        let root = &workspace.repo_root;
+        if (workspace.is_worktree && Path::new(root).is_dir())
+            || still_checkout_of(root, &workspace.primary_root)
+        {
+            candidates.push(root.clone());
         }
     }
     candidates.extend(vouched);
 
-    let (mut too_wide, mut gone) = (None, None);
+    // A folder that was a worktree's root is somewhere to go only while git
+    // still calls it that repository's checkout, whichever list offers it: a
+    // folder somebody made where a worktree used to be is a directory and
+    // nothing more, and being registered for the project does not make it
+    // the worktree again.
+    let mut former = Former::known(known, lost.as_ref(), &listed);
+    let (mut replaced, mut too_wide, mut gone) = (None, None, None);
     for path in &candidates {
         if !Path::new(path).is_dir() {
             if !same_place(path, cwd) {
                 gone = Some(path);
             }
+        } else if let Some(root) = former.replaced_over(path) {
+            replaced.get_or_insert(root);
         } else if !movable(path, &known.home) {
             too_wide.get_or_insert(path);
         } else if admitted(path) {
             return Ok(moved(cwd, path, lost.as_ref(), &why_not));
         }
     }
-    let why = match (why_not.is_empty(), too_wide, gone) {
-        (false, _, _) => why_not,
-        (true, Some(path), _) => format!("{path} is not a folder a chat is moved into"),
-        (true, None, Some(path)) => format!("{path} is gone too"),
-        (true, None, None) => "nothing is recorded about the repository it came from".into(),
+    // The folder the chat was in may be the one that was replaced, with
+    // nobody offering it.
+    let replaced = replaced.or_else(|| former.replaced_over(cwd));
+    let why = match (why_not.is_empty(), replaced, too_wide, gone) {
+        (false, ..) => why_not,
+        (true, Some(root), _, gone) => {
+            let also = gone
+                .map(|path| format!(", and {path} is gone too"))
+                .unwrap_or_default();
+            format!("{root} is no longer a checkout of the repository it belonged to{also}")
+        }
+        (true, None, Some(path), _) => format!("{path} is not a folder a chat is moved into"),
+        (true, None, None, Some(path)) => format!("{path} is gone too"),
+        (true, None, None, None) => "nothing is recorded about the repository it came from".into(),
     };
     Err(format!(
         "The chat's folder {cwd} was removed and could not be restored: {why}. Start a new chat."
     ))
 }
 
+/// What git lists for the repositories the host can vouch for: each one's
+/// primary checkout, and its linked worktrees. A removed worktree stays
+/// listed until the next prune.
+#[derive(Default)]
+struct Listed {
+    primaries: Vec<String>,
+    /// A linked worktree, and the primary checkout that lists it.
+    worktrees: Vec<(String, crate::git_ops::WorktreeEntry)>,
+}
+
+impl Listed {
+    /// Only a repository the host can vouch for is asked what it lists.
+    fn under(vouched: &[String]) -> Self {
+        let mut listed = Self::default();
+        for path in vouched
+            .iter()
+            .filter(|path| Path::new(path.as_str()).is_dir())
+        {
+            let Ok(primary) = crate::git_ops::primary_checkout_root(path) else {
+                continue;
+            };
+            let primary = primary.to_string_lossy().into_owned();
+            if listed.primaries.contains(&primary) {
+                continue;
+            }
+            // The first entry is the primary checkout itself.
+            for entry in crate::git_ops::listed_worktrees(&primary)
+                .into_iter()
+                .skip(1)
+            {
+                listed.worktrees.push((primary.clone(), entry));
+            }
+            listed.primaries.push(primary);
+        }
+        listed
+    }
+}
+
 /// Which worktree `cwd` was (in), from git's own list first and the stored
 /// verification second.
-fn lost_worktree(cwd: &str, known: &Remembered, vouched: &[String]) -> Option<Lost> {
+fn lost_worktree(cwd: &str, known: &Remembered, listed: &Listed) -> Option<Lost> {
     let stored = known
         .workspace
         .as_ref()
@@ -347,57 +404,125 @@ fn lost_worktree(cwd: &str, known: &Remembered, vouched: &[String]) -> Option<Lo
         .filter(|branch| !branch.starts_with('('))
         .unwrap_or_default();
 
-    // Only a repository the host can vouch for is asked what it lists.
-    let mut primaries: Vec<String> = Vec::new();
-    for path in vouched
-        .iter()
-        .filter(|path| Path::new(path.as_str()).is_dir())
-    {
-        if let Ok(primary) = crate::git_ops::primary_checkout_root(path) {
-            let primary = primary.to_string_lossy().into_owned();
-            if !primaries.contains(&primary) {
-                primaries.push(primary);
-            }
+    for (primary, entry) in &listed.worktrees {
+        if !holds(&entry.path, cwd) {
+            continue;
         }
-    }
-
-    for primary in &primaries {
-        // The first entry is the primary checkout itself.
-        for entry in crate::git_ops::listed_worktrees(primary)
-            .into_iter()
-            .skip(1)
-        {
-            if !holds(&entry.path, cwd) {
-                continue;
-            }
-            let recorded = !entry.head.is_empty() && entry.head.chars().any(|c| c != '0');
-            return Some(Lost {
-                primary: primary.clone(),
-                branch: if entry.branch.is_empty() {
-                    stored_branch.to_string()
-                } else {
-                    entry.branch
-                },
-                head: if recorded {
-                    entry.head
-                } else {
-                    known.head.clone()
-                },
-                root: spelled_like(cwd, &entry.path),
-            });
-        }
+        let recorded = !entry.head.is_empty() && entry.head.chars().any(|c| c != '0');
+        return Some(Lost {
+            primary: primary.clone(),
+            branch: if entry.branch.is_empty() {
+                stored_branch.to_string()
+            } else {
+                entry.branch.clone()
+            },
+            head: if recorded {
+                entry.head.clone()
+            } else {
+                known.head.clone()
+            },
+            root: spelled_like(cwd, &entry.path),
+        });
     }
 
     let stored = stored?;
-    let primary = primaries.into_iter().find(|primary| {
+    let primary = listed.primaries.iter().find(|primary| {
         same_place(primary, &stored.primary_root) || stored.primary_root.trim().is_empty()
     })?;
     holds(&stored.repo_root, cwd).then(|| Lost {
-        primary,
+        primary: primary.clone(),
         root: stored.repo_root.clone(),
         branch: stored_branch.to_string(),
         head: known.head.clone(),
     })
+}
+
+/// The folders the host knows to have been a linked worktree's root, each
+/// with the repositories it is said to have been a checkout of. Three places
+/// say so: the worktree the missing folder was found in, the last
+/// verification `chat_task` stored, and git's own list for every repository
+/// the host can vouch for.
+struct Former(Vec<FormerRoot>);
+
+struct FormerRoot {
+    root: String,
+    /// `root` with its symlinks resolved, to compare against.
+    place: PathBuf,
+    primaries: Vec<String>,
+    /// Whether git still calls it one of those repositories' checkout. Asked
+    /// once, and only when something lies in it: a repository can list dozens
+    /// of worktrees that have nothing to do with this chat.
+    still: Option<bool>,
+}
+
+impl Former {
+    fn known(known: &Remembered, lost: Option<&Lost>, listed: &Listed) -> Self {
+        let stored = known
+            .workspace
+            .as_ref()
+            .filter(|workspace| workspace.is_worktree)
+            .map(|workspace| {
+                (
+                    workspace.repo_root.as_str(),
+                    workspace.primary_root.as_str(),
+                )
+            });
+        let said = lost
+            .map(|lost| (lost.root.as_str(), lost.primary.as_str()))
+            .into_iter()
+            .chain(stored)
+            .chain(
+                listed
+                    .worktrees
+                    .iter()
+                    .map(|(primary, entry)| (entry.path.as_str(), primary.as_str())),
+            );
+        let mut roots: Vec<FormerRoot> = Vec::new();
+        for (root, primary) in said.filter(|(root, _)| !root.trim().is_empty()) {
+            let place = resolved(root);
+            let at = match roots.iter().position(|former| former.place == place) {
+                Some(at) => at,
+                None => {
+                    roots.push(FormerRoot {
+                        root: root.to_string(),
+                        place,
+                        primaries: Vec::new(),
+                        still: None,
+                    });
+                    roots.len() - 1
+                }
+            };
+            if !primary.trim().is_empty() && !roots[at].primaries.iter().any(|p| p == primary) {
+                roots[at].primaries.push(primary.to_string());
+            }
+        }
+        Self(roots)
+    }
+
+    /// The former worktree root `path` is, or lies in, that is a folder now
+    /// and no longer a checkout of the repository it belonged to. `None` for
+    /// a folder that never was a worktree, which is most of what a project
+    /// registers, and for one that still is.
+    fn replaced_over(&mut self, path: &str) -> Option<String> {
+        let place = resolved(path);
+        for former in &mut self.0 {
+            if !place.starts_with(&former.place) || !Path::new(&former.root).is_dir() {
+                continue;
+            }
+            let still = match former.still {
+                Some(still) => still,
+                None => former
+                    .primaries
+                    .iter()
+                    .any(|primary| still_checkout_of(&former.root, primary)),
+            };
+            former.still = Some(still);
+            if !still {
+                return Some(former.root.clone());
+            }
+        }
+        None
+    }
 }
 
 fn rebuilt(cwd: &str, lost: &Lost, restored: &crate::git_ops::RestoredWorktree) -> Recovery {
@@ -498,14 +623,31 @@ fn moved(cwd: &str, target: &str, lost: Option<&Lost>, why_not: &str) -> Recover
     }
 }
 
+impl Held<'_> {
+    /// Record the recovery this holds, once nothing can refuse the start any
+    /// more. It is a method of what is held, and the only way in from outside
+    /// this module, so it cannot run after the lock and the claim are let go:
+    /// the session is carried, and the chat's folder changed, while nothing
+    /// else can start this chat's agent or read where it is going.
+    pub(crate) fn settle(
+        &self,
+        key: &str,
+        agent: ChatAgent,
+        resume: Option<&str>,
+        env: Option<&BTreeMap<String, String>>,
+    ) {
+        self.recovery.clone().settle(key, agent, resume, env);
+    }
+}
+
 impl Recovery {
     /// Record a recovery that has taken hold: the index learns a new folder,
     /// a Claude session follows the chat there, the chat is told in its
-    /// transcript and the agent's next prompt carries the note. Called while
-    /// the recovery is still held ([`Held`]), so after every refusal
-    /// `recover` makes and before anything else can start the chat: a start
-    /// refused there says nothing.
-    pub(crate) fn settle(
+    /// transcript and the agent's next prompt carries the note. Reached
+    /// through [`Held::settle`], so after every refusal `recover` makes and
+    /// before anything else can start the chat: a start refused there says
+    /// nothing.
+    fn settle(
         mut self,
         key: &str,
         agent: ChatAgent,
@@ -631,6 +773,10 @@ pub(crate) fn claude_project_folder(cwd: &Path) -> Option<String> {
 /// conversation, or copied when a link cannot be made; the original stays
 /// where it was. When several folders hold the session, the one written last
 /// is the conversation.
+///
+/// One carry runs at a time ([`carrying`]), so a second one of the same
+/// session starts only when the first has finished: it finds the whole file,
+/// or none.
 pub(crate) fn carry_claude_session(
     projects: &Path,
     session: &str,
@@ -644,6 +790,7 @@ pub(crate) fn carry_claude_session(
         return Err("its id is not a plain session id".into());
     }
     let name = format!("{session}.jsonl");
+    let turn = carrying();
     let filed: Vec<PathBuf> = std::fs::read_dir(projects)
         .map_err(|error| format!("{} cannot be read: {error}", projects.display()))?
         .flatten()
@@ -669,25 +816,49 @@ pub(crate) fn carry_claude_session(
     let parent = target.parent().ok_or("the session folder has no parent")?;
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("{} cannot be created: {error}", parent.display()))?;
-    carry_file(&source, &target)?;
+    carry_file(&source, &target, &turn)?;
     Ok(target)
+}
+
+/// The one carry this process is making. Every function that gives a session
+/// file a second name asks for it, so none can be called beside another: it
+/// is made only by [`carrying`], which waits for the carry before it, and it
+/// cannot be lent to a second thread.
+///
+/// What that buys is the last resort (`write_new`), the one way a name can
+/// exist before its file is whole. A second carry of the same session, and
+/// the start that follows it, wait here until the first has written the
+/// whole file or taken its unfinished one away.
+struct Carrying {
+    _turn: MutexGuard<'static, ()>,
+    /// A guard is `Sync`; this is not, so `&Carrying` stays on its thread.
+    _here: std::marker::PhantomData<*const ()>,
+}
+
+static CARRY: Mutex<()> = Mutex::new(());
+
+fn carrying() -> Carrying {
+    Carrying {
+        _turn: CARRY.lock().unwrap_or_else(|e| e.into_inner()),
+        _here: std::marker::PhantomData,
+    }
 }
 
 /// Give the file at `source` the name `target` as well, without ever writing
 /// through either name.
 ///
-/// Two starts of one chat can both get here. The one that loses the race
+/// Two starts of one chat can both get here, one after the other. The second
 /// finds `target` made, and that is success: a copy over it would open for
 /// writing the very file it is reading, since both names are one file, and
 /// leave the conversation empty under both.
-fn carry_file(source: &Path, target: &Path) -> Result<(), String> {
+fn carry_file(source: &Path, target: &Path, turn: &Carrying) -> Result<(), String> {
     match std::fs::hard_link(source, target) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            keep_newer(source, target)
+            keep_newer(source, target, turn)
         }
         // No link can be made: another device, or a filesystem without them.
-        Err(_) => publish_copy(source, target),
+        Err(_) => publish_copy(source, target, turn),
     }
 }
 
@@ -703,7 +874,7 @@ fn written(path: &Path) -> Option<std::time::SystemTime> {
 /// then it is an older copy of the conversation, and the newer one takes its
 /// name by a rename, which swaps the whole file at once. Two names of one
 /// file were written at the same moment, so a link is always left alone.
-fn keep_newer(source: &Path, target: &Path) -> Result<(), String> {
+fn keep_newer(source: &Path, target: &Path, _turn: &Carrying) -> Result<(), String> {
     match (written(source), written(target)) {
         (Some(from), Some(to)) if from > to => {}
         _ => return Ok(()),
@@ -734,25 +905,49 @@ fn staged_copy(source: &Path, target: &Path) -> Result<PathBuf, String> {
 }
 
 /// Carry by copying: the copy is made whole under another name first, then
-/// given the name `target` only if nothing has it. A reader never sees half
-/// a file, and a carry that lost the race changes nothing.
-fn publish_copy(source: &Path, target: &Path) -> Result<(), String> {
+/// given the name `target` by a hard link, which publishes the whole file at
+/// once and only if nothing has the name. A carry that finds the name taken
+/// changes nothing. Only a filesystem with no links at all goes on to the
+/// last resort, which promises less (`write_new`).
+fn publish_copy(source: &Path, target: &Path, turn: &Carrying) -> Result<(), String> {
     let staged = staged_copy(source, target)?;
     let published = match std::fs::hard_link(&staged, target) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            keep_newer(source, target)
+            keep_newer(source, target, turn)
         }
-        Err(_) => publish_exclusive(&staged, target),
+        Err(_) => publish_exclusive(&staged, target, turn),
     };
     let _ = std::fs::remove_file(&staged);
     published
 }
 
-/// The last resort, for a filesystem with no links at all: `create_new` is
-/// what refuses a `target` somebody else made first, and that again is
-/// success. A file this made and could not finish is taken away again.
-fn publish_exclusive(staged: &Path, target: &Path) -> Result<(), String> {
+/// The last resort, for a filesystem with no links at all.
+fn publish_exclusive(staged: &Path, target: &Path, turn: &Carrying) -> Result<(), String> {
+    let mut from = std::fs::File::open(staged)
+        .map_err(|error| format!("the session file cannot be copied: {error}"))?;
+    write_new(&mut from, target, turn)
+}
+
+/// Make `target` with `create_new` and write `from` into it. `create_new` is
+/// what refuses a name somebody else made first, and that again is success:
+/// nothing that exists is ever written over or cut short.
+///
+/// What it does NOT give is a name that appears whole. Nothing in `std`
+/// publishes a file without a link and without replacing, so here the name
+/// exists while the file is still being written. Two things keep that from
+/// being read as the conversation:
+///
+/// - no other carry runs meanwhile ([`Carrying`]), so the next one finds the
+///   file whole, or gone: one this made and could not finish is taken away
+///   again before the turn is given up;
+/// - the chat's agent is started by the thread that settled the recovery,
+///   after this has returned, and nothing else can start it
+///   ([`Held::settle`]).
+///
+/// Another program reading the folder in that moment can see part of the
+/// file, and a server that dies in the middle leaves that part behind.
+fn write_new(from: &mut dyn std::io::Read, target: &Path, _turn: &Carrying) -> Result<(), String> {
     let mut to = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -762,9 +957,7 @@ fn publish_exclusive(staged: &Path, target: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
         Err(error) => return Err(format!("the session file cannot be created: {error}")),
     };
-    let copied = std::fs::File::open(staged)
-        .and_then(|mut from| std::io::copy(&mut from, &mut to))
-        .and_then(|_| to.sync_all());
+    let copied = std::io::copy(from, &mut to).and_then(|_| to.sync_all());
     drop(to);
     copied.map_err(|error| {
         let _ = std::fs::remove_file(target);
@@ -1622,7 +1815,156 @@ mod tests {
             "{refused}"
         );
         assert!(refused.contains("is gone too"), "{refused}");
+        assert!(refused.contains("is no longer a checkout"), "{refused}");
         assert!(refused.ends_with("Start a new chat."), "{refused}");
+    }
+
+    /// Review R3, the reviewer's scene: the worktree was removed properly, a
+    /// plain folder now sits at its root, and the primary checkout was moved
+    /// away, so the one on record is gone. The chat ran one level inside.
+    fn replaced_with_the_primary_gone(name: &str) -> (Scene, String) {
+        let scene = scene(name);
+        scene.remove_worktree();
+        std::fs::create_dir_all(&scene.worktree).unwrap();
+        std::fs::write(scene.worktree.join("replacement.txt"), "not a checkout\n").unwrap();
+        std::fs::rename(&scene.repo, scene.repo.with_file_name("repo-moved")).unwrap();
+        let cwd = Scene::text(&scene.worktree.join("packages").join("app"));
+        (scene, cwd)
+    }
+
+    fn names_in(folder: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_replaced_worktree_root_is_not_gone_to_because_the_project_registers_it() {
+        let (scene, cwd) = replaced_with_the_primary_gone("registered");
+        let root = Scene::text(&scene.worktree);
+        let repo = Scene::text(&scene.repo);
+        let refusal = format!(
+            "The chat's folder {cwd} was removed and could not be restored: {root} is no longer a checkout of the repository it belonged to, and {repo} is gone too. Start a new chat."
+        );
+
+        // Nobody offers it.
+        assert_eq!(restore(&cwd, &scene.remembered()), Err(refusal.clone()));
+
+        // The chat's project registers it, and the page names it: it used to
+        // come back in through that list, unchecked.
+        let registered = Remembered {
+            project_paths: vec![root.clone()],
+            preferred: vec![root.clone()],
+            ..scene.remembered()
+        };
+        assert_eq!(restore(&cwd, &registered), Err(refusal.clone()));
+
+        // A project that points one level into it fares no better.
+        let inside = scene.worktree.join("packages");
+        std::fs::create_dir_all(&inside).unwrap();
+        let one_level_in = Remembered {
+            project_paths: vec![Scene::text(&inside)],
+            ..scene.remembered()
+        };
+        assert_eq!(restore(&cwd, &one_level_in), Err(refusal));
+        assert_eq!(
+            names_in(&scene.worktree),
+            ["packages", "replacement.txt"],
+            "left as it was"
+        );
+    }
+
+    #[test]
+    fn a_replaced_worktree_root_is_passed_over_for_a_registered_folder_that_is_safe() {
+        let (scene, cwd) = replaced_with_the_primary_gone("registered-second");
+        let root = Scene::text(&scene.worktree);
+        // A project folder with no Git history: never a worktree.
+        let second = scene.repo.with_file_name("second");
+        std::fs::create_dir_all(&second).unwrap();
+        let known = Remembered {
+            project_paths: vec![root.clone(), Scene::text(&second)],
+            preferred: vec![root],
+            ..scene.remembered()
+        };
+
+        let recovery = restore(&cwd, &known).expect("recovered");
+
+        assert_eq!(recovery.kind, Kind::Moved);
+        assert_eq!(recovery.cwd, Scene::text(&second));
+        assert_eq!(recovery.branch, "");
+        assert_eq!(names_in(&scene.worktree), ["replacement.txt"]);
+    }
+
+    #[test]
+    fn a_replaced_worktree_root_git_still_lists_is_passed_over_too() {
+        // Deleted by hand, so git's list is what says it was a worktree:
+        // nothing was ever verified for this chat.
+        let scene = scene("registered-listed");
+        std::fs::remove_dir_all(&scene.worktree).unwrap();
+        std::fs::create_dir_all(&scene.worktree).unwrap();
+        let cwd = Scene::text(&scene.worktree.join("packages").join("app"));
+        let known = Remembered {
+            project_paths: vec![Scene::text(&scene.worktree), Scene::text(&scene.repo)],
+            ..Remembered::default()
+        };
+
+        let recovery = restore(&cwd, &known).expect("recovered");
+
+        assert_eq!(recovery.kind, Kind::Moved);
+        assert_eq!(recovery.cwd, Scene::text(&scene.repo));
+        assert_eq!(recovery.branch, "main");
+    }
+
+    #[test]
+    fn a_registered_worktree_that_is_still_a_checkout_takes_the_chat_back() {
+        // Only a folder inside it went, and the project registers the
+        // worktree itself.
+        let scene = scene("registered-live");
+        let root = Scene::text(&scene.worktree);
+        let cwd = Scene::text(&scene.worktree.join("packages").join("app"));
+        let verified = Remembered {
+            project_paths: vec![root.clone()],
+            ..scene.remembered()
+        };
+        // The same, for a chat nothing was ever verified for.
+        let unverified = Remembered {
+            project_paths: vec![root.clone()],
+            ..Remembered::default()
+        };
+
+        for known in [verified, unverified] {
+            let recovery = restore(&cwd, &known).expect("recovered");
+            assert_eq!(recovery.kind, Kind::Moved);
+            assert_eq!(recovery.cwd, root);
+            assert_eq!(recovery.branch, "task/one");
+            assert_eq!(recovery.head, scene.head);
+        }
+    }
+
+    #[test]
+    fn a_registered_folder_with_no_git_history_is_still_somewhere_to_go() {
+        let scratch = crate::test_dir::TestDir::new("recover-no-git").canonicalized();
+        let notes = scratch.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        let gone = Scene::text(&notes.join("drafts"));
+        let known = Remembered {
+            workspace: Some(Workspace {
+                cwd: gone.clone(),
+                ..Workspace::default()
+            }),
+            project_paths: vec![Scene::text(&notes)],
+            ..Remembered::default()
+        };
+
+        let recovery = restore(&gone, &known).expect("recovered");
+
+        assert_eq!(recovery.kind, Kind::Moved);
+        assert_eq!(recovery.cwd, Scene::text(&notes));
+        assert_eq!((recovery.branch.as_str(), recovery.head.as_str()), ("", ""));
     }
 
     #[test]
@@ -1725,13 +2067,13 @@ mod tests {
     #[test]
     fn twenty_four_carries_that_must_copy_publish_one_whole_file() {
         // No link from the original can be made (another device): each carry
-        // copies, and only one copy gets the name.
+        // copies, one after the other, and only one copy gets the name.
         let (scratch, source, _new_cwd, original) = filed_session("carry-copy");
         let folder = scratch.join("projects").join("-primary");
         std::fs::create_dir_all(&folder).unwrap();
         let target = folder.join("abc-123.jsonl");
 
-        for outcome in at_once(|| publish_copy(&source, &target)) {
+        for outcome in at_once(|| publish_copy(&source, &target, &carrying())) {
             assert_eq!(outcome, Ok(()));
         }
 
@@ -1742,8 +2084,9 @@ mod tests {
         // And on a filesystem with no links at all, `create_new` decides.
         let bare = folder.join("def-456.jsonl");
         let outcomes = at_once(|| {
+            let turn = carrying();
             let staged = staged_copy(&source, &bare)?;
-            let published = publish_exclusive(&staged, &bare);
+            let published = publish_exclusive(&staged, &bare, &turn);
             std::fs::remove_file(&staged).unwrap();
             published
         });
@@ -1803,5 +2146,114 @@ mod tests {
             assert_eq!(old, b"{\"type\":\"user\",\"later\":true}\n");
         }
         assert_eq!(leftovers(target.parent().unwrap()), Vec::<String>::new());
+    }
+
+    /// A session that stops half way, says so, and goes on when told to.
+    struct Paused<'a> {
+        bytes: &'a [u8],
+        at: usize,
+        half: Option<std::sync::mpsc::Sender<()>>,
+        go: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl std::io::Read for Paused<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let middle = self.bytes.len() / 2;
+            if self.at == middle {
+                if let Some(half) = self.half.take() {
+                    let _ = half.send(());
+                    // Not for ever, so a failed assertion ends the test.
+                    let _ = self.go.recv_timeout(std::time::Duration::from_secs(30));
+                }
+            }
+            let until = if self.at < middle {
+                middle
+            } else {
+                self.bytes.len()
+            };
+            let count = buf.len().min(until - self.at);
+            buf[..count].copy_from_slice(&self.bytes[self.at..self.at + count]);
+            self.at += count;
+            Ok(count)
+        }
+    }
+
+    /// A session that cannot be read to its end.
+    struct Cut(bool);
+
+    impl std::io::Read for Cut {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if std::mem::replace(&mut self.0, true) {
+                return Err(std::io::Error::other("the disk went away"));
+            }
+            buf[..1].copy_from_slice(b"{");
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn a_second_carry_waits_until_a_last_resort_copy_is_whole() {
+        // Review M1: with no link to publish by, the name is made first and
+        // written after. A second carry used to find the name, answer Ok at
+        // once, and let a start read half a conversation.
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let (scratch, source, new_cwd, original) = filed_session("carry-paused");
+        let projects = scratch.join("projects");
+        let target = projects
+            .join(claude_project_folder(&new_cwd).unwrap())
+            .join("abc-123.jsonl");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let (half, at_half) = channel();
+        let (go, told) = channel();
+        let (answered, answer) = channel();
+        let mut from = Paused {
+            bytes: &original,
+            at: 0,
+            half: Some(half),
+            go: told,
+        };
+
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| write_new(&mut from, &target, &carrying()));
+            at_half
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the first copy is under way");
+            // What the last resort does not promise: the name is there.
+            let seen = std::fs::read(&target).unwrap();
+            assert!(seen.len() < original.len(), "{} bytes", seen.len());
+            // What it does: nobody else is carrying.
+            assert!(matches!(
+                CARRY.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            let second = scope.spawn(|| {
+                let carried = carry_claude_session(&projects, "abc-123", &new_cwd);
+                let _ = answered.send(());
+                carried
+            });
+            assert!(
+                answer.recv_timeout(Duration::from_millis(300)).is_err(),
+                "no answer while the file is partial"
+            );
+
+            go.send(()).unwrap();
+            assert_eq!(first.join().expect("the first carry"), Ok(()));
+            assert_eq!(second.join().expect("the second carry"), Ok(target.clone()));
+        });
+
+        assert_eq!(std::fs::read(&target).unwrap(), original, "the carried");
+        assert_eq!(std::fs::read(&source).unwrap(), original, "the original");
+
+        // A copy that cannot be finished takes its file away again before the
+        // next carry gets a turn, so that one finds no name and carries.
+        let cut = target.with_file_name("def-456.jsonl");
+        let failed = write_new(&mut Cut(false), &cut, &carrying()).unwrap_err();
+        assert!(failed.contains("cannot be copied"), "{failed}");
+        assert!(!cut.exists(), "nothing half-written is left under the name");
+        // And a name somebody else made first is never written into.
+        std::fs::write(&cut, b"theirs").unwrap();
+        assert_eq!(write_new(&mut &original[..], &cut, &carrying()), Ok(()));
+        assert_eq!(std::fs::read(&cut).unwrap(), b"theirs");
     }
 }
