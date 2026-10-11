@@ -1222,12 +1222,14 @@ here, so the task waits for it:
 
 - Each entry of `reopens` carries `noticeDelivered`. It is `false` from the
   reopen until that event is in the coordinator's transcript and the host
-  holds a confirmed sync of it to disk. An entry kept before this field
-  existed reads as `true`.
+  holds a confirmed sync of it to disk. An entry that does not say reads as
+  `false` too, and is confirmed like any other.
 - While any is `false`, no start of the task is accepted, by the
   coordinator, the host's own dispatch and recovery, or the page: `This task
-  was reopened with new instructions, and the notice of that is not in the
-  coordinator's chat yet, so it does not start: …`. The ready wave passes it
+  was reopened with new instructions, and the notice of that in the
+  coordinator's chat has not been confirmed as saved to disk yet, so it does
+  not start: …`. The line may already show in that chat: it is sent to the
+  page as it is written, before it is confirmed. The ready wave passes it
   over, and the task says `heldByReopen: true` in `orchestration_snapshot`,
   in every view. The key is left out otherwise.
 - The host writes the notice right after the ledger, and again on every pass
@@ -1239,11 +1241,14 @@ here, so the task waits for it:
 - It is exactly one event. Every try writes the same one, made from the
   entry in `reopens`, so `taskId`, `attempt` and `at` never change; and a
   notice already in the transcript is never written again.
-- A notice that can be read back is not yet a confirmed one. The line of a
-  write that was never confirmed (its folder would not sync, or the server
-  stopped) is recorded only after the host has synced the transcript's file
-  and its folder, and both succeeded. While either fails the task stays
-  held, and no other notice is written into that transcript.
+- A notice counts only after the host has, in that same pass, synced the
+  transcript's file as it is now and then the folder it is in, and both
+  succeeded. No path is exempt: a line written in this pass, a line found
+  already there (one that can be read back is not yet a confirmed one), a
+  file that existed before, a file that compaction replaced. While either
+  sync fails the task stays held, and no other notice is written into a
+  transcript that holds an unconfirmed one. On Windows there is no folder
+  sync to ask for, so the file's own sync is the whole confirmation there.
 - A notice is written only into a chat you can open: one the chat list has
   and that is not in the trash. When the coordinator's chat is not such a
   chat, the reopen is refused outright and nothing is recorded: `The

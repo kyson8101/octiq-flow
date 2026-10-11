@@ -923,16 +923,21 @@ page's. Nothing but an approval writes it. So:
 - **A reopened task starts only once that notice is in the transcript and
   confirmed on disk.** The notice stands in for an approval, so it is
   tracked like one: `TaskReopen::notice_delivered` is false from the reopen
-  until the synced append is confirmed, `reserve_attempt_for` refuses the
+  (and for a record that does not say) until the notice is confirmed on
+  disk, `reserve_attempt_for` refuses the
   task meanwhile (`heldByReopen` in the snapshot), and the scheduler writes
   what is owed (`deliver_reopen_notices`), backing off to once a minute
   while a transcript gives no confirmation. The event is made from the
   stored reopen, so every try writes the same one, and one already in the
-  transcript is never written twice. **A line that can be read back is not
-  a receipt**: it is recorded only after the syncs its append owed have
-  been made and have succeeded (`workspaces::notice_receipts`,
-  `transcript::confirm_synced`: the file, then its folder), whichever
-  branch found it. A reopen whose coordinator
+  transcript is never written twice. **Neither a line that can be read
+  back nor an append's own answer is a receipt**: a notice is recorded
+  only after the record as it is now and then its folder have been synced
+  in that same pass, under the append lock, and both succeeded
+  (`workspaces::notice_receipts`, whose every `true` follows one
+  `transcript::confirm_synced`). That holds for a line just written and
+  for one found there, for a file that existed and for one compaction
+  replaced: `append_synced` syncs the folder only for a file it made. A
+  reopen whose coordinator
   chat the person cannot open (not in the chat list, or in the trash) is
   refused. A write whose receipt says whether it held
   (`record_chat_event_synced` answers `Option`) has that receipt read: a
