@@ -475,9 +475,13 @@ describe("a completion is one turn, and everything about it names that turn", ()
   });
 
   it("shows the sentence a Complete ends with when the agent never honoured a Stop", () => {
-    const why = "The agent did not stop within 30 seconds, so the wrap-up was not sent.";
+    // The host's own sentence (`agent_chat.rs`), about 30 s after the Stop.
+    const why = "The agent did not stop, so its process was ended and the chat was not completed. Complete it again.";
     const state = fold([asked, start(T1, "queued"), end(T1, false, why)]);
+    expect(state.completing).toEqual({});
     expect(endReasonLine(state.ended.c1.reason)).toBe(why);
+    expect(completionLine({ ended: state.ended.c1, done: false, messages: [] }))
+      .toEqual({ kind: "not-done", label: "Not completed", detail: why });
   });
 
   it("keeps a completion from an older host, whose end names no turn", () => {
