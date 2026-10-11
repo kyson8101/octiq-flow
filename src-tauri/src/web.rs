@@ -1927,15 +1927,19 @@ async fn agents_hook(
         return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead."));
     }
     if action == "delete" {
-        // Not while any of its work is running: asked of the ledger before
-        // the card and again when it is answered (`agent_work`).
-        let orchestrations = ctx.services.orchestrations.clone();
+        // Not while anything of its is in progress: a task, a run one of its
+        // chats coordinates, a turn in flight in one. Asked before the card,
+        // and again in the one step that removes it (`agent_work::Departure`).
+        let services = ctx.services.clone();
         let gone = crate::team_tools::propose_delete_when(
             &roster,
             &team,
             chat_key,
             serde_json::from_value(args).map_err(invalid)?,
-            &|agent| orchestrations.removal_of(&agent.id, &agent.name),
+            &crate::orchestration::agent_work::Departure {
+                store: &services.orchestrations,
+                chats: &services.chats,
+            },
             crate::permission::ask,
         )
         .await?;

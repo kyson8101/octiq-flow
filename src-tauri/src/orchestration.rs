@@ -890,6 +890,13 @@ struct Stored {
     /// Every peer ask, by id (`peer.rs`).
     #[serde(default)]
     peer_asks: BTreeMap<String, peer::PeerAsk>,
+    /// The registered agents that were removed, by id, and when. Written
+    /// under this ledger's lock in the step that removes the agent from the
+    /// roster (`agent_work::Departure`), and read under it by every start:
+    /// no attempt is reserved for an agent that is gone. An id is never
+    /// given out twice, so an entry is never taken back.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    removed_agents: BTreeMap<String, i64>,
 }
 
 fn store_version() -> u32 {
@@ -914,6 +921,7 @@ impl Default for Stored {
             scoring_since: None,
             bridges: BTreeMap::new(),
             peer_asks: BTreeMap::new(),
+            removed_agents: BTreeMap::new(),
         }
     }
 }
@@ -2556,6 +2564,18 @@ impl OrchestrationStore {
             // approved.
             if let Some(waiting) = held_by_plan(&run, &task, &|id| data.tasks.get(id)) {
                 return Err(plan_hold_reason(&task, waiting));
+            }
+            // No start for an agent that is gone. A removal writes this in
+            // the same hold of this lock that it checks the agent's work in
+            // (`agent_work::Departure`), so the two cannot both go through:
+            // a start that got here first is work in progress, and refuses
+            // the removal; a removal that got here first refuses this.
+            if let Some(gone) = task
+                .assignee
+                .as_ref()
+                .filter(|assignee| data.removed_agents.contains_key(&assignee.id))
+            {
+                return Err(agent_work::gone_reason(&gone.name));
             }
             // The person stopped it, so the person starts it again.
             match (&task.stopped, by) {

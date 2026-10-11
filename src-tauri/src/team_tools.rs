@@ -1017,14 +1017,101 @@ where
     A: FnOnce(crate::permission::Request) -> F,
     F: Future<Output = Answer>,
 {
-    propose_delete_when(roster, team, chat_key, proposal, &|_| Ok(None), ask).await
+    propose_delete_when(
+        roster,
+        team,
+        chat_key,
+        proposal,
+        &|_: &TeamAgent| Ok(None),
+        ask,
+    )
+    .await
 }
 
-/// What the ledger says of an agent about to be removed
-/// (`OrchestrationStore::removal_of`): an error while any of its work is
-/// running, in the words the caller is refused with, else what the card
-/// should say of its unfinished tasks, if it has any.
-pub type Work<'a> = &'a (dyn Fn(&TeamAgent) -> Result<Option<Unfinished>, String> + Send + Sync);
+/// What a removal is asked under, twice: before its card is shown, and in
+/// the step that makes it once the person has answered. The host's is the
+/// ledger and the live chats (`orchestration::agent_work::Departure`).
+pub trait Removing: Send + Sync {
+    /// Before the card: an error while anything of the agent's is in
+    /// progress, in the words the caller is refused with, else what the card
+    /// should say of its unfinished tasks, if it has any.
+    fn before(
+        &self,
+        agent: &TeamAgent,
+        chats: &[crate::team::OwnChat],
+    ) -> Result<Option<Unfinished>, String>;
+
+    /// The removal itself. See `team::Leave`.
+    fn leave(
+        &self,
+        agent: &TeamAgent,
+        chats: &[crate::team::OwnChat],
+        write: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String>;
+}
+
+/// A check with nothing of its own to hold: asked before the card, asked
+/// again when it is answered, and then the write is made. For tests only:
+/// the host's removals hold what they checked across the write.
+#[cfg(test)]
+impl<F> Removing for F
+where
+    F: Fn(&TeamAgent) -> Result<Option<Unfinished>, String> + Send + Sync,
+{
+    fn before(
+        &self,
+        agent: &TeamAgent,
+        _chats: &[crate::team::OwnChat],
+    ) -> Result<Option<Unfinished>, String> {
+        self(agent)
+    }
+
+    fn leave(
+        &self,
+        agent: &TeamAgent,
+        _chats: &[crate::team::OwnChat],
+        write: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self(agent)?;
+        write()
+    }
+}
+
+impl Removing for crate::orchestration::agent_work::Departure<'_> {
+    fn before(
+        &self,
+        agent: &TeamAgent,
+        chats: &[crate::team::OwnChat],
+    ) -> Result<Option<Unfinished>, String> {
+        self.check(agent, chats)
+    }
+
+    fn leave(
+        &self,
+        agent: &TeamAgent,
+        chats: &[crate::team::OwnChat],
+        write: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        crate::team::Leave::leave(self, agent, chats, write)
+    }
+}
+
+/// `Removing::leave`, as the roster's `delete` takes it.
+struct Left<'a>(&'a dyn Removing);
+
+impl crate::team::Leave for Left<'_> {
+    fn leave(
+        &self,
+        agent: &TeamAgent,
+        chats: &[crate::team::OwnChat],
+        write: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.0.leave(agent, chats, write)
+    }
+}
+
+/// See [`Removing`].
+pub type Work<'a> = &'a dyn Removing;
 
 /// What a removal's card says of the tasks that still name the agent: the
 /// two sentences whole (`note`), and how many there are in one line of at
@@ -1042,9 +1129,11 @@ pub struct Unfinished {
 /// same seats (`team::Removal`). Its reports move up to its manager
 /// (`team::delete`); its memory note stays.
 ///
-/// An agent with work running is not removed (`work`). It is refused before
-/// any card is shown, and again when the person answers one, under the
-/// roster's lock: a card can wait while a task of the agent's starts.
+/// An agent with work in progress is not removed (`work`): a task of its
+/// running, a run it coordinates, a turn in flight in a conversation of its
+/// own. It is refused before any card is shown, and again in the step that
+/// removes it once the person has answered: a card can wait while a task of
+/// the agent's starts, and that step lets none start beside it.
 pub async fn propose_delete_when<A, F>(
     roster: &Roster,
     team: &Path,
@@ -1067,7 +1156,8 @@ where
     let shown = roster
         .removal(&gone.id)
         .ok_or_else(|| invalid("That agent no longer exists.".into()))?;
-    let unfinished = work(&gone)?;
+    let chats = crate::team::own_chats(team, &gone.id)?;
+    let unfinished = work.before(&gone, &chats)?;
     let wait = wait_for(proposal.wait_seconds);
     let request = crate::permission::Request {
         chat_key: Some(chat_key.to_string()),
@@ -1081,8 +1171,7 @@ where
         ..Default::default()
     };
     approved(&ask(request).await, wait)?;
-    crate::team::delete_unchanged(team, &gone.id, &shown, &|agent| work(agent).map(|_| ()))
-        .map_err(Refusal::from)
+    crate::team::delete_unchanged(team, &gone.id, &shown, &Left(work)).map_err(Refusal::from)
 }
 
 /// `list`, or the card's word for an empty one.
@@ -2971,7 +3060,7 @@ mod tests {
         let (_dir, team) = temp_team();
         let potato = register(&team, "Potato", None);
         register_under(&team, "Dev", &potato);
-        const NOTE: &str = "2 unfinished tasks in 1 run still name it and will have no registered agent behind them. Each starts without its role, brief and memory unless you reassign it first.";
+        const NOTE: &str = "2 unfinished tasks in 1 run still name it. None of them starts as an agent that is gone: reassign each one first, or they wait until you do.";
         const SUMMARY: &str = "2 unfinished tasks in 1 run still name it";
         let (shown, deny) = asker("deny", "you denied it");
         propose_delete_when(
@@ -2979,7 +3068,7 @@ mod tests {
             &team,
             "chat:lead",
             remove("Dev"),
-            &|_| {
+            &|_: &TeamAgent| {
                 Ok(Some(Unfinished {
                     note: NOTE.into(),
                     summary: SUMMARY.into(),
@@ -3013,7 +3102,7 @@ mod tests {
             &team,
             "chat:lead",
             remove("Dev"),
-            &|_| Ok(None),
+            &|_: &TeamAgent| Ok(None),
             deny,
         )
         .await

@@ -640,14 +640,83 @@ fn apply(
 /// never points at someone who is gone.
 #[cfg(test)]
 pub fn delete(path: &Path, id: &str) -> Result<(), String> {
-    delete_checked(path, id, None, &|_| Ok(())).map(|_| ())
+    delete_checked(path, id, None, &Asked(|_: &TeamAgent| Ok(()))).map(|_| ())
 }
 
-/// What may still stop a removal at the moment it is made. Asked of the
-/// agent as stored, with the roster's lock held, so nothing is removed on an
-/// answer that was true only when a card was drawn or a page was loaded. An
-/// error is the refusal, in words for whoever asked.
-pub type Idle<'a> = &'a dyn Fn(&TeamAgent) -> Result<(), String>;
+/// A conversation an agent speaks in as itself: one it leads (the head's
+/// cross-project conversation is one of them) or its front-desk chat. What a
+/// removal's guard looks at for a turn in flight or a run it coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnChat {
+    pub chat_key: String,
+    pub front_desk: bool,
+}
+
+fn own_chats_of(stored: &Stored, id: &str) -> Vec<OwnChat> {
+    let leads = stored
+        .leads
+        .iter()
+        .filter(|record| record.lead_id == id)
+        .map(|record| OwnChat {
+            chat_key: record.chat_key.clone(),
+            front_desk: false,
+        });
+    let desks = stored
+        .front_desk_chats
+        .iter()
+        .filter(|chat| chat.agent_id == id)
+        .map(|chat| OwnChat {
+            chat_key: chat.chat_key.clone(),
+            front_desk: true,
+        });
+    leads.chain(desks).collect()
+}
+
+/// The conversations the agent `id` speaks in as itself, for the check a
+/// removal makes before it shows a card.
+pub fn own_chats(path: &Path, id: &str) -> Result<Vec<OwnChat>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    Ok(own_chats_of(&read(path)?, id))
+}
+
+/// What a removal is made under. `leave` is called with the roster's lock
+/// held, for the agent as stored and the conversations it speaks in, and is
+/// handed the write itself: it refuses with an error, in words for whoever
+/// asked, or it runs `write` and answers what `write` did. Nothing is
+/// removed on an answer that was true only when a card was drawn or a page
+/// was loaded, and whoever implements it can hold a guard of its own across
+/// the write, so that what it checked cannot change before the agent is
+/// gone (`orchestration::agent_work::Departure`, which holds the ledger).
+pub trait Leave {
+    fn leave(
+        &self,
+        agent: &TeamAgent,
+        chats: &[OwnChat],
+        write: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String>;
+}
+
+/// A check with nothing of its own to hold: asked, then the write is made.
+/// For tests only. The host's removals go through a guard that holds what
+/// it checked across the write, and a bare question could not.
+#[cfg(test)]
+pub(crate) struct Asked<F>(pub F);
+
+#[cfg(test)]
+impl<F: Fn(&TeamAgent) -> Result<(), String>> Leave for Asked<F> {
+    fn leave(
+        &self,
+        agent: &TeamAgent,
+        _chats: &[OwnChat],
+        write: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        (self.0)(agent)?;
+        write()
+    }
+}
+
+/// See [`Leave`].
+pub type Idle<'a> = &'a dyn Leave;
 
 /// `delete`, as the page asks for it: refused while `idle` says the agent
 /// has work running (`orchestration::agent_work`).
@@ -768,24 +837,29 @@ fn delete_checked(
             ));
         }
     }
-    idle(&gone)?;
-    stored.agents.retain(|a| a.id != id);
-    if stored.head.as_deref() == Some(id) {
-        stored.head = None;
-    }
-    if stored.front_desk.as_deref() == Some(id) {
-        stored.front_desk = None;
-    }
-    // A report that moves is a changed agent: a card made against it before
-    // the move (`save_unchanged`, `delete_unchanged`) no longer applies.
-    let now = now_ms();
-    for agent in &mut stored.agents {
-        if agent.reports_to.as_deref() == Some(id) {
-            agent.reports_to = gone.reports_to.clone();
-            agent.updated_at = now.max(agent.updated_at + 1);
+    let chats = own_chats_of(&stored, id);
+    // The write is the guard's to make, so that whatever it holds while it
+    // asks is still held when the agent goes.
+    idle.leave(&gone, &chats, &mut || {
+        stored.agents.retain(|a| a.id != id);
+        if stored.head.as_deref() == Some(id) {
+            stored.head = None;
         }
-    }
-    write(path, &stored)?;
+        if stored.front_desk.as_deref() == Some(id) {
+            stored.front_desk = None;
+        }
+        // A report that moves is a changed agent: a card made against it
+        // before the move (`save_unchanged`, `delete_unchanged`) no longer
+        // applies.
+        let now = now_ms();
+        for agent in &mut stored.agents {
+            if agent.reports_to.as_deref() == Some(id) {
+                agent.reports_to = gone.reports_to.clone();
+                agent.updated_at = now.max(agent.updated_at + 1);
+            }
+        }
+        write(path, &stored)
+    })?;
     Ok(gone)
 }
 
@@ -3461,7 +3535,8 @@ mod tests {
 
         // The seat given up while a card waited: refused, nothing written.
         set_head(&path, None).unwrap();
-        let refused = delete_unchanged(&path, &cto.id, &shown, &|_| Ok(())).unwrap_err();
+        let idle = Asked(|_: &TeamAgent| Ok(()));
+        let refused = delete_unchanged(&path, &cto.id, &shown, &idle).unwrap_err();
         assert_eq!(
             refused,
             "Cto was changed while this waited for approval, so nothing was removed: it is no longer the head. Read it again and propose the removal again."
@@ -3495,12 +3570,12 @@ mod tests {
         .unwrap();
         let before = list(&path, None, true).unwrap();
         let asked = std::cell::RefCell::new(Vec::new());
-        let busy = |agent: &TeamAgent| {
+        let busy = Asked(|agent: &TeamAgent| {
             asked.borrow_mut().push(agent.clone());
             // The lock the removal is written under is held while this runs.
             assert!(LOCK.try_lock().is_err());
             Err(format!("{} still has 1 task in progress.", agent.name))
-        };
+        });
         let shown = removal(&before, None, None, &lead.id).unwrap();
         for refused in [
             delete_idle(&path, &lead.id, &busy).unwrap_err(),
@@ -3524,7 +3599,7 @@ mod tests {
         assert_eq!(asked.borrow().len(), 2);
 
         // Idle: removed, and its report moves up.
-        delete_idle(&path, &lead.id, &|_| Ok(())).unwrap();
+        delete_idle(&path, &lead.id, &Asked(|_: &TeamAgent| Ok(()))).unwrap();
         let left = list(&path, None, true).unwrap();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].id, dev.id);

@@ -1315,6 +1315,21 @@ impl ChatManager {
             .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
     }
 
+    /// `turn_in_flight`, for a caller that already holds locks of its own
+    /// and must never wait for this manager's: the removal of a registered
+    /// agent asks under the roster's lock and the ledger's
+    /// (`orchestration::agent_work::Departure`). The session table is tried,
+    /// not waited for, and a table that is busy answers `true`: in doubt a
+    /// turn is in flight, and the removal is refused and asked again.
+    pub(crate) fn turn_may_be_in_flight(&self, key: &str) -> bool {
+        let Ok(sessions) = self.sessions.try_lock() else {
+            return true;
+        };
+        sessions
+            .get(key)
+            .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
+    }
+
     /// Note the program a just-started process runs, as the PATH lookup the
     /// launch made resolves it through its symlinks. Homebrew keeps each Codex
     /// release in its own versioned folder and removes the old one on upgrade,
