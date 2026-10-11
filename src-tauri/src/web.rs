@@ -1784,14 +1784,38 @@ async fn agents_handler(
     headers: axum::http::HeaderMap,
     Json(request): Json<TaskHook>,
 ) -> Response {
-    let chat_key = match task_hook_caller(&ctx, &headers, &request) {
-        Ok(chat_key) => chat_key,
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: None,
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim)
+        .and_then(|caller| not_front_desk(&ctx, caller))
+    {
+        Ok(caller) => caller,
         Err(refused) => return hook_refusal(refused),
     };
-    match agents_hook(&ctx, &chat_key, &request.action, request.args).await {
+    if let Some(refused) = roster_seat_refusal(&request.action, &caller) {
+        return hook_failed(StatusCode::BAD_REQUEST, refused);
+    }
+    match agents_hook(&ctx, &caller.chat_key, &request.action, request.args).await {
         Ok(result) => axum::Json(json!({ "result": result })).into_response(),
         Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
+}
+
+/// A proposal to change the roster is put to the person as the chat's
+/// registered agent, on a card in that chat. A room seat's capability proves
+/// the chat, not that identity, so every action that changes something is
+/// refused it before any card: register, update, delete, policy_update,
+/// team_create, team_update. Reading the roster (`list`) stays open.
+fn roster_seat_refusal(action: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
+    (action != "list" && caller.session_key != caller.chat_key).then(|| {
+        crate::outcome::Refusal::new(
+            crate::outcome::ReasonClass::ScopeRefused,
+            "Only the chat's own agent can propose a change to the registered agents, their teams or the shared policy. An additional agent in a room is one voice in the chat, not its registered agent.",
+        )
+    })
 }
 
 async fn agents_hook(
@@ -3217,6 +3241,80 @@ mod tests {
             assert_eq!(answer["outcome"]["reasonClass"], "validation", "{answer}");
         }
         chats.test_end("chat:lead");
+
+        // A room seat: a second process of a chat, with its own capability.
+        // That proves the chat, not the chat's registered agent, so each of
+        // the same changes is refused before anyone is asked.
+        let seat = chats.test_launch_in("chat:seated#2", "chat:seated");
+        let seated = |action: &str, args: Value| {
+            json!({
+                "chatKey": "chat:seated", "sessionKey": "chat:seated#2",
+                "action": action, "args": args,
+            })
+        };
+        for (action, args) in changes() {
+            let (status, answer) =
+                post_hook(&base, "agents", None, Some(&seat), seated(action, args)).await;
+            assert_eq!(status, 400, "{action}: {answer}");
+            assert_eq!(
+                answer["outcome"]["reasonClass"], "scope-refused",
+                "{action}: {answer}"
+            );
+            assert!(
+                answer["error"].as_str().unwrap().starts_with(
+                    "Only the chat's own agent can propose a change to the registered agents"
+                ),
+                "{action}: {answer}"
+            );
+        }
+        let waiting = serde_json::to_string(&crate::permission::pending()).unwrap();
+        assert!(!waiting.contains("chat:seated"), "{waiting}");
+        // Reading the roster stays open to it.
+        let (status, answer) = post_hook(
+            &base,
+            "agents",
+            None,
+            Some(&seat),
+            seated("list", json!({})),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["result"]["agents"][0]["name"], "Potato");
+        chats.test_end("chat:seated#2");
+        assert_eq!(crate::team::list(&team, None, true).unwrap().len(), 1);
+        assert_eq!(crate::team::policy(&team).unwrap().text, "");
+        assert!(crate::team::teams(&team).unwrap().is_empty());
+    }
+
+    /// The pure half of the same rule: which roster actions a seat is
+    /// refused, and that the chat's own process is refused none.
+    #[test]
+    fn a_room_seat_can_read_the_roster_and_change_none_of_it() {
+        let own = HookCaller {
+            chat_key: "chat:lead".into(),
+            session_key: "chat:lead".into(),
+            launch_id: "l1".into(),
+        };
+        let seat = HookCaller {
+            session_key: "chat:lead#2".into(),
+            ..own.clone()
+        };
+        for action in [
+            "register",
+            "update",
+            "delete",
+            "policy_update",
+            "team_create",
+            "team_update",
+        ] {
+            let refused = roster_seat_refusal(action, &seat).expect(action);
+            assert_eq!(
+                refused.outcome.reason_class,
+                crate::outcome::ReasonClass::ScopeRefused
+            );
+            assert!(roster_seat_refusal(action, &own).is_none(), "{action}");
+        }
+        assert!(roster_seat_refusal("list", &seat).is_none());
     }
 
     /// Every hook failure says it is OctiqFlow's, and what kind, so the agent's

@@ -401,8 +401,12 @@ a Claude chat. In a Codex chat it stays up for 50 seconds, because Codex gives
 an MCP call about a minute; a longer wait could save a change the agent had
 already been told failed. An orchestration worker may list agents but not
 change them, and stays a worker for this after its attempt has settled: the
-host refuses by the chat's worker identity, before any card is put up. A
-front desk may do neither. Every save, from a chat or from
+host refuses by the chat's worker identity, before any card is put up. An
+additional agent in a room (a seat: its capability proves the chat, not the
+chat's registered agent) may list them too, and is refused every change the
+same way: register, update, delete, the policy and both team tools
+(`web.rs` `roster_seat_refusal`). A front desk may do neither. Every save,
+from a chat or from
 Settings, sends `team-changed`, and every open page reads the roster again.
 
 ### The card's change as rows (`changeFacts`)

@@ -5009,13 +5009,19 @@ impl ChatManager {
     /// A stand-in agent under `key`, holding the capability a real launch
     /// is given. Returns that secret.
     pub(crate) fn test_launch(&self, key: &str) -> String {
+        self.test_launch_in(key, key)
+    }
+
+    /// [`Self::test_launch`] for a process running under `key` in the chat
+    /// `chat_key`: an additional agent in a room when the two differ.
+    pub(crate) fn test_launch_in(&self, key: &str, chat_key: &str) -> String {
         let child = stand_in::still()
             .stdin(Stdio::null())
             .spawn()
             .expect("a stand-in agent");
         let launch_id = uuid::Uuid::new_v4().to_string();
         let mut sessions = self.sessions.lock().unwrap();
-        let secret = self.grant_capability(&sessions, key, key, &launch_id);
+        let secret = self.grant_capability(&sessions, key, chat_key, &launch_id);
         sessions.insert(
             key.to_string(),
             Arc::new(Mutex::new(ChatSession {

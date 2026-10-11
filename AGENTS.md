@@ -609,7 +609,9 @@ scope clarification needs no gate.
   `require_user_chat` (a `chat:orch-` key, or an attempt on record:
   `worker_coordinator`), the way `access_handler` and `agents_hook` do. Hiding
   a tool in the MCP server is not authorization. A review of such a hook
-  covers the window after a worker settles.
+  covers the window after a worker settles. A hook that speaks for the chat's
+  registered agent refuses a room seat (`session_key != chat_key`) before any
+  card, as `seat_refusal` and `roster_seat_refusal` do.
 - **Carry a session or history file to a second name without ever writing
   over what is there, and promise no more wholeness than the path gives.**
   `hard_link` answering `AlreadyExists` is success, not a reason to copy: the
