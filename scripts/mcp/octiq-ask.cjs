@@ -2143,7 +2143,7 @@ const WORKSPACE_TOOLS = [
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, spec: { type: "string" } }, required: ["taskId", "spec"] } },
   { name: "orchestration_task_accept", description: "Agents mode: accept a report's completed task after you have checked its result against the task's acceptance criteria. This is what pays the assignee the task's XP, once per task. Only the run's lead, or the manager who split a subtask, may accept; never your own task. Pass the completed attempt you reviewed; if it is no longer the current one, review again. A worker saying it finished is not acceptance.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, attemptId: { type: "string", description: "The completed attempt whose result you reviewed." } }, required: ["taskId", "attemptId"] } },
-  { name: "orchestration_validation_create", description: "Create a detached temporary validation worktree from an exact base commit and optional selected commits. Does not alter the preserved task tree. Git conflicts remain available for inspection. Only this task's active worker or coordinator.",
+  { name: "orchestration_validation_create", description: "Create a detached temporary validation worktree from an exact base commit and optional selected commits. Does not alter the preserved task tree. Git conflicts remain available for inspection. Only this task's active worker or coordinator. On a peer request's task only its own worker makes one.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, baseSha: { type: "string" }, commits: { type: "array", items: { type: "string" } } }, required: ["taskId", "baseSha"] } },
   { name: "orchestration_validation_remove", description: "Remove an owned validation checkout only if Git considers it clean. Never forces removal or accepts an unregistered path.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" }, path: { type: "string" } }, required: ["taskId", "path"] } },
@@ -2152,7 +2152,7 @@ const WORKSPACE_TOOLS = [
 const ORCHESTRATION_TOOLS = [
   {
     name: "orchestration_service_register",
-    description: "Register a local service required by this run before settling its startup task. The host checks loopback TCP reachability independently of task completion, invalidates old evidence after restart, and notifies the coordinator when reachability changes. This does not launch or restart a process, prove application health, or grant permission. The owning active worker or coordinator may register; re-registering a task's service name replaces its prior record.",
+    description: "Register a local service required by this run before settling its startup task. The host checks loopback TCP reachability independently of task completion, invalidates old evidence after restart, and notifies the coordinator when reachability changes. This does not launch or restart a process, prove application health, or grant permission. The owning active worker or coordinator may register; re-registering a task's service name replaces its prior record. On a peer request's task only its own worker registers: the coordinator is refused.",
     inputSchema: { type: "object", properties: {
       attemptId: { type: "string" }, name: { type: "string" },
       host: { type: "string", enum: ["127.0.0.1", "::1"] },

@@ -661,6 +661,22 @@ extended. The host (`orchestration/peer_request.rs`):
   the shared Memory Vault, in the files of the workspace it works in, and in
   other chats' transcripts, which `search_conversations` and
   `read_conversation` read off the profile for any agent.
+- **lets nobody but the teammate, the host and the person write what it
+  reads there.** Everything in that view was written by the teammate itself
+  (its report, messages, gates, status reports, services, validation
+  checkouts), by the host from what it observed or in its own fixed words, or
+  by the person. The run's coordinator is the teammate that asked, or speaks
+  for it, so the writes it could make there are refused, from a chat and from
+  the page acting as the coordinator: `orchestration_service_register` on the
+  task (a service's name and recovery guidance are free text, and a
+  registration replaces the one of the same name), `orchestration_validation_create`
+  for it (the coordinator removes a leftover checkout only once the
+  teammate's attempt has settled), and a `orchestration_worker_start` that
+  names a `baseBranch`. What the coordinator can still do to the task changes
+  a status, a time or an id and carries no words: start or stop it, confirm
+  the teammate's own held closing words with an outcome and a verdict, accept
+  the result, refresh what git says of its branch, replace it with a new
+  task.
 - **never touches the roster.** Nothing in it reads `reportsTo` as changed or
   writes `team.json`; the store method is not given the file.
 

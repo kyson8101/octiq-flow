@@ -694,7 +694,9 @@ impl OrchestrationStore {
         Ok(writers)
     }
 
-    fn validation_task(&self, actor: &str, task_id: &str) -> Result<Task, String> {
+    /// The task `actor` may manage validation checkouts of: its coordinator's,
+    /// or its own active one. `removing` is a removal, not a new checkout.
+    fn validation_task(&self, actor: &str, task_id: &str, removing: bool) -> Result<Task, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
@@ -709,16 +711,32 @@ impl OrchestrationStore {
             .runs
             .get(&task.run_id)
             .ok_or("Run does not exist.")?;
-        if actor != run.coordinator_chat_key
-            && active_task_for_actor(&inner.data, actor)
-                .as_ref()
-                .map(|t| t.id.as_str())
-                != Some(task_id)
-        {
+        let own = active_task_for_actor(&inner.data, actor)
+            .as_ref()
+            .map(|t| t.id.as_str())
+            == Some(task_id);
+        if actor != run.coordinator_chat_key && !own {
             return Err(
                 "Only this task's active worker or coordinator can manage validation workspaces."
                     .into(),
             );
+        }
+        // A peer request's worker reads `validationPaths` back with its
+        // task, and a checkout holds whatever commits its maker chose. The
+        // coordinator makes none, and removes one only once the teammate
+        // has settled, which is what lets the workspace be cleaned up.
+        if task.peer_request.is_some() && !own {
+            if !removing {
+                return Err(super::peer_request::PEERS_VALIDATION.into());
+            }
+            if inner
+                .data
+                .attempts
+                .values()
+                .any(|a| a.task_id == task_id && attempt_is_unsettled(&inner.data, a))
+            {
+                return Err(super::peer_request::PEERS_VALIDATION_IN_USE.into());
+            }
         }
         Ok(task.clone())
     }
@@ -731,7 +749,7 @@ impl OrchestrationStore {
         commits: Vec<String>,
     ) -> Result<String, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
-        let task = self.validation_task(actor, task_id)?;
+        let task = self.validation_task(actor, task_id, false)?;
         let ws = task.workspace.as_ref().ok_or("Task has no workspace.")?;
         if ws.state == WorkspaceState::Cleaned || ws.state == WorkspaceState::Cleaning {
             return Err("Workspace is closed.".into());
@@ -784,7 +802,7 @@ impl OrchestrationStore {
         path: &str,
     ) -> Result<Task, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
-        let task = self.validation_task(actor, task_id)?;
+        let task = self.validation_task(actor, task_id, true)?;
         let ws = task.workspace.as_ref().ok_or("Task has no workspace.")?;
         if !ws.validation_paths.iter().any(|p| p == path) {
             return Err("This task does not own that validation workspace.".into());

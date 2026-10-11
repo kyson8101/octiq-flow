@@ -3692,6 +3692,91 @@ mod tests {
         chats.test_end(peer_chat);
     }
 
+    /// The run's coordinator writes nothing a peer request's worker then
+    /// reads back in its task: no service (the reviewer's case: a recovery
+    /// text that asks for more work, on the teammate's own service name) and
+    /// no validation checkout. By the hook and by the page
+    /// acting as that coordinator alike, with the teammate's own entry left
+    /// as it was; and the teammate's own registration goes through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_peer_requests_ledger_is_written_by_its_worker_alone_by_the_hook_or_the_page() {
+        use crate::orchestration::peer_request::tests::{timed, LEAD_CHAT, MORE_WORK};
+        use crate::orchestration::peer_request::{PEERS_SERVICE, PEERS_VALIDATION};
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let (made, peer) = timed(&store, 30);
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let lead = chats.test_launch(LEAD_CHAT);
+        let peer_cap = chats.test_launch(&peer.worker_chat_key);
+        let (ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let from_lead = |action: &str, args: Value| json!({ "chatKey": LEAD_CHAT, "action": action, "args": args });
+        let from_peer = |action: &str, args: Value| json!({ "chatKey": peer.worker_chat_key, "action": action, "args": args });
+        let service = |name: &str, recovery: &str| {
+            json!({
+                "attemptId": peer.id, "name": name, "host": "127.0.0.1", "port": 3001,
+                "recovery": recovery,
+            })
+        };
+        // Either door, as the coordinator: refused with `why`.
+        let refused =
+            |action: &'static str, command: &'static str, args: Value, why: &'static str| {
+                let (base, lead, ctx) = (base.clone(), lead.clone(), ctx.clone());
+                async move {
+                    let (status, answer) =
+                        hook(&base, Some(&lead), from_lead(action, args.clone())).await;
+                    assert_eq!(status, 400, "{action}: {answer}");
+                    assert_eq!(answer["error"], why, "{action}: {answer}");
+                    let mut paged = args;
+                    paged["actorChatKey"] = json!(LEAD_CHAT);
+                    let error =
+                        crate::dispatch::dispatch(&ctx.services, command, paged).unwrap_err();
+                    assert_eq!(error, why, "{command}");
+                }
+            };
+
+        let (status, own) = hook(
+            &base,
+            Some(&peer_cap),
+            from_peer("service_register", service("usage-probe", "Run probe.sh.")),
+        )
+        .await;
+        assert_eq!(status, 200, "{own}");
+        let own_id = own["result"]["id"].as_str().unwrap().to_string();
+
+        for name in ["usage-probe", "cleanup"] {
+            refused(
+                "service_register",
+                "orchestration_service_register",
+                service(name, MORE_WORK),
+                PEERS_SERVICE,
+            )
+            .await;
+        }
+        refused(
+            "validation_create",
+            "orchestration_validation_create",
+            json!({ "taskId": made.task_id, "baseSha": "abc1234", "commits": [] }),
+            PEERS_VALIDATION,
+        )
+        .await;
+        let ledger = store.snapshot(Some(&made.run_id)).unwrap();
+        assert_eq!(ledger.services.len(), 1);
+        assert_eq!(ledger.services[0].id, own_id);
+        assert_eq!(ledger.services[0].recovery, "Run probe.sh.");
+        assert!(
+            ledger.tasks[0].workspace.is_none(),
+            "no validation path was recorded"
+        );
+
+        // What the teammate reads back is its own entry and nothing of the
+        // coordinator's.
+        let (status, read) = hook(&base, Some(&peer_cap), from_peer("snapshot", json!({}))).await;
+        assert_eq!(status, 200, "{read}");
+        let services = read["result"]["services"].as_array().unwrap();
+        assert_eq!(services.len(), 1, "{read}");
+        assert_eq!(services[0]["recovery"], "Run probe.sh.");
+        assert!(!read.to_string().contains(MORE_WORK), "{read}");
+    }
+
     /// Review H2. Whoever asked for a peer request is the worker's teammate,
     /// not its manager, so no agent's words reach the worker once it runs: a
     /// coordinator's message and its answer to the worker's gate are refused

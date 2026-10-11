@@ -2431,6 +2431,15 @@ impl OrchestrationStore {
                 let peer = task.assignee.as_ref().map_or("a teammate", |a| a.name.as_str());
                 peer_request::keeps_to_identity(approved, &worker, launch.effort.as_deref(), peer)?;
             }
+            // And from the branch the host planned for it. Only the person's
+            // own start names another: an agent's choice of base would reach
+            // the teammate as its task's branch and checkout.
+            if task.peer_request.is_some()
+                && !launch.base_branch.is_empty()
+                && !matches!(by, StartedBy::Page { .. })
+            {
+                return Err(peer_request::PEERS_BASE.into());
+            }
             worker.recovery = task
                 .worker
                 .as_ref()
