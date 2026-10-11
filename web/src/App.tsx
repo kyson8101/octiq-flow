@@ -172,7 +172,10 @@ import { ChatWorkflowBar, TasksButton } from "./components/ChatWorkflowBar";
 import { taskColumnCounts } from "./lib/runPanel";
 import { chatStrip, dismissStrip, parseDismissed, stripHidden } from "./lib/runProgress";
 import { RunProgressStrip } from "./components/RunProgressStrip";
-import { besideHeld as heldBesideTask, holdsRunColumn, knownToStore, parseKnown } from "./lib/runColumn";
+import {
+  besideHeld as heldBesideTask, columnAtFirstPaint, columnHeldShut, holdsRunColumn, knownToStore, NO_FIRST_PAINT, parseKnown,
+  type ColumnAtFirstPaint,
+} from "./lib/runColumn";
 import { ChatPlanCards } from "./components/ChatPlanCards";
 import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
 import {
@@ -675,7 +678,22 @@ export default function App() {
   // Put away from the top bar's Tasks button: the room is there, but the chat
   // takes all of it. See TASKS_KEY.
   const [tasksShut, setTasksShut] = useState(() => recall(TASKS_KEY) === "1");
-  const runSplit = workflowSplit && !tasksShut;
+  // A chat that was drawn at its full width is not split afterwards. Whether
+  // it has a run is the ledger's to say, and where nothing said so by the
+  // chat's first paint (`lib/runColumn`), the column the ledger then brings
+  // starts put away: the Tasks button arrives with its counts, the line
+  // above the composer says what the run is doing, and the person opens the
+  // column. Nothing already on screen moves. Only that one paint is held to:
+  // leaving the chat and coming back draws it with the column, and a run
+  // started while the chat is open opens it as before.
+  const firstPaint = useRef<ColumnAtFirstPaint>(NO_FIRST_PAINT);
+  firstPaint.current = columnAtFirstPaint(firstPaint.current, {
+    chatId: conversationId, column: workflowVisible, ledgerRead, runs: runWorkflow.runs.length,
+  });
+  const [lateOpened, setLateOpened] = useState<string | null>(null);
+  const lateShut = columnHeldShut(firstPaint.current) && lateOpened !== conversationId && !runOpened[workflowKey];
+  const columnShut = tasksShut || lateShut;
+  const runSplit = workflowSplit && !columnShut;
   const [displayedRuns, setDisplayedRuns] = useState<Record<string, string | null>>({});
   const displayedRunKey = runChatKey ?? "new";
   const onSelectedRunChange = useCallback((runId: string | null) => {
@@ -4898,7 +4916,12 @@ export default function App() {
       {/* Here, not in the overflow: a plan waiting in the hidden column rides
           on this button, and a closed menu would hide it again. */}
       {workflowSplit && <TasksButton tasks={taskCounts.tasks} decisions={taskCounts.decisions}
-        open={!tasksShut} onToggle={() => showTasks(tasksShut)} />}
+        open={!columnShut} onToggle={() => {
+          // Opening it is the person's word, for a column that was only
+          // held shut for this paint as for one they put away themselves.
+          if (columnShut) setLateOpened(conversationId);
+          if (!columnShut || tasksShut) showTasks(columnShut);
+        }} />}
       {conversationId && <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />}
       {sessionProject && <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />}
       {project && !unavailableChat && <FocusModeButton onClick={enterFocus} />}
@@ -5266,7 +5289,7 @@ export default function App() {
             pendingApprovals={pendingApprovals}
             onView={showWorkflowView} />}
           <div className={`workflow-surfaces${runSplit ? " is-split" : ""}`}>
-          {workflowVisible && <div className={`workflow-run-surface ${entryClass(runColumnEntry)}`} hidden={workflowSplit ? tasksShut : workflowView !== "run"}
+          {workflowVisible && <div className={`workflow-run-surface ${entryClass(runColumnEntry)}`} hidden={workflowSplit ? columnShut : workflowView !== "run"}
             style={{ "--run-w": `${runDock.width}px` } as React.CSSProperties}>
             {runSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}

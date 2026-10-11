@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { besideHeld, holdsRunColumn, KNOWN_KEPT, knownToStore, parseKnown, runChatIds } from "./runColumn";
+import { besideHeld, holdsRunColumn, KNOWN_KEPT, knownToStore, parseKnown, runChatIds, columnAtFirstPaint, columnHeldShut, NO_FIRST_PAINT } from "./runColumn";
 import type { OrchestrationRun } from "./orchestration";
 
 const run = (id: string, chat: string, createdAt: number): OrchestrationRun => ({
@@ -81,5 +81,82 @@ describe("holding a pane for the task beside the chat", () => {
     expect(besideHeld({ main: "lead", task: "orch-gone" }, "lead", exists)).toBeNull();
     expect(besideHeld(null, "lead", exists)).toBeNull();
     expect(besideHeld({ main: "orch-1", task: "orch-1" }, "orch-1", exists)).toBeNull();
+  });
+});
+
+describe("a chat that was drawn without the column", () => {
+  /** The renders of one page, in order: what each knows as it draws. */
+  const renders = (...steps: { chatId: string | null; column: boolean; ledgerRead: boolean; runs: number }[]) =>
+    steps.reduce((seen, step) => columnAtFirstPaint(seen, step), NO_FIRST_PAINT);
+
+  it("keeps the column put away when the ledger says, after the paint, that the chat has a run", () => {
+    // Drawn at full width, then the ledger arrives with a run of this chat.
+    const late = renders(
+      { chatId: "lead", column: false, ledgerRead: false, runs: 0 },
+      { chatId: "lead", column: true, ledgerRead: true, runs: 1 },
+    );
+    expect(late).toEqual({ chatId: "lead", column: false, decided: true, late: true });
+    expect(columnHeldShut(late)).toBe(true);
+    // It stays that way through every later render of the same chat.
+    expect(columnHeldShut(columnAtFirstPaint(late, { chatId: "lead", column: true, ledgerRead: true, runs: 2 }))).toBe(true);
+  });
+
+  it("holds it shut too when the chat list says so late, before the ledger has answered", () => {
+    // `coordinatesRun` arrives with the list, after the chat is on screen:
+    // holding the column from then would split the page just the same.
+    const listed = renders(
+      { chatId: "lead", column: false, ledgerRead: false, runs: 0 },
+      { chatId: "lead", column: true, ledgerRead: false, runs: 0 },
+    );
+    expect(columnHeldShut(listed)).toBe(true);
+    // The ledger then agrees: still shut, and now for the ledger's reason.
+    expect(columnHeldShut(columnAtFirstPaint(listed, { chatId: "lead", column: true, ledgerRead: true, runs: 1 }))).toBe(true);
+    // Or it says there is no run after all: nothing is held.
+    expect(columnHeldShut(columnAtFirstPaint(listed, { chatId: "lead", column: false, ledgerRead: true, runs: 0 }))).toBe(false);
+  });
+
+  it("never shuts a column that was there at the chat's first paint", () => {
+    for (const ledgerRead of [false, true]) {
+      const held = renders(
+        { chatId: "lead", column: true, ledgerRead, runs: ledgerRead ? 1 : 0 },
+        { chatId: "lead", column: true, ledgerRead: true, runs: 1 },
+      );
+      expect(columnHeldShut(held), String(ledgerRead)).toBe(false);
+    }
+  });
+
+  it("opens the column as before for a run started while the chat is open", () => {
+    // The ledger was read and found no run; one starts later.
+    const started = renders(
+      { chatId: "lead", column: false, ledgerRead: false, runs: 0 },
+      { chatId: "lead", column: false, ledgerRead: true, runs: 0 },
+      { chatId: "lead", column: true, ledgerRead: true, runs: 1 },
+    );
+    expect(started).toMatchObject({ decided: true, late: false });
+    expect(columnHeldShut(started)).toBe(false);
+    // And for a chat first drawn after the ledger was read.
+    expect(columnHeldShut(renders({ chatId: "plain", column: false, ledgerRead: true, runs: 0 }, { chatId: "plain", column: true, ledgerRead: true, runs: 1 }))).toBe(false);
+  });
+
+  it("starts over for another chat, and for the same chat come back to", () => {
+    const late = renders(
+      { chatId: "lead", column: false, ledgerRead: false, runs: 0 },
+      { chatId: "lead", column: true, ledgerRead: true, runs: 1 },
+    );
+    const away = columnAtFirstPaint(late, { chatId: "other", column: false, ledgerRead: true, runs: 0 });
+    expect(columnHeldShut(away)).toBe(false);
+    // Back: this paint has the column from the start, so it is shown.
+    const back = columnAtFirstPaint(away, { chatId: "lead", column: true, ledgerRead: true, runs: 1 });
+    expect(back).toEqual({ chatId: "lead", column: true, decided: true, late: false });
+    expect(columnHeldShut(back)).toBe(false);
+    // No chat on screen holds nothing.
+    expect(columnHeldShut(NO_FIRST_PAINT)).toBe(false);
+  });
+
+  it("keeps the same record when nothing it reads has changed", () => {
+    const first = columnAtFirstPaint(NO_FIRST_PAINT, { chatId: "lead", column: false, ledgerRead: false, runs: 0 });
+    expect(columnAtFirstPaint(first, { chatId: "lead", column: false, ledgerRead: false, runs: 0 })).toBe(first);
+    const read = columnAtFirstPaint(first, { chatId: "lead", column: true, ledgerRead: true, runs: 1 });
+    expect(columnAtFirstPaint(read, { chatId: "lead", column: true, ledgerRead: true, runs: 3 })).toBe(read);
   });
 });

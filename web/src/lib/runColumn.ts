@@ -76,3 +76,42 @@ export function holdsRunColumn(input: {
   if (input.ledgerRead || input.ledgerFailed || !input.chatId) return false;
   return input.coordinates === true || input.chatId.startsWith(WORKER) || !!input.besideTask || input.known.has(input.chatId);
 }
+
+/* ---- A chat that was drawn without the column -------------------------- */
+
+/** What the chat on screen was first drawn with, and what the ledger has
+ *  since said of it. */
+export type ColumnAtFirstPaint = {
+  chatId: string | null;
+  /** The run column was there at the chat's first paint. */
+  column: boolean;
+  /** The ledger has been read while this chat was on screen, or before. */
+  decided: boolean;
+  /** It was read after the chat was drawn without the column, and said the
+   *  chat has a run. */
+  late: boolean;
+};
+
+export const NO_FIRST_PAINT: ColumnAtFirstPaint = { chatId: null, column: false, decided: false, late: false };
+
+/** Carried from one render to the next. A new chat on screen starts over,
+ *  with whatever is known as it is drawn; for the same chat the only thing
+ *  that changes is the ledger's first answer. */
+export function columnAtFirstPaint(
+  before: ColumnAtFirstPaint,
+  now: { chatId: string | null; column: boolean; ledgerRead: boolean; runs: number },
+): ColumnAtFirstPaint {
+  if (before.chatId !== now.chatId) return { chatId: now.chatId, column: now.column, decided: now.ledgerRead, late: false };
+  if (before.decided || !now.ledgerRead) return before;
+  return { ...before, decided: true, late: !before.column && now.runs > 0 };
+}
+
+/** Whether the column, if there is one now, starts put away: the chat was
+ *  drawn without it, and it would arrive under what is already on screen.
+ *  That is a ledger read after the paint which found a run, or, before the
+ *  ledger is read at all, anything else that says so late (the chat list's
+ *  answer carrying `coordinatesRun`). Once the ledger has been read and found
+ *  no run, a run that starts later opens the column as it always did. */
+export function columnHeldShut(seen: ColumnAtFirstPaint): boolean {
+  return seen.chatId !== null && !seen.column && (!seen.decided || seen.late);
+}
