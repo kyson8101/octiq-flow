@@ -10,7 +10,7 @@ const { spawn } = require("node:child_process");
 function mcp(root, chatKey, method, params, scriptArgs = []) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...scriptArgs], {
-      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: chatKey },
+      env: { ...process.env, OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: chatKey },
       stdio: ["pipe", "pipe", "pipe"],
     });
     const timer = setTimeout(() => { child.kill(); reject(new Error("MCP timed out")); }, 5000);

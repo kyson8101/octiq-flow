@@ -12,7 +12,7 @@ function mcp(env, method, params, scriptArgs = []) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-handover-mcp-"));
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...scriptArgs], {
-      env: { ...process.env, OCTIQ_ROOT: root, OCTIQ_ORCHESTRATION_ATTEMPT: "", ...env },
+      env: { ...process.env, OCTIQ_ROOT: root, OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let out = "";
