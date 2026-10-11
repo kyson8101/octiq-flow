@@ -228,17 +228,8 @@
 .route-title { display: grid; gap: 6px; flex: 1 1 auto; min-width: 0; }
 .route-head h3 { font-size: 14px; line-height: 20px; margin-top: 4px; }
 .route-chips { display: flex; flex-wrap: wrap; gap: 4px 6px; min-width: 0; margin: 0; padding: 0; list-style: none; }
-/* A setting, as a label. No chip class in the app is a plain label (`.chip`
-   is an attached file, `.level-chip` a button), so this follows
-   `.read-only-badge`: an outlined pill, 20px high. */
-.handover-chip {
-  display: inline-flex; align-items: center; min-width: 0; max-width: 100%;
-  height: 20px; padding: 0 8px;
-  border: 1px solid var(--border); border-radius: var(--r-pill);
-  background: var(--bg-1); color: var(--fg-2);
-  font-size: 11px; font-weight: 520; line-height: 1; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-}
+/* A setting, as a label: the app's one label pill, drawn by `.label-pill,
+   .handover-chip` in styles.css. Only what is this card's own is here. */
 .handover-chip[data-chip="model"] { color: var(--fg-1); }
 
 .route-facts { gap: 6px; margin-top: 12px; }

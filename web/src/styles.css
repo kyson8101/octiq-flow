@@ -10506,6 +10506,169 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
+/* A word about a thing, as a label: an outlined pill, 20px high, after
+   `.read-only-badge`. Never a control (`.chip` is an attached file,
+   `.level-chip` a button). The route card's settings (`.handover-chip`) and
+   the permission card's server and tool id are this one rule. */
+.label-pill,
+.handover-chip {
+  display: inline-flex; align-items: center; min-width: 0; max-width: 100%;
+  height: 20px; padding: 0 8px;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--bg-1); color: var(--fg-2);
+  font-size: 11px; font-weight: 520; line-height: 1; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* An id, to the letter. */
+.label-pill.is-mono {
+  font-family: var(--mono);
+  font-weight: 400;
+}
+
+/* The permission card itself, read top to bottom in three rows: what is
+   asked, what it would do, the answer. The rows are set apart by space, and
+   the shared `.ask-card-*` rules above are left as the other cards use them. */
+.permission-card {
+  padding: 13px 14px;
+}
+
+/* A title that wraps (a phone, a long tool name) keeps its dot and icon on
+   the first line rather than floating between two. */
+.permission-card .ask-card-head {
+  align-items: flex-start;
+}
+
+.permission-card .ask-card-dot {
+  margin-top: 6.5px;
+}
+
+.permission-card .ask-card-title {
+  min-width: 0;
+  row-gap: 4px;
+  line-height: 20px;
+}
+
+.ask-card-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A change the host worded as a sentence and its fields. */
+.ask-change {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ask-change-lead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg-1);
+  overflow-wrap: anywhere;
+}
+
+/* One grid for every row, so the names share a column as wide as the longest
+   of them. A long list scrolls in place, as the text it replaces did. */
+.ask-change-rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 3px 12px;
+  margin: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ask-change-rows > div {
+  display: contents;
+}
+
+.ask-change-rows dt {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-3);
+}
+
+.ask-change-rows dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-1);
+  overflow-wrap: anywhere;
+}
+
+/* What it was, quietly; what it becomes, in weight. No red and green: nothing
+   here is right or wrong until the person says so. */
+.ask-change-was {
+  color: var(--fg-2);
+}
+
+.ask-change-arrow {
+  color: var(--fg-3);
+}
+
+.ask-change-now {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+/* What holds the agent on the left, the answer on the right. On a narrow card
+   the note takes its own line above and the three answers keep one row. */
+.ask-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 14px;
+  margin-top: 12px;
+}
+
+.ask-card-wait {
+  flex: 1 1 240px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-2);
+}
+
+/* Changes every second, so it keeps its width and does not move the line. */
+.ask-card-clock {
+  color: var(--fg-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ask-card-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.ask-card-actions .ask-btn {
+  white-space: nowrap;
+}
+
+/* Deny is always there and seldom the answer: words, no plate. */
+.ask-card-actions .ask-btn.is-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--fg-1);
+}
+
+.ask-card-actions .ask-btn.is-quiet:hover {
+  background: color-mix(in srgb, var(--fg-1) 9%, transparent);
+  color: var(--fg-0);
+}
+
 /* An agent asking for more access: the two levels side by side, then why. */
 .access-card-levels {
   display: flex;

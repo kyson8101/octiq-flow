@@ -450,6 +450,34 @@ export function mcpLabel(name: string): string {
   return match ? `mcp(${match[1]}:${match[2]})` : "";
 }
 
+/** The servers a person knows by another name than the one in the tool id.
+ *  Ours is `octiq`, and `octiqflow_octiq` where Antigravity names it
+ *  (`antigravityEvents`). */
+const MCP_SERVERS: Record<string, string> = {
+  octiq: "OctiqFlow",
+  octiqflow_octiq: "OctiqFlow",
+};
+
+export type McpParts = { server: string; tool: string; serverLabel: string };
+
+/** The two halves of an MCP callable, from the provider's own name
+ *  (`mcp__octiq__agent_update`) or the compact one (`mcp(octiq:agent_update)`).
+ *  A server name may hold single underscores (`claude_ai_Gmail`), so the split
+ *  is on the first DOUBLE underscore. Null for anything else. */
+export function mcpParts(name: string): McpParts | null {
+  const match = name.match(/^mcp__(.+?)__(.+)$/i) ?? name.match(/^mcp\((.+?):(.+)\)$/i);
+  if (!match) return null;
+  const [, server, tool] = match;
+  return { server, tool, serverLabel: MCP_SERVERS[server.toLowerCase()] ?? server };
+}
+
+/** A tool id as words: `agent_update` → `Agent update`. For a card that asks
+ *  a person about the call; the id itself stays beside it. */
+export function toolWords(tool: string): string {
+  const words = tool.replace(/[_-]+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : tool;
+}
+
 export function toolLook(name: string, args: unknown): ToolLook {
   const raw = name || "";
   const lower = raw.toLowerCase();

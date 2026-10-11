@@ -26,6 +26,48 @@ const WHOLE_PLAN = 8000;
  *  (`team_tools::describe`). Room for that, with its labels, and no cut. */
 export const WHOLE_CHANGE = 16000;
 
+/** One field of a change: its name and what it becomes. `before` and `after`
+ *  are set when the host worded a move (`was → now`). */
+export type ChangeRow = { label: string; value: string; before?: string; after?: string };
+
+/** A change the host worded as a sentence and a list of fields. */
+export type ChangeFacts = { lead: string; rows: ChangeRow[] };
+
+/** Past this a change is read as text, not as a list of fields. A new agent
+ *  is the longest list the host words: a sentence, a blank line, nine fields. */
+const FACT_LINES = 12;
+const FACT_CHARS = 1200;
+
+/** A field name as the host writes one: a capital, then a few words. */
+const FACT = /^([A-Z][A-Za-z]*(?: [A-Za-z]+){0,3}): (\S.*)$/;
+
+/** The change text of `team_tools::describe`, as a sentence and its fields:
+ *  `Change the agent Nova.`, a blank line, then `Label: value` lines, a move
+ *  written `was → now`. `null` for anything that is not exactly that shape,
+ *  and the caller then shows the text itself: a value that runs over several
+ *  lines (a role, a persistent prompt, a policy) has lines no field claims,
+ *  and every line of a change is one the person is asked to approve. */
+export function changeFacts(body: string): ChangeFacts | null {
+  if (body.length > FACT_CHARS) return null;
+  const lines = body.split("\n");
+  if (lines.length < 3 || lines.length > FACT_LINES) return null;
+  const [lead, gap, ...rest] = lines;
+  if (!lead.trim() || lead !== lead.trim() || gap !== "") return null;
+  const rows: ChangeRow[] = [];
+  for (const line of rest) {
+    const field = FACT.exec(line);
+    if (!field) return null;
+    const [, label, value] = field;
+    // One arrow is a move. Two could be an arrow inside either text, so the
+    // value is left as the host wrote it.
+    const move = value.split(" → ");
+    rows.push(move.length === 2 && move[0] && move[1]
+      ? { label, value, before: move[0], after: move[1] }
+      : { label, value });
+  }
+  return { lead, rows };
+}
+
 export function askDetail(input: Record<string, unknown> | null | undefined): AskDetail | null {
   const bag = input ?? {};
   const read = (key: string): string => {
