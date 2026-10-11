@@ -716,7 +716,8 @@ message starts it again and takes the tick away.
   and Delete, and is not drawn for a worker's chat, a front desk or a seat.
   The confirm (`CompleteChatConfirm`) is a decision surface: the decision
   colour, one line of what will happen, the host's preview as label and
-  value, and the steps behind one disclosure. One line above the composer
+  value, and the steps behind the one disclosure every decision card has
+  (`components/CardFold`). One line above the composer
   (`ChatCompletionLine`) says Completing, Completed, or why not; the tick
   itself only ever arrives through the chat index. Every event about a chat
   bumps a revision, so a `chat_activity` or `chat_queue_state` read that was
