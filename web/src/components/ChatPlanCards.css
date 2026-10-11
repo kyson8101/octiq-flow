@@ -8,6 +8,10 @@
   background: var(--bg-1);
 }
 .chat-plan .plan-review { margin-top: 14px; }
+/* Waiting on the person: the decision colour on its edge, as a tint behind
+   it and on its dot, like the other cards that ask. */
+.chat-plan[data-pending] { border-color: var(--decide); background: var(--decide-tint); }
+.chat-plan[data-pending] .plan-review-dot { background: var(--decide); }
 /* A plan with no tasks yet is one line, and the card closes round it. It
    opens again as the tasks arrive, so the padding moves with them. */
 .chat-plan[data-pending] { transition: padding 200ms ease-out; }

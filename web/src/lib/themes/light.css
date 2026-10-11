@@ -18,6 +18,10 @@
   --accent-foreground: #171717;
   --destructive: #bb3543;
   --destructive-foreground: #ffffff;
+  /* A decision waiting on the person. Its own blue-teal, never the primary. */
+  --decide: #1d7486;
+  --decide-foreground: #ffffff;
+  --decide-tint: rgb(29 116 134 / 8%);
   --border: #e0e0e0;
   --input: #d4d4d4;
   --ring: #3866da;

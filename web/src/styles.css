@@ -10410,17 +10410,44 @@ body.is-ultra .eff {
 }
 
 /* ---- Permission question -----------------------------------------------
-   The agent is blocked until this is answered, so it is the one card allowed
-   to be loud. Amber rather than red: nothing is wrong, something is waiting. */
+   The agent is blocked until this is answered. Nothing is wrong, something is
+   waiting on a decision: the card is the decision colour, never amber, which
+   is kept for a warning (`.safety-card` below is the one that stays amber). */
 .ask-card {
   flex: 0 0 auto;
   max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 10px;
   padding: 13px 15px;
-  border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border));
+  border: 1px solid var(--decide);
   border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  background: var(--decide-tint);
+}
+
+/* The cards that wait on the person's decision share a tinted surface, and
+   the quietest text does not hold 4.5:1 on a tint in every mode. On these
+   cards it takes one step up. */
+:is(.ask-card:not(.safety-card), .qa-card, .handover-card.is-pending, .chat-plan[data-pending]) {
+  --fg-3: var(--fg-2);
+}
+
+/* The answer a decision card leads with: the decision colour as a tint under
+   its own outline, never a solid block and never the accent, which here is
+   the model's colour. */
+:is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary {
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+:is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary:hover {
+  background: color-mix(in srgb, var(--decide) 28%, var(--bg-1));
+  filter: none;
+}
+
+:is(.permission-card, .access-card, .qa-card) .ask-btn:focus-visible {
+  outline-color: var(--decide);
 }
 
 .ask-card-head {
@@ -10435,7 +10462,7 @@ body.is-ultra .eff {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--warn);
+  background: var(--decide);
   animation: chat-pulse 1.4s ease-in-out infinite;
 }
 
@@ -10741,9 +10768,12 @@ body.is-ultra .eff {
 
 /* A tool call that the Codex safety reviewer already stopped. It shares the
    permission card's shape, while the small context row makes it immediately
-   clear that Codex — not OctiqFlow — raised the warning. */
+   clear that Codex — not OctiqFlow — raised the warning. A refusal IS a
+   warning, so this is the one card of that shape that stays amber. */
 .safety-card {
   padding: 14px 15px 13px;
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
 }
 
 .safety-card-context {
@@ -11177,17 +11207,18 @@ body.is-ultra .eff {
 }
 
 /* ---- A question from the agent -----------------------------------------
-   Blue rather than amber: a permission prompt is a risk to weigh, this is
-   simply a decision only you can make. */
+   A decision only you can make, in the decision colour like the permission
+   card: every rule below reads `--decide`, never the accent, which is the
+   model's colour here and can be gold. */
 .qa-card {
   flex: 0 0 auto;
   max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 10px;
   padding: 13px 15px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border: 1px solid var(--decide);
   border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: var(--decide-tint);
 }
 
 .qa-head {
@@ -11200,9 +11231,9 @@ body.is-ultra .eff {
 /* The answer you already gave, so stepping back does not look like starting
    over. A fill, never an edge stripe. */
 .qa-option.is-on {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
+  background: var(--decide);
+  border-color: var(--decide);
+  color: var(--decide-fg);
 }
 
 .qa-questions {
@@ -11261,7 +11292,7 @@ body.is-ultra .eff {
   gap: 10px;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-top: 1px solid color-mix(in srgb, var(--decide) 18%, var(--border));
 }
 
 .qa-page-arrow {
@@ -11269,7 +11300,7 @@ body.is-ultra .eff {
   width: 26px;
   height: 26px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--decide) 30%, var(--border));
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-2);
@@ -11308,7 +11339,7 @@ body.is-ultra .eff {
   width: 7px;
   height: 7px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--decide) 45%, var(--border));
   border-radius: 50%;
   background: transparent;
   cursor: pointer;
@@ -11330,20 +11361,20 @@ body.is-ultra .eff {
 
 .qa-page-dot.is-done {
   border-color: transparent;
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--decide) 55%, transparent);
 }
 
 .qa-page-dot.is-here {
   transform: scale(1.45);
-  border-color: var(--accent);
+  border-color: var(--decide);
 }
 
 .qa-page-dot.is-here.is-done {
-  background: var(--accent);
+  background: var(--decide);
 }
 
 .qa-page-dot:hover:not(:disabled):not(.is-here) {
-  border-color: var(--accent);
+  border-color: var(--decide);
 }
 
 .qa-page-dot:disabled {
@@ -11400,7 +11431,7 @@ body.is-ultra .eff {
   gap: 9px;
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--decide) 22%, var(--border));
   border-radius: var(--r-sm);
   background: transparent;
   color: inherit;
@@ -11413,8 +11444,8 @@ body.is-ultra .eff {
 }
 
 .qa-review-row:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 10%, transparent);
 }
 
 .qa-review-row:disabled {
@@ -11498,7 +11529,7 @@ body.is-ultra .eff {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--decide);
   animation: chat-pulse 1.4s ease-in-out infinite;
 }
 
@@ -11544,8 +11575,8 @@ body.is-ultra .eff {
 }
 
 .qa-option:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--accent-tint);
+  border-color: var(--decide);
+  background: var(--decide-tint);
 }
 
 .qa-option:disabled {
@@ -11558,15 +11589,16 @@ body.is-ultra .eff {
    looks chosen is a default wearing a disguise. Scoped away from `.is-on` so
    that once you pick, your choice owns the look. */
 .qa-option.is-tip:not(.is-on) {
-  border-color: var(--accent-soft-border, var(--accent));
-  background: var(--accent-tint-faint, var(--bg-1));
+  border-color: var(--decide);
+  background: var(--bg-1);
 }
 
+/* At full strength: the word is small, and faded it would not hold 4.5:1 in
+   every mode. */
 .qa-tip {
   margin-left: 7px;
   font-size: 11px;
-  color: var(--accent);
-  opacity: 0.85;
+  color: var(--decide);
 }
 
 .qa-option.is-on .qa-tip {
@@ -11595,7 +11627,7 @@ body.is-ultra .eff {
 }
 
 .qa-input:focus {
-  border-color: var(--accent);
+  border-color: var(--decide);
 }
 
 /* ---- A question that takes a set ---------------------------------------
@@ -11744,7 +11776,7 @@ body.is-ultra .eff {
 }
 
 .qa-restore:hover {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--decide) 8%, transparent);
 }
 
 .qa-min-copy {
@@ -11777,7 +11809,7 @@ body.is-ultra .eff {
 .qa-min-cue {
   flex: 0 0 auto;
   font-size: 11.5px;
-  color: var(--accent);
+  color: var(--decide);
 }
 
 

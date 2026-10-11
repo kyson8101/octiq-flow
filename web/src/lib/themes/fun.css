@@ -69,5 +69,10 @@
   --sidebar-accent-foreground: oklch(0 0 0);
   --sidebar-border: oklch(0.3867 0 0);
   --sidebar-ring: oklch(0.8027 0.1355 349.2347);
+  /* A decision waiting on the person. A bright blue-teal of its own: the
+     primary here is pink, and the model's colour can be anything. */
+  --decide: #7cc7d6;
+  --decide-foreground: #06181c;
+  --decide-tint: rgb(124 199 214 / 12%);
   --radius: 0.5rem;
 }

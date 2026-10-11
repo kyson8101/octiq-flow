@@ -19,6 +19,13 @@
   --warn: #edbd69;
   --danger: #f28787;
   --danger-fg: #261111;
+  /* A decision waiting on the person: a question, a request, a plan to
+     approve. A calm blue-teal of its own, stated outright in every mode and
+     never worked out from `--accent`, which inside the composer is the
+     model's colour and can be gold. Amber is `--warn`, and means a problem. */
+  --decide: #6bb4c6;
+  --decide-fg: #0d1b1f;
+  --decide-tint: rgb(107 180 198 / 10%);
   --link: #92b8ff;
   --focus: #82aaff;
 

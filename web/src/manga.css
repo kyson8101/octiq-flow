@@ -162,6 +162,16 @@
   box-shadow: none;
 }
 
+/* The answer a decision card leads with. Everywhere else it is a tint of the
+   decision colour; a tint of ink is one more grey among greys, so here it is
+   beta, solid black, as it was when it was the accent. */
+:root[data-theme="manga"] :is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary,
+:root[data-theme="manga"] .plan-review-approve .orch-primary {
+  border-color: var(--decide);
+  background: var(--decide);
+  color: var(--decide-fg);
+}
+
 :root[data-theme="manga"] :is(.gitp-badge, .resume-count, .sidebar-utility-count) {
   border: 0;
   border-radius: var(--r-sm);

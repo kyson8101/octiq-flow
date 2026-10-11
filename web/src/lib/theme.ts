@@ -172,6 +172,15 @@ export function mapTokens(t: Tokens): Record<string, string> {
     "--danger": t["destructive"] ?? "#ff453a",
     "--danger-fg": t["destructive-foreground"] ?? "#fff",
 
+    // A decision waiting on the person. Each palette states its own, and
+    // nothing here works one out from `primary`: inside the composer the
+    // accent is the model's colour, which can be gold, and gold on a card
+    // that asks reads as a warning. The fallbacks are Dark's
+    // (`design-system.css`), for a palette that names none.
+    "--decide": t["decide"] ?? "#6bb4c6",
+    "--decide-fg": t["decide-foreground"] ?? "#0d1b1f",
+    "--decide-tint": t["decide-tint"] ?? "rgb(107 180 198 / 10%)",
+
     // Three rungs a fixed gap apart — but the gap can never be wider than the
     // radius itself, so a theme asking for 0 gets 0 on all three. Adding a
     // flat 2px/6px used to leave Brutalism and Neon quietly rounded, which is

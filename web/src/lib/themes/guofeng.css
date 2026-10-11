@@ -27,6 +27,12 @@
   --accent-foreground: #ebe3d3;
   --destructive: #d0574a;
   --destructive-foreground: #1a0d0b;
+  /* A decision waiting on the person: 天青, the muted blue-green of a celadon
+     glaze. Not the gold, which is the accent and reads as amber on a card
+     that asks, and not the cinnabar, which is a seal. */
+  --decide: #8fbcb8;
+  --decide-foreground: #0f1a19;
+  --decide-tint: rgb(143 188 184 / 10%);
   --border: #2e2a24;
   --input: #3a352d;
   --ring: #c9a45c;
