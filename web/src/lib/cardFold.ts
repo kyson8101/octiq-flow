@@ -26,8 +26,14 @@ export const SHORT_TEXT = 200;
  *  delete_facts`): the seat that empties, the reports that move. A
  *  consequence, so a sentence of it is drawn whole where any other value of
  *  that length would fold to its size. The host's own labels, checked against
- *  its source by the test. */
-export const STRUCTURAL = new Set(["Head", "Front desk", "Direct report", "Direct reports"]);
+ *  its source by the test.
+ *
+ *  A team card has two of the same kind (`team_tools::team_rows`).
+ *  `Membership` is the one fixed sentence that closes every team card: what
+ *  the people on a team may do with each other, which is what is being
+ *  approved. `Other teams` is who leaves which team by joining this one. Left
+ *  to the short-fact rule both folded to a size on every team card. */
+export const STRUCTURAL = new Set(["Head", "Front desk", "Direct report", "Direct reports", "Membership", "Other teams"]);
 
 /** How long a consequence may run and still be drawn whole. */
 export const STRUCTURAL_WHOLE = 160;

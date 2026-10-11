@@ -120,6 +120,10 @@ describe("a row of a change", () => {
   });
 });
 
+/** The two labels of `STRUCTURAL` that a team card sends
+ *  (`team_tools::team_rows`); the rest are a removal's. */
+const TEAM_LABELS = ["Membership", "Other teams"];
+
 describe("what a removal does to the chart", () => {
   // The host's own sentences (`team_tools.rs`), each longer than a short fact.
   const noHead = "The cross-project conversation will have no head until another is chosen.";
@@ -154,9 +158,70 @@ describe("what a removal does to the chart", () => {
     // A renamed label would fold a consequence to a size. The names are the
     // host's own statics, so they are read from its source.
     const facts = host.slice(host.indexOf("pub fn delete_facts"), host.indexOf("fn policy_lead"));
-    for (const label of STRUCTURAL) expect(facts, label).toContain(`"${label}"`);
+    // A team card's two are sent by the function that builds its rows.
+    const team = host.slice(host.indexOf("fn team_rows"), host.indexOf("pub const MEMBERSHIP_GRANTS"));
+    expect(facts.length).toBeGreaterThan(100);
+    expect(team.length).toBeGreaterThan(100);
+    for (const label of STRUCTURAL) expect(TEAM_LABELS.includes(label) ? team : facts, label).toContain(`"${label}"`);
+    for (const label of TEAM_LABELS) expect(STRUCTURAL.has(label), label).toBe(true);
     expect(host).toContain(`const NO_HEAD: &str = "${noHead[0].toLowerCase()}${noHead.slice(1)}"`);
     expect(host).toContain(`const NO_FRONT_DESK: &str = "${noFrontDesk[0].toLowerCase()}${noFrontDesk.slice(1)}"`);
+  });
+
+  describe("a team card", () => {
+    // `team_tools::MEMBERSHIP_GRANTS`, read from the host's source: the one
+    // sentence that closes every team card.
+    const grants = /pub const MEMBERSHIP_GRANTS: &str = "([^"]+)";/.exec(host)?.[1] ?? "";
+
+    it("draws what membership grants whole on every team card, never as a size", () => {
+      expect(grants).toBe("Teammates may ask each other questions and request bounded work, and each request for work is approved separately.");
+      // Longer than a short fact, which is why it folded to "114 characters".
+      expect(grants.length).toBe(114);
+      expect(grants.length).toBeGreaterThan(SHORT_FACT);
+      expect(grants.length).toBeLessThanOrEqual(STRUCTURAL_WHOLE);
+      expect(rowFold({ label: "Membership", value: grants })).toEqual({ folded: false });
+      // Under any other name the same sentence is a long value.
+      expect(rowFold({ label: "Role", value: grants })).toEqual({ folded: true, note: "114 characters" });
+    });
+
+    it("draws who leaves which team whole, up to the limit of a consequence", () => {
+      // Two agents moving is already past a short fact (the host's own test).
+      const two = "Ada leaves Web. Cy leaves Ops.";
+      const several = "Ada leaves Web. Bo leaves Ops. Cy leaves Platform. Di leaves the Front desk team.";
+      expect(several.length).toBeGreaterThan(SHORT_FACT);
+      for (const value of [two, several]) expect(rowFold({ label: "Other teams", value })).toEqual({ folded: false });
+    });
+
+    it("folds a longer list of moves to its size, with the host's own line for it when it sends one", () => {
+      const value = Array.from({ length: 12 }, (_, i) => `Agent ${i + 1} leaves Team ${i + 1}.`).join(" ");
+      expect(value.length).toBeGreaterThan(STRUCTURAL_WHOLE);
+      const size = `${digits(value.length)} characters`;
+      // A host that sends no summary: the label and the size, never a piece.
+      const bare = rowFold({ label: "Other teams", value });
+      expect(bare).toEqual({ folded: true, note: size });
+      expect(JSON.stringify(bare)).not.toMatch(/Agent|leaves/);
+      // With one: the host's sentence whole, then the size.
+      const summary = "12 agents leave their current teams";
+      expect(rowFold({ label: "Other teams", value, summary })).toEqual({ folded: true, note: size, summary });
+      // A summary beside a value that is drawn whole is not wanted.
+      expect(rowFold({ label: "Other teams", value: "Bo leaves Ops.", summary: "1 agent leaves its current team" })).toEqual({ folded: false });
+    });
+
+    it("reads the rows of a changed team as the host sends them: nothing of it folds", () => {
+      // `team_tools.rs`, the card its own test prints for two agents joining.
+      const facts = changeFacts({
+        lead: "Change the team Web.",
+        rows: [
+          { label: "Added", value: "Bo, Cy" },
+          { label: "Members", before: "Ada", after: "Ada, Bo, Cy" },
+          { label: "Other teams", value: "Bo leaves Ops. Cy leaves Platform. Di leaves the Front desk team.", summary: "3 agents leave their current teams" },
+          { label: "Membership", value: grants },
+        ],
+      })!;
+      expect(facts.rows.map((row) => rowFold(row).folded)).toEqual([false, false, false, false]);
+      // A summary on a plain row is kept by the reader for when it is needed.
+      expect(facts.rows[2]).toMatchObject({ label: "Other teams", summary: "3 agents leave their current teams" });
+    });
   });
 
   it("holds a summary to the length the host holds it to", () => {
