@@ -261,3 +261,25 @@ export function agoLabel(then: number, now: number): string {
  *  objective that is nearly right is worse than an honest blank, because it
  *  is the line everything else is read against. */
 export const NOT_REPORTED = "Not reported by the agent";
+
+/** The last status each chat was seen with, for the moment it is opened again.
+ *
+ *  The bar asks afresh every time a chat opens, and until the answer lands it
+ *  had nothing to draw: the phase alone, then the count and the branch a beat
+ *  later, on every visit. The answer rarely differs from the last one, so the
+ *  last one is drawn at once and replaced when the new one arrives. Memory
+ *  only: it is a picture of the last look, never a record. */
+const LAST_SEEN_MAX = 64;
+const lastSeen = new Map<string, TaskStatus>();
+
+export function rememberTaskStatus(status: TaskStatus, seen: Map<string, TaskStatus> = lastSeen): void {
+  if (!status?.chatId) return;
+  // Re-inserted so the oldest entry is always the first key.
+  seen.delete(status.chatId);
+  seen.set(status.chatId, status);
+  if (seen.size > LAST_SEEN_MAX) seen.delete(seen.keys().next().value as string);
+}
+
+export function recallTaskStatus(chatId: string, seen: Map<string, TaskStatus> = lastSeen): TaskStatus | undefined {
+  return seen.get(chatId);
+}

@@ -16,6 +16,7 @@ import {
 import { useRosterAgent } from "../lib/agentRoster";
 import { briefRuns } from "../lib/briefRuns";
 import { AgentAvatar } from "./AgentAvatar";
+import { Arrive } from "./Arrive";
 import "./HandoverCards.css";
 
 type Open = (chatKey: string, projectId: string | null) => void;
@@ -334,16 +335,23 @@ export function RouteCard({ handover, onDecide }: {
 
 /** The handovers at the end of a chat: only the ones the person still has to
  *  act on (`handoverPlaces(…).tail`). */
-export function HandoverCards({ outgoing, onDecide }: {
+export function HandoverCards({ outgoing, onDecide, late }: {
   outgoing: readonly Handover[];
   onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
+  /** The `handover:<id>` keys that turned up after the chat was drawn; those
+   *  cards come in (`components/Arrive`), the rest are drawn in place. */
+  late?: ReadonlySet<string>;
 }) {
   if (!outgoing.length) return null;
   return (
     <div className="handover-cards">
-      {outgoing.map((handover) => isRoute(handover)
-        ? <RouteCard key={handover.id} handover={handover} onDecide={onDecide} />
-        : <SourceCard key={handover.id} handover={handover} onDecide={onDecide} />)}
+      {outgoing.map((handover) => (
+        <Arrive key={handover.id} late={!!late?.has(`handover:${handover.id}`)}>
+          {isRoute(handover)
+            ? <RouteCard handover={handover} onDecide={onDecide} />
+            : <SourceCard handover={handover} onDecide={onDecide} />}
+        </Arrive>
+      ))}
     </div>
   );
 }
