@@ -745,6 +745,26 @@ pub struct ChatManager {
     /// Chats whose turn was interrupted and whose own full stop has not come
     /// back yet, with when — see `ChatManager::unwinding`.
     unwinding: Mutex<HashMap<String, Instant>>,
+    /// Chats whose removed folder is being put back, each with the thread
+    /// doing it — see `ChatManager::claim_start`.
+    start_claims: Mutex<HashMap<String, thread::ThreadId>>,
+}
+
+/// One start's hold on a chat that has no process yet
+/// (`ChatManager::claim_start`). Dropping it lets the chat go.
+pub(crate) struct StartClaim<'a> {
+    manager: &'a ChatManager,
+    key: String,
+}
+
+impl Drop for StartClaim<'_> {
+    fn drop(&mut self) {
+        self.manager
+            .start_claims
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
 }
 
 /// How long an interrupted turn may take to send its own full stop before
@@ -1269,6 +1289,44 @@ impl ChatManager {
         self.sessions
             .lock()
             .map(|s| s.contains_key(key))
+            .unwrap_or(true)
+    }
+
+    /// Hold a chat that has no process for the one start that is about to put
+    /// its removed folder back (`chat_recover`). Refused while it has a
+    /// process, in the words `start_session` uses, so a stale page falls back
+    /// to sending. From here until the claim is dropped every OTHER start of
+    /// this chat is refused the same way: a second tab, an auto-resume or a
+    /// queued turn cannot start an agent in between, under which the folder
+    /// would then be rebuilt. The claiming thread's own start goes through,
+    /// because `chat_start` runs on one thread from the claim to the spawn.
+    pub(crate) fn claim_start(&self, key: &str) -> Result<StartClaim<'_>, String> {
+        let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let replacing = self
+            .handoffs
+            .lock()
+            .map_err(|e| e.to_string())?
+            .contains(key);
+        let mut claims = self.start_claims.lock().map_err(|e| e.to_string())?;
+        if sessions.contains_key(key) || replacing || claims.contains_key(key) {
+            return Err(format!("chat '{key}' is already running"));
+        }
+        claims.insert(key.to_string(), thread::current().id());
+        Ok(StartClaim {
+            manager: self,
+            key: key.to_string(),
+        })
+    }
+
+    /// Whether another thread holds this chat for its own start.
+    fn claimed_elsewhere(&self, key: &str) -> bool {
+        self.start_claims
+            .lock()
+            .map(|claims| {
+                claims
+                    .get(key)
+                    .is_some_and(|owner| *owner != thread::current().id())
+            })
             .unwrap_or(true)
     }
 
@@ -2435,6 +2493,7 @@ pub(crate) fn start_session(
         .lock()
         .map_err(|e| e.to_string())?
         .contains_key(&session_key)
+        || manager.claimed_elsewhere(&session_key)
     {
         return Err(format!("chat '{session_key}' is already running"));
     }
@@ -2498,6 +2557,7 @@ pub(crate) fn start_session(
         return Err("User messages are waiting; notification delivery will retry.".into());
     }
     if sessions.contains_key(&session_key)
+        || manager.claimed_elsewhere(&session_key)
         || ((record_user_turn || notification_start)
             && manager
                 .handoffs
@@ -8587,6 +8647,79 @@ mod access_tests {
         let full = command(Access::Full);
         assert!(full.contains("--dangerously-skip-permissions"));
         assert!(!full.contains("--permission-mode bypassPermissions"));
+    }
+}
+
+/// A start's claim on a chat keeps every other start out (`claim_start`).
+#[cfg(test)]
+mod start_claim_tests {
+    use super::*;
+
+    fn start(manager: Arc<ChatManager>, key: &str) -> Result<(), String> {
+        start_session(
+            manager,
+            Voice::host(key.to_string()),
+            "/tmp/project".into(),
+            ChatAgent::Claude,
+            None,
+            None,
+            Some("carry on".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("turn-1".into()),
+            true,
+            None,
+        )
+    }
+
+    #[test]
+    fn a_claimed_chat_is_started_by_nobody_else() {
+        let manager = Arc::new(ChatManager::default());
+        let key = "chat:claimed";
+        let claim = manager.claim_start(key).expect("nothing runs there");
+        assert!(!manager.claimed_elsewhere(key), "the claimant's own start");
+
+        let other = manager.clone();
+        let (refused, second) = thread::spawn(move || {
+            (
+                start(other.clone(), key),
+                other.claim_start(key).map(|_| ()),
+            )
+        })
+        .join()
+        .unwrap();
+        // In the words a page already falls back to sending on.
+        assert_eq!(refused, Err(format!("chat '{key}' is already running")));
+        assert_eq!(second, Err(format!("chat '{key}' is already running")));
+        assert!(!manager.has_process(key), "nothing was started");
+
+        drop(claim);
+        let other = manager.clone();
+        let free = thread::spawn(move || !other.claimed_elsewhere(key))
+            .join()
+            .unwrap();
+        assert!(free, "the claim goes with its guard");
+    }
+
+    #[test]
+    fn a_chat_with_a_process_cannot_be_claimed() {
+        let manager = ChatManager::default();
+        let key = "chat:claim-live";
+        manager.test_launch(key);
+        assert_eq!(
+            manager.claim_start(key).map(|_| ()),
+            Err(format!("chat '{key}' is already running"))
+        );
+        manager.test_end(key);
+        assert!(manager.claim_start(key).is_ok());
+
+        // A one-shot process being replaced is as good as running.
+        manager.handoffs.lock().unwrap().insert(key.to_string());
+        assert!(manager.claim_start(key).is_err());
     }
 }
 
