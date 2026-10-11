@@ -1658,7 +1658,14 @@ fn with_waiting_messages(ctx: &Ctx, chat_key: &str, result: Value) -> Value {
     };
     let waiting = waiting_messages(ctx, chat_key);
     if !waiting.is_null() {
-        fields.insert("coordinatorMessages".into(), waiting);
+        // Named for who they are from: a peer request's worker gets none of
+        // a coordinator's.
+        let field = if waiting["notice"] == PEER_WAITING_NOTICE {
+            "hostNotices"
+        } else {
+            "coordinatorMessages"
+        };
+        fields.insert(field.into(), waiting);
     }
     Value::Object(fields)
 }
@@ -3649,7 +3656,11 @@ mod tests {
         )
         .await;
         assert_eq!(status, 200, "{answer}");
-        let carried = &answer["result"]["coordinatorMessages"];
+        assert!(
+            answer["result"].get("coordinatorMessages").is_none(),
+            "{answer}"
+        );
+        let carried = &answer["result"]["hostNotices"];
         assert_eq!(carried["notice"], PEER_WAITING_NOTICE, "{answer}");
         assert!(!PEER_WAITING_NOTICE.contains("may change what you are doing"));
         assert!(PEER_WAITING_NOTICE.contains("only the person can"));
@@ -3734,6 +3745,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, 200, "{read}");
+        assert!(read["result"].get("hostNotices").is_none(), "{read}");
         let carried = &read["result"]["coordinatorMessages"];
         assert_eq!(carried["notice"], WAITING_NOTICE, "{read}");
         assert!(carried.to_string().contains("release/1.8.2"), "{read}");

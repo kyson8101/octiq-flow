@@ -644,8 +644,11 @@ extended. The host (`orchestration/peer_request.rs`):
   only by the person, on the task board: the page sends the socket's
   `orchestration_gate_resolve`, which no hook action maps to, and a
   coordinator's `gate_resolve` (`orchestration_gate_resolve_in_chat`) is
-  refused for it. The coordinator, and a requesting worker, are told that it
-  waits on the person. The teammate's brief states both rules as fact.
+  refused for it. The coordinator, and a requesting worker (`peer_waiting`),
+  are told that it waits on the person. The teammate's brief states both
+  rules as fact, and what reaches the teammate in the answer to a host call
+  is carried as `hostNotices`, not `coordinatorMessages`: the person's answer
+  to its gate, or a notice the host wrote.
 - **never touches the roster.** Nothing in it reads `reportsTo` as changed or
   writes `team.json`; the store method is not given the file.
 
