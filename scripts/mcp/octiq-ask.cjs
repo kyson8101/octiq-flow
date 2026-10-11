@@ -1889,9 +1889,11 @@ const ORCHESTRATION_SNAPSHOT = {
     "left out and long text is clipped; pass taskId for one task in full. This is the source of truth; never " +
     "infer task state from chat prose. nativeDecisions identifies observed safety cards and continuation viability; " +
     "absence is not proof of approval. services reports registered local listener reachability and checkedAt, " +
-    "independent of task completion; verify application health before use. heldByPlan on a task means a start " +
+    "independent of task completion; verify application health before use. heldByPlan true on a task means a start " +
     "of it is refused for now: the plan card is waiting for the person and their approval does not cover that " +
-    "task, or one it depends on; tasks they have already approved keep starting. A peer request's worker is shown its " +
+    "task, or one it depends on; tasks they have already approved keep starting and say false. heldByReopen means " +
+    "the task was reopened and the notice of that is not in the coordinator's chat yet: the host writes it and the " +
+    "task starts then. A peer request's worker is shown its " +
     "own task only, in full, and is refused another runId or taskId.",
   inputSchema: {
     type: "object",

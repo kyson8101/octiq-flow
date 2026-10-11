@@ -920,6 +920,18 @@ page's. Nothing but an approval writes it. So:
   each reopen on the task and writes `octiq_task_reopened` into the
   coordinator's transcript, so the person sees every one. A new field a
   reopen could change belongs in that event.
+- **A reopened task starts only once that notice is in the transcript, on
+  disk.** The notice stands in for an approval, so it is tracked like one:
+  `TaskReopen::notice_delivered` is false from the reopen until the synced
+  append is confirmed, `reserve_attempt_for` refuses the task meanwhile
+  (`heldByReopen` in the snapshot), and the scheduler writes what is owed on
+  every pass (`deliver_reopen_notices`). The event is made from the stored
+  reopen, so every try writes the same one, and one already in the
+  transcript is recorded, never written twice. A reopen whose coordinator
+  chat the person cannot open (not in the chat list, or in the trash) is
+  refused. A write whose receipt says whether it held
+  (`record_chat_event_synced` answers `Option`) has that receipt read: a
+  step that only counts once the person was told waits for it.
 - A replaced task (`superseded_by`) and a task the person stopped
   (`Task::stopped`, from the socket-only `orchestration_task_stop`) do not
   start again; only the person starts the second.
@@ -932,20 +944,55 @@ roster's (`team.rs` `LOCK`), then the ledger's (`OrchestrationStore::inner`).**
 (`agent_work::Departure`) holds the ledger across that write and records the
 agent in `Stored::removed_agents` before it lets go, and `reserve_attempt_for`
 refuses a removed agent under the same lock. Nothing that holds the ledger's
-lock may call into `team.rs`, and the chats are asked with `try_lock` only
-(`ChatManager::turn_may_be_in_flight`). A removal made any other way (a bare
-check, then a write) reopens the window a task started in. What stops a
-removal is in `agent_work.rs`: a task in progress, a run one of the agent's
-own conversations coordinates that has not finished or been stopped, a turn
-in flight in one. An idle head or front desk is removed.
+lock may call into `team.rs`. The chats' locks come after both and are never
+waited for from a removal: the session table, the queue and each session are
+tried (`LeavingMark::working`), and one that is taken answers "working". A
+removal made any other way (a bare check, then a write) reopens the window a
+task started in. What stops a removal is in `agent_work.rs`: a task in
+progress, a run one of the agent's own conversations coordinates that has
+not finished or been stopped, a turn in flight in one. An idle head or front
+desk is removed.
+
+- **A removal is done only when its record is.** `OrchestrationStore::leave`
+  saves the ledger with the agent in `removed_agents` FIRST and writes the
+  roster second, so every failure leaves the agent registered and working: a
+  ledger that cannot be saved refuses the removal with the roster untouched,
+  and a roster that cannot be written has the record taken back (and says so
+  when even that fails). The running server takes the record up only after
+  both. A server killed between the two leaves a record for an agent the
+  roster still has; `reconcile_removed`, run when the ledger is loaded,
+  drops it. A roster that cannot be read changes nothing: never read "could
+  not be read" as "everyone is gone", or as "everyone is here". A new step
+  that changes two files orders them the same way: nothing irreversible
+  before the record is on disk, and a save that fails is a refusal, never a
+  line in the log.
+- **A prompt and a removal of its agent never both go through: mark first,
+  then look** (`agent_chat::Leaving`). `Departure::leave` marks the agent's
+  own conversations (`ChatManager::mark_leaving`) before it asks whether any
+  is working, and a live process takes the mark under its own lock in the
+  look that finds it idle. `write_user_message_locked`, which every prompt
+  goes through, refuses a session that carries it, beside its `CutOff`
+  check; `start_session` refuses a chat the manager holds one for, under the
+  session table's lock. So the write saw the mark or the removal saw the
+  turn. Dropped without `gone`, the mark is called off; a removal that was
+  made leaves it, in memory, until the server restarts. A new way to hand an
+  agent a prompt goes through one of those two functions, never around
+  them, and a new check of "is this chat idle" that something irreversible
+  follows is made the same way: a look alone goes stale the moment its lock
+  is let go.
 
 **Facts the page reads that are derived for the answer are never stored and
-never taken from an agent**: `heldByPlan` on a task, `awaits` on an open gate
-and a pending native decision, `usage` and `context` on an attempt,
-`coordinatesRun` on a chat's index entry. Each is `skip_deserializing` or
-added at the dispatch arm, and absent rather than zero or guessed when the
-host does not know (`docs/agents-mode.md`, What the run panel reads from the
-host).
+never taken from an agent**: `heldByPlan` and `heldByReopen` on a task,
+`awaits` on an open gate and a pending native decision, `usage` and `context`
+on an attempt, `coordinatesRun` on a chat's index entry. Each is
+`skip_deserializing` or added at the dispatch arm, and absent rather than
+zero or guessed when the host does not know (`docs/agents-mode.md`, What the
+run panel reads from the host). A fact the host does know is said outright:
+`heldByPlan` is `true` or `false` on every task of a run that has a plan
+approval, because a page sent nothing for "not held" could not tell it from
+a host that does not say, and read an approved task as held. `awaits` says
+who must decide and nothing else; whether the attempt can go on right now is
+`continuation`'s to say.
 
 **A mid-turn instruction that loosens a permission or safety rule goes through
 a decision gate.** When a coordinator's `orchestration_message_send` would add

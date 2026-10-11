@@ -405,18 +405,64 @@ a peer-help team, through seven MCP tools (`team_tools.rs`,
   page's `team_delete` asks it there too. That second asking is not a check
   followed by a write. The roster's `delete` hands its write to a guard
   (`team::Leave`), and the host's guard (`agent_work::Departure`) takes the
-  ledger's lock, asks, writes the roster without the agent, records the agent
-  as removed in the ledger (`removedAgents`), and only then lets go. Every
-  start takes that same lock to reserve its attempt
+  ledger's lock, asks, saves the agent as removed in the ledger
+  (`removed_agents`), writes the roster without the agent, and only then
+  lets go. Every start takes that same lock to reserve its attempt
   (`reserve_attempt_for`). So one of the two always goes first, and the other
   is refused: a start that got there first is work in progress and the
   removal is refused; a removal that got there first has the start refused,
   `Nova is no longer a registered agent: it was removed, and nothing starts
   as an agent that is gone.` The lock order is the roster's lock, then the
-  ledger's, and nothing takes them the other way round. The chats are asked
-  for a turn in flight without waiting for any lock of theirs; when that
-  cannot be told at once, the answer is that one is, and the removal is
-  refused and can be asked again.
+  ledger's, and nothing takes them the other way round. The chats' locks
+  come after both and are never waited for: each is tried, and one that is
+  taken answers "working", so the removal is refused and can be asked again.
+- **A removal is done only when its record is** (review of 931b5f0). Two
+  files change, the ledger and the roster, and the order is the one whose
+  every failure leaves the agent registered and working:
+  1. The ledger is saved with the agent in `removed_agents`. If that fails,
+     the removal is refused and nothing was changed: `Nova was not removed:
+     the ledger could not record the removal, so nothing was changed (…).
+     Nova is still registered and its work still starts. Fix what stops the
+     ledger from being saved, then remove Nova again.`
+  2. The roster is written without the agent. If that fails, the record is
+     taken back and the removal is refused: `Nova was not removed: the
+     roster could not be written (…). Nothing was changed, and Nova is still
+     registered.` If the record cannot be taken back either, the refusal says
+     that as well: the ledger on disk still calls Nova removed, this server
+     goes on starting its work, and the record is dropped at the next save
+     and the next start.
+  3. Only then does the running server treat the agent as gone.
+
+  So "removed" always means both: the roster no longer has the agent, and
+  the ledger refuses its work, now and after a restart. A server killed
+  between the two writes leaves the one state that disagrees, a ledger that
+  calls gone an agent the roster still has. The roster is right: when the
+  ledger is loaded, each such record is dropped and logged
+  (`reconcile_removed`, from `Services::load`). A roster that cannot be read
+  changes nothing: nobody is taken for gone, and no record is dropped.
+- **A message and a removal never both go through** (review of 931b5f0).
+  Looking at a chat and finding it idle is not enough: a message could be
+  written to the agent between that look and the roster's write. So the
+  removal marks first and looks second (`agent_chat::Leaving`). It puts a
+  mark on every conversation the agent speaks in as itself, then asks each
+  one whether it is working, and a live process takes the mark in the look
+  that finds it idle, under its own lock. Every prompt is written under that
+  lock by one function (`write_user_message_locked`: a message, a queued
+  message handed over at a full stop, a host notification, a completion's
+  wrap-up), which refuses a session that carries the mark; and a process is
+  put in the session table by `start_session`, which refuses a chat the
+  mark is on. Either the write came first and the removal saw its turn, or
+  the removal came first and the write saw the mark: `Lead is being removed,
+  so this conversation takes no message right now. Nothing was sent. Send it
+  again in a moment: if the removal is refused, the conversation carries
+  on.` Working, for that look, is a turn in flight, a stopped turn whose
+  full stop is still owed, anything queued, and a one-shot process being
+  replaced. A removal that is refused or fails takes the mark off again. One
+  that is made leaves it: `Lead was removed, and this was Lead's
+  conversation: it takes no more messages. Nothing was sent. Start a new
+  conversation with another agent.` The mark is in memory only, so a restart
+  forgets it; after one, such a chat is an ordinary chat with no registered
+  agent, as it was before this rule.
 - **Unfinished tasks do not stop a removal, and do not start afterwards.** A
   task of the agent's that is planned, ready, failed or blocked with nobody
   working on it keeps the agent's name (`TaskAssignee` is a copy). The card
@@ -1170,6 +1216,34 @@ one. `assignee` is the task's, or `null`. `at` is the host's clock, and
 `previousSpecChars` counts characters. A reopen that is refused writes
 nothing. A peer request is still never reopened.
 
+**A reopened task starts only once you have been shown the reopen** (review
+of 931b5f0). The notice is the one thing that stands in for an approval
+here, so the task waits for it:
+
+- Each entry of `reopens` carries `noticeDelivered`. It is `false` from the
+  reopen until that event is in the coordinator's transcript, on disk. An
+  entry kept before this field existed reads as `true`.
+- While any is `false`, no start of the task is accepted, by the
+  coordinator, the host's own dispatch and recovery, or the page: `This task
+  was reopened with new instructions, and the notice of that is not in the
+  coordinator's chat yet, so it does not start: …`. The ready wave passes it
+  over, and the task says `heldByReopen: true` in `orchestration_snapshot`,
+  in every view. The key is left out otherwise.
+- The host writes the notice right after the ledger, and again on every pass
+  of the scheduler (about every two seconds) until it holds
+  (`deliver_reopen_notices`). A restart changes nothing: the ledger
+  remembers what is owed.
+- It is exactly one event. Every try writes the same one, made from the
+  entry in `reopens`, so `taskId`, `attempt` and `at` never change; and a
+  notice already in the transcript is recorded, never written again.
+- A notice is written only into a chat you can open: one the chat list has
+  and that is not in the trash. When the coordinator's chat is not such a
+  chat, the reopen is refused outright and nothing is recorded: `The
+  coordinator's chat no longer exists, so the person could not be shown this
+  reopen. Nothing was reopened. …`. A chat deleted after its reopen was
+  recorded gets no notice and its task stays held; restoring the chat lets
+  both through.
+
 **You can stop one task and leave the run going.** `orchestration_task_stop
 { taskId, reason? }` is the page's command and no hook action maps to it. It
 cancels the task's unsettled attempt, with any decision it was waiting on,
@@ -1205,10 +1279,17 @@ a reopened task, a coordinator's retry, the page's Start, the host's automatic
 recovery, `orchestration_worker_start`), the scheduler's and
 `orchestration_dispatch_ready`'s wave (`ready_wave`, where a held task takes no
 slot), and the recovery pass, which keeps a held task's retry instead of
-dropping it. Each task in a snapshot carries `heldByPlan: true` while a start
-of it would be refused for this reason, so the page and the coordinator can say
-"waiting for plan approval" apart from "ready"; it is derived on every read and
-never stored. Unchanged: a task you have not approved never starts; rejecting
+dropping it. Each task in a snapshot says whether a start of it would be
+refused for this reason, so the page and the coordinator can say "waiting for
+plan approval" apart from "ready": `heldByPlan` is `true` or `false` on every
+task of a run that has a plan approval (`run.planApproval`, pending or
+decided), finished tasks included, in the page's full read and in the
+coordinator's compact and one-task reads. It is left out only for a run with
+no plan approval at all, where there is nothing to be held by. `false` is said
+outright because a reader has to tell "not held" from "this host does not
+say": with a plan pending and nothing held (approve A, add B, withdraw B), a
+page sent nothing read A as held. It is derived on every read and never
+stored. Unchanged: a task you have not approved never starts; rejecting
 an amendment withdraws the new work and leaves the earlier approved plan in
 force; stopping a run, closing or abandoning a mission and `maxConcurrent`
 behave as before; a peer request still waits for its own approval on the card.
@@ -1236,9 +1317,22 @@ up, carry no such key.
 
 | `awaits` | When |
 | --- | --- |
-| `person` | The host knows only you can answer. A gate on a peer-request task, which no agent resolves. A gate the run's coordinator opened itself, which is that coordinator asking for a decision it will not make alone. A provider's safety card still up on a live attempt whose answer can start a new turn in it (`continuation: "new_turn_same_attempt"`). |
+| `person` | The decision is yours. A gate on a peer-request task, which no agent resolves. A gate the run's coordinator opened itself, which is that coordinator asking for a decision it will not make alone (see the note below). A provider's safety card still up on an attempt that is still its task's and unsettled: being prepared, running, or blocked on an open gate. |
 | `coordinator` | A worker's gate on an ordinary task. The coordinator may resolve it; whether it asks you first is its own judgment, which the host cannot see. |
-| `nobody` | Nothing waits on it. A Claude auto-mode refusal, which no one can approve; an outage refusal, which the worker was told to carry on past; a card whose attempt is no longer running, because it settled, was replaced, or is itself waiting on an open gate (that gate then says who it waits for). |
+| `nobody` | Nothing waits on it. A Claude auto-mode refusal, which no one can approve; an outage refusal, which the worker was told to carry on past; a card whose attempt is over, because it settled or was replaced. |
+
+Who must decide is one fact and whether the attempt can go on right now is
+another, and they are said apart. A safety card whose attempt is blocked on
+an open gate still has `awaits: "person"`: you have to answer it. Its
+`continuation` is `"unavailable"` and its `recovery` says why: nothing
+continues the attempt until the gate is answered too. Once it is, the same
+card reads `continuation: "new_turn_same_attempt"`.
+
+A gate the coordinator opened itself says `person`, and the coordinator can
+still resolve it: today your answer to such a gate travels through the
+coordinator, which is the one that calls `orchestration_gate_resolve`. So
+`person` on that gate says whose decision it is, not that the host refuses
+everyone else. Only a peer-request gate is refused to every agent.
 
 A plan revision waiting for you is not a gate: it is `run.planApproval` with
 `status: "pending"`, and always yours.
