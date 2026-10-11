@@ -9,7 +9,7 @@
 // a disclosure, like every other piece of agent prose. A card that waits on
 // the person has one such disclosure (`components/CardFold`), named for what
 // it holds and how much, and it opens above the buttons.
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   askBackSummary, canDiscussInstead, chatIdOf, handoverHeadline, homeShort, isRoute, latestOutcome, noticeLine, outcomeText, placeLine,
   routeHeadline, routePlace, settingsLine, settingsParts, waitsOnPerson,
@@ -17,7 +17,7 @@ import {
 } from "../lib/handover";
 import { useRosterAgent } from "../lib/agentRoster";
 import { briefRuns } from "../lib/briefRuns";
-import { count, isShort, lineCount, sizeLabel } from "../lib/cardFold";
+import { chars, count, isShort, lineCount, sizeLabel, tooLong, tooLongNote } from "../lib/cardFold";
 import { AgentAvatar } from "./AgentAvatar";
 import { Arrive } from "./Arrive";
 import { FoldBody, FoldLine, useFold, WholeText } from "./CardFold";
@@ -245,6 +245,24 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
   const brief = handover.brief.objective;
   const longBrief = !isShort(brief);
   const briefHead = <h4>Brief{handover.from.name && <span className="route-brief-from"> · from {handover.from.name}</span>}</h4>;
+  // What opens the chat is the exact first message. One the page cannot draw
+  // whole is not drawn in part, and the chat cannot be opened from this card:
+  // what cannot be shown whole cannot be agreed to here.
+  const message = route?.message ?? "";
+  const over = useMemo(() => {
+    for (const [what, text] of [["first message", message], ["brief", brief]] as const) {
+      if (tooLong(text)) return tooLongNote(what, chars(text), "be sent from here", "Cancel it and ask for a shorter one.");
+    }
+    return "";
+  }, [message, brief]);
+  const overId = useId();
+  // Off, not disabled: it keeps its place with its reason read out.
+  const send = (action: HandoverAction) => ({
+    "aria-disabled": over ? true : undefined,
+    "aria-describedby": over ? overId : undefined,
+    title: over || undefined,
+    onClick: () => { if (!over) void decide(action); },
+  });
   return (
     <section
       className={`handover-card route-card is-${handover.status}`}
@@ -305,25 +323,25 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
       <FoldLine
         fold={fold}
         labels={[
-          longBrief && `Brief · ${sizeLabel(brief)}`,
-          route?.message && `Exact first message · ${sizeLabel(route.message)}`,
+          !over && longBrief && `Brief · ${sizeLabel(brief)}`,
+          !over && message && `Exact first message · ${sizeLabel(message)}`,
         ]}
         what="the brief"
       />
-      <FoldBody fold={fold}>
+      {over ? <p className="handover-over" id={overId}>{over}</p> : <FoldBody fold={fold}>
         {longBrief && (
           <div className="route-brief">
             {briefHead}
             <BriefProse text={brief} />
           </div>
         )}
-        {route?.message && (
+        {message && (
           <div className="route-message">
             <h4>Exact first message</h4>
-            <WholeText text={route.message} className="route-message-text" />
+            <WholeText text={message} className="route-message-text" />
           </div>
         )}
-      </FoldBody>
+      </FoldBody>}
       {failed && <p className="handover-error" role="alert">{failed}</p>}
       {pending && (
         <footer className="handover-actions">
@@ -331,7 +349,7 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
           <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")}>
             {busy === "decline" ? "Cancelling…" : "Cancel"}
           </button>
-          <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
+          <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")}>
             {busy === "confirm" ? "Opening…" : route?.discuss ? `Discuss with ${handover.to.name}` : `Open chat with ${handover.to.name}`}
           </button>
         </footer>
@@ -353,12 +371,12 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
             </button>
           )}
           {discussInstead && (
-            <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("discuss")}>
+            <button type="button" className="handover-quiet" disabled={!!busy} {...send("discuss")}>
               {busy === "discuss" ? "Opening…" : "Discuss only (read-only)"}
             </button>
           )}
           {handover.error && (
-            <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
+            <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")}>
               {busy === "confirm" ? "Opening…" : "Try again"}
             </button>
           )}

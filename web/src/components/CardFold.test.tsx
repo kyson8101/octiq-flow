@@ -3,7 +3,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FoldBody, FoldLine, FoldToggle, useFold, WholeText } from "./CardFold";
-import { HARD_CAP } from "../lib/cardFold";
 import cardFoldCss from "./CardFold.css?raw";
 
 function Card({ startOpen = false, labels = ["Brief · 12 lines", "Checkout"] }: { startOpen?: boolean; labels?: (string | false)[] }) {
@@ -75,9 +74,11 @@ describe("a text opened whole", () => {
     expect(renderToStaticMarkup(<WholeText text={text} />)).toBe(`<pre class="ask-card-body is-whole">${text}</pre>`);
   });
 
-  it("past the hard cap says how much it shows and how much it does not", () => {
-    const html = renderToStaticMarkup(<WholeText text={"x".repeat(HARD_CAP + 5)} />);
-    expect(html).toContain('<p class="card-fold-cut" role="note">The first 200,000 of 200,005 characters are shown. 5 characters are not shown.</p>');
+  it("has no cap: past the 200,000 it used to stop at, it is still every character", () => {
+    const text = `${"x".repeat(329_000)} LAST WORDS`;
+    const html = renderToStaticMarkup(<WholeText text={text} />);
+    expect(html).toBe(`<pre class="ask-card-body is-whole">${text}</pre>`);
+    expect(html).not.toContain("not shown");
   });
 });
 

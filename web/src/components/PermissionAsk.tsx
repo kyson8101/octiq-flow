@@ -14,20 +14,25 @@
 //
 // It arrives folded (`lib/cardFold`): the tool, the path, the short facts and
 // the answers. A long part is named with its size and opens whole, above the
-// answers; nothing on this card is ever cut without saying how much.
+// answers; nothing on this card is ever cut.
 //
 // A command is not a long part. It is what is being approved, so it is on the
 // folded card whole, up to twelve lines; past that the card shows the lines
 // it can, says how many it does not, and holds Allow back until the whole
-// command has been opened. Its first line never stands for it, in the title
+// command has been drawn. Its first line never stands for it, in the title
 // or under it.
+//
+// Nothing here is cut. Opened, a text is every character of it, scrolling
+// inside the card; a text the page cannot draw whole (`lib/cardFold`'s
+// `WHOLE_MAX`) is not opened in part, and the card will not take an Allow
+// for it at all: it says why, and Deny still answers.
 import { useEffect, useId, useMemo, useState } from "react";
 import { ASK_WAIT_SECS, askDeadline, askRemaining, askWaitSecs, clockText } from "../lib/askClock";
 import { askDetail, changeFacts, isCommand, type ChangeRow } from "../lib/askDetail";
 import { bridge } from "../lib/bridge";
 import {
-  allowHeld, commandFold, commandOpened, count, cutNote, diffLabel, longRowsLabel, rowFold, scriptLabel, textFold,
-  unseenLines, type RowFold,
+  allowHeld, chars, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, longRowsLabel, notShown,
+  rowFold, textFold, tooLong, tooLongNote, unseenLines, type RowFold,
 } from "../lib/cardFold";
 import { fileDiff } from "../lib/diff";
 import { mcpParts, toolLook, toolWords } from "../lib/toolKind";
@@ -192,29 +197,50 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   const runs = extra && !facts && isCommand(extra) ? extra.body : null;
   // Kept between the clock's ticks: a command can be very long.
   const command = useMemo(() => (runs === null ? null : commandFold(runs)), [runs]);
-  const opened = useMemo(() => (command && command.more > 0 ? commandOpened(command) : null), [command]);
+  // Opening shows the rest of it, all of it, or there is nothing to open.
+  const opens = !!command && commandOpens(command);
   // One control. Behind it, a long command's own block and the sentences the
   // foot shortens are two boxes; every other card has the one.
-  const fold = useFold(ask.id, { parts: opened ? 2 : 1, startOpen });
-  const text = extra && !facts && !command ? textFold(extra.body) : null;
+  const fold = useFold(ask.id, { parts: opens ? 2 : 1, startOpen });
+  // What this card draws of the command, and so what Allow is asked about.
+  const shown = useMemo(() => (command ? commandShown(command, fold.shown) : null), [command, fold.shown]);
+  const unshown = useMemo(() => (command && shown ? notShown(command, shown) : 0), [command, shown]);
+  const prose = extra && !facts && !command ? extra.body : null;
+  // A text the page cannot draw whole is not opened in part. Whichever part
+  // of the ask it is, the ask cannot be allowed from this card.
+  const over = useMemo(() => {
+    if (command) return command.tooLong ? command.size : 0;
+    if (prose !== null) return tooLong(prose) ? chars(prose) : 0;
+    for (const row of facts?.rows ?? []) {
+      for (const part of "before" in row ? [row.before, row.after] : [row.value]) {
+        if (tooLong(part)) return chars(part);
+      }
+    }
+    return 0;
+  }, [command, prose, facts]);
+  const text = useMemo(() => (prose !== null && over === 0 ? textFold(prose) : null), [prose, over]);
   const folded = [
     diff && diffLabel(diff),
-    longRows.length > 0 && longRowsLabel(longRows.length),
+    over === 0 && longRows.length > 0 && longRowsLabel(longRows.length),
     text && !text.whole && text.rest,
   ];
   const folds = folded.some(Boolean);
-  // Over several lines it is a script, and no one of its commands names it.
-  const script = command && command.lines > 1 ? scriptLabel(command.lines) : null;
-  // A command the folded card cannot show whole has to be opened before it
-  // can be allowed. Once is enough: it stays allowed if it is folded again.
-  const [seen, setSeen] = useState<string | null>(startOpen ? ask.id : null);
+  const what = extra?.label === "replacing with" ? "text" : extra?.label ?? "command";
+  // Its first command does not name it once any of it is off the card.
+  const sized = command ? commandTitle(command, what === "command" ? "command" : "script") : null;
+  // Allow waits for the whole command to have been drawn. Once is enough:
+  // it stays allowed if the card is folded again.
+  const [whole, setWhole] = useState<string | null>(null);
   useEffect(() => {
-    if (fold.open) setSeen(ask.id);
-  }, [fold.open, ask.id]);
-  const held = allowHeld(command, fold.open || seen === ask.id);
+    if (command && unshown === 0) setWhole(ask.id);
+  }, [command, unshown, ask.id]);
+  const held = !!command && allowHeld(unshown, whole === ask.id);
+  // Held until it is opened, or unavailable for good: either way the reason
+  // is a sentence on the card, and the answers point at it.
+  const off = held || over > 0;
+  const why = over > 0 ? tooLongNote(what, over) : held ? `Open the full ${what} to allow it.` : "";
   const commandId = useId();
-  const heldId = useId();
-  const what = extra?.label ?? "command";
+  const whyId = useId();
 
   const answer = async (choice: "allow" | "deny" | "always") => {
     setSending(choice);
@@ -239,8 +265,8 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
       <div className="ask-card-head">
         <span className="ask-card-dot" aria-hidden="true" />
         {/* A script is something that runs, whatever its first line reads. */}
-        <span className="tool-icon" data-kind={script ? "run" : look.kind} aria-hidden="true">
-          <ToolIcon kind={script ? "run" : look.kind} />
+        <span className="tool-icon" data-kind={sized ? "run" : look.kind} aria-hidden="true">
+          <ToolIcon kind={sized ? "run" : look.kind} />
         </span>
         {mcp ? (
           <span className="ask-card-title">
@@ -250,13 +276,16 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
               <span className="label-pill">{mcp.serverLabel}</span>
               <span className="label-pill is-mono">{mcp.tool}</span>
             </span>
+            {/* What it runs is a script whichever tool runs it. */}
+            {sized && <span className="ask-card-script">{sized}</span>}
           </span>
-        ) : script ? (
+        ) : sized ? (
           <span className="ask-card-title">
             {/* The tool and how much it runs. `bash(echo)` over a script whose
-                second line is `rm -rf` was the card naming the harmless part. */}
+                second line is `rm -rf`, or over one line too long to draw, was
+                the card naming the harmless part. */}
             Claude wants to use <strong>{ask.toolName || "a tool"}</strong>
-            <span className="ask-card-script">{script}</span>
+            <span className="ask-card-script">{sized}</span>
           </span>
         ) : (
           <span className="ask-card-title">
@@ -286,41 +315,41 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
         </div>
       )}
 
-      {extra && command && (
-        <div className="ask-card-detail ask-command" data-held={held || undefined}>
+      {extra && command && shown && (
+        <div className="ask-card-detail ask-command" data-held={off || undefined}>
           <div className="ask-command-top">
             <span className="ask-card-label" id={commandId}>
               {extra.label}{command.lines > 1 ? ` · ${count(command.lines, "line")}` : ""}
             </span>
             {/* Above what it opens, like every disclosure: the answers are on
-                the far side of the command however the card is anchored. */}
-            {opened && (
+                the far side of the command however the card is anchored. Only
+                where opening is the whole command, which is what it says. */}
+            {opens && (
               <FoldButton fold={fold} describedBy={commandId} className="ask-btn is-primary"
                 shut={`Open the full ${what}`} open={`Fold the ${what}`} />
             )}
           </div>
-          {opened ? (
-            (command.head || fold.shown) && (
+          {opens ? (
+            (shown.head || fold.shown) && (
               <div className="ask-card-body is-command is-long" data-open={fold.shown || undefined}>
-                {command.head && <pre className="ask-command-text">{command.head}</pre>}
+                {shown.head && <pre className="ask-command-text">{shown.head}</pre>}
                 <FoldBody fold={fold} bounded={false}>
-                  <pre className="ask-command-text">{opened.rest}</pre>
+                  {shown.rest !== null && <pre className="ask-command-text">{shown.rest}</pre>}
                 </FoldBody>
               </div>
             )
           ) : (
-            <pre className="ask-card-body is-command">{command.head}</pre>
+            shown.head && <pre className="ask-card-body is-command">{shown.head}</pre>
           )}
-          {opened && fold.shown && opened.hidden > 0 && (
-            <p className="card-fold-cut" role="note">{cutNote(opened.total, opened.hidden)}</p>
-          )}
-          {opened && !fold.open && (
+          {/* The last thing above the answers while any of it is off the
+              card: how much, then why the answers are off and what to do. */}
+          {unshown > 0 && (
             <p className="ask-command-unseen">
               <strong>{unseenLines(command)}</strong>
-              {held && <span id={heldId}> Open the full {what} to allow it.</span>}
+              {off && <span className="ask-card-why" id={whyId}> {why}</span>}
             </p>
           )}
-          {opened && (
+          {opens && (
             <FoldBody fold={fold} part={1} bounded={false}>
               <p className="card-fold-note">{askNote(ask)}</p>
             </FoldBody>
@@ -337,6 +366,17 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
         </div>
       )}
 
+      {/* A text the page cannot draw: none of it is drawn as if it were the
+          text, and the sentence stands where it would have been. */}
+      {over > 0 && !command && (
+        <div className="ask-card-detail">
+          {extra && !facts && <div className="ask-card-label">{extra.label}</div>}
+          <p className="ask-command-unseen">
+            <span className="ask-card-why" id={whyId}>{why}</span>
+          </p>
+        </div>
+      )}
+
       <FoldLine fold={fold} labels={folded} />
       {folds && <FoldBody fold={fold}>
         {diff && (
@@ -348,7 +388,7 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
             <DiffView diff={diff} first={FIRST_OPENED} />
           </div>
         )}
-        {longRows.length > 0 && (
+        {over === 0 && longRows.length > 0 && (
           <dl className="ask-change-rows is-whole">
             {longRows.map(({ row }, i) => (
               <div key={i}>
@@ -394,17 +434,17 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
               className="ask-btn"
               type="button"
               disabled={!!sending}
-              // Held, not disabled: it keeps its place in the tab order with
+              // Off, not disabled: it keeps its place in the tab order with
               // its reason read out, and Deny beside it still answers.
-              aria-disabled={held || undefined}
-              aria-describedby={held ? heldId : undefined}
+              aria-disabled={off || undefined}
+              aria-describedby={off ? whyId : undefined}
               title={
-                held ? `Open the full ${what} to allow it`
+                off ? why
                   : ask.toolName?.toLowerCase() === "bash"
                   ? "Stop asking about this program for the rest of this chat"
                   : "Stop asking about this tool for the rest of this chat"
               }
-              onClick={() => { if (!held) void answer("always"); }}
+              onClick={() => { if (!off) void answer("always"); }}
             >
               {sending === "always" ? "Allowing…" : "Always"}
             </button>
@@ -413,10 +453,10 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
             className="ask-btn is-primary"
             type="button"
             disabled={!!sending}
-            aria-disabled={held || undefined}
-            aria-describedby={held ? heldId : undefined}
-            title={held ? `Open the full ${what} to allow it` : undefined}
-            onClick={() => { if (!held) void answer("allow"); }}
+            aria-disabled={off || undefined}
+            aria-describedby={off ? whyId : undefined}
+            title={off ? why : undefined}
+            onClick={() => { if (!off) void answer("allow"); }}
           >
             {sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"}
           </button>

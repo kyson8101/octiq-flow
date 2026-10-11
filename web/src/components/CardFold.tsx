@@ -23,7 +23,7 @@
 // while it is on screen, by the id of what it asks; nothing is kept past that.
 import { useEffect, useId, useState, type AnimationEvent, type ReactNode } from "react";
 import {
-  capped, chars, cutNote, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, strayPress,
+  foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, strayPress,
   type FoldPhase, type FoldState, type Press,
 } from "../lib/cardFold";
 import "./CardFold.css";
@@ -206,14 +206,9 @@ export function FoldBody({ fold, part = 0, className, bounded = true, children }
   );
 }
 
-/** A text opened whole: every character of it, or up to the cap with exactly
- *  how much the cap left out said under it. */
+/** A text opened whole: every character of it. There is no cut. A text the
+ *  page cannot draw (`lib/cardFold.tooLong`) is not given to this: its card
+ *  says so in its place and takes its approval away. */
 export function WholeText({ text, className = "ask-card-body" }: { text: string; className?: string }) {
-  const { shown, hidden } = capped(text);
-  return (
-    <>
-      <pre className={`${className} is-whole`}>{shown}</pre>
-      {hidden > 0 && <p className="card-fold-cut" role="note">{cutNote(chars(text), hidden)}</p>}
-    </>
-  );
+  return <pre className={`${className} is-whole`}>{text}</pre>;
 }

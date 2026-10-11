@@ -60,6 +60,16 @@ describe("HandoverCards", () => {
     expect(html.indexOf("handover-brief-body")).toBeLessThan(html.indexOf("handover-actions"));
   });
 
+  it("draws every section of a brief whole whatever its length: nothing beside Hand over is cut", () => {
+    // The host stops a section at 8,000 characters; the page has no cap of
+    // its own to cut one at, and this keeps one from being added.
+    const remaining = `Finish it.\n${"r".repeat(329_000)}\nLAST LINE OF THE BRIEF`;
+    const html = opened([handover({ brief: { objective: "Finish the login fix", remaining } })], "chat:source");
+    expect(html).toContain(`<p>${remaining}</p>`);
+    expect(html).not.toContain("not shown");
+    expect(html).toContain('<button type="button" class="handover-go">Hand over to Mango</button>');
+  });
+
   it("sizes a brief by every section of it", () => {
     expect(briefLabels(handover({
       brief: { objective: "Fix login.\nKeep the old flow.", doneSoFar: "Found it.", remaining: "a\nb\nc" },

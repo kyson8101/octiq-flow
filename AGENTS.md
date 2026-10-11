@@ -445,13 +445,22 @@ folded line and are not part of this.
 - **A command is what is being approved, not detail.** `command`, `script`
   and `code` (`askDetail.isCommand`) are on the folded card whole, up to
   twelve lines and 1,200 characters, no line cut and no scroll of their own.
-  Over several lines the title is the tool and `N-line script`, never the
-  first command. Past that the card shows the leading whole lines, says `N
-  more lines not shown` at full strength, and holds Allow once and Always
-  (`aria-disabled`, with `Open the full command to allow it`) until the
-  command has been opened once (`cardFold.allowHeld`). Deny always answers.
-  A diff keeps its `+a −b` line, and prose (a plan, an older host's change)
-  its first line and size.
+  Over several lines the title is the tool and `N-line script`, and on one
+  line the folded card cannot draw, the tool and `N-character command`
+  (`cardFold.commandTitle`): never the first command, for an MCP tool too.
+  Past that the card shows the leading whole lines, says `N more lines not
+  shown` at full strength as the last thing above the buttons, and holds
+  Allow once and Always (`aria-disabled`, pointing at the visible sentence
+  `Open the full command to allow it`). Deny always answers. A diff keeps
+  its `+a −b` line, and prose (a plan, an older host's change) its first line
+  and size.
+- **Allow is asked of what is drawn, never of what was pressed.** The card
+  draws the two texts `cardFold.commandShown` returns and nothing else of a
+  command; `cardFold.notShown` compares them with the command, and
+  `allowHeld` lets go only when nothing is unshown, or was once on this card.
+  An opening that drew less than all of it (a cap, a bug) leaves Allow held.
+  The control says `Open the full command` only where opening is the whole
+  command (`commandOpens`).
 - **A plan's stage line names every place and agent it can.** Destinations
   are told apart by project and whole path (`planReview.planPlaceNames`): a
   shared folder name gets its project, then its parent folder, then the path.
@@ -460,15 +469,23 @@ folded line and are not part of this.
   criteria, command approval, the full brief) in one scroll; only the run
   panel keeps a disclosure per task. The fold belongs to one revision
   (`cardFold.planFoldId`), so a changed plan arrives folded.
-- **Opened is whole.** `askDetail` carries no limit and nothing slices a body
-  where it is drawn. A long detail scrolls inside the card. The one cap is
-  `HARD_CAP` (200,000 characters), and past it the card says how many
-  characters it shows and how many it does not. A silent cut of something the
-  person approves is the bug this replaced (1,200 / 8,000 / 16,000 characters,
-  with no sign of it). A diff draws its first 600 rows on opening
-  (`DiffView.FIRST_OPENED`) and keeps its own `Show N more lines` past that:
-  5,000 rows at once stop the page for about 0.4 s, and drawing them a
-  stretch a frame was slower still.
+- **Opened is whole, and what cannot be shown whole cannot be allowed.**
+  `askDetail` carries no limit and nothing cuts a body where it is drawn: no
+  cap, no "first N characters". A long detail scrolls inside the card. A cap
+  with a note under it was tried (200,000 characters) and was the hole: the
+  card drew that much of a 330,000-character command, said the rest was not
+  shown, and let Allow go. The one limit is `cardFold.WHOLE_MAX` (5,000,000
+  characters, where opening stops the page for about a second; every size
+  measured up to 50,000,000 was still drawn whole). A command, a plan, a
+  change (text or a row) or a route's first message past it is not drawn in
+  part: the card says `This command is too long to show in full (N
+  characters), so it cannot be allowed here. Deny it and ask for it in
+  smaller steps.` and its approving buttons stay off for good
+  (`tooLong`, `tooLongNote`). Deny and Cancel always answer. A diff draws its
+  first 600 rows on opening (`DiffView.FIRST_OPENED`) and keeps its own `Show
+  N more lines` past that: 5,000 rows at once stop the page for about 0.4 s,
+  and drawing them a stretch a frame was slower still. Those rows are a press
+  away, not cut, so they hold nothing back.
 - **The control is above what it opens, which is above the buttons.** However
   the card is anchored (on the composer and growing up, or in the transcript
   and growing down), the pointer that opened it is never left over that

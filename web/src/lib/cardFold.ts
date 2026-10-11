@@ -32,8 +32,20 @@ export const STRUCTURAL = new Set(["Head", "Front desk", "Direct report", "Direc
 /** How long a consequence may run and still be drawn whole. */
 export const STRUCTURAL_WHOLE = 160;
 
-/** Past this the opened detail stops, and says how much it left out. */
-export const HARD_CAP = 200_000;
+/** The most characters of one text a card draws. Nothing shorter is ever
+ *  cut: an opened detail is every character of it, scrolling inside the card.
+ *  A text past this is not drawn in part and passed off as opened. The card
+ *  says it is too long to show, and what would approve it is unavailable
+ *  (`tooLong`, `tooLongNote`): what cannot be shown whole cannot be allowed.
+ *
+ *  Set where opening stops the page for about a second. One `<pre>` with one
+ *  text node, production build, headless Chromium, the page stopped for:
+ *  330,000 characters 0.04–0.09 s, 1,000,000 0.13–0.22 s, 2,000,000
+ *  0.24–0.62 s, 5,000,000 0.7–1.2 s, 10,000,000 1.4–4 s, 20,000,000 3–7 s,
+ *  50,000,000 8–9 s. Every size was drawn whole, last line included, in
+ *  Chromium and in WebKit: the limit is the wait, not a point where the text
+ *  stops being drawn. */
+export const WHOLE_MAX = 5_000_000;
 
 /** The lines of a text, without the blank ones at either end. */
 export function textLines(text: string): string[] {
@@ -149,7 +161,9 @@ export function textFold(text: string, limit = SHORT_TEXT): TextFold {
    folded card whole for as long as a card can hold it: twelve lines. A first
    line is never left to stand for the rest. Past that the card shows the
    lines it can, says how many it does not, and will not take an Allow until
-   the whole command has been opened. */
+   the whole command has been drawn: every line, with no cut. What decides
+   is what the card draws (`notShown`), never that a control was pressed. A
+   command too long to draw whole (`WHOLE_MAX`) cannot be allowed at all. */
 
 /** The most lines of a command a folded card draws. */
 export const COMMAND_LINES = 12;
@@ -162,6 +176,8 @@ export const COMMAND_CHARS = 1200;
 export type CommandFold = {
   /** Its lines, without the blank ones at either end. */
   lines: number;
+  /** How many characters those lines are, their line breaks included. */
+  size: number;
   /** What the folded card draws: every line, or the first whole lines. */
   head: string;
   /** The lines after those, drawn once the card is opened. Empty when the
@@ -169,6 +185,9 @@ export type CommandFold = {
   rest: string;
   /** How many lines `rest` is. */
   more: number;
+  /** Past what the page draws (`WHOLE_MAX`): it cannot be opened whole, so
+   *  it is not opened, and it cannot be allowed here. */
+  tooLong: boolean;
 };
 
 export function commandFold(text: string): CommandFold {
@@ -181,27 +200,52 @@ export function commandFold(text: string): CommandFold {
     budget -= size;
     kept += 1;
   }
+  const whole = lines.join("\n");
   return {
     lines: lines.length,
+    size: chars(whole),
     head: lines.slice(0, kept).join("\n"),
     rest: lines.slice(kept).join("\n"),
     more: lines.length - kept,
+    tooLong: tooLong(whole),
   };
 }
 
-/** The lines the folded card left out, as they are drawn once it is opened:
- *  all of them, or up to the hard cap with what the cap left out. `total` is
- *  the whole command's size, the lines on the folded card included. */
-export function commandOpened(fold: CommandFold): { rest: string; hidden: number; total: number } {
-  // The line break between what was on the card and the rest counts as one.
-  const before = fold.head === "" ? 0 : chars(fold.head) + 1;
-  const { shown, hidden } = capped(fold.rest, Math.max(0, HARD_CAP - before));
-  return { rest: shown, hidden, total: before + chars(fold.rest) };
+/** What a card draws of a command: the lines of the folded card, and under
+ *  them the rest when there is one to draw. The card draws these two texts
+ *  and nothing else of the command, so they are also what `notShown` is
+ *  asked about. */
+export type CommandShown = { head: string; rest: string | null };
+
+/** A command as the card draws it, folded or opened. Opened is the whole of
+ *  it, every line: there is no cut. A command the page cannot draw whole is
+ *  not opened at all. */
+export function commandShown(fold: CommandFold, open: boolean): CommandShown {
+  return { head: fold.head, rest: open && commandOpens(fold) ? fold.rest : null };
 }
 
-/** What the folded card says under the lines it shows. Full strength on the
- *  card: it is the one thing standing between a person and an Allow of lines
- *  they have not seen. */
+/** Whether opening shows the whole command: there are lines the folded card
+ *  left out, and the page can draw them. The control that says "Open the
+ *  full command" is drawn for this and for nothing else. */
+export function commandOpens(fold: CommandFold): boolean {
+  return fold.more > 0 && !fold.tooLong;
+}
+
+/** How many characters of a command are not in what the card draws. Nothing
+ *  when the two texts drawn are, in order, the whole command. Asked of what
+ *  is drawn and not of whether the card was opened: an opening that drew
+ *  less than all of it leaves this above nothing, and Allow held. */
+export function notShown(fold: CommandFold, shown: CommandShown): number {
+  const whole = shown.head === fold.head && (fold.more === 0 || shown.rest === fold.rest);
+  if (whole) return 0;
+  const drawn = chars(shown.head) + (shown.rest === null ? 0 : chars(shown.rest) + (shown.head === "" ? 0 : 1));
+  return Math.max(1, fold.size - drawn);
+}
+
+/** What the card says under the lines it shows, while it does not show the
+ *  rest. Full strength, and the last thing above the answers: it is the one
+ *  thing standing between a person and an Allow of lines they have not
+ *  seen. */
 export function unseenLines(fold: CommandFold): string {
   if (fold.more === 0) return "";
   // Nothing of it is on the card: a line too long to draw whole.
@@ -219,11 +263,46 @@ export function scriptLabel(lines: number): string {
   return `${digits(lines)}-line script`;
 }
 
-/** Whether Allow is held back: the folded card does not show the whole
- *  command, and it has not been opened. Opening it once is enough; folding it
- *  again does not take the answer away. */
-export function allowHeld(fold: CommandFold | null, opened: boolean): boolean {
-  return !!fold && fold.more > 0 && !opened;
+/** What a command is called in the card's title when its first command must
+ *  not name it: over several lines, how many; on one line the folded card
+ *  cannot draw, how long ("5,012-character command"). A title that read
+ *  `bash(echo)` over `echo <base64> | base64 -d | sh` named the harmless
+ *  end of a line nobody could see. `null` for one line that is whole on the
+ *  card, which keeps the tool's own title. `noun` is what the tool calls
+ *  what it runs. */
+export function commandTitle(fold: CommandFold, noun = "command"): string | null {
+  if (fold.lines > 1) return scriptLabel(fold.lines);
+  if (fold.more > 0) return `${digits(fold.size)}-character ${noun}`;
+  return null;
+}
+
+/** Whether Allow is held back: some of the command has never been in front
+ *  of the person. `unshown` is how much of it the card is not drawing now
+ *  (`notShown`); `wasWhole`, whether this card has drawn all of it before.
+ *  Showing it whole once is enough, and folding it again does not take the
+ *  answer away. A command too long to draw is never whole, so its Allow is
+ *  never let go. */
+export function allowHeld(unshown: number, wasWhole = false): boolean {
+  return unshown > 0 && !wasWhole;
+}
+
+/** Whether a text is past what the page draws whole. */
+export function tooLong(text: string): boolean {
+  // Never more characters than units, so this is most texts, at no cost.
+  return text.length > WHOLE_MAX && chars(text) > WHOLE_MAX;
+}
+
+/** What a card says in place of a text it cannot draw whole, beside the
+ *  answers it has taken away. `what` names the text: "command", "plan".
+ *  `cannot` and `instead` are the card's own words for what is off and for
+ *  the way out; a permission's are the default. */
+export function tooLongNote(
+  what: string,
+  size: number,
+  cannot = "be allowed here",
+  instead = "Deny it and ask for it in smaller steps.",
+): string {
+  return `This ${what} is too long to show in full (${count(size, "character")}), so it cannot ${cannot}. ${instead}`;
 }
 
 /** "+12 −3 in chat.ts": a diff as its counts, for the folded card. */
@@ -246,31 +325,6 @@ export function planFoldId(runId: string, revision: number | undefined): string 
 /** "3 tasks in 2 stages". */
 export function planLabel(tasks: number, stages: number): string {
   return `${count(tasks, "task")} in ${count(stages, "stage")}`;
-}
-
-/** A detail as it is drawn opened: all of it, or up to the cap with what the
- *  cap left out. Counted in characters like every size here, so the cut
- *  never lands inside one. */
-export function capped(text: string, cap = HARD_CAP): { shown: string; hidden: number } {
-  // Never more characters than units, so this is most texts, at no cost.
-  if (text.length <= cap) return { shown: text, hidden: 0 };
-  const total = chars(text);
-  if (total <= cap) return { shown: text, hidden: 0 };
-  let seen = 0;
-  let end = 0;
-  while (seen < cap) {
-    const unit = text.charCodeAt(end);
-    end += unit >= 0xd800 && unit <= 0xdbff && end + 1 < text.length ? 2 : 1;
-    seen += 1;
-  }
-  return { shown: text.slice(0, end), hidden: total - cap };
-}
-
-/** What a capped detail says under itself. Never drawn for a text that fits.
- *  `total` is the text's `chars`. */
-export function cutNote(total: number, hidden: number): string {
-  const verb = hidden === 1 ? "is" : "are";
-  return `The first ${digits(total - hidden)} of ${count(total, "character")} are shown. ${count(hidden, "character")} ${verb} not shown.`;
 }
 
 /** Names in a line, and the rest said in words: "Ada, Bo, Cy +2 more agents".

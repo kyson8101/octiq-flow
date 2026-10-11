@@ -88,6 +88,16 @@ describe("ChatPlanCards", () => {
     expect(html).toContain(">Reject<");
   });
 
+  it("draws a brief whole whatever its length: nothing beside Approve is cut", () => {
+    // Past the 200,000 characters other cards used to stop at. A plan's
+    // brief never had a cap, and this keeps one from being added.
+    const spec = `Step one.\n${"s".repeat(329_000)}\nLAST LINE OF THE BRIEF`;
+    const html = renderOpen(waiting, [task("a", "run_2278aa", { spec })]);
+    expect(html).toContain(`<div class="plan-task-spec">${spec}</div>`);
+    expect(html).not.toContain("not shown");
+    expect(html).toMatch(/<button class="orch-primary" type="button">Approve plan<\/button>/);
+  });
+
   it("shows the whole of every task in that one opening, with nothing a second press away", () => {
     // The reviewer's task: an unexpected agent, an unexpected place, and a
     // brief that says what it will really do.

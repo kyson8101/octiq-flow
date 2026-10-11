@@ -10840,8 +10840,9 @@ body.is-ultra .eff {
   word-break: break-word;
 }
 
-/* What the folded card does not show, at full strength: it is the one thing
-   between the person and an Allow of lines they have not read. */
+/* What the card does not show, at full strength and last above the answers:
+   it is the one thing between the person and an Allow of lines they have not
+   read. The sentence after the count is why the answers are off. */
 .ask-command-unseen {
   margin: 8px 0 0;
   color: var(--fg-0);

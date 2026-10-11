@@ -70,8 +70,5 @@
 .card-fold-in .diff-body { max-height: none; }
 .card-fold-in > :first-child { margin-top: 4px; }
 
-/* What a capped detail left out, said under it. */
-.card-fold-cut { margin: 6px 0 0; color: var(--fg-1); font-size: 12px; font-weight: 600; }
-
 /* The sentences a folded card shortens, whole. */
 .card-fold-note { margin: 9px 0 0; color: var(--fg-2); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

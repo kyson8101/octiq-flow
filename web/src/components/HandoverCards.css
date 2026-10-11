@@ -88,6 +88,16 @@
 .handover-link:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
 .handover-quiet:disabled,
 .handover-go:disabled { opacity: 0.5; cursor: default; }
+/* Off because what it would send cannot be shown whole (`lib/cardFold.
+   tooLong`). It keeps its place and its words; the sentence above says why. */
+.handover-quiet[aria-disabled="true"],
+.handover-go[aria-disabled="true"],
+.handover-go[aria-disabled="true"]:hover {
+  border-color: var(--border); background: var(--bg-2);
+  color: var(--fg-1); font-weight: 400; opacity: 0.5; cursor: not-allowed;
+}
+/* Why it is off, at full strength: the last thing read before the answers. */
+.handover-over { margin: 10px 0 0; color: var(--fg-0); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 
 @media (max-width: 640px), (pointer: coarse) {
   .handover-card { padding: 12px 12px 14px; }

@@ -8,11 +8,13 @@ import { describe, expect, it } from "vitest";
 // Loaded through Vite's `?raw`, not node:fs: this is a browser tsconfig.
 import host from "../../../src-tauri/src/team_tools.rs?raw";
 import { changeFacts, SUMMARY_MAX } from "./askDetail";
+import * as cardFold from "./cardFold";
 import {
-  allowHeld, capped, chars, COMMAND_CHARS, COMMAND_LINES, commandFold, commandOpened, count, cutNote, diffLabel, digits,
-  foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, HARD_CAP,
-  isShort, lineCount, longRowsLabel, nameList, planFoldId, planLabel, scriptLabel, STRAY_MS, STRAY_RADIUS, strayPress,
-  rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, textFold, textLines, unseenLines,
+  allowHeld, chars, COMMAND_CHARS, COMMAND_LINES, commandFold, commandOpens, commandShown, commandTitle, count,
+  diffLabel, digits, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
+  isShort, lineCount, longRowsLabel, nameList, notShown, planFoldId, planLabel, scriptLabel, STRAY_MS, STRAY_RADIUS,
+  strayPress, rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, textFold, textLines, tooLong,
+  tooLongNote, unseenLines, WHOLE_MAX,
 } from "./cardFold";
 
 describe("short fact or long part", () => {
@@ -215,18 +217,18 @@ describe("a command", () => {
   const lines = (n: number) => Array.from({ length: n }, (_, i) => `step ${i + 1}`).join("\n");
 
   it("is on the folded card whole, up to twelve lines", () => {
-    expect(commandFold("pnpm test")).toEqual({ lines: 1, head: "pnpm test", rest: "", more: 0 });
+    expect(commandFold("pnpm test")).toEqual({ lines: 1, size: 9, head: "pnpm test", rest: "", more: 0, tooLong: false });
     // The reviewer's: the second line is the one that matters.
     const danger = 'echo "Routine check"\nrm -rf /tmp/example-review-data';
-    expect(commandFold(danger)).toEqual({ lines: 2, head: danger, rest: "", more: 0 });
+    expect(commandFold(danger)).toMatchObject({ lines: 2, size: danger.length, head: danger, rest: "", more: 0 });
     expect(commandFold("pwd\ngit push origin main").head).toBe("pwd\ngit push origin main");
-    expect(commandFold(lines(COMMAND_LINES))).toEqual({ lines: 12, head: lines(12), rest: "", more: 0 });
+    expect(commandFold(lines(COMMAND_LINES))).toMatchObject({ lines: 12, head: lines(12), rest: "", more: 0 });
     expect(unseenLines(commandFold(lines(12)))).toBe("");
   });
 
   it("past twelve lines shows the first twelve whole and counts the rest", () => {
     const fold = commandFold(lines(13));
-    expect(fold).toEqual({ lines: 13, head: lines(12), rest: "step 13", more: 1 });
+    expect(fold).toMatchObject({ lines: 13, size: lines(13).length, head: lines(12), rest: "step 13", more: 1 });
     expect(unseenLines(fold)).toBe("1 more line not shown");
     const long = commandFold(lines(5000));
     expect(long.more).toBe(4988);
@@ -238,20 +240,20 @@ describe("a command", () => {
   it("never cuts a line to make it fit", () => {
     // One line past what a card can hold: none of it is drawn folded.
     const one = "x".repeat(COMMAND_CHARS + 1);
-    expect(commandFold(one)).toEqual({ lines: 1, head: "", rest: one, more: 1 });
+    expect(commandFold(one)).toMatchObject({ lines: 1, head: "", rest: one, more: 1 });
     expect(unseenLines(commandFold(one))).toBe("1,201 characters not shown");
     expect(commandFold("x".repeat(COMMAND_CHARS)).more).toBe(0);
     // A short line, then a long one: the short one whole, the long one unseen
     // along with everything after it.
     const mixed = `echo ok\n${"y".repeat(5000)}\nrm -rf /`;
-    expect(commandFold(mixed)).toEqual({ lines: 3, head: "echo ok", rest: `${"y".repeat(5000)}\nrm -rf /`, more: 2 });
+    expect(commandFold(mixed)).toMatchObject({ lines: 3, head: "echo ok", rest: `${"y".repeat(5000)}\nrm -rf /`, more: 2 });
     expect(unseenLines(commandFold(mixed))).toBe("2 more lines not shown");
     // Several lines with nothing drawn are counted as lines.
     expect(unseenLines(commandFold(`${one}\nls`))).toBe("2 lines not shown");
   });
 
   it("counts its lines without the blank ones at either end", () => {
-    expect(commandFold("\n\npwd\nls\n\n")).toEqual({ lines: 2, head: "pwd\nls", rest: "", more: 0 });
+    expect(commandFold("\n\npwd\nls\n\n")).toMatchObject({ lines: 2, size: 6, head: "pwd\nls", rest: "", more: 0 });
   });
 
   it("is called a script once it has more than one line", () => {
@@ -259,24 +261,127 @@ describe("a command", () => {
     expect(scriptLabel(5000)).toBe("5,000-line script");
   });
 
-  it("holds Allow back until a command the card does not show whole has been opened", () => {
-    expect(allowHeld(commandFold(lines(13)), false)).toBe(true);
-    // Opened once is enough, folded again or not.
-    expect(allowHeld(commandFold(lines(13)), true)).toBe(false);
-    // Whole on the card: nothing to open, nothing held.
-    expect(allowHeld(commandFold(lines(12)), false)).toBe(false);
-    expect(allowHeld(commandFold('echo "Routine check"\nrm -rf /tmp/example-review-data'), false)).toBe(false);
-    // Not a command at all.
-    expect(allowHeld(null, false)).toBe(false);
+  it("on one line it cannot draw is called by its size, never by its first command", () => {
+    // `echo <base64> | base64 -d | sh`: `bash(echo)` named the harmless end.
+    const piped = `echo ${"A".repeat(4990)} | base64 -d | sh`;
+    expect(chars(piped)).toBe(5012);
+    expect(commandTitle(commandFold(piped))).toBe("5,012-character command");
+    expect(commandTitle(commandFold(piped), "script")).toBe("5,012-character script");
+    // Whole on one line of the card: the tool's own title is kept.
+    expect(commandTitle(commandFold("echo safe; rm -rf /tmp/review-danger"))).toBeNull();
+    expect(commandTitle(commandFold("x".repeat(COMMAND_CHARS)))).toBeNull();
+    expect(commandTitle(commandFold("x".repeat(COMMAND_CHARS + 1)))).toBe("1,201-character command");
+    // Several lines are a script whether or not they all fit.
+    expect(commandTitle(commandFold(lines(2)))).toBe("2-line script");
+    expect(commandTitle(commandFold(lines(13)), "script")).toBe("13-line script");
   });
 
-  it("opens to every line it left out, up to the hard cap", () => {
-    expect(commandOpened(commandFold(lines(13)))).toEqual({ rest: "step 13", hidden: 0, total: lines(13).length });
-    const huge = commandFold(`echo start\n${"c".repeat(HARD_CAP + 77)}`);
-    const opened = commandOpened(huge);
-    expect(opened.total).toBe(HARD_CAP + 88);
-    expect(opened.hidden).toBe(88);
-    expect(opened.rest.length).toBe(HARD_CAP - 11);
+  // The reviewer's: 4,999 harmless lines, then the one that matters.
+  const reviewer = Array.from({ length: 5000 }, (_, i) => i === 4999 ? "rm -rf /tmp/review-danger" : "echo safe " + "x".repeat(55)).join("\n");
+
+  it("opens to every line it left out: there is no cut", () => {
+    const fold = commandFold(lines(13));
+    expect(commandShown(fold, false)).toEqual({ head: lines(12), rest: null });
+    expect(commandShown(fold, true)).toEqual({ head: lines(12), rest: "step 13" });
+    // 329,959 characters, past the 200,000 the card used to stop at.
+    expect(reviewer).toHaveLength(329_959);
+    const big = commandFold(reviewer);
+    expect(big).toMatchObject({ lines: 5000, size: 329_959, more: 4988, tooLong: false });
+    expect(commandOpens(big)).toBe(true);
+    const opened = commandShown(big, true);
+    expect(`${opened.head}\n${opened.rest}`).toBe(reviewer);
+    expect(opened.rest!.endsWith("\nrm -rf /tmp/review-danger")).toBe(true);
+    expect(notShown(big, opened)).toBe(0);
+    // 2,000,000 characters on one line: still all of it.
+    const one = commandFold("c".repeat(2_000_000));
+    expect(commandShown(one, true)).toEqual({ head: "", rest: "c".repeat(2_000_000) });
+    expect(notShown(one, commandShown(one, true))).toBe(0);
+  });
+
+  it("counts what the card does not draw from what it draws", () => {
+    const fold = commandFold(lines(13));
+    // Folded: the thirteenth line and the break before it.
+    expect(notShown(fold, commandShown(fold, false))).toBe("\nstep 13".length);
+    expect(notShown(fold, commandShown(fold, true))).toBe(0);
+    // Whole on the folded card: nothing unshown, opened or not.
+    const short = commandFold('echo "Routine check"\nrm -rf /tmp/example-review-data');
+    expect(notShown(short, commandShown(short, false))).toBe(0);
+    // Nothing of a long single line is on the folded card.
+    const one = commandFold("x".repeat(5000));
+    expect(notShown(one, commandShown(one, false))).toBe(5000);
+    const big = commandFold(reviewer);
+    expect(notShown(big, commandShown(big, false))).toBe(329_959 - chars(big.head));
+  });
+
+  it("is not whole when an opening draws less than all of it, whatever was pressed", () => {
+    // What the card did before: opened, the first 200,000 characters, and
+    // Allow let go. Asked of what is drawn, that is 129,959 short.
+    const big = commandFold(reviewer);
+    const cut = { head: big.head, rest: big.rest.slice(0, 200_000 - big.head.length - 1) };
+    expect(notShown(big, cut)).toBe(129_959);
+    expect(allowHeld(notShown(big, cut))).toBe(true);
+    // One character short is short.
+    expect(notShown(big, { head: big.head, rest: big.rest.slice(0, -1) })).toBe(1);
+    // Another text of the same length is not the command either.
+    expect(notShown(big, { head: big.head, rest: "y".repeat(big.rest.length) })).toBeGreaterThan(0);
+    // Nor is the rest without the lines above it.
+    expect(notShown(big, { head: "", rest: big.rest })).toBeGreaterThan(0);
+  });
+
+  it("holds Allow back while anything of the command has never been shown", () => {
+    const fold = commandFold(lines(13));
+    expect(allowHeld(notShown(fold, commandShown(fold, false)))).toBe(true);
+    expect(allowHeld(notShown(fold, commandShown(fold, true)))).toBe(false);
+    // Shown whole once is enough: folded again, it is still allowed.
+    expect(allowHeld(notShown(fold, commandShown(fold, false)), true)).toBe(false);
+    // Whole on the card: nothing to open, nothing held.
+    const short = commandFold(lines(12));
+    expect(allowHeld(notShown(short, commandShown(short, false)))).toBe(false);
+    // The reviewer's: held folded, let go only with the last line drawn.
+    const big = commandFold(reviewer);
+    expect(allowHeld(notShown(big, commandShown(big, false)))).toBe(true);
+    expect(allowHeld(notShown(big, commandShown(big, true)))).toBe(false);
+  });
+
+  it("past what the page draws is never opened, and never allowed", () => {
+    const line = "echo safe " + "x".repeat(55);
+    const over = commandFold(`${(line + "\n").repeat(Math.ceil(WHOLE_MAX / 66))}rm -rf /tmp/review-danger`);
+    expect(over.size).toBeGreaterThan(WHOLE_MAX);
+    expect(over.tooLong).toBe(true);
+    // There is nothing that says "Open the full command", because nothing would.
+    expect(commandOpens(over)).toBe(false);
+    // Asked to open anyway, it draws no more than the folded card.
+    expect(commandShown(over, true)).toEqual({ head: over.head, rest: null });
+    expect(notShown(over, commandShown(over, true))).toBe(over.size - chars(over.head));
+    expect(allowHeld(notShown(over, commandShown(over, true)))).toBe(true);
+    expect(unseenLines(over)).toBe(`${digits(over.lines - 12)} more lines not shown`);
+    // Exactly at the limit is drawn.
+    expect(commandFold("c".repeat(WHOLE_MAX)).tooLong).toBe(false);
+    expect(commandFold("c".repeat(WHOLE_MAX + 1)).tooLong).toBe(true);
+  });
+});
+
+describe("a text too long to show", () => {
+  it("is one past what the page draws, counted in characters", () => {
+    expect(tooLong("c".repeat(WHOLE_MAX))).toBe(false);
+    expect(tooLong("c".repeat(WHOLE_MAX + 1))).toBe(true);
+    // More units than the limit, but not more characters.
+    expect(tooLong("😀".repeat(WHOLE_MAX / 2 + 1000))).toBe(false);
+    expect(tooLong("")).toBe(false);
+  });
+
+  it("says why it cannot be allowed and what to do instead", () => {
+    expect(tooLongNote("command", 5_000_024)).toBe(
+      "This command is too long to show in full (5,000,024 characters), so it cannot be allowed here. Deny it and ask for it in smaller steps.",
+    );
+    expect(tooLongNote("first message", 5_000_001, "be sent from here", "Cancel it and ask for a shorter one.")).toBe(
+      "This first message is too long to show in full (5,000,001 characters), so it cannot be sent from here. Cancel it and ask for a shorter one.",
+    );
+  });
+
+  it("is the only limit: nothing in this module cuts a text", () => {
+    // The cap that drew 200,000 characters of a command and let Allow go.
+    for (const gone of ["HARD_CAP", "capped", "cutNote", "commandOpened"]) expect(cardFold).not.toHaveProperty(gone);
   });
 });
 
@@ -336,38 +441,6 @@ describe("the other size labels", () => {
     expect(nameList(["Ada", "Bo", "Cy"], 3, "agent")).toBe("Ada, Bo, Cy");
     expect(nameList(["Ada", "Bo", "Cy", "Di"], 3, "agent")).toBe("Ada, Bo, Cy +1 more agent");
     expect(nameList(["Ada", "Bo", "Cy", "Di", "Ed"], 3, "destination")).toBe("Ada, Bo, Cy +2 more destinations");
-  });
-});
-
-describe("a detail opened", () => {
-  it("is every character of a long text", () => {
-    const text = "c".repeat(20_000);
-    expect(capped(text)).toEqual({ shown: text, hidden: 0 });
-  });
-
-  it("stops only at the hard cap, and says exactly how much it left out", () => {
-    const text = "c".repeat(HARD_CAP + 1234);
-    const { shown, hidden } = capped(text);
-    expect(shown.length).toBe(HARD_CAP);
-    expect(hidden).toBe(1234);
-    expect(cutNote(text.length, hidden)).toBe(
-      "The first 200,000 of 201,234 characters are shown. 1,234 characters are not shown.",
-    );
-    expect(cutNote(HARD_CAP + 1, 1)).toBe("The first 200,000 of 200,001 characters are shown. 1 character is not shown.");
-  });
-
-  it("never stops in the middle of a character", () => {
-    // Three emoji, room for two: the cut falls between characters.
-    expect(capped("😀😀😀", 2)).toEqual({ shown: "😀😀", hidden: 1 });
-    // A cut by units would have left half of the second one.
-    expect(capped("a😀b", 2)).toEqual({ shown: "a😀", hidden: 1 });
-    expect(capped("😀😀", 2)).toEqual({ shown: "😀😀", hidden: 0 });
-    // More units than the cap, but not more characters: all of it.
-    const emoji = "😀".repeat(HARD_CAP);
-    expect(capped(emoji)).toEqual({ shown: emoji, hidden: 0 });
-    const over = capped(`${emoji}😀x`);
-    expect(over.hidden).toBe(2);
-    expect(over.shown).toBe(emoji);
   });
 });
 
