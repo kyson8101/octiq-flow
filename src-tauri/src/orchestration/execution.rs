@@ -876,12 +876,16 @@ impl OrchestrationStore {
             {
                 continue;
             }
-            // The plan is back with the person (a peer request, a new task),
-            // and nothing starts until they decide. A task they had already
-            // approved keeps its retry and waits with it: refusing the start
-            // would drop the retry and leave the task failed for a reason
-            // that was never its own.
-            if run.awaiting_plan_approval() {
+            // The plan is back with the person (a peer request, a new task).
+            // A task they had already approved recovers as usual. One whose
+            // own approval is still owed (it changed hands after failing, or
+            // depends on work they have not approved) keeps its retry and
+            // waits with it: refusing the start would drop the retry and
+            // leave the task failed for a reason that was never its own.
+            let find = |id: &str| snapshot.tasks.iter().find(|task| task.id == id);
+            if find(&attempt.task_id)
+                .is_some_and(|task| super::held_by_plan(run, task, &find).is_some())
+            {
                 self.hold_recovery(&attempt.id)?;
                 continue;
             }
@@ -932,9 +936,12 @@ impl OrchestrationStore {
                 // new reservation exists. Do not retry that forever either.
                 let stopped = self.mutate(|data| {
                     if !data.tasks.get(&attempt.task_id).is_some_and(|t| t.active_attempt_id.as_deref() == Some(&attempt.id)) { return Ok(false); }
-                    // The plan went back to the person between the read above
-                    // and this start: held, as above, not dropped.
-                    if data.runs.get(&run.id).is_some_and(|r| r.awaiting_plan_approval()) {
+                    // The task's approval was withdrawn between the read
+                    // above and this start: held, as above, not dropped.
+                    let waits = data.runs.get(&run.id).zip(data.tasks.get(&attempt.task_id)).is_some_and(|(run, task)| {
+                        super::held_by_plan(run, task, &|id| data.tasks.get(id)).is_some()
+                    });
+                    if waits {
                         hold(data, &attempt.id);
                         return Ok(false);
                     }
@@ -966,9 +973,9 @@ impl OrchestrationStore {
         Ok(())
     }
 
-    /// Keep a due recovery waiting while its run's plan is with the person.
-    /// Written and told once: a pass that finds it already held writes
-    /// nothing.
+    /// Keep a due recovery waiting while its task waits for the person's
+    /// approval on the plan card (`held_by_plan`). Written and told once: a
+    /// pass that finds it already held writes nothing.
     fn hold_recovery(&self, attempt_id: &str) -> Result<(), String> {
         {
             let inner = self.inner.lock().map_err(|error| error.to_string())?;
@@ -991,9 +998,10 @@ fn held(attempt: &Attempt) -> bool {
     attempt.execution.current_operation.as_deref() == Some(RECOVERY_HELD)
 }
 
-/// Mark a failed attempt's due recovery as waiting for the plan, and tell the
-/// coordinator, once. Its `next_retry_at` is left alone: the recovery runs on
-/// the first pass after the plan is decided. The run's id when this wrote.
+/// Mark a failed attempt's due recovery as waiting for its task's approval,
+/// and tell the coordinator, once. Its `next_retry_at` is left alone: the
+/// recovery runs on the first pass after the plan is decided. The run's id
+/// when this wrote.
 fn hold(data: &mut Stored, attempt_id: &str) -> Option<String> {
     let attempt = data.attempts.get_mut(attempt_id)?;
     if held(attempt) || attempt.execution.next_retry_at.is_none() {
@@ -1003,7 +1011,7 @@ fn hold(data: &mut Stored, attempt_id: &str) -> Option<String> {
     let attempt = attempt.clone();
     let target = data.runs.get(&attempt.run_id)?.coordinator_chat_key.clone();
     inbox::enqueue(data, &attempt.run_id, &attempt.worker_chat_key, &target, format!("recovery-held:{attempt_id}"), "provider",
-        format!("Automatic recovery for task {} (attempt {attempt_id}) is due, and the plan is waiting for the person's approval, so nothing starts yet. The retry is kept: the host starts it once the person has decided on the plan. Nothing is needed from you for it.", attempt.task_id));
+        format!("Automatic recovery for task {} (attempt {attempt_id}) is due, but the task is waiting for the person's approval on the plan card, so it does not start yet. The retry is kept: the host starts it once the person has decided on the plan. Tasks they have already approved are not held. Nothing is needed from you for it.", attempt.task_id));
     Some(attempt.run_id)
 }
 

@@ -374,6 +374,30 @@ a peer-help team, through seven MCP tools (`team_tools.rs`,
   removed and the agent is told to propose it again. A report that moves up
   becomes a new version of itself, so a card still waiting on that report is
   refused too.
+- **An agent with work in progress is not removed** (decided 2026-10-11), by
+  the tool or by the page's `team_delete`. Work in progress, read from the
+  ledger by agent id (`orchestration/agent_work.rs`), is a task with an
+  unsettled attempt of the agent's (being prepared, running, or blocked on an
+  open decision), a task whose automatic retry the host has scheduled, a
+  task of its whose workspace the host is preparing or cleaning up, and a
+  peer request in flight that it asked for or is asked to do, from the plan
+  card until it ends. The refusal names how many tasks and in which runs,
+  and what to do: `Nova still has 2 tasks in progress in 1 run: 2 in "Ship
+  the feature" (run_…). Nothing was removed. Stop them or wait for them to
+  finish, then remove Nova.` The tool is refused before any card. Because a
+  card can wait while a task starts, the same question is asked again when
+  the person answers, under the lock the removal is written with
+  (`team::delete_unchanged`'s `idle`), and refused in the same words; the
+  page's command asks it there too (`team::delete_idle`). A task start does
+  not take that lock, so a start in the instant between that check and the
+  write is not excluded. A lease left on a settled task's retained workspace
+  is not work in progress: it stays until cleanup.
+- **Unfinished tasks do not stop a removal.** A task of the agent's that is
+  planned, ready, failed or blocked with nobody working on it keeps the
+  agent's name (`TaskAssignee` is a copy) and its provider and model, and
+  starts without its role, brief and memory. The card says how many there
+  are, in an `Unfinished tasks` row, so the person can reassign them first.
+  The count is not part of what the Allow is held to.
 - `agent_policy_update` only **proposes** a whole new agent policy (`""`
   clears it), on the same card. It is saved with `team::set_policy_unchanged`,
   so a policy edited meanwhile is not overwritten.
@@ -475,7 +499,7 @@ Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
 | --- | --- |
 | `agent_register` | A plain row for each of `Name`, `Role`, `Provider`, `Model`, `Effort`, `Access`, `Available in`, `Reports to`, `Team`, then `Persistent prompt` when one is proposed. |
 | `agent_update` | A move for each of those fields that changes, and no row for one that stays. `Persistent prompt` comes last when the change touches it: plain when it is set where there was none, a move when it is replaced or cleared. |
-| `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, and `Memory note` last. |
+| `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, `Unfinished tasks` when tasks nobody is working on still name it, and `Memory note` last. |
 | `agent_policy_update` | One `Policy` row: plain when a policy is set where there was none, a move when it is replaced or cleared. |
 | `team_create` | Plain rows `Available in` (always `every project`) and `Members` (the names, or `none`), then `Other teams` when a member is on another team, then `Membership`. |
 | `team_update` | `Name` as a move when the team is renamed. When its members change: plain rows `Added` and `Removed`, each only when there are any, then `Members` as a move from every member before to every member after (`none` for an empty team). `Other teams` when an agent it adds is on another team, then `Membership`. |
@@ -630,9 +654,10 @@ extended. The host (`orchestration/peer_request.rs`):
   the teammate and carries `peerRequest` (`requestedBy`, `requesterChatKey`,
   `requesterAttemptId` for a worker, `output`, `maxMinutes`). It waits on the
   **normal plan card**, like any task added to an approved plan: the plan goes
-  back to pending, its revision covers who asked and the bounds, and no worker
-  starts before the person approves. A run that never asked for approval asks
-  from then on. There is no new card type.
+  back to pending, its revision covers who asked and the bounds, and the
+  request does not start before the person approves. Tasks they had already
+  approved keep starting (see **What a waiting plan holds**). A run that never
+  asked for approval asks from then on. There is no new card type.
 - **puts the task where the requester's work is.** A worker's request joins
   the worker's own run, and that run's coordinator is told. A lead chat's
   joins the live run the chat coordinates; when it coordinates none, the host
@@ -870,8 +895,9 @@ access become the task's worker settings, so a lead cannot misquote a teammate.
 ## Plan approval
 
 Every run a lead opens waits for you (`run.planApproval`, always required).
-Until you approve it, the host refuses every worker start, manual or automatic,
-and the scheduler skips the run. The lead creates all its tasks, replies with
+The host starts a task only once you have approved it: until then it refuses
+every start of that task, manual or automatic, and the scheduler leaves it out
+(see **What a waiting plan holds** below). The lead creates all its tasks, replies with
 the plan as a short list, and ends its turn. The run's **Plan ready for
 review** view lists each task with who it goes to and **where it runs** —
 project and repository, the full path in its tooltip; a task without a
@@ -988,11 +1014,43 @@ Approval is for exactly the plan you saw:
   (`shownMs`). A revision that replaced another less than 1.5 s before the
   click is refused, and the card holds its button that long after a change.
   Once approved, the plan leaves the chat; its record stays in the run panel.
-- A task the lead adds **after** approval puts the whole run back to waiting
-  for you; it is marked **New** in the review, and no worker starts (retries
-  included) until you approve again. Running workers carry on.
+- A task the lead adds **after** approval puts the plan back in front of you;
+  it is marked **New** in the review. Running workers carry on, and so does
+  every task you had already approved.
 
 Only the top plan needs you. Managers split their tasks further without asking.
+
+### What a waiting plan holds
+
+A plan back in front of you holds only what you have not approved (decided
+2026-10-11; before that it froze the whole run, and approved tasks sat ready
+behind a card that was about other work). A task may start when you approved
+**that task as it stands** (`task.approvedAt`, stamped by the plan decision and
+cleared by every change to what it covered: a new owner, a new size) and no
+task it depends on, however far down, is still waiting for you. So a task the
+lead created, revised, re-routed or resized since your last approval waits, and
+so does whatever depends on it; a manager's subtask is never on the card and
+goes by its parent's approval. The rule is one function,
+`orchestration::held_by_plan`, read by every way a task comes to run: the
+single door every start goes through (`reserve_attempt_for`: a first dispatch,
+a reopened task, a coordinator's retry, the page's Start, the host's automatic
+recovery, `orchestration_worker_start`), the scheduler's and
+`orchestration_dispatch_ready`'s wave (`ready_wave`, where a held task takes no
+slot), and the recovery pass, which keeps a held task's retry instead of
+dropping it. Each task in a snapshot carries `heldByPlan: true` while a start
+of it would be refused for this reason, so the page and the coordinator can say
+"waiting for plan approval" apart from "ready"; it is derived on every read and
+never stored. Unchanged: a task you have not approved never starts; rejecting
+an amendment withdraws the new work and leaves the earlier approved plan in
+force; stopping a run, closing or abandoning a mission and `maxConcurrent`
+behave as before; a peer request still waits for its own approval on the card.
+A run that asked for no approval until a peer request put a plan in front of
+you has no approved task at all, so everything in it not already running waits
+with that card.
+
+`orchestration_task_reopen` puts new follow-up instructions in a completed
+task's spec and keeps its approval, as it always has: the reopened task starts
+without the new words going on the plan card.
 
 ## Memory
 
@@ -1014,6 +1072,19 @@ arguments never name the caller. An agent may:
 - append only to its own memory, one dated entry at a time, never overwriting;
 - propose a new **Lessons** section for its own memory, which the person
   approves on a card.
+
+Both writes are the chat's **own agent's**. An additional agent in a room
+(a seat, `session_key != chat_key`) holds a capability that proves the chat,
+not the chat's registered agent, so the host refuses it
+`vault_agent_memory_append` and `vault_agent_memory_lessons` before reading
+their arguments (`web.rs` `memory_seat_refusal`): `Only the chat's own agent
+can add to its working memory. An additional agent in a room is one voice in
+the chat, not its registered agent.` The person decided the append on
+2026-10-11 although `vault_patch` and `vault_write` can reach the same note,
+and those two are unchanged: only an agent's own chat writes its working
+memory through the tool that names it, the one whose saved entry OctiqFlow
+draws in the chat. A seat may still read. A worker's chat is its own voice,
+and appends to its assignee's memory as before.
 
 ### Lessons and the newest entries (`memory_lessons.rs`)
 
@@ -1043,7 +1114,7 @@ second file it has to know to read and decide which one to write.
   It records entries, and curates them the next time it leads a chat.
 - **An additional agent in a room cannot propose them.** Its capability proves
   the chat, not the chat's registered agent, so the host refuses it before
-  any card (`web.rs` `lessons_seat_refusal`).
+  any card (`web.rs` `memory_seat_refusal`).
 - **The read nudges.** With no Lessons and more than 8 entries, or with
   entries left out, the read carries a `lessonsHint` to propose some.
 - **A lesson for every agent goes up, not sideways.** The brief tells an agent

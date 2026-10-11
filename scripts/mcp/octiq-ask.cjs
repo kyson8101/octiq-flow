@@ -1889,7 +1889,9 @@ const ORCHESTRATION_SNAPSHOT = {
     "left out and long text is clipped; pass taskId for one task in full. This is the source of truth; never " +
     "infer task state from chat prose. nativeDecisions identifies observed safety cards and continuation viability; " +
     "absence is not proof of approval. services reports registered local listener reachability and checkedAt, " +
-    "independent of task completion; verify application health before use. A peer request's worker is shown its " +
+    "independent of task completion; verify application health before use. heldByPlan on a task means a start " +
+    "of it is refused for now: the plan card is waiting for the person and their approval does not cover that " +
+    "task, or one it depends on; tasks they have already approved keep starting. A peer request's worker is shown its " +
     "own task only, in full, and is refused another runId or taskId.",
   inputSchema: {
     type: "object",
@@ -2133,7 +2135,7 @@ const ORCHESTRATION_RUN_STOP = {
 const WORKSPACE_TOOLS = [
   { name: "orchestration_automation_configure", description: "Enable host dispatch with workerDefaults={access:'auto'} using the main agent's per-task worker selections, or pause ready-wave dispatch with workerDefaults=null. Transient provider recovery uses each task's recovery policy; worker-reported failures and blocks still need explicit retries. Coordinator only.",
     inputSchema: { type: "object", properties: { runId: { type: "string" }, workerDefaults: WORKER_DEFAULTS_SCHEMA }, required: ["runId", "workerDefaults"] } },
-  { name: "orchestration_dispatch_ready", description: "Immediately dispatch the configured run's full ready wave up to its capacity. Repeated calls do not duplicate active workers. The scheduler also does this automatically.",
+  { name: "orchestration_dispatch_ready", description: "Immediately dispatch the configured run's full ready wave up to its capacity. Repeated calls do not duplicate active workers. The scheduler also does this automatically. While a plan revision waits for the person, the wave is the ready tasks they have already approved: a task they have not approved, and whatever depends on it, is left out and shows heldByPlan in orchestration_snapshot.",
     inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
   { name: "orchestration_workspace_refresh", description: "Refresh Git and remote delivery evidence for a task: exact commit, dirty state, push, PR/review, and merge. Requires GitHub CLI for PR evidence. Worker completion alone is not delivery.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
@@ -2292,7 +2294,7 @@ const AGENT_UPDATE = agentTool("update", "Agents mode: propose changing one regi
 const AGENT_POLICY_UPDATE = agentTool("policy_update", "Agents mode: propose replacing the shared agent policy, the person's rules that every registered agent's brief starts with, ahead of its own standing instructions and role. Pass the whole new text; \"\" clears it." + AGENT_APPROVAL, {
   policy: { type: "string", maxLength: 4000, description: "The whole new policy text." },
 }, ["policy"], false);
-const AGENT_DELETE = agentTool("delete", "Agents mode: propose removing one registered agent. Its direct reports move up to its own manager, and its memory note in the vault is kept. The card shows the agent and what moves." + AGENT_APPROVAL, {
+const AGENT_DELETE = agentTool("delete", "Agents mode: propose removing one registered agent. Its direct reports move up to its own manager, and its memory note in the vault is kept. The card shows the agent and what moves. An agent with work in progress is refused, before any card and again when one is answered: a task of its being prepared, running, blocked on an open decision or due an automatic retry, a workspace being prepared or cleaned up for one, or a peer request in flight that it asked for or was asked to do. The refusal says how many tasks and in which runs; stop them or wait, then propose it again. Its unfinished tasks that nobody is working on do not stop it: they keep its name with no registered agent behind them, and the card says how many." + AGENT_APPROVAL, {
   agent: { type: "string", minLength: 1, description: "The agent to remove: its id or name from agent_list." },
 }, ["agent"], false);
 // Peer-help teams ride the same hook and the same card. A team tool names a

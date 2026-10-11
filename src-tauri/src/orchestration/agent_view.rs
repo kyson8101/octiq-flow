@@ -370,6 +370,7 @@ fn compact(
                             "kind",
                             "updatedAt",
                             "peerRequest",
+                            "heldByPlan",
                         ]
                     };
                     let mut item = pick(&full, keys);

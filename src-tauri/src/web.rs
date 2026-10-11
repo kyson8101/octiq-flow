@@ -1724,7 +1724,7 @@ async fn vault_handler(
         Ok(caller) => caller,
         Err(refused) => return hook_refusal(refused),
     };
-    if let Some(refused) = lessons_seat_refusal(&request.action, &caller) {
+    if let Some(refused) = memory_seat_refusal(&request.action, &caller) {
         return hook_failed(StatusCode::BAD_REQUEST, refused);
     }
     let chat_key = caller.chat_key;
@@ -1750,19 +1750,30 @@ async fn vault_handler(
     }
 }
 
-/// A Lessons proposal is put to the person as the chat's registered agent, on
-/// a card in that chat, and rewrites that agent's own section. A room seat's
-/// capability proves the chat, not that identity, so it is refused before
-/// any card. The other vault actions stay open to a seat: the memory notes
-/// are ordinary notes of the shared vault, which its own vault tools reach
-/// under the same chat key, so they give it nothing those do not.
-fn lessons_seat_refusal(action: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
-    (action == "agent_memory_lessons" && caller.session_key != caller.chat_key).then(|| {
-        crate::outcome::Refusal::new(
-            crate::outcome::ReasonClass::ScopeRefused,
-            "Only the chat's own agent can propose its Lessons. An additional agent in a room is one voice in the chat, not its registered agent.",
-        )
-    })
+/// The two agent-memory writes are made as the chat's registered agent: a
+/// Lessons proposal is put to the person on a card in that chat and rewrites
+/// that agent's own section, and an entry is added to that agent's own note
+/// and drawn in the chat as its memory being saved. A room seat's capability
+/// proves the chat, not that identity, so it is refused both before its
+/// arguments are read, and before any card.
+///
+/// The person decided the second on 2026-10-11 although `vault_patch` and
+/// `vault_write` reach the same note under the same chat key: only an
+/// agent's own chat writes its working memory through the tool that names
+/// it. Those two tools, and every vault read, stay open to a seat.
+fn memory_seat_refusal(action: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
+    if caller.session_key == caller.chat_key {
+        return None;
+    }
+    let what = match action {
+        "agent_memory_lessons" => "propose its Lessons",
+        "agent_memory_append" => "add to its working memory",
+        _ => return None,
+    };
+    Some(crate::outcome::Refusal::new(
+        crate::outcome::ReasonClass::ScopeRefused,
+        format!("Only the chat's own agent can {what}. An additional agent in a room is one voice in the chat, not its registered agent."),
+    ))
 }
 
 /// An agent proposing a new Lessons section for its own memory
@@ -1916,11 +1927,15 @@ async fn agents_hook(
         return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead."));
     }
     if action == "delete" {
-        let gone = crate::team_tools::propose_delete(
+        // Not while any of its work is running: asked of the ledger before
+        // the card and again when it is answered (`agent_work`).
+        let orchestrations = ctx.services.orchestrations.clone();
+        let gone = crate::team_tools::propose_delete_when(
             &roster,
             &team,
             chat_key,
             serde_json::from_value(args).map_err(invalid)?,
+            &|agent| orchestrations.removal_of(&agent.id, &agent.name),
             crate::permission::ask,
         )
         .await?;
@@ -3121,6 +3136,107 @@ mod tests {
         chats.test_end("chat:lead");
     }
 
+    /// agent_delete review, M3 (the person's decision of 2026-10-11): an
+    /// agent with work running is not removed, by the tool or by the page.
+    /// The tool refuses before any card; the page's command refuses under
+    /// the lock the removal is written with. Once the work has ended, both
+    /// go on as before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_with_work_running_is_not_removed_by_the_tool_or_by_the_page() {
+        use crate::orchestration::tests::{run, running_worker_of};
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let wiring = crate::handover::Wiring::scratch();
+        let team = wiring.team.clone();
+        // The page's command reads the roster from its usual place.
+        let _team = crate::team::use_test_path(team.clone());
+        let nova = crate::team::save(
+            &team,
+            crate::team::TeamDraft {
+                id: None,
+                name: "Nova".into(),
+                role: "Builds.".into(),
+                agent: crate::agent_chat::ChatAgent::Claude,
+                model: "sonnet".into(),
+                effort: None,
+                access: None,
+                project_id: None,
+                reports_to: None,
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap();
+        let run = run(&store);
+        let worker = running_worker_of(
+            &store,
+            &run,
+            &crate::orchestration::TaskAssignee {
+                id: nova.id.clone(),
+                name: nova.name.clone(),
+            },
+        );
+        let busy = format!(
+            "Nova still has 1 task in progress in 1 run: 1 in \"Ship the feature\" ({}). Nothing was removed. Stop it or wait for it to finish, then remove Nova.",
+            run.id
+        );
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        let (ctx, base) = test_server_handing_over(cfg, chats.clone(), store.clone(), wiring).await;
+        // A key no other test uses: the list of waiting cards is one for the
+        // whole process.
+        let lead = chats.test_launch("chat:removes-nova");
+        let remove = json!({ "chatKey": "chat:removes-nova", "action": "delete", "args": { "agent": "Nova" } });
+
+        let (status, answer) = post_hook(&base, "agents", None, Some(&lead), remove.clone()).await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(answer["error"], busy.as_str(), "{answer}");
+        let waiting = serde_json::to_string(&crate::permission::pending()).unwrap();
+        assert!(
+            !waiting.contains("chat:removes-nova"),
+            "no card was shown: {waiting}"
+        );
+        let page =
+            crate::dispatch::dispatch(&ctx.services, "team_delete", json!({ "id": nova.id }))
+                .unwrap_err();
+        assert_eq!(page, busy);
+        assert_eq!(
+            crate::team::list(&team, None, true).unwrap(),
+            vec![nova.clone()]
+        );
+
+        // The task reports: nothing of Nova's is running any more.
+        store
+            .report_worker(
+                &worker.worker_chat_key,
+                crate::orchestration::WorkerReport {
+                    attempt_id: worker.id.clone(),
+                    outcome: crate::orchestration::WorkerOutcome::Completed,
+                    summary: "Done".into(),
+                    files_modified: Vec::new(),
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        // The tool is past the check and at its card, which nobody is there
+        // to answer; the page's command removes it.
+        let (status, answer) = post_hook(&base, "agents", None, Some(&lead), remove).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("Nobody has OctiqFlow open to approve this"),
+            "{answer}"
+        );
+        crate::dispatch::dispatch(&ctx.services, "team_delete", json!({ "id": nova.id })).unwrap();
+        assert!(crate::team::list(&team, None, true).unwrap().is_empty());
+        chats.test_end("chat:removes-nova");
+    }
+
     /// agent_delete review, H2: a worker is refused by what its chat IS, not
     /// by a task in flight. Once its attempt has reported, `active_task` is
     /// `None` while its capability still works for the live launch; it is
@@ -3465,10 +3581,98 @@ mod tests {
         chats.test_end(&chat);
     }
 
-    /// The pure half: only the Lessons proposal is refused a seat on
-    /// `/hook/vault`, and the chat's own process is refused nothing.
+    /// The person's decision of 2026-10-11, on `/hook/vault`: an entry in an
+    /// agent's working memory is written only by that agent's own chat. A
+    /// room seat is refused before its arguments are read, the chat's own
+    /// process and a worker's chat reach the command as before, and the
+    /// shared vault's own write tools are not this rule's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_room_seat_cannot_add_to_the_chats_working_memory() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let chat = format!("chat:memory-seated-{id}");
+        let seat_key = format!("{chat}#2");
+        let worker = format!("chat:orch-memory-{id}");
+        let (_ctx, base) = test_server(chats.clone(), store).await;
+        let own = chats.test_launch(&chat);
+        let seat = chats.test_launch_in(&seat_key, &chat);
+        let worker_cap = chats.test_launch(&worker);
+        let call = |chat: &str, session: &str, action: &str, args: Value| json!({ "chatKey": chat, "sessionKey": session, "action": action, "args": args });
+        let entry = || json!({ "text": "A gotcha.", "requestId": format!("seat-{id}") });
+        // Arguments no entry could have, and then a real one: the seat is
+        // answered the same, because neither was read.
+        for args in [json!({ "text": 5 }), entry()] {
+            let (status, answer) = post_hook(
+                &base,
+                "vault",
+                None,
+                Some(&seat),
+                call(&chat, &seat_key, "agent_memory_append", args),
+            )
+            .await;
+            assert_eq!(status, 400, "{answer}");
+            assert_eq!(
+                answer["outcome"]["reasonClass"], "scope-refused",
+                "{answer}"
+            );
+            assert_eq!(
+                answer["error"],
+                "Only the chat's own agent can add to its working memory. An additional agent in a room is one voice in the chat, not its registered agent.",
+            );
+        }
+        assert!(crate::transcript::since(&chat, 0).is_empty());
+        // The chat's own process, and a worker's chat, are past that check:
+        // what answers is the command, which refuses a chat the index does
+        // not hold before any vault is opened.
+        for (key, cap) in [(&chat, &own), (&worker, &worker_cap)] {
+            let (status, answer) = post_hook(
+                &base,
+                "vault",
+                None,
+                Some(cap),
+                call(key, key, "agent_memory_append", entry()),
+            )
+            .await;
+            assert_eq!(status, 400, "{key}: {answer}");
+            assert!(
+                answer["error"].as_str().unwrap().contains("chat index"),
+                "{key}: {answer}"
+            );
+        }
+        // The seat's own vault tools are not refused as a seat's: they
+        // reach the command like the chat's own.
+        for action in ["patch", "write"] {
+            let (status, answer) = post_hook(
+                &base,
+                "vault",
+                None,
+                Some(&seat),
+                call(&chat, &seat_key, action, json!({})),
+            )
+            .await;
+            assert_ne!(
+                answer["outcome"]["reasonClass"], "scope-refused",
+                "{action} {status}: {answer}"
+            );
+            assert!(
+                !answer["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("An additional agent in a room"),
+                "{action}: {answer}"
+            );
+        }
+        chats.test_end(&seat_key);
+        chats.test_end(&chat);
+        chats.test_end(&worker);
+    }
+
+    /// The pure half: the two agent-memory writes are refused a seat on
+    /// `/hook/vault`, nothing else is, and the chat's own process is refused
+    /// nothing.
     #[test]
-    fn a_room_seat_is_refused_the_lessons_proposal_and_no_other_vault_action() {
+    fn a_room_seat_is_refused_the_two_memory_writes_and_no_other_vault_action() {
         let own = HookCaller {
             chat_key: "chat:lead".into(),
             session_key: "chat:lead".into(),
@@ -3478,21 +3682,45 @@ mod tests {
             session_key: "chat:lead#2".into(),
             ..own.clone()
         };
-        let refused = lessons_seat_refusal("agent_memory_lessons", &seat).unwrap();
-        assert_eq!(
-            refused.outcome.reason_class,
-            crate::outcome::ReasonClass::ScopeRefused
-        );
-        assert!(lessons_seat_refusal("agent_memory_lessons", &own).is_none());
+        for (action, said) in [
+            (
+                "agent_memory_lessons",
+                "Only the chat's own agent can propose its Lessons. An additional agent in a room is one voice in the chat, not its registered agent.",
+            ),
+            (
+                "agent_memory_append",
+                "Only the chat's own agent can add to its working memory. An additional agent in a room is one voice in the chat, not its registered agent.",
+            ),
+        ] {
+            let refused = memory_seat_refusal(action, &seat).unwrap();
+            assert_eq!(
+                refused.outcome.reason_class,
+                crate::outcome::ReasonClass::ScopeRefused
+            );
+            assert_eq!(refused.message, said);
+            assert!(memory_seat_refusal(action, &own).is_none(), "{action}");
+        }
+        // Reading its memory, and the shared vault's own tools, the write
+        // tools among them, are not this rule's.
         for action in [
             "agent_memory_read",
-            "agent_memory_append",
             "read",
             "search",
+            "list",
             "patch",
+            "write",
         ] {
-            assert!(lessons_seat_refusal(action, &seat).is_none(), "{action}");
+            assert!(memory_seat_refusal(action, &seat).is_none(), "{action}");
+            assert!(memory_seat_refusal(action, &own).is_none(), "{action}");
         }
+        // A worker's chat is its own voice, whatever else it is: its rule
+        // for an entry is the command's, unchanged.
+        let worker = HookCaller {
+            chat_key: "chat:orch-1".into(),
+            session_key: "chat:orch-1".into(),
+            launch_id: "l2".into(),
+        };
+        assert!(memory_seat_refusal("agent_memory_append", &worker).is_none());
     }
 
     /// A finished peer request is one approved job. Its coordinator's

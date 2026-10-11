@@ -735,13 +735,20 @@ fn reports_of<'a>(roster: &'a Roster, shown: &Removal) -> Vec<&'a str> {
 /// one agent from another, and what the removal does to the rest of the
 /// chart — the head or front desk seat that empties, the reports that move
 /// up. The seats come first: the list of reports has no bound, and the page
-/// shows only the start of a long card. The memory note is not touched, and
-/// the card says so.
+/// shows only the start of a long card. `unfinished` is what the ledger says
+/// of the tasks still naming it (`AgentWork::unfinished_note`), which the
+/// removal leaves as they are. The memory note is not touched, and the card
+/// says so.
 ///
 /// `shown` is `Roster::removal` of the same roster: everything said here about
 /// the chart is read from it, and it is what the person's Allow is held to
 /// (`team::delete_unchanged`).
-pub fn describe_delete(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> String {
+pub fn describe_delete(
+    roster: &Roster,
+    gone: &TeamAgent,
+    shown: &Removal,
+    unfinished: Option<&Unfinished>,
+) -> String {
     let mut text = format!("Remove the agent {}.\n", gone.name);
     for (label, value) in fields(roster, gone) {
         if label == "Name" {
@@ -767,6 +774,9 @@ pub fn describe_delete(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> St
             reports.join(", "),
             roster.agent_name(shown.reports_to.as_deref())
         ));
+    }
+    if let Some(unfinished) = unfinished {
+        text.push_str(&format!("\n\n{}", unfinished.note));
     }
     text.push_str("\n\nIts memory note in the vault is kept.");
     text
@@ -795,10 +805,17 @@ fn reports_summary(count: usize, to: &str) -> String {
 /// `describe_delete` as rows, in the same order: a plain row for each field
 /// but the name, which the lead carries, then what the removal does to the
 /// chart as plain rows of their own — `Head` and `Front desk` when that seat
-/// empties, `Direct report(s)` naming who moves up and to whom — and `Memory
-/// note` last. The reports row names every one of them, so it also carries
-/// `reports_summary`.
-pub fn delete_facts(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> ChangeFacts {
+/// empties, `Direct report(s)` naming who moves up and to whom — then
+/// `Unfinished tasks` when any still name it, and `Memory note` last. The
+/// reports row names every one of them, so it also carries
+/// `reports_summary`; the unfinished row is two sentences, and carries the
+/// ledger's own count of them (`Unfinished::summary`).
+pub fn delete_facts(
+    roster: &Roster,
+    gone: &TeamAgent,
+    shown: &Removal,
+    unfinished: Option<&Unfinished>,
+) -> ChangeFacts {
     let mut rows: Vec<FactRow> = fields(roster, gone)
         .into_iter()
         .filter(|(label, _)| *label != "Name")
@@ -821,6 +838,13 @@ pub fn delete_facts(roster: &Roster, gone: &TeamAgent, shown: &Removal) -> Chang
             },
             format!("{} will report to {to}.", reports.join(", ")),
             reports_summary(reports.len(), &to),
+        ));
+    }
+    if let Some(unfinished) = unfinished {
+        rows.push(summed(
+            "Unfinished tasks",
+            unfinished.note.as_str(),
+            unfinished.summary.clone(),
         ));
     }
     rows.push(plain("Memory note", "Kept in the vault."));
@@ -980,16 +1004,53 @@ pub fn deleted_text(roster: &Roster, gone: &TeamAgent) -> Value {
     })
 }
 
-/// Propose removing an agent, put it to the person, and remove it only on
-/// their Allow, and only while the removal still does what the card said: the
-/// same version of the agent, the same manager, the same direct reports, the
-/// same seats (`team::Removal`). Its reports move up to its manager
-/// (`team::delete`); its memory note stays.
+/// `propose_delete_when` for an agent with nothing in the ledger.
+#[cfg(test)]
 pub async fn propose_delete<A, F>(
     roster: &Roster,
     team: &Path,
     chat_key: &str,
     proposal: DeleteProposal,
+    ask: A,
+) -> Result<TeamAgent, Refusal>
+where
+    A: FnOnce(crate::permission::Request) -> F,
+    F: Future<Output = Answer>,
+{
+    propose_delete_when(roster, team, chat_key, proposal, &|_| Ok(None), ask).await
+}
+
+/// What the ledger says of an agent about to be removed
+/// (`OrchestrationStore::removal_of`): an error while any of its work is
+/// running, in the words the caller is refused with, else what the card
+/// should say of its unfinished tasks, if it has any.
+pub type Work<'a> = &'a (dyn Fn(&TeamAgent) -> Result<Option<Unfinished>, String> + Send + Sync);
+
+/// What a removal's card says of the tasks that still name the agent: the
+/// two sentences whole (`note`), and how many there are in one line of at
+/// most `SUMMARY_MAX` characters (`summary`), which is what a folded card
+/// keeps of the row. Both are the ledger's (`AgentWork::unfinished`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unfinished {
+    pub note: String,
+    pub summary: String,
+}
+
+/// Propose removing an agent, put it to the person, and remove it only on
+/// their Allow, and only while the removal still does what the card said: the
+/// same version of the agent, the same manager, the same direct reports, the
+/// same seats (`team::Removal`). Its reports move up to its manager
+/// (`team::delete`); its memory note stays.
+///
+/// An agent with work running is not removed (`work`). It is refused before
+/// any card is shown, and again when the person answers one, under the
+/// roster's lock: a card can wait while a task of the agent's starts.
+pub async fn propose_delete_when<A, F>(
+    roster: &Roster,
+    team: &Path,
+    chat_key: &str,
+    proposal: DeleteProposal,
+    work: Work<'_>,
     ask: A,
 ) -> Result<TeamAgent, Refusal>
 where
@@ -1006,20 +1067,22 @@ where
     let shown = roster
         .removal(&gone.id)
         .ok_or_else(|| invalid("That agent no longer exists.".into()))?;
+    let unfinished = work(&gone)?;
     let wait = wait_for(proposal.wait_seconds);
     let request = crate::permission::Request {
         chat_key: Some(chat_key.to_string()),
         tool_name: Some("mcp__octiq__agent_delete".into()),
         tool_input: Some(json!({
-            "change": describe_delete(roster, &gone, &shown),
-            "changeFacts": delete_facts(roster, &gone, &shown),
+            "change": describe_delete(roster, &gone, &shown, unfinished.as_ref()),
+            "changeFacts": delete_facts(roster, &gone, &shown, unfinished.as_ref()),
         })),
         once: true,
         answer_within_secs: Some(wait.as_secs()),
         ..Default::default()
     };
     approved(&ask(request).await, wait)?;
-    crate::team::delete_unchanged(team, &gone.id, &shown).map_err(Refusal::from)
+    crate::team::delete_unchanged(team, &gone.id, &shown, &|agent| work(agent).map(|_| ()))
+        .map_err(Refusal::from)
 }
 
 /// `list`, or the card's word for an empty one.
@@ -2479,7 +2542,7 @@ mod tests {
         // roster of its own below; here it is the head with 300 of them.
         let shown = roster.removal(&lead.id).unwrap();
         assert_eq!(shown.reports.len(), 300);
-        let text = describe_delete(&roster, &lead, &shown);
+        let text = describe_delete(&roster, &lead, &shown, None);
         assert!(text.chars().count() > 16_000, "{}", text.chars().count());
         let head = text.find("It is the head").unwrap();
         assert!(head < 2_000, "{head}");
@@ -2488,7 +2551,7 @@ mod tests {
 
         let desk = crate::team::create_front_desk(&team, Default::default()).unwrap();
         let roster = self::roster(&team);
-        let text = describe_delete(&roster, &desk, &roster.removal(&desk.id).unwrap());
+        let text = describe_delete(&roster, &desk, &roster.removal(&desk.id).unwrap(), None);
         assert!(
             text.ends_with("\n\nIt is the front desk: incoming requests will have no front desk until another is chosen.\n\nIts memory note in the vault is kept."),
             "{text}"
@@ -2826,6 +2889,139 @@ mod tests {
             .ends_with("\nPersistent prompt: cleared"));
     }
 
+    /// agent_delete review, M3 (the person's decision of 2026-10-11): an
+    /// agent with work running is refused before any card is shown, and
+    /// again, in the same words, when a card that waited is answered.
+    #[tokio::test]
+    async fn an_agent_with_work_running_is_refused_before_a_card_and_when_one_is_answered() {
+        let (_dir, team) = temp_team();
+        let potato = register(&team, "Potato", None);
+        let dev = register_under(&team, "Dev", &potato);
+        const BUSY: &str = "Dev still has 1 task in progress in 1 run: 1 in \"Ship\" (run_1). Nothing was removed. Stop it or wait for it to finish, then remove Dev.";
+
+        // Before a card: nobody is asked.
+        let (shown, allow) = asker("allow", "you allowed it");
+        let asked_of = Mutex::new(Vec::new());
+        let busy = |agent: &TeamAgent| {
+            asked_of.lock().unwrap().push(agent.id.clone());
+            Err(BUSY.to_string())
+        };
+        let refused = propose_delete_when(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            remove("Dev"),
+            &busy,
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.message, BUSY);
+        assert!(shown.lock().unwrap().is_empty(), "no card was shown");
+        assert_eq!(*asked_of.lock().unwrap(), [dev.id.clone()]);
+        assert_eq!(stored(&team).len(), 2);
+
+        // A task of its starts while the card waits: the Allow removes
+        // nobody, and says the same thing.
+        let started = std::sync::atomic::AtomicBool::new(false);
+        let work = |_: &TeamAgent| {
+            if started.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(BUSY.to_string())
+            } else {
+                Ok(None)
+            }
+        };
+        let (shown, allow) =
+            allowed_after(|| started.store(true, std::sync::atomic::Ordering::SeqCst));
+        let refused = propose_delete_when(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            remove("Dev"),
+            &work,
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.message, BUSY);
+        assert_eq!(shown.lock().unwrap().len(), 1, "the card was shown");
+        assert_eq!(stored(&team).len(), 2);
+
+        // It finishes: the same proposal removes it.
+        started.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (_, allow) = asker("allow", "you allowed it");
+        let gone = propose_delete_when(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            remove("Dev"),
+            &work,
+            allow,
+        )
+        .await
+        .unwrap();
+        assert_eq!(gone.id, dev.id);
+        assert_eq!(stored(&team).len(), 1);
+    }
+
+    /// Unfinished tasks do not stop a removal, so its card says what
+    /// becomes of them: a row of its own, and a sentence in the text.
+    #[tokio::test]
+    async fn a_removal_card_says_what_becomes_of_the_agents_unfinished_tasks() {
+        let (_dir, team) = temp_team();
+        let potato = register(&team, "Potato", None);
+        register_under(&team, "Dev", &potato);
+        const NOTE: &str = "2 unfinished tasks in 1 run still name it and will have no registered agent behind them. Each starts without its role, brief and memory unless you reassign it first.";
+        const SUMMARY: &str = "2 unfinished tasks in 1 run still name it";
+        let (shown, deny) = asker("deny", "you denied it");
+        propose_delete_when(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            remove("Dev"),
+            &|_| {
+                Ok(Some(Unfinished {
+                    note: NOTE.into(),
+                    summary: SUMMARY.into(),
+                }))
+            },
+            deny,
+        )
+        .await
+        .unwrap_err();
+        let input = input_of(&shown);
+        let rows = input["changeFacts"]["rows"].as_array().unwrap();
+        assert_eq!(
+            rows[rows.len() - 2..],
+            [
+                json!({ "label": "Unfinished tasks", "value": NOTE, "summary": SUMMARY }),
+                json!({ "label": "Memory note", "value": "Kept in the vault." }),
+            ]
+        );
+        let change = input["change"].as_str().unwrap();
+        assert!(
+            change.ends_with(&format!(
+                "\n\n{NOTE}\n\nIts memory note in the vault is kept."
+            )),
+            "{change}"
+        );
+
+        // With none, the card is as it was.
+        let (shown, deny) = asker("deny", "you denied it");
+        propose_delete_when(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            remove("Dev"),
+            &|_| Ok(None),
+            deny,
+        )
+        .await
+        .unwrap_err();
+        let input = input_of(&shown);
+        assert!(!input.to_string().contains("Unfinished"), "{input}");
+    }
+
     #[tokio::test]
     async fn a_removal_card_carries_who_goes_and_what_it_does_to_the_chart_as_rows() {
         let (_dir, team) = temp_team();
@@ -2967,7 +3163,7 @@ mod tests {
     /// card's text beside it.
     fn reports_row(roster: &Roster, gone: &TeamAgent) -> (Value, String) {
         let shown = roster.removal(&gone.id).unwrap();
-        let facts = serde_json::to_value(delete_facts(roster, gone, &shown)).unwrap();
+        let facts = serde_json::to_value(delete_facts(roster, gone, &shown, None)).unwrap();
         let rows: Vec<&Value> = facts["rows"]
             .as_array()
             .unwrap()
@@ -2975,7 +3171,7 @@ mod tests {
             .filter(|row| row["label"].as_str().unwrap().starts_with("Direct report"))
             .collect();
         assert_eq!(rows.len(), 1, "{facts}");
-        (rows[0].clone(), describe_delete(roster, gone, &shown))
+        (rows[0].clone(), describe_delete(roster, gone, &shown, None))
     }
 
     /// Compact decision cards review, H2: a folded removal card showed the
@@ -3115,7 +3311,7 @@ mod tests {
         roster.head = Some(lead.id.clone());
         let shown = roster.removal(&lead.id).unwrap();
         assert!(shown.head && shown.reports.is_empty());
-        let facts = serde_json::to_value(delete_facts(&roster, &lead, &shown)).unwrap();
+        let facts = serde_json::to_value(delete_facts(&roster, &lead, &shown, None)).unwrap();
         let rows = facts["rows"].as_array().unwrap();
         assert_eq!(
             rows.iter().map(|row| &row["label"]).collect::<Vec<_>>(),
