@@ -96,3 +96,26 @@ export function liveAppend(was: readonly string[] | null, ids: readonly string[]
   for (let index = 0; index < was.length; index += 1) if (was[index] !== ids[index]) return false;
   return true;
 }
+
+/** What a transcript had on screen at its last COMMIT: which chat, and its
+ *  turns. */
+export type Drawn = { scope: string; ids: readonly string[] };
+
+/** Whether the turns of this render arrived live, asked against what was
+ *  last committed and never against what an earlier pass of the same render
+ *  saw.
+ *
+ *  React may run one render more than once before it commits: a state set
+ *  during render re-runs it (the transcript's own window does, on a chat
+ *  switch), and StrictMode runs every render twice. `liveAppend` answers
+ *  "nothing was added" with yes, so a record written by the first pass made
+ *  the second take a whole history for an answer growing a block, and every
+ *  notice in a chat you came back to ran its entry again. `committed` only
+ *  moves when React commits, so every pass of one render gets one answer.
+ *
+ *  Another chat's turns are never live, whatever they look like: an empty
+ *  chat left for one with a single turn is a chat being opened. */
+export function liveSince(committed: Drawn | null, scope: string, ids: readonly string[]): boolean {
+  if (!committed || committed.scope !== scope) return false;
+  return liveAppend(committed.ids, ids);
+}

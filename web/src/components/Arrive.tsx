@@ -14,9 +14,10 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 import { useLate } from "../lib/useArrival";
 
 /** Whether what the transcript is mounting right now was just said, as
- *  opposed to read back (`lib/arrival.liveAppend`). A box rather than a value:
- *  the transcript writes it on every render, a delta included, and a value
- *  would re-render every reader each time. Off outside a transcript. */
+ *  opposed to read back (`lib/arrival.liveSince`). The transcript hands down
+ *  a new box only when the answer changes, so a delta re-renders no reader,
+ *  and a reader takes the answer once, as it mounts. Off outside a
+ *  transcript. */
 export const LiveArrivals = createContext<{ current: boolean }>({ current: false });
 
 /** The entry class for a block inside the conversation, decided once as it

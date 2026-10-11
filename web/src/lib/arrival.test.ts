@@ -2,7 +2,7 @@
 // alternative is something animating that was simply already there: a chat
 // reopened, a list read from the cache, a transcript opened from disk.
 import { describe, expect, it } from "vitest";
-import { ENTRY_MS, arrive, entryPhase, liveAppend } from "./arrival";
+import { ENTRY_MS, arrive, entryPhase, liveAppend, liveSince, type Drawn } from "./arrival";
 
 describe("arrive", () => {
   it("marks nothing late on the first draw of a place", () => {
@@ -156,5 +156,108 @@ describe("liveAppend", () => {
   it("refuses a list that shrank", () => {
     expect(liveAppend(["a", "b"], ["a"])).toBe(false);
     expect(liveAppend(["a", "b"], [])).toBe(false);
+  });
+});
+
+describe("liveSince", () => {
+  // A transcript as React drives it: one render may run any number of times
+  // before it commits (a state set during render re-runs it, StrictMode runs
+  // every render twice), and only the commit moves what is on screen.
+  function transcript() {
+    let committed: Drawn | null = null;
+    return {
+      /** One render of `passes` runs, then its commit. What each run decided. */
+      render(scope: string, ids: string[], passes = 1): boolean[] {
+        const said = Array.from({ length: passes }, () => liveSince(committed, scope, ids));
+        committed = { scope, ids };
+        return said;
+      },
+    };
+  }
+  /** The rule as it was: the record written by each run, read by the next. */
+  function asItWas() {
+    let drawn: string[] | null = null;
+    return (ids: string[], passes = 1): boolean[] => Array.from({ length: passes }, () => {
+      const live = liveAppend(drawn, ids);
+      drawn = ids;
+      return live;
+    });
+  }
+  const a = ["a1", "a2", "a3"];
+  const b = ["b1", "b2"];
+
+  it("takes the same turns presented twice in a row for history both times", () => {
+    // A chat opening under StrictMode, or with its window set during render.
+    expect(transcript().render("A", a, 2)).toEqual([false, false]);
+    expect(transcript().render("A", a, 3)).toEqual([false, false, false]);
+    // What it used to say: the second run took the first one's record for
+    // what was on screen, and "nothing was added" reads as live.
+    expect(asItWas()(a, 2)).toEqual([false, true]);
+  });
+
+  it("marks nothing live from A to B and back to A", () => {
+    // The reviewer's path. Each switch re-runs its render once, as the
+    // transcript's window does.
+    const page = transcript();
+    expect(page.render("A", a)).toEqual([false]);
+    for (let round = 0; round < 3; round += 1) {
+      expect(page.render("B", b, 2), `to B, round ${round}`).toEqual([false, false]);
+      expect(page.render("A", a, 2), `back to A, round ${round}`).toEqual([false, false]);
+    }
+    // And as it was: the history of the chat come back to was live.
+    const old = asItWas();
+    old(a);
+    old(b, 2);
+    expect(old(a, 2)).toEqual([false, true]);
+  });
+
+  it("marks what truly arrives after the chat was drawn, and gives every run of that render one answer", () => {
+    const page = transcript();
+    page.render("A", a, 2);
+    // A notice lands in the last turn: no turn was added.
+    expect(page.render("A", a)).toEqual([true]);
+    // A message and the start of its answer.
+    expect(page.render("A", [...a, "a4", "a5"], 2)).toEqual([true, true]);
+    // A catch-up after a dropped connection is history.
+    expect(page.render("A", [...a, "a4", "a5", "a6", "a7", "a8"])).toEqual([false]);
+  });
+
+  it("is asked against the commit, so a run that was thrown away changes nothing", () => {
+    const committed: Drawn = { scope: "A", ids: a };
+    // Asked twice, a hundred times: nothing here moves the record.
+    for (let run = 0; run < 100; run += 1) expect(liveSince(committed, "B", b)).toBe(false);
+    expect(liveSince(committed, "A", a)).toBe(true);
+  });
+
+  it("never takes another chat's turns for live, whatever they look like", () => {
+    // An empty chat left for one with a single turn: by its turns alone that
+    // is "the first message in a blank chat".
+    expect(liveAppend([], ["b1"])).toBe(true);
+    expect(liveSince({ scope: "A", ids: [] }, "B", ["b1"])).toBe(false);
+    // The same chat, and it is.
+    expect(liveSince({ scope: "A", ids: [] }, "A", ["a1"])).toBe(true);
+    expect(liveSince(null, "A", ["a1"])).toBe(false);
+  });
+});
+
+describe("a render that runs twice", () => {
+  it("marks nothing late that its first run did not", () => {
+    // `useLateKeys` writes its record during render. That is safe only
+    // because folding the same keys in again changes nothing.
+    const opened = arrive(null, "chat-1", ["permission:a"]);
+    expect(arrive(opened, "chat-1", ["permission:a"])).toBe(opened);
+    const grown = arrive(opened, "chat-1", ["permission:a", "question:b"]);
+    const again = arrive(grown, "chat-1", ["permission:a", "question:b"]);
+    expect(again).toBe(grown);
+    expect([...again.late]).toEqual(["question:b"]);
+    // Coming back to a chat, run twice: still nothing late.
+    const away = arrive(grown, "chat-2", []);
+    const back = arrive(away, "chat-1", ["permission:a", "question:b"]);
+    expect(arrive(back, "chat-1", ["permission:a", "question:b"]).late.size).toBe(0);
+  });
+
+  it("opens a gate the same way both times", () => {
+    expect(entryPhase(false, true, false)).toBe(entryPhase(false, true, false));
+    expect(entryPhase(true, true, false)).toBe("settled");
   });
 });

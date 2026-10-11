@@ -1,13 +1,20 @@
 // The hooks over `lib/arrival`: the rules live there, tested; these only hold
 // the record between renders.
-import { useEffect, useRef, useState } from "react";
-import { ENTRY_MS, arrive, entryPhase, type Arrivals, type EntryPhase } from "./arrival";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ENTRY_MS, arrive, entryPhase, liveSince, type Arrivals, type Drawn, type EntryPhase } from "./arrival";
 
 /** The keys that arrived after `scope` was first drawn.
  *
  *  Read and written during render, like `useJustArrived`: the class has to be
  *  on the element in the commit that mounts it, and an effect would be one
- *  frame late — the element would show at full strength and then start over. */
+ *  frame late — the element would show at full strength and then start over.
+ *
+ *  A render React runs twice (a state set during render, StrictMode) folds
+ *  the same keys in twice, and `arrive` hands the same record back the second
+ *  time: nothing is marked that the first pass did not mark. That is what
+ *  makes a ref written here safe, and it is `arrive`'s to keep (its test
+ *  says so). A rule that answers "nothing changed" with anything but "the
+ *  same" cannot be written this way: see `useLiveAppend`. */
 export function useLateKeys(scope: string, keys: readonly string[]): ReadonlySet<string> {
   const record = useRef<Arrivals | null>(null);
   record.current = arrive(record.current, scope, keys);
@@ -21,6 +28,23 @@ export function useLate(present: boolean, scope = ""): boolean {
 
 const ONE = ["it"] as const;
 const NONE = [] as const;
+
+/** Whether the turns a transcript is drawing now were just said, as opposed
+ *  to read back (`lib/arrival.liveSince`).
+ *
+ *  What it compares with is what was last COMMITTED, recorded in a layout
+ *  effect and never during render: a render that runs twice gets the same
+ *  answer both times, because nothing it does changes what it is asked
+ *  against. The layout effect runs before the browser paints and before any
+ *  later render, so the next render always sees this one. */
+export function useLiveAppend(scope: string, ids: readonly string[]): boolean {
+  const committed = useRef<Drawn | null>(null);
+  const live = liveSince(committed.current, scope, ids);
+  useLayoutEffect(() => {
+    committed.current = { scope, ids };
+  });
+  return live;
+}
 
 /** A gate that opens once: `held` until `ready`, `entering` for the length of
  *  the entry, then `settled`. Ready at the first draw is `settled` outright.

@@ -24,7 +24,7 @@ import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
 import { LiveArrivals, useLiveEntry } from "./Arrive";
-import { liveAppend } from "../lib/arrival";
+import { useLiveAppend } from "../lib/useArrival";
 import { useRunningCalls } from "./Background";
 import { SentFiles } from "./Thumb";
 import { roughTokens } from "../lib/tokens";
@@ -1755,14 +1755,13 @@ const MessageListBody = function MessageList({
 
   const { fresh, nth } = useJustArrived(turns);
   // Whether the blocks this render mounts were just said. Asked of the turns
-  // actually drawn, so an older page coming in above them is not an arrival.
-  const drawn = useRef<string[] | null>(null);
-  const live = useRef(false);
-  {
-    const ids = visibleTurns.map((turn) => turn[0].id);
-    live.current = liveAppend(drawn.current, ids);
-    drawn.current = ids;
-  }
+  // actually drawn, so an older page coming in above them is not an arrival,
+  // and against what was last committed, so the render the window above
+  // re-runs on a chat switch gets one answer and not two.
+  const drawnIds = useMemo(() => visibleTurns.map((turn) => turn[0].id), [visibleTurns]);
+  const liveNow = useLiveAppend(conversationId ?? "", drawnIds);
+  // A new box only when the answer changes: a delta re-renders no reader.
+  const live = useMemo(() => ({ current: liveNow }), [liveNow]);
   const mapTurns = useMemo(() => conversationMapTurns(visibleTurns), [visibleTurns]);
 
   // A map point is another way of deliberately reading back. Its programmatic

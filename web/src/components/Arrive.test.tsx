@@ -18,7 +18,9 @@ import lightPalette from "../lib/themes/light.css?raw";
 import funPalette from "../lib/themes/fun.css?raw";
 import mangaPalette from "../lib/themes/manga.css?raw";
 import guofengPalette from "../lib/themes/guofeng.css?raw";
-import { entryClass } from "../lib/useArrival";
+import { useMemo, useRef, useState } from "react";
+import { liveAppend } from "../lib/arrival";
+import { entryClass, useLiveAppend } from "../lib/useArrival";
 import { Arrive, LiveArrivals, useLiveEntry } from "./Arrive";
 import { ChatRequests, SafetyLines } from "./ChatRequests";
 import { ChatTaskBarView } from "./ChatTaskBar";
@@ -67,6 +69,53 @@ describe("a block inside the conversation", () => {
   it("enters when the transcript says it was just said", () => {
     expect(renderToStaticMarkup(<LiveArrivals.Provider value={{ current: true }}><Probe /></LiveArrivals.Provider>))
       .toBe('<i class="enter-rise"></i>');
+  });
+
+  describe("in a render React runs twice", () => {
+    // The transcript sets its window during render when the chat changes,
+    // and React then runs that render again before it draws anything. This
+    // is that, through React itself: the server renderer re-runs a component
+    // whose state was set while it rendered, exactly as the browser's does.
+    // What it cannot run is a commit, so the record moving when React
+    // commits is checked in a browser (the A to B to A harness), not here.
+    const runs: boolean[] = [];
+    function Transcript({ chat, ids, decide }: {
+      chat: string;
+      ids: string[];
+      decide: (chat: string, ids: string[]) => boolean;
+    }) {
+      const [shown, setShown] = useState("");
+      if (shown !== chat) setShown(chat);
+      const liveNow = decide(chat, ids);
+      runs.push(liveNow);
+      const live = useMemo(() => ({ current: liveNow }), [liveNow]);
+      return <LiveArrivals.Provider value={live}><Probe /></LiveArrivals.Provider>;
+    }
+    /** The rule as it was: a record written by each run of the render. */
+    function useAsItWas(_chat: string, ids: string[]): boolean {
+      const drawn = useRef<string[] | null>(null);
+      const live = liveAppend(drawn.current, ids);
+      drawn.current = ids;
+      return live;
+    }
+    const history = ["t1", "t2", "t3"];
+
+    it("draws a history notice with no entry", () => {
+      runs.length = 0;
+      const html = renderToStaticMarkup(<Transcript chat="A" ids={history} decide={useLiveAppend} />);
+      // Two runs of the one render, and the same answer from both.
+      expect(runs).toEqual([false, false]);
+      expect(html).toBe('<i class=""></i>');
+    });
+
+    it("is the render that used to replay it", () => {
+      // The same component with the old rule: the second run saw the turns
+      // the first had recorded, and history came in as if it had been said.
+      runs.length = 0;
+      const html = renderToStaticMarkup(<Transcript chat="A" ids={history} decide={useAsItWas} />);
+      expect(runs).toEqual([false, true]);
+      expect(html).toBe('<i class="enter-rise"></i>');
+    });
   });
 
   const saved = { id: "m1", status: "saved" as const, text: "Remember this.", at: 1_700_000_000_000 };
