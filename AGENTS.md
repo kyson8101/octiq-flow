@@ -457,10 +457,35 @@ folded line and are not part of this.
 - **Allow is asked of what is drawn, never of what was pressed.** The card
   draws the two texts `cardFold.commandShown` returns and nothing else of a
   command; `cardFold.notShown` compares them with the command, and
-  `allowHeld` lets go only when nothing is unshown, or was once on this card.
-  An opening that drew less than all of it (a cap, a bug) leaves Allow held.
-  The control says `Open the full command` only where opening is the whole
-  command (`commandOpens`).
+  `allowHeld` lets go only when nothing is unshown now, or when this exact
+  command was drawn whole on this card before. An opening that drew less
+  than all of it (a cap, a bug) leaves Allow held. The control says `Open
+  the full command` only where opening is the whole command
+  (`commandOpens`).
+- **"Shown whole" is said of a text, not of an ask.** What the card keeps
+  after drawing every character of a command is that command
+  (`cardFold.CommandAsked`: the ask id, the tool, the argument's name and the
+  exact string the host sent), set by `drawnWhole` after the draw and
+  compared with the one on the card at every draw (`sameCommand`). So the
+  same command opened and folded again keeps its Allow, and an ask whose
+  command changed under the same id, by one character, is unread and held:
+  `PendingRequests.add` replaces an item under its id, and the page does not
+  lean on the host never doing so. The fold itself is still the id's: a card
+  left open draws a replaced command whole, and Allow is then asked of that
+  drawing. No other card's approval waits on something having been opened.
+- **A command is never missing a character, and one that cannot be seen is
+  drawn as its code.** Its lines are `cardFold.commandLines`: only a line
+  with nothing on it, or spaces and tabs, is left out before the first line
+  and after the last. A line holding a no-break space or a lone carriage
+  return is a word to a shell and is drawn and counted (JavaScript's `trim`
+  calls it blank). In a command, script or code block the characters that
+  draw nothing or turn the reading order round are drawn where they stand as
+  `\u{202E}`, set apart as a mark (`cardFold.commandDrawn`): U+00A0, U+00AD,
+  U+061C, U+200B to U+200F, U+2028 to U+202E, U+2060, U+2066 to U+2069 and
+  U+FEFF. One full-strength line under the block says how many the whole
+  command holds. Only the drawing changes: `notShown` and what Allow sends
+  are the text itself. Past `MARKS_MAX` (5,000) the codes are written into
+  the text without an element each.
 - **A plan's stage line names every place and agent it can.** Destinations
   are told apart by project and whole path (`planReview.planPlaceNames`): a
   shared folder name gets its project, then its parent folder, then the path.
@@ -476,12 +501,17 @@ folded line and are not part of this.
   card drew that much of a 330,000-character command, said the rest was not
   shown, and let Allow go. The one limit is `cardFold.WHOLE_MAX` (5,000,000
   characters, where opening stops the page for about a second; every size
-  measured up to 50,000,000 was still drawn whole). A command, a plan, a
-  change (text or a row) or a route's first message past it is not drawn in
-  part: the card says `This command is too long to show in full (N
-  characters), so it cannot be allowed here. Deny it and ask for it in
-  smaller steps.` and its approving buttons stay off for good
-  (`tooLong`, `tooLongNote`). Deny and Cancel always answer. A diff draws its
+  measured up to 50,000,000 was still drawn whole). A text past it is never
+  opened in part, and its card cannot approve it: the card says `This command
+  is too long to show in full (N characters), so it cannot be allowed here.
+  Deny it and ask for it in smaller steps.` and its approving buttons stay
+  off for good (`tooLong`, `tooLongNote`). What is still on the card differs
+  by kind. A command keeps what any folded command has, its leading whole
+  lines with `N more lines not shown` under them, and has no control to open
+  it. A plan, an older host's change text or a route's first message or brief
+  has none of that text drawn: the sentence stands where it would open. A
+  row of a change keeps its label and size, and is not opened. Deny and
+  Cancel always answer. A diff draws its
   first 600 rows on opening (`DiffView.FIRST_OPENED`) and keeps its own `Show
   N more lines` past that: 5,000 rows at once stop the page for about 0.4 s,
   and drawing them a stretch a frame was slower still. Those rows are a press
