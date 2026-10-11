@@ -23,17 +23,16 @@ export function ReopenedNote({ reopened, startOpen = false }: {
   const entry = useLiveEntry();
   const headline = reopenedHeadline(reopened);
   const behind = reopenedFoldLabel(reopened);
-  const when = reopened.at ? new Date(reopened.at) : undefined;
+  // When it happened, in the reader's own clock, as the last thing the line
+  // says: the chevron ends the line, and nothing sits past it.
+  const when = reopened.at ? new Date(reopened.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
   return (
     <div className={`reopened-note${entry ? ` ${entry}` : ""}`} data-task={reopened.taskId} role="group" aria-label={headline}>
       {behind
-        ? <FoldLine fold={fold} labels={[headline, behind]} what="the new instructions" />
+        ? <FoldLine fold={fold} labels={[headline, behind, when]} what="the new instructions" />
         // The host sent no instructions: the line says what happened, and
         // offers nothing to open.
-        : <div className="card-fold-line"><span className="card-fold-labels"><span>{headline}</span></span></div>}
-      {when && <time className="reopened-note-time" dateTime={when.toISOString()} title={when.toLocaleString()}>
-        {when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-      </time>}
+        : <div className="card-fold-line"><span className="card-fold-labels"><span>{headline}</span>{when && <span>{when}</span>}</span></div>}
       {behind && <FoldBody fold={fold} bounded={false} className="reopened-note-body">
         <WholeText text={reopened.spec} className="reopened-note-spec" />
       </FoldBody>}

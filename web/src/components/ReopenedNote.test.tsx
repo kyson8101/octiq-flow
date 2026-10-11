@@ -87,7 +87,10 @@ describe("the reopened line", () => {
     const html = draw();
     // Then the time it happened, in the reader's own clock.
     expect(words(html)).toMatch(/^Reopened L · Run progress for OCTIQ FE · attempt 2 New instructions · 6 lines · was 8,000 characters \d{1,2}:05( [AP]M)?$/);
-    expect(html).toContain('<time class="reopened-note-time" dateTime="2026-10-11T13:05:00.000Z"');
+    // The time is the last thing said before the control, never past it.
+    expect(html).toMatch(/<span>\d{1,2}:05( [AP]M)?<\/span><\/span><button type="button" class="card-fold-toggle"/);
+    // A host that sent no time: the line says none.
+    expect(words(draw({ at: undefined }))).toBe("Reopened L · Run progress for OCTIQ FE · attempt 2 New instructions · 6 lines · was 8,000 characters");
     expect(html.match(/<button /g)).toHaveLength(1);
     expect(html).toMatch(/<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="[^"]+" aria-describedby="[^"]+" aria-label="Show the new instructions"/);
     // Folded: not a word of the coordinator's prose is on the page.
