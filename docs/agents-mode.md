@@ -649,6 +649,18 @@ extended. The host (`orchestration/peer_request.rs`):
   rules as fact, and what reaches the teammate in the answer to a host call
   is carried as `hostNotices`, not `coordinatorMessages`: the person's answer
   to its gate, or a notice the host wrote.
+- **shows it its own task and nothing else of the run.** The worker's
+  `orchestration_snapshot` holds its task with its spec and card, that task's
+  attempts and gates, the messages it sent, the notices addressed to it and
+  the services registered for it; the run's objective is replaced by a fixed
+  host line, and another `runId` or `taskId` is refused with the reason. It
+  is held by the attempt on record (`OrchestrationStore::snapshot_for_agent`),
+  so it still holds once the worker has reported or been ended; the
+  coordinator, every other worker and the page read what they always did.
+  What the requester wrote that the teammate can still read is whatever is in
+  the shared Memory Vault, in the files of the workspace it works in, and in
+  other chats' transcripts, which `search_conversations` and
+  `read_conversation` read off the profile for any agent.
 - **never touches the roster.** Nothing in it reads `reportsTo` as changed or
   writes `team.json`; the store method is not given the file.
 

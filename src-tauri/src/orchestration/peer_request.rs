@@ -29,7 +29,8 @@
 //!   what was used never goes down, and nothing extends the limit.
 //! - Nobody but the person adds to it once it is approved: no coordinator's
 //!   message reaches its worker (`NO_INSTRUCTIONS`), and only the person
-//!   answers a gate on it (`PERSONS_GATE`).
+//!   answers a gate on it (`PERSONS_GATE`). Its worker cannot fetch them
+//!   either: its snapshot holds its own task only (`snapshot_for_agent`).
 //! - Depth: a peer-request task cannot be split, and its worker cannot make a
 //!   peer request. It may still ask a question (`peer.rs`).
 //! - When the teammate's attempt settles, the run's coordinator is told as
@@ -38,6 +39,12 @@
 use super::peer::LeadCaller;
 use super::*;
 use crate::team::{AgentTeam, TeamAgent};
+
+/// What a peer request's worker is told when its snapshot names a run or a
+/// task that is not its own.
+pub const OWN_TASK_ONLY: &str = "You work on a peer request, so orchestration_snapshot shows you your own task and nothing else: the rest of the run, and every other run, was written for someone else and is not part of the request the person approved. Call it without runId or taskId.";
+/// What stands where the run's objective was in such a worker's snapshot.
+pub const RUN_NOT_SHOWN: &str = "The run this peer request is in. Its worker is shown its own task and nothing else of the run.";
 
 /// Peer requests one worker attempt may make, whatever became of them.
 pub const MAX_REQUESTS_PER_ATTEMPT: usize = 2;
@@ -239,6 +246,57 @@ pub(super) fn clock_for(
 /// is waiting, not working, and is never ended under the card.
 fn on_card(chat_key: &str) -> bool {
     crate::safety_block::awaits_decision(chat_key) || crate::permission::awaits(chat_key)
+}
+
+/// What `snapshot` read of a run, cut down to one peer-request task for its
+/// own worker: the task with its spec and card, its attempts, its gates, the
+/// messages its workers sent, the notices addressed to them, and what was
+/// recorded for it. Everything else in the run was written for someone else:
+/// other tasks and their specs, other workers' messages, gates and reports,
+/// what the requester or a coordinator wrote to anyone, and services
+/// registered for other tasks.
+fn own_task_only(mut snapshot: Snapshot, task_id: &str) -> Snapshot {
+    snapshot.tasks.retain(|task| task.id == task_id);
+    snapshot
+        .attempts
+        .retain(|attempt| attempt.task_id == task_id);
+    let workers: BTreeSet<String> = snapshot
+        .attempts
+        .iter()
+        .map(|attempt| attempt.worker_chat_key.clone())
+        .collect();
+    snapshot
+        .gates
+        .retain(|gate| gate.task_id.as_deref() == Some(task_id));
+    snapshot
+        .messages
+        .retain(|message| message.relay.is_none() && workers.contains(&message.from_chat_key));
+    // A notice the host wrote. A message is an agent's words, and none is
+    // sent to this worker (`NO_INSTRUCTIONS`); one on record from before
+    // that rule is not shown either.
+    snapshot.notifications.retain(|notice| {
+        workers.contains(&notice.target_chat_key)
+            && !matches!(notice.kind.as_str(), "message" | "progress" | "relay")
+    });
+    snapshot.reports.retain(|chat, _| workers.contains(chat));
+    snapshot
+        .native_decisions
+        .retain(|decision| decision.task_id == task_id);
+    snapshot
+        .services
+        .retain(|service| service.task_id == task_id);
+    snapshot.bridges.clear();
+    snapshot.peer_asks.clear();
+    for run in &mut snapshot.runs {
+        // The objective is the coordinator's own words, and the plan's
+        // consent the person's words to the coordinator.
+        run.objective = RUN_NOT_SHOWN.into();
+        run.plan_approval = None;
+        run.worker_defaults = None;
+        run.stopped_reason = None;
+        run.mission_delivery.clear();
+    }
+    snapshot
 }
 
 /// What makes a task a peer request: who asked, and the bounds they set.
@@ -870,6 +928,51 @@ impl OrchestrationStore {
             active_task_for_actor(&inner.data, chat_key)
                 .is_some_and(|task| task.peer_request.is_some())
         })
+    }
+
+    /// The peer-request task `chat_key` works on or worked on, and its run.
+    /// By the attempt on record, which outlives the attempt: a worker that
+    /// has reported, failed or been ended still holds a working capability,
+    /// and `active_task` no longer knows it.
+    fn peer_task_of(&self, chat_key: &str) -> Result<Option<(String, String)>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        Ok(inner
+            .data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.worker_chat_key == chat_key)
+            .filter_map(|attempt| inner.data.tasks.get(&attempt.task_id))
+            .find(|task| task.peer_request.is_some())
+            .map(|task| (task.id.clone(), task.run_id.clone())))
+    }
+
+    /// The ledger an agent's `orchestration_snapshot` is built from, and the
+    /// one task it is held to when `actor` is a peer request's worker.
+    ///
+    /// Every other chat gets `snapshot(run_id)` as it always has. A peer
+    /// request's worker gets its own task and nothing else of the run it is
+    /// in (`own_task_only`), because a snapshot is a read the agent starts
+    /// itself: the host delivers it nobody's words (`NO_INSTRUCTIONS`), and
+    /// this keeps it from fetching them. Naming another run or task is
+    /// refused (`OWN_TASK_ONLY`) and never answered with an empty view, which
+    /// would read as "that run holds nothing".
+    pub fn snapshot_for_agent(
+        &self,
+        actor: &str,
+        run_id: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Result<(Snapshot, Option<String>), String> {
+        let Some((own_task, own_run)) = self.peer_task_of(actor)? else {
+            return Ok((self.snapshot(run_id)?, None));
+        };
+        if run_id.is_some_and(|id| id != own_run) || task_id.is_some_and(|id| id != own_task) {
+            return Err(OWN_TASK_ONLY.into());
+        }
+        let snapshot = own_task_only(self.snapshot(Some(&own_run))?, &own_task);
+        Ok((snapshot, Some(own_task)))
     }
 
     /// End every peer-request attempt that has used the working time its
@@ -3288,6 +3391,318 @@ pub(crate) mod tests {
             gone.starts_with("You are no longer a registered agent"),
             "{gone}"
         );
+    }
+
+    /// Words planted around a peer request, none of them written for the
+    /// teammate doing it.
+    pub(crate) const NOT_FOR_THE_PEER: [&str; 6] = [
+        "Ship the feature",
+        "Make the requested change",
+        "Use release/1.8.2 as the base.",
+        "The requester's own status.",
+        "Keep the old name?",
+        "Restart with the staging key.",
+    ];
+
+    /// A master's run with an ordinary worker (Ada's, which asked) and the
+    /// peer request it made of Bo, running. Around it: the coordinator's
+    /// message to the requester, the requester's to the coordinator, the
+    /// requester's own gate, a run-level gate and a service of the
+    /// requester's task. The teammate has written to its coordinator, been
+    /// answered by the person and registered a service of its own.
+    pub(crate) fn peer_among_others(store: &OrchestrationStore) -> (Run, Attempt, Attempt) {
+        let run = run(store);
+        let worker = worker_ada(store, &run);
+        let made = from_worker(store, &worker, work("bo")).unwrap();
+        let peer = approved_and_started(store, &made.task_id);
+        let say = |from: &str, to: &str, body: &str| {
+            store
+                .record_message(
+                    from,
+                    run.id.clone(),
+                    to.into(),
+                    "status".into(),
+                    "Note".into(),
+                    body.into(),
+                )
+                .unwrap()
+        };
+        say("chat:master", &worker.id, NOT_FOR_THE_PEER[2]);
+        say(&worker.worker_chat_key, "coordinator", NOT_FOR_THE_PEER[3]);
+        say(&peer.worker_chat_key, "coordinator", "volume1 is mounted.");
+        // Before the gates: a worker waiting on one registers nothing.
+        let service = |attempt: &Attempt, recovery: &str| {
+            store
+                .register_service(
+                    &attempt.worker_chat_key,
+                    lifecycle::Registration {
+                        attempt_id: attempt.id.clone(),
+                        name: "api".into(),
+                        host: "127.0.0.1".parse().unwrap(),
+                        port: 3001,
+                        recovery: recovery.into(),
+                    },
+                )
+                .unwrap()
+        };
+        service(&worker, NOT_FOR_THE_PEER[5]);
+        service(&peer, "Run the usage probe again.");
+        let ask = |from: &str, question: &str| {
+            store
+                .create_gate(from, run.id.clone(), None, question.into(), vec![])
+                .unwrap()
+        };
+        ask(&worker.worker_chat_key, NOT_FOR_THE_PEER[4]);
+        ask("chat:master", "Which release train?");
+        let own = ask(&peer.worker_chat_key, "Which volume?");
+        person_answers(store, &own.id, "volume1");
+        (run, worker, peer)
+    }
+
+    /// What the teammate's chat reads, as the dispatch builds it.
+    fn peers_read(store: &OrchestrationStore, peer: &Attempt) -> (Snapshot, serde_json::Value) {
+        let (snapshot, own) = store
+            .snapshot_for_agent(&peer.worker_chat_key, None, None)
+            .unwrap();
+        assert_eq!(own.as_deref(), Some(peer.task_id.as_str()));
+        let view = agent_view::agent_snapshot(
+            snapshot.clone(),
+            &agent_view::AgentRead {
+                actor: &peer.worker_chat_key,
+                run_id: None,
+                task_id: own.as_deref(),
+                message_limit: agent_view::MAX_MESSAGES,
+            },
+        )
+        .unwrap();
+        (snapshot, view)
+    }
+
+    /// A snapshot is a read the agent starts itself. A peer request's worker
+    /// is held to its own task in it, so what the host delivers it nobody's
+    /// words of, it cannot fetch either.
+    #[test]
+    fn a_peer_requests_worker_reads_only_its_own_task() {
+        let store = OrchestrationStore::default();
+        let (run, worker, peer) = peer_among_others(&store);
+        let whole = serde_json::to_string(&store.snapshot(Some(&run.id)).unwrap()).unwrap();
+        for words in NOT_FOR_THE_PEER {
+            assert!(whole.contains(words), "the run holds {words:?}");
+        }
+
+        let (snapshot, view) = peers_read(&store, &peer);
+        let ids = |tasks: &[Task]| tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&snapshot.tasks), [peer.task_id.clone()]);
+        assert_eq!(snapshot.attempts.len(), 1);
+        assert_eq!(snapshot.attempts[0].id, peer.id);
+        // Its own gate with the person's answer; not the requester's, and
+        // not the run's.
+        assert_eq!(snapshot.gates.len(), 1);
+        assert_eq!(snapshot.gates[0].question, "Which volume?");
+        assert_eq!(snapshot.gates[0].resolution.as_deref(), Some("volume1"));
+        // What it sent, and the one notice addressed to it.
+        assert_eq!(snapshot.messages.len(), 1);
+        assert_eq!(snapshot.messages[0].body, "volume1 is mounted.");
+        assert_eq!(snapshot.notifications.len(), 1);
+        assert_eq!(
+            snapshot.notifications[0].target_chat_key,
+            peer.worker_chat_key
+        );
+        assert_eq!(snapshot.notifications[0].kind, "resolution");
+        assert_eq!(snapshot.services.len(), 1);
+        assert_eq!(snapshot.services[0].recovery, "Run the usage probe again.");
+        assert!(snapshot.bridges.is_empty() && snapshot.peer_asks.is_empty());
+        // The run is named and nothing of it is told.
+        assert_eq!(snapshot.runs.len(), 1);
+        assert_eq!(snapshot.runs[0].id, run.id);
+        assert_eq!(snapshot.runs[0].objective, RUN_NOT_SHOWN);
+        assert!(snapshot.runs[0].plan_approval.is_none());
+
+        // Nothing written for anyone else is in the ledger it reads from, or
+        // in the view made of it; its own task is there in full.
+        let read = serde_json::to_string(&snapshot).unwrap() + &view.to_string();
+        for words in NOT_FOR_THE_PEER {
+            assert!(!read.contains(words), "{words:?} reached the teammate");
+        }
+        assert!(!read.contains(&worker.task_id), "the requester's task");
+        assert_eq!(view["view"], "task");
+        assert_eq!(view["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            view["tasks"][0]["spec"],
+            "Inspect the NAS and read each volume's usage.\n\nExpected output\nOne line per volume: name, used, total."
+        );
+        assert_eq!(
+            view["tasks"][0]["peerRequest"]["requestedBy"]["name"],
+            "ADA"
+        );
+        assert_eq!(view["runs"][0]["objective"], RUN_NOT_SHOWN);
+        assert_eq!(view["services"].as_array().unwrap().len(), 1);
+        assert_eq!(view["notifications"].as_array().unwrap().len(), 1);
+
+        // Its own run and its own task, named, are the same read.
+        let (named, own) = store
+            .snapshot_for_agent(
+                &peer.worker_chat_key,
+                Some(&run.id),
+                Some(peer.task_id.as_str()),
+            )
+            .unwrap();
+        assert_eq!(own.as_deref(), Some(peer.task_id.as_str()));
+        assert_eq!(
+            serde_json::to_value(&named).unwrap(),
+            serde_json::to_value(&snapshot).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_peer_requests_worker_naming_another_run_or_task_is_refused() {
+        let store = OrchestrationStore::default();
+        let (run, worker, peer) = peer_among_others(&store);
+        let elsewhere = store
+            .create_run(
+                "chat:other".into(),
+                "Another lead's run".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                Some(2),
+            )
+            .unwrap();
+        let read = |run_id: Option<&str>, task_id: Option<&str>| {
+            store
+                .snapshot_for_agent(&peer.worker_chat_key, run_id, task_id)
+                .map(|(snapshot, _)| snapshot)
+        };
+        for (run_id, task_id) in [
+            (Some(elsewhere.id.as_str()), None),
+            (Some("run_nobody_made"), None),
+            // The requester's task, by itself and inside the worker's own run.
+            (None, Some(worker.task_id.as_str())),
+            (Some(run.id.as_str()), Some(worker.task_id.as_str())),
+            (None, Some("task_nobody_made")),
+            // Its own task does not open another run.
+            (Some(elsewhere.id.as_str()), Some(peer.task_id.as_str())),
+        ] {
+            assert_eq!(
+                read(run_id, task_id).unwrap_err(),
+                OWN_TASK_ONLY,
+                "{run_id:?} {task_id:?}"
+            );
+        }
+        // The words say why, and what to call.
+        assert!(OWN_TASK_ONLY.contains("peer request"));
+        assert!(OWN_TASK_ONLY.contains("without runId or taskId"));
+    }
+
+    /// The limit is the attempt on record, not the task in flight: a worker
+    /// that has reported, or whose attempt was ended, still holds a working
+    /// capability, and `active_task` no longer knows it.
+    #[test]
+    fn a_settled_peer_requests_worker_still_reads_only_its_own_task() {
+        let store = OrchestrationStore::default();
+        let (run, worker, peer) = peer_among_others(&store);
+        report(&store, &peer, "volume1: 71% of 8 TB");
+        assert!(store.active_task(&peer.worker_chat_key).unwrap().is_none());
+        assert!(!store.works_on_peer_request(&peer.worker_chat_key));
+
+        let (snapshot, view) = peers_read(&store, &peer);
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
+        assert_eq!(view["tasks"][0]["result"], "volume1: 71% of 8 TB");
+        let read = serde_json::to_string(&snapshot).unwrap() + &view.to_string();
+        for words in NOT_FOR_THE_PEER {
+            assert!(!read.contains(words), "{words:?} reached the teammate");
+        }
+        assert_eq!(
+            store
+                .snapshot_for_agent(&peer.worker_chat_key, Some(&run.id), Some(&worker.task_id))
+                .unwrap_err(),
+            OWN_TASK_ONLY
+        );
+
+        // An attempt the host ended, and the one that took the task up after
+        // it: both chats are held to the task, and each sees both attempts.
+        let store = OrchestrationStore::default();
+        let (_, _, first) = peer_among_others(&store);
+        store
+            .mutate(|data| {
+                let attempt = data.attempts.get_mut(&first.id).unwrap();
+                attempt.status = AttemptStatus::Failed;
+                attempt.finished_at = Some(now_ms());
+                let task = data.tasks.get_mut(&first.task_id).unwrap();
+                task.status = TaskStatus::Ready;
+                task.active_attempt_id = None;
+                Ok(())
+            })
+            .unwrap();
+        let task = task_of(&store, &first.task_id);
+        let (_, _, second, _) = store
+            .reserve_attempt("chat:master", &host_launch(&store, &task))
+            .unwrap();
+        assert_ne!(second.worker_chat_key, first.worker_chat_key);
+        for chat in [&first.worker_chat_key, &second.worker_chat_key] {
+            let (snapshot, own) = store.snapshot_for_agent(chat, None, None).unwrap();
+            assert_eq!(own.as_deref(), Some(first.task_id.as_str()), "{chat}");
+            assert_eq!(snapshot.tasks.len(), 1);
+            assert_eq!(snapshot.attempts.len(), 2);
+            let read = serde_json::to_string(&snapshot).unwrap();
+            for words in NOT_FOR_THE_PEER {
+                assert!(!read.contains(words), "{words:?} reached {chat}");
+            }
+        }
+    }
+
+    /// Everyone else reads what they always read: the run's coordinator, an
+    /// ordinary worker, the worker that asked, a lead that asked, and a chat
+    /// that is in no run.
+    #[test]
+    fn nobody_but_a_peer_requests_worker_reads_a_narrower_snapshot() {
+        let store = OrchestrationStore::default();
+        let (run, worker, peer) = peer_among_others(&store);
+        let whole = |run_id: Option<&str>| serde_json::to_value(store.snapshot(run_id).unwrap());
+        for chat in [
+            "chat:master",
+            worker.worker_chat_key.as_str(),
+            "chat:stranger",
+        ] {
+            for run_id in [None, Some(run.id.as_str())] {
+                // Another task named is the view's business, as before.
+                let (snapshot, own) = store
+                    .snapshot_for_agent(chat, run_id, Some(&peer.task_id))
+                    .unwrap();
+                assert_eq!(own, None, "{chat}");
+                assert_eq!(
+                    serde_json::to_value(&snapshot).unwrap(),
+                    whole(run_id).unwrap(),
+                    "{chat} {run_id:?}"
+                );
+            }
+        }
+        // The requester still follows the request it made, in full.
+        let view = agent_view::agent_snapshot(
+            store
+                .snapshot_for_agent(&worker.worker_chat_key, None, None)
+                .unwrap()
+                .0,
+            &agent_view::AgentRead {
+                actor: &worker.worker_chat_key,
+                run_id: None,
+                task_id: Some(&peer.task_id),
+                message_limit: 5,
+            },
+        )
+        .unwrap();
+        assert_eq!(view["tasks"][0]["id"], peer.task_id.as_str());
+        assert_eq!(view["runs"][0]["objective"], "Ship the feature");
+
+        // A lead that asked coordinates the run its request is in.
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 30);
+        let (snapshot, own) = store
+            .snapshot_for_agent(LEAD_CHAT, Some(&made.run_id), None)
+            .unwrap();
+        assert_eq!(own, None);
+        assert_eq!(snapshot.runs[0].objective, "Peer requests from ADA");
+        assert_eq!(snapshot.tasks[0].id, peer.task_id);
     }
 
     /// A request, its approval, its run and its report are all the ledger's:

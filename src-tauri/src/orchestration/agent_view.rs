@@ -12,6 +12,10 @@
 //! and the latest messages — with long text clipped and marked as clipped.
 //! `taskId` returns one task in full: its spec, every attempt, its gates and the
 //! messages exchanged with its workers.
+//!
+//! Which ledger a read is made from is the store's decision, not this
+//! module's: `OrchestrationStore::snapshot_for_agent` hands a peer request's
+//! worker its own task and nothing else, and everything here sees only that.
 use super::*;
 use serde_json::{Map, Value};
 
@@ -21,6 +25,9 @@ const TEXT_LIMIT: usize = 600;
 const SETTLED_TEXT_LIMIT: usize = 200;
 const DETAIL_TEXT_LIMIT: usize = 4_000;
 const HINT: &str = "Compact view: task specs, superseded attempts and older messages are left out, and long text is clipped. Pass taskId for one task in full, runId for another run, messageLimit (up to 100) for more messages.";
+
+const OWN_TASK_SCOPE: &str = "Your own task only. You work on a peer request, so nothing else of this run or of any other is shown to you: not other tasks, other workers' messages, gates or reports, or what the teammate that asked wrote to anyone.";
+const OWN_TASK_HINT: &str = "Long text is clipped and older messages are left out. Pass messageLimit (up to 100) for more messages.";
 
 pub struct AgentRead<'a> {
     pub actor: &'a str,
@@ -256,6 +263,20 @@ pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, Str
         out.insert("omitted".into(), Value::Object(omitted));
     }
     Ok(Value::Object(out))
+}
+
+/// A peer request's worker read its own task and nothing else
+/// (`OrchestrationStore::snapshot_for_agent`). Say so in the view, so the
+/// rest of the run does not read as empty, and offer nothing it cannot ask
+/// for.
+pub fn held_to_own_task(view: &mut Value) {
+    let Some(out) = view.as_object_mut() else {
+        return;
+    };
+    out.insert("scope".into(), Value::String(OWN_TASK_SCOPE.into()));
+    if let Some(Value::Object(omitted)) = out.get_mut("omitted") {
+        omitted.insert("hint".into(), Value::String(OWN_TASK_HINT.into()));
+    }
 }
 
 /// The runs this chat coordinates or works in. A chat in none of them — a

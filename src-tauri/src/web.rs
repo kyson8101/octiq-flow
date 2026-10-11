@@ -3544,6 +3544,154 @@ mod tests {
         chats.test_end("chat:master");
     }
 
+    /// A snapshot is the one read of the ledger an agent starts itself. A
+    /// peer request's worker gets its own task by it and nothing else of the
+    /// run, another run or task named is refused, and that holds once it has
+    /// reported. Every other caller, and the page, read what they always did.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_peer_requests_worker_is_shown_only_its_own_task_by_the_hook() {
+        use crate::orchestration::peer_request::tests::{peer_among_others, NOT_FOR_THE_PEER};
+        use crate::orchestration::peer_request::{OWN_TASK_ONLY, RUN_NOT_SHOWN};
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let (run, worker, peer) = peer_among_others(&store);
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let master = chats.test_launch("chat:master");
+        let worker_cap = chats.test_launch(&worker.worker_chat_key);
+        let peer_cap = chats.test_launch(&peer.worker_chat_key);
+        let (ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let read = |chat: &str, args: Value| json!({ "chatKey": chat, "action": "snapshot", "args": args });
+        let own_task_only = |answer: &Value| {
+            let result = &answer["result"];
+            assert_eq!(result["view"], "task", "{answer}");
+            assert_eq!(result["tasks"].as_array().unwrap().len(), 1, "{answer}");
+            assert_eq!(result["tasks"][0]["id"], peer.task_id.as_str(), "{answer}");
+            assert_eq!(result["runs"][0]["objective"], RUN_NOT_SHOWN, "{answer}");
+            assert!(
+                result["scope"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Your own task only."),
+                "{answer}"
+            );
+            assert!(result.get("environmentCapacity").is_none(), "{answer}");
+            let said = answer.to_string();
+            for words in NOT_FOR_THE_PEER {
+                assert!(
+                    !said.contains(words),
+                    "{words:?} reached the teammate: {said}"
+                );
+            }
+            assert!(!said.contains(&worker.task_id), "{said}");
+        };
+        let refused = |answer: (u16, Value)| {
+            assert_eq!(answer.0, 400, "{}", answer.1);
+            assert_eq!(answer.1["error"], OWN_TASK_ONLY, "{}", answer.1);
+        };
+        let peer_chat = peer.worker_chat_key.as_str();
+
+        let (status, answer) = hook(&base, Some(&peer_cap), read(peer_chat, json!({}))).await;
+        assert_eq!(status, 200, "{answer}");
+        own_task_only(&answer);
+        assert!(
+            answer["result"]["tasks"][0]["spec"]
+                .as_str()
+                .unwrap()
+                .starts_with("Inspect the NAS and read each volume's usage."),
+            "{answer}"
+        );
+        // The person's answer to its gate rides the same call, as before.
+        assert!(
+            answer["result"]["hostNotices"]
+                .to_string()
+                .contains("Decision: volume1"),
+            "{answer}"
+        );
+        for args in [
+            json!({ "runId": "run_nobody_made" }),
+            json!({ "taskId": worker.task_id }),
+            json!({ "runId": run.id, "taskId": worker.task_id }),
+        ] {
+            refused(hook(&base, Some(&peer_cap), read(peer_chat, args)).await);
+        }
+        // Its own run and task, named.
+        let (status, answer) = hook(
+            &base,
+            Some(&peer_cap),
+            read(
+                peer_chat,
+                json!({ "runId": run.id, "taskId": peer.task_id }),
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        own_task_only(&answer);
+
+        // Reported: no task is active for its chat, and its capability still
+        // answers.
+        let (status, answer) = hook(
+            &base,
+            Some(&peer_cap),
+            json!({ "chatKey": peer_chat, "action": "worker_report", "args": {
+                "attemptId": peer.id, "outcome": "completed", "summary": "volume1: 71% of 8 TB",
+                "filesModified": [], "verdict": null,
+            } }),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert!(store.active_task(peer_chat).unwrap().is_none());
+        let (status, answer) = hook(&base, Some(&peer_cap), read(peer_chat, json!({}))).await;
+        assert_eq!(status, 200, "{answer}");
+        own_task_only(&answer);
+        assert_eq!(answer["result"]["tasks"][0]["status"], "completed");
+        refused(
+            hook(
+                &base,
+                Some(&peer_cap),
+                read(peer_chat, json!({ "taskId": worker.task_id })),
+            )
+            .await,
+        );
+
+        // The worker that asked, the coordinator and the page are unchanged:
+        // the whole run, the request among its tasks.
+        for (chat, cap) in [
+            (worker.worker_chat_key.as_str(), &worker_cap),
+            ("chat:master", &master),
+        ] {
+            let (status, answer) =
+                hook(&base, Some(cap), read(chat, json!({ "runId": run.id }))).await;
+            assert_eq!(status, 200, "{answer}");
+            let result = &answer["result"];
+            assert_eq!(result["view"], "compact", "{answer}");
+            assert_eq!(result["tasks"].as_array().unwrap().len(), 2, "{answer}");
+            assert_eq!(result["runs"][0]["objective"], "Ship the feature");
+            assert!(result.get("scope").is_none(), "{answer}");
+            let (status, answer) = hook(
+                &base,
+                Some(cap),
+                read(chat, json!({ "taskId": peer.task_id })),
+            )
+            .await;
+            assert_eq!(status, 200, "{answer}");
+            assert_eq!(answer["result"]["tasks"][0]["id"], peer.task_id.as_str());
+        }
+        let page = crate::dispatch::dispatch(
+            &ctx.services,
+            "orchestration_snapshot",
+            json!({ "runId": run.id }),
+        )
+        .unwrap();
+        assert_eq!(page["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(page["runs"][0]["objective"], "Ship the feature");
+        let page = page.to_string();
+        for words in NOT_FOR_THE_PEER {
+            assert!(page.contains(words), "{words:?}");
+        }
+        chats.test_end("chat:master");
+        chats.test_end(&worker.worker_chat_key);
+        chats.test_end(peer_chat);
+    }
+
     /// Review H2. Whoever asked for a peer request is the worker's teammate,
     /// not its manager, so no agent's words reach the worker once it runs: a
     /// coordinator's message and its answer to the worker's gate are refused

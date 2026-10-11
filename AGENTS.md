@@ -579,7 +579,9 @@ kind, from a chat and from the page) and a gate on its task is answered only
 by the person on the page (`ResolvedBy::Person`: the socket's
 `orchestration_gate_resolve`, which no hook action maps to). A new path that
 puts an agent's words in a worker's inbox, or continues a worker, asks
-`task.peer_request` first. Its `maxMinutes` is working time, and a wait is
+`task.peer_request` first. Its worker reads only its own task of the ledger
+(`OrchestrationStore::snapshot_for_agent`, by the attempt on record), so a new
+read of the ledger that an agent can start goes through it too. Its `maxMinutes` is working time, and a wait is
 free only while the host can verify that nothing is running: between two of
 the scheduler's looks that both saw a card, or an open gate with no turn in
 flight. A gate under a running turn is charged, used time never goes down,

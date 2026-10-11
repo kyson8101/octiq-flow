@@ -973,11 +973,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // key when it resolves a visible gate or starts a run explicitly.
         "orchestration_snapshot" => {
             let run_id: Option<String> = arg(&args, "runId")?;
-            let snapshot = svc.orchestrations.snapshot(run_id.as_deref());
             // An agent's read lands in its transcript and goes out to every
             // tab, so it gets the compact view; the browser, which names no
             // actor, keeps the whole store.
             let Some(actor) = arg::<Option<String>>(&args, "actorChatKey")? else {
+                let snapshot = svc.orchestrations.snapshot(run_id.as_deref());
                 // The tab's whole-ledger read can leave finished runs' long
                 // text out; its run panel asks for one run whole (`brief.rs`).
                 let brief = arg::<Option<bool>>(&args, "brief")?.unwrap_or(false);
@@ -989,7 +989,15 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             };
             let task_id: Option<String> = arg(&args, "taskId")?;
             let message_limit: Option<usize> = arg(&args, "messageLimit")?;
-            let snapshot = snapshot?;
+            // Every agent's read is built from this one ledger, so a peer
+            // request's worker, held to its own task, finds nothing else in
+            // the view or in the environments below.
+            let (snapshot, own_task) = svc.orchestrations.snapshot_for_agent(
+                &actor,
+                run_id.as_deref(),
+                task_id.as_deref(),
+            )?;
+            let task_id = own_task.clone().or(task_id);
             let full = snapshot.clone();
             let mut view = crate::orchestration::agent_view::agent_snapshot(
                 snapshot,
@@ -1001,6 +1009,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                         .unwrap_or(crate::orchestration::agent_view::DEFAULT_MESSAGES),
                 },
             )?;
+            if own_task.is_some() {
+                crate::orchestration::agent_view::held_to_own_task(&mut view);
+            }
             // Only when a task in view needs one: the sandbox record is read
             // from disk, and most runs never touch it.
             let shown: std::collections::BTreeSet<String> = view["runs"]
@@ -1024,10 +1035,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                         "environments".into(),
                         crate::orchestration::agent_view::environments(&full, &sandboxes, &shown),
                     );
-                    out.insert(
-                        "environmentCapacity".into(),
-                        crate::orchestration::agent_view::capacity(&sandboxes),
-                    );
+                    // Host-wide, and it names the chats waiting for a slot.
+                    if own_task.is_none() {
+                        out.insert(
+                            "environmentCapacity".into(),
+                            crate::orchestration::agent_view::capacity(&sandboxes),
+                        );
+                    }
                 }
             }
             Ok(view)
