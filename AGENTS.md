@@ -569,6 +569,26 @@ message starts it again and takes the tick away.
 - **The state is in memory only.** A server restart mid-completion forgets it:
   the wrap-up turn is in the transcript, the chat is simply not ticked, and
   the person ticks it by hand or completes it again.
+- **The page mirrors, and decides nothing** (`lib/chatComplete`,
+  `lib/useChatCompletions`). The action is in the chat's own menu beside Copy
+  and Delete, and is not drawn for a worker's chat, a front desk or a seat.
+  The confirm (`CompleteChatConfirm`) is a decision surface: the decision
+  colour, one line of what will happen, the host's preview as label and
+  value, and the steps behind one disclosure. One line above the composer
+  (`ChatCompletionLine`) says Completing, Completed, or why not; the tick
+  itself only ever arrives through the chat index. Every event about a chat
+  bumps a revision, so a `chat_activity` or `chat_queue_state` read that was
+  in the air when it arrived cannot put the older answer back.
+- **The wrap-up's bubble is named, not quoted.** The page knows the turn by
+  its id prefix (`isWrapUpTurn`) and draws `Wrap-up` with the host's text
+  behind a disclosure. Its take-back says Cancel and returns nothing to the
+  composer (`reclaim` skips it): the words were never typed.
+- **Close mission is offered after the completion, never before, and never
+  sent.** Once `chat-completed` says ok, the page asks git about the missions
+  the confirm listed (`orchestration_mission_refresh`), reads the preview
+  again, and offers Close only for a mission the host calls `closeEligible`.
+  The click asks in the run panel's own words before
+  `orchestration_mission_close`.
 
 ### Attention alerts
 

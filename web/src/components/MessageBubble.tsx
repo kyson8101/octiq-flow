@@ -4,9 +4,12 @@ import "./MessageBubble.css";
 
 /** One visible delivery row on every screen size. Its height is retained when
  * the queue controls become a delivery receipt, so pickup doesn't move prose. */
-export function MessageBubble({ user, message, onStart, onCancel, onRestore, onDismiss, onDiscuss, footer, children }: {
+export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel, onRestore, onDismiss, onDiscuss, footer, children }: {
   user: boolean;
   message: Message;
+  /** The host's wrap-up turn of a completion (`lib/chatComplete`): taking it
+   *  back cancels the completion, and there are no words to return. */
+  wrapUp?: boolean;
   onStart?: () => void;
   onCancel?: () => void;
   onRestore?: () => void;
@@ -21,7 +24,7 @@ export function MessageBubble({ user, message, onStart, onCancel, onRestore, onD
   const accepted = !!(message.echo || message.takenUp);
   const delivery = accepted ? "dispatched" : message.queueLost ? "failed" : message.delivery;
   const pending = !!message.queueAction;
-  const label = message.queueAction === "cancel" ? "Returning to composer…"
+  const label = message.queueAction === "cancel" ? (wrapUp ? "Cancelling…" : "Returning to composer…")
     : message.queueAction === "start" || delivery === "starting" ? "Sending next…"
     : accepted ? "Sent"
     : delivery === "queued" ? "Queued"
@@ -42,11 +45,14 @@ export function MessageBubble({ user, message, onStart, onCancel, onRestore, onD
           <span className="message-delivery-status" role="status" title={detail}>{label}</span>
           <div className="message-delivery-actions" role="group" aria-label="Message actions">
             {onStart && <button type="button" disabled={pending}
-              title="Stop the current reply and send this message next"
+              title={wrapUp ? "Stop the current reply and wrap up now" : "Stop the current reply and send this message next"}
               aria-label="Send this queued message now" onClick={onStart}>Send now</button>}
-            {onCancel && <button type="button" disabled={pending}
+            {onCancel && (wrapUp ? <button type="button" disabled={pending}
+              title="Take the wrap-up back. The chat is not completed."
+              aria-label="Cancel completing this chat" onClick={onCancel}>Cancel</button>
+              : <button type="button" disabled={pending}
               title="Return this message and its attachments to the composer"
-              aria-label="Take this queued message back to edit" onClick={onCancel}>Edit</button>}
+              aria-label="Take this queued message back to edit" onClick={onCancel}>Edit</button>)}
             {onRestore && <button type="button" onClick={onRestore}>Restore to composer</button>}
             {onDismiss && <button type="button" onClick={onDismiss}>Dismiss</button>}
             {onDiscuss && <button type="button"

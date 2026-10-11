@@ -6,6 +6,7 @@
 // make the rail noisy.
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { Message } from "../lib/chat";
+import { WRAP_UP_LABEL, isWrapUpTurn } from "../lib/chatComplete";
 
 import "./ConversationMap.css";
 
@@ -45,7 +46,8 @@ export function conversationMapTurns(turns: Message[][]): ConversationMapTurn[] 
     return [
       {
         id: turn[0].id,
-        prompt: previewText(turn) || "Message",
+        // The host's wrap-up turn is named, not quoted: the person did not say it.
+        prompt: isWrapUpTurn(turn[0].turnId) ? WRAP_UP_LABEL : previewText(turn) || "Message",
         reply: answer ? previewText(answer) : "",
       },
     ];

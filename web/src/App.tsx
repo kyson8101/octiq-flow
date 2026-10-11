@@ -185,6 +185,10 @@ import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/Ses
 import { FullscreenButton } from "./components/FullscreenButton";
 import { InstalledReload } from "./components/InstalledReload";
 import { ChatDeleteButton } from "./components/ChatDeleteButton";
+import { ChatCompletionLine, CompleteChatButton, CompleteChatDialog } from "./components/CompleteChat";
+import { chatKindOf, completeAction, completingIds, completionLine, isWrapUpTurn, type CompletePreview } from "./lib/chatComplete";
+import { useChatCompletions } from "./lib/useChatCompletions";
+import { useConfirm } from "./components/Confirm";
 import { CopyChatIdButton } from "./components/CopyChatIdButton";
 import { TopbarActionLayout } from "./components/TopbarActionsMenu";
 import { ChatTaskBar } from "./components/ChatTaskBar";
@@ -1536,7 +1540,8 @@ export default function App() {
 
   /** Hold one cancelled message's words for the box. */
   const reclaim = useCallback((id: string, turnId: string, message: Message | undefined) => {
-    if (!message || reclaimedIds.current.includes(turnId)) return;
+    // The host's wrap-up turn was never typed; taking it back returns nothing.
+    if (!message || isWrapUpTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
     const words = reclaimedMessage(message);
     reclaimedIds.current = [...reclaimedIds.current.slice(-199), turnId];
     setReclaimed((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), words] }));
@@ -3953,6 +3958,54 @@ export default function App() {
     bridge.invoke("chat_interrupt", { key: keyFor(conversationId) }).catch(() => {});
   }, [conversationId, patch]);
 
+  // Completing a chat (`lib/chatComplete`). The host owns the state; this
+  // mirrors it, and a chat it ticked and stopped has no process any more.
+  const completions = useChatCompletions(conn, conversationId, useCallback((id: string, ok: boolean) => {
+    if (!ok) return;
+    setRunning((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []));
+  const completingChats = useMemo(() => completingIds(completions.state), [completions.state]);
+  /** The chat whose Complete is being confirmed. Held here, not in the menu
+   *  the action sits in: the menu closes on the click that opens this. */
+  const [completeAsk, setCompleteAsk] = useState<string | null>(null);
+  const completeChat = useCallback(async (id: string, preview?: CompletePreview) => {
+    setCompleteAsk(null);
+    const held = conversationsRef.current.find((c) => c.id === id);
+    const home = workspaces.find((w) => w.id === held?.projectId) ?? project;
+    // What `send` would start this chat with. The host uses it only when the
+    // chat has no process, and then starts it with the wrap-up as its message.
+    const taken = await completions.complete(id, {
+      cwd: held?.cwd ?? chatsRef.current[id]?.cwd ?? home?.primary_path ?? "",
+      fallbackCwd: home?.primary_path ?? null,
+      useSandbox: false,
+      extraDirs: home?.paths ?? [],
+      env: home?.env ?? {},
+      agent: choice.agent,
+      model: choice.flag || null,
+      access,
+      effort,
+      lite,
+      resume: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
+    }, preview);
+    if (taken) setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  }, [completions.complete, workspaces, project, choice, access, effort, lite]);
+  const confirmAction = useConfirm();
+  /** Close a mission the completed chat coordinated. The person's own action,
+   *  asked in the words the run panel asks it in. */
+  const closeMissionAfter = useCallback(async (id: string, runId: string) => {
+    if (!(await confirmAction({
+      title: "Close this mission?",
+      body: "Once git confirms the merge, its worktree is removed and its local branch deleted. The remote branch and the history are kept.",
+      confirmLabel: "Close mission",
+    }))) return;
+    await completions.closeMission(id, runId);
+  }, [confirmAction, completions.closeMission]);
+
   const actOnQueue = useCallback((turnId: string, action: "start" | "cancel") => {
     if (!conversationId || conn !== "open") return;
     const id = conversationId;
@@ -4782,6 +4835,13 @@ export default function App() {
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
       {!mainPage && conversationId && <CopyChatIdButton chatId={conversationId} />}
+      {!mainPage && conversationId && <CompleteChatButton
+        action={completeAction({
+          kind: chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) }),
+          completing: completingChats.has(conversationId),
+          connected: conn === "open",
+        })}
+        onClick={() => setCompleteAsk(conversationId)} />}
       {!mainPage && conversationId && !workerChat && <>
         <span className="topbar-actions-separator" role="separator" />
         <ChatDeleteButton deleting={deleting.has(conversationId)} disabled={leaving.has(conversationId)}
@@ -4829,6 +4889,7 @@ export default function App() {
         currentConversation={conversationId}
         running={running}
         busy={busySet}
+        completing={completingChats}
         deleting={deleting}
         leaving={leaving}
         deleteMs={UNDO_MS}
@@ -5406,6 +5467,20 @@ export default function App() {
             />
           )}
 
+          {conversationId && !workerChat && (
+            <ChatCompletionLine
+              line={completionLine({
+                completing: completions.state.completing[conversationId],
+                ended: completions.state.ended[conversationId],
+                done: !!openRecord && isChatDone(openRecord),
+                messages: chat.messages,
+              })}
+              offers={completions.offers[conversationId]}
+              onCloseMission={(runId) => void closeMissionAfter(conversationId, runId)}
+              onDismiss={() => completions.dismiss(conversationId)}
+            />
+          )}
+
           {conversationId && visibleNotices.length > 0 && (
             <ChatNotices
               notices={visibleNotices}
@@ -5651,6 +5726,14 @@ export default function App() {
         />
       )}
 
+      {completeAsk && completeAsk === conversationId && (
+        <CompleteChatDialog
+          chatKey={keyFor(completeAsk)}
+          busy={chat.busy && !cutOff}
+          onCancel={() => setCompleteAsk(null)}
+          onConfirm={(preview) => void completeChat(completeAsk, preview)}
+        />
+      )}
       {trashOpen && (
         <DeletedChats
           chats={deletedChats}
