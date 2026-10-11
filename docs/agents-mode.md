@@ -701,7 +701,11 @@ notice.
   turn's own full stop). Opening a gate stops no clock by itself: while the
   turn that opened it still runs, the attempt is working, is charged, and is
   ended at its limit with the gate open. The teammate's brief says to end the
-  turn after opening a gate.
+  turn after opening a gate. A turn that a Stop cut short still counts as a
+  turn until its own full stop has been read (`ChatManager::unwinding`): the
+  chat is marked idle at once, but the agent has not said it stopped, so the
+  window is charged until the full stop arrives or the process is ended for
+  not stopping.
 - **Bounds, not guesses.** Free time is only the time between two looks in a
   row that both saw the wait, with no line of the agent's stream arriving
   between them (`Wait`, `{from, to}`). The clock is read before and after each

@@ -136,7 +136,9 @@ pub(super) struct Look {
     /// Its chat is on a card only the person can answer (`on_card`).
     pub card: bool,
     /// Its chat has a turn in flight (`ChatManager::turn_in_flight`): from a
-    /// write to the agent's stdin until that turn's own full stop.
+    /// write to the agent's stdin until that turn's own full stop. A turn a
+    /// Stop cut short counts until its full stop has been read
+    /// (`ChatManager::unwinding`).
     pub turn: bool,
 }
 
@@ -1000,7 +1002,12 @@ impl OrchestrationStore {
     pub(crate) fn expire_peer_requests(&self, chats: &ChatManager) -> Result<Vec<String>, String> {
         self.expire_peer_requests_with(&now_ms, &|chat| Look {
             card: on_card(chat),
-            turn: chats.turn_in_flight(chat),
+            // A Stop marks the chat idle at once, while the turn it cut
+            // short has not reached its full stop: the agent was asked to
+            // stop and has not said it has. That is not a wait the host
+            // can verify, so it reads as a turn until the full stop is
+            // read or the process is ended.
+            turn: chats.turn_in_flight(chat) || chats.unwinding(chat),
         })
     }
 
@@ -2235,6 +2242,71 @@ pub(crate) mod tests {
         assert_eq!(waits(), seen);
         // A chat with no process has no turn either.
         chats.test_end(&peer.worker_chat_key);
+        looks(3);
+        assert_eq!(waits().len(), 2, "{:?}", waits());
+    }
+
+    /// A Stop marks the chat idle at once (`busy` is false), while the turn
+    /// it cut short has not reached its full stop (`CutOff::Owed`): the
+    /// agent was asked to stop and has not said it has. A gate open in that
+    /// window is not a wait the host can verify, so it is working time until
+    /// the full stop is read, or the process is ended for not stopping.
+    #[test]
+    fn a_stopped_turn_is_working_time_until_its_full_stop_is_read() {
+        let store = OrchestrationStore::default();
+        let (made, peer) = timed(&store, 120);
+        let chat = peer.worker_chat_key.as_str();
+        let chats = ChatManager::default();
+        chats.test_launch(chat);
+        let waits = || {
+            attempt_of(&store, &peer.id)
+                .peer_clock
+                .map(|clock| clock.waits)
+                .unwrap_or_default()
+        };
+        let looks = |times: usize| {
+            for _ in 0..times {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+                assert!(store.expire_peer_requests(&chats).unwrap().is_empty());
+            }
+        };
+        chats.test_busy(chat, true);
+        store
+            .create_gate(
+                chat,
+                made.run_id.clone(),
+                None,
+                "Which volume?".into(),
+                vec![],
+            )
+            .unwrap();
+        looks(3);
+        assert!(waits().is_empty(), "{:?}", waits());
+
+        // The person stops the turn. The chat itself says no turn is in
+        // flight, and the look still does not see a wait.
+        chats.test_full_stop_owed(chat, true);
+        assert!(!chats.turn_in_flight(chat));
+        assert!(chats.unwinding(chat));
+        looks(4);
+        assert!(waits().is_empty(), "{:?}", waits());
+
+        // The cut-off turn's full stop is read: waiting from here on.
+        chats.test_full_stop_owed(chat, false);
+        looks(3);
+        let seen = waits();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(seen[0].from < seen[0].to, "{seen:?}");
+
+        // Stopped again, and this time the full stop never comes: the wait
+        // keeps its end until the process is gone, which is what the end of
+        // the grace does (`grace_ran_out`).
+        chats.test_busy(chat, true);
+        chats.test_full_stop_owed(chat, true);
+        looks(3);
+        assert_eq!(waits(), seen);
+        chats.test_end(chat);
+        assert!(!chats.unwinding(chat));
         looks(3);
         assert_eq!(waits().len(), 2, "{:?}", waits());
     }

@@ -1137,7 +1137,7 @@ impl ChatManager {
     /// holds reads as unwinding, which only ever makes a notification wait
     /// for the next pass. A caller holding either lock reads
     /// `ChatSession::cut_off` itself.
-    fn unwinding(&self, key: &str) -> bool {
+    pub(crate) fn unwinding(&self, key: &str) -> bool {
         let Ok(sessions) = self.sessions.lock() else {
             return true;
         };
@@ -6056,6 +6056,20 @@ impl ChatManager {
     pub(crate) fn test_busy(&self, key: &str, busy: bool) {
         let session = self.sessions.lock().unwrap().get(key).cloned().unwrap();
         session.lock().unwrap().busy = busy;
+    }
+
+    /// Leave a stand-in from `test_launch` as a Stop leaves a chat whose turn
+    /// it cut short: idle at once, that turn's full stop still owed. `false`
+    /// is the full stop being read. No thread waits out a grace.
+    pub(crate) fn test_full_stop_owed(&self, key: &str, owed: bool) {
+        let session = self.sessions.lock().unwrap().get(key).cloned().unwrap();
+        let mut session = session.lock().unwrap();
+        session.busy = false;
+        session.cut_off = if owed {
+            CutOff::Owed(self.next_unwind())
+        } else {
+            CutOff::No
+        };
     }
 
     /// End a stand-in from `test_launch`, as the chat ending would.
