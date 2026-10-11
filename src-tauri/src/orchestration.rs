@@ -37,6 +37,7 @@ pub mod levels;
 pub mod lifecycle;
 pub mod mission;
 pub mod peer;
+pub mod peer_request;
 #[cfg(test)]
 mod reporting_tests;
 mod retention;
@@ -421,6 +422,11 @@ pub struct Task {
     /// so it stops counting as blocked (feedback 6b0870f9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+    /// Set on a task a teammate asked for (`peer_request.rs`): who asked,
+    /// the result they expect back and the time it may take. Fixed from
+    /// creation; it is what makes the task a peer request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_request: Option<peer_request::PeerRequest>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1091,7 +1097,12 @@ impl OrchestrationStore {
                     .data
                     .peer_asks
                     .values()
-                    .filter(|ask| visible.contains(ask.run_id.as_str()))
+                    // A lead chat's ask belongs to no run when the chat
+                    // coordinates none: the whole-ledger read lists it.
+                    .filter(|ask| {
+                        visible.contains(ask.run_id.as_str())
+                            || (run_id.is_none() && ask.run_id.is_empty())
+                    })
                     .cloned()
                     .collect();
                 asks.sort_by_key(|ask| (ask.asked_at, ask.id.clone()));
@@ -1843,6 +1854,9 @@ impl OrchestrationStore {
                     if parent_task.parent_task_id.is_some() {
                         return Err("This task is already a subtask. Delegation goes no deeper; do it yourself.".into());
                     }
+                    if parent_task.peer_request.is_some() {
+                        return Err("This task is a peer request, and a peer request cannot be split. Do the work yourself.".into());
+                    }
                     if assignee.is_none() {
                         return Err("Give each subtask an `assignee`: one of your direct reports.".into());
                     }
@@ -1880,6 +1894,10 @@ impl OrchestrationStore {
                 if task.run_id != run_id {
                     return Err("A parent task must belong to the same run.".into());
                 }
+                // One bounded piece of work for one teammate: it has no parts.
+                if task.peer_request.is_some() {
+                    return Err("That task is a peer request, and a peer request cannot be split. Its teammate does the work itself.".into());
+                }
             }
             let now = now_ms();
             let ready = depends_on.iter().all(|dependency| {
@@ -1916,6 +1934,7 @@ impl OrchestrationStore {
                 verdict: None,
                 handoffs: Vec::new(),
                 superseded_by: None,
+                peer_request: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -2018,6 +2037,9 @@ impl OrchestrationStore {
             }
             if task.parent_task_id.is_some() {
                 return Err("This is a manager's subtask; its manager hands it on.".into());
+            }
+            if task.peer_request.is_some() {
+                return Err("This is a peer request to one named teammate and cannot change hands. Withdraw it, or let whoever asked make another.".into());
             }
             if let Some(active) = task.active_attempt_id.as_deref().and_then(|id| data.attempts.get(id)) {
                 if matches!(active.status, AttemptStatus::Preparing | AttemptStatus::Running) {
@@ -2146,6 +2168,11 @@ impl OrchestrationStore {
                 || !matches!(task.status, TaskStatus::Pending | TaskStatus::Ready)
             {
                 return Err("This task has already started or been withdrawn.".into());
+            }
+            // A peer request is fixed as asked: its text, its teammate and
+            // its destination are what the bounds were checked against.
+            if task.peer_request.is_some() && !revision.withdraw {
+                return Err("A peer request cannot be revised. Withdraw it (withdraw: true) and let whoever asked make another.".into());
             }
             if revision.withdraw {
                 if let Some(dependant) = data.tasks.values().find(|other| {
@@ -2364,6 +2391,11 @@ impl OrchestrationStore {
             if let Some(approved) = unstarted_handoff(data, &task) {
                 let owner = task.assignee.as_ref().map_or("another agent", |a| a.name.as_str());
                 keeps_to_handoff(approved, &worker, owner)?;
+            }
+            // A peer runs as its registered identity, whoever starts it.
+            if let (Some(_), Some(approved)) = (&task.peer_request, &task.worker) {
+                let peer = task.assignee.as_ref().map_or("a teammate", |a| a.name.as_str());
+                peer_request::keeps_to_identity(approved, &worker, launch.effort.as_deref(), peer)?;
             }
             worker.recovery = task
                 .worker
@@ -2737,9 +2769,13 @@ impl OrchestrationStore {
         // Agents mode: every assigned agent has its own memory.
         if let Some(assignee) = &task.assignee {
             let path = crate::team::default_path();
-            if let Some((me, brief)) =
-                crate::team::assignee_brief(&path, &assignee.id, &workspace.id)
-            {
+            if let Some((me, brief)) = crate::team::assignee_brief(
+                &path,
+                &assignee.id,
+                &workspace.id,
+                // A peer request goes no further: its worker asks, never hands on.
+                task.peer_request.is_none(),
+            ) {
                 let _ = crate::team::ensure_memory(
                     &crate::memory_vault::Vault::profile(),
                     &reserved.worker_chat_key,
@@ -2749,8 +2785,14 @@ impl OrchestrationStore {
                 prompt.push_str(&brief);
             }
         }
+        if let Some(request) = &task.peer_request {
+            prompt.push_str(&peer_request::worker_brief(request));
+        }
         // Agents mode: a second-level assignee that manages agents may split.
-        if let (Some(assignee), None) = (&task.assignee, &task.parent_task_id) {
+        // Never a peer request, which is one teammate's own piece of work.
+        if let (Some(assignee), None, None) =
+            (&task.assignee, &task.parent_task_id, &task.peer_request)
+        {
             if let Ok(Some(brief)) = crate::team::manager_brief(
                 &crate::team::default_path(),
                 &workspace.id,
@@ -4179,6 +4221,15 @@ fn decide_plan_in(
                         "Rejected by the person with plan revision {plan_revision}."
                     ));
                     task.updated_at = now;
+                    // A worker that asked a teammate for this hears that it
+                    // will not happen, instead of waiting for a report.
+                    let withdrawn = task.clone();
+                    peer_request::tell_requester(
+                        data,
+                        &withdrawn,
+                        format!("peer-rejected:{id}"),
+                        "the person rejected it on the plan card, so it will not be done. Carry on without it.",
+                    );
                 }
             }
             let rejection = PlanRejection {
@@ -4303,6 +4354,14 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
             // Likewise only when not ordinary work.
             if !task.kind.is_work() {
                 entry["kind"] = json!(task.kind);
+            }
+            // Who asked a teammate for it, and the bounds they set.
+            if let Some(request) = &task.peer_request {
+                entry["peerRequest"] = json!({
+                    "requestedBy": request.requested_by,
+                    "output": request.output,
+                    "maxMinutes": request.max_minutes,
+                });
             }
             entry
         })
@@ -4519,6 +4578,17 @@ fn settle_attempt(
     let settled = task_mut.clone();
     make_ready(data, &attempt.run_id);
     recompute_run(data, &attempt.run_id);
+    // A peer request's report goes back to the worker that asked for it.
+    peer_request::tell_requester(
+        data,
+        &settled,
+        format!("peer-report:{}", attempt.id),
+        &format!(
+            "reported {:?}.\n\n{}",
+            settled.status,
+            settled.result.as_deref().unwrap_or_default()
+        ),
+    );
     let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
     if target == actor_chat_key {
         return settled;
@@ -4536,7 +4606,7 @@ fn settle_attempt(
         }
     }
     inbox::enqueue(data, &attempt.run_id, actor_chat_key, &target, format!("report:{}", attempt.id), "report",
-        format!("Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.", settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default()));
+        format!("{}Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.", peer_request::report_note(&settled), settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default()));
     settled
 }
 

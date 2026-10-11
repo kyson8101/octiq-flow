@@ -597,6 +597,7 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__orchestration_worker_report mcp__octiq__orchestration_gate_create \\
                      mcp__octiq__orchestration_gate_resolve mcp__octiq__orchestration_message_send \\
                      mcp__octiq__orchestration_run_stop mcp__octiq__orchestration_peer_ask \\
+                     mcp__octiq__orchestration_peer_request \\
                      mcp__octiq__vault_info mcp__octiq__vault_list mcp__octiq__vault_search \\
                      mcp__octiq__vault_read mcp__octiq__vault_write mcp__octiq__vault_patch \\
                      mcp__octiq__vault_move mcp__octiq__vault_archive mcp__octiq__vault_receipt \\
@@ -2016,6 +2017,12 @@ pub(crate) mod tests {
             // A raise of the chat's access is asked on its own card too.
             "request_access",
         ] {
+            assert!(claude.contains(&format!("mcp__octiq__{tool}")), "{tool}");
+        }
+        // A peer ask only reads, and a peer request only records a task that
+        // waits on the plan card: the person decides there, not on a prompt
+        // in front of the call.
+        for tool in ["orchestration_peer_ask", "orchestration_peer_request"] {
             assert!(claude.contains(&format!("mcp__octiq__{tool}")), "{tool}");
         }
         assert!(claude.contains("mcp__octiq__feedback_submit"));

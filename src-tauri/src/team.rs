@@ -1205,11 +1205,14 @@ pub fn teammates<'a>(
 
 /// What a worker is told about its team: who it may ask and how. `None`
 /// when it has no teammate who may look at work in `project_id`.
+/// `may_request` is false for the worker of a peer request, which may ask a
+/// question but cannot hand work on (`orchestration::peer_request`).
 pub fn peer_brief(
     agents: &[TeamAgent],
     teams: &[AgentTeam],
     me: &TeamAgent,
     project_id: &str,
+    may_request: bool,
 ) -> Option<String> {
     let team = teams
         .iter()
@@ -1226,10 +1229,58 @@ pub fn peer_brief(
         .map(|a| describe(a, agents, false, None))
         .collect::<Vec<_>>()
         .join("\n");
+    let request = if may_request {
+        peer_request_brief(
+            crate::orchestration::peer_request::MAX_REQUESTS_PER_ATTEMPT,
+            "per attempt",
+        )
+    } else {
+        String::new()
+    };
     Some(format!(
-        "You are on the team {}. Your teammates:\n{rows}\n\nPeers answer questions; they do not do the work. When a teammate's role fits a question you are stuck on, call orchestration_peer_ask with their id as teammateId, one self-contained question, and optionally contextPaths (files in your workspace, relative to it) they should read first. The host runs their answer as that teammate, read-only in your workspace, and returns it as the tool result. At most {} asks per attempt. The answer is advice: you still own the task, and you verify before acting on it.",
+        "You are on the team {}. Your teammates:\n{rows}\n\nA question is orchestration_peer_ask. Peers answer questions; they do not do the work. When a teammate's role fits a question you are stuck on, call it with their id as teammateId, one self-contained question, and optionally contextPaths (files in your workspace, relative to it) they should read first. The host runs their answer as that teammate, read-only in your workspace, and returns it as the tool result. At most {} asks per attempt. The answer is advice: you still own the task, and you verify before acting on it.{request}",
         team.name,
         crate::orchestration::peer::MAX_ASKS_PER_ATTEMPT
+    ))
+}
+
+/// How a peer request is described in a brief: the same words for a worker
+/// and a lead, with the limit that applies to each.
+fn peer_request_brief(limit: usize, per: &str) -> String {
+    use crate::orchestration::peer_request::{DEFAULT_MINUTES, MAX_MINUTES, MAX_REQUEST_CHARS};
+    format!(
+        " Work is orchestration_peer_request: one bounded piece of work a teammate fits better than you, with a defined result. Pass peer (their id or name), title, request (the work, at most {MAX_REQUEST_CHARS} characters), output (the result you expect back), and optionally project, repository and maxMinutes (default {DEFAULT_MINUTES}, at most {MAX_MINUTES}). It becomes one task for that teammate, running as their own registered agent where they may work, and it waits on the plan card: nothing starts until the person approves it. Their report comes back to you and stays on the task in orchestration_snapshot. It changes nobody's manager. At most {limit} {per}; a peer request cannot be split or passed on."
+    )
+}
+
+/// What a lead is told about its team in its own chat: who its peers are,
+/// and that it may ask them a question or hand one a bounded piece of work.
+/// `None` when it is on no team, or alone on it.
+pub fn lead_peer_brief(
+    agents: &[TeamAgent],
+    teams: &[AgentTeam],
+    me: &TeamAgent,
+) -> Option<String> {
+    let team = teams
+        .iter()
+        .find(|t| Some(t.id.as_str()) == me.team_id.as_deref())?;
+    let peers = teammates(agents, teams, me);
+    if peers.is_empty() {
+        return None;
+    }
+    let rows = peers
+        .iter()
+        .map(|a| describe(a, agents, false, None))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "You are on the team {}. These are your peers, not your reports; orchestration_task_create still takes only your direct reports:\n{rows}\n\nA question is orchestration_peer_ask: call it with a peer's id as teammateId and one self-contained question. The host answers as that peer, reading this chat's folder read-only, and returns the answer as the tool result. At most {} asks from this chat in any hour. The answer is advice.{}",
+        team.name,
+        crate::orchestration::peer::MAX_LEAD_ASKS_PER_HOUR,
+        peer_request_brief(
+            crate::orchestration::peer_request::MAX_OPEN_REQUESTS_PER_LEAD_CHAT,
+            "open at once from this chat"
+        )
     ))
 }
 
@@ -1801,6 +1852,7 @@ pub fn assignee_brief(
     path: &Path,
     assignee_id: &str,
     project_id: &str,
+    may_request: bool,
 ) -> Option<(TeamAgent, String)> {
     let team = list(path, None, true).ok()?;
     let me = team.iter().find(|a| a.id == assignee_id)?.clone();
@@ -1810,7 +1862,7 @@ pub fn assignee_brief(
     text.push_str(&memory_brief(&me, &team));
     // Who it may ask for help, and that they only answer.
     let teams = teams(path).unwrap_or_default();
-    if let Some(peers) = peer_brief(&team, &teams, &me, project_id) {
+    if let Some(peers) = peer_brief(&team, &teams, &me, project_id, may_request) {
         text.push_str("\n\n");
         text.push_str(&peers);
     }
@@ -2780,7 +2832,20 @@ Your direct reports:\n{roster}"
         )
     };
     record_lead(path, chat_key, &lead, project_id, cross_project)?;
-    Ok(format!("{text}\n\n{}", memory_brief(&lead, &team)))
+    // Its peers are whoever shares its team, wherever they work: the whole
+    // roster, not the project's slice of it.
+    let peers = lead_peers(path, &lead)
+        .map(|peers| format!("\n\n{peers}"))
+        .unwrap_or_default();
+    Ok(format!("{text}\n\n{}{peers}", memory_brief(&lead, &team)))
+}
+
+/// [`lead_peer_brief`] read from the store. A roster that cannot be read
+/// leaves the brief without it rather than failing the chat.
+fn lead_peers(path: &Path, lead: &TeamAgent) -> Option<String> {
+    let everyone = list(path, None, true).ok()?;
+    let teams = teams(path).ok()?;
+    lead_peer_brief(&everyone, &teams, lead)
 }
 
 /// Append current host-authorized roster context to a lead's later turn. The
@@ -2841,8 +2906,11 @@ pub fn refresh_turn_brief(
             "Your currently eligible direct reports are listed below. This host-authorized roster supersedes any older roster or instruction saying that no agent reports to you. You may create an orchestration run when passing on or splitting the person's task; the host still validates every direct-report edge and project destination.\n\n{rows}"
         )
     };
+    let peers = lead_peers(path, &lead)
+        .map(|peers| format!("\n\n{peers}"))
+        .unwrap_or_default();
     Ok(format!(
-        "{text}{BRIEF_MARK}Current roster for {}\n\n{roster}",
+        "{text}{BRIEF_MARK}Current roster for {}\n\n{roster}{peers}",
         lead.name
     ))
 }
@@ -3095,7 +3163,7 @@ mod tests {
         save(&path, draft("Di", None)).unwrap();
         let everyone = list(&path, None, true).unwrap();
         let all_teams = teams(&path).unwrap();
-        let brief = peer_brief(&everyone, &all_teams, &ada, "p1").unwrap();
+        let brief = peer_brief(&everyone, &all_teams, &ada, "p1", true).unwrap();
         assert!(brief.contains("You are on the team Web."));
         assert!(brief.contains("Bo — builds things"));
         assert!(brief.contains(&format!("id `{}`", agent_named(&path, "Bo").id)));
@@ -3108,11 +3176,68 @@ mod tests {
         assert!(!brief.contains("Cy —"));
         // No brief at all without anyone to ask.
         let di = agent_named(&path, "Di");
-        assert!(peer_brief(&everyone, &all_teams, &di, "p1").is_none());
+        assert!(peer_brief(&everyone, &all_teams, &di, "p1", true).is_none());
         let cy = agent_named(&path, "Cy");
-        assert!(peer_brief(&everyone, &all_teams, &cy, "p2")
+        assert!(peer_brief(&everyone, &all_teams, &cy, "p2", true)
             .unwrap()
             .contains("Ada —"));
+        // Work is the other tool, with its own bounds; the worker of a peer
+        // request is told how to ask and never how to hand work on.
+        assert!(brief.contains("Work is orchestration_peer_request"));
+        assert!(brief.contains("nothing starts until the person approves it"));
+        assert!(brief.contains("At most 2 per attempt"));
+        assert!(brief.contains("It changes nobody's manager."));
+        let asks_only = peer_brief(&everyone, &all_teams, &ada, "p1", false).unwrap();
+        assert!(asks_only.contains("orchestration_peer_ask"));
+        assert!(!asks_only.contains("orchestration_peer_request"));
+    }
+
+    #[test]
+    fn a_lead_is_told_who_its_peers_are_in_its_first_brief_and_on_later_turns() {
+        let path = temp();
+        let leads = save_team(&path, team_draft("Leads", None)).unwrap();
+        let ada = save(&path, on(&leads, "Ada", None)).unwrap();
+        let bo = save(&path, on(&leads, "Bo", Some("p2"))).unwrap();
+        let cy = save(&path, draft("Cy", None)).unwrap();
+        let everyone = list(&path, None, true).unwrap();
+        let all_teams = teams(&path).unwrap();
+        let peers = lead_peer_brief(&everyone, &all_teams, &ada).unwrap();
+        assert!(
+            peers.starts_with("You are on the team Leads. These are your peers, not your reports")
+        );
+        // Every teammate, wherever it works: a request goes to its project.
+        assert!(peers.contains(&format!("id `{}` · Bo —", bo.id)), "{peers}");
+        assert!(!peers.contains("Cy —") && !peers.contains("Ada —"));
+        assert!(peers.contains("orchestration_peer_ask"));
+        assert!(peers.contains("At most 5 asks from this chat in any hour"));
+        assert!(peers.contains("Work is orchestration_peer_request"));
+        assert!(peers.contains("At most 3 open at once from this chat"));
+        assert!(peers.contains("orchestration_task_create still takes only your direct reports"));
+        // Alone on its team, or on none, there is nothing to say.
+        assert!(lead_peer_brief(&everyone, &all_teams, &cy).is_none());
+        assert!(lead_peer_brief(&everyone[..1], &all_teams, &ada).is_none());
+
+        // The first brief of a lead's chat carries it, and so does a later
+        // turn's roster, so a chat older than the team still learns of it.
+        let first = brief(
+            &path,
+            "chat:ada",
+            "p1",
+            &ada.id,
+            "Check the NAS",
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(first.contains("You are on the team Leads."), "{first}");
+        let later = refresh_turn_brief(&path, "chat:ada", "And now?".into(), &[]).unwrap();
+        assert!(later.contains("You are on the team Leads."), "{later}");
+        assert!(later.contains("orchestration_peer_request"));
+        let no_team = brief(&path, "chat:cy", "p1", &cy.id, "Check the NAS", false, &[]).unwrap();
+        assert!(!no_team.contains("orchestration_peer_request"));
+        // Neither brief wrote anything about who reports to whom.
+        assert_eq!(agent_named(&path, "Bo").reports_to, None);
+        assert_eq!(agent_named(&path, "Ada").updated_at, ada.updated_at);
     }
 
     fn temp() -> crate::test_dir::TestPath {
@@ -4457,14 +4582,14 @@ mod tests {
         let path = temp();
         set_policy(&path, POLICY).unwrap();
         let ada = save(&path, standing("Ada", None, STANDING)).unwrap();
-        let (me, text) = assignee_brief(&path, &ada.id, "p1").unwrap();
+        let (me, text) = assignee_brief(&path, &ada.id, "p1", true).unwrap();
         assert_eq!(me.id, ada.id);
         in_order(&text, "You are Ada, the registered OctiqFlow agent");
         assert!(
             at(&text, "Your role: builds things.") < at(&text, "vault_agent_memory_read"),
             "{text}"
         );
-        assert!(assignee_brief(&path, "agent_gone", "p1").is_none());
+        assert!(assignee_brief(&path, "agent_gone", "p1", true).is_none());
     }
 
     /// Wherever an agent is listed to ANOTHER agent, only its role shows.
@@ -4515,7 +4640,7 @@ mod tests {
         let team = list(&path, None, true).unwrap();
         let teams = teams(&path).unwrap();
         let mid = team.iter().find(|a| a.id == manager.id).unwrap();
-        let peers = peer_brief(&team, &teams, mid, "p1").unwrap();
+        let peers = peer_brief(&team, &teams, mid, "p1", true).unwrap();
         assert!(peers.contains("Report — builds things"), "{peers}");
         for text in [&lead_text, &later, &split, &peers] {
             assert!(!text.contains(hidden), "{text}");

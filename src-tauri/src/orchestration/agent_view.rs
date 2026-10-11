@@ -332,6 +332,7 @@ fn compact(
                             "verdict",
                             "assignee",
                             "activeAttemptId",
+                            "peerRequest",
                         ]
                     } else {
                         &[
@@ -347,6 +348,7 @@ fn compact(
                             "environment",
                             "kind",
                             "updatedAt",
+                            "peerRequest",
                         ]
                     };
                     let mut item = pick(&full, keys);

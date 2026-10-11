@@ -2053,13 +2053,15 @@ const ORCHESTRATION_RELAY_SEND = {
 const ORCHESTRATION_PEER_ASK = {
   name: "orchestration_peer_ask",
   description:
-    "Agents mode, workers only: ask a teammate on your own team one question while you work " +
-    "on your task. Peers answer questions; they do not do the work. The host answers as that " +
-    "teammate (its registered provider, model and effort), reading your workspace read-only " +
-    "with no orchestration tools, and returns the answer here. Your brief lists your " +
-    "teammates and their ids. At most 5 asks per attempt; long answers are cut. Asking " +
-    "yourself, someone off your team, or an unregistered agent is refused. The answer is " +
-    "advice: you still own the task and verify before acting on it.",
+    "Agents mode: ask a teammate on your own team one question. For a worker on a running " +
+    "task, and for a registered lead in its own agents-mode chat. Peers answer questions; " +
+    "they do not do the work (that is orchestration_peer_request). The host answers as that " +
+    "teammate (its registered provider, model and effort), reading your workspace, or a " +
+    "lead chat's folder, read-only with no orchestration tools, and returns the answer here. " +
+    "Your brief lists your teammates and their ids. At most 5 asks per worker attempt, or 5 " +
+    "from a lead chat in any hour; long answers are cut. Asking yourself, someone off your " +
+    "team, or an unregistered agent is refused, as is a front desk or an additional agent " +
+    "in a room. The answer is advice: you still own the work and verify before acting on it.",
   inputSchema: {
     type: "object",
     properties: {
@@ -2068,6 +2070,42 @@ const ORCHESTRATION_PEER_ASK = {
       contextPaths: { type: "array", items: { type: "string" }, maxItems: 8, description: "Optional files or folders in your workspace, relative to it, for the teammate to read first." },
     },
     required: ["teammateId", "question"],
+  },
+};
+
+const ORCHESTRATION_PEER_REQUEST = {
+  name: "orchestration_peer_request",
+  description:
+    "Agents mode: ask a teammate on your own team to DO one bounded piece of work and hand " +
+    "back a defined result. For a worker on a running task, and for a registered lead in its " +
+    "own agents-mode chat. It records ONE task assigned to that teammate, marked with who " +
+    "asked, and nothing starts: the task waits on the plan card for the person's approval " +
+    "like any task added to a plan. A worker's request joins its own run; a lead chat's " +
+    "joins the run that chat coordinates, which the host opens when it has none. Once " +
+    "approved, the teammate runs as its own registered agent (provider, model, effort, " +
+    "access) under the destination's normal workspace policy. Its report comes back to you " +
+    "(a lead as the run's coordinator; a worker in the answer to a later host call while its " +
+    "attempt runs) and stays on the task in orchestration_snapshot (peerRequest.requestedBy, " +
+    "status, result). The run's coordinator accepts the task as usual. Nobody's reportsTo " +
+    "changes. Limits: 2 requests per worker attempt, 3 open at once per lead chat, request " +
+    "text up to 4000 characters, and maxMinutes of running time, after which the host ends " +
+    "the attempt as failed (peer request time limit). Refused: someone off your team (the " +
+    "refusal names your teammates), yourself, a teammate on a lead-only model, a project or " +
+    "repository the teammate or you may not work in, a front desk, and an additional agent " +
+    "in a room. A peer-request task cannot be split, revised or passed on, and its worker " +
+    "cannot make a peer request. For a question, use orchestration_peer_ask.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      peer: { type: "string", description: "The teammate: its agent id or exact name, from your brief or agent_list." },
+      title: { type: "string", description: "A short outcome-based title for the task, at most 240 characters." },
+      request: { type: "string", description: "The bounded work to do, self-contained, at most 4000 characters." },
+      output: { type: "string", description: "The defined result you expect back, at most 1000 characters." },
+      project: { type: "string", description: "Optional registered project id or name. Default: your task's or chat's project when the teammate may work there; a teammate confined to one project works in that one." },
+      repository: { type: "string", description: "Optional registered repository path or folder name, when the project has more than one." },
+      maxMinutes: { type: "integer", minimum: 1, maximum: 120, description: "How long the teammate's attempt may run. Default 30." },
+    },
+    required: ["peer", "title", "request", "output"],
   },
 };
 
@@ -2129,6 +2167,7 @@ const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_RELAY_SEND,
   ORCHESTRATION_RUN_STOP,
   ORCHESTRATION_PEER_ASK,
+  ORCHESTRATION_PEER_REQUEST,
   ...WORKSPACE_TOOLS,
 ];
 
@@ -2304,6 +2343,10 @@ const BASE_SERVER_INSTRUCTIONS =
   "starts the full ready wave before waiting, and reads orchestration_snapshot as truth. " +
   "Fable and Astra are reserved for main agents orchestrating other agents, never execution workers. " +
   "Workers must settle their exact attempt with orchestration_worker_report. " +
+  "When your agents-mode brief says you are on a team, a teammate is a peer, not a report: " +
+  "ask one a question with orchestration_peer_ask, or hand one a single bounded piece of work " +
+  "with orchestration_peer_request, which becomes a task the person approves on the plan card " +
+  "before anything starts and changes nobody's manager. " +
   "Use task_status when you take on a task of more than a couple of steps, and " +
   "again whenever the plan or the active step changes: it fills the status line " +
   "above the chat, which is how the person sees what this chat is doing without " +

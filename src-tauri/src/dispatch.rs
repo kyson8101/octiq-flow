@@ -152,6 +152,34 @@ fn refresh_lead_turn(svc: &Services, key: &str, text: String) -> Result<String, 
     crate::team::refresh_turn_brief(&crate::team::default_path(), key, text, &projects)
 }
 
+/// Who calls a peer tool, when it is not a worker: the registered lead whose
+/// own agents-mode chat `actor` is, with that chat's project and folder.
+/// `None` for a worker's chat, which the store identifies by its attempt.
+/// Any other chat has no registered agent and is refused.
+fn peer_lead(
+    svc: &Services,
+    team_path: &std::path::Path,
+    actor: &str,
+) -> Result<Option<crate::orchestration::peer::LeadCaller>, String> {
+    if svc.orchestrations.is_worker_chat(actor)? {
+        return Ok(None);
+    }
+    let Some(record) = crate::team::lead_for_chat(team_path, actor)? else {
+        return Err(crate::outcome::refuse(
+            crate::outcome::ReasonClass::ScopeRefused,
+            "Peer tools are for a registered agent: a worker on a running task, or a lead in its own agents-mode chat. This chat is neither.",
+        ));
+    };
+    let (project_id, cwd) =
+        crate::orchestration::infer_context(&svc.workspaces, actor, None, None)?;
+    Ok(Some(crate::orchestration::peer::LeadCaller {
+        agent_id: record.lead_id,
+        project_id,
+        cwd,
+        cross_project: record.cross_project,
+    }))
+}
+
 /// Run one command. `Err` is the message the client shows, so it is written for
 /// a person rather than a log.
 /// Who a task goes to and where it runs, as the host decides it from what
@@ -1651,15 +1679,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             };
             to_value(Ok::<_, String>(settled))
         }
-        // A worker's question to a teammate, answered by the host as that
-        // teammate in a read-only one-shot turn (`orchestration/peer.rs`).
+        // A question to a teammate, answered by the host as that teammate in
+        // a read-only one-shot turn (`orchestration/peer.rs`): from a worker
+        // on its task, or from a registered lead in its own chat.
         "orchestration_peer_ask" => {
+            let actor: String = arg(&args, "actorChatKey")?;
             let path = crate::team::default_path();
             let agents = crate::team::list(&path, None, true)?;
             let teams = crate::team::teams(&path)?;
             let policy = crate::team::policy(&path)?;
+            let lead = peer_lead(svc, &path, &actor)?;
             to_value(svc.orchestrations.peer_ask(
-                &arg::<String>(&args, "actorChatKey")?,
+                &actor,
+                lead.as_ref(),
                 crate::orchestration::peer::PeerQuestion {
                     teammate_id: arg(&args, "teammateId")?,
                     question: arg(&args, "question")?,
@@ -1671,6 +1703,39 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 &policy.text,
                 crate::orchestration::peer::run_helper,
             ))
+        }
+        // One bounded piece of work for a teammate, recorded as a task that
+        // waits for the person (`orchestration/peer_request.rs`). Who asks
+        // comes from the chat; nothing in the arguments names the requester.
+        "orchestration_peer_request" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let path = crate::team::default_path();
+            let agents = crate::team::list(&path, None, true)?;
+            let teams = crate::team::teams(&path)?;
+            let projects = crate::workspaces::list_workspaces_impl(&svc.workspaces)?;
+            let lead = peer_lead(svc, &path, &actor)?;
+            let made = svc.orchestrations.peer_request(
+                &actor,
+                lead.as_ref(),
+                crate::orchestration::peer_request::PeerWork {
+                    peer: arg(&args, "peer")?,
+                    title: arg(&args, "title")?,
+                    request: arg(&args, "request")?,
+                    output: arg(&args, "output")?,
+                    project: arg(&args, "project")?,
+                    repository: arg(&args, "repository")?,
+                    max_minutes: arg(&args, "maxMinutes")?,
+                },
+                &agents,
+                &teams,
+                &projects,
+            )?;
+            // The host opened a run for this chat: it must be able to wake
+            // the chat when the teammate reports, as for any coordinator.
+            if made.run_created {
+                svc.chats.persist_orchestration_context(&actor)?;
+            }
+            to_value(Ok(made))
         }
         "orchestration_relay_send" => to_value(svc.orchestrations.relay_between_runs(
             &arg::<String>(&args, "actorChatKey")?,

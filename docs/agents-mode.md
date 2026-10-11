@@ -520,34 +520,125 @@ What they can and cannot do:
   settled, before any card is put up, and its MCP does not offer the tools. A
   front desk is refused at the hook.
 
-**Peer help is a question and an answer, not a handoff.** A worker whose task
-was handed to a registered agent is told in its brief who its teammates are
-(name, role, id, and those who may look at the task's project only) and that
-peers answer questions and do not do the work. It asks with the MCP tool
-`orchestration_peer_ask` (`teammateId`, `question`, optional `contextPaths`
-inside its workspace). The host (`orchestration/peer.rs`):
+A teammate helps in two ways, with two tools: a **question**
+(`orchestration_peer_ask`) and one bounded piece of **work**
+(`orchestration_peer_request`). Neither changes who reports to whom.
 
-- accepts the call only from the chat of a running attempt, and only for a
-  registered member of the asker's own team who may work in the task's
-  project; asking itself, someone off the team or an unknown agent is refused
-  with a message naming who it can ask;
-- allows 5 asks per attempt (answered or not) and questions of up to 4000
-  characters, and cuts answers at 8000;
+**Who may use them.** Two kinds of chat, by what the chat's capability proves
+and never by an argument:
+
+- the chat of a **running attempt** whose task was handed to a registered
+  agent (a worker);
+- a **registered lead's own agents-mode chat** (the chat `team.json` records a
+  lead for).
+
+A chat with no registered agent, a front desk, and an additional agent in a
+room (a seat: its capability proves the chat, not the chat's agent) are
+refused both tools. A lead is told who its peers are in its first brief and
+again on every later turn (`team::lead_peer_brief`), a worker in its task
+brief (`team::peer_brief`).
+
+### A question: `orchestration_peer_ask`
+
+**Peer help is a question and an answer, not a handoff.** The asker's brief
+lists its teammates (name, role, id; for a worker, those who may look at the
+task's project) and says that peers answer questions and do not do the work.
+It asks with `teammateId`, `question` and optional `contextPaths` inside its
+workspace. The host (`orchestration/peer.rs`):
+
+- accepts the call only for a registered member of the asker's own team who
+  may work in the project (the task's, or a lead chat's); asking itself,
+  someone off the team or an unknown agent is refused with a message naming
+  who it can ask;
+- allows 5 asks per worker attempt (`MAX_ASKS_PER_ATTEMPT`) and 5 from a lead
+  chat in any rolling hour (`MAX_LEAD_ASKS_PER_HOUR`), answered or not, takes
+  questions of up to 4000 characters, and cuts answers at 8000;
 - runs the answer as the teammate's registered provider, model and effort
   (a Fable or Astra teammate may answer: answering is not working a task) in a
-  one-shot process in the asker's workspace with read tools only (Claude:
-  `--tools Read,Grep,Glob`, no MCP; Codex: `-s read-only`,
-  `--ignore-user-config`), none of the chat's `OCTIQ_*` variables and a
-  10-minute deadline, so it cannot write, reach the orchestration hook, or ask
-  a peer of its own;
-- records every ask in the run's ledger (`peerAsks` in the snapshot: question,
+  one-shot process in the asker's workspace, or a lead chat's folder, with
+  read tools only (Claude: `--tools Read,Grep,Glob`, no MCP; Codex:
+  `-s read-only`, `--ignore-user-config`), none of the chat's `OCTIQ_*`
+  variables and a 10-minute deadline, so it cannot write, reach the
+  orchestration hook, or ask a peer of its own. A lead's ask gets exactly the
+  same process;
+- records every ask in the ledger (`peerAsks` in the snapshot: question,
   answer or error, asker, helper, times, tokens) before the teammate starts,
   and settles it after; an ask cut off by a restart is marked failed on load.
+  A worker's record names its run, task and attempt. A lead chat has no
+  attempt: its record names the chat (`askerChatKey`) and, when the chat
+  coordinates a live run, that run; `taskId` and `attemptId` are absent, and
+  `runId` too when it coordinates none (the whole-ledger read still lists it).
 
-The answer comes back as the tool result. The task view shows the exchange
-under the task's row (Peer help). No gate is involved: the ask sits inside a
-task the person already approved. Read-only means no writes: a Codex
-teammate's sandbox can still read outside the workspace.
+The answer comes back as the tool result. The task view shows a worker's
+exchange under the task's row (Peer help); a lead chat's ask has no task row
+to sit under yet. No gate is involved: an ask reads and advises. Read-only
+means no writes: a Codex teammate's sandbox can still read outside the
+workspace.
+
+### A piece of work: `orchestration_peer_request`
+
+**A peer request is bounded delegation between teammates, approved by the
+person.** It is how a lead hands a peer one piece of work without becoming its
+manager. Arguments: `peer` (id or name), `title`, `request` (the work, at most
+4000 characters), `output` (the result expected back, at most 1000), optional
+`project` / `repository`, and `maxMinutes` (default 30, at most 120). The host
+(`orchestration/peer_request.rs`):
+
+- **records one ordinary task and starts nothing.** The task is assigned to
+  the teammate and carries `peerRequest` (`requestedBy`, `requesterChatKey`,
+  `requesterAttemptId` for a worker, `output`, `maxMinutes`). It waits on the
+  **normal plan card**, like any task added to an approved plan: the plan goes
+  back to pending, its revision covers who asked and the bounds, and no worker
+  starts before the person approves. A run that never asked for approval asks
+  from then on. There is no new card type.
+- **puts the task where the requester's work is.** A worker's request joins
+  the worker's own run, and that run's coordinator is told. A lead chat's
+  joins the live run the chat coordinates; when it coordinates none, the host
+  opens one for it ("Peer requests from <lead>", a mission like any run a lead
+  opens, with automatic dispatch on) in the same write as the task.
+- **asks only a teammate.** Anyone off the requester's team, the requester
+  itself, or an unknown agent is refused with a reason naming its teammates.
+- **sends work only where it may go** (`destination::route_lateral`): a
+  registered project and repository, where the teammate may work and where the
+  requester may send work. With no `project`, it is the requester's task
+  destination or chat project; a teammate confined to one project works in
+  that one. A teammate that cannot work there, an unregistered project, and a
+  teammate on a lead-only model are each refused with the reason. This is the
+  one path a task takes to an agent that does not report to whoever asked;
+  `orchestration_task_create` keeps its direct-report rule untouched.
+- **runs the teammate as itself**, under the destination's ordinary workspace
+  policy: its registered provider, model, effort and access are copied onto
+  the task, and any start with other settings (a coordinator's manual start, a
+  page retry, a recovery with a fallback model) is refused.
+- **bounds it** (named constants): 2 requests per worker attempt
+  (`MAX_REQUESTS_PER_ATTEMPT`), 3 open at once per lead chat
+  (`MAX_OPEN_REQUESTS_PER_LEAD_CHAT`), and `maxMinutes` of running time. The
+  scheduler's own pass (`expire_peer_requests`, no timer per request) ends an
+  attempt past its time as **failed** with the reason `peer request time
+  limit`, never retried; the same pass stops its process. The clock is the
+  attempt's and starts again when a gate it waited on is resolved.
+- **keeps it one level deep.** A peer-request task cannot be split (no
+  `parentTaskId` under it, by its worker or the coordinator), revised or
+  reassigned (it can be withdrawn), and its worker cannot make a peer request.
+  It may still ask a question. The lead → report → report's report rule is
+  otherwise unchanged.
+- **never touches the roster.** Nothing in it reads `reportsTo` as changed or
+  writes `team.json`; the store method is not given the file.
+
+**The report comes back to the requester.** When the teammate's attempt
+settles, the run's coordinator gets the ordinary durable report notice, which
+for a lead requester is the requester; the notice says it is a peer request. A
+requesting **worker** gets a `peer_report` notice of its own, delivered
+between its turns or in the answer to its next call to the host
+(`coordinatorMessages`), only while its attempt is still running; it also
+hears when the person rejects the request or the time limit ends it. Either
+way the report stays on the task (`result`, with `peerRequest.requestedBy` and
+`status`) in `orchestration_snapshot`, and the run's coordinator accepts the
+task as usual.
+
+A mission has one writer per repository at a time, so a writing worker's
+request into its own repository starts only after that worker settles; the
+tool's result says so, and the report then goes to the coordinator.
 
 ## Chain of command
 

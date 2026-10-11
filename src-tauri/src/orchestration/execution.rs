@@ -466,6 +466,17 @@ pub(super) fn fail(data: &mut Stored, id: &str, error: ExecutionError, now: i64)
     }
     inbox::enqueue(data, &before.run_id, &before.worker_chat_key, &target, format!("execution-failed:{id}"), &error.kind,
         format!("Host detected {} for task {} (attempt {}).\n\n{}\n\n{}\nRead orchestration_snapshot. This attempt is failed and is not active work.", error.kind, before.task_id, id, error.message, recovery));
+    // A peer request that failed for good: the worker that asked hears it.
+    if !retry {
+        if let Some(task) = data.tasks.get(&before.task_id).cloned() {
+            peer_request::tell_requester(
+                data,
+                &task,
+                format!("peer-report:{id}"),
+                &format!("ended as failed. {}", error.message),
+            );
+        }
+    }
     recompute_run(data, &before.run_id);
     true
 }

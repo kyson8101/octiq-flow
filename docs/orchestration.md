@@ -209,9 +209,13 @@ The bundled chat-bound MCP exposes:
 - `orchestration_gate_create` / `orchestration_gate_resolve`
 - `orchestration_message_send`
 - `orchestration_run_stop`
-- `orchestration_peer_ask` — agents mode: a worker asks a teammate one
-  question, answered read-only by the host as that teammate (see
-  `docs/agents-mode.md`, Teams and peer help)
+- `orchestration_peer_ask` — agents mode: a worker, or a lead in its own
+  chat, asks a teammate one question, answered read-only by the host as that
+  teammate (see `docs/agents-mode.md`, Teams and peer help)
+- `orchestration_peer_request` — agents mode: a worker, or a lead in its own
+  chat, asks a teammate to do one bounded piece of work. It records a task
+  that waits on the plan card for the person; nothing starts before that
+  (same section)
 
 The local `/hook/orchestration` endpoint takes the calling chat from its
 launch capability (never the body or the server token) and injects it;
