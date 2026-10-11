@@ -854,11 +854,9 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
   context (`attempt.context`) yet, so today a row ends in its minutes and
   there is no Tokens tile. Both fields are typed and read, so they appear
   when the host sends them.
-- **"Needs you" is a fact, decided in one place** (`lib/runWaits.runWaits`),
-  and the strip, the panel's rows, its decisions box and attention count,
-  the chat list's line, the Agents page and the badges all read it. A wait
-  is the person's when the plan has a revision to approve, when the page
-  itself holds a card for the worker (permission, safety, question, an
+- **"Needs you" is a fact, decided in one place** (`lib/runWaits.runWaits`).
+  A wait is the person's when the plan has a revision to approve, when the
+  page itself holds a card for the worker (permission, safety, question, an
   undelivered answer, a handover), or when the host says so: an open gate
   or a pending native decision whose `awaits` is `"person"`. A gate on a
   peer request is the person's on any host, because only their page can
@@ -869,21 +867,57 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
   and the tooltip says `The host does not say who this waits on.` A native
   decision and its safety card are one thing under one key, so decisions
   are counted per card and never per row.
+- **Every surface is drawn from that one reading, and nothing else reads
+  the ledger's waits.** `lib/runWaits` is the only module that names the
+  ledger's `gates`, its `nativeDecisions` or a record's `awaits`; anything
+  else asks it (`runWaits`, `ledgerWaits`, `openGates`, `taskDecisions`,
+  `pendingDecisions`). The page's own cards are read once
+  (`pendingActions.heldCards`) and handed to it as `held`
+  (`PendingActionsView.held`), and from what it returns come: the strip
+  (`chatStrip`), the panel's rows, its decision boxes, its `N to decide`
+  and the run picker's count (`runAttention`), the Tasks button
+  (`taskColumnCounts`), the chat list's line (`rowRun`, `runSummary`) and
+  its badge (`pendingReading`), and the Agents page (`taskState`,
+  `agentRoster`). `runWaits.surfaces.test.tsx` asks every one of them the
+  same count and the same yes or no over a table of ledger shapes (a host
+  that says `awaits` and one that does not; the card list delivered, not
+  arrived, failed), and scans the source for a second reader. A new surface
+  that says or counts a wait takes a `RunWaits`; it does not filter gates.
+- **The host's word does not wait for the card.** A native decision the
+  host says waits on the person is badged and counted with no card on the
+  page (`PendingAction.cardMissing`: the list was not read yet, or its
+  request failed, which is not tried again within a connection). The page
+  then asks for `safety_block_pending` again, once for each set of missing
+  cards and once more when the badge is pressed; nothing polls.
+- **What the ledger alone records is history once a run is stopped, closed
+  or archived; a card the page still holds is not.** Its buttons are on the
+  person's screen, so it is counted wherever it is said, and the row that
+  holds a decision of the person's says Needs you whatever became of its
+  task.
 - **Four states, in this order:** Needs you, Failed (a failed task, a block
   with no decision open, a check whose verdict is fail, none of them
   replaced, and only while nothing waits on the person), Done, Running. A
   cancelled or replaced task is counted nowhere, so a run can reach its
   whole count. A stopped, closed or archived run, and a run with no task,
-  draws no strip.
+  draws no strip, unless something in it waits on the person: then the
+  line is drawn, and a run with nothing to count yet says `No tasks yet`.
 - **A chat that coordinates several runs has one line** (`chatStrip`): a
   run that waits on the person outranks a newer one that runs, a failure
-  outranks plain progress, the decisions of every live run are counted,
-  and with more than one live run the line says how many (`2 runs`; under
-  400px that second count gives way and stays in the tooltip).
+  outranks plain progress, the decisions of every run of the chat are
+  counted (`ledgerWaits`), and with more than one run on the line it says
+  how many (`2 runs`; under 400px that second count gives way and stays in
+  the tooltip).
 - **Groups: Needs you, Running, Finished, Planned. There is no fifth.**
+  A heading says what it counts (`groupHeading`): Needs you counts the
+  decisions of its rows, like the strip (`Needs you · 2 decisions` for two
+  cards of one worker), and the others their tasks (`Running · 4`, spoken
+  `Running, 4 tasks`). A decision of the run itself, its plan or a gate
+  with no task, is no row and is drawn in its own box above the groups.
   Finished is the only one that folds and starts folded; Finished and
   Planned show three rows and a line for the rest, which is a disclosure
-  (`aria-expanded`, `aria-controls`). What failed is listed first under
+  (`aria-expanded`, `aria-controls`); pressing it puts the keyboard on the
+  first row it showed, on the row's summary or, for a task with no worker
+  chat, its details disclosure (`ROW_FOCUS`). What failed is listed first under
   Running, in the danger colour with the host's word, then a stalled,
   disconnected or retrying worker with the host's label in the warning
   colour. An empty group is not drawn, and the task on screen is never
@@ -925,10 +959,21 @@ or the remembered choice), and the chats this browser last saw coordinating
 (`octiq.v2.runChats`). The held column is empty until the ledger fills it.
 `coordinatesRun` holds the column at first paint only where the page has the
 entry at first paint, which is the chat as this browser cached it the last
-time it was listed (CLS 0.004). Heard for the first time with the chat list,
-after the chat is already drawn, it only moves the split earlier (0.26), and
-on a host that does not send it a coordinating chat opened for the first
-time in a browser, with no task beside it, still splits once.
+time it was listed (CLS 0.004).
+
+**A chat that was drawn at its full width is not split afterwards**
+(`runColumn.columnAtFirstPaint`, `columnHeldShut`). Where nothing said the
+chat has a run by its first paint (a coordinating chat opened cold for the
+first time in a browser, on a host that does not send `coordinatesRun`, or
+one that sends it only with the chat list's answer), the column the ledger
+then brings starts put away, the state the top bar's Tasks button already
+has: the button arrives with its counts and what waits on the person, the
+line above the composer says what the run is doing, and the person opens
+the column (CLS 0.003, from 0.26). Only that one paint is held to: leaving
+the chat and coming back draws it with the column, a run started while the
+chat is open opens it as before, and from the next load the browser
+remembers that the chat coordinates. The split is never made by the
+ledger's first answer, or by the chat list's, under what is already drawn.
 
 **A task the coordinator reopened is one folded line in its chat**
 (`lib/taskReopened`, `ReopenedNote`). A coordinator may reopen an approved
