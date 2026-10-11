@@ -759,6 +759,22 @@ describe("a command on the permission card", () => {
     }
   });
 
+  it("counts a line that only looks empty, and does not name the command by the line between", () => {
+    // A no-break space on a line of its own is a program name to bash. The
+    // card took it for blank: one line, `bash(echo)`, nothing off the card.
+    const html = draw(bash("\u00a0\necho safe\n\u00a0"));
+    expect(html).toContain(">command · 3 lines<");
+    expect(html).toContain('<span class="ask-card-script">3-line script</span>');
+    expect(html).not.toContain("bash(echo)");
+    // A lone carriage return is a line too.
+    expect(draw(bash("\r\necho safe\n\r"))).toContain(">command · 3 lines<");
+    // Lines that are empty, or spaces and tabs, still are not.
+    const plain = draw(bash("\n \n\t\necho safe\n\n  \n"));
+    expect(plain).toContain('<pre class="ask-card-body is-command">echo safe</pre>');
+    expect(plain).not.toContain("ask-card-script");
+    expect(plain).toContain("bash(echo)");
+  });
+
   it("treats a script or code an MCP tool runs as a command too", () => {
     const html = draw({ id: "c3", toolName: "mcp__playwright__browser_run_code_unsafe", toolInput: { code: lines(13) } });
     expect(html).toContain(">code · 13 lines<");

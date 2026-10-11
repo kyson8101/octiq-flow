@@ -47,7 +47,9 @@ export const STRUCTURAL_WHOLE = 160;
  *  stops being drawn. */
 export const WHOLE_MAX = 5_000_000;
 
-/** The lines of a text, without the blank ones at either end. */
+/** The lines of a text to read (a plan, a role, a brief), without the blank
+ *  ones at either end. For naming its size only: such a text opens whole.
+ *  A command's lines are `commandLines`, which drops far less. */
 export function textLines(text: string): string[] {
   const lines = text.split("\n");
   while (lines.length && lines[0].trim() === "") lines.shift();
@@ -173,8 +175,27 @@ export const COMMAND_LINES = 12;
  *  folded at all, and nor are the lines after it. */
 export const COMMAND_CHARS = 1200;
 
+/** A line with nothing on it: no character at all, or spaces and tabs. The
+ *  only lines a shell skips whatever it is told to run. JavaScript's own
+ *  idea of blank is wider, and wrong here: a line holding one no-break space
+ *  (U+00A0) is a word to bash, which looks on PATH for a program of that
+ *  name, and a lone carriage return is one too. */
+const EMPTY_LINE = /^[ \t]*$/;
+
+/** The lines of a command. Every line with a character on it is one of
+ *  them, drawn and counted; only empty lines before the first of those and
+ *  after the last are left out. Nothing is trimmed off a line. */
+export function commandLines(text: string): string[] {
+  const lines = text.split("\n");
+  let from = 0;
+  let to = lines.length;
+  while (from < to && EMPTY_LINE.test(lines[from])) from += 1;
+  while (to > from && EMPTY_LINE.test(lines[to - 1])) to -= 1;
+  return lines.slice(from, to);
+}
+
 export type CommandFold = {
-  /** Its lines, without the blank ones at either end. */
+  /** Its lines, without the empty ones at either end (`commandLines`). */
   lines: number;
   /** How many characters those lines are, their line breaks included. */
   size: number;
@@ -191,7 +212,7 @@ export type CommandFold = {
 };
 
 export function commandFold(text: string): CommandFold {
-  const lines = textLines(text);
+  const lines = commandLines(text);
   let kept = 0;
   let budget = COMMAND_CHARS;
   while (kept < lines.length && kept < COMMAND_LINES) {

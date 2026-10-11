@@ -10,7 +10,7 @@ import host from "../../../src-tauri/src/team_tools.rs?raw";
 import { changeFacts, SUMMARY_MAX } from "./askDetail";
 import * as cardFold from "./cardFold";
 import {
-  allowHeld, chars, COMMAND_CHARS, COMMAND_LINES, commandFold, commandOpens, commandShown, commandTitle, count,
+  allowHeld, chars, COMMAND_CHARS, COMMAND_LINES, commandFold, commandLines, commandOpens, commandShown, commandTitle, count,
   diffLabel, digits, drawnWhole, sameCommand, type CommandAsked, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
   isShort, lineCount, longRowsLabel, nameList, notShown, planFoldId, planLabel, scriptLabel, STRAY_MS, STRAY_RADIUS,
   strayPress, rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, textFold, textLines, tooLong,
@@ -252,8 +252,55 @@ describe("a command", () => {
     expect(unseenLines(commandFold(`${one}\nls`))).toBe("2 lines not shown");
   });
 
-  it("counts its lines without the blank ones at either end", () => {
+  it("counts its lines without the empty ones at either end", () => {
     expect(commandFold("\n\npwd\nls\n\n")).toMatchObject({ lines: 2, size: 6, head: "pwd\nls", rest: "", more: 0 });
+    // Spaces and tabs are nothing to a shell either.
+    expect(commandLines("\n \n\t\necho safe\n\n  \t\n")).toEqual(["echo safe"]);
+    // One line stays one line, with its own title, whatever follows it.
+    expect(commandTitle(commandFold("echo safe\n"))).toBeNull();
+    // An empty line between two commands is between them: drawn, and counted.
+    expect(commandLines("pwd\n\nls")).toEqual(["pwd", "", "ls"]);
+    // Nothing is trimmed off a line that is kept.
+    expect(commandLines("  pwd  \n\tls\t")).toEqual(["  pwd  ", "\tls\t"]);
+    expect(commandLines("")).toEqual([]);
+    expect(commandLines(" \n\t")).toEqual([]);
+  });
+
+  it("draws and counts a line that only looks empty: a no-break space is a word to a shell", () => {
+    // The reviewer's: bash ran a program named U+00A0 from PATH, twice, while
+    // the card drew `echo safe` and said nothing was off it.
+    const nbsp = "\u00a0\necho safe\n\u00a0";
+    const fold = commandFold(nbsp);
+    expect(fold).toMatchObject({ lines: 3, size: 13, head: nbsp, rest: "", more: 0 });
+    expect(commandLines(nbsp)).toEqual(["\u00a0", "echo safe", "\u00a0"]);
+    // It is a script of three lines, and no longer `bash(echo)`.
+    expect(commandTitle(fold)).toBe("3-line script");
+    expect(notShown(fold, commandShown(fold, false))).toBe(0);
+    // Every other space JavaScript trims and a shell does not.
+    for (const space of ["\u1680", "\u2000", "\u2003", "\u200a", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff", "\u000b", "\u000c"]) {
+      expect(space.trim()).toBe("");
+      expect(commandLines(`${space}\npwd\n${space}`)).toEqual([space, "pwd", space]);
+      expect(commandFold(`pwd\n${space}`).lines).toBe(2);
+    }
+  });
+
+  it("draws and counts a line holding a lone carriage return", () => {
+    expect(commandLines("\r\necho safe\n\r")).toEqual(["\r", "echo safe", "\r"]);
+    expect(commandFold("\r\necho safe\n\r")).toMatchObject({ lines: 3, size: 13, more: 0 });
+    // Windows line ends: the return stays on its line, and the last line end
+    // leaves no line behind it.
+    expect(commandLines("pwd\r\nls\r\n")).toEqual(["pwd\r", "ls\r"]);
+    // An empty line in Windows line ends is a return: kept.
+    expect(commandLines("pwd\r\n\r\n")).toEqual(["pwd\r", "\r"]);
+  });
+
+  it("never drops a character of a line it cannot draw folded", () => {
+    // Thirteen lines, the last a no-break space: held, and counted as unshown.
+    const fold = commandFold(`${lines(12)}\n\u00a0`);
+    expect(fold).toMatchObject({ lines: 13, more: 1, rest: "\u00a0" });
+    expect(notShown(fold, commandShown(fold, false))).toBe(2);
+    expect(notShown(fold, commandShown(fold, true))).toBe(0);
+    expect(unseenLines(fold)).toBe("1 more line not shown");
   });
 
   it("is called a script once it has more than one line", () => {
