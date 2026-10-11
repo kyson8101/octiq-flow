@@ -10547,6 +10547,11 @@ body.is-ultra .eff {
   min-width: 0;
   row-gap: 4px;
   line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.permission-card .ask-card-title > strong {
+  min-width: 0;
 }
 
 .ask-card-chips {
@@ -10573,12 +10578,15 @@ body.is-ultra .eff {
 }
 
 /* One grid for every row, so the names share a column as wide as the longest
-   of them. A long list scrolls in place, as the text it replaces did. */
+   of them, and never more than two fifths of the card: a name is whatever the
+   host sent, and on a phone a long one would leave its value no room. A long
+   list scrolls in place, as the text it replaces did. */
 .ask-change-rows {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
   align-items: baseline;
   gap: 3px 12px;
+  min-width: 0;
   margin: 0;
   max-height: 220px;
   overflow-y: auto;
@@ -10590,17 +10598,22 @@ body.is-ultra .eff {
 }
 
 .ask-change-rows dt {
+  min-width: 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--fg-3);
+  overflow-wrap: anywhere;
 }
 
+/* A value is the whole text, with the lines it came with: a role or a prompt
+   over several lines is one row, never one row a line. */
 .ask-change-rows dd {
   min-width: 0;
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
   color: var(--fg-1);
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -10617,6 +10630,29 @@ body.is-ultra .eff {
 .ask-change-now {
   color: var(--fg-0);
   font-weight: 600;
+}
+
+/* A field left empty: the word, set apart from a text that reads the same. */
+.ask-change-now.is-cleared {
+  color: var(--fg-1);
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* A long move reads down, not across: what it was on its own line, then the
+   arrow beside what it becomes. */
+.ask-change-rows dd.is-stacked {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 6px;
+}
+
+.ask-change-rows dd.is-stacked .ask-change-was {
+  grid-column: 1 / -1;
+}
+
+.ask-change-rows dd.is-stacked .ask-change-arrow {
+  white-space: normal;
 }
 
 /* What holds the agent on the left, the answer on the right. On a narrow card

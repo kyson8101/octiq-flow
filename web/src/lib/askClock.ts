@@ -12,16 +12,22 @@ import type { RequestState } from "./pendingRequests";
 /** The host's wait, and its ceiling (`permission::ANSWER_TIMEOUT`). */
 export const ASK_WAIT_SECS = 180;
 
-/** How long the host waits for this question, in seconds. */
+/** How long the host waits for this question, in seconds: three minutes when
+ *  it does not say, never more than its ceiling, and `0` when it says zero.
+ *  The host takes `Some(0)` at its word and answers Deny at once
+ *  (`permission.rs`), so zero is not "unset". */
 export function askWaitSecs(ask: Ask): number {
   const secs = ask.answerWithinSecs;
-  return typeof secs === "number" && secs > 0 ? Math.min(secs, ASK_WAIT_SECS) : ASK_WAIT_SECS;
+  if (typeof secs !== "number" || !Number.isFinite(secs) || secs < 0) return ASK_WAIT_SECS;
+  return Math.min(secs, ASK_WAIT_SECS);
 }
 
 /** When the host answers Deny for the person, in this page's clock. `null`
- *  when the page did not see the question arrive. */
+ *  when the page did not see the question arrive, and for a question the host
+ *  does not wait on at all: there is no time to count. */
 export function askDeadline(ask: Ask): number | null {
-  return typeof ask.receivedAt === "number" ? ask.receivedAt + askWaitSecs(ask) * 1000 : null;
+  const wait = askWaitSecs(ask);
+  return typeof ask.receivedAt === "number" && wait > 0 ? ask.receivedAt + wait * 1000 : null;
 }
 
 /** Whole seconds left, never below zero and never more than the host waits.

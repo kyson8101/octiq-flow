@@ -109,10 +109,37 @@ describe("mcpParts", () => {
     expect(mcpParts("mcp__octiqflow_octiq__ask_user")?.serverLabel).toBe("OctiqFlow");
   });
 
+  it("shows a server it has no other name for as the server wrote it", () => {
+    // A server names itself. Looked up on a plain object, `__proto__` answers
+    // with an object (which React cannot draw: the card and its buttons went
+    // with it) and `constructor` with a function (an empty chip).
+    expect(mcpParts("mcp(__proto__:x)")).toEqual({ server: "__proto__", tool: "x", serverLabel: "__proto__" });
+    expect(mcpParts("mcp__constructor__x")).toEqual({ server: "constructor", tool: "x", serverLabel: "constructor" });
+    expect(mcpParts("mcp__toString__x")).toEqual({ server: "toString", tool: "x", serverLabel: "toString" });
+    for (const server of ["constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "prototype"]) {
+      for (const name of [`mcp__${server}__x`, `mcp(${server}:x)`]) {
+        expect(mcpParts(name), name).toEqual({ server, tool: "x", serverLabel: server });
+      }
+    }
+    // The provider's own form splits on the first double underscore, so it
+    // cannot carry `__proto__` whole. Whatever it carries is still a string.
+    expect(mcpParts("mcp____proto____x")).toEqual({ server: "__proto", tool: "__x", serverLabel: "__proto" });
+    expect(mcpParts("mcp__CONSTRUCTOR__x")?.serverLabel).toBe("CONSTRUCTOR");
+  });
+
   it("is nothing for a tool that is not an MCP callable", () => {
     expect(mcpParts("Bash")).toBeNull();
     expect(mcpParts("ask_user")).toBeNull();
     expect(mcpParts("")).toBeNull();
+  });
+});
+
+describe("a tool named like something every object has", () => {
+  it("is one this app does not know, not whatever the object answers", () => {
+    for (const name of ["__proto__", "constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect(toolLook(name, {}), name).toEqual({ kind: "other", label: name });
+    }
+    expect(toolLook("Constructor", { file_path: "/tmp/a" })).toEqual({ kind: "other", label: "Constructor" });
   });
 });
 

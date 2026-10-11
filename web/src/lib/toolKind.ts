@@ -452,11 +452,13 @@ export function mcpLabel(name: string): string {
 
 /** The servers a person knows by another name than the one in the tool id.
  *  Ours is `octiq`, and `octiqflow_octiq` where Antigravity names it
- *  (`antigravityEvents`). */
-const MCP_SERVERS: Record<string, string> = {
-  octiq: "OctiqFlow",
-  octiqflow_octiq: "OctiqFlow",
-};
+ *  (`antigravityEvents`). A Map, because the name looked up is whatever a
+ *  server called itself: on a plain object `__proto__` answers with an object
+ *  and `constructor` with a function, and neither is a label. */
+const MCP_SERVERS: ReadonlyMap<string, string> = new Map([
+  ["octiq", "OctiqFlow"],
+  ["octiqflow_octiq", "OctiqFlow"],
+]);
 
 export type McpParts = { server: string; tool: string; serverLabel: string };
 
@@ -468,7 +470,7 @@ export function mcpParts(name: string): McpParts | null {
   const match = name.match(/^mcp__(.+?)__(.+)$/i) ?? name.match(/^mcp\((.+?):(.+)\)$/i);
   if (!match) return null;
   const [, server, tool] = match;
-  return { server, tool, serverLabel: MCP_SERVERS[server.toLowerCase()] ?? server };
+  return { server, tool, serverLabel: MCP_SERVERS.get(server.toLowerCase()) ?? server };
 }
 
 /** A tool id as words: `agent_update` → `Agent update`. For a card that asks
@@ -526,7 +528,8 @@ export function toolLook(name: string, args: unknown): ToolLook {
     return { kind: "mcp", label: mcpLabel(raw) || raw };
   }
 
-  const kind = FAMILY[lower] ?? "other";
+  // Its own entry only: a tool named `constructor` is not one of ours.
+  const kind = Object.hasOwn(FAMILY, lower) ? FAMILY[lower] : "other";
   if (kind === "read" || kind === "edit") {
     const file = argumentFile(args);
     if (file) return { kind, label: `${kind}(${file})` };

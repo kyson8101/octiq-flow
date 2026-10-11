@@ -12,8 +12,8 @@
 // asks you to approve arrives here too, and is the clearest case of it: there
 // is nothing else on the card to judge it by.
 import { useEffect, useState } from "react";
-import { askDeadline, askRemaining, clockText } from "../lib/askClock";
-import { askDetail, changeFacts } from "../lib/askDetail";
+import { ASK_WAIT_SECS, askDeadline, askRemaining, askWaitSecs, clockText } from "../lib/askClock";
+import { askDetail, changeFacts, type ChangeRow } from "../lib/askDetail";
 import { bridge } from "../lib/bridge";
 import { fileDiff } from "../lib/diff";
 import { mcpParts, toolLook, toolWords } from "../lib/toolKind";
@@ -46,8 +46,11 @@ export function askNoteParts(ask: Ask, remaining?: number | null): [string, stri
   if (typeof remaining === "number") {
     return ["Paused until you answer. No answer in ", clockText(remaining), ` counts as Deny.${always}`];
   }
-  const secs = ask.answerWithinSecs;
-  const within = secs && secs < 180 ? `${secs} seconds` : "three minutes";
+  // No clock: the page did not see the question arrive, or the host does not
+  // wait on it at all, and then no length of time is true to name.
+  const secs = askWaitSecs(ask);
+  if (secs === 0) return [`Paused until you answer. No answer counts as Deny.${always}`, null, ""];
+  const within = secs < ASK_WAIT_SECS ? (secs === 1 ? "1 second" : `${secs} seconds`) : "three minutes";
   return [`Paused until you answer. No answer within ${within} counts as Deny.${always}`, null, ""];
 }
 
@@ -68,6 +71,30 @@ function useNow(ticking: boolean): number {
     return () => clearInterval(timer);
   }, [ticking]);
   return now;
+}
+
+/** A text long enough, or with lines of its own, to want the whole width. */
+const isLong = (text: string): boolean => text.includes("\n") || text.length > 48;
+
+/** What one row of a change says. A text is drawn whole with the lines it
+ *  came with, never taken apart; a move is what it was, then what it becomes,
+ *  one above the other once either is long. */
+function ChangeValue({ row }: { row: ChangeRow }) {
+  if (!("before" in row)) return <dd>{row.value}</dd>;
+  const stacked = isLong(row.before) || isLong(row.after);
+  return (
+    <dd className={stacked ? "is-stacked" : undefined}>
+      <span className="ask-change-was">{row.before}</span>
+      <span className="ask-change-arrow"> → </span>
+      {row.after === "" ? (
+        // Nothing is left of the field. Said in words, set apart from a text
+        // that happens to read "cleared": a blank would look like a fault.
+        <em className="ask-change-now is-cleared">cleared</em>
+      ) : (
+        <span className="ask-change-now">{row.after}</span>
+      )}
+    </dd>
+  );
 }
 
 /** The path a tool is about to touch, when it names one. */
@@ -97,8 +124,9 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
   // is being decided here is the change, not where in the file it lands.
   const diff = fileDiff(ask.toolName ?? "", ask.toolInput);
   const extra = diff ? null : askDetail(ask.toolInput);
-  // A change to the registered agents, when it is a sentence and its fields.
-  const facts = extra?.label === "change" ? changeFacts(extra.body) : null;
+  // A change to the registered agents, as the rows the host sent beside its
+  // text. Rows that are not exactly the shape drawn below leave the text.
+  const facts = extra?.label === "change" ? changeFacts(ask.toolInput?.changeFacts) : null;
   // The same icon and the same name the chat's own tool cards use. The question
   // is about a call that is one second away from appearing there, so it should
   // already look like it.
@@ -171,15 +199,7 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
             {facts.rows.map((row, i) => (
               <div key={i}>
                 <dt>{row.label}</dt>
-                {row.before !== undefined ? (
-                  <dd>
-                    <span className="ask-change-was">{row.before}</span>
-                    <span className="ask-change-arrow"> → </span>
-                    <span className="ask-change-now">{row.after}</span>
-                  </dd>
-                ) : (
-                  <dd>{row.value}</dd>
-                )}
+                <ChangeValue row={row} />
               </div>
             ))}
           </dl>

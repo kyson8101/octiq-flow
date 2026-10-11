@@ -23,7 +23,18 @@ describe("the wait the host gives a question", () => {
   it("is three minutes unless the host says less", () => {
     expect(askWaitSecs(ask())).toBe(180);
     expect(askWaitSecs(ask({ answerWithinSecs: 50 }))).toBe(50);
-    expect(askWaitSecs(ask({ answerWithinSecs: 0 }))).toBe(180);
+  });
+
+  it("is nothing at all when the host says zero", () => {
+    // `permission.rs` takes `Some(0)` at its word and answers Deny at once.
+    // Zero is a wait of its own, not a wait nobody set.
+    expect(askWaitSecs(ask({ answerWithinSecs: 0 }))).toBe(0);
+  });
+
+  it("is the usual three minutes for a wait that is not a length of time", () => {
+    expect(askWaitSecs(ask({ answerWithinSecs: -5 }))).toBe(180);
+    expect(askWaitSecs(ask({ answerWithinSecs: Number.NaN }))).toBe(180);
+    expect(askWaitSecs(ask({ answerWithinSecs: "50" as unknown as number }))).toBe(180);
   });
 
   it("is never more than the host's own ceiling", () => {
@@ -50,6 +61,15 @@ describe("askDeadline and askRemaining", () => {
   it("stop at zero, and at the host's wait if this machine's clock stepped back", () => {
     expect(askRemaining(ask({ receivedAt: 10_000 }), 999_000)).toBe(0);
     expect(askRemaining(ask({ receivedAt: 10_000, answerWithinSecs: 50 }), 0)).toBe(50);
+  });
+
+  it("have no clock for a question the host does not wait on", () => {
+    // Zero is not three minutes: a clock counting down from 3:00 here would
+    // promise time the host has already taken back.
+    const now = ask({ receivedAt: 10_000, answerWithinSecs: 0 });
+    expect(askDeadline(now)).toBeNull();
+    expect(askRemaining(now, 10_000)).toBeNull();
+    expect(askRemaining(now, 999_000)).toBeNull();
   });
 
   it("have nothing to say about a question nobody here saw arrive", () => {
