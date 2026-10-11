@@ -329,6 +329,77 @@ export function drawnWhole(was: CommandAsked | null, asked: CommandAsked, unshow
   return sameCommand(was, asked) ? was : asked;
 }
 
+/* ---- Characters that are there and cannot be seen ----------------------
+   A command is read by eye and run by a shell, and a few characters part the
+   two. Some draw nothing (a zero-width space inside a host name, a soft
+   hyphen, a word joiner); some draw as a space and are not one to a shell
+   (the no-break space); some turn the order the eye reads round (the
+   right-to-left override: `invoice_<U+202E>fdp.exe` reads `invoice_exe.pdf`).
+   Each is drawn in place as its code, `\u{202E}`, set apart as a mark, so
+   what is seen is the order the shell gets. Only the drawing changes: the
+   command, what is counted as shown and what Allow sends are the text
+   itself. */
+
+/** The characters drawn as their code: the no-break space (U+00A0) and soft
+ *  hyphen (U+00AD); the zero-width space, non-joiner and joiner (U+200B to
+ *  U+200D), word joiner (U+2060) and byte-order mark (U+FEFF); the line and
+ *  paragraph separators (U+2028, U+2029); and the marks that set reading
+ *  order (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069). */
+const HIDDEN = /[\u00A0\u00AD\u061C\u200B-\u200F\u2028-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+
+/** `\u{202E}`: a character written as its code, at least four digits. */
+export function codeOf(char: string): string {
+  return `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}}`;
+}
+
+/** The most marks a card sets apart one by one. Each is an element of its
+ *  own, and a command made of a million of them would stop the page; past
+ *  this their codes are written into the text where they stand, still in
+ *  place and still counted, without the mark around each. */
+export const MARKS_MAX = 5000;
+
+/** One stretch of a command as it is drawn: text as written, or the code of
+ *  a character that cannot be seen as typed. */
+export type CommandPart = string | { code: string };
+
+/** A command as a card draws it, in order: its text, with every character
+ *  of `HIDDEN` replaced where it stands by its code. A command with none is
+ *  one part, itself, drawn exactly as it was written. */
+export function commandDrawn(text: string): CommandPart[] {
+  const { count } = hiddenIn(text);
+  if (count === 0) return [text];
+  if (count > MARKS_MAX) return [text.replace(HIDDEN, (char) => codeOf(char))];
+  const parts: CommandPart[] = [];
+  let from = 0;
+  for (const found of text.matchAll(HIDDEN)) {
+    const at = found.index ?? 0;
+    if (at > from) parts.push(text.slice(from, at));
+    parts.push({ code: codeOf(found[0]) });
+    from = at + found[0].length;
+  }
+  if (from < text.length) parts.push(text.slice(from));
+  return parts;
+}
+
+/** How many such characters a text holds, and the code of the first. */
+export function hiddenIn(text: string): { count: number; example: string } {
+  let count = 0;
+  let example = "";
+  for (const found of text.matchAll(HIDDEN)) {
+    if (count === 0) example = codeOf(found[0]);
+    count += 1;
+  }
+  return { count, example };
+}
+
+/** The line under a command that holds any: how many, at full strength, then
+ *  what the card did with them. `what` names the text: "command", "script". */
+export function hiddenNote(n: number, what = "command"): { count: string; rest: string } {
+  return n === 1
+    ? { count: "1 character that cannot be seen as typed", rest: ` is in this ${what}, drawn as its code: ` }
+    : { count: `${digits(n)} characters that cannot be seen as typed`, rest: ` are in this ${what}, each drawn as its code, like ` };
+}
+
 /** Whether a text is past what the page draws whole. */
 export function tooLong(text: string): boolean {
   // Never more characters than units, so this is most texts, at no cost.

@@ -10,7 +10,8 @@ import host from "../../../src-tauri/src/team_tools.rs?raw";
 import { changeFacts, SUMMARY_MAX } from "./askDetail";
 import * as cardFold from "./cardFold";
 import {
-  allowHeld, chars, COMMAND_CHARS, COMMAND_LINES, commandFold, commandLines, commandOpens, commandShown, commandTitle, count,
+  allowHeld, chars, codeOf, COMMAND_CHARS, COMMAND_LINES, commandDrawn, commandFold, commandLines, commandOpens,
+  hiddenIn, hiddenNote, MARKS_MAX, commandShown, commandTitle, count,
   diffLabel, digits, drawnWhole, sameCommand, type CommandAsked, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
   isShort, lineCount, longRowsLabel, nameList, notShown, planFoldId, planLabel, scriptLabel, STRAY_MS, STRAY_RADIUS,
   strayPress, rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, textFold, textLines, tooLong,
@@ -486,6 +487,98 @@ describe("a command", () => {
     // Exactly at the limit is drawn.
     expect(commandFold("c".repeat(WHOLE_MAX)).tooLong).toBe(false);
     expect(commandFold("c".repeat(WHOLE_MAX + 1)).tooLong).toBe(true);
+  });
+});
+
+describe("a character of a command that cannot be seen as typed", () => {
+  const mark = (hex: string) => ({ code: `\\u{${hex}}` });
+  // The marks that set reading order.
+  const BIDI = ["\u202A", "\u202B", "\u202C", "\u202D", "\u202E", "\u2066", "\u2067", "\u2068", "\u2069", "\u200E", "\u200F", "\u061C"];
+  // The ones that draw nothing, and the two separators a shell does not break a line on.
+  const UNSEEN = ["\u200B", "\u200C", "\u200D", "\u2060", "\uFEFF", "\u00AD", "\u2028", "\u2029"];
+  const NBSP = "\u00A0";
+
+  it("draws a command with none exactly as it was written", () => {
+    for (const text of ["pnpm test", 'echo "a\tb"  && ls\r\nls -la', "git commit -m 'café 中文 😀'", "printf '\\u{202E}'", ""]) {
+      const drawn = commandDrawn(text);
+      expect(drawn).toEqual([text]);
+      expect(drawn[0]).toBe(text);
+      expect(hiddenIn(text)).toEqual({ count: 0, example: "" });
+    }
+  });
+
+  it("draws each mark that sets reading order as its code, where it stands", () => {
+    for (const char of BIDI) {
+      const hex = char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0");
+      expect(commandDrawn(`a${char}b`)).toEqual(["a", mark(hex), "b"]);
+      expect(hiddenIn(`a${char}b`)).toEqual({ count: 1, example: `\\u{${hex}}` });
+    }
+    expect(codeOf("\u202E")).toBe("\\u{202E}");
+    expect(codeOf("\u061C")).toBe("\\u{061C}");
+    // The override that makes `invoice_exe.pdf` of this: seen as what runs.
+    expect(commandDrawn("open invoice_\u202Efdp.exe")).toEqual(["open invoice_", mark("202E"), "fdp.exe"]);
+  });
+
+  it("draws each character that draws nothing as its code", () => {
+    for (const char of UNSEEN) {
+      const hex = char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0");
+      expect(commandDrawn(`a${char}b`)).toEqual(["a", mark(hex), "b"]);
+    }
+    expect(commandDrawn("curl exam\u200Bple.com")).toEqual(["curl exam", mark("200B"), "ple.com"]);
+    expect(codeOf("\uFEFF")).toBe("\\u{FEFF}");
+    expect(codeOf("\u00AD")).toBe("\\u{00AD}");
+  });
+
+  it("draws a no-break space as its code: it is not a space to a shell", () => {
+    expect(commandDrawn(`echo${NBSP}done`)).toEqual(["echo", mark("00A0"), "done"]);
+    expect(commandDrawn(`${NBSP}\necho safe\n${NBSP}`)).toEqual([mark("00A0"), "\necho safe\n", mark("00A0")]);
+  });
+
+  it("keeps every one of them, in order, at either end and side by side", () => {
+    expect(commandDrawn("\u200B\u200Bls\u202E")).toEqual([mark("200B"), mark("200B"), "ls", mark("202E")]);
+    expect(commandDrawn("\u2066")).toEqual([mark("2066")]);
+    // What is left between the marks is the command, character for character.
+    const text = `rm\u2060 -rf\uFEFF /tmp/x\u00AD\necho a\u2028echo b\u2029echo c${NBSP}`;
+    const drawn = commandDrawn(text);
+    expect(drawn.filter((part) => typeof part !== "string")).toHaveLength(6);
+    expect(drawn.filter((part) => typeof part === "string").join("")).toBe("rm -rf /tmp/x\necho aecho becho c");
+  });
+
+  it("draws every other character as written", () => {
+    // A space, a tab and a return; and, outside the set the card marks, the
+    // wider spaces of other scripts (an ideographic space is ordinary in a
+    // Chinese or Japanese commit message), a combining accent, an emoji.
+    for (const text of ["a b", "a\tb", "a\rb", "a　b", "a b", "áb", "👨🏽"]) {
+      expect(commandDrawn(text)).toEqual([text]);
+    }
+  });
+
+  it("counts them in the whole command and names the first", () => {
+    expect(hiddenIn(`${NBSP}\necho safe\n${NBSP}`)).toEqual({ count: 2, example: "\\u{00A0}" });
+    expect(hiddenIn("a\u202Eb\u200Bc\u00A0")).toEqual({ count: 3, example: "\\u{202E}" });
+    expect(hiddenNote(1)).toEqual({ count: "1 character that cannot be seen as typed", rest: " is in this command, drawn as its code: " });
+    expect(hiddenNote(3)).toEqual({ count: "3 characters that cannot be seen as typed", rest: " are in this command, each drawn as its code, like " });
+    expect(hiddenNote(12_345, "script")).toEqual({
+      count: "12,345 characters that cannot be seen as typed", rest: " are in this script, each drawn as its code, like ",
+    });
+  });
+
+  it("changes the drawing only: the command, its size and what is unshown are the text itself", () => {
+    const text = "open invoice_\u202Efdp.exe";
+    const fold = commandFold(text);
+    expect(fold.head).toBe(text);
+    expect(fold.size).toBe(text.length);
+    expect(notShown(fold, commandShown(fold, false))).toBe(0);
+    // A code drawn in place of one character is not counted as eight.
+    expect(commandFold(`${"x".repeat(COMMAND_CHARS - 1)}\u200B`).more).toBe(0);
+  });
+
+  it("past the marks a card sets apart, writes the codes into the text, still in place and counted", () => {
+    const some = "a\u200B".repeat(MARKS_MAX);
+    expect(commandDrawn(some)).toHaveLength(MARKS_MAX * 2);
+    const many = "a\u200B".repeat(MARKS_MAX + 1);
+    expect(commandDrawn(many)).toEqual(["a\\u{200B}".repeat(MARKS_MAX + 1)]);
+    expect(hiddenIn(many).count).toBe(MARKS_MAX + 1);
   });
 });
 

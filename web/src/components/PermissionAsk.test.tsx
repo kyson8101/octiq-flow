@@ -775,6 +775,71 @@ describe("a command on the permission card", () => {
     expect(plain).toContain("bash(echo)");
   });
 
+  const marked = (hex: string) => `<span class="ask-command-mark">\\u{${hex}}</span>`;
+
+  it("draws a no-break space as its code, and says how many such characters the command holds", () => {
+    const html = draw(bash("\u00A0\necho safe\n\u00A0"));
+    expect(html).toContain(`<pre class="ask-card-body is-command">${marked("00A0")}\necho safe\n${marked("00A0")}</pre>`);
+    expect(html).not.toContain("\u00A0");
+    expect(html).toContain(
+      `<p class="ask-command-hidden"><strong>2 characters that cannot be seen as typed</strong> are in this command, each drawn as its code, like ${marked("00A0")}</p>`,
+    );
+    // Under the block, above the answers. It takes no answer away.
+    expect(html.indexOf("ask-command-hidden")).toBeGreaterThan(html.indexOf("is-command"));
+    expect(html.indexOf("ask-command-hidden")).toBeLessThan(html.indexOf("ask-card-foot"));
+    expect(allows(html)).toEqual({ always: false, once: false });
+  });
+
+  it("draws a mark that turns the reading order round as its code, in the order the shell gets", () => {
+    // Drawn raw, the override shows this as `open invoice_exe.pdf`.
+    const html = draw(bash("open invoice_\u202Efdp.exe"));
+    expect(html).toContain(`<pre class="ask-card-body is-command">open invoice_${marked("202E")}fdp.exe</pre>`);
+    expect(html).not.toContain("\u202E");
+    expect(html).toContain(
+      `<p class="ask-command-hidden"><strong>1 character that cannot be seen as typed</strong> is in this command, drawn as its code: ${marked("202E")}</p>`,
+    );
+    // Every mark of the kind, and the ones that draw nothing.
+    const all = "\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069\u200E\u200F\u061C\u200B\u200C\u200D\u2060\uFEFF\u00AD\u2028\u2029";
+    const each = draw(bash(`ls ${all}`));
+    for (const char of all) {
+      expect(each).not.toContain(char);
+      expect(each).toContain(marked(char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")));
+    }
+    expect(each).toContain("<strong>20 characters that cannot be seen as typed</strong>");
+  });
+
+  it("draws a command with no such character exactly as before, and says nothing about them", () => {
+    const html = draw(bash('echo "plain"\n\tgit status  --short'));
+    expect(html).toContain('<pre class="ask-card-body is-command">echo &quot;plain&quot;\n\tgit status  --short</pre>');
+    expect(html).not.toContain("ask-command-mark");
+    expect(html).not.toContain("ask-command-hidden");
+    // Text that spells a code is text.
+    expect(draw(bash("printf '\\u{202E}'"))).not.toContain("ask-command-mark");
+  });
+
+  it("counts the ones on lines the folded card does not draw, above what it says is not shown", () => {
+    const text = `${lines(13)}\nrm -rf /tmp/\u202Ereview\u200B`;
+    const html = draw(bash(text));
+    expect(html).not.toContain(marked("202E") + "review");
+    const hidden = html.indexOf('<p class="ask-command-hidden"><strong>2 characters that cannot be seen as typed</strong>');
+    const unseen = html.indexOf('<p class="ask-command-unseen"><strong>2 more lines not shown</strong>');
+    expect(hidden).toBeGreaterThan(-1);
+    // What is not shown stays the last thing above the answers.
+    expect(unseen).toBeGreaterThan(hidden);
+    expect(html.indexOf("ask-card-foot")).toBeGreaterThan(unseen);
+    expect(allows(html)).toEqual({ always: true, once: true });
+    // Opened, they are in place in the rest.
+    const open = drawOpen(bash(text));
+    expect(open).toContain(`rm -rf /tmp/${marked("202E")}review${marked("200B")}</pre>`);
+    expect(allows(open)).toEqual({ always: false, once: false });
+  });
+
+  it("marks them in a script or code an MCP tool runs, and calls it that", () => {
+    const html = draw({ id: "c9", toolName: "mcp__sandbox__exec", toolInput: { script: 'print("a\u200Bb")' } });
+    expect(html).toContain(`print(&quot;a${marked("200B")}b&quot;)`);
+    expect(html).toContain("</strong> is in this script, drawn as its code: ");
+  });
+
   it("treats a script or code an MCP tool runs as a command too", () => {
     const html = draw({ id: "c3", toolName: "mcp__playwright__browser_run_code_unsafe", toolInput: { code: lines(13) } });
     expect(html).toContain(">code · 13 lines<");

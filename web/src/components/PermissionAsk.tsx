@@ -31,8 +31,8 @@ import { ASK_WAIT_SECS, askDeadline, askRemaining, askWaitSecs, clockText } from
 import { askDetail, changeFacts, isCommand, type ChangeRow } from "../lib/askDetail";
 import { bridge } from "../lib/bridge";
 import {
-  allowHeld, chars, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, drawnWhole, longRowsLabel,
-  notShown,
+  allowHeld, chars, commandDrawn, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, drawnWhole,
+  hiddenIn, hiddenNote, longRowsLabel, notShown,
   rowFold, textFold, tooLong, tooLongNote, unseenLines, type CommandAsked, type RowFold,
 } from "../lib/cardFold";
 import { fileDiff } from "../lib/diff";
@@ -142,6 +142,21 @@ function FoldedValue({ fold }: { fold: Extract<RowFold, { folded: true }> }) {
   );
 }
 
+/** A character of a command that cannot be seen as typed, as its code. */
+function Mark({ code }: { code: string }) {
+  return <span className="ask-command-mark">{code}</span>;
+}
+
+/** A stretch of a command as the card draws it (`lib/cardFold.commandDrawn`):
+ *  as written, but for the characters that draw nothing or turn the reading
+ *  order round, each of which is its code where it stands. A command with
+ *  none of them is the one text it always was. */
+function CommandText({ text }: { text: string }) {
+  // Kept between the clock's ticks: a command can be very long.
+  const parts = useMemo(() => commandDrawn(text), [text]);
+  return <>{parts.map((part, i) => (typeof part === "string" ? part : <Mark key={i} code={part.code} />))}</>;
+}
+
 /** The path a tool is about to touch, when it names one. */
 function target(ask: Ask): string | null {
   const input = ask.toolInput ?? {};
@@ -206,6 +221,9 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   // What this card draws of the command, and so what Allow is asked about.
   const shown = useMemo(() => (command ? commandShown(command, fold.shown) : null), [command, fold.shown]);
   const unshown = useMemo(() => (command && shown ? notShown(command, shown) : 0), [command, shown]);
+  // Characters in it that cannot be seen as typed, in all of it: the ones on
+  // lines the folded card does not draw are counted too.
+  const hidden = useMemo(() => (runs === null ? null : hiddenIn(runs)), [runs]);
   const prose = extra && !facts && !command ? extra.body : null;
   // A text the page cannot draw whole is not opened in part. Whichever part
   // of the ask it is, the ask cannot be allowed from this card.
@@ -346,15 +364,25 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
           {opens ? (
             (shown.head || fold.shown) && (
               <div className="ask-card-body is-command is-long" data-open={fold.shown || undefined}>
-                {shown.head && <pre className="ask-command-text">{shown.head}</pre>}
+                {shown.head && <pre className="ask-command-text"><CommandText text={shown.head} /></pre>}
                 <FoldBody fold={fold} bounded={false}>
-                  {shown.rest !== null && <pre className="ask-command-text">{shown.rest}</pre>}
+                  {shown.rest !== null && <pre className="ask-command-text"><CommandText text={shown.rest} /></pre>}
                 </FoldBody>
               </div>
             )
           ) : (
-            shown.head && <pre className="ask-card-body is-command">{shown.head}</pre>
+            shown.head && <pre className="ask-card-body is-command"><CommandText text={shown.head} /></pre>
           )}
+          {/* Under the block, at full strength: what the marks in it are,
+              and how many the whole command holds. */}
+          {hidden && hidden.count > 0 && (() => {
+            const note = hiddenNote(hidden.count, what);
+            return (
+              <p className="ask-command-hidden">
+                <strong>{note.count}</strong>{note.rest}<Mark code={hidden.example} />
+              </p>
+            );
+          })()}
           {/* The last thing above the answers while any of it is off the
               card: how much, then why the answers are off and what to do. */}
           {unshown > 0 && (
