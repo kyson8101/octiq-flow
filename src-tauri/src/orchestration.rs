@@ -3405,6 +3405,14 @@ impl OrchestrationStore {
             {
                 return Err("This chat does not belong to that run.".into());
             }
+            // A worker's gate is its own task's whether or not it names it,
+            // so the checks below are made of the task the gate will carry.
+            let task_id = task_id.clone().or_else(|| {
+                owned_task
+                    .as_ref()
+                    .filter(|task| task.run_id == run_id)
+                    .map(|task| task.id.clone())
+            });
             if let Some(requested) = task_id.as_deref() {
                 let task = data
                     .tasks
@@ -3431,9 +3439,7 @@ impl OrchestrationStore {
             let gate = Gate {
                 id: format!("gate_{}", compact_id()),
                 run_id: run_id.clone(),
-                task_id: task_id
-                    .clone()
-                    .or_else(|| owned_task.as_ref().map(|task| task.id.clone())),
+                task_id,
                 created_by_chat_key: actor_chat_key.into(),
                 target_chat_key: run.coordinator_chat_key.clone(),
                 question,
@@ -8174,6 +8180,54 @@ pub(crate) mod tests {
             store.snapshot(None).unwrap().attempts[0].status,
             AttemptStatus::Running
         );
+    }
+
+    /// Review M7: the task a worker's gate carries is its own whether or not
+    /// the call names it, so "one open gate per task" is asked of that task.
+    #[test]
+    fn a_task_has_one_open_gate_even_when_the_worker_does_not_name_it() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        let open = |task_id: Option<String>| {
+            store.create_gate(
+                &worker.worker_chat_key,
+                run.id.clone(),
+                task_id,
+                "Which volume?".into(),
+                vec![],
+            )
+        };
+        let first = open(None).unwrap();
+        assert_eq!(first.task_id.as_deref(), Some(worker.task_id.as_str()));
+        for task_id in [None, Some(worker.task_id.clone())] {
+            let second = open(task_id).unwrap_err();
+            assert_eq!(
+                second,
+                "This task already has an open decision gate. Resolve it first."
+            );
+        }
+        let gates = store.snapshot(None).unwrap().gates;
+        assert_eq!(gates.len(), 1);
+        // Answered, the task may ask again.
+        store
+            .resolve_gate("chat:master", first.id, "volume1".into())
+            .unwrap();
+        open(None).unwrap();
+        // A coordinator's gate that names no task is the run's, as before,
+        // and any number of those may be open.
+        for _ in 0..2 {
+            let gate = store
+                .create_gate(
+                    "chat:master",
+                    run.id.clone(),
+                    None,
+                    "Ship today?".into(),
+                    vec![],
+                )
+                .unwrap();
+            assert!(gate.task_id.is_none());
+        }
     }
 
     #[test]
