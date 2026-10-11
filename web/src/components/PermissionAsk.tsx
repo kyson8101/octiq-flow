@@ -31,8 +31,9 @@ import { ASK_WAIT_SECS, askDeadline, askRemaining, askWaitSecs, clockText } from
 import { askDetail, changeFacts, isCommand, type ChangeRow } from "../lib/askDetail";
 import { bridge } from "../lib/bridge";
 import {
-  allowHeld, chars, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, longRowsLabel, notShown,
-  rowFold, textFold, tooLong, tooLongNote, unseenLines, type RowFold,
+  allowHeld, chars, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, drawnWhole, longRowsLabel,
+  notShown,
+  rowFold, textFold, tooLong, tooLongNote, unseenLines, type CommandAsked, type RowFold,
 } from "../lib/cardFold";
 import { fileDiff } from "../lib/diff";
 import { mcpParts, toolLook, toolWords } from "../lib/toolKind";
@@ -228,13 +229,26 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   const what = extra?.label === "replacing with" ? "text" : extra?.label ?? "command";
   // Its first command does not name it once any of it is off the card.
   const sized = command ? commandTitle(command, what === "command" ? "command" : "script") : null;
-  // Allow waits for the whole command to have been drawn. Once is enough:
-  // it stays allowed if the card is folded again.
-  const [whole, setWhole] = useState<string | null>(null);
+  // What an Allow here would approve: this ask's tool and the exact text it
+  // runs, as the host sent it.
+  const tool = ask.toolName ?? "";
+  const key = extra?.label ?? "";
+  const asked = useMemo<CommandAsked | null>(
+    () => (runs === null ? null : { id: ask.id, tool, key, text: runs }),
+    [runs, ask.id, tool, key],
+  );
+  // Allow waits for the whole command to have been drawn. Once is enough, and
+  // it stays allowed if the card is folded again: for that command. What is
+  // kept is the command that was drawn whole, not that something was, and it
+  // is compared with the one on the card at every draw. The same id carrying
+  // another text has not been read.
+  const [whole, setWhole] = useState<CommandAsked | null>(null);
   useEffect(() => {
-    if (command && unshown === 0) setWhole(ask.id);
-  }, [command, unshown, ask.id]);
-  const held = !!command && allowHeld(unshown, whole === ask.id);
+    // After a draw: it had every character of `asked` in it, or it changes
+    // nothing.
+    if (asked) setWhole((was) => drawnWhole(was, asked, unshown));
+  }, [asked, unshown]);
+  const held = !!asked && allowHeld(unshown, whole, asked);
   // Held until it is opened, or unavailable for good: either way the reason
   // is a sentence on the card, and the answers point at it.
   const off = held || over > 0;

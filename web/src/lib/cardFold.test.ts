@@ -11,7 +11,7 @@ import { changeFacts, SUMMARY_MAX } from "./askDetail";
 import * as cardFold from "./cardFold";
 import {
   allowHeld, chars, COMMAND_CHARS, COMMAND_LINES, commandFold, commandOpens, commandShown, commandTitle, count,
-  diffLabel, digits, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
+  diffLabel, digits, drawnWhole, sameCommand, type CommandAsked, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
   isShort, lineCount, longRowsLabel, nameList, notShown, planFoldId, planLabel, scriptLabel, STRAY_MS, STRAY_RADIUS,
   strayPress, rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, textFold, textLines, tooLong,
   tooLongNote, unseenLines, WHOLE_MAX,
@@ -319,7 +319,7 @@ describe("a command", () => {
     const big = commandFold(reviewer);
     const cut = { head: big.head, rest: big.rest.slice(0, 200_000 - big.head.length - 1) };
     expect(notShown(big, cut)).toBe(129_959);
-    expect(allowHeld(notShown(big, cut))).toBe(true);
+    expect(allowHeld(notShown(big, cut), null, { id: "a", tool: "Bash", key: "command", text: reviewer })).toBe(true);
     // One character short is short.
     expect(notShown(big, { head: big.head, rest: big.rest.slice(0, -1) })).toBe(1);
     // Another text of the same length is not the command either.
@@ -328,19 +328,97 @@ describe("a command", () => {
     expect(notShown(big, { head: "", rest: big.rest })).toBeGreaterThan(0);
   });
 
+  /** One card, as `PermissionAsk` keeps it: each draw says whether Allow is
+   *  held for what it drew, then remembers a command it drew whole. */
+  const card = () => {
+    let whole: CommandAsked | null = null;
+    return (asked: CommandAsked, open = false): boolean => {
+      const fold = commandFold(asked.text);
+      const unshown = notShown(fold, commandShown(fold, open));
+      const held = allowHeld(unshown, whole, asked);
+      whole = drawnWhole(whole, asked, unshown);
+      return held;
+    };
+  };
+  const bash = (id: string, text: string): CommandAsked => ({ id, tool: "Bash", key: "command", text });
+  const safe = lines(13);
+  const danger = `${lines(12)}\nrm -rf /tmp/review-danger`;
+
   it("holds Allow back while anything of the command has never been shown", () => {
-    const fold = commandFold(lines(13));
-    expect(allowHeld(notShown(fold, commandShown(fold, false)))).toBe(true);
-    expect(allowHeld(notShown(fold, commandShown(fold, true)))).toBe(false);
+    const draw = card();
+    expect(draw(bash("a", safe))).toBe(true);
+    expect(draw(bash("a", safe), true)).toBe(false);
     // Shown whole once is enough: folded again, it is still allowed.
-    expect(allowHeld(notShown(fold, commandShown(fold, false)), true)).toBe(false);
+    expect(draw(bash("a", safe))).toBe(false);
     // Whole on the card: nothing to open, nothing held.
-    const short = commandFold(lines(12));
-    expect(allowHeld(notShown(short, commandShown(short, false)))).toBe(false);
+    expect(card()(bash("b", lines(12)))).toBe(false);
     // The reviewer's: held folded, let go only with the last line drawn.
-    const big = commandFold(reviewer);
-    expect(allowHeld(notShown(big, commandShown(big, false)))).toBe(true);
-    expect(allowHeld(notShown(big, commandShown(big, true)))).toBe(false);
+    const big = card();
+    expect(big(bash("c", reviewer))).toBe(true);
+    expect(big(bash("c", reviewer), true)).toBe(false);
+    expect(big(bash("c", reviewer))).toBe(false);
+  });
+
+  it("is shown whole as that text, not as that ask: a short command, then a long one under its id", () => {
+    const draw = card();
+    // Whole on the card at once; nothing was opened.
+    expect(draw(bash("dynamic", "echo safe"))).toBe(false);
+    // The same id, thirteen lines, the last of them not on the folded card.
+    expect(draw(bash("dynamic", danger))).toBe(true);
+    expect(draw(bash("dynamic", danger))).toBe(true);
+    expect(draw(bash("dynamic", danger), true)).toBe(false);
+  });
+
+  it("is unread again when a command opened and folded is replaced under the same id", () => {
+    const draw = card();
+    expect(draw(bash("same", safe), true)).toBe(false);
+    expect(draw(bash("same", safe))).toBe(false);
+    expect(draw(bash("same", danger))).toBe(true);
+  });
+
+  it("is unread when an id read before comes back with another command", () => {
+    const draw = card();
+    expect(draw(bash("a", safe), true)).toBe(false);
+    // Another ask, long and never opened.
+    expect(draw(bash("b", lines(40)))).toBe(true);
+    expect(draw(bash("a", danger))).toBe(true);
+    // And the unread one in between let nothing go either.
+    expect(draw(bash("b", lines(40)))).toBe(true);
+  });
+
+  it("keeps Allow for the very same command sent again, and for no other", () => {
+    const draw = card();
+    draw(bash("a", safe), true);
+    // The same ask again, as `PendingRequests.add` replaces it: a new object,
+    // the same content.
+    expect(draw(bash("a", `${safe}`))).toBe(false);
+    // One character more, one less, one changed.
+    expect(draw(bash("a", `${safe} `))).toBe(true);
+    draw(bash("a", safe), true);
+    expect(draw(bash("a", safe.slice(0, -1)))).toBe(true);
+    draw(bash("a", safe), true);
+    expect(draw(bash("a", safe.replace("step 13", "step 31")))).toBe(true);
+    // A blank line the card does not draw is still a different text.
+    draw(bash("a", safe), true);
+    expect(draw(bash("a", `${safe}\n`))).toBe(true);
+    // The same text under a new id, another tool, or another argument.
+    draw(bash("a", safe), true);
+    expect(draw(bash("new", safe))).toBe(true);
+    draw(bash("a", safe), true);
+    expect(draw({ ...bash("a", safe), tool: "mcp__x__run" })).toBe(true);
+    draw(bash("a", safe), true);
+    expect(draw({ ...bash("a", safe), key: "script" })).toBe(true);
+  });
+
+  it("remembers the command it drew whole, and nothing when it drew less", () => {
+    const a = bash("a", safe);
+    expect(drawnWhole(null, a, 7)).toBeNull();
+    expect(drawnWhole(null, a, 0)).toBe(a);
+    // Drawing less of another command does not forget the one that was read.
+    expect(drawnWhole(a, bash("a", danger), 25)).toBe(a);
+    expect(sameCommand(a, bash("a", safe))).toBe(true);
+    expect(sameCommand(a, null)).toBe(false);
+    expect(sameCommand(null, null)).toBe(false);
   });
 
   it("past what the page draws is never opened, and never allowed", () => {
@@ -353,7 +431,10 @@ describe("a command", () => {
     // Asked to open anyway, it draws no more than the folded card.
     expect(commandShown(over, true)).toEqual({ head: over.head, rest: null });
     expect(notShown(over, commandShown(over, true))).toBe(over.size - chars(over.head));
-    expect(allowHeld(notShown(over, commandShown(over, true)))).toBe(true);
+    // Opened or not, and whatever the card remembers: it was never whole.
+    const asked = { id: "a", tool: "Bash", key: "command", text: `${(line + "\n").repeat(Math.ceil(WHOLE_MAX / 66))}rm -rf /tmp/review-danger` };
+    expect(allowHeld(notShown(over, commandShown(over, true)), null, asked)).toBe(true);
+    expect(drawnWhole(null, asked, notShown(over, commandShown(over, true)))).toBeNull();
     expect(unseenLines(over)).toBe(`${digits(over.lines - 12)} more lines not shown`);
     // Exactly at the limit is drawn.
     expect(commandFold("c".repeat(WHOLE_MAX)).tooLong).toBe(false);

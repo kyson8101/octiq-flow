@@ -276,14 +276,36 @@ export function commandTitle(fold: CommandFold, noun = "command"): string | null
   return null;
 }
 
+/** What an Allow of a command approves, exactly: the ask, the tool, the
+ *  argument that runs, and every character of it as the host sent it. The
+ *  text is the argument itself and not the lines drawn from it, so nothing
+ *  that reads it (a trim, a fold) can make two commands one. */
+export type CommandAsked = { id: string; tool: string; key: string; text: string };
+
+/** Whether two of them are the same thing to approve. One character apart,
+ *  or the same text under another tool, argument or ask, is another. */
+export function sameCommand(a: CommandAsked | null, b: CommandAsked | null): boolean {
+  return !!a && !!b && a.id === b.id && a.tool === b.tool && a.key === b.key && a.text === b.text;
+}
+
 /** Whether Allow is held back: some of the command has never been in front
- *  of the person. `unshown` is how much of it the card is not drawing now
- *  (`notShown`); `wasWhole`, whether this card has drawn all of it before.
- *  Showing it whole once is enough, and folding it again does not take the
- *  answer away. A command too long to draw is never whole, so its Allow is
- *  never let go. */
-export function allowHeld(unshown: number, wasWhole = false): boolean {
-  return unshown > 0 && !wasWhole;
+ *  of the person. `unshown` is how much of `asked` the card is not drawing
+ *  now (`notShown`); `whole`, the command this card last drew every
+ *  character of. Showing it whole once is enough, and folding it again does
+ *  not take the answer away: but only for that command. "Shown whole" is
+ *  said of a text, and is asked again of whatever is on the card now. An
+ *  ask whose command changed under the same id, by one character, is unread.
+ *  A command too long to draw is never whole, so its Allow is never let go. */
+export function allowHeld(unshown: number, whole: CommandAsked | null, asked: CommandAsked): boolean {
+  return unshown > 0 && !sameCommand(whole, asked);
+}
+
+/** What the card remembers after a draw: the command, when that draw had
+ *  every character of it; else what it remembered before. The memory is the
+ *  command itself, so it can only ever let go of an Allow for that one. */
+export function drawnWhole(was: CommandAsked | null, asked: CommandAsked, unshown: number): CommandAsked | null {
+  if (unshown > 0) return was;
+  return sameCommand(was, asked) ? was : asked;
 }
 
 /** Whether a text is past what the page draws whole. */
