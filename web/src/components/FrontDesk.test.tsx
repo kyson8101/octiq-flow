@@ -11,7 +11,7 @@ import { ContinueDesk } from "./ContinueDesk";
 import { FRONT_DESK_GREETING } from "../lib/frontDesk";
 import { handover } from "../lib/handover.fixture";
 import {
-  canDiscussInstead, handoverPlaces, handoversFor, isRoute, mergeHandover, routeHeadline, routePlaceLine, type Handover,
+  canDiscussInstead, handoverPlaces, handoversFor, homeShort, isRoute, mergeHandover, routeHeadline, routePlaceLine, settingsLine, type Handover,
 } from "../lib/handover";
 import { pendingActions } from "../lib/pendingActions";
 import type { TeamAgent } from "../lib/agentsMode";
@@ -49,10 +49,19 @@ describe("the front desk's confirm card", () => {
     expect(lines).toBe("");
     expect(html).toContain('data-kind="route"');
     expect(html).toContain("Open a chat with Vesper?");
-    expect(html).toContain("Sonnet latest · high · Accept edits");
-    expect(html).toContain("starfall-novel · new worktree");
+    // Who: the agent's face beside the question, the chat's settings as chips.
+    expect(html).toMatch(/<header class="handover-head route-head"><span class="agent-avatar"[^>]*aria-hidden="true"/);
+    expect(html).toContain('<ul class="route-chips" aria-label="Chat settings">'
+      + '<li class="handover-chip" data-chip="model">Sonnet latest</li>'
+      + '<li class="handover-chip" data-chip="effort">high</li>'
+      + '<li class="handover-chip" data-chip="access">Accept edits</li></ul>');
+    // Where: the project first, what is worth knowing about the place after it.
+    expect(html).toContain('<span class="route-project">starfall-novel</span><span class="route-scope"> · new worktree</span>');
+    expect(html).toContain('<span class="route-repo" title="/src/starfall">/src/starfall</span>');
+    // What: the whole brief as prose, and who wrote it.
+    expect(html).toContain('<h4>Brief<span class="route-brief-from"> · from Front desk</span></h4>');
     expect(html).toContain("Draft chapter 3: the crossing.\nKeep Lyra&#x27;s voice; 3,000 words.");
-    expect(html).toContain("map.png");
+    expect(html).toContain('<span class="chip"><span class="chip-name">map.png</span></span>');
     expect(html).toContain("Not passed on: hosts (not a file the person attached in OctiqFlow)");
     // The exact first message, paths and all, is one click away.
     expect(html).toContain("Exact first message");
@@ -97,7 +106,9 @@ describe("the front desk's confirm card", () => {
     });
     const { tail } = cards([talk], "chat:desk");
     expect(tail).toContain("Discuss with Vesper?");
-    expect(tail).toContain("starfall-novel · new worktree · discussion, read-only");
+    expect(tail).toContain('<span class="route-project">starfall-novel</span>'
+      + '<span class="route-scope"> · new worktree</span><span class="route-scope"> · discussion, read-only</span>');
+    expect(tail).toContain('data-chip="access">Plan<');
     expect(tail).toContain("Discuss with Vesper<");
     expect(tail).not.toContain("Discuss only (read-only)");
   });
@@ -112,11 +123,38 @@ describe("the front desk's confirm card", () => {
     expect(mergeHandover([], route({ status: "abandoned" }))).toEqual([]);
   });
 
+  it("sets the ids, paths and branches of a brief in mono, and leaves its words alone", () => {
+    const { tail } = cards([route({
+      brief: { objective: "Ask STAR LEAD (agent_ee96a6613d0c) to review /src/starfall/ch3.md on feature/ch3 & co.\nRun `pnpm test` <first>." },
+    })], "chat:desk");
+    expect(tail).toContain('<p class="route-brief-text">Ask STAR LEAD (<code>agent_ee96a6613d0c</code>) to review '
+      + "<code>/src/starfall/ch3.md</code> on <code>feature/ch3</code> &amp; co.\nRun <code>pnpm test</code> &lt;first&gt;.</p>");
+  });
+
+  it("gives a head's cross-project chat no folder, and a home folder its short name", () => {
+    const head = route({
+      route: { message: "x", crossProject: true },
+      workspace: { mode: "folder", path: "/Users/kyson/general" },
+      destination: { projectId: "g", projectName: "General", repository: "/Users/kyson/general" },
+    });
+    const across = cards([head], "chat:desk").tail;
+    expect(across).toContain('<span class="route-project">General</span><span class="route-scope"> · plans across every project</span></dd>');
+    expect(across).not.toContain("route-repo");
+    const one = cards([route({ ...head, route: { message: "x" } })], "chat:desk").tail;
+    expect(one).toContain('<span class="route-project">General</span><span class="route-repo" title="/Users/kyson/general">~/general</span>');
+    expect(homeShort("C:\\Users\\kyson\\work\\app")).toBe("~\\work\\app");
+    expect(homeShort("/home/kyson")).toBe("~");
+    expect(homeShort("/srv/app")).toBe("/srv/app");
+  });
+
   it("names where the chat will work, as a person reads it", () => {
     expect(routeHeadline(route({ status: "starting" }))).toBe("Opening a chat with Vesper…");
     expect(routePlaceLine(route({ workspace: { mode: "folder", path: "/g" }, destination: { projectId: "g", projectName: "General", repository: "/g" } }))).toBe("General");
     expect(routePlaceLine(route({ route: { message: "x", crossProject: true }, workspace: { mode: "folder", path: "/g" }, destination: { projectId: "g", projectName: "General", repository: "/g" } })))
       .toBe("General · plans across every project");
+    expect(routePlaceLine(route({ route: { message: "x", discuss: true } }))).toBe("starfall-novel · new worktree · discussion, read-only");
+    // The chips and the one-line form are the same settings.
+    expect(settingsLine(route().settings)).toBe("Sonnet latest · high · Accept edits");
     expect(isRoute(route())).toBe(true);
     expect(isRoute(handover())).toBe(false);
   });

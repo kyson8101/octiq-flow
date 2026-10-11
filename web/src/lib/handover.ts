@@ -268,13 +268,19 @@ export function modelName(settings: Handover["settings"]): string {
     ?? flag;
 }
 
+/** The new chat's settings as separate labels, for chips: the model, the
+ *  effort when one is set, and the access level. */
+export function settingsParts(settings: Handover["settings"]): { kind: "model" | "effort" | "access"; label: string }[] {
+  return [
+    { kind: "model" as const, label: modelName(settings) },
+    { kind: "effort" as const, label: settings.effort?.trim() ?? "" },
+    { kind: "access" as const, label: accessLabel(settings.agent, settings.access) },
+  ].filter((part) => part.label);
+}
+
 /** "Sonnet 5.5 · high · Edits", the new chat's settings on one line. */
 export function settingsLine(settings: Handover["settings"]): string {
-  return [
-    modelName(settings),
-    settings.effort,
-    accessLabel(settings.agent, settings.access),
-  ].filter(Boolean).join(" · ");
+  return settingsParts(settings).map((part) => part.label).join(" · ");
 }
 
 /** The last folder of a path, for a label; the full path stays in details. */
@@ -305,13 +311,25 @@ export function routeHeadline(handover: Handover): string {
   return handover.route?.discuss ? `Discuss with ${handover.to.name}?` : `Open a chat with ${handover.to.name}?`;
 }
 
+/** Where a routed chat works: the project, and what is worth knowing about
+ *  the place, most important first. */
+export function routePlace(handover: Handover): { project: string; notes: string[] } {
+  const notes: string[] = [];
+  if (handover.route?.crossProject) notes.push("plans across every project");
+  else if (handover.workspace.mode === "worktree") notes.push("new worktree");
+  if (handover.route?.discuss) notes.push("discussion, read-only");
+  return { project: handover.destination.projectName, notes };
+}
+
 /** Where a routed chat works, in a few words. */
 export function routePlaceLine(handover: Handover): string {
-  const project = handover.destination.projectName;
-  const place = handover.route?.crossProject
-    ? `${project} · plans across every project`
-    : handover.workspace.mode === "worktree" ? `${project} · new worktree` : project;
-  return handover.route?.discuss ? `${place} · discussion, read-only` : place;
+  const { project, notes } = routePlace(handover);
+  return [project, ...notes].join(" · ");
+}
+
+/** A path with the person's home folder written as `~`, for a label. */
+export function homeShort(path: string): string {
+  return path.replace(/^(?:\/Users|\/home|[A-Za-z]:[\\/]Users)[\\/][^\\/]+(?=[\\/]|$)/, "~");
 }
 
 /** Whether a route whose chat could not start may be opened as a read-only
