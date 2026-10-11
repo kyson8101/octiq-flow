@@ -55,9 +55,23 @@ export function DiffStat({ diff }: { diff: FileDiff }) {
   );
 }
 
-export function DiffView({ diff }: { diff: FileDiff }) {
+/** Rows drawn at once where the reader has already opened the detail to
+ *  approve it (the permission card): most edits whole, in the one step. Not
+ *  every row, because the page stops while they are drawn. Measured on a
+ *  production build on a quiet machine: 240 rows no long task, 600 one of up
+ *  to 0.1 s, 1,000 about 0.11 s, 2,000 about 0.2 s, 5,000 about 0.4 s (each
+ *  about double on a busy one). Drawing the rest a stretch a frame was
+ *  worse, 3 to 6 s of long tasks, because every stretch lays the whole diff
+ *  out again. */
+export const FIRST_OPENED = 600;
+
+export function DiffView({ diff, first = FIRST }: {
+  diff: FileDiff;
+  /** How many rows are drawn before the reader has to ask for the rest. */
+  first?: number;
+}) {
   const [all, setAll] = useState(false);
-  const rows = all ? diff.rows : diff.rows.slice(0, FIRST);
+  const rows = all ? diff.rows : diff.rows.slice(0, first);
   const hidden = diff.rows.length - rows.length;
 
   if (!diff.rows.length) {

@@ -178,6 +178,19 @@ describe("UserQuestion", () => {
     expect(html).not.toContain("[object Object]");
   });
 
+  it("folds nothing: every option and the whole of what it means is on the card", () => {
+    // The other cards that ask fold their long parts behind one control.
+    // Here the options ARE the decision, and the card has controls on every
+    // side of where such a control could go, so a description is never held
+    // to a line and there is nothing to open.
+    const long = "Runs as its own server, which is one more thing to keep alive but takes every writer at once.";
+    const html = draw({ options: [{ label: "SQLite", description: "One file, no server" }, { label: "Postgres", description: long }] });
+    expect(html).toContain(`<span class="qa-option-desc">${long}</span>`);
+    expect(html).toContain('<span class="qa-option-desc">One file, no server</span>');
+    expect(html).not.toContain("card-fold");
+    expect(html.match(/role="radio"/g)).toHaveLength(2);
+  });
+
   it("still draws a plain list of strings", () => {
     // An older server sends this shape, and the client deploys ahead of it.
     const html = draw({ options: ["Postgres", "SQLite"] });
@@ -188,7 +201,7 @@ describe("UserQuestion", () => {
   it("draws a set as ticks, and says so before the first tap", () => {
     const html = draw({ options: ["a", "b"], multiple: true });
     expect(html).toContain('role="checkbox"');
-    expect(html).toContain("Pick as many as you like");
+    expect(html).toContain("Pick any, or add your own");
   });
 
   it("draws a one-of question with no ticks at all", () => {
@@ -213,7 +226,7 @@ describe("a tap is a choice, not an answer", () => {
 
   it("says how to send it, in the words on the shared button", () => {
     const html = draw({ options: ["a", "b"] });
-    expect(html).toContain("Pick one or type another answer");
+    expect(html).toContain("Pick one, or type your own");
     expect(html).toContain("Send answers");
   });
 

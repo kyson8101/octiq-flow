@@ -89,28 +89,16 @@
   font-size: 12.5px;
 }
 
-.complete-ask-steps > summary {
-  width: fit-content;
-  min-height: 28px;
-  padding: 4px 0;
-  color: var(--fg-2);
-  cursor: pointer;
-}
-
-.complete-ask-steps > summary:hover {
-  color: var(--fg-0);
-}
-
-.complete-ask-steps > summary:focus-visible {
-  outline: 2px solid var(--decide);
-  outline-offset: 2px;
-  border-radius: var(--r-sm);
+/* The line and its control are the shared disclosure's (`CardFold.css`). */
+.complete-ask-steps > .card-fold-line {
+  margin-top: 0;
+  font-size: 12.5px;
 }
 
 .complete-ask-steps ol {
   display: grid;
   gap: 6px;
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   padding: 0;
   list-style: none;
   counter-reset: step;

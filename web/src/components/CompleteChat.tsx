@@ -19,7 +19,9 @@ import {
   type CompletionLine,
   type ConfirmContent,
 } from "../lib/chatComplete";
+import { count } from "../lib/cardFold";
 import type { MissionOffer } from "../lib/useChatCompletions";
+import { FoldBody, FoldLine, useFold } from "./CardFold";
 import "./CompleteChat.css";
 
 /** The action in the chat's menu. Icon and tooltip; the label shows in the
@@ -97,15 +99,20 @@ export function CompleteChatDialog({
 export function CompleteChatConfirm({
   content,
   loading = false,
+  startOpen = false,
   onCancel,
   onConfirm,
 }: {
   content: ConfirmContent;
   loading?: boolean;
+  /** Draw the steps opened: for the tests, which cannot press the control. */
+  startOpen?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
+  // One question on screen at a time, and it starts folded each time it is asked.
+  const fold = useFold("complete-chat", { startOpen });
   // Through a ref, and focus once: the page behind re-renders on every delta
   // of a streaming reply, and each one must not pull the focus back here.
   const cancel = useRef(onCancel);
@@ -147,14 +154,20 @@ export function CompleteChatConfirm({
           </dl>
         ) : loading && <p className="complete-ask-loading" role="status">Checking the workspace…</p>}
 
-        <details className="complete-ask-steps">
-          <summary>What the agent is asked · {content.steps.length} steps</summary>
-          <ol>
-            {content.steps.map((step) => (
-              <li key={step.label}><strong>{step.label}</strong><span>{step.line}</span></li>
-            ))}
-          </ol>
-        </details>
+        {/* The one disclosure every decision card has (`CardFold`): the line
+            that names what is folded, above what it opens, above the
+            answers. */}
+        <div className="complete-ask-steps">
+          <FoldLine fold={fold} what="the steps"
+            labels={[`What the agent is asked · ${count(content.steps.length, "step")}`]} />
+          <FoldBody fold={fold}>
+            <ol>
+              {content.steps.map((step) => (
+                <li key={step.label}><strong>{step.label}</strong><span>{step.line}</span></li>
+              ))}
+            </ol>
+          </FoldBody>
+        </div>
 
         {content.refusal && <p className="complete-ask-refusal" role="status">{content.refusal}</p>}
 

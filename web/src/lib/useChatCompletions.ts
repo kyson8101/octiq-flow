@@ -17,7 +17,9 @@ import {
   NO_COMPLETIONS,
   closeOffer,
   missionsOf,
+  receiptOutcome,
   reduceCompletions,
+  type CompleteOutcome,
   type CompletePreview,
   type CompletionAction,
   type Completions,
@@ -68,26 +70,38 @@ export function useChatCompletions(
     if (open.length) setOffers((before) => ({ ...before, [chatId]: open.map((run) => ({ run })) }));
   }, []);
 
+  /** Fold one action in, and say whether it ended the chat's completion on
+   *  this page. An end that belongs to another completion than the one on
+   *  screen changes nothing here and is announced to nobody. */
+  const settle = useCallback((chatId: string, action: CompletionAction) => {
+    const before = held.current.ended[chatId];
+    dispatch(action);
+    const end = held.current.ended[chatId];
+    if (!end || end === before) return;
+    if (end.ok) void findOffers(chatId);
+    else delete missions.current[chatId];
+    ended.current?.(chatId, end.ok);
+  }, [dispatch, findOffers]);
+
   useEffect(() => {
     const offStart = bridge.on<{ chatKey?: string; turnId?: string; state?: string }>("chat-completing", (payload) => {
       const chatId = chatOf(payload?.chatKey);
       if (!chatId || !payload.turnId) return;
       dispatch({ type: "completing", chatId, turnId: payload.turnId, state: payload.state === "queued" ? "queued" : "started" });
     });
-    const offEnd = bridge.on<{ chatKey?: string; ok?: boolean; doneAt?: number; reason?: string }>("chat-completed", (payload) => {
+    const offEnd = bridge.on<{ chatKey?: string; turnId?: string; ok?: boolean; doneAt?: number; reason?: string }>("chat-completed", (payload) => {
       const chatId = chatOf(payload?.chatKey);
       if (!chatId) return;
-      const ok = payload.ok === true;
-      dispatch({ type: "completed", chatId, ok, reason: payload.reason, doneAt: payload.doneAt });
-      if (ok) void findOffers(chatId);
-      else delete missions.current[chatId];
-      ended.current?.(chatId, ok);
+      settle(chatId, {
+        type: "completed", chatId, turnId: payload.turnId || undefined,
+        ok: payload.ok === true, reason: payload.reason, doneAt: payload.doneAt,
+      });
     });
     return () => {
       offStart();
       offEnd();
     };
-  }, [dispatch, findOffers]);
+  }, [dispatch, settle]);
 
   // Every connect, not once: a backend restart forgets every completion, and
   // a page that went on showing one would be showing something nobody holds.
@@ -124,12 +138,14 @@ export function useChatCompletions(
 
   /** Ask the host to complete a chat. `start` is what the page would start
    *  the chat with; the host uses it only when the chat has no process.
-   *  `preview` is what the confirm showed. Answers whether the host took it. */
+   *  `preview` is what the confirm showed. Answers what became of it by the
+   *  time the host's answer was in: `refused`, still `completing`, or already
+   *  `ended` (the events for a quick one arrive before the answer does). */
   const complete = useCallback(async (
     chatId: string,
     start: Record<string, unknown>,
     preview?: CompletePreview,
-  ): Promise<boolean> => {
+  ): Promise<CompleteOutcome> => {
     dispatch({ type: "asked", chatId });
     setOffers((before) => {
       if (!before[chatId]) return before;
@@ -149,18 +165,17 @@ export function useChatCompletions(
         if (!said(error).includes("already running")) throw error;
         answer = await ask();
       }
-      // The host's own event usually gets here first, and may already have
-      // been followed by the end of a completion that was taken straight back.
-      if (held.current.completing[chatId]?.state === "asked") {
-        dispatch({ type: "completing", chatId, turnId: answer.turnId, state: answer.state === "queued" ? "queued" : "started" });
-      }
-      return true;
+      // The host's own events usually get here first, and the completion this
+      // answer is about may already be over. The answer names its turn, and
+      // only that turn's state is read.
+      settle(chatId, { type: "receipt", chatId, turnId: answer.turnId, state: answer.state === "queued" ? "queued" : "started" });
+      return receiptOutcome(held.current, chatId, answer.turnId);
     } catch (error) {
       delete missions.current[chatId];
       dispatch({ type: "refused", chatId, error: said(error) });
-      return false;
+      return "refused";
     }
-  }, [dispatch]);
+  }, [dispatch, settle]);
 
   const dismiss = useCallback((chatId: string) => {
     dispatch({ type: "dismiss", chatId });

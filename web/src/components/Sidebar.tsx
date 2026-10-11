@@ -27,6 +27,8 @@ import type { ProjectAppearance } from "./ProjectAvatar";
 import { SidebarMenu } from "./SidebarMenu";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import { pendingLabel } from "../lib/pendingActions";
+import { entryClass, useEntry } from "../lib/useArrival";
+import { Arrive } from "./Arrive";
 import "./MobileSidebar.css";
 import "./SidebarArchive.css";
 
@@ -72,7 +74,15 @@ export function Sidebar({
   loadPreview, onNewChat, newLabel = "New task", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
   onSearch, onSettings, onAgents, onProjects, onPullRequests, activeView = null,
+  projectsReady = true, chatsReady = true,
 }: {
+  /** Whether the project list has been answered. Until it has, a row's
+   *  project is not unknown, only not known yet: its name and logo hold their
+   *  place and come in together once (`lib/arrival`). */
+  projectsReady?: boolean;
+  /** Whether the chat list has been answered. A browser with nothing cached
+   *  has no rows until then, which is not the same as having no chats. */
+  chatsReady?: boolean;
   orchestration?: OrchestrationSnapshot;
   /** Null while the first authoritative ledger read is pending. Undefined
    *  keeps the supplied orchestration snapshot for static callers/tests. */
@@ -148,6 +158,11 @@ export function Sidebar({
   const held = useRef(false);
   const badgeTap = useRef<{ chatId: string; at: number } | null>(null);
   const seenChatIds = useRef<ReadonlySet<string>>(new Set(conversations.map((chat) => chat.id)));
+  const identity = useEntry(projectsReady);
+  // The list as a whole arrives once, as one thing. Only after that is a row
+  // that turns up a new row, with an entry of its own: forty rows each opening
+  // their own height at the same moment is a stampede, not an arrival.
+  const listed = useEntry(chatsReady || everyChat.length > 0);
   const knownProjects = [...projects, ...shelved];
   const projectLedger = ledgerSnapshot === undefined ? orchestration : ledgerSnapshot;
   const projectById = new Map(knownProjects.map((project) => [project.id, project]));
@@ -294,7 +309,7 @@ export function Sidebar({
       : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
 
     return (
-      <AnimatedChatRow entering={!seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
+      <AnimatedChatRow entering={listed === "settled" && !seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
         <div className={[
           "chat", chat.id === currentConversation ? "is-on" : "",
           running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
@@ -356,7 +371,11 @@ export function Sidebar({
                   <time className="chat-time" dateTime={new Date(chat.updatedAt).toISOString()} title={new Date(chat.updatedAt).toLocaleString()}>{chatTime(chat.updatedAt)}</time>
                 </span>
                 <span className="chat-snippet">{plainSnippet(snippet)}</span>
-                {workflowLabel && <span className="chat-workflow-status" title={workflowLabel}>{workflowLabel}</span>}
+                {/* The ledger answers after the list does, so this line turns
+                    up under a row already drawn: it opens its own height. */}
+                <Arrive inline when={!!workflowLabel}>
+                  <span className="chat-workflow-status" title={workflowLabel ?? undefined}>{workflowLabel}</span>
+                </Arrive>
                 <span className="chat-meta">
                   {projectInfo.status === "home" ? <span className="chat-project">
                     <span className="chat-project-name" title={projectContext}>{projectContext}</span>
@@ -376,9 +395,9 @@ export function Sidebar({
               </span>
             </ChatPreviewButton>
           )}
-          {renaming !== chat.id && pending.length > 0 && (
+          <Arrive when={renaming !== chat.id && pending.length > 0} className="chat-pending-slot">
             <PendingActionBadge className="chat-pending" actions={pending} subject={chat.title} />
-          )}
+          </Arrive>
 
           {/* One slot on the left, answering three questions at once: whose
               project this is, whether it is running, and whether you are
@@ -488,7 +507,7 @@ export function Sidebar({
   const recentLabel = showArchived ? "Archived" : CHAT_FILTER_LABELS[filter];
 
   return (
-    <nav className="sidebar task-sidebar" aria-label="Chats">
+    <nav className={`sidebar task-sidebar${identity === "settled" ? "" : ` ${entryClass(identity)}`}`} aria-label="Chats">
       <div className="task-chat-scroll" onScroll={(event) => {
         const scroller = event.currentTarget;
         const preserve = !!toolbar.current?.contains(document.activeElement);
@@ -545,8 +564,8 @@ export function Sidebar({
         </div>
 
         {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
-        {conversations.length > 0 || showArchived ? (
-          <div className="task-chat-content">
+        {listed === "held" ? null : conversations.length > 0 || showArchived ? (
+          <div className={`task-chat-content${listed === "entering" ? " enter-fade" : ""}`}>
             {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
               <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
               <ul className="chat-list task-chat-list">{pinnedNodes.map(renderChat)}</ul>

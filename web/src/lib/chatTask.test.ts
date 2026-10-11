@@ -8,10 +8,13 @@ import {
   mergeLine,
   phaseOf,
   prCompletionLine,
+  recallTaskStatus,
+  rememberTaskStatus,
   releaseLine,
   removedFolderNote,
   stepProgress,
   type TaskDelivery,
+  type TaskStatus,
   type TaskWorkspace,
 } from "./chatTask";
 
@@ -205,5 +208,40 @@ describe("pull request completion", () => {
     const base = { root: "/repo", number: 42, url: "https://github.test/pr/42", headSha: "abc", completedAt: 1 };
     expect(prCompletionLine({ ...base, trigger: "approved" })).toBe("PR #42 completed on current-head approval");
     expect(prCompletionLine({ ...base, trigger: "merged" })).toBe("PR #42 completed on merge");
+  });
+});
+
+describe("the last status a chat was seen with", () => {
+  it("stands in for a chat that is opened again", () => {
+    const seen = new Map<string, TaskStatus>();
+    expect(recallTaskStatus("c1", seen)).toBeUndefined();
+    rememberTaskStatus({ chatId: "c1", projectId: "p" }, seen);
+    expect(recallTaskStatus("c1", seen)).toEqual({ chatId: "c1", projectId: "p" });
+    expect(recallTaskStatus("c2", seen)).toBeUndefined();
+  });
+
+  it("is replaced by the newer answer", () => {
+    const seen = new Map<string, TaskStatus>();
+    rememberTaskStatus({ chatId: "c1", projectId: "old" }, seen);
+    rememberTaskStatus({ chatId: "c1", projectId: "new" }, seen);
+    expect(recallTaskStatus("c1", seen)?.projectId).toBe("new");
+    expect(seen.size).toBe(1);
+  });
+
+  it("lets go of the chat not looked at for longest", () => {
+    const seen = new Map<string, TaskStatus>();
+    for (let index = 0; index < 64; index += 1) rememberTaskStatus({ chatId: `c${index}` }, seen);
+    // Looked at again, so no longer the oldest.
+    rememberTaskStatus({ chatId: "c0" }, seen);
+    rememberTaskStatus({ chatId: "one-more" }, seen);
+    expect(seen.size).toBe(64);
+    expect(recallTaskStatus("c0", seen)).toBeDefined();
+    expect(recallTaskStatus("c1", seen)).toBeUndefined();
+  });
+
+  it("keeps nothing for an answer that names no chat", () => {
+    const seen = new Map<string, TaskStatus>();
+    rememberTaskStatus({ chatId: "" }, seen);
+    expect(seen.size).toBe(0);
   });
 });

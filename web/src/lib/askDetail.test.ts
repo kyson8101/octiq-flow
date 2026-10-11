@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { askDetail, changeFacts } from "./askDetail";
+import { askDetail, changeFacts, isCommand, MAX_ROWS, rowSummary, SUMMARY_MAX } from "./askDetail";
 
 describe("askDetail", () => {
   it("shows a command in full, because what it runs is the whole question", () => {
     const d = askDetail({ command: "rm -rf build" });
-    expect(d).toEqual({ label: "command", body: "rm -rf build", limit: 1200 });
+    expect(d).toEqual({ label: "command", body: "rm -rf build" });
   });
 
   it("shows what a write is about to put in the file", () => {
@@ -18,14 +18,14 @@ describe("askDetail", () => {
     // card that cannot read `plan` shows three buttons and no plan — approval
     // for something you were never shown.
     const plan = "## Step 1\nAdd the flag.\n\n## Step 2\nPrint and exit.";
-    expect(askDetail({ plan })).toEqual({ label: "plan", body: plan, limit: 8000 });
+    expect(askDetail({ plan })).toEqual({ label: "plan", body: plan });
   });
 
   it("shows a change to the registered agents whole", () => {
     // The host words it (team_tools); a role can run to 2000 characters, and
     // the person is approving every line of it.
     const change = `Register a new agent, Nova.\n\nRole: ${"r".repeat(2000)}\nModel: gpt-5.5`;
-    expect(askDetail({ change })).toEqual({ label: "change", body: change, limit: 16000 });
+    expect(askDetail({ change })).toEqual({ label: "change", body: change });
   });
 
   it("never cuts the longest change the host can word", () => {
@@ -36,17 +36,20 @@ describe("askDetail", () => {
       `Role: ${"a".repeat(2000)} → ${"b".repeat(2000)}`,
       `Persistent prompt (8000 characters, replaces the current one):\n${"p".repeat(8000)}`,
     ].join("\n");
-    const d = askDetail({ change });
-    expect(d && d.body.slice(0, d.limit)).toBe(change);
+    expect(askDetail({ change })?.body).toBe(change);
   });
 
-  it("does not trim a plan to the length of a file preview", () => {
-    // A preview is a sample and may stop early. A plan is the thing being
-    // decided, and one cut off part-way cannot be judged at all.
-    const long = "x".repeat(5000);
-    const d = askDetail({ plan: long });
-    expect(d!.limit).toBeGreaterThan(long.length);
-    expect(askDetail({ content: long })!.limit).toBeLessThan(long.length);
+  it("hands every body over whole, with no limit to cut it by", () => {
+    // A body used to carry a limit (1,200 characters for a command or a
+    // write, 8,000 for a plan, 16,000 for a change) and the card cut at it
+    // with no sign that it had. Folding is the card's now (`lib/cardFold`),
+    // and what it opens is all of this.
+    const long = "x".repeat(50_000);
+    for (const key of ["command", "change", "plan", "content", "new_string"]) {
+      const d = askDetail({ [key]: long });
+      expect(d?.body, key).toBe(long);
+      expect(Object.keys(d!), key).toEqual(["label", "body"]);
+    }
   });
 
   it("says nothing rather than dumping arguments it does not understand", () => {
@@ -66,11 +69,7 @@ describe("askDetail", () => {
   it("still says 'replacing with' when the replacement is nothing", () => {
     // An edit whose new_string is empty is a DELETION, and that is worth
     // showing. Only the key being absent means there is nothing to say.
-    expect(askDetail({ new_string: "" })).toEqual({
-      label: "replacing with",
-      body: "",
-      limit: 1200,
-    });
+    expect(askDetail({ new_string: "" })).toEqual({ label: "replacing with", body: "" });
   });
 });
 
@@ -162,6 +161,16 @@ describe("changeFacts", () => {
     expect(changeFacts({ lead, rows: [good, good] })?.rows).toHaveLength(2);
   });
 
+  it("is nothing past fifty rows, however well formed each is", () => {
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ label: `Field ${i}`, value: `v${i}` }));
+    expect(changeFacts({ lead, rows: rows(MAX_ROWS) })?.rows).toHaveLength(50);
+    expect(changeFacts({ lead, rows: rows(MAX_ROWS + 1) })).toBeNull();
+    // What held the page for four seconds: refused before a row is read.
+    const started = performance.now();
+    expect(changeFacts({ lead, rows: rows(10_000) })).toBeNull();
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+
   it("is nothing when there is a key the card would not draw", () => {
     // The rows are drawn INSTEAD of the text. A key this page does not know
     // would be approved unseen, so the text is shown.
@@ -176,5 +185,87 @@ describe("changeFacts", () => {
     expect(changeFacts(Object.create({ lead, rows }))).toBeNull();
     expect(changeFacts({ lead, rows: [Object.create({ label: "Access", value: "auto" })] })).toBeNull();
     expect(changeFacts(JSON.parse(`{"lead":"x","rows":[{"label":"a","value":"b"}],"__proto__":{"x":1}}`))).toBeNull();
+    // A summary a prototype lent the row is not the host's either.
+    const lent = Object.assign(Object.create({ summary: "Nothing changes" }), { label: "Access", value: "auto" });
+    expect(changeFacts({ lead, rows: [lent] })?.rows).toEqual([{ label: "Access", value: "auto" }]);
+  });
+});
+
+describe("a row's summary", () => {
+  const lead = "Remove the agent HEAD.";
+  const value = `${Array.from({ length: 300 }, (_, i) => `Report ${i + 1}`).join(", ")} will report to Potato Juice.`;
+  const summary = "300 direct reports will report to Potato Juice";
+  const row = (extra: Record<string, unknown>) => changeFacts({ lead, rows: [{ label: "Direct reports", value, ...extra }] })?.rows;
+
+  it("is kept when it is one line of at most 160 characters", () => {
+    // The host's own example (`team_tools`, task K).
+    expect(row({ summary })).toEqual([{ label: "Direct reports", value, summary }]);
+    expect(rowSummary("s".repeat(SUMMARY_MAX))).toBe("s".repeat(SUMMARY_MAX));
+    // Characters, as the host counts them: 160 emoji are 320 units and fit.
+    expect(rowSummary("😀".repeat(SUMMARY_MAX))).toBe("😀".repeat(SUMMARY_MAX));
+    // Whichever order the keys arrive in.
+    expect(changeFacts(JSON.parse(JSON.stringify({ lead, rows: [{ summary, value, label: "Direct reports" }] })))?.rows)
+      .toEqual([{ label: "Direct reports", value, summary }]);
+  });
+
+  it("is dropped when it is not, and the row is still a row", () => {
+    const bad: unknown[] = [
+      "s".repeat(SUMMARY_MAX + 1), "😀".repeat(SUMMARY_MAX + 1), "two\nlines", "two\r\nlines", "a\rb", "a b",
+      "", "   ", 300, null, true, ["300 reports"], { text: "300 reports" },
+    ];
+    for (const item of bad) {
+      // No summary, never no rows: the value it stood for is still there to open.
+      expect(row({ summary: item }), JSON.stringify(item)).toEqual([{ label: "Direct reports", value }]);
+      expect(rowSummary(item), JSON.stringify(item)).toBeUndefined();
+    }
+  });
+
+  it("is absent on a host that sends none", () => {
+    expect(row({})).toEqual([{ label: "Direct reports", value }]);
+    expect(Object.keys(row({})![0])).toEqual(["label", "value"]);
+  });
+
+  it("is the only key a stated value may have besides its own", () => {
+    expect(row({ summary, note: "also grants push" })).toBeUndefined();
+    expect(changeFacts({ lead, rows: [{ label: "Role", summary }] })).toBeNull();
+    expect(changeFacts({ lead, rows: [{ summary }] })).toBeNull();
+  });
+
+  it("is an unknown key on a move, which the host never puts one on", () => {
+    // Unknown keys cost the rows: the card would draw the move and not the
+    // line beside it, so it shows the text instead.
+    expect(changeFacts({ lead, rows: [{ label: "Role", before: "a\nb", after: "c", summary: "Role shortened" }] })).toBeNull();
+    expect(changeFacts({ lead, rows: [{ label: "Role", before: "a", after: "", summary: 3 }] })).toBeNull();
+  });
+
+  it("reads the rows the host really sends", () => {
+    // `team_tools::delete_facts`, as its own tests print it (task K).
+    const sent = JSON.parse('{"lead":"Remove the agent Lead.","rows":[{"label":"Role","value":"Writes code."},'
+      + '{"label":"Reports to","value":"Manager"},'
+      + '{"label":"Direct reports","value":"Report 000, Report 001 will report to Manager.","summary":"2 direct reports will report to Manager"},'
+      + '{"label":"Memory note","value":"Kept in the vault."}]}');
+    const facts = changeFacts(sent);
+    expect(facts?.rows).toHaveLength(4);
+    expect(facts?.rows[2]).toEqual({
+      label: "Direct reports", value: "Report 000, Report 001 will report to Manager.", summary: "2 direct reports will report to Manager",
+    });
+  });
+});
+
+describe("what runs", () => {
+  it("is a command under any of the names tools give it", () => {
+    expect(askDetail({ command: "ls" })).toEqual({ label: "command", body: "ls" });
+    expect(askDetail({ script: "make\nmake install" })).toEqual({ label: "script", body: "make\nmake install" });
+    expect(askDetail({ code: "await page.goto(url)" })).toEqual({ label: "code", body: "await page.goto(url)" });
+    for (const key of ["command", "script", "code"]) expect(isCommand(askDetail({ [key]: "x" })), key).toBe(true);
+    // The command comes first when a call names more than one.
+    expect(askDetail({ code: "x", command: "y" })?.label).toBe("command");
+  });
+
+  it("is not a plan, a change or what a write puts in a file", () => {
+    for (const key of ["plan", "change", "content", "new_string"]) {
+      expect(isCommand(askDetail({ [key]: "one\ntwo" })), key).toBe(false);
+    }
+    expect(isCommand(null)).toBe(false);
   });
 });

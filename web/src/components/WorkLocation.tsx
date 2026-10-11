@@ -58,7 +58,7 @@ export function WorkLocation({
         : branch || branches.current || "No branch";
 
   return (
-    <div className="work-location" aria-label="Work location">
+    <div className="work-location enter-gated" aria-label="Work location">
       <label className="work-location-field" title="Project">
         <FolderIcon />
         <span className="sr-only">Project</span>

@@ -2,36 +2,46 @@
 //
 // The same PlanReview the run panel draws, over the same ledger snapshot, so
 // the two cannot disagree and an approval from either shows in both. A plan
-// waiting for the person is open, with Approve and a line on how to answer in
-// chat. Once the host records the decision the card leaves the chat: a
+// waiting for the person arrives folded like every card that asks: its
+// counts, each stage on one line, and Approve. The tasks and the line on how
+// to answer in chat open from the card's one control. Once the host records the decision the card leaves the chat: a
 // settled plan above the message box is a row of nothing to do. The record of
 // how it was decided stays folded in the run panel (`ApprovedPlan` or
 // `RejectedPlan`). A plan the lead changes after approval is a new revision,
 // waiting again, and comes back.
 import { approvalLabel, chatApprovalHint, type ChatPlan } from "../lib/chatPlans";
 import { PlanReview } from "./PlanReview";
+import { Arrive } from "./Arrive";
 import "./ChatPlanCards.css";
 
 /** Changes are asked for in the message box under the card, so the card's
  *  own change box is not drawn and never called. */
 const inChat = () => {};
 
-export function ChatPlanCards({ plans, drafting, projectName }: {
+export function ChatPlanCards({ plans, drafting, projectName, late, startOpen }: {
   plans: ChatPlan[];
   /** The lead is mid-turn. */
   drafting: boolean;
   projectName?: (id: string) => string | undefined;
+  /** The `plan:<run>` keys that turned up after the chat was drawn; those
+   *  cards come in (`components/Arrive`), the rest are drawn in place. */
+  late?: ReadonlySet<string>;
+  /** Draw the cards opened: for the tests, which cannot press the control. */
+  startOpen?: boolean;
 }) {
   const pending = plans.filter((plan) => plan.pending);
   if (!pending.length) return null;
   return (
     <div className="chat-plans">
       {pending.map((plan) => (
-        <div className="chat-plan" key={plan.run.id} data-pending="" tabIndex={-1}
-          data-pending-keys={`plan:${plan.run.id}:${plan.revision}`}>
-          <PlanReview run={plan.run} tasks={plan.tasks} drafting={drafting} projectName={projectName}
-            chatHint={chatApprovalHint(plan, pending.length)} onRequestChanges={inChat} surface="chat" />
-        </div>
+        <Arrive key={plan.run.id} late={!!late?.has(`plan:${plan.run.id}`)}>
+          <div className="chat-plan" data-pending="" tabIndex={-1}
+            data-pending-keys={`plan:${plan.run.id}:${plan.revision}`}>
+            <PlanReview run={plan.run} tasks={plan.tasks} drafting={drafting} projectName={projectName}
+              chatHint={chatApprovalHint(plan, pending.length)} onRequestChanges={inChat} surface="chat"
+              folds startOpen={startOpen} />
+          </div>
+        </Arrive>
       ))}
     </div>
   );

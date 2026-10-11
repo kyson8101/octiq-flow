@@ -34,6 +34,7 @@ import { Drafts, type Draft } from "../lib/drafts";
 import type { BackgroundTask } from "../lib/background";
 import { BackgroundNote } from "./Background";
 import { RollingText } from "./RollingNumber";
+import { useLate } from "../lib/useArrival";
 import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/commandMenu";
 import {
   AGENT_NAME,
@@ -972,6 +973,10 @@ export function Composer({
     setAttachError(null);
   }
 
+  // The last turn's receipt is read off the transcript, so on a chat that has
+  // just been opened it turns up a moment after the box does.
+  const receiptLate = useLate(!!model || lastDurationMs !== undefined || lastCostUsd !== undefined, session ?? "");
+
   return (
     <div className={`composer ${focusMode ? "composer-focus" : ""} ${focusMode && focusOptions ? "focus-options-open" : ""}`} data-composer-style={choice.composerStyle} data-model-id={choice.id}>
       {focusMode && <div className="focus-activity" role="status">{activity || (busy ? "Working…" : "\u00a0")}</div>}
@@ -1033,7 +1038,7 @@ export function Composer({
             tooltip spells all of it out. */}
         {(model || lastDurationMs !== undefined || lastCostUsd !== undefined) && (
           <span
-            className="composer-last"
+            className={`composer-last${receiptLate ? " enter-fade" : ""}`}
             title={[
               model && `Model · ${model}`,
               lastDurationMs !== undefined &&
@@ -1548,7 +1553,7 @@ export function Composer({
             </button>
           )}
 
-          <ContextMeter tokens={contextTokens} window={contextWindow} />
+          <ContextMeter tokens={contextTokens} window={contextWindow} scope={session ?? ""} />
 
           {focusMode && (
             <button
@@ -2524,7 +2529,10 @@ function EffortSlider({
   );
 }
 
-function ContextMeter({ tokens, window }: { tokens?: number; window?: number }) {
+function ContextMeter({ tokens, window, scope }: { tokens?: number; window?: number; scope: string }) {
+  // Known only once the transcript has been read back: it comes in beside
+  // Send, in room that was already there, rather than appearing.
+  const late = useLate(!!tokens && !!window, scope);
   if (!tokens || !window) return null;
   const percent = Math.min(100, Math.round((tokens / window) * 100));
   const level = percent >= 90 ? "is-danger" : percent >= 70 ? "is-warn" : "";
@@ -2534,7 +2542,7 @@ function ContextMeter({ tokens, window }: { tokens?: number; window?: number }) 
 
   return (
     <span
-      className={`ctx ${level}`}
+      className={`ctx ${level}${late ? " enter-fade" : ""}`}
       title={`Context: ${short(tokens)} of ${short(window)} used (${percent}%)`}
     >
       <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">

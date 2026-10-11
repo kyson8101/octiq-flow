@@ -20,6 +20,38 @@
 .plan-review[data-drafting] .plan-review-dot { background: var(--decide); animation: plan-review-pulse 1.4s ease-in-out infinite; }
 @keyframes plan-review-pulse { 50% { opacity: 0.25; } }
 .plan-review-meta { margin: 0; color: var(--fg-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* The counts and, on a folded card, the control that opens what they count. */
+.plan-review-more { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.plan-review-more > .card-fold-toggle::after { content: ""; position: absolute; inset: -4px 0; }
+
+/* Folded (`folds`): a stage is one line, and its tasks open under it. */
+.plan-review[data-folds] { gap: 12px; }
+.plan-review[data-folds] .plan-review-body-in { gap: 12px; }
+.plan-review[data-folds] .plan-stage { padding-bottom: 6px; }
+.plan-review[data-folds] .plan-stage:last-child { padding-bottom: 0; }
+.plan-review[data-folds] .plan-stage-head { flex-wrap: wrap; gap: 2px 10px; margin-bottom: 0; }
+.plan-review[data-folds] .plan-stage-tasks { margin: 8px 0 6px; }
+.plan-stage-sum { min-width: 0; color: var(--fg-2); overflow-wrap: anywhere; }
+/* Opened, it is the whole plan, and the one scroll for it is here, inside
+   the card: the answers stay in sight under it. */
+.plan-review[data-folds][data-open] .plan-stages {
+  max-height: min(60vh, 560px);
+  overflow-y: auto; overscroll-behavior: contain;
+}
+/* A task drawn out (`whole`): nothing of it is cut to a line or kept behind
+   a disclosure of its own. */
+.plan-task[data-whole] > .plan-task-row { align-items: flex-start; flex-wrap: wrap; padding-bottom: 6px; }
+.plan-task[data-whole] .plan-task-title,
+.plan-task[data-whole] .plan-task-where > span { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.plan-task[data-whole] .plan-task-where { align-items: flex-start; }
+.plan-task[data-whole] .plan-task-where svg { margin-top: 2px; }
+.plan-task[data-whole] > .plan-card { padding: 2px 12px 10px 40px; }
+.plan-task-brief-label { padding: 4px 12px 4px 40px; color: var(--fg-2); font-size: 12px; }
+@media (max-width: 520px) {
+  .plan-task[data-whole] > .plan-card,
+  .plan-task-brief-label { padding-left: 12px; }
+}
+.plan-review[data-folds] .card-fold-in > .plan-review-chat-hint { margin: 0; }
 
 /* Nothing written yet: the state line and one line under it, nothing else.
    The line sits under the heading's words, clear of the dot. */

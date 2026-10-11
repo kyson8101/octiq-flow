@@ -55,8 +55,19 @@ export function accessRequestTitle(request: AccessRequest): string {
   return `Raise this chat's access to ${accessLabel(request.agent, request.requested)}?`;
 }
 
-/** The line under the buttons: when a raise takes hold, and what holds the
- *  agent meanwhile. */
+/** The line beside the buttons: the one thing a raise does that the person
+ *  has to know before pressing it, which is when it takes hold, or that it
+ *  ends the turn. `accessRequestNote` says the rest, in the card's detail. */
+export function accessRequestShort(request: AccessRequest): string {
+  if (raiseRestarts(request)) return "Raising ends the turn now";
+  return request.takes === "now"
+    ? "Applies at once"
+    : request.takes === "next-turn"
+      ? "Applies from the agent's next turn"
+      : "Applies from your next message";
+}
+
+/** All of it: when a raise takes hold, and what holds the agent meanwhile. */
 export function accessRequestNote(request: AccessRequest): string {
   if (raiseRestarts(request)) {
     return "This level needs a fresh agent: raising it ends the turn now, and your next message continues at it. Not now leaves the level as it is.";

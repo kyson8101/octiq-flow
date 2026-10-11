@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { chatIdOf, earlierState, memoryHeadline, type MemoryActivity } from "../lib/memoryActivity";
 import { chatRouteHash } from "../lib/chatRoute";
+import { useLiveEntry } from "./Arrive";
 import "./MemoryNote.css";
 
 /** The host's line for an agent's memory write, drawn where it happened.
@@ -21,9 +22,10 @@ export function MemoryNote({ activity }: { activity: MemoryActivity }) {
   // A refused call is two facts: this call wrote nothing, and the earlier
   // change under its requestId stands as it is. Both show without opening.
   const earlier = earlierState(activity);
+  const entry = useLiveEntry();
 
   return (
-    <div className={`memory-note is-${status} ${open ? "is-open" : ""}`} data-memory-status={status}>
+    <div className={`memory-note is-${status} ${open ? "is-open" : ""}${entry ? ` ${entry}` : ""}`} data-memory-status={status}>
       <div className="memory-note-head">
         <span className="memory-note-icon" aria-hidden="true">
           {status === "saved" ? (

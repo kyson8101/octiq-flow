@@ -77,8 +77,8 @@ describe("the Complete action", () => {
 });
 
 describe("the question before a chat is completed", () => {
-  const draw = (content = confirmContent(preview), loading = false) => renderToStaticMarkup(
-    <CompleteChatConfirm content={content} loading={loading} onCancel={nothing} onConfirm={nothing} />,
+  const draw = (content = confirmContent(preview), loading = false, startOpen = false) => renderToStaticMarkup(
+    <CompleteChatConfirm content={content} loading={loading} startOpen={startOpen} onCancel={nothing} onConfirm={nothing} />,
   );
 
   it("says what will happen and shows the host's facts as label and value", () => {
@@ -95,14 +95,29 @@ describe("the question before a chat is completed", () => {
     }
   });
 
-  it("keeps the wrap-up steps behind one disclosure that says how many there are", () => {
+  it("keeps the wrap-up steps behind the one disclosure every decision card has", () => {
     const html = draw();
-    expect(html).toContain("<summary>What the agent is asked · 5 steps</summary>");
-    // Closed until asked for.
-    expect(html).toContain('<details class="complete-ask-steps">');
-    expect(html).not.toContain("<details open");
+    // The shared control: a real button that says what it opens and names
+    // the box it opens, shut until asked for.
+    const button = /<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="Show the steps" title="Show the steps">/.exec(html);
+    expect(button, "no disclosure button").not.toBeNull();
+    expect(html).toContain(`<span class="card-fold-labels" id="${button![2]}"><span>What the agent is asked · 5 steps</span></span>`);
+    expect(html).toContain(`<div id="${button![1]}" class="card-fold" hidden=""></div>`);
+    expect(html).not.toContain("<details");
+    expect(html).not.toContain("<strong>Clean up</strong>");
+    // The line, then what it opens, then the answers.
+    expect(html.indexOf("card-fold-line")).toBeLessThan(html.indexOf('class="card-fold"'));
+    expect(html.indexOf('class="card-fold"')).toBeLessThan(html.indexOf("ask-buttons"));
+  });
+
+  it("opens to every step, above the answers", () => {
+    const html = draw(confirmContent(preview), false, true);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('aria-label="Hide the steps"');
     for (const step of ["Work", "Clean up", "Memory", "Run", "Report"]) expect(html).toContain(`<strong>${step}</strong>`);
     expect(html).toContain("A worktree and its branch go only if merged.");
+    expect(html.lastIndexOf("</ol>")).toBeLessThan(html.indexOf("ask-buttons"));
+    expect(html).toContain(">Complete</button>");
   });
 
   it("never shows the agent's instructions or an absolute path", () => {
