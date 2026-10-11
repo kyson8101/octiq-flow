@@ -2515,6 +2515,11 @@ pub(crate) fn start_session(
         }
         (prompt, _) => (prompt, visible_prompt),
     };
+    // A chat whose folder was put back or changed since its last turn: the
+    // agent is told on the prompt that follows, once (`chat_recover`). Taken
+    // only when there is a prompt to carry it, and only once nothing above
+    // can still refuse this start.
+    let (prompt, visible_prompt) = crate::chat_recover::with_note(&key, prompt, visible_prompt);
 
     manager.admit_beside_writers(
         &session_key,

@@ -361,6 +361,24 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
     write(&index)
 }
 
+/// Move a chat to another folder, and nothing else. Used when the folder it
+/// ran in was removed and the host carried it to the project's own checkout
+/// (`chat_recover`). Answers `false` for a chat the index does not list.
+pub fn set_cwd(id: &str, cwd: &str) -> Result<bool, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(mut index) = read_checked() else {
+        return Ok(false);
+    };
+    let Some(chat) = index.chats.iter_mut().find(|chat| chat.id == id) else {
+        return Ok(false);
+    };
+    if chat.cwd.as_deref() == Some(cwd) {
+        return Ok(true);
+    }
+    chat.cwd = Some(cwd.to_string());
+    write(&index).map(|()| true)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatTitleUpdate {

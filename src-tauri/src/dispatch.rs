@@ -502,12 +502,35 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         "chat_start" => {
             let key: String = arg(&args, "key")?;
+            let mut cwd: String = arg(&args, "cwd")?;
+            let resume: Option<String> = arg(&args, "resume")?;
+            // A chat outlives the worktree it ran in. Put the folder back, or
+            // move the chat to one that exists, before anything reads it: the
+            // sandbox below and the launch both need a real directory.
+            let recovery = crate::chat_recover::recover(
+                &key,
+                &cwd,
+                arg::<Option<String>>(&args, "fallbackCwd")?.as_deref(),
+            )?;
+            if let Some(recovery) = &recovery {
+                cwd = recovery.cwd.clone();
+            }
             crate::sandbox::Store::profile().select(
                 &key,
-                &arg::<String>(&args, "cwd")?,
+                &cwd,
                 arg(&args, "useSandbox")?,
-                arg::<Option<String>>(&args, "resume")?.is_some(),
+                resume.is_some(),
             )?;
+            // Said only once the start is admitted with the recovered folder.
+            if let Some(recovery) = recovery {
+                recovery.settle(
+                    &key,
+                    arg(&args, "agent")?,
+                    resume.as_deref(),
+                    arg::<Option<std::collections::BTreeMap<String, String>>>(&args, "env")?
+                        .as_ref(),
+                );
+            }
             let turn_id = crate::agent_chat::fresh_turn_id(arg(&args, "turnId")?);
             let prompt: Option<String> = arg(&args, "prompt")?;
             if let Some(words) = &prompt {
@@ -524,13 +547,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             unit(crate::agent_chat::chat_start_answering_impl(
                 svc.chats.clone(),
                 key,
-                arg(&args, "cwd")?,
+                cwd,
                 arg(&args, "agent")?,
                 arg(&args, "model")?,
                 arg(&args, "access")?,
                 prompt,
                 arg(&args, "handoff")?,
-                arg(&args, "resume")?,
+                resume,
                 arg(&args, "extraDirs")?,
                 arg(&args, "env")?,
                 arg(&args, "effort")?,
