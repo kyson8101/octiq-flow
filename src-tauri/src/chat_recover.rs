@@ -241,7 +241,7 @@ fn lost_worktree(cwd: &str, known: &Remembered) -> Option<Lost> {
                 } else {
                     known.head.clone()
                 },
-                root: entry.path,
+                root: spelled_like(cwd, &entry.path),
             });
         }
     }
@@ -298,6 +298,8 @@ fn rebuilt(cwd: &str, lost: &Lost, restored: &crate::git_ops::RestoredWorktree) 
 }
 
 fn moved(cwd: &str, target: &str, lost: Option<&Lost>, why_not: &str) -> Recovery {
+    let target = native(target);
+    let target = target.as_str();
     let branch = run_git(target, &["branch", "--show-current"])
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
@@ -529,6 +531,29 @@ pub(crate) fn carry_claude_session(
 fn resolved(path: &str) -> PathBuf {
     let path = Path::new(path.trim_end_matches(['/', '\\']));
     crate::paths::canonical_target(path).unwrap_or_else(|| path.to_path_buf())
+}
+
+/// A path in the platform's own spelling. git answers `C:/repo/wt` on Windows,
+/// and stored as a chat's folder that would sit beside `C:\repo\wt` as though
+/// it were somewhere else.
+fn native(path: &str) -> String {
+    Path::new(path)
+        .components()
+        .collect::<PathBuf>()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// git's name for a worktree, spelled the way the chat spells its own folder:
+/// the ancestor of `cwd` that is that place. The chat's spelling is the one
+/// its index entry and its sandbox were recorded under.
+fn spelled_like(cwd: &str, listed: &str) -> String {
+    let wanted = resolved(listed);
+    Path::new(cwd.trim_end_matches(['/', '\\']))
+        .ancestors()
+        .find(|ancestor| resolved(&ancestor.to_string_lossy()) == wanted)
+        .map(|ancestor| ancestor.to_string_lossy().into_owned())
+        .unwrap_or_else(|| native(listed))
 }
 
 fn same_place(a: &str, b: &str) -> bool {
@@ -827,6 +852,22 @@ mod tests {
         assert_eq!(recovery.kind, Kind::Moved);
         assert_eq!(recovery.cwd, Scene::text(&scene.worktree));
         assert_eq!(recovery.branch, "task/one");
+    }
+
+    #[test]
+    fn gits_spelling_of_a_worktree_becomes_the_chats_own() {
+        let scene = scene("spelling");
+        let root = Scene::text(&scene.worktree);
+        let inside = Scene::text(&scene.worktree.join("packages").join("app"));
+        // git lists a Windows worktree with forward slashes.
+        let listed = root.replace('\\', "/");
+        assert_eq!(spelled_like(&inside, &listed), root);
+        assert_eq!(spelled_like(&format!("{root}/"), &listed), root);
+        // Nothing of the chat's to borrow from: the platform's spelling.
+        assert_eq!(
+            native("/repos/app//wt/"),
+            ["", "repos", "app", "wt"].join(std::path::MAIN_SEPARATOR_STR)
+        );
     }
 
     #[test]
