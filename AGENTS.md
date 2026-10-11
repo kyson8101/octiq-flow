@@ -220,6 +220,9 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   the module name alone.
 - `chat_task.rs` — where a chat is and what became of its work. See **A chat's
   status is half reported, half verified** below.
+- `chat_recover.rs` — puts back, or replaces, the folder of a chat whose
+  worktree was removed, before its agent starts. See **A chat whose folder was
+  removed is recovered before it starts** below.
 - `fsbrowse.rs` — file browser listing and reads.
 - `memory.rs` — what this app holds in RAM, and which chat or terminal holds it.
   One `ps` sweep, then a walk DOWN from the server's own pid, carrying the
@@ -298,6 +301,47 @@ Three rules hold:
   on `git-status-changed`, and when the panel opens; verification is cached for
   four seconds so several open tabs cost one `git status`. The accent is for a
   turn in flight only — states the work is merely *owed* stay quiet.
+
+### A chat whose folder was removed is recovered before it starts
+
+A chat remembers the exact folder it ran in, and a task chat's is a linked
+worktree that gets removed once its work is merged. The chat outlives it, so
+`chat_start` goes through `chat_recover.rs` first, and only when the folder is
+missing. The order:
+
+1. **Rebuild the worktree at the SAME path** (`git_ops::restore_worktree`):
+   from its branch when the branch still exists, else by making the branch
+   again at the commit remembered for it (`Delivery.head`). What the worktree
+   was comes from git's own `worktree list` (a folder deleted by hand is still
+   listed until the next prune) and from the last `chat_task` verification,
+   because either can be the one that survived. The same path keeps the chat's
+   sandbox, which is bound to its folder, and the agent's own session folder.
+2. **Else move the chat to a folder that exists**: the worktree's root when
+   only a subfolder went, the repository's primary checkout, the folder the
+   chat was planned in, then the project's folder the page sends as
+   `fallbackCwd`. `chat_index::set_cwd` records it, and a Claude session is
+   hard-linked into the new folder's `~/.claude/projects/<encoded cwd>/`
+   (`carry_claude_session`). Claude Code 2.1.292 resumes by id from any
+   folder, so that link is for older CLIs; Codex resumes by id regardless.
+3. **Else say why** in words: `The chat's folder … was removed and could not
+   be restored: …`, which the page shows under the unsent message.
+
+- **Nothing is overwritten.** A path that exists is never rebuilt over, and
+  git refuses a branch another worktree holds, which falls through to step 2.
+  Uncommitted work in the removed folder is gone, and both notices say so.
+- **Sandbox ownership is unchanged.** `sandbox::Store::select` still runs,
+  after the recovery, with the recovered folder. A chat that had to move with
+  an enabled sandbox is refused as before ("belongs to a different folder").
+- **It is told twice, once each.** `Recovery::settle` runs only after the
+  start is admitted: a durable `octiq_chat_recovered` event draws a notice in
+  the chat and moves the page's `cwd`, and the agent's next prompt carries a
+  one-line note (`chat_recover::with_note`, taken in `start_session`) that
+  stays out of the person's bubble.
+- **Before any of that, the page says it is coming.** `RemovedFolderBanner`
+  reads `chat_task`'s `workspace.exists` and shows one line above the
+  composer (`removedFolderNote`). It never blocks a send.
+- Only `chat_start` recovers. Auto-resume, restart and a queued Codex turn
+  reuse the remembered start context and are not covered.
 
 ### An agent asks for more access on a card
 
