@@ -2436,6 +2436,73 @@ pub(super) mod tests {
         assert!(refused.contains("Close the mission"), "{refused}");
         assert!(Path::new(&one.cwd).exists());
     }
+
+    /// What `chat_complete_preview` reads: the runs a chat coordinates, and
+    /// whether Close would go through, without changing or fetching anything.
+    #[test]
+    fn a_coordinators_runs_say_when_their_mission_can_be_closed() {
+        let repo = Repo::new();
+        repo.remote();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+        let only = |store: &OrchestrationStore| {
+            let mut runs = store.coordinated_runs("chat:master").unwrap();
+            assert_eq!(runs.len(), 1);
+            runs.remove(0)
+        };
+        assert!(store
+            .coordinated_runs("chat:someone-else")
+            .unwrap()
+            .is_empty());
+
+        // A worker is on it: live, and Close says so in its own words.
+        let one = prepare(&store, &task, Access::Auto).unwrap();
+        let working = only(&store);
+        assert_eq!(working.run_id, run.id);
+        assert!(working.live && working.mission);
+        assert_eq!(working.workers_running, 1);
+        assert!(!working.close_eligible);
+        assert!(working
+            .close_blocker
+            .unwrap()
+            .contains("settle every worker"));
+
+        // Settled, with a file nobody committed.
+        std::fs::write(Path::new(&one.cwd).join("scratch.txt"), "left behind").unwrap();
+        report(&store, &one, WorkerOutcome::Completed);
+        let dirty = only(&store);
+        assert_eq!(dirty.workers_running, 0);
+        assert!(dirty.close_blocker.unwrap().contains("uncommitted"));
+
+        // Committed, but nothing has asked git about the merge yet.
+        repo.commit(&one.cwd, "feature.txt", "done");
+        std::fs::remove_file(Path::new(&one.cwd).join("scratch.txt")).unwrap();
+        let unasked = only(&store);
+        assert!(unasked
+            .close_blocker
+            .unwrap()
+            .contains("Refresh the mission"));
+
+        // Merged and refreshed: eligible, and nothing was removed by asking.
+        repo.git(&["merge", "--ff-only", &one.branch]);
+        repo.git(&["push", "origin", "main"]);
+        store.refresh_mission("chat:master", &run.id).unwrap();
+        let ready = only(&store);
+        assert!(ready.close_eligible, "{:?}", ready.close_blocker);
+        assert_eq!(ready.close_blocker, None);
+        assert!(Path::new(&one.cwd).exists());
+
+        // A commit made after the refresh is not covered by it.
+        repo.commit(&one.cwd, "later.txt", "more");
+        assert!(!only(&store).close_eligible);
+
+        // Stopped but not closed, a mission is still the person's to close;
+        // closed, it is no longer listed.
+        repo.git(&["merge", "--ff-only", &one.branch]);
+        repo.git(&["push", "origin", "main"]);
+        store.refresh_mission("chat:master", &run.id).unwrap();
+        close(&store, &run, false).unwrap();
+        assert!(store.coordinated_runs("chat:master").unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]
