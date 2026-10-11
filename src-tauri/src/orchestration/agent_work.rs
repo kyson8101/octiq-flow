@@ -208,8 +208,10 @@ fn in_progress(
 /// So a removal and a start of the agent's work exclude each other, and
 /// whichever takes the ledger first wins. The start first: its attempt is
 /// work in progress and the removal is refused. The removal first: the
-/// agent is written out of the roster and into `Stored::removed_agents`
-/// before the lock is let go, and the start is refused (`gone_reason`).
+/// agent is saved into `Stored::removed_agents` and then written out of the
+/// roster before the lock is let go (`OrchestrationStore::leave`, which
+/// says what each failure leaves), and the start is refused
+/// (`gone_reason`).
 pub struct Departure<'a> {
     pub store: &'a OrchestrationStore,
     pub chats: &'a ChatManager,
@@ -369,11 +371,25 @@ impl OrchestrationStore {
     /// Remove an agent from the roster, or refuse, in one hold of this
     /// ledger's lock (see [`Departure`] for the order of the locks). `write`
     /// writes the roster without the agent; it runs only when nothing of the
-    /// agent's is in progress, and only its success records the agent gone.
+    /// agent's is in progress.
     ///
-    /// The roster is written before the ledger: if the ledger's write then
-    /// fails, the agent is gone all the same and this process still refuses
-    /// starts for it, from the copy in memory, which the next write saves.
+    /// **A removal is done only when its record is** (review of 931b5f0,
+    /// H3). Two files change, and the order is the one whose every failure
+    /// leaves the agent registered and able to work:
+    ///
+    /// 1. The ledger is saved with the agent in `removed_agents`. If that
+    ///    fails the removal is refused: the roster was never touched, and
+    ///    neither the ledger on disk nor the one in memory says it is gone.
+    /// 2. The roster is written without the agent. If that fails the record
+    ///    is taken back: the ledger is saved again without it, and the
+    ///    refusal says so if even that could not be saved. This process
+    ///    never took the record up, so it keeps starting the agent's work.
+    /// 3. Only then does this process take the record up.
+    ///
+    /// A server killed between 1 and 2, or a record that could not be taken
+    /// back, leaves a ledger that calls gone an agent the roster still has.
+    /// The roster is right, and `reconcile_removed` drops the record when the
+    /// ledger is next loaded.
     pub(crate) fn leave(
         &self,
         agent: &crate::team::TeamAgent,
@@ -386,15 +402,66 @@ impl OrchestrationStore {
             return Err(error.clone());
         }
         in_progress(&inner.data, agent, chats, in_flight)?;
-        write()?;
-        inner.data.removed_agents.insert(agent.id.clone(), now_ms());
-        if let Err(error) = self.persist(&inner.data) {
-            eprintln!(
-                "orchestration: {} was removed, and the ledger could not be saved: {error}",
-                agent.name
-            );
+        let name = &agent.name;
+        let mut recorded = inner.data.clone();
+        recorded.removed_agents.insert(agent.id.clone(), now_ms());
+        self.persist(&recorded).map_err(|error| {
+            format!("{name} was not removed: the ledger could not record the removal, so nothing was changed ({error}). {name} is still registered and its work still starts. Fix what stops the ledger from being saved, then remove {name} again.")
+        })?;
+        if let Err(error) = write() {
+            return Err(match self.persist(&inner.data) {
+                Ok(()) => format!(
+                    "{name} was not removed: the roster could not be written ({error}). Nothing was changed, and {name} is still registered."
+                ),
+                Err(kept) => format!(
+                    "{name} was not removed: the roster could not be written ({error}). The ledger's record of the removal could not be taken back either ({kept}), so the ledger on disk still says {name} was removed. {name} is still registered and its work still starts; the record is dropped the next time the ledger is saved, and when the server next starts."
+                ),
+            });
         }
+        inner.data = recorded;
         Ok(())
+    }
+
+    /// Drop every record of a removal whose agent the roster still has, and
+    /// answer their ids. Run once, when the ledger is loaded
+    /// (`dispatch::Services::load`).
+    ///
+    /// It is the one inconsistent state `leave` can leave behind: the record
+    /// saved, the roster not written. The agent exists, so its work starts.
+    /// The roster is read under its own lock, which is taken before this
+    /// ledger's as everywhere. A roster that cannot be read changes nothing:
+    /// "could not be read" is never taken for "everyone is still here", and
+    /// it is never taken for "everyone is gone" either, because nothing here
+    /// adds a record.
+    pub fn reconcile_removed(&self, roster: &std::path::Path) -> Result<Vec<String>, String> {
+        crate::team::with_registered(roster, |registered| {
+            let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
+            if let Some(error) = &inner.load_error {
+                return Err(error.clone());
+            }
+            let back: Vec<String> = inner
+                .data
+                .removed_agents
+                .keys()
+                .filter(|id| registered.contains(*id))
+                .cloned()
+                .collect();
+            if back.is_empty() {
+                return Ok(back);
+            }
+            for id in &back {
+                inner.data.removed_agents.remove(id);
+                eprintln!(
+                    "orchestration: the ledger said {id} was removed, but the roster still has it: a removal was interrupted before the roster was written. The record was dropped; the agent is registered."
+                );
+            }
+            // Memory follows the roster whether or not this is saved: the
+            // next write saves it, and so does the next load.
+            if let Err(error) = self.persist(&inner.data) {
+                eprintln!("orchestration: the ledger could not be saved after that: {error}");
+            }
+            Ok(back)
+        })?
     }
 }
 
@@ -758,6 +825,294 @@ mod tests {
             .reserve_attempt("chat:master", &launch_for(&later.id))
             .unwrap();
         assert_eq!(attempt.assignee, Some(as_assignee(&ops)));
+    }
+
+    /// A ledger in a folder of its own, with one agent and two tasks of its.
+    fn ledger_of_dev() -> (
+        crate::test_dir::TestDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        crate::team::TeamAgent,
+        [Task; 2],
+    ) {
+        let (dir, path) = roster();
+        let dev = registered(&path, "Dev");
+        let ledger = dir.0.join("ledger").join("orchestrations.json");
+        let store = OrchestrationStore::load(ledger.clone());
+        let run = wide(&store, "chat:master", "Ship the feature");
+        let tasks = [
+            task_of(&store, &run, &as_assignee(&dev)),
+            task_of(&store, &run, &as_assignee(&dev)),
+        ];
+        (dir, path, ledger, dev, tasks)
+    }
+
+    /// Review of 931b5f0, H3: a removal is done only when its record is. The
+    /// ledger cannot be saved (`broken`), so the removal is refused in words
+    /// that say why, the roster still has the agent, and nothing is refused
+    /// as "gone" afterwards: not in this process and not in the next, which
+    /// reads the ledger as it was. Mended, the removal goes through and a
+    /// restart keeps it.
+    fn refused_while_the_ledger_cannot_be_saved(
+        broken: impl Fn(&std::path::Path),
+        mended: impl Fn(&std::path::Path),
+    ) {
+        let (_dir, path, ledger, dev, [first, later]) = ledger_of_dev();
+        let store = OrchestrationStore::load(ledger.clone());
+        let before = fs::read(&ledger).unwrap();
+        let chats = ChatManager::default();
+        let departure = Departure {
+            store: &store,
+            chats: &chats,
+        };
+        broken(&ledger);
+        let refused = crate::team::delete_idle(&path, &dev.id, &departure);
+        mended(&ledger);
+        let refused = refused.expect_err("a removal nothing recorded is not a removal");
+        assert!(
+            refused.starts_with(
+                "Dev was not removed: the ledger could not record the removal, so nothing was changed ("
+            ),
+            "{refused}"
+        );
+        assert_eq!(names(&path), ["Dev"], "the roster is untouched");
+        assert_eq!(fs::read(&ledger).unwrap(), before, "and so is the ledger");
+        // Still registered, so its work starts here...
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .unwrap();
+        store
+            .fail_preparation(
+                &attempt.id,
+                "no workspace".into(),
+                String::new(),
+                String::new(),
+                false,
+            )
+            .unwrap();
+        drop(store);
+        // ...and after a restart. With the fault gone the removal is made,
+        // and the restart after that still refuses the agent's work.
+        let store = OrchestrationStore::load(ledger.clone());
+        let departure = Departure {
+            store: &store,
+            chats: &chats,
+        };
+        crate::team::delete_idle(&path, &dev.id, &departure).unwrap();
+        assert!(names(&path).is_empty());
+        drop(store);
+        let store = OrchestrationStore::load(ledger);
+        let gone = store
+            .reserve_attempt("chat:master", &launch_for(&later.id))
+            .unwrap_err();
+        assert_eq!(gone, gone_reason("Dev"));
+    }
+
+    /// The fault every platform has: a folder where the ledger's file goes.
+    #[test]
+    fn a_removal_the_ledger_cannot_record_is_refused_and_removes_nobody() {
+        let aside = |ledger: &std::path::Path| ledger.with_extension("aside");
+        refused_while_the_ledger_cannot_be_saved(
+            |ledger| {
+                fs::rename(ledger, aside(ledger)).unwrap();
+                fs::create_dir(ledger).unwrap();
+                // Not empty, so no platform replaces it with a file.
+                fs::write(ledger.join("in-the-way"), b"").unwrap();
+            },
+            |ledger| {
+                fs::remove_dir_all(ledger).unwrap();
+                fs::rename(aside(ledger), ledger).unwrap();
+            },
+        );
+    }
+
+    /// The reviewer's own probe: the ledger's folder is read-only, so the
+    /// old ledger is never touched, and a plain reload reads it.
+    #[cfg(unix)]
+    #[test]
+    fn a_removal_is_refused_while_the_ledgers_folder_is_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |ledger: &std::path::Path, mode| {
+            fs::set_permissions(ledger.parent().unwrap(), fs::Permissions::from_mode(mode)).unwrap()
+        };
+        refused_while_the_ledger_cannot_be_saved(|l| mode(l, 0o555), |l| mode(l, 0o755));
+    }
+
+    /// A removal whose roster write does what the test says instead.
+    struct RosterWrite<'a, F: Fn() -> Result<(), String>> {
+        departure: &'a Departure<'a>,
+        instead: F,
+    }
+
+    impl<F: Fn() -> Result<(), String>> crate::team::Leave for RosterWrite<'_, F> {
+        fn leave(
+            &self,
+            agent: &crate::team::TeamAgent,
+            chats: &[crate::team::OwnChat],
+            _write: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<(), String> {
+            crate::team::Leave::leave(self.departure, agent, chats, &mut || (self.instead)())
+        }
+    }
+
+    fn starts(store: &OrchestrationStore, task: &Task) -> Result<(), String> {
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch_for(&task.id))?;
+        store
+            .fail_preparation(
+                &attempt.id,
+                "no workspace".into(),
+                String::new(),
+                String::new(),
+                false,
+            )
+            .map(|_| ())
+    }
+
+    /// The second write fails: the record the first one saved is taken
+    /// back, on disk as in memory, and the agent goes on working.
+    #[test]
+    fn a_roster_that_cannot_be_written_takes_the_removals_record_back() {
+        let (_dir, path, ledger, dev, [first, later]) = ledger_of_dev();
+        let store = OrchestrationStore::load(ledger.clone());
+        let chats = ChatManager::default();
+        let departure = Departure {
+            store: &store,
+            chats: &chats,
+        };
+        let recorded = std::cell::Cell::new(false);
+        let failing = RosterWrite {
+            departure: &departure,
+            instead: || {
+                // The record is on disk by the time the roster is written.
+                let saved = String::from_utf8(fs::read(&ledger).unwrap()).unwrap();
+                recorded.set(saved.contains(&dev.id) && saved.contains("removed_agents"));
+                Err("No space left on device".into())
+            },
+        };
+        let refused = crate::team::delete_idle(&path, &dev.id, &failing).unwrap_err();
+        assert_eq!(
+            refused,
+            "Dev was not removed: the roster could not be written (No space left on device). Nothing was changed, and Dev is still registered."
+        );
+        assert!(recorded.get(), "the record was saved before the roster");
+        assert_eq!(names(&path), ["Dev"]);
+        let saved = String::from_utf8(fs::read(&ledger).unwrap()).unwrap();
+        assert!(!saved.contains("removed_agents"), "taken back on disk");
+        starts(&store, &first).expect("and in memory");
+        drop(store);
+        let store = OrchestrationStore::load(ledger);
+        assert_eq!(store.reconcile_removed(&path), Ok(Vec::new()));
+        starts(&store, &later).expect("and after a restart");
+    }
+
+    /// Both fail: the roster's write, then the save that takes the record
+    /// back. The refusal says so. The agent is registered, so this process
+    /// goes on starting its work, and the next one drops the record the
+    /// disk was left with: the state a server killed between the two writes
+    /// leaves.
+    #[test]
+    fn a_record_that_could_not_be_taken_back_is_said_and_dropped_on_load() {
+        let (_dir, path, ledger, dev, [first, later]) = ledger_of_dev();
+        let store = OrchestrationStore::load(ledger.clone());
+        let chats = ChatManager::default();
+        let departure = Departure {
+            store: &store,
+            chats: &chats,
+        };
+        let aside = ledger.with_extension("aside");
+        let failing = RosterWrite {
+            departure: &departure,
+            instead: || {
+                fs::rename(&ledger, &aside).unwrap();
+                fs::create_dir(&ledger).unwrap();
+                fs::write(ledger.join("in-the-way"), b"").unwrap();
+                Err("No space left on device".into())
+            },
+        };
+        let refused = crate::team::delete_idle(&path, &dev.id, &failing).unwrap_err();
+        fs::remove_dir_all(&ledger).unwrap();
+        fs::rename(&aside, &ledger).unwrap();
+        assert!(
+            refused.starts_with(
+                "Dev was not removed: the roster could not be written (No space left on device). The ledger's record of the removal could not be taken back either ("
+            ),
+            "{refused}"
+        );
+        assert!(
+            refused.ends_with(
+                "so the ledger on disk still says Dev was removed. Dev is still registered and its work still starts; the record is dropped the next time the ledger is saved, and when the server next starts."
+            ),
+            "{refused}"
+        );
+        assert_eq!(names(&path), ["Dev"]);
+        // The server is killed here, before anything else saves the ledger:
+        // the file is the one the first write made.
+        let saved = String::from_utf8(fs::read(&ledger).unwrap()).unwrap();
+        assert!(saved.contains("removed_agents"), "{saved}");
+        let killed = OrchestrationStore::load(ledger.clone());
+        assert_eq!(
+            killed
+                .reserve_attempt("chat:master", &launch_for(&later.id))
+                .unwrap_err(),
+            gone_reason("Dev"),
+            "what the file says until it is checked against the roster"
+        );
+        assert_eq!(killed.reconcile_removed(&path), Ok(vec![dev.id.clone()]));
+        starts(&killed, &later).expect("the roster has it, so it starts");
+        assert_eq!(killed.reconcile_removed(&path), Ok(Vec::new()), "once");
+        drop(killed);
+        // The process that refused never took the record up. Its next save
+        // writes the ledger without it.
+        starts(&store, &first).expect("still registered here");
+        drop(store);
+        let saved = String::from_utf8(fs::read(&ledger).unwrap()).unwrap();
+        assert!(!saved.contains("removed_agents"), "{saved}");
+    }
+
+    /// What the check on load never does: drop the record of an agent that
+    /// is gone, or decide anything from a roster it could not read.
+    #[test]
+    fn the_check_on_load_keeps_real_removals_and_trusts_no_unread_roster() {
+        let (dir, path, ledger, dev, [task, _]) = ledger_of_dev();
+        let ops = registered(&path, "Ops");
+        let store = OrchestrationStore::load(ledger.clone());
+        let chats = ChatManager::default();
+        let departure = Departure {
+            store: &store,
+            chats: &chats,
+        };
+        crate::team::delete_idle(&path, &dev.id, &departure).unwrap();
+        // And an interrupted removal of Ops beside it.
+        store
+            .mutate(|data| {
+                data.removed_agents.insert(ops.id.clone(), now_ms());
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+        let store = OrchestrationStore::load(ledger);
+        // A roster that is not a file cannot be read: nothing changes.
+        let unreadable = dir.0.join("not-a-roster");
+        fs::create_dir(&unreadable).unwrap();
+        let error = store.reconcile_removed(&unreadable).unwrap_err();
+        assert!(
+            error.starts_with("Saved agents could not be read"),
+            "{error}"
+        );
+        // Nor does one that is not there say anyone is back.
+        assert_eq!(
+            store.reconcile_removed(&dir.0.join("missing.json")),
+            Ok(Vec::new())
+        );
+        assert_eq!(store.reconcile_removed(&path), Ok(vec![ops.id.clone()]));
+        assert_eq!(names(&path), ["Ops"]);
+        assert_eq!(
+            store
+                .reserve_attempt("chat:master", &launch_for(&task.id))
+                .unwrap_err(),
+            gone_reason("Dev"),
+            "Dev was removed, and stays removed"
+        );
     }
 
     /// Review H4: coordinating a run that has not finished, and a turn in

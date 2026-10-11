@@ -679,6 +679,18 @@ pub fn own_chats(path: &Path, id: &str) -> Result<Vec<OwnChat>, String> {
     Ok(own_chats_of(&read(path)?, id))
 }
 
+/// Run `then` with the id of every registered agent, under the roster's
+/// lock, so that what `then` decides from them is still true when it is
+/// done. A roster that cannot be read is an error, and `then` is not run.
+pub fn with_registered<T>(
+    path: &Path,
+    then: impl FnOnce(&std::collections::BTreeSet<String>) -> T,
+) -> Result<T, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let registered = read(path)?.agents.into_iter().map(|a| a.id).collect();
+    Ok(then(&registered))
+}
+
 /// What a removal is made under. `leave` is called with the roster's lock
 /// held, for the agent as stored and the conversations it speaks in, and is
 /// handed the write itself: it refuses with an error, in words for whoever

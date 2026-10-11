@@ -969,11 +969,13 @@ struct Stored {
     /// Every peer ask, by id (`peer.rs`).
     #[serde(default)]
     peer_asks: BTreeMap<String, peer::PeerAsk>,
-    /// The registered agents that were removed, by id, and when. Written
-    /// under this ledger's lock in the step that removes the agent from the
-    /// roster (`agent_work::Departure`), and read under it by every start:
-    /// no attempt is reserved for an agent that is gone. An id is never
-    /// given out twice, so an entry is never taken back.
+    /// The registered agents that were removed, by id, and when. Saved
+    /// under this ledger's lock BEFORE the roster is written without the
+    /// agent (`OrchestrationStore::leave`), and read under it by every
+    /// start: no attempt is reserved for an agent that is gone. An id is
+    /// never given out twice, so an entry is taken back only when the
+    /// removal it records was not made: by `leave` when the roster's write
+    /// failed, and by `reconcile_removed` when the ledger is loaded.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     removed_agents: BTreeMap<String, i64>,
 }

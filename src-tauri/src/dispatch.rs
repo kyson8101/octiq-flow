@@ -57,6 +57,11 @@ impl Services {
             .unwrap_or_else(|| crate::profile::profile_dir().join("chats"))
             .join("questions.json");
         let orchestrations = Arc::new(OrchestrationStore::load_profile());
+        // A removal that was interrupted between its two writes: the roster
+        // still has the agent, so the ledger stops calling it gone.
+        if let Err(error) = orchestrations.reconcile_removed(&crate::team::default_path()) {
+            eprintln!("orchestration: removed agents were not checked against the roster: {error}");
+        }
         // Banners come from main agents only; the ledger says which chats are
         // a run's workers and whose.
         crate::push::route_workers_through(orchestrations.clone());
