@@ -101,6 +101,19 @@ pub struct ChatMeta {
     /// on another device a moment ago. Only `set_done` moves it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_at: Option<i64>,
+    /// The tick was made by the host when a completion ended
+    /// (`agent_chat::chat_complete_impl`), and holds until the chat is
+    /// started again.
+    ///
+    /// `updated_at` is the PAGE's clock: every open tab stamps it when it
+    /// sees a turn end and saves the row, a moment after the host ticked the
+    /// chat for that same turn. Left to `is_done` alone, the turn that earned
+    /// the tick would retire it. While this is set a save moves `done_at` up
+    /// with the activity it carries instead (`upsert`), and the next start of
+    /// the chat takes tick and hold away together (`reopen`). A tick made by
+    /// hand is never held.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub done_held: bool,
     /// Soft-deleted chats stay in the index, but not in the active list. The
     /// reaper removes this row and its transcript after `DELETED_CHAT_TTL_MS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -325,7 +338,13 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             // back after the person cleared it. `set_done` is the only writer;
             // the activity this save carries retires the tick by itself,
             // through `is_done`.
-            let done_at = existing.done_at;
+            let done_held = existing.done_held;
+            // A completion's tick outlasts the page's own record of the turn
+            // that earned it (see `done_held`).
+            let done_at = match existing.done_at {
+                Some(at) if done_held => Some(at.max(meta.updated_at)),
+                at => at,
+            };
             // A page from before this field, or one that never learned it,
             // saves without it; that must not wipe the level the chat runs at.
             if meta.effort.is_none() {
@@ -340,6 +359,7 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             existing.launch = launch;
             existing.created_at = created;
             existing.done_at = done_at;
+            existing.done_held = done_held;
             // Only the lifecycle commands below may change these. In
             // particular, a save already in flight when Delete was pressed
             // must not resurrect the chat.
@@ -354,6 +374,7 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             meta.generation = 0;
             meta.agent_title = false;
             meta.done_at = None;
+            meta.done_held = false;
             meta.launch = meta.launch.take().and_then(LaunchPlan::checked);
             index.chats.push(meta);
         }
@@ -474,11 +495,51 @@ pub fn set_done(id: &str, at: Option<i64>) -> Result<(), String> {
     let Some(existing) = index.chats.iter_mut().find(|c| c.id == id) else {
         return Ok(());
     };
-    if existing.done_at == at {
+    if existing.done_at == at && !existing.done_held {
         return Ok(());
     }
     existing.done_at = at;
+    // By hand, so an ordinary tick: the next activity retires it.
+    existing.done_held = false;
     write(&index)
+}
+
+/// Tick a chat off because its completion ended (`agent_chat`), stamped no
+/// earlier than the activity already recorded, and held (see `done_held`).
+/// Answers the stamp, or `None` for a chat the index does not list.
+pub fn complete(id: &str, at: i64) -> Result<Option<i64>, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(mut index) = read_checked() else {
+        return Ok(None);
+    };
+    let Some(existing) = index
+        .chats
+        .iter_mut()
+        .find(|c| c.id == id && c.deleted_at.is_none())
+    else {
+        return Ok(None);
+    };
+    let at = at.max(existing.updated_at);
+    existing.done_at = Some(at);
+    existing.done_held = true;
+    write(&index).map(|()| Some(at))
+}
+
+/// A completed chat was started again: its held tick goes, whatever the
+/// page's save of that message says and whichever of the two lands first.
+/// Answers whether anything changed. A tick made by hand is left to
+/// `is_done`.
+pub fn reopen(id: &str) -> Result<bool, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(mut index) = read_checked() else {
+        return Ok(false);
+    };
+    let Some(existing) = index.chats.iter_mut().find(|c| c.id == id && c.done_held) else {
+        return Ok(false);
+    };
+    existing.done_at = None;
+    existing.done_held = false;
+    write(&index).map(|()| true)
 }
 
 /// Put a chat in the one-day trash. Repeating the same request is idempotent:
@@ -756,6 +817,7 @@ mod tests {
             read_at: None,
             pinned: false,
             done_at: None,
+            done_held: false,
             deleted_at: None,
             generation: 0,
             launch: None,
@@ -1048,6 +1110,101 @@ mod tests {
         // before this shipped reads back byte for byte as it was written.
         let written = serde_json::to_string(&found).unwrap();
         assert!(!written.contains("doneAt"));
+        assert!(!written.contains("doneHeld"));
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn a_completions_tick_outlasts_the_pages_record_of_the_turn_that_earned_it() {
+        let id = "test-index-done-held";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        let row = || list().into_iter().find(|c| c.id == id).unwrap();
+
+        // The wrap-up turn ends: the host ticks the chat...
+        assert_eq!(complete(id, 900).unwrap(), Some(900));
+        assert!(row().is_done());
+        // ...and each open tab then saves the turn's end, on its own clock,
+        // after the tick. An ordinary tick would be retired by that.
+        let mut ended = meta(id, 100);
+        ended.updated_at = 950;
+        upsert(ended).unwrap();
+        let mut other_tab = meta(id, 100);
+        other_tab.updated_at = 940;
+        upsert(other_tab).unwrap();
+        let held = row();
+        assert_eq!(held.done_at, Some(950), "the tick moves up, never back");
+        assert!(held.is_done());
+        assert!(held.done_held);
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn a_completions_tick_is_never_stamped_before_the_recorded_activity() {
+        let id = "test-index-done-held-late";
+        cleanup(&[id]);
+        // A page whose clock runs ahead saved the turn's end first.
+        upsert(meta(id, 5_000)).unwrap();
+        assert_eq!(complete(id, 900).unwrap(), Some(5_000));
+        assert!(list().into_iter().find(|c| c.id == id).unwrap().is_done());
+        assert_eq!(
+            complete("test-index-done-held-unknown", 900).unwrap(),
+            None,
+            "a chat the index does not list has nothing to tick"
+        );
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn starting_a_completed_chat_again_takes_its_tick_whichever_write_lands_first() {
+        let id = "test-index-done-reopen";
+        let row = || list().into_iter().find(|c| c.id == id).unwrap();
+        // The page's save of the new message lands before the start...
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        complete(id, 900).unwrap();
+        let mut sent = meta(id, 100);
+        sent.updated_at = 2_000;
+        upsert(sent).unwrap();
+        assert!(row().is_done(), "a held tick does not judge the save");
+        assert_eq!(reopen(id), Ok(true));
+        assert_eq!(row().done_at, None);
+        assert!(!row().done_held);
+        assert_eq!(reopen(id), Ok(false), "nothing left to take");
+
+        // ...or after it.
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        complete(id, 900).unwrap();
+        assert_eq!(reopen(id), Ok(true));
+        let mut sent = meta(id, 100);
+        sent.updated_at = 2_000;
+        upsert(sent).unwrap();
+        assert!(!row().is_done());
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn a_tick_made_by_hand_is_not_held_and_a_hand_takes_a_held_one_over() {
+        let id = "test-index-done-by-hand";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        let row = || list().into_iter().find(|c| c.id == id).unwrap();
+
+        set_done(id, Some(900)).unwrap();
+        assert_eq!(reopen(id), Ok(false), "a start leaves a hand-made tick");
+        assert_eq!(row().done_at, Some(900));
+
+        // Ticking again by hand over a completion's tick makes it ordinary:
+        // the next activity retires it, as it always did.
+        complete(id, 900).unwrap();
+        set_done(id, Some(900)).unwrap();
+        assert!(!row().done_held);
+        let mut sent = meta(id, 100);
+        sent.updated_at = 2_000;
+        upsert(sent).unwrap();
+        assert_eq!(row().done_at, Some(900));
+        assert!(!row().is_done());
         cleanup(&[id]);
     }
 

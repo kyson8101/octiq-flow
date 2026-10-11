@@ -58,6 +58,90 @@ fn mission_plans(data: &Stored, run_id: &str) -> Vec<WorkspacePlan> {
         .collect()
 }
 
+/// Whether the record lets this mission be closed, and the worktrees a close
+/// would then look at. Everything `close_mission` refuses before it asks
+/// git, in its words; nothing is changed.
+fn closable_plans(data: &Stored, run: &Run, abandon: bool) -> Result<Vec<WorkspacePlan>, String> {
+    let run_id = run.id.as_str();
+    if run.status == RunStatus::Closed {
+        return Err("This mission is already closed.".into());
+    }
+    if data
+        .attempts
+        .values()
+        .any(|a| a.run_id == run_id && attempt_is_unsettled(data, a))
+    {
+        return Err("Stop or settle every worker before closing the mission.".into());
+    }
+    if data
+        .gates
+        .values()
+        .any(|g| g.run_id == run_id && g.status == GateStatus::Open)
+    {
+        return Err("Answer the open decision before closing the mission.".into());
+    }
+    if !abandon
+        && data.tasks.values().any(|t| {
+            t.run_id == run_id && !matches!(t.status, TaskStatus::Completed | TaskStatus::Cancelled)
+        })
+    {
+        return Err("Some tasks are not finished. Finish them, or abandon the mission.".into());
+    }
+    // A task worktree from Worktree mode has its own cleanup, with its
+    // own merge check per branch. Close does not do it for them.
+    if data.tasks.values().any(|t| {
+        t.run_id == run_id
+            && t.workspace.as_ref().is_some_and(|ws| {
+                ws.plan.managed
+                    && ws.plan.mode == WorkspaceMode::Worktree
+                    && ws.state != WorkspaceState::Cleaned
+            })
+    }) {
+        return Err("Clean up this run's task worktrees first; each has its own branch.".into());
+    }
+    let plans = mission_plans(data, run_id);
+    for plan in &plans {
+        let holders = data.tasks.values().filter(|t| {
+            t.workspace
+                .as_ref()
+                .is_some_and(|ws| ws.plan.checkout_root == plan.checkout_root)
+        });
+        for task in holders {
+            let ws = task.workspace.as_ref().unwrap();
+            if task.run_id != run_id && ws.state != WorkspaceState::Cleaned {
+                return Err("Another run is using this mission's worktree.".into());
+            }
+            if !ws.validation_paths.is_empty() {
+                return Err("Remove the mission's validation checkouts before closing it.".into());
+            }
+        }
+    }
+    Ok(plans)
+}
+
+/// A run a chat coordinates, as the page's Complete dialog reads it
+/// (`OrchestrationStore::coordinated_runs`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoordinatedRun {
+    pub run_id: String,
+    pub status: RunStatus,
+    /// The run has not ended: completing the chat asks its agent to stop it.
+    pub live: bool,
+    /// A mission: it stays open until the person closes it.
+    pub mission: bool,
+    /// Workers whose attempts have not settled.
+    pub workers_running: usize,
+    /// Close would go through, by everything known without the network:
+    /// the record, a local `git status` of each mission worktree, and what
+    /// the last `refresh_mission` said about the merge. A mission that was
+    /// never refreshed is not eligible; refresh it and ask again.
+    pub close_eligible: bool,
+    /// Why not, when it is not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_blocker: Option<String>,
+}
+
 fn delivery_of(run: &Run, plan: &WorkspacePlan) -> Result<MissionDelivery, String> {
     let evidence = workflow::inspect(plan, true)?;
     // Nothing committed is nothing to merge: the base already holds it all.
@@ -87,7 +171,91 @@ fn delivery_of(run: &Run, plan: &WorkspacePlan) -> Result<MissionDelivery, Strin
     })
 }
 
+/// Why a mission whose record allows a close would still be refused, from a
+/// local look at its worktrees and the merge the last refresh recorded.
+fn close_blocker(run: &Run, plans: &[WorkspacePlan]) -> Option<String> {
+    for plan in plans {
+        let evidence = match workflow::inspect(plan, false) {
+            Ok(evidence) => evidence,
+            Err(error) => return Some(error),
+        };
+        if evidence.dirty {
+            return Some(format!(
+                "{} has uncommitted or untracked files. Commit or move them before closing.",
+                plan.checkout_root
+            ));
+        }
+        let merged = !evidence.has_commits
+            || run.mission_delivery.iter().any(|known| {
+                known.checkout_root == plan.checkout_root
+                    && known.merged
+                    && known.evidence.head_sha == evidence.head_sha
+            });
+        if !merged {
+            return Some(format!(
+                "{} is not known to be merged into {}. Refresh the mission to ask git.",
+                plan.branch, plan.base_branch
+            ));
+        }
+    }
+    None
+}
+
 impl OrchestrationStore {
+    /// The runs `chat_key` coordinates that still have something to do: one
+    /// that has not ended, or a mission the person has not closed. Read-only,
+    /// and never on the network.
+    pub fn coordinated_runs(&self, chat_key: &str) -> Result<Vec<CoordinatedRun>, String> {
+        let found: Vec<(Run, usize, Result<Vec<WorkspacePlan>, String>)> = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(error) = &inner.load_error {
+                return Err(error.clone());
+            }
+            let data = &inner.data;
+            let mut runs: Vec<&Run> = data
+                .runs
+                .values()
+                .filter(|run| run.coordinator_chat_key == chat_key)
+                .filter(|run| {
+                    !run_has_ended(run)
+                        || (run.workspace_mode == WorkspaceMode::Mission
+                            && run.status != RunStatus::Closed)
+                })
+                .collect();
+            runs.sort_by_key(|run| run.created_at);
+            runs.into_iter()
+                .map(|run| {
+                    let workers = data
+                        .attempts
+                        .values()
+                        .filter(|a| a.run_id == run.id && attempt_is_unsettled(data, a))
+                        .count();
+                    (run.clone(), workers, closable_plans(data, run, false))
+                })
+                .collect()
+        };
+        Ok(found
+            .into_iter()
+            .map(|(run, workers_running, plans)| {
+                let mission = run.workspace_mode == WorkspaceMode::Mission;
+                let close_blocker = match plans {
+                    _ if !mission => Some("This run is not a mission.".to_string()),
+                    Ok(plans) => close_blocker(&run, &plans),
+                    Err(refused) => Some(refused),
+                };
+                CoordinatedRun {
+                    live: !run_has_ended(&run),
+                    mission,
+                    workers_running,
+                    close_eligible: close_blocker.is_none(),
+                    close_blocker,
+                    status: run.status,
+                    run_id: run.id,
+                }
+            })
+            .collect())
+    }
+
     /// Ask git where each of the mission's worktrees stands, and record it.
     pub fn refresh_mission(&self, actor: &str, run_id: &str) -> Result<Run, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
@@ -126,66 +294,7 @@ impl OrchestrationStore {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let (run, plans, workers) = self.mutate(|data| {
             let run = coordinator(data, run_id, actor)?.clone();
-            if run.status == RunStatus::Closed {
-                return Err("This mission is already closed.".into());
-            }
-            if data
-                .attempts
-                .values()
-                .any(|a| a.run_id == run_id && attempt_is_unsettled(data, a))
-            {
-                return Err("Stop or settle every worker before closing the mission.".into());
-            }
-            if data
-                .gates
-                .values()
-                .any(|g| g.run_id == run_id && g.status == GateStatus::Open)
-            {
-                return Err("Answer the open decision before closing the mission.".into());
-            }
-            if !abandon
-                && data.tasks.values().any(|t| {
-                    t.run_id == run_id
-                        && !matches!(t.status, TaskStatus::Completed | TaskStatus::Cancelled)
-                })
-            {
-                return Err(
-                    "Some tasks are not finished. Finish them, or abandon the mission.".into(),
-                );
-            }
-            // A task worktree from Worktree mode has its own cleanup, with its
-            // own merge check per branch. Close does not do it for them.
-            if data.tasks.values().any(|t| {
-                t.run_id == run_id
-                    && t.workspace.as_ref().is_some_and(|ws| {
-                        ws.plan.managed
-                            && ws.plan.mode == WorkspaceMode::Worktree
-                            && ws.state != WorkspaceState::Cleaned
-                    })
-            }) {
-                return Err(
-                    "Clean up this run's task worktrees first; each has its own branch.".into(),
-                );
-            }
-            let plans = mission_plans(data, run_id);
-            for plan in &plans {
-                let holders = data.tasks.values().filter(|t| {
-                    t.workspace
-                        .as_ref()
-                        .is_some_and(|ws| ws.plan.checkout_root == plan.checkout_root)
-                });
-                for task in holders {
-                    let ws = task.workspace.as_ref().unwrap();
-                    if task.run_id != run_id && ws.state != WorkspaceState::Cleaned {
-                        return Err("Another run is using this mission's worktree.".into());
-                    }
-                    if !ws.validation_paths.is_empty() {
-                        return Err(
-                            "Remove the mission's validation checkouts before closing it.".into(),
-                        );
-                    }
-                }
-            }
+            let plans = closable_plans(data, &run, abandon)?;
             let workers: Vec<String> = data
                 .attempts
                 .values()
