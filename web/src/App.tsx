@@ -170,6 +170,8 @@ import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type 
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar, TasksButton } from "./components/ChatWorkflowBar";
 import { taskColumnCounts } from "./lib/runPanel";
+import { dismissStrip, parseDismissed, runProgress, stripHidden, stripRun } from "./lib/runProgress";
+import { RunProgressStrip } from "./components/RunProgressStrip";
 import { ChatPlanCards } from "./components/ChatPlanCards";
 import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
 import {
@@ -410,6 +412,10 @@ const RAIL_KEY = "octiq.v2.railShut";
  *  so what is worth remembering is the decision to hide it. One flag for every
  *  chat in this browser, not one per chat. */
 const TASKS_KEY = "octiq.v2.tasksShut";
+/** The run strips the person put away, each as the strip's signature when it
+ *  was hidden (`lib/runProgress.dismissStrip`): one short string per run, the
+ *  oldest dropped, so a dismissed Done stays dismissed across a reload. */
+const STRIP_KEY = "octiq.v2.runStripHidden";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
@@ -4738,15 +4744,39 @@ export default function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [cardFocus, showRunFor]);
+  const pendingTasks = useMemo(() => pendingByTask(pendingList), [pendingList]);
   const pendingView = useMemo<PendingActionsView>(() => {
     const rows = pendingByRow(pendingList);
-    const tasks = pendingByTask(pendingList);
     return {
       forRow: (chatId) => rows.get(chatId) ?? NO_ACTIONS,
-      forTask: (taskId) => tasks.get(taskId) ?? NO_ACTIONS,
+      forTask: (taskId) => pendingTasks.get(taskId) ?? NO_ACTIONS,
       reveal: revealPending,
     };
-  }, [pendingList, revealPending]);
+  }, [pendingList, pendingTasks, revealPending]);
+
+  // The run's one line above the composer, for the chat that coordinates it.
+  // Read off the ledger this tab already holds; it shows no clock, so it
+  // needs no tick of its own.
+  const [stripDismissed, setStripDismissed] = useState(() => parseDismissed(recall(STRIP_KEY)));
+  const runStrip = useMemo(() => {
+    if (workerChat || !conversationId) return null;
+    const run = stripRun(currentWorkflow.runs);
+    const strip = run && runProgress(currentWorkflow, run, Date.now(), pendingTasks).strip;
+    return run && strip ? { run, strip } : null;
+  }, [workerChat, conversationId, currentWorkflow, pendingTasks]);
+  const stripShown = !!runStrip && !stripHidden(stripDismissed, runStrip.strip);
+  const hideStrip = () => {
+    if (!runStrip) return;
+    const next = dismissStrip(stripDismissed, runStrip.strip.signature);
+    setStripDismissed(next);
+    remember(STRIP_KEY, JSON.stringify(next));
+  };
+  /** The strip's click: the Agents panel, on the run the strip is about. */
+  const openAgentsPanel = () => {
+    if (!runStrip || !conversationId) return;
+    showRunFor(conversationId, runStrip.run.id);
+    if (workflowSplit) showTasks(true);
+  };
 
   // Agents mode's creation action always prepares a new conversation, with
   // the configured head until the person picks someone else on its empty
@@ -5591,6 +5621,14 @@ export default function App() {
               </section>
             );
           })}
+
+          {/* How far the run has got, on the composer. It grows upward like the
+              cards above it, so arriving never moves the composer. */}
+          {conversationId && !workerChat && (
+            <Arrive when={stripShown} scope={conversationId}>
+              {runStrip && <RunProgressStrip strip={runStrip.strip} onOpen={openAgentsPanel} onHide={hideStrip} />}
+            </Arrive>
+          )}
 
           {/* A task chat takes no messages: no composer, and no block in its
               place — the Read-only badge by its title says so. */}

@@ -112,11 +112,17 @@ describe("a task row's reported checklist", () => {
     objective: "Build it", nextStep: "", reportedBy: "codex", reportedAt: 10,
     steps: states.map((state, index) => ({ state, title: titles?.[index] ?? `Step ${index + 1}` })),
   });
+  const render = (current: OrchestrationSnapshot) => renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+    initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
+  // The collapsed line: everything before the row's controls.
   const row = (current: OrchestrationSnapshot) => {
-    const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
-      initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
-    // The collapsed line: everything before the disclosure.
+    const html = render(current);
     return html.slice(html.indexOf('class="orch-task-summary"'), html.indexOf('class="orch-task-actions"'));
+  };
+  // What the row's disclosure opens.
+  const detail = (current: OrchestrationSnapshot) => {
+    const html = render(current);
+    return html.slice(html.indexOf('class="orch-task-detail"'));
   };
   const running = () => {
     const current = structuredClone(snapshot);
@@ -128,35 +134,44 @@ describe("a task row's reported checklist", () => {
     return current;
   };
 
-  it("shows the count and the step being worked on beside the host's own word", () => {
+  it("shows the count and a bar, and keeps the worker's own words behind the disclosure", () => {
     const line = row(running());
-    expect(line).toContain("Waiting for a tool");
-    expect(line).toContain('<span class="orch-task-count">2/5 steps</span> · <span class="orch-task-step">Running tests</span>');
-    expect(line).toContain('data-current="true"');
+    expect(line).toContain('<span class="run-row-note" title="Waiting for a tool · 2 of 5 reported steps done');
+    expect(line).toContain(">2/5 steps</span>");
     expect(line).toContain('style="width:40%"');
+    // The step is the worker's text: never the row's default line.
+    for (const words of ["Running tests", "Read", "Review", "Ship", "Bash"]) expect(line).not.toContain(`>${words}<`);
+    expect(line).not.toContain("Running tests");
+    // It is one disclosure away, with the host's state word.
+    const opened = detail(running());
+    expect(opened).toContain('<span class="orch-task-state">Waiting for a tool</span>');
+    expect(opened).toContain('<span class="orch-task-step" title="Running tests">Running tests</span>');
+    expect(opened).toContain('aria-label="Reported checklist"');
   });
 
   it("follows the report as it moves, with nothing kept from the one before", () => {
     const next = running();
     next.reports!["chat:worker"] = report(["done", "done", "done", "active", "pending"], ["Read", "Build", "Running tests", "Review", "Ship"]);
-    const line = row(next);
-    expect(line).toContain("3/5 steps");
-    expect(line).toContain('<span class="orch-task-step">Review</span>');
-    expect(line).not.toContain("Running tests");
+    expect(row(next)).toContain(">3/5 steps</span>");
+    expect(row(next)).toContain('style="width:60%"');
+    expect(detail(next)).toContain('<span class="orch-task-step" title="Review">Review</span>');
   });
 
-  it("gives a blocked task its real count and its last step, not a running one", () => {
+  it("says a blocked task is blocked in the host's word, and keeps its last step for the disclosure", () => {
     const blocked = running();
     blocked.tasks[0].status = "blocked";
     blocked.attempts[0].status = "blocked";
     blocked.attempts[0].execution = { state: "blocked", retryCount: 0 };
     const line = row(blocked);
-    expect(line).toContain("2/5 steps");
-    expect(line).toContain("Last step: Running tests");
-    expect(line).not.toContain("data-current");
+    expect(line).toContain('data-tone="danger"');
+    expect(line).toContain(">Blocked</span>");
+    // The bar still says how far it got.
+    expect(line).toContain('style="width:40%"');
+    expect(line).not.toContain("Running tests");
+    expect(detail(blocked)).toContain("Last step: Running tests");
   });
 
-  it("keeps a finished task's reported count and its bar with it", () => {
+  it("keeps a finished check's verdict and its bar with it", () => {
     const done = running();
     done.tasks[0].status = "completed";
     done.tasks[0].verdict = "fail";
@@ -164,22 +179,25 @@ describe("a task row's reported checklist", () => {
     done.attempts[0].status = "completed";
     done.attempts[0].execution = { state: "completed", retryCount: 0 };
     const line = row(done);
-    expect(line).toContain("Done · check failed");
-    expect(line).toContain("2/5 steps");
+    expect(line).toContain(">Check failed</span>");
+    expect(line).toContain('<span class="run-row-pill" data-verdict="fail"');
     expect(line).not.toContain("5/5");
     expect(line).toContain('style="width:40%"');
-    expect(line).toContain("Last step: Running tests");
+    const opened = detail(done);
+    expect(opened).toContain("Done · check failed");
+    expect(opened).toContain("Last step: Running tests");
   });
 
-  it("says nothing it was not told: no checklist, no active step, or a retry that has not reported", () => {
+  it("says nothing it was not told: no checklist, or a retry that has not reported", () => {
     const silent = running();
     silent.reports = {};
-    expect(row(silent)).not.toContain("orch-task-progress");
+    expect(row(silent)).not.toContain("steps");
     expect(row(silent)).not.toContain("0/0");
+    expect(row(silent)).not.toContain("orch-task-track");
 
     const noActive = running();
     noActive.reports = { "chat:worker": report(["done", "pending"], ["Read", "Write the migration"]) };
-    expect(row(noActive)).toContain('<span class="orch-task-count">1/2 steps</span></span>');
+    expect(row(noActive)).toContain(">1/2 steps</span>");
     expect(row(noActive)).not.toContain("Write the migration");
 
     // Attempt 2 has its own chat; attempt 1's checklist stays with attempt 1.
@@ -187,19 +205,42 @@ describe("a task row's reported checklist", () => {
     retry.attempts[0].status = "failed";
     retry.attempts.push({ ...retry.attempts[0], id: "attempt_2", number: 2, workerChatKey: "chat:worker-2", status: "running", createdAt: 20 });
     retry.tasks[0].activeAttemptId = "attempt_2";
-    expect(row(retry)).not.toContain("orch-task-progress");
+    expect(row(retry)).not.toContain("steps");
     expect(row(retry)).not.toContain("Running tests");
   });
 
-  it("keeps a queued task's word, with no attempt and no checklist", () => {
+  it("draws a queued task as planned, with its word behind the disclosure", () => {
     const queued = structuredClone(snapshot);
     queued.gates = [];
     queued.tasks[0].status = "pending";
     queued.tasks[0].activeAttemptId = undefined;
     queued.attempts = [];
-    const line = row(queued);
-    expect(line).toContain("Queued");
-    expect(line).not.toContain("orch-task-progress");
+    const html = render(queued);
+    expect(html).toContain('data-status="pending" data-state="planned"');
+    expect(html).toContain('aria-label="Planned, 1"');
+    expect(row(queued)).not.toContain("steps");
+    expect(detail(queued)).toContain('<span class="orch-task-state">Queued</span>');
+  });
+
+  it("writes elapsed time in minutes, never seconds", () => {
+    const html = render(running());
+    // The run's line, the Time tile and the row's figures.
+    expect(html).not.toMatch(/\d+m \d\ds\b/);
+    expect(html).not.toMatch(/>\d+s</);
+    expect(html).toMatch(/<dt>Time<\/dt><dd>(&lt;1m|\d+m|\d+h \d\dm)<\/dd>/);
+  });
+
+  it("draws no Tokens tile and no figure the host did not send, and both once it does", () => {
+    const bare = render(running());
+    expect(bare).toContain("<dt>Tasks</dt><dd>0 / 1</dd>");
+    expect(bare).not.toContain("<dt>Tokens</dt>");
+    expect(bare).not.toContain("ctx ");
+    const sent = running();
+    sent.attempts[0].usage = { input: 500_000, output: 20_000 };
+    sent.attempts[0].context = { tokens: 82_000, window: 200_000 };
+    const html = render(sent);
+    expect(html).toContain("<dt>Tokens</dt><dd>520k</dd>");
+    expect(html).toMatch(/<span class="run-row-figures">ctx 41% · 520k · [^<]+<\/span>/);
   });
 });
 
@@ -244,7 +285,7 @@ describe("OrchestrationPanel", () => {
     expect(html).toContain("Acceptance: unverified");
   });
 
-  it.each([false, true])("keeps attention and ongoing work above settled tasks (embedded: %s)", (embedded) => {
+  it.each([false, true])("groups what is owed, what runs, what settled and what is planned, in that order (embedded: %s)", (embedded) => {
     const statuses = ["completed", "pending", "running", "cancelled", "ready", "blocked", "running", "failed", "completed"] as const;
     const current: OrchestrationSnapshot = {
       ...snapshot,
@@ -258,9 +299,17 @@ describe("OrchestrationPanel", () => {
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
 
+    // What is owed, what is running, what settled (cancelled last), then
+    // what is planned, a task that can start before one still waiting.
     expect([...html.matchAll(/<span class="orch-task-title">(.*?)<\/span>/g)].map((match) => match[1])).toEqual([
-      "Task 5", "Task 7", "Task 2", "Task 6", "Task 4", "Task 1", "Task 0", "Task 8", "Task 3",
+      "Task 5", "Task 7", "Task 2", "Task 6", "Task 0", "Task 8", "Task 3", "Task 4", "Task 1",
     ]);
+    expect([...html.matchAll(/<section class="run-group" data-group="([a-z]+)" aria-label="([^"]+)"/g)].map((match) => match[2])).toEqual([
+      "Needs you, 2", "Running, 2", "Finished, 3", "Planned, 2",
+    ]);
+    // Finished is the one group that folds, and it starts folded.
+    expect(html.match(/class="run-group-head" aria-expanded="false"/g)).toHaveLength(1);
+    expect(html).toMatch(/aria-expanded="false"[^>]*>(<svg.*?<\/svg>)?Finished · 3<\/button><div class="run-group-rows" id="[^"]+" hidden=""/);
     expect(current).toEqual(before);
   });
 
@@ -552,13 +601,14 @@ describe("embedded chat runs", () => {
     expect(renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />)).not.toContain("Open beside main");
   });
-  it("gives a task's title its own line, with status leading the line under it and the controls kept apart", () => {
+  it("gives a task's title its own line, with who has it under it and the controls kept apart", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onOpenBeside={() => {}} onClose={() => {}} />);
     const row = html.slice(html.indexOf('<div class="orch-task-heading">'), html.indexOf('<div class="orch-task-detail"'));
-    // Title, then the metadata line opening with the status; nothing sits beside the title.
-    expect(row).toMatch(/<span class="orch-task-title">Build the host ledger<\/span><span class="orch-task-meta"><span class="orch-task-state">/);
+    // Title and the row's mark, then who has it; the state word is behind the disclosure.
+    expect(row).toMatch(/<span class="orch-task-title">Build the host ledger<\/span><span class="run-row-mark" role="img" aria-label="Needs you"[^>]*>\?<\/span><span class="run-row-who">/);
+    expect(row).not.toContain("orch-task-state");
     // Both controls live together outside the row button, so the button never nests one.
     expect(row).toMatch(/<\/button><span class="orch-task-actions"><button type="button" class="open-beside orch-task-beside"[^>]*>.*<\/button><button type="button" class="orch-task-expand"/);
   });

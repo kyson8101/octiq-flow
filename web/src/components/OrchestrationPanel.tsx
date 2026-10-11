@@ -4,7 +4,7 @@ import "./OrchestrationPanel.css";
 import { AGENT_NAME } from "../lib/agentProviders";
 import {
   attemptIsExecuting, boardCounts, executionNeedsAttention, pendingDecision, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
-  sortTasksByActivity, stepCountLabel, stepLabel, taskElapsed, taskProgress, taskStage, taskStateLabel, taskStepSummary, TASK_LABELS,
+  stepLabel, taskProgress, taskStage, taskStateLabel, taskStepSummary, TASK_LABELS,
   useElapsedTick,
 } from "../lib/agentTaskBoard";
 import { acceptanceLine, checkCoverage, KIND_LABEL, requiresVerdict, runStages, taskEnvironment } from "../lib/runAcceptance";
@@ -20,7 +20,6 @@ import { MissionTrack } from "./MissionTrack";
 import { MissionSections, ReassignButton, ReassignForm, useMissionCrew } from "./MissionPage";
 import type { CrewMember } from "../lib/missionPage";
 import { SIZE_LABEL } from "../lib/agentLevels";
-import { elapsedLabel } from "../lib/working";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { orchestrationFeed } from "../lib/orchestrationFeed";
 import { useOrchestrationFeed } from "../lib/useOrchestrationSnapshot";
@@ -34,12 +33,17 @@ import { ApprovedPlan, RejectedPlan } from "./ChatPlanCards";
 import { planHandle } from "../lib/chatPlans";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
-import { BranchIcon, ClockIcon, TaskStatusIcon } from "./TaskMeter";
+import { BranchIcon, ClockIcon } from "./TaskMeter";
 import { OpenBesideButton } from "./OpenBesideButton";
 import { ProposedReportNote } from "./ProposedReportNote";
 import { RunBridges } from "./RunBridges";
 import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
+import {
+  figuresLabel, GROUP_FOLDED, GROUP_SHOWN, minutesLabel, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
+  type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
+} from "../lib/runProgress";
+import "./RunProgress.css";
 
 import {
   deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
@@ -668,20 +672,9 @@ function NewRun({
 /** The run screen is read at a glance or not at all, so nothing in its default
  *  state is a paragraph. Every task is one row of labels, numbers and a bar;
  *  the prose a worker was handed — its brief, its summaries, its paths — is
- *  real and kept, but it opens on request rather than filling the screen. */
-type TaskFilter = "all" | "working" | "blocked" | "done";
-
-const TASK_FILTERS: { key: TaskFilter; label: string; match: (task: OrchestrationTask, attempt?: OrchestrationAttempt) => boolean }[] = [
-  { key: "all", label: "All", match: () => true },
-  { key: "working", label: "Working", match: (task, attempt) => task.status === "running" && (!attempt?.execution || attemptIsExecuting(attempt)) },
-  { key: "blocked", label: "Blocked", match: (task, attempt) => isStuck(task) || (!task.supersededBy && executionNeedsAttention(attempt)) },
-  { key: "done", label: "Done", match: (task) => task.status === "completed" },
-];
-
-/** A filter row over four tasks hides nothing and costs a line, so it only
- *  appears once the list is long enough to need one. */
-const FILTERS_WORTH_SHOWING = 4;
-
+ *  real and kept, but it opens on request rather than filling the screen.
+ *  The rows are grouped by what they ask of the person (`lib/runProgress`):
+ *  Needs you, Running, Finished (folded), Planned. */
 const TAB_LABELS: Record<RunTab, string> = { tasks: "Tasks", notifications: "Notifications", log: "Coordination log" };
 
 /** How much of each history the tabs keep on screen. The ledger keeps more
@@ -768,7 +761,6 @@ function RunDetail({
   sharedHeading: boolean;
   compactControls: boolean;
 }) {
-  const [filter, setFilter] = useState<TaskFilter>("all");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState<"close" | "abandon" | null>(null);
@@ -811,18 +803,17 @@ function RunDetail({
   // rows are where the next change of hands, or the correction of a wrong one,
   // is made. So they stay, unfiltered, with every start held by the host.
   const pendingRows = planPending && mission;
-  const active = pendingRows ? TASK_FILTERS[0] : TASK_FILTERS.find((option) => option.key === filter) ?? TASK_FILTERS[0];
-  const visible = sortTasksByActivity(
-    tasks.filter((task) => active.match(task, attempts.find((attempt) => attempt.id === task.activeAttemptId))),
-    attempts,
-  );
+  // What the page holds for the person, per task: a row that waits on one of
+  // those cards says so, in the group that asks.
+  const pendingView = usePendingActions();
+  const progress = runProgress(snapshot, run, now, new Map(tasks.map((task) => [task.id, pendingView.forTask(task.id)])));
   const awaitingReceipt = notifications.filter((item) => item.state === "pending" || item.state === "delivering").length;
 
-  // Asked to show what is owed: every task, and focus on the first owed thing
-  // — a decision, the plan, or a stuck row — so a keyboard lands on it too.
+  // Asked to show what is owed: focus on the first owed thing — a decision,
+  // the plan, or a stuck row — so a keyboard lands on it too. Every such row
+  // is in a group that is always open and never cut short.
   useEffect(() => {
     if (!attentionFocus) return;
-    setFilter("all");
     const frame = requestAnimationFrame(() => {
       const target = detailRef.current?.querySelector<HTMLElement>("[data-attention]");
       target?.scrollIntoView?.({ block: "nearest" });
@@ -1034,24 +1025,24 @@ function RunDetail({
 
       <div className="orch-tab-panel" role="tabpanel" id={`${tabsId}-tasks-panel`} aria-labelledby={`${tabsId}-tasks`} hidden={tab !== "tasks"}>
         {!planPending && tasks.length > 0 && <RunStages tasks={tasks} attempts={attempts} sandboxes={sandboxes} />}
-        {tasks.length > FILTERS_WORTH_SHOWING && !planPending && <div className="orch-task-filters" role="group" aria-label="Filter tasks">
-          {TASK_FILTERS.map((option) => <button key={option.key} type="button" className={option.key === filter ? "is-on" : ""}
-            aria-pressed={option.key === filter} onClick={() => setFilter(option.key)}>{option.label}</button>)}
-        </div>}
+        {tasks.length > 0 && !planPending && <RunTiles tiles={progress.tiles} />}
         {planPending && <p className="orch-task-none">The tasks start once the plan above is approved.</p>}
         {planPending && (!pendingRows || tasks.length === 0) ? null : tasks.length === 0 ? (
           <div className="orch-planning"><span className="orch-pulse" />The main agent is planning the tasks.</div>
-        ) : visible.length === 0 ? (
-          <p className="orch-task-none">Nothing is {active.label.toLowerCase()} right now.</p>
-        ) : visible.map((task) => (
-          <RunTask key={task.id} run={run} snapshot={snapshot} task={task} attempts={attempts} gates={gates} sandboxes={sandboxes}
-            taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
-            archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
-            onOpenBeside={onOpenBeside}
-            open={!!currentChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === currentChatKey)}
-            beside={!!besideChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === besideChatKey)}
-            projectName={projectName} mission={mission ? crew : undefined} />
-        ))}
+        ) : progress.groups.map((group) => {
+          const chatOf = (row: ProgressRow, chatKey: string | null | undefined) =>
+            !!chatKey && attempts.some((attempt) => attempt.taskId === row.task.id && attempt.workerChatKey === chatKey);
+          return <RunGroup key={group.key} group={group}
+            // The task on screen is never behind a fold or a "more" line.
+            holds={group.rows.findIndex((row) => chatOf(row, currentChatKey) || chatOf(row, besideChatKey))}>
+            {(row) => <RunTask key={row.task.id} run={run} snapshot={snapshot} row={row} attempts={attempts} gates={gates} sandboxes={sandboxes}
+              taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
+              archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
+              onOpenBeside={onOpenBeside}
+              open={chatOf(row, currentChatKey)} beside={chatOf(row, besideChatKey)}
+              projectName={projectName} mission={mission ? crew : undefined} />}
+          </RunGroup>;
+        })}
       </div>
 
       <div className="orch-tab-panel orch-notifications" role="tabpanel" id={`${tabsId}-notifications-panel`} aria-labelledby={`${tabsId}-notifications`} hidden={tab !== "notifications"}>
@@ -1110,7 +1101,8 @@ function RunLine({ snapshot, run, tasks, attempts }: {
   ].filter(Boolean);
   return <small className="orch-run-line">
     <span>{parts.join(" · ")}</span>
-    {elapsed !== null && <span className="orch-run-elapsed" title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{elapsedLabel(elapsed)}</span>}
+    {/* In minutes: a figure that changes every few seconds is a clock. */}
+    {elapsed !== null && <span className="orch-run-elapsed" title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{minutesLabel(elapsed)}</span>}
     {/* Every task done reads as "finished", which is exactly when it needs
         saying what, if anything, checked the outcome. */}
     {(settled || planned) && <span className="orch-progress-acceptance" data-tone={acceptance.tone} title={acceptance.note}>Acceptance: {acceptance.value.toLowerCase()}</span>}
@@ -1189,7 +1181,71 @@ function RunStages({ tasks, attempts, sandboxes }: {
 }
 
 /** The row opens the worker chat; the separate disclosure shows its checklist. */
-function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName, mission }: {
+/** The run's totals. A tile whose figure the host did not send is not drawn:
+ *  nothing is worked out in its place. */
+function RunTiles({ tiles }: { tiles: RunTilesData }) {
+  return <dl className="run-tiles" aria-label="Mission totals">
+    <div className="run-tile"><dt>Tasks</dt><dd>{tasksLabel(tiles.tasks)}</dd></div>
+    {tiles.tokens !== null && <div className="run-tile" title="Tokens the workers read and wrote, as their providers reported them. Usage a provider never reported is not in it.">
+      <dt>Tokens</dt><dd>{tokensLabel(tiles.tokens)}</dd>
+    </div>}
+    {tiles.elapsedMs !== null && <div className="run-tile" title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once.">
+      <dt>Time</dt><dd>{minutesLabel(tiles.elapsedMs)}</dd>
+    </div>}
+  </dl>;
+}
+
+/** One group of rows under its count. Finished is the only one that folds,
+ *  and starts folded; a long quiet group shows its first rows and a line for
+ *  the rest. `holds` is where the task on screen sits in it, or -1. */
+function RunGroup({ group, holds, children }: {
+  group: ProgressGroup;
+  holds: number;
+  children: (row: ProgressRow) => ReactNode;
+}) {
+  const folds = GROUP_FOLDED[group.key];
+  const [open, setOpen] = useState(!folds || holds >= 0);
+  const [all, setAll] = useState(false);
+  const bodyId = useId();
+  // Opening a task from elsewhere brings its row into view here too.
+  useEffect(() => {
+    if (holds >= 0) setOpen(true);
+  }, [holds]);
+  const { rows, more } = shownRows(group, all || holds >= GROUP_SHOWN[group.key]);
+  const label = `${group.label} · ${group.rows.length}`;
+  return <section className="run-group" data-group={group.key} aria-label={`${group.label}, ${group.rows.length}`}>
+    {folds
+      ? <button type="button" className="run-group-head" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
+        <svg className="run-group-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        {label}
+      </button>
+      : <h3 className="run-group-head">{label}</h3>}
+    {/* Every row stays mounted, folded or behind the line: a row keeps what
+        the person opened in it, and nothing is rebuilt to show it again. */}
+    <div className="run-group-rows" id={bodyId} hidden={!open}>
+      {rows.map(children)}
+      {more > 0 && <>
+        <button type="button" className="run-group-more" onClick={() => setAll(true)}>
+          <span className="run-row-face is-none" aria-hidden="true">…</span>{more} more
+        </button>
+        <div className="run-group-rest" hidden>{group.rows.slice(rows.length).map(children)}</div>
+      </>}
+    </div>
+  </section>;
+}
+
+/** The mark at the end of a row's first line. A running row has none: the
+ *  strip above the composer is the one thing that moves. */
+function RowMark({ state }: { state: RowState }) {
+  if (state === "running") return null;
+  const label = { needs: "Needs you", failed: "Failed", done: "Done", planned: "Planned", closed: "Closed" }[state];
+  return <span className="run-row-mark" role="img" aria-label={label} title={label}>
+    {state === "needs" ? "?" : state === "failed" ? "!" : state === "done" ? "✓" : state === "closed" ? "–"
+      : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4l2.5 2" /></svg>}
+  </span>;
+}
+
+function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName, mission }: {
   projectName?: (id: string) => string | undefined;
   /** A mission's crew: the row names its owner, kind and size, and offers
    *  reassignment. Absent for every other run, whose row is unchanged. */
@@ -1201,7 +1257,9 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
   beside?: boolean;
   run: OrchestrationRun;
   snapshot: OrchestrationSnapshot;
-  task: OrchestrationTask;
+  /** The task as `lib/runProgress` reads it: its state, the host's word for
+   *  it, and the figures the host sent. */
+  row: ProgressRow;
   attempts: OrchestrationAttempt[];
   gates: OrchestrationGate[];
   taskNames: Map<string, string>;
@@ -1215,6 +1273,7 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
   open: boolean;
 }) {
+  const task = row.task;
   const [expanded, setExpanded] = useState(false);
   const [reassigning, setReassigning] = useState(false);
   const detailId = useId();
@@ -1229,15 +1288,18 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
   // status word, which line one already carries. Saying "Blocked · Blocked"
   // is how a row starts looking busy while telling you less.
   const reportedStage = attempt?.execution || stage === TASK_LABELS[task.status] ? null : stage;
-  // The worker's own checklist, on the row: how many of its steps are done
-  // and which one it is on. The host's operation ("Waiting for a tool") is
-  // line one's word and never hides it; a stopped task's step is its last.
+  // The worker's own checklist. The row carries its counts and nothing of
+  // its words: the step it says it is on is the worker's own text, and sits
+  // with the checklist behind the disclosure. A stopped task's is its last.
   const steps = taskStepSummary(task, attempt, report);
   const step = steps && stepLabel(steps);
-  // The bar agrees with the count beside it; a finished task's full bar is
-  // only for one that reported no checklist to count.
-  const trackPercent = steps ? Math.round(steps.done / steps.total * 100) : progress.percent;
-  const elapsed = taskElapsed(snapshot, task, now);
+  // What the row says under the title: the host's word when the task waits
+  // on something or went wrong, else how far its checklist has got.
+  const note = row.why ?? (row.steps ? stepsLabel(row.steps) : null);
+  const figures = figuresLabel(row);
+  const stateWord = taskStateLabel(task, attempt, snapshot.nativeDecisions);
+  const provider = attempt?.agent ?? task.worker?.agent;
+  const who = assigneeFace?.name ?? task.assignee?.name ?? (provider ? AGENT_NAME[provider] : null);
   const branch = task.workspace?.plan.branch || attempt?.branch;
   const gate = gates.find((item) => item.taskId === task.id && item.status === "open");
   const reviewReady = task.status === "ready" && attempt?.status === "completed";
@@ -1257,45 +1319,39 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
   const decision = task.activeAttemptId === attempt?.id ? pendingDecision(attempt, snapshot.nativeDecisions) : undefined;
 
   return (
-    <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""}`} data-status={task.status}>
+    <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""} run-row`} data-status={task.status} data-state={row.state}>
       <div className="orch-task-heading">
         <button type="button" className="orch-task-summary" disabled={!attempt} data-attention={owed || undefined}
           aria-current={open || beside ? "page" : undefined}
           aria-label={`Open task chat: ${task.title}`}
           title={attempt ? `Open task chat: ${task.title}` : "No worker chat yet"}
           onClick={() => attempt && onOpenChat(attempt.workerChatKey)}>
-          <span className="orch-task-glyph" aria-hidden="true"><TaskStatusIcon status={task.status} /></span>
-          <span className="orch-task-title">{task.title}</span>
-          <span className="orch-task-meta">
-            <span className="orch-task-state">{taskStateLabel(task, attempt, snapshot.nativeDecisions)}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
-            {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
-            {task.verdict === "fail" && <span className="orch-task-blocker" title="It finished, and what it checked did not pass. Tasks that depend on it wait.">Check failed</span>}
-            {requiresVerdict(task) && task.verdict !== "fail" && <span className="orch-task-kind" title="It settles only with a pass or fail verdict, and only a pass releases the tasks that depend on it.">{KIND_LABEL[task.kind!]}</span>}
-            {mission && !requiresVerdict(task) && <span className="orch-task-kind">{KIND_LABEL.work}</span>}
-            {mission && task.size && <span className="orch-task-size" title="What the task is worth when its result is accepted">{SIZE_LABEL[task.size]}</span>}
-            {mission && task.assignee && <span className="orch-task-owner" title={`Owner: ${assigneeFace?.name ?? task.assignee.name}`}>
-              <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={14} decorative />
-              {assigneeFace?.name ?? task.assignee.name}
-            </span>}
-            {environment && <span className="orch-task-env" data-tone={environment.tone} title={environment.detail.join("\n")}>{environment.label}</span>}
-            {decision && <span className="orch-task-decision" title={[
-              `Native decision ${decision.id}`,
-              decision.reason,
-              decision.blockedAction ? `Action: ${decision.blockedAction}` : "The provider gave no exact action.",
-              decision.continuation === "unavailable" ? "This attempt cannot continue from here; a new attempt is needed." : decision.continuation === "new_turn_same_attempt" ? "Answering resumes this same attempt." : "Whether it can resume is not known.",
-            ].join("\n")}>{decision.continuation === "unavailable" ? "Decision recorded · cannot resume" : "Native decision"} {decision.id.slice(0, 10)}</span>}
-            {trackPercent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${trackPercent}%` }} /></span>}
-            {steps && <span className="orch-task-progress" data-current={steps.current || undefined}
-              title={[`${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}`, step].filter(Boolean).join("\n")}>
-              <span className="orch-task-count">{stepCountLabel(steps)}</span>
-              {step && <> · <span className="orch-task-step">{step}</span></>}
-            </span>}
-            {reportedStage && !step && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
-            {attempt && !(mission && task.assignee) && <span className="orch-task-agent" title={`${task.assignee ? `${assigneeFace?.name ?? task.assignee.name} · ` : ""}${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}>{task.assignee
-              ? <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={14} decorative />
-              : <AgentLogo agent={attempt.agent} size={10} />}</span>}
-            {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
+          <span className={`run-row-face${task.assignee || provider ? "" : " is-none"}`} aria-hidden="true">
+            {task.assignee
+              ? <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={28} decorative />
+              : provider ? <AgentLogo agent={provider} size={14} /> : null}
           </span>
+          <span className="orch-task-title">{task.title}</span>
+          <RowMark state={row.state} />
+          {/* Who has it, on which model: the registration's name, and the
+              host's own record of the attempt. Never the worker's words. */}
+          <span className="run-row-who">
+            {who && <span className={mission && task.assignee ? "orch-task-owner" : "run-row-name"}
+              title={attempt ? `${who} · ${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}` : who}>{who}</span>}
+            {row.model && <span>{row.model}</span>}
+            {row.effort && <span>{row.effort}</span>}
+            {row.after.length > 0 && <span className="run-row-after" title={`After ${row.after.join(", ")}`}>
+              after {row.after[0]}{row.after.length > 1 ? ` +${row.after.length - 1}` : ""}
+            </span>}
+            {row.verdict && <span className="run-row-pill" data-verdict={row.verdict}
+              title={row.verdict === "pass" ? "What it checked passed." : "It finished, and what it checked did not pass. Tasks that depend on it wait."}>{row.verdict}</span>}
+          </span>
+          {(note || figures) && <span className="run-row-nums">
+            <span className="run-row-note" data-tone={row.tone ?? undefined}
+              title={steps ? `${stateWord} · ${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}` : stateWord}>{note}</span>
+            {figures && <span className="run-row-figures">{figures}</span>}
+          </span>}
+          {row.percent !== null && <span className="orch-task-track run-row-bar" aria-hidden="true"><span style={{ width: `${row.percent}%` }} /></span>}
         </button>
         {/* Only where it would change something: not for the task already
             beside main, and not for the one open full-width, whose own header
@@ -1316,6 +1372,27 @@ function RunTask({ run, snapshot, task, attempts, gates, sandboxes, taskNames, g
       {pending.length > 0 && <PendingActionBadge className="orch-task-pending" actions={pending} subject={task.title} />}
       {mission && reassigning && !readOnly && <ReassignForm run={run} task={task} crew={mission} onDone={() => setReassigning(false)} />}
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
+        {/* What the row leaves out: the host's state word, the task's kind
+            and size, its environment, the decision it is parked on, the step
+            its worker said it was on, and its branch. */}
+        <div className="orch-task-meta">
+          <span className="orch-task-state">{stateWord}</span>
+          {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
+          {task.verdict === "fail" && <span className="orch-task-blocker" title="It finished, and what it checked did not pass. Tasks that depend on it wait.">Check failed</span>}
+          {requiresVerdict(task) && task.verdict !== "fail" && <span className="orch-task-kind" title="It settles only with a pass or fail verdict, and only a pass releases the tasks that depend on it.">{KIND_LABEL[task.kind!]}</span>}
+          {mission && !requiresVerdict(task) && <span className="orch-task-kind">{KIND_LABEL.work}</span>}
+          {mission && task.size && <span className="orch-task-size" title="What the task is worth when its result is accepted">{SIZE_LABEL[task.size]}</span>}
+          {environment && <span className="orch-task-env" data-tone={environment.tone} title={environment.detail.join("\n")}>{environment.label}</span>}
+          {decision && <span className="orch-task-decision" title={[
+            `Native decision ${decision.id}`,
+            decision.reason,
+            decision.blockedAction ? `Action: ${decision.blockedAction}` : "The provider gave no exact action.",
+            decision.continuation === "unavailable" ? "This attempt cannot continue from here; a new attempt is needed." : decision.continuation === "new_turn_same_attempt" ? "Answering resumes this same attempt." : "Whether it can resume is not known.",
+          ].join("\n")}>{decision.continuation === "unavailable" ? "Decision recorded · cannot resume" : "Native decision"} {decision.id.slice(0, 10)}</span>}
+          {step && <span className="orch-task-step" title={step}>{step}</span>}
+          {reportedStage && !step && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
+          {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
+        </div>
         {/* The standard plan card: where it runs (planned until the host
             prepares it), who owns it on which model, and what done means. */}
         <TaskPlanCard task={task} run={run} attempt={attempt} projectName={projectName} />
