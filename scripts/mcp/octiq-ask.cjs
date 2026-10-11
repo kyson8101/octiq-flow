@@ -2093,7 +2093,10 @@ const ORCHESTRATION_PEER_REQUEST = {
     "text up to 4000 characters, and maxMinutes: minutes of working time; waiting for a decision " +
     "does not count, and it is not extended. When they are used the host ends the attempt as " +
     "failed (peer request time limit). There is no way to add time: a longer job is a new " +
-    "request, and only the person can start a failed one again. Refused: someone off your team (the " +
+    "request. A failed one that you or the host start again carries on with the time that is " +
+    "left; only the person's own retry on the page starts a new limit. A wait is free only " +
+    "while nothing is running: a gate that is open while the teammate's turn still runs is " +
+    "working time. Refused: someone off your team (the " +
     "refusal names your teammates), yourself, a teammate on a lead-only model, a project or " +
     "repository the teammate or you may not work in, a front desk, and an additional agent " +
     "in a room. A peer-request task cannot be split, revised or passed on, you cannot send " +
