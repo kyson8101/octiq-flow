@@ -1,6 +1,6 @@
 //! What an agent may do to the person's registered agents through its MCP:
-//! `agent_list`, `agent_register`, `agent_update`, `agent_delete` and
-//! `agent_policy_update`.
+//! `agent_list`, `agent_register`, `agent_update`, `agent_delete`,
+//! `agent_policy_update`, `team_create` and `team_update`.
 //!
 //! Reading the roster is free. A change is only ever PROPOSED by the agent.
 //! The host builds the whole draft itself, runs it through every rule the
@@ -10,7 +10,9 @@
 //! `team::save_unchanged` (or `team::delete_unchanged` for a removal), so what
 //! is saved is exactly the change they were shown, made to the version of the
 //! agent they were shown it against. A removal also moves other agents, so it
-//! is held to everything its card said about the chart (`team::Removal`).
+//! is held to everything its card said about the chart (`team::Removal`), and
+//! a team change to everything its card said about the team and its members
+//! (`team::TeamChange`).
 //!
 //! The card is one-off: "Always" would wave through the next agent this chat
 //! invents, which is not a decision anybody can make in advance.
@@ -24,7 +26,7 @@ use serde_json::{json, Value};
 use crate::agent_chat::{Access, ChatAgent};
 use crate::outcome::{ReasonClass, Refusal};
 use crate::permission::Answer;
-use crate::team::{AgentPolicy, AgentTeam, Removal, TeamAgent, TeamDraft};
+use crate::team::{AgentPolicy, AgentTeam, Removal, TeamAgent, TeamChange, TeamDraft, TeamRequest};
 use crate::workspaces::Workspace;
 
 /// The shortest and longest an agent may ask the person's card to stay up.
@@ -99,6 +101,36 @@ pub struct PolicyProposal {
     pub wait_seconds: Option<u64>,
 }
 
+/// `team_create`'s arguments: the new team's name and who starts on it, each
+/// by id or name. The team is global; nothing else about an agent is named.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TeamCreateProposal {
+    pub name: String,
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// As `Proposal::wait_seconds`.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+/// `team_update`'s arguments: the team, by id or name, and what changes about
+/// it: a new name, agents to add, agents to remove.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TeamUpdateProposal {
+    pub team: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub add_members: Vec<String>,
+    #[serde(default)]
+    pub remove_members: Vec<String>,
+    /// As `Proposal::wait_seconds`.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
 /// Which change is being proposed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -147,6 +179,18 @@ impl Roster {
             self.front_desk.as_deref(),
             id,
         )
+    }
+
+    /// What `request` would do to this roster's teams: what its card states,
+    /// and what the person's Allow is held to.
+    pub fn team_change(&self, request: &TeamRequest) -> Result<TeamChange, String> {
+        crate::team::team_change(&self.agents, &self.teams, request)
+    }
+
+    /// The team an agent is on, when that team still exists.
+    fn team_of(&self, agent: &TeamAgent) -> Option<&AgentTeam> {
+        let id = agent.team_id.as_deref()?;
+        self.teams.iter().find(|t| t.id == id)
     }
 
     fn project_name(&self, id: Option<&str>) -> String {
@@ -234,8 +278,10 @@ fn optional(
 }
 
 /// One agent as an agent reads it: what the Settings form shows, without the
-/// picture or the memory note's path.
-fn public(agent: &TeamAgent) -> Value {
+/// picture or the memory note's path. `teamId` and `team` are its team's id
+/// and name, both null when it is on none.
+fn public(roster: &Roster, agent: &TeamAgent) -> Value {
+    let team = roster.team_of(agent);
     json!({
         "id": agent.id,
         "name": agent.name,
@@ -247,7 +293,25 @@ fn public(agent: &TeamAgent) -> Value {
         "access": agent.access,
         "projectId": agent.project_id,
         "reportsTo": agent.reports_to,
-        "teamId": agent.team_id,
+        "teamId": team.map(|t| &t.id),
+        "team": team.map(|t| &t.name),
+    })
+}
+
+/// One team as an agent reads it: its id, name and project, and who is on it,
+/// by name in registration order. Every member is listed, whichever project
+/// the listing was scoped to.
+fn public_team(roster: &Roster, team: &AgentTeam) -> Value {
+    json!({
+        "id": team.id,
+        "name": team.name,
+        "projectId": team.project_id,
+        "members": roster
+            .agents
+            .iter()
+            .filter(|a| a.team_id.as_deref() == Some(team.id.as_str()))
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -261,13 +325,11 @@ pub fn listing(roster: &Roster, args: ListArgs) -> Result<Value, String> {
         .agents
         .iter()
         .filter(|a| scope.is_none() || a.project_id.is_none() || a.project_id == scope)
-        .map(public)
+        .map(|a| public(roster, a))
         .collect();
     Ok(json!({
         "agents": agents,
-        "teams": roster.teams.iter().map(|t| json!({
-            "id": t.id, "name": t.name, "projectId": t.project_id,
-        })).collect::<Vec<_>>(),
+        "teams": roster.teams.iter().map(|t| public_team(roster, t)).collect::<Vec<_>>(),
         "projects": roster.projects.iter().map(|p| json!({
             "id": p.id, "name": p.name,
         })).collect::<Vec<_>>(),
@@ -767,12 +829,13 @@ pub fn policy_saved_text(policy: &AgentPolicy) -> Value {
 }
 
 /// What a saved change answers with: the agent as `agent_list` shows it.
-pub fn saved_text(kind: Kind, agent: &TeamAgent) -> Value {
+/// `roster` is the one the change was proposed against; it names the team.
+pub fn saved_text(roster: &Roster, kind: Kind, agent: &TeamAgent) -> Value {
     let said = match kind {
         Kind::Register => format!("The person approved it: {} is registered.", agent.name),
         Kind::Update => format!("The person approved it: {} is updated.", agent.name),
     };
-    json!({ "status": "saved", "text": said, "agent": public(agent) })
+    json!({ "status": "saved", "text": said, "agent": public(roster, agent) })
 }
 
 /// What follows a saved agent, however it was saved: its memory note, when a
@@ -831,11 +894,11 @@ where
 
 /// What a removal answers with: the agent that is gone, as `agent_list` last
 /// showed it.
-pub fn deleted_text(gone: &TeamAgent) -> Value {
+pub fn deleted_text(roster: &Roster, gone: &TeamAgent) -> Value {
     json!({
         "status": "saved",
         "text": format!("The person approved it: {} is removed.", gone.name),
-        "agent": public(gone),
+        "agent": public(roster, gone),
     })
 }
 
@@ -879,6 +942,250 @@ where
     };
     approved(&ask(request).await, wait)?;
     crate::team::delete_unchanged(team, &gone.id, &shown).map_err(Refusal::from)
+}
+
+/// `list`, or the card's word for an empty one.
+fn names(list: &[String]) -> String {
+    if list.is_empty() {
+        "none".into()
+    } else {
+        list.join(", ")
+    }
+}
+
+/// Every row of a team card, in order. One list for the text and the rows,
+/// so they cannot drift.
+///
+/// A new team: where it is available, and who starts on it. A changed team:
+/// `Name` when it is renamed, then, when its members change, who is `Added`,
+/// who is `Removed`, and `Members` whole, before and after. `Other teams`
+/// comes last on either card when an agent that joins is on another team: an
+/// agent is on one team at a time, so joining this one takes it off that one,
+/// and the card says which.
+fn team_rows(roster: &Roster, change: &TeamChange) -> Vec<FactRow> {
+    let of = |members: &[crate::team::TeamMember]| {
+        names(&members.iter().map(|m| m.name.clone()).collect::<Vec<_>>())
+    };
+    let mut rows = Vec::new();
+    match &change.was {
+        None => {
+            rows.push(plain(
+                "Available in",
+                roster.project_name(change.project_id.as_deref()),
+            ));
+            rows.push(plain("Members", of(&change.after)));
+        }
+        Some(was) => {
+            if was != &change.name {
+                rows.push(FactRow::Move {
+                    label: "Name",
+                    before: was.clone(),
+                    after: change.name.clone(),
+                });
+            }
+            if !change.joining.is_empty() {
+                let joining: Vec<String> = change.joining.iter().map(|j| j.name.clone()).collect();
+                rows.push(plain("Added", names(&joining)));
+            }
+            if !change.leaving.is_empty() {
+                rows.push(plain("Removed", of(&change.leaving)));
+            }
+            if change.before != change.after {
+                rows.push(FactRow::Move {
+                    label: "Members",
+                    before: of(&change.before),
+                    after: of(&change.after),
+                });
+            }
+        }
+    }
+    let moved: Vec<String> = change
+        .joining
+        .iter()
+        .filter_map(|j| Some(format!("{} leaves {}.", j.name, j.leaves.as_ref()?)))
+        .collect();
+    if !moved.is_empty() {
+        rows.push(plain("Other teams", moved.join(" ")));
+    }
+    rows
+}
+
+/// The first sentence of a team card.
+fn team_lead(change: &TeamChange) -> String {
+    match &change.was {
+        None => format!("Create the team {}.", change.name),
+        Some(was) => format!("Change the team {was}."),
+    }
+}
+
+/// The team change in words, for the card: `team_rows`, one to a line.
+/// `change` is `Roster::team_change` of the same roster, and it is what the
+/// person's Allow is held to (`team::change_team_unchanged`).
+pub fn describe_team(roster: &Roster, change: &TeamChange) -> String {
+    let mut text = team_lead(change);
+    text.push('\n');
+    for row in team_rows(roster, change) {
+        match row {
+            FactRow::Plain { label, value } => text.push_str(&format!("\n{label}: {value}")),
+            FactRow::Move {
+                label,
+                before,
+                after,
+            } => text.push_str(&format!("\n{label}: {before} → {after}")),
+        }
+    }
+    text
+}
+
+/// `describe_team` as rows: the same rows, in the same order.
+pub fn team_facts(roster: &Roster, change: &TeamChange) -> ChangeFacts {
+    ChangeFacts {
+        lead: team_lead(change),
+        rows: team_rows(roster, change),
+    }
+}
+
+/// What a saved team answers with: the team as `agent_list` shows it, with
+/// the members the card showed it ending up with.
+pub fn team_saved_text(team: &AgentTeam, change: &TeamChange) -> Value {
+    let said = match &change.was {
+        None => format!("The person approved it: the team {} is created.", team.name),
+        Some(_) => format!("The person approved it: the team {} is updated.", team.name),
+    };
+    json!({
+        "status": "saved",
+        "text": said,
+        "team": {
+            "id": team.id,
+            "name": team.name,
+            "projectId": team.project_id,
+            "members": change.after.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// The ids `specs` name, each an agent by id or name.
+fn agent_ids(roster: &Roster, specs: &[String]) -> Result<Vec<String>, String> {
+    specs
+        .iter()
+        .map(|spec| agent(roster, spec).map(|a| a.id.clone()))
+        .collect()
+}
+
+/// Put a team change to the person, and make it only on their Allow, and only
+/// while it still does what the card said (`team::TeamChange`). The saved
+/// team comes back with the change that was shown.
+async fn propose_team<A, F>(
+    roster: &Roster,
+    team: &Path,
+    chat_key: &str,
+    tool: &str,
+    request: TeamRequest,
+    wait_seconds: Option<u64>,
+    ask: A,
+) -> Result<(AgentTeam, TeamChange), Refusal>
+where
+    A: FnOnce(crate::permission::Request) -> F,
+    F: Future<Output = Answer>,
+{
+    // Every rule, against the roster as it is now. A proposal that would be
+    // refused is never put to the person.
+    let shown = roster
+        .team_change(&request)
+        .map_err(|error| Refusal::new(ReasonClass::Validation, error))?;
+    let wait = wait_for(wait_seconds);
+    let asked = crate::permission::Request {
+        chat_key: Some(chat_key.to_string()),
+        tool_name: Some(tool.into()),
+        tool_input: Some(json!({
+            "change": describe_team(roster, &shown),
+            "changeFacts": team_facts(roster, &shown),
+        })),
+        once: true,
+        answer_within_secs: Some(wait.as_secs()),
+        ..Default::default()
+    };
+    approved(&ask(asked).await, wait)?;
+    let saved = crate::team::change_team_unchanged(team, &request, &shown)?;
+    Ok((saved, shown))
+}
+
+/// Propose a new peer-help team, global, with the members named. An agent
+/// already on another team leaves it to join, and the card says so.
+pub async fn propose_team_create<A, F>(
+    roster: &Roster,
+    team: &Path,
+    chat_key: &str,
+    proposal: TeamCreateProposal,
+    ask: A,
+) -> Result<(AgentTeam, TeamChange), Refusal>
+where
+    A: FnOnce(crate::permission::Request) -> F,
+    F: Future<Output = Answer>,
+{
+    let invalid = |error: String| Refusal::new(ReasonClass::Validation, error);
+    let request = TeamRequest {
+        id: None,
+        name: Some(proposal.name),
+        add: agent_ids(roster, &proposal.members).map_err(invalid)?,
+        remove: Vec::new(),
+    };
+    propose_team(
+        roster,
+        team,
+        chat_key,
+        "mcp__octiq__team_create",
+        request,
+        proposal.wait_seconds,
+        ask,
+    )
+    .await
+}
+
+/// Propose renaming a team, adding agents to it or removing agents from it.
+/// Nothing else about the team or an agent changes: not the project the team
+/// belongs to, and no agent's manager, access, provider, model or project.
+pub async fn propose_team_update<A, F>(
+    roster: &Roster,
+    team: &Path,
+    chat_key: &str,
+    proposal: TeamUpdateProposal,
+    ask: A,
+) -> Result<(AgentTeam, TeamChange), Refusal>
+where
+    A: FnOnce(crate::permission::Request) -> F,
+    F: Future<Output = Answer>,
+{
+    let invalid = |error: String| Refusal::new(ReasonClass::Validation, error);
+    if proposal.team.trim().is_empty() {
+        return Err(invalid(
+            "Name the team to change, by id or name from agent_list.".into(),
+        ));
+    }
+    let target = pick(
+        &roster.teams,
+        &proposal.team,
+        |t| &t.id,
+        |t| &t.name,
+        "team",
+    )
+    .map_err(invalid)?;
+    let request = TeamRequest {
+        id: Some(target.id.clone()),
+        name: proposal.name,
+        add: agent_ids(roster, &proposal.add_members).map_err(invalid)?,
+        remove: agent_ids(roster, &proposal.remove_members).map_err(invalid)?,
+    };
+    propose_team(
+        roster,
+        team,
+        chat_key,
+        "mcp__octiq__team_update",
+        request,
+        proposal.wait_seconds,
+        ask,
+    )
+    .await
 }
 
 /// Propose a new shared agent policy, put it to the person, and save it only
@@ -1757,9 +2064,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(gone.id, cto.id);
-        assert_eq!(deleted_text(&gone)["status"], "saved");
+        assert_eq!(deleted_text(&roster(&team), &gone)["status"], "saved");
         assert_eq!(
-            deleted_text(&gone)["text"],
+            deleted_text(&roster(&team), &gone)["text"],
             "The person approved it: Cto is removed."
         );
         let left = stored(&team);
@@ -2540,5 +2847,847 @@ mod tests {
             input["change"],
             "Clear the shared agent policy that every agent's brief starts with."
         );
+    }
+
+    /// A team made in Settings, global or in one project.
+    fn settings_team(team: &Path, name: &str, project: Option<&str>) -> AgentTeam {
+        crate::team::save_team(
+            team,
+            crate::team::AgentTeamDraft {
+                id: None,
+                name: name.into(),
+                project_id: project.map(str::to_string),
+            },
+        )
+        .unwrap()
+    }
+
+    /// Put `agent` on `on` (off every team, with `None`), as its Settings
+    /// form would.
+    fn put_on(team: &Path, agent: &TeamAgent, on: Option<&AgentTeam>) -> TeamAgent {
+        crate::team::save(
+            team,
+            TeamDraft {
+                team_id: Some(on.map(|t| t.id.clone()).unwrap_or_default()),
+                ..redraft(agent)
+            },
+        )
+        .unwrap()
+    }
+
+    fn agent_named(team: &Path, name: &str) -> TeamAgent {
+        stored(team).into_iter().find(|a| a.name == name).unwrap()
+    }
+
+    /// Who is on the team called `name`, by name, as the store has it.
+    fn members_of(team: &Path, name: &str) -> Vec<String> {
+        let id = crate::team::teams(team)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.name == name)
+            .map(|t| t.id);
+        stored(team)
+            .into_iter()
+            .filter(|a| a.team_id.is_some() && a.team_id == id)
+            .map(|a| a.name)
+            .collect()
+    }
+
+    fn new_team(name: &str, members: &[&str]) -> TeamCreateProposal {
+        TeamCreateProposal {
+            name: name.into(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+            wait_seconds: Some(50),
+        }
+    }
+
+    fn team_edit(
+        spec: &str,
+        name: Option<&str>,
+        add: &[&str],
+        remove: &[&str],
+    ) -> TeamUpdateProposal {
+        TeamUpdateProposal {
+            team: spec.into(),
+            name: name.map(str::to_string),
+            add_members: add.iter().map(|m| m.to_string()).collect(),
+            remove_members: remove.iter().map(|m| m.to_string()).collect(),
+            wait_seconds: Some(50),
+        }
+    }
+
+    /// Feedback 9c1c51fa, item 4: an agent reads who is on which team from
+    /// the listing alone. Each row names its team, and each team its members.
+    #[test]
+    fn the_listing_names_each_agents_team_and_each_teams_members() {
+        let (_dir, team) = temp_team();
+        let ada = register(&team, "Ada", None);
+        let bo = register(&team, "Bo", Some("p1"));
+        register(&team, "Cy", None);
+        let star = settings_team(&team, "Starfall", None);
+        settings_team(&team, "Empty", Some("p2"));
+        put_on(&team, &ada, Some(&star));
+        put_on(&team, &bo, Some(&star));
+
+        let all = listing(&roster(&team), ListArgs::default()).unwrap();
+        let row = |name: &str| {
+            all["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["name"] == name)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(row("Ada")["teamId"], star.id.as_str());
+        assert_eq!(row("Ada")["team"], "Starfall");
+        assert_eq!(row("Bo")["team"], "Starfall");
+        // On no team: both keys are there, and null.
+        assert_eq!(row("Cy")["teamId"], Value::Null);
+        assert_eq!(row("Cy")["team"], Value::Null);
+        assert!(row("Cy").as_object().unwrap().contains_key("team"));
+        assert_eq!(
+            all["teams"],
+            json!([
+                { "id": star.id, "name": "Starfall", "projectId": null, "members": ["Ada", "Bo"] },
+                { "id": all["teams"][1]["id"], "name": "Empty", "projectId": "p2", "members": [] },
+            ])
+        );
+
+        // A listing scoped to one project still names every member of a team.
+        let octiq = listing(
+            &roster(&team),
+            ListArgs {
+                project: Some("Octiq".into()),
+            },
+        )
+        .unwrap();
+        let names: Vec<_> = octiq["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Ada", "Cy"]);
+        assert_eq!(octiq["teams"][0]["members"], json!(["Ada", "Bo"]));
+
+        // The answer to a saved change names the team the same way.
+        let saved = saved_text(&roster(&team), Kind::Update, &agent_named(&team, "Ada"));
+        assert_eq!(saved["agent"]["team"], "Starfall");
+        assert_eq!(saved["agent"]["teamId"], star.id.as_str());
+    }
+
+    /// The person's live store, as it reads the day this was written: the
+    /// team's members carry its id in the store, so the listing has always
+    /// had them. What it lacked was the team's name on the row and the
+    /// members on the team.
+    #[test]
+    fn a_stored_teamid_reaches_the_listing() {
+        let (_dir, team) = temp_team();
+        std::fs::write(
+            &team,
+            serde_json::to_vec(&json!({
+                "agents": [
+                    { "id": "agent_1", "name": "STAR LEAD", "role": "", "agent": "claude",
+                      "model": "opus", "access": "auto", "teamId": "team_5bd7146f6079",
+                      "createdAt": 1, "updatedAt": 2 },
+                    { "id": "agent_2", "name": "OCTIQ BE", "role": "", "agent": "claude",
+                      "model": "opus", "access": "auto", "projectId": "p2",
+                      "createdAt": 1, "updatedAt": 2 },
+                ],
+                "teams": [
+                    { "id": "team_5bd7146f6079", "name": "Starfall", "createdAt": 1, "updatedAt": 1 },
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let all = listing(&roster(&team), ListArgs::default()).unwrap();
+        assert_eq!(all["agents"][0]["teamId"], "team_5bd7146f6079");
+        assert_eq!(all["agents"][0]["team"], "Starfall");
+        assert_eq!(all["agents"][1]["teamId"], Value::Null);
+        assert_eq!(all["teams"][0]["members"], json!(["STAR LEAD"]));
+    }
+
+    #[tokio::test]
+    async fn a_proposed_team_is_made_only_when_the_person_allows_it() {
+        let (_dir, team) = temp_team();
+        register(&team, "Potato", None);
+        register(&team, "Nas", Some("p1"));
+        let before = stored(&team);
+
+        // Declined: no team, nobody moved.
+        let (shown, deny) = asker("deny", "you denied it");
+        let refused = propose_team_create(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            new_team("Leads", &["Potato", "Nas"]),
+            deny,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.message,
+            "The person declined this change, so nothing was changed."
+        );
+        assert_eq!(refused.outcome.reason_class, ReasonClass::ApprovalDenied);
+        let request = shown.lock().unwrap().pop().unwrap();
+        assert_eq!(
+            request.tool_name.as_deref(),
+            Some("mcp__octiq__team_create")
+        );
+        assert_eq!(request.chat_key.as_deref(), Some("chat:lead"));
+        assert!(request.once, "a team card has no Always");
+        assert_eq!(request.answer_within_secs, Some(50));
+        assert!(crate::team::teams(&team).unwrap().is_empty());
+        assert_eq!(stored(&team), before);
+
+        // Nobody answered: the same.
+        let (_, expire) = asker("deny", "nobody answered in time");
+        let expired = propose_team_create(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            new_team("Leads", &["Potato"]),
+            expire,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(expired.outcome.reason_class, ReasonClass::ApprovalExpired);
+        assert!(crate::team::teams(&team).unwrap().is_empty());
+        assert_eq!(stored(&team), before);
+
+        // Allowed: the team exists, global, with exactly those members, and
+        // the answer says saved.
+        let (shown, allow) = asker("allow", "you allowed it");
+        let (saved, change) = propose_team_create(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            new_team(" Leads ", &["Potato", "Nas", "potato"]),
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["change"],
+            "Create the team Leads.\n\nAvailable in: every project\nMembers: Potato, Nas"
+        );
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Create the team Leads.",
+                "rows": [
+                    { "label": "Available in", "value": "every project" },
+                    { "label": "Members", "value": "Potato, Nas" },
+                ],
+            })
+        );
+        rows_say_what_the_text_says(&input);
+        assert_eq!(saved.name, "Leads");
+        assert_eq!(saved.project_id, None);
+        assert_eq!(crate::team::teams(&team).unwrap(), vec![saved.clone()]);
+        assert_eq!(members_of(&team, "Leads"), ["Potato", "Nas"]);
+        assert_eq!(
+            team_saved_text(&saved, &change),
+            json!({
+                "status": "saved",
+                "text": "The person approved it: the team Leads is created.",
+                "team": { "id": saved.id, "name": "Leads", "projectId": null, "members": ["Potato", "Nas"] },
+            })
+        );
+        // Membership is all that moved: every other field is as it was.
+        for (was, now) in before.iter().zip(stored(&team)) {
+            assert_eq!(now.team_id.as_deref(), Some(saved.id.as_str()));
+            assert!(
+                now.updated_at > was.updated_at,
+                "a new version of {}",
+                now.name
+            );
+            assert_eq!(
+                TeamAgent {
+                    team_id: None,
+                    updated_at: was.updated_at,
+                    ..now
+                },
+                *was
+            );
+        }
+
+        // A team may start empty.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose_team_create(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            new_team("Later", &[]),
+            allow,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            card_of(&shown),
+            "Create the team Later.\n\nAvailable in: every project\nMembers: none"
+        );
+        assert!(members_of(&team, "Later").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_team_update_renames_adds_and_removes_and_touches_nothing_else() {
+        let (_dir, team) = temp_team();
+        let ada = register(&team, "Ada", None);
+        let bo = register(&team, "Bo", None);
+        let cy = register_under(&team, "Cy", &ada);
+        register(&team, "Di", Some("p1"));
+        let web = settings_team(&team, "Web", None);
+        put_on(&team, &ada, Some(&web));
+        put_on(&team, &bo, Some(&web));
+        let before = stored(&team);
+
+        // Declined: nothing moved.
+        let (_, deny) = asker("deny", "you denied it");
+        propose_team_update(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            team_edit("Web", Some("Site"), &["Cy"], &["Bo"]),
+            deny,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(stored(&team), before);
+        assert_eq!(crate::team::teams(&team).unwrap(), vec![web.clone()]);
+
+        let (shown, allow) = asker("allow", "you allowed it");
+        let (saved, change) = propose_team_update(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            team_edit(&web.id, Some("Site"), &["Cy", "Di"], &["Bo"]),
+            allow,
+        )
+        .await
+        .unwrap();
+        let request = shown.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            request.tool_name.as_deref(),
+            Some("mcp__octiq__team_update")
+        );
+        assert!(request.once);
+        let input = input_of(&shown);
+        assert_eq!(
+            input["change"],
+            "Change the team Web.\n\nName: Web → Site\nAdded: Cy, Di\nRemoved: Bo\nMembers: Ada, Bo → Ada, Cy, Di"
+        );
+        assert_eq!(
+            input["changeFacts"],
+            json!({
+                "lead": "Change the team Web.",
+                "rows": [
+                    { "label": "Name", "before": "Web", "after": "Site" },
+                    { "label": "Added", "value": "Cy, Di" },
+                    { "label": "Removed", "value": "Bo" },
+                    { "label": "Members", "before": "Ada, Bo", "after": "Ada, Cy, Di" },
+                ],
+            })
+        );
+        rows_say_what_the_text_says(&input);
+        assert_eq!(saved.id, web.id);
+        assert_eq!(saved.name, "Site");
+        assert_eq!(saved.project_id, None);
+        assert!(saved.updated_at > web.updated_at);
+        assert_eq!(members_of(&team, "Site"), ["Ada", "Cy", "Di"]);
+        assert_eq!(
+            team_saved_text(&saved, &change)["text"],
+            "The person approved it: the team Site is updated."
+        );
+        assert_eq!(
+            team_saved_text(&saved, &change)["team"]["members"],
+            json!(["Ada", "Cy", "Di"])
+        );
+        // Nobody's manager, access, provider, model or project moved, and an
+        // agent the change did not name is the version it was.
+        for (was, now) in before.iter().zip(stored(&team)) {
+            let named = ["Bo", "Cy", "Di"].contains(&now.name.as_str());
+            assert_eq!(now.updated_at > was.updated_at, named, "{}", now.name);
+            assert_eq!(
+                TeamAgent {
+                    team_id: was.team_id.clone(),
+                    updated_at: was.updated_at,
+                    ..now
+                },
+                *was
+            );
+        }
+        assert_eq!(agent_named(&team, "Cy").reports_to, cy.reports_to);
+        assert_eq!(agent_named(&team, "Bo").team_id, None);
+
+        // Members only: no Name row. The last member leaving empties it.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose_team_update(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            team_edit("site", None, &[], &["Ada", "Cy", "Di"]),
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["change"],
+            "Change the team Site.\n\nRemoved: Ada, Cy, Di\nMembers: Ada, Cy, Di → none"
+        );
+        rows_say_what_the_text_says(&input);
+        assert!(members_of(&team, "Site").is_empty());
+
+        // A rename only: one row.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose_team_update(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            team_edit("Site", Some("Web"), &[], &[]),
+            allow,
+        )
+        .await
+        .unwrap();
+        assert_eq!(card_of(&shown), "Change the team Site.\n\nName: Site → Web");
+    }
+
+    /// One team per agent: an agent added while it is on another team leaves
+    /// that one, and the card says which.
+    #[tokio::test]
+    async fn an_agent_on_another_team_leaves_it_and_the_card_says_which() {
+        let (_dir, team) = temp_team();
+        let ada = register(&team, "Ada", None);
+        let bo = register(&team, "Bo", None);
+        register(&team, "Cy", None);
+        let web = settings_team(&team, "Web", None);
+        let ops = settings_team(&team, "Ops", None);
+        put_on(&team, &ada, Some(&web));
+        put_on(&team, &bo, Some(&ops));
+
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose_team_update(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            team_edit("Web", None, &["Bo", "Cy"], &[]),
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["change"],
+            "Change the team Web.\n\nAdded: Bo, Cy\nMembers: Ada → Ada, Bo, Cy\nOther teams: Bo leaves Ops."
+        );
+        assert_eq!(
+            input["changeFacts"]["rows"][2],
+            json!({ "label": "Other teams", "value": "Bo leaves Ops." })
+        );
+        rows_say_what_the_text_says(&input);
+        assert_eq!(members_of(&team, "Web"), ["Ada", "Bo", "Cy"]);
+        assert!(members_of(&team, "Ops").is_empty());
+
+        // A new team taking members from two others names both.
+        let (shown, allow) = asker("allow", "you allowed it");
+        put_on(&team, &agent_named(&team, "Cy"), Some(&ops));
+        propose_team_create(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            new_team("Leads", &["Ada", "Cy"]),
+            allow,
+        )
+        .await
+        .unwrap();
+        let input = input_of(&shown);
+        assert_eq!(
+            input["change"],
+            "Create the team Leads.\n\nAvailable in: every project\nMembers: Ada, Cy\nOther teams: Ada leaves Web. Cy leaves Ops."
+        );
+        rows_say_what_the_text_says(&input);
+        assert_eq!(members_of(&team, "Leads"), ["Ada", "Cy"]);
+        assert_eq!(members_of(&team, "Web"), ["Bo"]);
+        assert!(members_of(&team, "Ops").is_empty());
+    }
+
+    /// A proposal the rules refuse never reaches the person, and changes
+    /// nothing.
+    #[tokio::test]
+    async fn a_team_proposal_the_rules_refuse_puts_up_no_card() {
+        let (_dir, team) = temp_team();
+        let ada = register(&team, "Ada", None);
+        register(&team, "Bo", None);
+        register(&team, "Di", Some("p1"));
+        register(&team, "Twin", Some("p1"));
+        register(&team, "twin", Some("p2"));
+        let web = settings_team(&team, "Web", None);
+        let octiq = settings_team(&team, "Octiq only", Some("p2"));
+        put_on(&team, &ada, Some(&web));
+        let before = (stored(&team), crate::team::teams(&team).unwrap());
+
+        let created = [
+            (new_team("", &[]), "Give the team a name."),
+            (new_team("   ", &["Ada"]), "Give the team a name."),
+            (
+                new_team(&"x".repeat(61), &[]),
+                "The team's name is longer than 60 characters.",
+            ),
+            (new_team("web", &[]), "Another team is already called web."),
+            (
+                new_team("Octiq Only", &[]),
+                "Another team is already called Octiq Only.",
+            ),
+            (
+                new_team("Leads", &["Ada", "Nobody"]),
+                "No agent is called Nobody. Call agent_list for the ids.",
+            ),
+            (
+                new_team("Leads", &["Twin"]),
+                "More than one agent is called Twin. Pass its id from agent_list.",
+            ),
+        ];
+        for (proposal, said) in created {
+            let (shown, allow) = asker("allow", "you allowed it");
+            let refused = propose_team_create(&roster(&team), &team, "chat:lead", proposal, allow)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.message, said);
+            assert_eq!(refused.outcome.reason_class, ReasonClass::Validation);
+            assert!(shown.lock().unwrap().is_empty(), "{said}");
+        }
+
+        let updated = [
+            (
+                team_edit("", Some("X"), &[], &[]),
+                "Name the team to change, by id or name from agent_list.",
+            ),
+            (
+                team_edit("Nope", Some("X"), &[], &[]),
+                "No team is called Nope. Call agent_list for the ids.",
+            ),
+            (
+                team_edit("Web", None, &[], &[]),
+                "Say what to change about Web: a new name, or members to add or remove.",
+            ),
+            (
+                team_edit("Web", Some("Web"), &[], &[]),
+                "Say what to change about Web: a new name, or members to add or remove.",
+            ),
+            (
+                team_edit("Web", Some(" "), &["Bo"], &[]),
+                "Give the team a name.",
+            ),
+            (
+                team_edit("Web", Some("octiq only"), &[], &[]),
+                "Another team is already called octiq only.",
+            ),
+            (
+                team_edit("Web", None, &["Nobody"], &[]),
+                "No agent is called Nobody. Call agent_list for the ids.",
+            ),
+            (
+                team_edit("Web", None, &[], &["Nobody"]),
+                "No agent is called Nobody. Call agent_list for the ids.",
+            ),
+            (
+                team_edit("Web", None, &["Ada"], &[]),
+                "Ada is already on Web.",
+            ),
+            (team_edit("Web", None, &[], &["Bo"]), "Bo is not on Web."),
+            (
+                team_edit("Web", None, &["Bo"], &["Bo"]),
+                "Bo cannot be both added to and removed from Web.",
+            ),
+            // A project's team holds that project's agents and global ones.
+            (
+                team_edit(&octiq.id, None, &["Di"], &[]),
+                "Di cannot be on Octiq only: that team belongs to another project.",
+            ),
+        ];
+        for (proposal, said) in updated {
+            let (shown, allow) = asker("allow", "you allowed it");
+            let refused = propose_team_update(&roster(&team), &team, "chat:lead", proposal, allow)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.message, said);
+            assert_eq!(refused.outcome.reason_class, ReasonClass::Validation);
+            assert!(shown.lock().unwrap().is_empty(), "{said}");
+        }
+        assert_eq!((stored(&team), crate::team::teams(&team).unwrap()), before);
+
+        // The project a team belongs to is not this tool's to name.
+        let scoped: Result<TeamUpdateProposal, _> =
+            serde_json::from_value(json!({ "team": "Web", "project": "Octiq" }));
+        assert!(scoped.is_err());
+        let scoped: Result<TeamCreateProposal, _> =
+            serde_json::from_value(json!({ "name": "Leads", "project": "Octiq" }));
+        assert!(scoped.is_err());
+        let other: Result<TeamUpdateProposal, _> =
+            serde_json::from_value(json!({ "team": "Web", "reportsTo": "Ada" }));
+        assert!(other.is_err());
+        // A global agent may join a project's team; its project stays its own.
+        let (_, allow) = asker("allow", "you allowed it");
+        propose_team_update(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            team_edit(&octiq.id, None, &["Bo"], &[]),
+            allow,
+        )
+        .await
+        .unwrap();
+        assert_eq!(agent_named(&team, "Bo").project_id, None);
+        assert_eq!(
+            crate::team::teams(&team).unwrap()[1].project_id.as_deref(),
+            Some("p2")
+        );
+    }
+
+    /// The person's Allow is held to everything the card said: the team's
+    /// name, its members, and the team each agent it adds would leave. Each
+    /// of these changes the roster while the card waits; each is refused and
+    /// saves nothing.
+    #[tokio::test]
+    async fn a_team_change_is_refused_when_the_roster_is_no_longer_what_its_card_said() {
+        async fn refused(
+            team: &Path,
+            proposal: TeamUpdateProposal,
+            meanwhile: impl FnOnce(),
+            what: &str,
+        ) {
+            let (shown, allow) = allowed_after(meanwhile);
+            let stale = propose_team_update(&roster(team), team, "chat:lead", proposal, allow)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                stale.message,
+                format!("The team Web or its members changed while this waited for approval, so nothing was saved: {what}. Read agent_list again and propose it again."),
+            );
+            assert_eq!(shown.lock().unwrap().len(), 1);
+        }
+        let add_cy = || team_edit("Web", None, &["Cy"], &[]);
+
+        let (_dir, team) = temp_team();
+        let ada = register(&team, "Ada", None);
+        let bo = register(&team, "Bo", None);
+        let cy = register(&team, "Cy", None);
+        let web = settings_team(&team, "Web", None);
+        let ops = settings_team(&team, "Ops", None);
+        put_on(&team, &ada, Some(&web));
+
+        // Somebody joined in Settings during the wait: never on the card.
+        refused(
+            &team,
+            add_cy(),
+            || {
+                put_on(&team, &bo, Some(&web));
+            },
+            "its members are not the ones the card listed",
+        )
+        .await;
+        assert_eq!(members_of(&team, "Web"), ["Ada", "Bo"]);
+
+        // A member left during the wait.
+        refused(
+            &team,
+            add_cy(),
+            || {
+                put_on(&team, &agent_named(&team, "Bo"), None);
+            },
+            "its members are not the ones the card listed",
+        )
+        .await;
+        assert_eq!(members_of(&team, "Web"), ["Ada"]);
+
+        // The agent it adds joined another team during the wait: the card
+        // never said it would leave one.
+        refused(
+            &team,
+            add_cy(),
+            || {
+                put_on(&team, &cy, Some(&ops));
+            },
+            "an agent the card names has changed",
+        )
+        .await;
+        assert_eq!(members_of(&team, "Ops"), ["Cy"]);
+        assert_eq!(members_of(&team, "Web"), ["Ada"]);
+
+        // The agent it adds was renamed during the wait.
+        refused(
+            &team,
+            add_cy(),
+            || {
+                let cy = agent_named(&team, "Cy");
+                crate::team::save(
+                    &team,
+                    TeamDraft {
+                        name: "Cyrus".into(),
+                        ..redraft(&cy)
+                    },
+                )
+                .unwrap();
+            },
+            "an agent the card names has changed",
+        )
+        .await;
+        assert_eq!(members_of(&team, "Ops"), ["Cyrus"]);
+
+        // The agent it adds was added by someone else during the wait.
+        refused(
+            &team,
+            team_edit("Web", None, &["Cyrus"], &[]),
+            || {
+                put_on(&team, &agent_named(&team, "Cyrus"), Some(&web));
+            },
+            "Cyrus is already on Web",
+        )
+        .await;
+
+        // The agent it adds was removed during the wait.
+        refused(
+            &team,
+            team_edit("Web", None, &["Bo"], &[]),
+            || {
+                crate::team::delete(&team, &bo.id).unwrap();
+            },
+            "An agent this names no longer exists",
+        )
+        .await;
+
+        // The team was renamed in Settings during the wait.
+        let rename = |name: &str| {
+            crate::team::save_team(
+                &team,
+                crate::team::AgentTeamDraft {
+                    id: Some(web.id.clone()),
+                    name: name.into(),
+                    project_id: None,
+                },
+            )
+            .unwrap();
+        };
+        refused(
+            &team,
+            team_edit("Web", None, &[], &["Ada"]),
+            || rename("Site"),
+            "the team is not the one the card showed",
+        )
+        .await;
+        assert_eq!(members_of(&team, "Site"), ["Ada", "Cyrus"]);
+        rename("Web");
+
+        // The name it asks for was taken during the wait.
+        refused(
+            &team,
+            team_edit("Web", Some("Leads"), &[], &[]),
+            || {
+                settings_team(&team, "Leads", None);
+            },
+            "Another team is already called Leads",
+        )
+        .await;
+
+        // The team was removed during the wait.
+        refused(
+            &team,
+            team_edit("Web", Some("Site"), &[], &[]),
+            || {
+                crate::team::delete_team(&team, &web.id).unwrap();
+            },
+            "That team no longer exists",
+        )
+        .await;
+
+        // A new team: a member that joined another team during the wait,
+        // and a name taken during the wait.
+        let (_, allow) = allowed_after(|| {
+            put_on(&team, &agent_named(&team, "Ada"), Some(&ops));
+        });
+        let stale = propose_team_create(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            new_team("Core", &["Ada"]),
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            stale.message,
+            "The teams or the agents Core names changed while this waited for approval, so nothing was saved: an agent the card names has changed. Read agent_list again and propose it again."
+        );
+        let (_, allow) = allowed_after(|| {
+            settings_team(&team, "Core", None);
+        });
+        let stale = propose_team_create(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            new_team("Core", &["Ada"]),
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            stale.message,
+            "The teams or the agents Core names changed while this waited for approval, so nothing was saved: Another team is already called Core. Read agent_list again and propose it again."
+        );
+        assert!(members_of(&team, "Core").is_empty());
+        assert_eq!(members_of(&team, "Ops"), ["Ada"]);
+    }
+
+    /// An agent that joins or leaves a team is a new version of itself, so a
+    /// card made against the version before is refused, as after any edit.
+    #[tokio::test]
+    async fn a_team_change_makes_a_waiting_agent_card_stale() {
+        let (_dir, team) = temp_team();
+        register(&team, "Ada", None);
+        settings_team(&team, "Web", None);
+        let (_, allow) = allowed_after(|| {
+            let (_, allow) = asker("allow", "you allowed it");
+            let now = roster(&team);
+            let joined = propose_team_update(
+                &now,
+                &team,
+                "chat:other",
+                team_edit("Web", None, &["Ada"], &[]),
+                allow,
+            );
+            // Its asker answers at once, so there is nothing to wait for.
+            futures_util::FutureExt::now_or_never(joined)
+                .expect("answered at once")
+                .unwrap();
+        });
+        let stale = propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Ada".into()),
+                role: Some("Leads.".into()),
+                wait_seconds: Some(50),
+                ..Default::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            stale
+                .message
+                .starts_with("Ada was changed while this waited for approval"),
+            "{}",
+            stale.message
+        );
+        assert_eq!(agent_named(&team, "Ada").role, "Writes code.");
+        assert_eq!(members_of(&team, "Web"), ["Ada"]);
     }
 }

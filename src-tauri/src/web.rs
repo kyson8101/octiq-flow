@@ -1779,7 +1779,7 @@ async fn agents_hook(
     use crate::outcome::{ReasonClass, Refusal};
     use crate::team_tools::{Kind, Roster};
     let kind = match action {
-        "list" | "policy_update" | "delete" => None,
+        "list" | "policy_update" | "delete" | "team_create" | "team_update" => None,
         "register" => Some(Kind::Register),
         "update" => Some(Kind::Update),
         _ => {
@@ -1827,7 +1827,32 @@ async fn agents_hook(
         )
         .await?;
         crate::bus::emit("team-changed", json!({ "id": gone.id, "removed": true }));
-        return Ok(crate::team_tools::deleted_text(&gone));
+        return Ok(crate::team_tools::deleted_text(&roster, &gone));
+    }
+    // A team is a change to the roster like any other: the same callers, the
+    // same card. It moves membership only (`team_tools::propose_team_update`).
+    if action == "team_create" || action == "team_update" {
+        let (saved, change) = if action == "team_create" {
+            crate::team_tools::propose_team_create(
+                &roster,
+                &team,
+                chat_key,
+                serde_json::from_value(args).map_err(invalid)?,
+                crate::permission::ask,
+            )
+            .await?
+        } else {
+            crate::team_tools::propose_team_update(
+                &roster,
+                &team,
+                chat_key,
+                serde_json::from_value(args).map_err(invalid)?,
+                crate::permission::ask,
+            )
+            .await?
+        };
+        crate::bus::emit("team-changed", json!({ "team": saved.id }));
+        return Ok(crate::team_tools::team_saved_text(&saved, &change));
     }
     let Some(kind) = kind else {
         let saved = crate::team_tools::propose_policy(
@@ -1851,7 +1876,7 @@ async fn agents_hook(
         crate::permission::ask,
     )
     .await?;
-    let mut value = crate::team_tools::saved_text(kind, &saved);
+    let mut value = crate::team_tools::saved_text(&roster, kind, &saved);
     if let (Some(error), Some(object)) = (crate::team_tools::settle(&saved), value.as_object_mut())
     {
         object.insert("memoryError".into(), Value::String(error));
@@ -3055,6 +3080,14 @@ mod tests {
                 ),
                 ("delete", json!({ "agent": "Potato" })),
                 ("policy_update", json!({ "policy": "Use worktrees." })),
+                (
+                    "team_create",
+                    json!({ "name": "Leads", "members": ["Potato"] }),
+                ),
+                (
+                    "team_update",
+                    json!({ "team": "Leads", "addMembers": ["Potato"] }),
+                ),
             ]
         };
 
@@ -3109,6 +3142,7 @@ mod tests {
         }
         assert_eq!(crate::team::list(&team, None, true).unwrap(), vec![potato]);
         assert_eq!(crate::team::policy(&team).unwrap().text, "");
+        assert!(crate::team::teams(&team).unwrap().is_empty());
 
         // An ordinary lead chat is past that check for every one of them:
         // what answers it is the roster's own rules, never its identity.
@@ -3133,6 +3167,16 @@ mod tests {
                 "policy_update",
                 json!({ "policy": "" }),
                 "That is already the shared agent policy.",
+            ),
+            (
+                "team_create",
+                json!({ "name": "Leads", "members": ["Nobody"] }),
+                "No agent is called Nobody. Call agent_list for the ids.",
+            ),
+            (
+                "team_update",
+                json!({ "team": "Leads", "addMembers": ["Potato"] }),
+                "No team is called Leads. Call agent_list for the ids.",
             ),
         ] {
             let (status, answer) = post_hook(

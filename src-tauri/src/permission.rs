@@ -58,8 +58,8 @@ pub const DENIED: &str = "you denied it";
 /// agent saved a memory entry or reported its status. None of these touch the
 /// project: they keep the host's own bookkeeping (memory, status, title,
 /// feedback, previews), or they already put their own card in front of the
-/// person (handover, registering an agent, the shared policy), where a second
-/// card would only ask the same thing twice.
+/// person (handover, registering an agent, the shared policy, a team), where a
+/// second card would only ask the same thing twice.
 pub fn host_bookkeeping(tool: &str) -> bool {
     matches!(
         tool.strip_prefix("mcp__octiq__"),
@@ -80,6 +80,8 @@ pub fn host_bookkeeping(tool: &str) -> bool {
                 | "agent_update"
                 | "agent_delete"
                 | "agent_policy_update"
+                | "team_create"
+                | "team_update"
                 | "request_access"
         )
     )
@@ -592,6 +594,9 @@ mod tests {
         assert!(host_bookkeeping("mcp__octiq__handover"));
         assert!(host_bookkeeping("mcp__octiq__request_access"));
         assert!(host_bookkeeping("mcp__octiq__agent_delete"));
+        // A team change is asked on the host's own one-off card too.
+        assert!(host_bookkeeping("mcp__octiq__team_create"));
+        assert!(host_bookkeeping("mcp__octiq__team_update"));
         // Writes the person's notes or starts work: still asked in plan mode.
         assert!(!host_bookkeeping("mcp__octiq__vault_write"));
         assert!(!host_bookkeeping("mcp__octiq__orchestration_run_create"));

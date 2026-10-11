@@ -349,12 +349,17 @@ started with.
 
 ### Registering agents from a chat
 
-An agent can be asked to hire, adjust or remove agents, through five MCP tools
-(`team_tools.rs`, `POST /hook/agents`):
+An agent can be asked to hire, adjust or remove agents, and to make or change
+a peer-help team, through seven MCP tools (`team_tools.rs`,
+`POST /hook/agents`):
 
 - `agent_list` reads the roster, the peer-help teams and the projects, with
   their ids, each agent's `persistentPrompt`, and the `agentPolicy`. It needs
-  no approval.
+  no approval. Each agent row carries `teamId` and `team`, its team's id and
+  name, both `null` when it is on no team. Each entry of `teams` is
+  `{ id, name, projectId, members }`, with `members` the names of the agents
+  on it in registration order. A listing scoped to one project still names
+  every member of a team.
 - `agent_register` and `agent_update` only **propose** a change. Projects,
   managers and teams may be named by id or by name. An update keeps every
   field it does not name, and `""` clears one that may be empty.
@@ -372,6 +377,9 @@ An agent can be asked to hire, adjust or remove agents, through five MCP tools
 - `agent_policy_update` only **proposes** a whole new agent policy (`""`
   clears it), on the same card. It is saved with `team::set_policy_unchanged`,
   so a policy edited meanwhile is not overwritten.
+- `team_create` and `team_update` only **propose** a peer-help team or a
+  change to one, on the same card. See
+  [Teams from a chat](#teams-from-a-chat).
 
 The card lists an agent's role with its other fields, never its persistent
 prompt, except when the proposal itself sets or clears it: then the card shows
@@ -432,6 +440,12 @@ Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
 | `agent_update` | A move for each of those fields that changes, and no row for one that stays. `Persistent prompt` comes last when the change touches it: plain when it is set where there was none, a move when it is replaced or cleared. |
 | `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, and `Memory note` last. |
 | `agent_policy_update` | One `Policy` row: plain when a policy is set where there was none, a move when it is replaced or cleared. |
+| `team_create` | Plain rows `Available in` (always `every project`) and `Members` (the names, or `none`), then `Other teams` when a member is on another team. |
+| `team_update` | `Name` as a move when the team is renamed. When its members change: plain rows `Added` and `Removed`, each only when there are any, then `Members` as a move from every member before to every member after (`none` for an empty team). `Other teams` last, when an agent it adds is on another team. |
+
+`Other teams` holds one sentence for each agent that leaves a team to join
+this one: `Bo leaves Ops. Cy leaves Web.` The team rows are `team_tools.rs`
+`team_rows`, and the `change` text is those rows, one to a line.
 
 A replaced or cleared prompt or policy carries the current text in `before`.
 The `change` text leaves that out, so this is the one place the rows say more
@@ -456,6 +470,55 @@ its team. The team shows as a badge on the org chart and on the Agents page.
 Stored with the agents in `team.json` (`teams`, and `teamId` on each agent).
 Commands: `agent_team_list`, `agent_team_save`, `agent_team_delete`. A
 `team_save` with no `teamId` keeps the agent's team; `""` takes it off.
+
+### Teams from a chat
+
+An agent that may propose an agent may propose a team, with two MCP tools on
+the same hook and the same one-off card as `agent_register`
+([Registering agents from a chat](#registering-agents-from-a-chat)):
+
+- `team_create` takes `name` and optional `members`, each an agent id or
+  name. The new team is global, so it can hold any agent. It may start empty.
+- `team_update` takes `team` (id or name) and any of `name` (a rename),
+  `addMembers` and `removeMembers`.
+
+What they can and cannot do:
+
+- **Membership only.** They never change an agent's manager, access, provider,
+  model or project, and `team_update` cannot change the project a team belongs
+  to; neither tool has a field for any of these, and an unknown field is
+  refused. A team's project, and removing a team, stay in Settings.
+- **One team per agent, and a move is said on the card.** Adding an agent that
+  is on another team takes it off that team. The proposal is not refused; the
+  card's `Other teams` row names the agent and the team it leaves, and that is
+  part of what the person approves.
+- **The rules of Settings apply before anyone is asked.** An empty or
+  over-long name, a name another team has where the two overlap, an agent
+  nobody is called, an agent already on the team, one to remove that is not on
+  it, and a project agent on another project's team are each refused without
+  a card. So is an update that names nothing to change.
+- **The card is the only gate, at every access level.** The call changes
+  nothing. `permission::host_bookkeeping` lists both tools, which only keeps
+  Claude's plan mode from putting its own card in front of the host's. A
+  decline, no answer, or nobody having OctiqFlow open saves nothing.
+- **Allow is held to what the card said.** `team::team_change` works out
+  everything the card states (`team::TeamChange`: the team's name before and
+  after, its members before and after, and the team each added agent leaves),
+  from the roster the agent's call read. On Allow,
+  `team::change_team_unchanged` works it out again under the store's lock and
+  saves only when the two are equal. A member who joined or left in Settings
+  meanwhile, an added agent that changed teams or was renamed or removed, a
+  renamed or removed team, or a name taken meanwhile each refuse it, and the
+  agent is told to read `agent_list` and propose again.
+- **A saved change is one write.** The team and every agent that joined or
+  left are written together. Each of those agents becomes a new version of
+  itself, so an `agent_update` or `agent_delete` card still waiting on one is
+  refused. The reply is `{ status: "saved", text, team }`, with `team` as
+  `agent_list` shows it, and every open page is sent `team-changed`.
+- **Who may call.** The same chats as `agent_register`: an orchestration
+  worker is refused by its worker identity, also after its attempt has
+  settled, before any card is put up, and its MCP does not offer the tools. A
+  front desk is refused at the hook.
 
 **Peer help is a question and an answer, not a handoff.** A worker whose task
 was handed to a registered agent is told in its brief who its teammates are
