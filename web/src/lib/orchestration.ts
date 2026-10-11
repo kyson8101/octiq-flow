@@ -232,9 +232,21 @@ export type OrchestrationAttempt = {
   /** A read-only worker's closing words, held when its turn ended without a
    *  report. Not a settlement until the coordinator confirms this id. */
   proposedReport?: ProposedReport | null;
+  /** Tokens this attempt's chat has used, as its provider reported them
+   *  (`agent_usage.rs` keeps exactly this per chat). The host does not send
+   *  it yet: a row and the run's Tokens tile leave the figure out until it
+   *  does (`lib/runProgress`), and nothing is worked out in its place. */
+  usage?: AttemptUsage | null;
+  /** What the worker's session holds of its model's context window, both as
+   *  the provider said. Not sent by the host yet; the same rule applies. */
+  context?: { tokens: number; window: number } | null;
   createdAt: number;
   updatedAt: number;
 };
+
+/** `agent_usage::TokenUsage`: `input` and `output` are the whole of each, and
+ *  the other three are parts already inside them. */
+export type AttemptUsage = { input: number; cachedInput?: number; cacheWrite?: number; output: number; reasoning?: number };
 
 export type ProposedReport = {
   id: string;
