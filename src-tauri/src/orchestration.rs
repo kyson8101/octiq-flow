@@ -1155,8 +1155,16 @@ impl OrchestrationStore {
             .map(|attempt| attempt.worker_chat_key.clone()))
     }
 
+    /// Whether `chat_key` is a worker's chat, by what does not end with its
+    /// attempt: the key a worker is launched under, or an attempt on record
+    /// for it. A hook that can write asks this, never `active_task`, which is
+    /// `None` once the attempt has settled while its capability still works.
+    pub fn is_worker_chat(&self, chat_key: &str) -> Result<bool, String> {
+        Ok(chat_key.starts_with("chat:orch-") || self.worker_coordinator(chat_key)?.is_some())
+    }
+
     pub fn require_user_chat(&self, chat_key: &str) -> Result<(), String> {
-        if chat_key.starts_with("chat:orch-") || self.worker_coordinator(chat_key)?.is_some() {
+        if self.is_worker_chat(chat_key)? {
             return Err(
                 "This agent chat is read-only. Send instructions and requests in its main chat."
                     .into(),
@@ -5041,6 +5049,35 @@ pub(crate) mod tests {
         running_worker_on(store, run, ChatAgent::Codex)
     }
 
+    /// A worker whose attempt has reported: no task is active for its chat
+    /// any more. With `legacy_key` its chat is renamed to a key of the old
+    /// kind, which has no reserved prefix, so only the ledger says whose it is.
+    pub(crate) fn settled_worker(
+        store: &OrchestrationStore,
+        run: &Run,
+        legacy_key: Option<&str>,
+    ) -> Attempt {
+        let worker = running_worker(store, run);
+        store
+            .report_worker(
+                &worker.worker_chat_key,
+                WorkerReport {
+                    attempt_id: worker.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "done".into(),
+                    files_modified: Vec::new(),
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        let mut inner = store.inner.lock().unwrap();
+        let attempt = inner.data.attempts.get_mut(&worker.id).unwrap();
+        if let Some(key) = legacy_key {
+            attempt.worker_chat_key = key.into();
+        }
+        attempt.clone()
+    }
+
     /// A real `claude -p` stream (2.1.292, the flag set `build_command` uses)
     /// whose first turn is interrupted while a Bash call runs and whose
     /// second answers the message sent after it. Feedback 240ea516.
@@ -7935,6 +7972,12 @@ pub(crate) mod tests {
             .require_user_chat("chat:legacy-worker")
             .unwrap_err()
             .contains("read-only"));
+        // Its attempt has settled, so nothing is active for it; it is still
+        // a worker's chat, and that is what a hook that can write asks.
+        assert!(store.active_task("chat:legacy-worker").unwrap().is_none());
+        assert!(store.is_worker_chat("chat:legacy-worker").unwrap());
+        assert!(store.is_worker_chat("chat:orch-not-yet-loaded").unwrap());
+        assert!(!store.is_worker_chat("chat:master").unwrap());
         assert!(store
             .route_worker_questions("chat:legacy-worker", &[question()])
             .unwrap_err()

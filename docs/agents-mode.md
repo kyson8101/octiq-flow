@@ -349,7 +349,7 @@ started with.
 
 ### Registering agents from a chat
 
-An agent can be asked to hire or adjust agents, through four MCP tools
+An agent can be asked to hire, adjust or remove agents, through five MCP tools
 (`team_tools.rs`, `POST /hook/agents`):
 
 - `agent_list` reads the roster, the peer-help teams and the projects, with
@@ -358,6 +358,17 @@ An agent can be asked to hire or adjust agents, through four MCP tools
 - `agent_register` and `agent_update` only **propose** a change. Projects,
   managers and teams may be named by id or by name. An update keeps every
   field it does not name, and `""` clears one that may be empty.
+- `agent_delete` only **proposes** removing one agent, by id or name. The
+  card names the agent with its role, project and manager, says when it is
+  the head or the front desk, lists the direct reports that will move up to
+  its manager, and says that its memory note is kept. It is removed with
+  `team::delete_unchanged`, which holds the person's Allow to everything the
+  card said about the chart (`team::Removal`): the agent's version, its
+  manager, the set of its direct reports, and whether it is the head or the
+  front desk. If any of them changed while the card waited, nothing is
+  removed and the agent is told to propose it again. A report that moves up
+  becomes a new version of itself, so a card still waiting on that report is
+  refused too.
 - `agent_policy_update` only **proposes** a whole new agent policy (`""`
   clears it), on the same card. It is saved with `team::set_policy_unchanged`,
   so a policy edited meanwhile is not overwritten.
@@ -381,8 +392,54 @@ agent is told which of these happened. The card stays up for three minutes in
 a Claude chat. In a Codex chat it stays up for 50 seconds, because Codex gives
 an MCP call about a minute; a longer wait could save a change the agent had
 already been told failed. An orchestration worker may list agents but not
-change them, and a front desk may do neither. Every save, from a chat or from
+change them, and stays a worker for this after its attempt has settled: the
+host refuses by the chat's worker identity, before any card is put up. A
+front desk may do neither. Every save, from a chat or from
 Settings, sends `team-changed`, and every open page reads the roster again.
+
+### The card's change as rows (`changeFacts`)
+
+The card's `tool_input` carries the change twice: `change`, the text above,
+and `changeFacts`, the same change as data. A page draws its rows from
+`changeFacts` and never reads `change` back apart, because a role, a prompt
+or a policy may itself hold a line that reads `Access: edits → full`.
+`change` is unchanged, and it is all an older page or a saved transcript has.
+
+```json
+"changeFacts": {
+  "lead": "Change the agent Nova.",
+  "rows": [
+    { "label": "Access", "before": "edits", "after": "auto" },
+    { "label": "Persistent prompt", "value": "Stand up daily.\nShip on Fridays." }
+  ]
+}
+```
+
+- `lead` is the card's first sentence: what is being done, and to whom.
+- A **plain row** is `label` and `value`: a field stated whole.
+- A **move** is `label`, `before` and `after`: a field that changes. `before`
+  is never empty. An empty `after` means the field is cleared, which only
+  `Persistent prompt` and `Policy` can be.
+- Every value is the whole text with its newlines. A label is one of a fixed
+  set and appears once in a card.
+
+Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
+`policy_facts`, built from the same values as the text):
+
+| Card | Rows |
+| --- | --- |
+| `agent_register` | A plain row for each of `Name`, `Role`, `Provider`, `Model`, `Effort`, `Access`, `Available in`, `Reports to`, `Team`, then `Persistent prompt` when one is proposed. |
+| `agent_update` | A move for each of those fields that changes, and no row for one that stays. `Persistent prompt` comes last when the change touches it: plain when it is set where there was none, a move when it is replaced or cleared. |
+| `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, and `Memory note` last. |
+| `agent_policy_update` | One `Policy` row: plain when a policy is set where there was none, a move when it is replaced or cleared. |
+
+A replaced or cleared prompt or policy carries the current text in `before`.
+The `change` text leaves that out, so this is the one place the rows say more
+than the text.
+
+`changeFacts` is all or nothing. A card whose change cannot be told whole as
+rows is sent without the key, and the page shows `change` as text. The
+Lessons card (`vault_agent_memory_lessons`) is sent that way today.
 
 ## Teams and peer help
 

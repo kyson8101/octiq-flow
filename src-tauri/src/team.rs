@@ -595,7 +595,9 @@ fn apply(
                 persistent_prompt: persistent_prompt
                     .unwrap_or_else(|| existing.persistent_prompt.clone()),
                 created_at: existing.created_at,
-                updated_at: now,
+                // Never the same stamp twice, so a card made against one
+                // version is never taken for the next.
+                updated_at: now.max(existing.updated_at + 1),
             };
             existing.clone()
         }
@@ -637,6 +639,90 @@ fn apply(
 /// Remove one agent. Its reports move up to its own manager, so the chart
 /// never points at someone who is gone.
 pub fn delete(path: &Path, id: &str) -> Result<(), String> {
+    delete_checked(path, id, None).map(|_| ())
+}
+
+/// Everything a removal card states about the chart: the version of the agent
+/// it names, who that agent reports to, who reports to it, and whether it
+/// holds the head or the front-desk seat. `removal` is the one place it is
+/// worked out, for the card and again for the check when the person answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Removal {
+    pub updated_at: i64,
+    pub reports_to: Option<String>,
+    /// The ids of its direct reports, sorted: the order they are stored in
+    /// is not part of what was shown.
+    pub reports: Vec<String>,
+    pub head: bool,
+    pub front_desk: bool,
+}
+
+impl Removal {
+    /// What is different in `now`, in the card's terms; `None` when the
+    /// removal would do exactly what was shown.
+    fn changed(&self, now: &Removal) -> Option<&'static str> {
+        if self.updated_at != now.updated_at {
+            return Some("");
+        }
+        if self.reports_to != now.reports_to {
+            return Some(": it no longer reports to who the card said");
+        }
+        if self.reports != now.reports {
+            return Some(": its direct reports are not the ones the card listed");
+        }
+        if self.head != now.head {
+            return Some(if now.head {
+                ": it is now the head"
+            } else {
+                ": it is no longer the head"
+            });
+        }
+        if self.front_desk != now.front_desk {
+            return Some(if now.front_desk {
+                ": it is now the front desk"
+            } else {
+                ": it is no longer the front desk"
+            });
+        }
+        None
+    }
+}
+
+/// What removing `id` would do among `agents`, with `head` and `front_desk`
+/// the ids `head` and `front_desk` answer with. `None`: no such agent.
+pub fn removal(
+    agents: &[TeamAgent],
+    head: Option<&str>,
+    front_desk: Option<&str>,
+    id: &str,
+) -> Option<Removal> {
+    let gone = agents.iter().find(|a| a.id == id)?;
+    let mut reports: Vec<String> = agents
+        .iter()
+        .filter(|a| a.reports_to.as_deref() == Some(id))
+        .map(|a| a.id.clone())
+        .collect();
+    reports.sort();
+    Some(Removal {
+        updated_at: gone.updated_at,
+        reports_to: gone.reports_to.clone(),
+        reports,
+        head: head == Some(id),
+        front_desk: front_desk == Some(id),
+    })
+}
+
+/// `delete`, refused unless it would do exactly what `shown` says (`removal`
+/// of the roster the card was made from): the agent is the version shown,
+/// reports to the same manager, has the same direct reports and holds the
+/// same seats. What the person approved is that removal, never one the chart
+/// has since turned into. The removed agent comes back, so the caller can say
+/// who went.
+pub fn delete_unchanged(path: &Path, id: &str, shown: &Removal) -> Result<TeamAgent, String> {
+    delete_checked(path, id, Some(shown))
+}
+
+fn delete_checked(path: &Path, id: &str, shown: Option<&Removal>) -> Result<TeamAgent, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut stored = read(path)?;
     let gone = stored
@@ -645,6 +731,18 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
         .find(|a| a.id == id)
         .cloned()
         .ok_or("That agent no longer exists.")?;
+    if let Some(shown) = shown {
+        let head = head_of(&stored).map(|a| a.id);
+        let desk = desk_of(&stored).map(|a| a.id);
+        let changed = removal(&stored.agents, head.as_deref(), desk.as_deref(), id)
+            .and_then(|now| shown.changed(&now));
+        if let Some(what) = changed {
+            return Err(format!(
+                "{} was changed while this waited for approval, so nothing was removed{what}. Read it again and propose the removal again.",
+                gone.name
+            ));
+        }
+    }
     stored.agents.retain(|a| a.id != id);
     if stored.head.as_deref() == Some(id) {
         stored.head = None;
@@ -652,12 +750,17 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
     if stored.front_desk.as_deref() == Some(id) {
         stored.front_desk = None;
     }
+    // A report that moves is a changed agent: a card made against it before
+    // the move (`save_unchanged`, `delete_unchanged`) no longer applies.
+    let now = now_ms();
     for agent in &mut stored.agents {
         if agent.reports_to.as_deref() == Some(id) {
             agent.reports_to = gone.reports_to.clone();
+            agent.updated_at = now.max(agent.updated_at + 1);
         }
     }
-    write(path, &stored)
+    write(path, &stored)?;
+    Ok(gone)
 }
 
 /// The shared agent policy, empty when the person has written none.
@@ -921,14 +1024,17 @@ pub fn record_lead(
 /// when none is configured, or the configured one was removed.
 pub fn head(path: &Path) -> Result<Option<TeamAgent>, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
-    let stored = read(path)?;
-    Ok(stored.head.as_deref().and_then(|id| {
+    Ok(head_of(&read(path)?))
+}
+
+fn head_of(stored: &Stored) -> Option<TeamAgent> {
+    stored.head.as_deref().and_then(|id| {
         stored
             .agents
             .iter()
             .find(|a| a.id == id && a.project_id.is_none())
             .cloned()
-    }))
+    })
 }
 
 /// Configure (or clear, with `None`) the head. It must be a global agent:
@@ -2908,6 +3014,87 @@ mod tests {
             .find(|a| a.id == dev.id)
             .unwrap();
         assert_eq!(dev.reports_to.as_deref(), Some(ceo.id.as_str()));
+    }
+
+    /// The removal card's snapshot is the same for the same chart however the
+    /// agents are ordered, and `delete` with no snapshot (Settings) removes as
+    /// it always did, moving each report up as a new version of itself.
+    #[test]
+    fn a_removal_snapshot_ignores_order_and_a_plain_delete_needs_none() {
+        let path = temp();
+        let ceo = save(&path, draft("Ceo", None)).unwrap();
+        let cto = save(&path, under("Cto", None, &ceo)).unwrap();
+        let dev = save(&path, under("Dev", None, &cto)).unwrap();
+        let ops = save(&path, under("Ops", None, &cto)).unwrap();
+        set_head(&path, Some(&cto.id)).unwrap();
+        let agents = list(&path, None, true).unwrap();
+        let shown = removal(&agents, Some(&cto.id), None, &cto.id).unwrap();
+        assert_eq!(shown.updated_at, cto.updated_at);
+        assert_eq!(shown.reports_to.as_deref(), Some(ceo.id.as_str()));
+        assert_eq!(shown.reports.len(), 2);
+        assert!(shown.head && !shown.front_desk);
+        let mut reversed = agents.clone();
+        reversed.reverse();
+        assert_eq!(
+            removal(&reversed, Some(&cto.id), None, &cto.id).unwrap(),
+            shown
+        );
+        assert!(removal(&agents, None, None, "agent_nobody").is_none());
+        // Each thing the card states is compared, not only the version.
+        let moved = Removal {
+            reports_to: None,
+            ..shown.clone()
+        };
+        assert_eq!(
+            shown.changed(&moved),
+            Some(": it no longer reports to who the card said")
+        );
+        let fewer = Removal {
+            reports: vec![dev.id.clone()],
+            ..shown.clone()
+        };
+        assert_eq!(
+            shown.changed(&fewer),
+            Some(": its direct reports are not the ones the card listed")
+        );
+        assert_eq!(shown.changed(&shown), None);
+
+        // The seat given up while a card waited: refused, nothing written.
+        set_head(&path, None).unwrap();
+        let refused = delete_unchanged(&path, &cto.id, &shown).unwrap_err();
+        assert_eq!(
+            refused,
+            "Cto was changed while this waited for approval, so nothing was removed: it is no longer the head. Read it again and propose the removal again."
+        );
+        assert_eq!(list(&path, None, true).unwrap(), agents);
+
+        delete(&path, &cto.id).unwrap();
+        let left = list(&path, None, true).unwrap();
+        for moved in [&dev, &ops] {
+            let after = left.iter().find(|a| a.id == moved.id).unwrap();
+            assert_eq!(after.reports_to.as_deref(), Some(ceo.id.as_str()));
+            assert!(after.updated_at > moved.updated_at);
+        }
+        assert_eq!(left.iter().find(|a| a.id == ceo.id), Some(&ceo));
+    }
+
+    /// Two saves of one agent in the same millisecond are still two versions.
+    #[test]
+    fn every_save_of_an_agent_is_a_later_version() {
+        let path = temp();
+        let mut last = save(&path, draft("Ada", None)).unwrap();
+        for _ in 0..20 {
+            let next = save(
+                &path,
+                TeamDraft {
+                    id: Some(last.id.clone()),
+                    ..draft("Ada", None)
+                },
+            )
+            .unwrap();
+            assert!(next.updated_at > last.updated_at);
+            last = next;
+        }
     }
 
     #[test]
