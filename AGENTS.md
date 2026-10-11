@@ -476,16 +476,30 @@ folded line and are not part of this.
 - **A command is never missing a character, and one that cannot be seen is
   drawn as its code.** Its lines are `cardFold.commandLines`: only a line
   with nothing on it, or spaces and tabs, is left out before the first line
-  and after the last. A line holding a no-break space or a lone carriage
-  return is a word to a shell and is drawn and counted (JavaScript's `trim`
-  calls it blank). In a command, script or code block the characters that
-  draw nothing or turn the reading order round are drawn where they stand as
-  `\u{202E}`, set apart as a mark (`cardFold.commandDrawn`): U+00A0, U+00AD,
-  U+061C, U+200B to U+200F, U+2028 to U+202E, U+2060, U+2066 to U+2069 and
-  U+FEFF. One full-strength line under the block says how many the whole
-  command holds. Only the drawing changes: `notShown` and what Allow sends
-  are the text itself. Past `MARKS_MAX` (5,000) the codes are written into
-  the text without an element each.
+  and after the last. A line holding a no-break space or a carriage return
+  is a word to a shell and is drawn and counted (JavaScript's `trim` calls
+  it blank). In a command, script or code block the characters that draw
+  nothing or turn the reading order round are drawn where they stand as
+  `\u{202E}`, set apart as a mark (`cardFold.commandDrawn`): the control
+  characters U+0000 to U+001F and U+007F, but for the tab, the line feed and
+  a carriage return that a line feed follows; then U+00A0, U+00AD, U+061C,
+  U+200B to U+200F, U+2028 to U+202E, U+2060, U+2066 to U+2069 and U+FEFF.
+  One full-strength line under the block says how many the whole command
+  holds. Only the drawing changes: `notShown` and what Allow sends are the
+  text itself. Past `MARKS_MAX` (5,000) the codes are written into the text
+  without an element each. Left out on purpose, for a later decision: the
+  wider Unicode spaces (U+2000 to U+200A, U+202F, U+205F, U+3000, ordinary
+  in Chinese and Japanese text), U+2061 to U+2064, U+206A to U+206F, U+180E,
+  the Hangul fillers and the tag characters.
+- **The lines a command card states are the rows it draws**, for any mix of
+  `\n`, `\r\n` and a return alone. A Windows line end is drawn as the pair
+  it is, with no mark at the end of every line; a return anywhere else is
+  marked `\u{000D}`. The two texts a card draws stop before the line feed
+  that follows them, so `cardFold.lineFeedAfter` says whether one does, and
+  a return at the end of such a text is drawn with it. That is not
+  cosmetic: Chromium gives a return alone on the last line of a block no row
+  at all (WebKit gives it one), and the card would state a line it does not
+  draw.
 - **A plan's stage line names every place and agent it can.** Destinations
   are told apart by project and whole path (`planReview.planPlaceNames`): a
   shared folder name gets its project, then its parent folder, then the path.

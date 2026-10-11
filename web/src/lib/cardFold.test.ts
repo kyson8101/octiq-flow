@@ -11,7 +11,7 @@ import { changeFacts, SUMMARY_MAX } from "./askDetail";
 import * as cardFold from "./cardFold";
 import {
   allowHeld, chars, codeOf, COMMAND_CHARS, COMMAND_LINES, commandDrawn, commandFold, commandLines, commandOpens,
-  hiddenIn, hiddenNote, MARKS_MAX, commandShown, commandTitle, count,
+  hiddenIn, hiddenNote, lineFeedAfter, MARKS_MAX, commandShown, commandTitle, count,
   diffLabel, digits, drawnWhole, sameCommand, type CommandAsked, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
   isShort, lineCount, longRowsLabel, nameList, notShown, planFoldId, planLabel, scriptLabel, STRAY_MS, STRAY_RADIUS,
   strayPress, rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, textFold, textLines, tooLong,
@@ -218,7 +218,7 @@ describe("a command", () => {
   const lines = (n: number) => Array.from({ length: n }, (_, i) => `step ${i + 1}`).join("\n");
 
   it("is on the folded card whole, up to twelve lines", () => {
-    expect(commandFold("pnpm test")).toEqual({ lines: 1, size: 9, head: "pnpm test", rest: "", more: 0, tooLong: false });
+    expect(commandFold("pnpm test")).toEqual({ lines: 1, size: 9, head: "pnpm test", rest: "", more: 0, tooLong: false, ended: false });
     // The reviewer's: the second line is the one that matters.
     const danger = 'echo "Routine check"\nrm -rf /tmp/example-review-data';
     expect(commandFold(danger)).toMatchObject({ lines: 2, size: danger.length, head: danger, rest: "", more: 0 });
@@ -545,12 +545,87 @@ describe("a character of a command that cannot be seen as typed", () => {
   });
 
   it("draws every other character as written", () => {
-    // A space, a tab and a return; and, outside the set the card marks, the
-    // wider spaces of other scripts (an ideographic space is ordinary in a
-    // Chinese or Japanese commit message), a combining accent, an emoji.
-    for (const text of ["a b", "a\tb", "a\rb", "a　b", "a b", "áb", "👨🏽"]) {
+    // A space and a tab; and, outside the set the card marks, the wider
+    // spaces of other scripts (an ideographic space is ordinary in a Chinese
+    // or Japanese commit message), a combining accent, an emoji.
+    for (const text of ["a b", "a\tb", "a\u3000b", "a\u2003b", "a\u0301b", "\ud83d\udc68\ud83c\udffd"]) {
       expect(commandDrawn(text)).toEqual([text]);
     }
+  });
+
+  it("draws a control character as its code: an escape, a backspace, a delete", () => {
+    expect(commandDrawn("echo ok\u001b[2K")).toEqual(["echo ok", mark("001B"), "[2K"]);
+    // Backspaces: a terminal draws what follows over what came before them.
+    expect(commandDrawn("rm -rf ~\u0008\u0008\u0008/tmp/x")).toEqual(["rm -rf ~", mark("0008"), mark("0008"), mark("0008"), "/tmp/x"]);
+    expect(commandDrawn("a\u007fb")).toEqual(["a", mark("007F"), "b"]);
+    // Every one of them but the tab and the two that end a line.
+    for (let code = 0; code < 0x20; code += 1) {
+      const char = String.fromCharCode(code);
+      const drawn = commandDrawn(`a${char}b`);
+      if (code === 0x09 || code === 0x0a) expect(drawn).toEqual([`a${char}b`]);
+      else expect(drawn).toEqual(["a", mark(code.toString(16).toUpperCase().padStart(4, "0")), "b"]);
+    }
+    expect(hiddenIn("\u001b\u0008\u007f")).toEqual({ count: 3, example: "\\u{001B}" });
+  });
+
+  it("marks a carriage return that stands alone, and leaves a Windows line end as it is", () => {
+    // Alone: in a line, at the end of the text, before another return.
+    expect(commandDrawn("a\rb")).toEqual(["a", mark("000D"), "b"]);
+    expect(commandDrawn("a\r")).toEqual(["a", mark("000D")]);
+    expect(commandDrawn("a\r\r\nb")).toEqual(["a", mark("000D"), "\r\nb"]);
+    // With its line feed it is a line end: no mark at the end of every line.
+    expect(commandDrawn("pwd\r\nls\r\nwhoami")).toEqual(["pwd\r\nls\r\nwhoami"]);
+    expect(hiddenIn("pwd\r\nls\r\n")).toEqual({ count: 0, example: "" });
+    expect(hiddenIn("\r\necho safe\n\r")).toEqual({ count: 1, example: "\\u{000D}" });
+    // The part of a command a card draws stops before the line feed that
+    // follows it. Told that one does, a return at its end is a line end and
+    // is drawn with it; told nothing, it is alone.
+    expect(commandDrawn("pwd\r", true)).toEqual(["pwd\r\n"]);
+    expect(commandDrawn("pwd\r", false)).toEqual(["pwd", mark("000D")]);
+    expect(commandDrawn("pwd", true)).toEqual(["pwd"]);
+  });
+
+  /** The rows a browser draws for a text in a `pre`: one a line, a line feed
+   *  at the very end adding none. (Measured in Chromium and WebKit; a
+   *  carriage return alone on the last line gets no row in Chromium, which
+   *  is why none is ever drawn there unmarked.) */
+  const rows = (parts: ReturnType<typeof commandDrawn>): number => {
+    const text = parts.map((part) => (typeof part === "string" ? part : "<mark>")).join("");
+    // No return is left to stand unmarked without its line feed.
+    expect(text).not.toMatch(/\r(?!\n)/);
+    if (text === "") return 0;
+    return text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+  };
+
+  it("draws as many rows as the lines it states, for any mix of line ends", () => {
+    const mixes = [
+      "\r\necho safe\n\r", "\r", "\r\n", "a\n\r\n", "a\n\r", "a\r\n\r\nb", "a\r\rb", "pwd\r\nls\r\n", "pwd\r\nls\r",
+      "a\n\nb\n", "\n\r\n\r\n\n", "a\rb\r\nc\n\rd", "\r\r\r", "a\r\n \n\t\n", "a\n\u001b\n\u0008", "x\r\n".repeat(13), "x\n".repeat(12) + "\r\n", "x\n".repeat(12) + "\r",
+    ];
+    for (const text of mixes) {
+      const fold = commandFold(text);
+      const feeds = lineFeedAfter(fold);
+      // Folded and whole on the card, or opened: the head and the rest.
+      const shown = commandShown(fold, true);
+      const drawn = rows(commandDrawn(shown.head, feeds.head)) + (shown.rest === null ? 0 : rows(commandDrawn(shown.rest, feeds.rest)));
+      expect(drawn, JSON.stringify(text)).toBe(fold.lines);
+      // And the folded card draws a row for each line of its head.
+      const head = fold.head === "" ? 0 : fold.head.split("\n").length;
+      expect(rows(commandDrawn(fold.head, feeds.head)), JSON.stringify(text)).toBe(head);
+    }
+    // The coordinator's case: an empty first line, `echo safe`, and a third
+    // row that shows the return.
+    const fold = commandFold("\r\necho safe\n\r");
+    expect(fold.lines).toBe(3);
+    expect(commandDrawn(fold.head, lineFeedAfter(fold).head)).toEqual(["\r\necho safe\n", mark("000D")]);
+    // A Windows-ended script: a line feed follows its last line, and its
+    // last return is drawn with it.
+    const windows = commandFold("pwd\r\nls\r\n");
+    expect(windows).toMatchObject({ lines: 2, head: "pwd\r\nls\r", ended: true });
+    expect(lineFeedAfter(windows)).toEqual({ head: true, rest: true });
+    expect(commandDrawn(windows.head, true)).toEqual(["pwd\r\nls\r\n"]);
+    expect(commandFold("pwd\nls")).toMatchObject({ ended: false });
+    expect(lineFeedAfter(commandFold("x\n".repeat(13) + "y"))).toEqual({ head: true, rest: false });
   });
 
   it("counts them in the whole command and names the first", () => {

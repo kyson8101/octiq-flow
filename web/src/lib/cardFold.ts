@@ -182,16 +182,22 @@ export const COMMAND_CHARS = 1200;
  *  name, and a lone carriage return is one too. */
 const EMPTY_LINE = /^[ \t]*$/;
 
-/** The lines of a command. Every line with a character on it is one of
- *  them, drawn and counted; only empty lines before the first of those and
- *  after the last are left out. Nothing is trimmed off a line. */
-export function commandLines(text: string): string[] {
+/** The lines of a command, and whether a line feed follows the last of
+ *  them (lines were left out after it). Every line with a character on it is
+ *  one of them, drawn and counted; only empty lines before the first of
+ *  those and after the last are left out. Nothing is trimmed off a line. */
+function commandSpan(text: string): { lines: string[]; ended: boolean } {
   const lines = text.split("\n");
   let from = 0;
   let to = lines.length;
   while (from < to && EMPTY_LINE.test(lines[from])) from += 1;
   while (to > from && EMPTY_LINE.test(lines[to - 1])) to -= 1;
-  return lines.slice(from, to);
+  return { lines: lines.slice(from, to), ended: to > from && to < lines.length };
+}
+
+/** The lines of a command (`commandSpan`). */
+export function commandLines(text: string): string[] {
+  return commandSpan(text).lines;
 }
 
 export type CommandFold = {
@@ -209,10 +215,14 @@ export type CommandFold = {
   /** Past what the page draws (`WHOLE_MAX`): it cannot be opened whole, so
    *  it is not opened, and it cannot be allowed here. */
   tooLong: boolean;
+  /** A line feed follows its last line in the text the host sent. What
+   *  `commandDrawn` needs to tell a carriage return that ends that line (a
+   *  Windows line end) from one that stands alone. */
+  ended: boolean;
 };
 
 export function commandFold(text: string): CommandFold {
-  const lines = commandLines(text);
+  const { lines, ended } = commandSpan(text);
   let kept = 0;
   let budget = COMMAND_CHARS;
   while (kept < lines.length && kept < COMMAND_LINES) {
@@ -229,6 +239,7 @@ export function commandFold(text: string): CommandFold {
     rest: lines.slice(kept).join("\n"),
     more: lines.length - kept,
     tooLong: tooLong(whole),
+    ended,
   };
 }
 
@@ -237,6 +248,13 @@ export function commandFold(text: string): CommandFold {
  *  and nothing else of the command, so they are also what `notShown` is
  *  asked about. */
 export type CommandShown = { head: string; rest: string | null };
+
+/** Whether a line feed follows each of the two texts a card draws, in the
+ *  command itself: the head when lines come after it, and either when the
+ *  command goes on past its last line. */
+export function lineFeedAfter(fold: CommandFold): { head: boolean; rest: boolean } {
+  return { head: fold.more > 0 || fold.ended, rest: fold.ended };
+}
 
 /** A command as the card draws it, folded or opened. Opened is the whole of
  *  it, every line: there is no cut. A command the page cannot draw whole is
@@ -332,20 +350,27 @@ export function drawnWhole(was: CommandAsked | null, asked: CommandAsked, unshow
 /* ---- Characters that are there and cannot be seen ----------------------
    A command is read by eye and run by a shell, and a few characters part the
    two. Some draw nothing (a zero-width space inside a host name, a soft
-   hyphen, a word joiner); some draw as a space and are not one to a shell
-   (the no-break space); some turn the order the eye reads round (the
-   right-to-left override: `invoice_<U+202E>fdp.exe` reads `invoice_exe.pdf`).
-   Each is drawn in place as its code, `\u{202E}`, set apart as a mark, so
-   what is seen is the order the shell gets. Only the drawing changes: the
-   command, what is counted as shown and what Allow sends are the text
-   itself. */
+   hyphen, a word joiner, an escape, a backspace); some draw as a space and
+   are not one to a shell (the no-break space); some turn the order the eye
+   reads round (the right-to-left override: `invoice_<U+202E>fdp.exe` reads
+   `invoice_exe.pdf`). Each is drawn in place as its code, `\u{202E}`, set
+   apart as a mark, so what is seen is the order the shell gets. Only the
+   drawing changes: the command, what is counted as shown and what Allow
+   sends are the text itself. */
 
-/** The characters drawn as their code: the no-break space (U+00A0) and soft
- *  hyphen (U+00AD); the zero-width space, non-joiner and joiner (U+200B to
- *  U+200D), word joiner (U+2060) and byte-order mark (U+FEFF); the line and
- *  paragraph separators (U+2028, U+2029); and the marks that set reading
- *  order (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069). */
-const HIDDEN = /[\u00A0\u00AD\u061C\u200B-\u200F\u2028-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+/** The characters drawn as their code.
+ *  - Control characters: U+0000 to U+001F and U+007F, but for the tab, the
+ *    line feed, and a carriage return that a line feed follows. That pair is
+ *    a Windows line end and is drawn as the line end it is; a carriage
+ *    return anywhere else is a character a shell reads, and is marked.
+ *  - The no-break space (U+00A0) and soft hyphen (U+00AD).
+ *  - The zero-width space, non-joiner and joiner (U+200B to U+200D), word
+ *    joiner (U+2060) and byte-order mark (U+FEFF); the line and paragraph
+ *    separators (U+2028, U+2029).
+ *  - The marks that set reading order (U+061C, U+200E, U+200F, U+202A to
+ *    U+202E, U+2066 to U+2069). */
+const HIDDEN =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00A0\u00AD\u061C\u200B-\u200F\u2028-\u202E\u2060\u2066-\u2069\uFEFF]|\r(?!\n)/g;
 
 /** `\u{202E}`: a character written as its code, at least four digits. */
 export function codeOf(char: string): string {
@@ -362,22 +387,30 @@ export const MARKS_MAX = 5000;
  *  a character that cannot be seen as typed. */
 export type CommandPart = string | { code: string };
 
-/** A command as a card draws it, in order: its text, with every character
- *  of `HIDDEN` replaced where it stands by its code. A command with none is
- *  one part, itself, drawn exactly as it was written. */
-export function commandDrawn(text: string): CommandPart[] {
-  const { count } = hiddenIn(text);
-  if (count === 0) return [text];
-  if (count > MARKS_MAX) return [text.replace(HIDDEN, (char) => codeOf(char))];
+/** A command, or the part of one a card draws, as it is drawn, in order: its
+ *  text, with every character of `HIDDEN` replaced where it stands by its
+ *  code. A text with none is one part, itself, drawn exactly as written.
+ *
+ *  `lineFeedFollows` says the text is followed by a line feed in the command
+ *  (`lineFeedAfter`): a carriage return at its end is then a line end and
+ *  not a character alone, and is drawn with that line feed. The pair makes
+ *  a row of a line that holds nothing else; the return on its own, last in
+ *  the block, gets no row at all in Chromium, and the card would state a
+ *  line it does not draw. */
+export function commandDrawn(text: string, lineFeedFollows = false): CommandPart[] {
+  const body = lineFeedFollows && text.endsWith("\r") ? `${text}\n` : text;
+  const { count } = hiddenIn(body);
+  if (count === 0) return [body];
+  if (count > MARKS_MAX) return [body.replace(HIDDEN, (char) => codeOf(char))];
   const parts: CommandPart[] = [];
   let from = 0;
-  for (const found of text.matchAll(HIDDEN)) {
+  for (const found of body.matchAll(HIDDEN)) {
     const at = found.index ?? 0;
-    if (at > from) parts.push(text.slice(from, at));
+    if (at > from) parts.push(body.slice(from, at));
     parts.push({ code: codeOf(found[0]) });
     from = at + found[0].length;
   }
-  if (from < text.length) parts.push(text.slice(from));
+  if (from < body.length) parts.push(body.slice(from));
   return parts;
 }
 

@@ -834,6 +834,39 @@ describe("a command on the permission card", () => {
     expect(allows(open)).toEqual({ always: false, once: false });
   });
 
+  it("states three lines and draws three rows for a return on a line of its own", () => {
+    const html = draw(bash("\r\necho safe\n\r"));
+    expect(html).toContain(">command · 3 lines<");
+    // An empty first line (a Windows line end), the command, and a row that
+    // shows the return standing alone.
+    expect(html).toContain(`<pre class="ask-card-body is-command">\r\necho safe\n${marked("000D")}</pre>`);
+    expect(html).toContain("<strong>1 character that cannot be seen as typed</strong>");
+    // A script with Windows line ends is drawn as it is, with no mark at
+    // the end of each line, and its last return keeps its line feed.
+    const windows = draw(bash("pwd\r\nls\r\n"));
+    expect(windows).toContain('<pre class="ask-card-body is-command">pwd\r\nls\r\n</pre>');
+    expect(windows).not.toContain("ask-command-mark");
+    expect(windows).not.toContain("ask-command-hidden");
+    // An empty line in such a script, last: still a row of its own.
+    expect(draw(bash("pwd\r\n\r\n"))).toContain('<pre class="ask-card-body is-command">pwd\r\n\r\n</pre>');
+  });
+
+  it("draws an escape and a backspace as their codes", () => {
+    const html = draw(bash("echo ok\u001b[2K\u0008rm"));
+    expect(html).toContain(`echo ok${marked("001B")}[2K${marked("0008")}rm</pre>`);
+    expect(html).toContain("<strong>2 characters that cannot be seen as typed</strong>");
+  });
+
+  it("keeps a Windows line end whole across the fold: the head's last return is not alone", () => {
+    const text = Array.from({ length: 14 }, (_, i) => `step ${i + 1}`).join("\r\n");
+    const folded = draw(bash(text));
+    expect(folded).not.toContain("ask-command-mark");
+    expect(folded).toContain("step 12\r\n</pre>");
+    const open = drawOpen(bash(text));
+    expect(open).not.toContain("ask-command-mark");
+    expect(open).toContain("step 13\r\nstep 14</pre>");
+  });
+
   it("marks them in a script or code an MCP tool runs, and calls it that", () => {
     const html = draw({ id: "c9", toolName: "mcp__sandbox__exec", toolInput: { script: 'print("a\u200Bb")' } });
     expect(html).toContain(`print(&quot;a${marked("200B")}b&quot;)`);

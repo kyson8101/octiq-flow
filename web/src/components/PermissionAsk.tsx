@@ -32,7 +32,7 @@ import { askDetail, changeFacts, isCommand, type ChangeRow } from "../lib/askDet
 import { bridge } from "../lib/bridge";
 import {
   allowHeld, chars, commandDrawn, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, drawnWhole,
-  hiddenIn, hiddenNote, longRowsLabel, notShown,
+  hiddenIn, hiddenNote, lineFeedAfter, longRowsLabel, notShown,
   rowFold, textFold, tooLong, tooLongNote, unseenLines, type CommandAsked, type RowFold,
 } from "../lib/cardFold";
 import { fileDiff } from "../lib/diff";
@@ -151,9 +151,13 @@ function Mark({ code }: { code: string }) {
  *  as written, but for the characters that draw nothing or turn the reading
  *  order round, each of which is its code where it stands. A command with
  *  none of them is the one text it always was. */
-function CommandText({ text }: { text: string }) {
+function CommandText({ text, lineFeedFollows }: {
+  text: string;
+  /** A line feed follows this text in the command (`lib/cardFold.lineFeedAfter`). */
+  lineFeedFollows: boolean;
+}) {
   // Kept between the clock's ticks: a command can be very long.
-  const parts = useMemo(() => commandDrawn(text), [text]);
+  const parts = useMemo(() => commandDrawn(text, lineFeedFollows), [text, lineFeedFollows]);
   return <>{parts.map((part, i) => (typeof part === "string" ? part : <Mark key={i} code={part.code} />))}</>;
 }
 
@@ -221,6 +225,8 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   // What this card draws of the command, and so what Allow is asked about.
   const shown = useMemo(() => (command ? commandShown(command, fold.shown) : null), [command, fold.shown]);
   const unshown = useMemo(() => (command && shown ? notShown(command, shown) : 0), [command, shown]);
+  // What follows each of the two texts drawn, in the command itself.
+  const feeds = useMemo(() => (command ? lineFeedAfter(command) : { head: false, rest: false }), [command]);
   // Characters in it that cannot be seen as typed, in all of it: the ones on
   // lines the folded card does not draw are counted too.
   const hidden = useMemo(() => (runs === null ? null : hiddenIn(runs)), [runs]);
@@ -364,14 +370,14 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
           {opens ? (
             (shown.head || fold.shown) && (
               <div className="ask-card-body is-command is-long" data-open={fold.shown || undefined}>
-                {shown.head && <pre className="ask-command-text"><CommandText text={shown.head} /></pre>}
+                {shown.head && <pre className="ask-command-text"><CommandText text={shown.head} lineFeedFollows={feeds.head} /></pre>}
                 <FoldBody fold={fold} bounded={false}>
-                  {shown.rest !== null && <pre className="ask-command-text"><CommandText text={shown.rest} /></pre>}
+                  {shown.rest !== null && <pre className="ask-command-text"><CommandText text={shown.rest} lineFeedFollows={feeds.rest} /></pre>}
                 </FoldBody>
               </div>
             )
           ) : (
-            shown.head && <pre className="ask-card-body is-command"><CommandText text={shown.head} /></pre>
+            shown.head && <pre className="ask-card-body is-command"><CommandText text={shown.head} lineFeedFollows={feeds.head} /></pre>
           )}
           {/* Under the block, at full strength: what the marks in it are,
               and how many the whole command holds. */}
