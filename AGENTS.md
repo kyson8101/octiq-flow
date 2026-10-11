@@ -775,10 +775,16 @@ checkout for it and names no base branch for its start
 field on a task, an attempt, a gate or a service that a coordinator's command
 can fill with text needs the same refusal before it ships. Its `maxMinutes` is working time, and a wait is
 free only while the host can verify that nothing is running: between two of
-the scheduler's looks that both saw a card, or an open gate with no turn in
-flight. A gate under a running turn is charged, used time never goes down,
-and what the agent left running in the background is not counted
-(`docs/agents-mode.md`, The time limit).
+the scheduler's looks that both saw a card or an open gate with nothing
+running (`Look::nothing_running`: no owed full stop, and no turn in flight
+other than one parked on the very calls the cards ask about, by the
+provider's id in `execution.pending_tools`). A card is not proof that nothing
+runs: a tool call beside it is charged, as a gate under a running turn is.
+Charging and ending are separate: an attempt is never ended in front of a
+card, and one past its limit is ended on the first look after the card is
+answered. Used time never goes down, and what the agent left running in the
+background after its turn ended is not counted (`docs/agents-mode.md`, The
+time limit).
 
 ## Conventions & gotchas
 

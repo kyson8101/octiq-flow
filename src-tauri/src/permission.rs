@@ -204,12 +204,16 @@ pub fn pending() -> Vec<Asked> {
     with_pending(|p| p.values().map(|w| w.asked.clone()).collect())
 }
 
-/// Whether a question from this chat is still waiting on the person: its
-/// agent is parked on the card, not working.
-pub(crate) fn awaits(chat_key: &str) -> bool {
+/// The questions from this chat still waiting on the person, one entry per
+/// card: the id of the tool call the card asks about (`Request::tool_use_id`),
+/// or `None` when the question named no call. The agent is parked on THAT
+/// call; a card says nothing about any other call of the same turn.
+pub(crate) fn awaited_calls(chat_key: &str) -> Vec<Option<String>> {
     with_pending(|p| {
         p.values()
-            .any(|w| w.asked.request.chat_key.as_deref() == Some(chat_key))
+            .filter(|w| w.asked.request.chat_key.as_deref() == Some(chat_key))
+            .map(|w| w.asked.request.tool_use_id.clone())
+            .collect()
     })
 }
 
@@ -450,6 +454,34 @@ pub fn decide(id: &str, decision: Decision, remember: bool) -> bool {
     let delivered = waiting.tx.send(decision).is_ok();
     crate::bus::emit("permission-expired", serde_json::json!({ "id": id }));
     delivered
+}
+
+/// Put a question on the list the way `ask` does once a browser is watching,
+/// for a test of code that reads the list. `decide` takes it off again.
+#[cfg(test)]
+pub(crate) fn test_ask(chat_key: &str, tool_use_id: Option<&str>) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (tx, _) = oneshot::channel();
+    let asked = Asked {
+        id: id.clone(),
+        request: Request {
+            chat_key: Some(chat_key.into()),
+            tool_name: Some("Bash".into()),
+            tool_use_id: tool_use_id.map(str::to_string),
+            ..Default::default()
+        },
+    };
+    with_pending(|p| {
+        p.insert(
+            id.clone(),
+            Waiting {
+                tx,
+                remember: None,
+                asked,
+            },
+        )
+    });
+    id
 }
 
 #[cfg(test)]

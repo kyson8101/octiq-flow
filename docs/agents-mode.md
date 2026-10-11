@@ -710,18 +710,50 @@ notice.
   is ended at 60 seconds of work.
 - **What a wait is.** The scheduler looks at each live attempt every two
   seconds. A look sees a wait when the attempt's chat is on a card only the
-  person can answer (a Codex safety approval that continues the work, or a
-  permission question), or when a gate of its task is open **and** the chat
-  has no turn in flight (the `busy` the idle reaper trusts, read through
-  `ChatManager::turn_in_flight`: from a write to the agent's stdin until that
-  turn's own full stop). Opening a gate stops no clock by itself: while the
-  turn that opened it still runs, the attempt is working, is charged, and is
-  ended at its limit with the gate open. The teammate's brief says to end the
-  turn after opening a gate. A turn that a Stop cut short still counts as a
-  turn until its own full stop has been read (`ChatManager::unwinding`): the
-  chat is marked idle at once, but the agent has not said it stopped, so the
-  window is charged until the full stop arrives or the process is ended for
-  not stopping.
+  person can answer (a permission question, or a Codex safety approval that
+  continues the work), or a gate of its task is open, **and** the host sees
+  nothing of the attempt running. Neither a card nor a gate stops a clock by
+  itself, and both rest on that one answer (`Look::nothing_running`):
+  - **A full stop that is owed is something running.** A turn that a Stop cut
+    short counts until its own full stop has been read
+    (`ChatManager::unwinding`): the chat is marked idle at once, but the agent
+    has not said it stopped, so the window is charged until the full stop
+    arrives or the process is ended for not stopping. A card that is up in
+    that window does not change it.
+  - **With no turn in flight, nothing is.** That is the `busy` the idle
+    reaper trusts, read through `ChatManager::turn_in_flight`: from a write to
+    the agent's stdin until that turn's own full stop. An open gate, or a
+    Codex safety approval, is a wait from here on. Opening a gate under a
+    running turn stops nothing: the attempt is working, is charged, and is
+    ended at its limit with the gate open. The teammate's brief says to end
+    the turn after opening a gate.
+  - **A turn in flight is working, unless it is parked on the person.** It is
+    parked when every card names a tool call that the attempt's ledger of
+    started, unreturned calls holds (`execution.pendingTools`), and that
+    ledger holds no other call. Any other pending call makes the look working
+    time: `permission` knows that one call waits on the person, not that
+    another has stopped.
+  - **How the host tells the card's call from another.** By the provider's
+    own id for the call, which the card and the ledger both carry. Claude: the
+    `tool_use` block's id, which its `can_use_tool` request repeats as
+    `tool_use_id`, and which its stream announced before asking. Codex
+    app-server: the item's id, which `item/started` carries and the approval
+    request repeats as `itemId`. A Codex safety approval names no call at
+    all, because the call it is about was refused, so it is a wait only once
+    the turn is over. Antigravity cannot ask and raises no card. Every worker
+    is one of those three (`worker_model` refuses any other agent), so every
+    worker has a ledger.
+  - **Where the host cannot place a call, it charges.** A card that names no
+    call, or one the ledger does not hold (a provider or a hook with no tool
+    ledger), is not proof of anything, and the look is working time. So is a
+    call the ledger shows beside the card's own even when it is only queued
+    behind it, and the call of a sub-agent that waits on a card of its own
+    inner call: the ledger says a call started and has not returned, not
+    whether it is running. This errs toward the limit the person approved. It
+    costs them nothing while they decide, because an attempt is never ended in
+    front of a card; what it can cost is that an attempt which sat on their
+    card past its limit is ended once they answer, with the reason, and
+    starting it again is theirs (Start retry).
 - **Bounds, not guesses.** Free time is only the time between two looks in a
   row that both saw the wait, with no line of the agent's stream arriving
   between them (`Wait`, `{from, to}`). The clock is read before and after each
@@ -741,14 +773,19 @@ notice.
   can see it, not on every process the agent started. A background process
   the agent left running after its turn ended goes on under an open gate
   without being charged, because the chat has no turn in flight and its stream
-  is silent; so does a tool call running silently beside a pending card. A
-  turn that begins and ends between two looks is noticed only by the lines it
-  writes to the stream. Ending the attempt stops the agent's process, not
-  what that process detached.
-- **It is never ended under the person.** An attempt a look sees waiting is
-  not ended, even past its limit. It is ended by the first look that sees the
-  wait over, and the reason says the limit was reached and that the host held
-  it.
+  is silent. A tool call running beside a pending card IS counted: the ledger
+  shows it. A turn that begins and ends between two looks is noticed only by
+  the lines it writes to the stream. Ending the attempt stops the agent's
+  process, not what that process detached.
+- **It is never ended under the person.** Charging and ending are two things.
+  An attempt a look sees waiting is not ended, even past its limit, and
+  neither is one whose chat shows a card, whether that look was free or
+  charged. It is ended by the first look that sees neither, and the reason
+  says the limit was reached and that the host held it: until the wait was
+  over, or, when something ran on beside the card, until the card was
+  answered. A permission card expires after three minutes; a Codex safety
+  approval stays until the person answers it, so an attempt that works on
+  under one is charged all the while and ended when they do.
 - **Nothing extends it.** There is no tool, argument or message that adds
   time. A longer job is a new request, which the person approves like the
   first.

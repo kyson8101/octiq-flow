@@ -148,27 +148,78 @@ pub struct PeerClock {
     /// The clock's reading at the last look, to notice it stepping back.
     #[serde(skip)]
     looked_at: i64,
+    /// A look found it out of time on a card that was not a wait: something
+    /// else was running beside the card. It is ended once the card is
+    /// answered, and the reason says so.
+    #[serde(skip)]
+    held_on_card: bool,
 }
 
-/// What one of the scheduler's looks at a live attempt shows.
-#[derive(Clone, Copy, Debug, Default)]
+/// What one of the scheduler's looks at a live attempt's chat shows.
+#[derive(Clone, Debug, Default)]
 pub(super) struct Look {
-    /// Its chat is on a card only the person can answer (`on_card`).
-    pub card: bool,
+    /// The permission cards its chat is parked on, one entry per card: the
+    /// id of the tool call the card asks about, or `None` when the card
+    /// named none (`permission::awaited_calls`). Claude names the `tool_use`
+    /// block, Codex app-server the item (`itemId`).
+    pub asked: Vec<Option<String>>,
+    /// A Codex safety approval that would continue its work is up
+    /// (`safety_block::awaits_decision`). It asks about no call still in
+    /// flight: the call it names was refused.
+    pub approval: bool,
     /// Its chat has a turn in flight (`ChatManager::turn_in_flight`): from a
-    /// write to the agent's stdin until that turn's own full stop. A turn a
-    /// Stop cut short counts until its full stop has been read
-    /// (`ChatManager::unwinding`).
+    /// write to the agent's stdin until that turn's own full stop.
     pub turn: bool,
+    /// A Stop cut its turn short and that turn's full stop has not been read
+    /// (`ChatManager::unwinding`): the agent was asked to stop and has not
+    /// said it has.
+    pub unwinding: bool,
 }
 
 impl Look {
-    /// Whether this look saw the attempt waiting with nothing running: on a
-    /// card, or with a gate of its task open and no turn in flight. A gate
-    /// alone is not a wait: an agent that opens one and keeps working is
-    /// working.
-    fn waiting(self, gate_open: bool) -> bool {
-        self.card || (gate_open && !self.turn)
+    /// Its chat shows a card only the person can answer. An attempt is
+    /// never ended in front of one, charged or not.
+    fn on_card(&self) -> bool {
+        self.approval || !self.asked.is_empty()
+    }
+
+    /// Whether the host sees nothing of this attempt running. The one
+    /// answer both kinds of wait rest on, a card and an open gate alike.
+    ///
+    /// `tools` is the attempt's ledger of tool calls that started and have
+    /// not returned (`Execution::pending_tools`), by the provider's own id
+    /// for each call.
+    ///
+    /// - A full stop that is owed is something running.
+    /// - With no turn in flight, nothing is: the turn's own full stop was
+    ///   read, and its calls ended with it. (A process a call left behind
+    ///   in the background is outside what the host sees.)
+    /// - A turn in flight is running, unless it is parked on the person:
+    ///   every card names a call the ledger holds, and the ledger holds no
+    ///   other call. A card that names no call, or one the ledger does not
+    ///   hold, places nothing, so the turn counts as running. So does any
+    ///   call beside the card's own, whether it runs or waits behind it: the
+    ///   ledger cannot tell those apart.
+    fn nothing_running(&self, tools: &BTreeSet<String>) -> bool {
+        if self.unwinding {
+            return false;
+        }
+        if !self.turn {
+            return true;
+        }
+        let asked: BTreeSet<&str> = self.asked.iter().flatten().map(String::as_str).collect();
+        !self.asked.is_empty()
+            && asked.len() == self.asked.len()
+            && asked.iter().all(|call| tools.contains(*call))
+            && tools.iter().all(|call| asked.contains(call.as_str()))
+    }
+
+    /// Whether this look saw the attempt waiting for a decision with
+    /// nothing running: on a card, or with a gate of its task open. Neither
+    /// is a wait by itself: an agent that opens a gate and keeps working is
+    /// working, and so is one whose other call runs on beside a card.
+    fn waiting(&self, gate_open: bool, tools: &BTreeSet<String>) -> bool {
+        (self.on_card() || gate_open) && self.nothing_running(tools)
     }
 }
 
@@ -261,13 +312,6 @@ pub(super) fn clock_for(
         used_ms: carried_ms,
         ..PeerClock::default()
     })
-}
-
-/// Whether a chat is on a card only the person can answer: a Codex safety
-/// approval that continues its work, or a permission question. The attempt
-/// is waiting, not working, and is never ended under the card.
-fn on_card(chat_key: &str) -> bool {
-    crate::safety_block::awaits_decision(chat_key) || crate::permission::awaits(chat_key)
 }
 
 /// What `snapshot` read of a run, cut down to one peer-request task for its
@@ -1007,27 +1051,33 @@ impl OrchestrationStore {
     /// toward charging:
     ///
     /// - A look sees a wait when the attempt's chat is on a card only the
-    ///   person can answer, or when a gate of its task is open AND the chat
-    ///   has no turn in flight (`Look::waiting`). Opening a gate stops no
-    ///   clock by itself: while the turn that opened it still runs, the
-    ///   attempt is working and is charged, and can be ended.
+    ///   person can answer, or a gate of its task is open, AND the host sees
+    ///   nothing of the attempt running (`Look::nothing_running`, the one
+    ///   answer for both): no full stop owed, and no turn in flight other
+    ///   than one parked on the very calls the cards ask about. Neither a
+    ///   card nor a gate stops a clock by itself: a turn that opened a gate
+    ///   and runs on is working, and so is a tool call running beside a
+    ///   card.
     /// - Free time is only the time between two looks in a row that BOTH saw
     ///   the wait, with no line of the agent's own stream arriving between
     ///   them (`Wait`). A wait seen by one look is no time at all.
     /// - What was used never goes down (`PeerClock::used_ms`).
     ///
-    /// An attempt is never ended while a look sees it waiting: one that is
-    /// past its limit then is ended by the first look that sees the wait
-    /// over.
+    /// Charging and ending are two things. An attempt is never ended while
+    /// a look sees it waiting, nor while its chat shows a card, charged or
+    /// not: the person is in front of it. One that is past its limit then
+    /// is ended by the first look that sees neither.
     pub(crate) fn expire_peer_requests(&self, chats: &ChatManager) -> Result<Vec<String>, String> {
         self.expire_peer_requests_with(&now_ms, &|chat| Look {
-            card: on_card(chat),
+            asked: crate::permission::awaited_calls(chat),
+            approval: crate::safety_block::awaits_decision(chat),
+            turn: chats.turn_in_flight(chat),
             // A Stop marks the chat idle at once, while the turn it cut
             // short has not reached its full stop: the agent was asked to
             // stop and has not said it has. That is not a wait the host
-            // can verify, so it reads as a turn until the full stop is
-            // read or the process is ended.
-            turn: chats.turn_in_flight(chat) || chats.unwinding(chat),
+            // can verify, until the full stop is read or the process is
+            // ended.
+            unwinding: chats.unwinding(chat),
         })
     }
 
@@ -1052,7 +1102,13 @@ impl OrchestrationStore {
                 .collect()
         }
 
-        let chats: Vec<(String, String, bool)> = {
+        /// The tool calls an attempt started that have not returned, by
+        /// the provider's id for each (`Execution::pending_tools`).
+        fn tools(attempt: &Attempt) -> BTreeSet<String> {
+            attempt.execution.pending_tools.keys().cloned().collect()
+        }
+
+        let chats: Vec<(String, String, bool, BTreeSet<String>)> = {
             let inner = self.inner.lock().map_err(|error| error.to_string())?;
             if inner.load_error.is_some() {
                 return Ok(Vec::new());
@@ -1065,6 +1121,7 @@ impl OrchestrationStore {
                         attempt.id.clone(),
                         attempt.worker_chat_key.clone(),
                         attempt_has_open_gate(data, attempt),
+                        tools(attempt),
                     )
                 })
                 .collect()
@@ -1077,9 +1134,9 @@ impl OrchestrationStore {
         // extended to the earlier one, so a recorded stretch lies inside
         // the two real sightings that bound it.
         let before = clock();
-        let looks: BTreeMap<String, (Look, bool)> = chats
+        let mut looks: BTreeMap<String, (Look, bool, BTreeSet<String>)> = chats
             .into_iter()
-            .map(|(id, chat, gate_open)| (id, (look(&chat), gate_open)))
+            .map(|(id, chat, gate_open, tools)| (id, (look(&chat), gate_open, tools)))
             .collect();
         let after = clock();
 
@@ -1089,25 +1146,28 @@ impl OrchestrationStore {
         let (save, due) = {
             let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
             let data = &mut inner.data;
-            let seen: Vec<(String, i64, bool)> = live(data)
+            let seen: Vec<(String, i64, bool, BTreeSet<String>)> = live(data)
                 .into_iter()
                 .map(|(attempt, request)| {
                     (
                         attempt.id.clone(),
                         budget_ms(request),
                         attempt_has_open_gate(data, attempt),
+                        tools(attempt),
                     )
                 })
                 .collect();
             let mut save = false;
             let mut due = Vec::new();
-            for (id, budget, gate_open) in seen {
+            for (id, budget, gate_open, tools_now) in seen {
                 // Reserved after the looks were taken: the next pass's.
-                let Some(&(look, gate_was_open)) = looks.get(&id) else {
+                let Some((look, gate_was_open, mut tools)) = looks.remove(&id) else {
                     continue;
                 };
-                // A gate must be open at both readings of the ledger.
-                let waiting = look.waiting(gate_was_open && gate_open);
+                // A gate must be open at both readings of the ledger, and a
+                // call pending at either was running across this look.
+                tools.extend(tools_now);
+                let waiting = look.waiting(gate_was_open && gate_open, &tools);
                 let attempt = data.attempts.get_mut(&id).expect("listed above");
                 let active_at = attempt.execution.last_activity_at;
                 let own = attempt.peer_clock.get_or_insert_default();
@@ -1153,8 +1213,15 @@ impl OrchestrationStore {
                     .and_then(|attempt| attempt.peer_clock.as_mut())
                     .expect("set above");
                 own.used_ms = used;
-                if !waiting && used >= budget {
-                    due.push(id);
+                if used >= budget {
+                    if waiting {
+                        // Held until the wait is over.
+                    } else if look.on_card() {
+                        // Charged, and not ended in front of the person.
+                        own.held_on_card = true;
+                    } else {
+                        due.push(id);
+                    }
                 }
             }
             (save, due)
@@ -1189,7 +1256,13 @@ impl OrchestrationStore {
                     .any(|wait| {
                         wait.from < wait.to && counted_ms(&attempt, wait.to) >= budget_ms(&request)
                     });
-                let held = if held {
+                let held = if attempt
+                    .peer_clock
+                    .as_ref()
+                    .is_some_and(|clock| clock.held_on_card)
+                {
+                    " It reached the limit while a card was waiting for the person's answer, with something else of its turn still running beside the card, which is working time. The host does not end an attempt in front of a card, so it held it until the card was answered."
+                } else if held {
                     " It had reached the limit before the decision it was waiting on came back, so the host held it until that wait was over."
                 } else {
                     ""
@@ -1934,12 +2007,27 @@ pub(crate) mod tests {
     /// The scheduler, stood in for: what each of its looks at the peer's
     /// chat shows, and the time it reads off the clock. A working agent has
     /// a turn in flight, which is how every watch starts.
+    ///
+    /// `card` is a permission card as a provider raises one: it names the
+    /// call it asks about (`ON_CARD`), and that call is in the attempt's
+    /// tool ledger, where the stream's `tool_use` put it before the card
+    /// went up. `beside` is another call of the same turn that started and
+    /// has not returned (`BESIDE`).
     struct Watch<'a> {
         store: &'a OrchestrationStore,
         peer: &'a Attempt,
         card: std::cell::Cell<bool>,
+        beside: std::cell::Cell<bool>,
+        /// A Codex safety approval is up: a card that asks about no call.
+        approval: std::cell::Cell<bool>,
         turn: std::cell::Cell<bool>,
+        unwinding: std::cell::Cell<bool>,
     }
+
+    /// The call a stand-in permission card asks about.
+    const ON_CARD: &str = "toolu_on_card";
+    /// A call running beside it.
+    const BESIDE: &str = "toolu_beside";
 
     impl<'a> Watch<'a> {
         fn over(store: &'a OrchestrationStore, peer: &'a Attempt) -> Self {
@@ -1947,7 +2035,10 @@ pub(crate) mod tests {
                 store,
                 peer,
                 card: false.into(),
+                beside: false.into(),
+                approval: false.into(),
                 turn: true.into(),
+                unwinding: false.into(),
             }
         }
 
@@ -1956,10 +2047,31 @@ pub(crate) mod tests {
             self.look_between(at, at)
         }
 
+        /// Put the calls this watch says are pending in the attempt's tool
+        /// ledger, as the worker's stream would have, without a write of
+        /// the ledger (which a real `ToolStart` does make).
+        fn ledger(&self) {
+            let mut inner = self.store.inner.lock().unwrap();
+            let execution = &mut inner
+                .data
+                .attempts
+                .get_mut(&self.peer.id)
+                .unwrap()
+                .execution;
+            for (call, pending) in [(ON_CARD, self.card.get()), (BESIDE, self.beside.get())] {
+                if pending {
+                    execution.pending_tools.insert(call.into(), "Bash".into());
+                } else {
+                    execution.pending_tools.remove(call);
+                }
+            }
+        }
+
         /// One look whose clock read `before` ahead of it and `after` behind.
         fn look_between(&self, before: i64, after: i64) -> Vec<String> {
             let readings = std::cell::Cell::new(0);
             let zero = self.peer.created_at;
+            self.ledger();
             self.store
                 .expire_peer_requests_with(
                     &|| {
@@ -1969,8 +2081,15 @@ pub(crate) mod tests {
                     &|chat| {
                         assert_eq!(chat, self.peer.worker_chat_key);
                         Look {
-                            card: self.card.get(),
+                            asked: self
+                                .card
+                                .get()
+                                .then(|| Some(ON_CARD.to_string()))
+                                .into_iter()
+                                .collect(),
+                            approval: self.approval.get(),
                             turn: self.turn.get(),
+                            unwinding: self.unwinding.get(),
                         }
                     },
                 )
@@ -2329,6 +2448,344 @@ pub(crate) mod tests {
         assert!(!chats.unwinding(chat));
         looks(3);
         assert_eq!(waits().len(), 2, "{:?}", waits());
+    }
+
+    /// A card is not proof that nothing runs: `permission::awaited_calls`
+    /// says one call waits on the person, not that another has stopped. The
+    /// reviewer's case: a one-minute request with 59 seconds used, an
+    /// allowed shell call still running and silent while another call shows
+    /// a permission card. Every look sees the card, the stream says nothing,
+    /// and the wait used to be free: 179 seconds on, still 59 used and not
+    /// due.
+    ///
+    /// It is working time now. Charging and ending stay apart: the attempt
+    /// is never ended in front of the card, and the first look after the
+    /// card is answered finds the budget used up and ends it, with a reason
+    /// that says the limit was reached during the wait.
+    #[test]
+    fn a_tool_running_beside_a_card_is_working_time_and_it_is_ended_once_the_card_is_answered() {
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        assert!(watch.looks(2_000, 58_000).is_empty());
+        watch.beside.set(true);
+        watch.card.set(true);
+        // Three minutes, the longest a permission card stays up. Never
+        // ended before the answer, and every second of it charged.
+        for at in (59_000..=238_000).step_by(1_000) {
+            assert!(watch.look(at).is_empty(), "ended under the card at {at}");
+        }
+        assert!(watch.waits().is_empty(), "{:?}", watch.waits());
+        assert_eq!(watch.used(238_000), 238_000);
+        let live = attempt_of(&store, &peer.id);
+        assert_eq!(live.status, AttemptStatus::Running);
+
+        // The person answers; the other call is still running.
+        watch.card.set(false);
+        assert_eq!(watch.look(239_000), vec![peer.worker_chat_key.clone()]);
+        let ended = attempt_of(&store, &peer.id);
+        assert_eq!(ended.status, AttemptStatus::Failed);
+        assert_eq!(ended.execution.latest_error.unwrap().kind, "time_limit");
+        let summary = ended.summary.unwrap();
+        assert!(summary.starts_with(TIME_LIMIT_REASON), "{summary}");
+        assert!(
+            summary.contains("while a card was waiting for the person's answer")
+                && summary.contains("held it until the card was answered"),
+            "{summary}"
+        );
+
+        // The same card with nothing else pending is the wait it always
+        // was: free, and an attempt that was in time when it went up still
+        // has what it had left when it comes down.
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        assert!(watch.looks(2_000, 40_000).is_empty());
+        watch.card.set(true);
+        assert!(watch.looks(42_000, 220_000).is_empty());
+        watch.card.set(false);
+        assert!(watch.look(222_000).is_empty());
+        assert_eq!(watch.waits(), vec![(42_000, 220_000)]);
+        // 42 seconds to the wait and 2 after it.
+        assert_eq!(watch.used(222_000), 44_000);
+    }
+
+    /// The other call ends while the card is still up: from the look that
+    /// sees the ledger hold the card's call alone, the rest is a wait. And
+    /// one that starts beside a card that was a wait ends it.
+    #[test]
+    fn a_card_is_a_wait_only_while_no_other_call_is_pending() {
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 5);
+        let watch = Watch::over(&store, &peer);
+        watch.card.set(true);
+        watch.beside.set(true);
+        assert!(watch.looks(2_000, 20_000).is_empty());
+        assert!(watch.waits().is_empty());
+        watch.beside.set(false);
+        assert!(watch.looks(22_000, 40_000).is_empty());
+        assert_eq!(watch.waits(), vec![(22_000, 40_000)]);
+        watch.beside.set(true);
+        assert!(watch.looks(42_000, 60_000).is_empty());
+        assert_eq!(watch.waits(), vec![(22_000, 40_000)]);
+        assert_eq!(watch.used(60_000), 42_000);
+    }
+
+    /// A Stop while a card is up: the chat reads idle at once, the card is
+    /// still there, and the cut-off turn has not said it stopped. That is
+    /// charged like any owed full stop, and still not ended under the card.
+    #[test]
+    fn a_card_under_a_stopped_turn_is_working_time() {
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        watch.card.set(true);
+        assert!(watch.looks(2_000, 10_000).is_empty());
+        assert_eq!(watch.waits(), vec![(2_000, 10_000)]);
+        watch.turn.set(false);
+        watch.unwinding.set(true);
+        for at in (12_000..=90_000).step_by(2_000) {
+            assert!(watch.look(at).is_empty(), "ended under the card at {at}");
+        }
+        assert_eq!(watch.waits(), vec![(2_000, 10_000)]);
+        assert_eq!(watch.used(90_000), 82_000);
+        // The full stop is read with the card still up: a wait again, and
+        // an attempt past its limit is held through it.
+        watch.unwinding.set(false);
+        assert!(watch.looks(92_000, 96_000).is_empty());
+        watch.card.set(false);
+        assert_eq!(watch.look(98_000), vec![peer.worker_chat_key.clone()]);
+    }
+
+    /// A Codex safety approval asks about no call in flight: the call was
+    /// refused. It is a wait once the turn is over, as a gate is, and
+    /// working time while the turn runs on. Either way the attempt is not
+    /// ended in front of it.
+    #[test]
+    fn a_safety_approval_is_a_wait_only_once_the_turn_is_over() {
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 1);
+        let watch = Watch::over(&store, &peer);
+        watch.approval.set(true);
+        for at in (2_000..=80_000).step_by(2_000) {
+            assert!(watch.look(at).is_empty(), "ended under the card at {at}");
+        }
+        assert!(watch.waits().is_empty(), "{:?}", watch.waits());
+        assert_eq!(watch.used(80_000), 80_000);
+        watch.turn.set(false);
+        assert!(watch.looks(82_000, 90_000).is_empty());
+        assert_eq!(watch.waits(), vec![(82_000, 90_000)]);
+        watch.approval.set(false);
+        assert_eq!(watch.look(92_000), vec![peer.worker_chat_key.clone()]);
+    }
+
+    /// The one answer both kinds of wait rest on, row by row.
+    #[test]
+    fn the_host_sees_nothing_running_only_where_it_can_place_every_pending_call() {
+        let ledger = |calls: &[&str]| -> BTreeSet<String> {
+            calls.iter().map(|call| call.to_string()).collect()
+        };
+        let cards = |calls: &[Option<&str>]| -> Vec<Option<String>> {
+            calls.iter().map(|call| call.map(str::to_string)).collect()
+        };
+        let in_turn = |asked: &[Option<&str>]| Look {
+            asked: cards(asked),
+            turn: true,
+            ..Look::default()
+        };
+        // (what the look shows, the ledger, nothing running?)
+        let rows: Vec<(&str, Look, BTreeSet<String>, bool)> = vec![
+            (
+                "no turn, nothing pending",
+                Look::default(),
+                ledger(&[]),
+                true,
+            ),
+            (
+                "no turn: the full stop was read, whatever the ledger kept",
+                Look::default(),
+                ledger(&["a"]),
+                true,
+            ),
+            ("a turn in flight", in_turn(&[]), ledger(&[]), false),
+            ("a turn in a call", in_turn(&[]), ledger(&["a"]), false),
+            (
+                "parked on the card's own call",
+                in_turn(&[Some("a")]),
+                ledger(&["a"]),
+                true,
+            ),
+            (
+                "two cards, two calls, nothing else",
+                in_turn(&[Some("a"), Some("b")]),
+                ledger(&["a", "b"]),
+                true,
+            ),
+            (
+                "another call beside the card",
+                in_turn(&[Some("a")]),
+                ledger(&["a", "b"]),
+                false,
+            ),
+            (
+                "a card whose call the ledger does not hold",
+                in_turn(&[Some("a")]),
+                ledger(&[]),
+                false,
+            ),
+            (
+                "a card that names no call",
+                in_turn(&[None]),
+                ledger(&[]),
+                false,
+            ),
+            (
+                "a card that names no call, beside a pending one",
+                in_turn(&[None]),
+                ledger(&["a"]),
+                false,
+            ),
+            (
+                "one card placed and one not",
+                in_turn(&[Some("a"), None]),
+                ledger(&["a"]),
+                false,
+            ),
+            (
+                "a safety approval under a running turn",
+                Look {
+                    approval: true,
+                    turn: true,
+                    ..Look::default()
+                },
+                ledger(&[]),
+                false,
+            ),
+            (
+                "a safety approval with the turn over",
+                Look {
+                    approval: true,
+                    ..Look::default()
+                },
+                ledger(&[]),
+                true,
+            ),
+            (
+                "an owed full stop",
+                Look {
+                    unwinding: true,
+                    ..Look::default()
+                },
+                ledger(&[]),
+                false,
+            ),
+            (
+                "an owed full stop under a placed card",
+                Look {
+                    unwinding: true,
+                    ..in_turn(&[Some("a")])
+                },
+                ledger(&["a"]),
+                false,
+            ),
+        ];
+        for (what, look, tools, nothing) in rows {
+            assert_eq!(look.nothing_running(&tools), nothing, "{what}");
+            // A gate is a wait on exactly that answer, and so is a card;
+            // with neither there is no wait to speak of.
+            assert_eq!(look.waiting(true, &tools), nothing, "{what}, gate open");
+            assert_eq!(
+                look.waiting(false, &tools),
+                nothing && look.on_card(),
+                "{what}, no gate"
+            );
+        }
+    }
+
+    /// The look as the scheduler takes it, off the real things: the card
+    /// off `permission`'s list, the turn off the chat, and the calls off the
+    /// ledger the worker's own stream wrote. Claude names the call a card
+    /// asks about by its `tool_use` id, Codex app-server by the item's id.
+    #[test]
+    fn the_schedulers_look_reads_the_card_and_the_call_beside_it_off_the_stream() {
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 120);
+        let chat = peer.worker_chat_key.as_str();
+        let chats = ChatManager::default();
+        chats.test_launch(chat);
+        chats.test_busy(chat, true);
+        let waits = || {
+            attempt_of(&store, &peer.id)
+                .peer_clock
+                .map(|clock| clock.waits)
+                .unwrap_or_default()
+        };
+        let looks = |times: usize| {
+            for _ in 0..times {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+                assert!(store.expire_peer_requests(&chats).unwrap().is_empty());
+            }
+        };
+        let stream = |event: serde_json::Value| store.observe_worker_event(chat, &event).unwrap();
+        let pending = || {
+            attempt_of(&store, &peer.id)
+                .execution
+                .pending_tools
+                .into_keys()
+                .collect::<Vec<_>>()
+        };
+
+        // Claude: one message starts two calls, and a card goes up for one.
+        stream(json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "toolu_asked", "name": "Bash" },
+            { "type": "tool_use", "id": "toolu_beside", "name": "Bash" },
+        ] } }));
+        assert_eq!(pending(), ["toolu_asked", "toolu_beside"]);
+        let card = crate::permission::test_ask(chat, Some("toolu_asked"));
+        looks(4);
+        assert!(waits().is_empty(), "{:?}", waits());
+        // The other call returns: the turn is parked on the card alone.
+        stream(json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_beside" },
+        ] } }));
+        assert_eq!(pending(), ["toolu_asked"]);
+        looks(4);
+        let seen = waits();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(seen[0].from < seen[0].to, "{seen:?}");
+        // Answered: the call runs, and that is working time again.
+        crate::permission::decide(&card, crate::permission::Decision::Allow, false);
+        looks(3);
+        assert_eq!(waits(), seen);
+        stream(json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_asked" },
+        ] } }));
+        assert!(pending().is_empty());
+
+        // Codex app-server: the same, by item id.
+        stream(json!({ "type": "item.started", "item": {
+            "id": "call_asked", "type": "command_execution", "command": "rm x",
+        } }));
+        stream(json!({ "type": "item.started", "item": {
+            "id": "call_beside", "type": "mcp_tool_call", "tool": "probe",
+        } }));
+        let card = crate::permission::test_ask(chat, Some("call_asked"));
+        looks(4);
+        assert_eq!(waits(), seen);
+        stream(json!({ "type": "item.completed", "item": {
+            "id": "call_beside", "type": "mcp_tool_call", "tool": "probe",
+        } }));
+        looks(4);
+        assert_eq!(waits().len(), 2, "{:?}", waits());
+
+        // A card that names no call places nothing: not a wait.
+        crate::permission::decide(&card, crate::permission::Decision::Deny, false);
+        let unnamed = crate::permission::test_ask(chat, None);
+        let two = waits();
+        looks(4);
+        assert_eq!(waits(), two);
+        crate::permission::decide(&unnamed, crate::permission::Decision::Deny, false);
+        chats.test_end(chat);
     }
 
     /// A gate is free from the first look that saw the turn over, not from
