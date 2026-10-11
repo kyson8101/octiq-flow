@@ -208,6 +208,17 @@ export type OrchestrationTask = {
    *  it. Absent on a host that does not say: the run's own approval is then
    *  all the page has (`lib/agentsDashboard`, `lib/mission`). */
   heldByPlan?: boolean;
+  /** A start of it would be refused because it was reopened and the notice
+   *  of that is not confirmed on disk in the coordinator's chat. The host
+   *  sends the key only while it holds, and only as `true`. */
+  heldByReopen?: boolean;
+  /** Every reopen of the task, oldest first (the newest twelve). Absent on a
+   *  task that never was reopened. */
+  reopens?: TaskReopenRecord[];
+  /** The person stopped this task's worker from the page
+   *  (`orchestration_task_stop`). While it is set only the person starts the
+   *  task again: their Start, or their approval of a plan it is put back on. */
+  stopped?: { at: number; attemptId: string; reason?: string };
   /** Set on a task a teammate asked for (orchestration/peer_request.rs): who
    *  asked, the result they expect back, and `maxMinutes` of working time
    *  (waiting for a decision does not count, and it is not extended). */
@@ -221,6 +232,19 @@ export type OrchestrationTask = {
   };
   createdAt: number;
   updatedAt: number;
+};
+
+/** One reopen of a completed task, as the ledger keeps it. `attempt` is the
+ *  number of the attempt the instructions are for. `noticeDelivered` is
+ *  false until the notice of it is in the coordinator's chat and confirmed
+ *  on disk; a record that does not say reads as false too. */
+export type TaskReopenRecord = {
+  byChatKey: string;
+  at: number;
+  attempt: number;
+  previousSpec: string;
+  spec: string;
+  noticeDelivered?: boolean;
 };
 
 /** Blocked or failed and not replaced: something someone still has to deal

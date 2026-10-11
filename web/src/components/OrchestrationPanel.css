@@ -806,6 +806,11 @@
 .orch-task-lifecycle code { font-family: var(--mono); font-size: 10.5px; }
 .orch-task-lifecycle-commands { margin: 0 0 6px; padding-left: 16px; color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
 .orch-task-blocker { color: var(--warn); }
+/* Why a task that could start does not (lib/taskHold): the host's own
+   sentences, in the detail's ink. The warning colour is for a hold that has
+   lasted, and for nothing else here. */
+.orch-task-detail > .orch-task-hold { margin: 2px 0 10px; overflow-wrap: anywhere; }
+.orch-task-detail > .orch-task-hold[data-tone="warn"] { color: var(--warn); }
 /* A check's kind, its environment and a native decision: each a state of
    its own, beside the task's status and never folded into it. */
 .orch-task-kind, .orch-task-env, .orch-task-decision { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

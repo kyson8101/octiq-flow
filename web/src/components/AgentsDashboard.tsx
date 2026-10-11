@@ -16,6 +16,7 @@ import {
 } from "../lib/agentsDashboard";
 import type { OrchestrationSnapshot } from "../lib/orchestration";
 import type { Waiting } from "../lib/runWaits";
+import { useElapsedTick } from "../lib/agentTaskBoard";
 import { bridge } from "../lib/bridge";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentRole } from "./AgentRole";
@@ -135,10 +136,14 @@ export function AgentsDashboard({
   };
 
   const projectList = useMemo(() => projects.map(({ id, name }) => ({ id, name })), [projects]);
+  // The one reading here that a clock moves: a reopened task whose notice
+  // has stayed unconfirmed takes the warning colour. It ticks only while
+  // some task is held that way.
+  const now = useElapsedTick(!!snapshot?.tasks.some((task) => task.heldByReopen === true));
   const rows = agentRoster({
     team, leads, snapshot, projects: projectList, teams,
     providerLabel: (agent) => `${AGENT_NAME[agent.agent]} ${teamModelLabel(agent)}`,
-    chatTitle, chatExists, leadActivity, waitingOn, held,
+    chatTitle, chatExists, leadActivity, waitingOn, held, now,
   });
   const summary = rosterSummary(rows);
   const stale = !connected || !!ledgerError;
@@ -297,6 +302,7 @@ function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onO
         <div className="dash-agent-work">
           {shown.map((activity) => (
             <button key={activity.key} className="dash-item" type="button" data-state={activity.state}
+              data-tone={activity.tone} title={activity.detail} aria-description={activity.detail}
               disabled={!canOpen(activity)} onClick={() => onOpen(activity)}
               aria-label={`${activity.label}: ${activity.title}${activity.project ? `, in ${activity.project.name}` : ""}. Open ${activity.kind === "lead" ? "conversation" : "task"}`}>
               <span className={`dash-dot is-${activity.state}`} aria-hidden="true" />

@@ -18,6 +18,7 @@ import type {
   AttemptUsage, OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask,
 } from "./orchestration";
 import { ledgerWaits, NO_WAITS, runWaits, UNSAID_NOTE, type RunWaits, type WaitKind, type Waiting, type Waits } from "./runWaits";
+import { taskHold, type TaskHold } from "./taskHold";
 
 export type { Waiting } from "./runWaits";
 
@@ -66,6 +67,10 @@ export type ProgressRow = {
   decisions: number;
   /** What the row's tooltip adds: a wait the host put no name to. */
   hint: string | null;
+  /** What holds a task that has not started, when the host would refuse a
+   *  start of it (`lib/taskHold`): the person's stop, the plan, a reopen
+   *  whose notice is not confirmed yet. Its label is the row's `why`. */
+  hold: TaskHold | null;
   /** The worker's checklist as counts. Its words are not on the row. */
   steps: { done: number; total: number } | null;
   /** The thin bar. `null` draws none: nothing was reported to draw. */
@@ -227,6 +232,7 @@ function read(
   task: OrchestrationTask,
   attempt: OrchestrationAttempt | undefined,
   waits: Waits,
+  hold: TaskHold | null,
 ): Reading {
   // The person's, and only then "Needs you". It is asked first: whatever
   // `lib/runWaits` says waits on them is counted on the strip, so the row
@@ -247,6 +253,10 @@ function read(
   // The coordinator's: a wait, in the warning colour, that asks nothing of
   // the person.
   if (waits.coordinator.length) return { state: "running", why: COORDINATOR_WORD, tone: "warn" };
+  // The person stopped its worker. The host leaves the task failed, and
+  // nothing failed: it is held until they start it, and waits with what has
+  // not started.
+  if (hold?.kind === "stopped") return { state: "planned", why: hold.label, tone: hold.tone };
   if (task.status === "failed") return { state: "failed", why: "Failed", tone: "danger" };
   // A decision is open and the host does not say whose it is. It is said as
   // what the ledger holds, in no colour, and counted as nobody's.
@@ -276,7 +286,9 @@ function read(
     if (attempt?.status === "preparing" && !attempt.execution) return { state: "running", why: "Preparing workspace", tone: null };
     return { state: "running", why: null, tone: null };
   }
-  return { state: "planned", why: null, tone: null };
+  // Not started. A start the host would refuse is said as that, never as a
+  // task that is merely waiting its turn.
+  return { state: "planned", why: hold?.label ?? null, tone: hold?.tone ?? null };
 }
 
 /** What failed is listed with what is running, first: the person asked for
@@ -305,7 +317,8 @@ export function progressRow(
 ): ProgressRow {
   const attempt = currentAttempt(snapshot, task);
   const mineWaits = waits.tasks.get(task.id) ?? NO_WAITS;
-  const reading = read(run, task, attempt, mineWaits);
+  const hold = taskHold(task, run, snapshot.tasks, now);
+  const reading = read(run, task, attempt, mineWaits, hold);
   const summary = taskStepSummary(task, attempt, attempt ? snapshot.reports?.[attempt.workerChatKey] : undefined);
   const steps = summary ? { done: summary.done, total: summary.total } : null;
   const mine = snapshot.attempts.filter((item) => item.taskId === task.id);
@@ -319,6 +332,9 @@ export function progressRow(
     // Said only of a row that is still owed something: a finished or closed
     // one waits for nothing, whatever the ledger kept.
     hint: mineWaits.unsaid.length && (reading.state === "running" || reading.state === "failed" || reading.state === "planned") ? UNSAID_NOTE : null,
+    // Said only where it is the row's reading: a task that waits on the
+    // person, or that the coordinator has, says that instead.
+    hold: reading.state === "planned" ? hold : null,
     steps,
     percent: steps ? Math.round(steps.done / steps.total * 100) : reading.state === "done" ? 100 : null,
     model: attempt?.model || task.worker?.model || null,
@@ -349,7 +365,12 @@ function ordered(key: GroupKey, rows: ProgressRow[]): ProgressRow[] {
     const when = (row: ProgressRow) => row.attempt?.finishedAt ?? row.task.updatedAt;
     return [...rows].sort((a, b) => Number(a.state === "closed") - Number(b.state === "closed") || when(b) - when(a) || keep(a, b));
   }
-  if (key === "planned") return [...rows].sort((a, b) => Number(b.task.status === "ready") - Number(a.task.status === "ready") || keep(a, b));
+  // A task something holds is never behind "N more": the one the person
+  // stopped first, then one whose hold has lasted, then the other held ones.
+  if (key === "planned") {
+    const held = (row: ProgressRow) => row.hold?.kind === "stopped" ? 0 : row.hold?.tone === "warn" ? 1 : row.hold ? 2 : 3;
+    return [...rows].sort((a, b) => held(a) - held(b) || Number(b.task.status === "ready") - Number(a.task.status === "ready") || keep(a, b));
+  }
   // What failed leads, then a worker in trouble, then the ones simply going.
   const rank = (row: ProgressRow) => row.state === "failed" ? 0 : row.tone === "warn" ? 1 : 2;
   return [...rows].sort((a, b) => rank(a) - rank(b) || keep(a, b));
@@ -397,6 +418,17 @@ function stripSide(strip: Pick<RunStrip, "state" | "needs" | "planOnly" | "faile
   return side.filter((item): item is StripSide => !!item).slice(0, 2);
 }
 
+/** What the strip's tooltip says of tasks something holds. Never on the
+ *  line: a hold asks nothing of the person. */
+function holdNotes(rows: readonly ProgressRow[]): string[] {
+  const of = (kind: TaskHold["kind"]) => rows.filter((row) => row.hold?.kind === kind).length;
+  const [stopped, reopened] = [of("stopped"), of("reopen")];
+  return [
+    stopped ? `${plural(stopped, "task", "tasks")} stopped by you: only your Start starts ${stopped === 1 ? "it" : "them"} again.` : null,
+    reopened ? `${plural(reopened, "reopened task", "reopened tasks")} held: the notice of ${reopened === 1 ? "it" : "them"} is not confirmed as saved yet.` : null,
+  ].filter((note): note is string => !!note);
+}
+
 /** Everything both surfaces draw for one run. `waiting` is the cards the
  *  page holds for the person, per task; who each wait is on is decided in
  *  one place (`lib/runWaits.runWaits`) and read here for the rows and the
@@ -428,7 +460,11 @@ export function runProgress(
   const active = ACTIVE_RUN.has(run.status);
   // Per decision, never per row: two cards of one worker are two.
   const needs = waits.person.length;
-  const failed = rows.filter((row) => row.state === "failed").length + (run.status === "failed" && !rows.some((row) => row.state === "failed") ? 1 : 0);
+  // A run the host calls failed with no failed row is said as one failure,
+  // unless what the host left failed is a task the person stopped: that
+  // row says so, and nothing failed.
+  const failed = rows.filter((row) => row.state === "failed").length
+    + (run.status === "failed" && !rows.some((row) => row.state === "failed" || row.hold?.kind === "stopped") ? 1 : 0);
   const working = rows.filter((row) => row.flight).length;
 
   let strip: RunStrip | null = null;
@@ -442,6 +478,7 @@ export function runProgress(
     const notes = [
       waits.coordinator.length ? `${waits.coordinator.length} waiting on the coordinator.` : null,
       waits.unsaid.length ? `${plural(waits.unsaid.length, "open decision", "open decisions")}: the host does not say who ${waits.unsaid.length === 1 ? "it waits" : "they wait"} on.` : null,
+      ...holdNotes(rows),
     ].filter((note): note is string => !!note);
     const counts = { state, needs, planOnly: needs === 1 && waits.person[0].kind === "plan", failed, working, runs: 1 };
     strip = {

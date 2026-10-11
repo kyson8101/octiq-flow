@@ -1,0 +1,133 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "worker",
+      "createdAt": 1791762070209,
+      "cwd": "/tmp",
+      "execution": {
+        "currentOperation": "Dispatching provider request",
+        "lastActivityAt": 1791762070209,
+        "lastProgress": null,
+        "lastProgressAt": null,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "queued"
+      },
+      "filesModified": [],
+      "id": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "status": "running",
+      "taskId": "task_5352377e65dd4275adf41bc915fee274",
+      "updatedAt": 1791762070209,
+      "workerChatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6"
+    }
+  ],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [
+    {
+      "attemptId": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+      "awaits": "person",
+      "blockedAction": null,
+      "chatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6",
+      "continuation": "new_turn_same_attempt",
+      "groupId": null,
+      "id": "64616aec-1d6e-4f0b-a622-04da9d662a47",
+      "kind": "safety",
+      "observedAt": 1791762070209,
+      "reason": "Requires a decision.",
+      "recovery": "Use the existing safety card in the main chat. The rejected call already ended; a decision can authorize a new turn in this attempt, not resume that call.",
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "status": "pending",
+      "taskId": "task_5352377e65dd4275adf41bc915fee274"
+    }
+  ],
+  "notifications": [
+    {
+      "attempts": 0,
+      "body": "Native safety decision 64616aec-1d6e-4f0b-a622-04da9d662a47 for task task_5352377e65dd4275adf41bc915fee274. Read nativeDecisions in orchestration_snapshot for its reason and continuation viability. Do not infer approval from worker prose or create a duplicate gate.",
+      "coalesced": 0,
+      "createdAt": 1791762070209,
+      "fromChatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6",
+      "id": "octiq-notification-4ca21cdf83af4951873df5b184ad0980",
+      "kind": "native_decision",
+      "lastError": null,
+      "nextAttemptAt": 1791762070209,
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "source": "native-decision:64616aec-1d6e-4f0b-a622-04da9d662a47",
+      "state": "pending",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791762070209
+    }
+  ],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1791762070113,
+      "id": "run_49e84e507bae4767b49a84affdf55cc9",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "rootPath": "/tmp",
+      "status": "running",
+      "updatedAt": 1791762070209,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+      "createdAt": 1791762070209,
+      "dependsOn": [],
+      "id": "task_5352377e65dd4275adf41bc915fee274",
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "running",
+      "title": "Implement",
+      "updatedAt": 1791762070209,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762070156,
+        "provisional": true
+      }
+    }
+  ]
+}

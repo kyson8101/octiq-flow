@@ -1,0 +1,322 @@
+{
+  "answer": {
+    "activeAttemptId": "attempt_50e80629f61b420c8446bccb75bf16da",
+    "approved": {
+      "at": 1791762069800,
+      "by": "plan",
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      }
+    },
+    "approvedAt": 1791762069800,
+    "createdAt": 1791762069689,
+    "dependsOn": [],
+    "id": "task_d60032e9aa0743109afa744386fa7f4f",
+    "result": "Stopped by the person. Their reason: Not these instructions",
+    "runId": "run_f122742daaf44ce78066b511d0998163",
+    "size": "medium",
+    "spec": "Make the requested change",
+    "status": "failed",
+    "stopped": {
+      "at": 1791762069801,
+      "attemptId": "attempt_50e80629f61b420c8446bccb75bf16da",
+      "reason": "Not these instructions"
+    },
+    "title": "Implement",
+    "updatedAt": 1791762069801,
+    "worker": {
+      "access": "auto",
+      "agent": "codex",
+      "effort": null,
+      "model": "gpt-5.6-sol",
+      "recovery": null
+    },
+    "workspaceProposal": {
+      "newBranch": false,
+      "plan": {
+        "baseBranch": "",
+        "baseSha": "",
+        "branch": "",
+        "checkoutRoot": "/private/tmp",
+        "cwd": "/private/tmp",
+        "initialStatus": "",
+        "isRepo": false,
+        "managed": false,
+        "mode": "direct",
+        "repositoryRoot": "/private/tmp",
+        "warnings": [
+          "This folder has no Git history. Changes are made directly."
+        ]
+      },
+      "proposedAt": 1791762069670,
+      "provisional": true
+    }
+  },
+  "snapshot": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791762069801,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791762069801,
+          "lastProgress": null,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "pendingTools": {},
+          "providerRetryStartedAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "cancelled"
+        },
+        "filesModified": [],
+        "finishedAt": 1791762069801,
+        "id": "attempt_50e80629f61b420c8446bccb75bf16da",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "status": "cancelled",
+        "summary": "Stopped by the person.",
+        "taskId": "task_d60032e9aa0743109afa744386fa7f4f",
+        "updatedAt": 1791762069801,
+        "workerChatKey": "chat:orch-7cddf1dccc9644b58a73632df5fe8d47"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791762069801,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Dispatching provider request",
+          "lastActivityAt": 1791762069801,
+          "lastProgress": null,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "pendingTools": {},
+          "providerRetryStartedAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_9fc8b7689bb04bba8dc1628f0b3108c8",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "status": "running",
+        "taskId": "task_fa62683afe334bf8a462ba9f61bf3afa",
+        "updatedAt": 1791762069801,
+        "workerChatKey": "chat:orch-5bf2ecfc20c94eb7b72e2aee34617a12"
+      }
+    ],
+    "bridges": [],
+    "gates": [
+      {
+        "closedAt": 1791762069801,
+        "createdAt": 1791762069801,
+        "createdByChatKey": "chat:orch-7cddf1dccc9644b58a73632df5fe8d47",
+        "id": "gate_bc1b8412728b49de9ff75eb7f830ad85",
+        "options": [],
+        "question": "Which way?",
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "status": "cancelled",
+        "targetChatKey": "chat:master",
+        "taskId": "task_d60032e9aa0743109afa744386fa7f4f",
+        "updatedAt": 1791762069801
+      }
+    ],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [
+      {
+        "attempts": 0,
+        "body": "Worker needs a decision for gate gate_bc1b8412728b49de9ff75eb7f830ad85.\n\nWhich way?\n\nRead orchestration_snapshot and resolve through orchestration_gate_resolve. Only ask the person if their decision is needed.",
+        "coalesced": 0,
+        "createdAt": 1791762069801,
+        "fromChatKey": "chat:orch-7cddf1dccc9644b58a73632df5fe8d47",
+        "id": "octiq-notification-8dd65811b9fe4111a1c14bdfbb8b3085",
+        "kind": "decision",
+        "lastError": null,
+        "nextAttemptAt": 1791762069801,
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "source": "gate:gate_bc1b8412728b49de9ff75eb7f830ad85",
+        "state": "pending",
+        "targetChatKey": "chat:master",
+        "updatedAt": 1791762069801
+      },
+      {
+        "attempts": 0,
+        "body": "The person stopped the worker on task \"Implement\" (task_d60032e9aa0743109afa744386fa7f4f, attempt attempt_50e80629f61b420c8446bccb75bf16da). Their reason was: “Not these instructions” The run goes on. The task is held: only the person starts it again. This records their decision; it is not an instruction to start or replace the task.",
+        "coalesced": 0,
+        "createdAt": 1791762069801,
+        "fromChatKey": "host",
+        "id": "octiq-notification-c6efdb03903c42d78f3dc1b92fd289a7",
+        "kind": "task_stopped",
+        "lastError": null,
+        "nextAttemptAt": 1791762069801,
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "source": "task-stopped:attempt_50e80629f61b420c8446bccb75bf16da",
+        "state": "pending",
+        "targetChatKey": "chat:master",
+        "updatedAt": 1791762069801
+      }
+    ],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "createdAt": 1791762069626,
+        "id": "run_f122742daaf44ce78066b511d0998163",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "consent": {
+            "at": 1791762069800,
+            "revision": 3,
+            "via": "button"
+          },
+          "decidedAt": 1791762069800,
+          "requestedAt": 1791762069626,
+          "revisedAt": 1791762069800,
+          "revision": 3,
+          "scope": "a0d090eb369f8c06360d9f9490295b6a5d1c239f947cb9bde59e4c2cb7b13ee2",
+          "status": "approved"
+        },
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791762069802,
+        "workerDefaults": null,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_50e80629f61b420c8446bccb75bf16da",
+        "approved": {
+          "at": 1791762069800,
+          "by": "plan",
+          "worker": {
+            "access": "auto",
+            "agent": "codex",
+            "effort": null,
+            "model": "gpt-5.6-sol",
+            "recovery": null
+          }
+        },
+        "approvedAt": 1791762069800,
+        "createdAt": 1791762069689,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_d60032e9aa0743109afa744386fa7f4f",
+        "result": "Stopped by the person. Their reason: Not these instructions",
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "size": "medium",
+        "spec": "Make the requested change",
+        "status": "failed",
+        "stopped": {
+          "at": 1791762069801,
+          "attemptId": "attempt_50e80629f61b420c8446bccb75bf16da",
+          "reason": "Not these instructions"
+        },
+        "title": "Implement",
+        "updatedAt": 1791762069801,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        },
+        "workspaceProposal": {
+          "newBranch": false,
+          "plan": {
+            "baseBranch": "",
+            "baseSha": "",
+            "branch": "",
+            "checkoutRoot": "/private/tmp",
+            "cwd": "/private/tmp",
+            "initialStatus": "",
+            "isRepo": false,
+            "managed": false,
+            "mode": "direct",
+            "repositoryRoot": "/private/tmp",
+            "warnings": [
+              "This folder has no Git history. Changes are made directly."
+            ]
+          },
+          "proposedAt": 1791762069670,
+          "provisional": true
+        }
+      },
+      {
+        "activeAttemptId": "attempt_9fc8b7689bb04bba8dc1628f0b3108c8",
+        "approved": {
+          "at": 1791762069800,
+          "by": "plan",
+          "worker": {
+            "access": "auto",
+            "agent": "codex",
+            "effort": null,
+            "model": "gpt-5.6-sol",
+            "recovery": null
+          }
+        },
+        "approvedAt": 1791762069800,
+        "createdAt": 1791762069790,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_fa62683afe334bf8a462ba9f61bf3afa",
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "size": "medium",
+        "spec": "Make the requested change",
+        "status": "running",
+        "title": "Implement",
+        "updatedAt": 1791762069801,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        },
+        "workspaceProposal": {
+          "newBranch": false,
+          "plan": {
+            "baseBranch": "",
+            "baseSha": "",
+            "branch": "",
+            "checkoutRoot": "/private/tmp",
+            "cwd": "/private/tmp",
+            "initialStatus": "",
+            "isRepo": false,
+            "managed": false,
+            "mode": "direct",
+            "repositoryRoot": "/private/tmp",
+            "warnings": [
+              "This folder has no Git history. Changes are made directly."
+            ]
+          },
+          "proposedAt": 1791762069767,
+          "provisional": true
+        }
+      }
+    ]
+  }
+}

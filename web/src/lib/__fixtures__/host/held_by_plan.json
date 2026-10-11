@@ -1,0 +1,130 @@
+{
+  "attempts": [],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1791762069277,
+      "id": "run_fd935c32a4b54375911e73d3be16e2b1",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "planApproval": {
+        "consent": {
+          "at": 1791762069399,
+          "revision": 2,
+          "via": "button"
+        },
+        "requestedAt": 1791762069501,
+        "revisedAt": 1791762069506,
+        "revision": 3,
+        "scope": "c58549986c0514b21897ae59cf24302fafc1a12cc32cec5cffba7589377d6b55",
+        "status": "pending"
+      },
+      "rootPath": "/tmp",
+      "status": "running",
+      "updatedAt": 1791762069501,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "approved": {
+        "assignee": {
+          "id": "agent_dev",
+          "name": "Dev"
+        },
+        "at": 1791762069399,
+        "by": "plan",
+        "worker": {
+          "access": "manual",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-terra",
+          "recovery": null
+        }
+      },
+      "approvedAt": 1791762069399,
+      "assignee": {
+        "id": "agent_dev",
+        "name": "Dev"
+      },
+      "createdAt": 1791762069396,
+      "dependsOn": [],
+      "heldByPlan": false,
+      "id": "task_fcc6febd24e44edd82c80384abdd6260",
+      "runId": "run_fd935c32a4b54375911e73d3be16e2b1",
+      "size": "medium",
+      "spec": "Inspect under command approval",
+      "status": "ready",
+      "title": "Inspect only",
+      "updatedAt": 1791762069396,
+      "worker": {
+        "access": "manual",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-terra",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762069343
+      }
+    },
+    {
+      "createdAt": 1791762069501,
+      "dependsOn": [],
+      "heldByPlan": true,
+      "id": "task_3a25925cb5b44440807619bfa5d86a34",
+      "runId": "run_fd935c32a4b54375911e73d3be16e2b1",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "ready",
+      "title": "Implement",
+      "updatedAt": 1791762069501,
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762069453,
+        "provisional": true
+      }
+    }
+  ]
+}

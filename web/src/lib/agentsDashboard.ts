@@ -15,10 +15,9 @@
 //
 // Everything is keyed on the agent's stable id, so a rename, or a change of
 // provider or model, keeps its work where it was.
-import {
-  taskHeldByPlan, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
-} from "./orchestration";
+import type { OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
 import { ledgerWaits, NO_WAITS, type LedgerWaits, type Waiting, type Waits } from "./runWaits";
+import { taskHold, type TaskHold } from "./taskHold";
 // Types only: agentsMode opens the socket bridge on import, and this module
 // is pure.
 import type { AgentTeam, TeamAgent } from "./agentsMode";
@@ -91,6 +90,11 @@ export type AgentActivity = {
   state: AgentState;
   /** The specific reason, for the row: "Executing", "Plan awaiting approval". */
   label: string;
+  /** The warning colour on that reason: a hold that has lasted. */
+  tone?: "warn";
+  /** Whole sentences behind the reason, for its tooltip: why a task that
+   *  could start does not (`lib/taskHold`). */
+  detail?: string;
   title: string;
   /** The real project the work lands in. Null when none is recorded — never
    *  guessed from the run's home. */
@@ -155,6 +159,10 @@ export type RosterInput = {
   /** The cards the page holds, per task (`lib/pendingActions`): what
    *  `lib/runWaits` reads with the ledger to say who a task waits on. */
   held?: Waiting;
+  /** The reader's clock, for the one thing here that depends on it: the
+   *  warning colour of a reopen whose notice has stayed unconfirmed
+   *  (`lib/taskHold`). Left out: no hold is ever said to have lasted. */
+  now?: number;
 };
 
 const LIVE_RUN: OrchestrationRun["status"][] = ["planning", "running", "waiting"];
@@ -174,11 +182,10 @@ export function taskState(
   /** What the task waits for, and on whom: its entry in
    *  `runWaits(...).tasks`, which is the only place that is decided. */
   waits: Waits,
-  /** A start of it would be refused until the person approves it
-   *  (`taskHeldByPlan`). Left out: the run's own approval, as before the
-   *  host said it per task. */
-  held: boolean = run?.planApproval?.status === "pending",
-): { state: AgentState; label: string } | null {
+  /** What holds it, when a start of it would be refused (`lib/taskHold`):
+   *  the person's stop, the plan, a reopen whose notice is not confirmed. */
+  hold: TaskHold | null,
+): { state: AgentState; label: string; tone?: "warn"; detail?: string } | null {
   if (!run) return null;
   // "Needs you" for exactly what `lib/runWaits` says is the person's, and
   // first: a card still on their screen is theirs whatever became of the
@@ -192,13 +199,15 @@ export function taskState(
   // task without asking the person.
   if (waits.coordinator.length) return { state: "blocked", label: "Waiting on the coordinator" };
   if ([...waits.nobody, ...waits.unsaid].some((wait) => wait.kind === "gate")) return { state: "blocked", label: "Decision open" };
+  // Something holds it and the host would refuse a start: it is waiting,
+  // and says what for. The plan is the lead's to have approved, and a task
+  // the person already approved is not held by a later revision of it. A
+  // task the person stopped is left failed by the host and did not fail. A
+  // reopened task whose notice is not confirmed is not "Ready to start".
+  if (hold) return { state: "queued", label: hold.label, detail: hold.detail, ...(hold.tone ? { tone: hold.tone } : {}) };
   if (task.status === "failed") return { state: "blocked", label: "Failed" };
   if (task.status === "blocked") return { state: "blocked", label: "Blocked" };
   if (task.status === "pending" || task.status === "ready") {
-    // The plan is the lead's to have approved; a task it holds is only
-    // waiting. One the person already approved is not held by a later
-    // revision of the plan, and says what it is doing.
-    if (held) return { state: "queued", label: "Waiting for plan approval" };
     return { state: "queued", label: task.status === "ready" ? "Ready to start" : "Queued" };
   }
   // Running, as the ledger has it. Whether anything is executing is the
@@ -242,7 +251,8 @@ export function workingTaskCount(snapshot: OrchestrationSnapshot, held?: Waiting
   return snapshot.tasks.filter((task) => {
     const attempt = latestAttempt(snapshot, task);
     const run = runs.get(task.runId);
-    return taskState(task, run, attempt, taskWaits(waits, task), taskHeldByPlan(task, run, snapshot.tasks))?.state === "working";
+    // A hold only ever says "queued": whether one lasts is not asked here.
+    return taskState(task, run, attempt, taskWaits(waits, task), taskHold(task, run, snapshot.tasks, 0))?.state === "working";
   }).length;
 }
 
@@ -290,7 +300,8 @@ export function agentRoster(input: RosterInput): AgentRow[] {
     const run = runs.get(task.runId);
     const attempt = latestAttempt(snapshot, task);
     if (attempt && input.chatExists(attempt.workerChatKey)) touch(assignee, attempt.workerChatKey, task.title, attempt.updatedAt);
-    const current = taskState(task, run, attempt, waits ? taskWaits(waits, task) : NO_WAITS, taskHeldByPlan(task, run, snapshot.tasks));
+    const current = taskState(task, run, attempt, waits ? taskWaits(waits, task) : NO_WAITS,
+      taskHold(task, run, snapshot.tasks, input.now ?? 0));
     if (!current) continue;
     const destination = task.destination;
     add(assignee, {

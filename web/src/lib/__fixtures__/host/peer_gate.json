@@ -1,0 +1,302 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "assignee": {
+        "id": "ada",
+        "name": "ADA"
+      },
+      "branch": "test",
+      "createdAt": 1791762070393,
+      "cwd": "/tmp",
+      "execution": {
+        "currentOperation": "Dispatching provider request",
+        "lastActivityAt": 1791762070393,
+        "lastProgress": null,
+        "lastProgressAt": null,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "queued"
+      },
+      "filesModified": [],
+      "id": "attempt_254fe03c7066420ba692d54d4d8ea43c",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "status": "running",
+      "taskId": "task_1a968145ae4f4a11a8a74b5d13d4c57b",
+      "updatedAt": 1791762070393,
+      "workerChatKey": "chat:orch-2d43af63a89e489c826499b178908d46"
+    },
+    {
+      "access": "edits",
+      "agent": "codex",
+      "assignee": {
+        "id": "bo",
+        "name": "BO"
+      },
+      "branch": "peer",
+      "createdAt": 1791762070502,
+      "cwd": "/tmp",
+      "effort": "medium",
+      "execution": {
+        "currentOperation": "Waiting for a decision",
+        "lastActivityAt": 1791762070502,
+        "lastProgress": null,
+        "lastProgressAt": null,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "blocked"
+      },
+      "filesModified": [],
+      "id": "attempt_34b162d3ff3c4fcbb0716913d108a50a",
+      "isWorktree": true,
+      "model": "gpt-5.6-terra",
+      "number": 1,
+      "peerClock": {
+        "carriedMs": 0,
+        "usedMs": 0
+      },
+      "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "status": "blocked",
+      "taskId": "task_c87801bbf98b4497b0a9fcc15f36cdf5",
+      "updatedAt": 1791762070502,
+      "workerChatKey": "chat:orch-d25090870c954b9f8a354537c41fcbe6"
+    }
+  ],
+  "bridges": [],
+  "gates": [
+    {
+      "awaits": "person",
+      "createdAt": 1791762070502,
+      "createdByChatKey": "chat:orch-d25090870c954b9f8a354537c41fcbe6",
+      "id": "gate_3cd75b41602248148ab1f31e6152a0a3",
+      "options": [],
+      "question": "Which volume?",
+      "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "status": "open",
+      "targetChatKey": "chat:master",
+      "taskId": "task_c87801bbf98b4497b0a9fcc15f36cdf5",
+      "updatedAt": 1791762070502
+    }
+  ],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [
+    {
+      "attempts": 0,
+      "body": "Peer request \"Report volume usage\" (task task_c87801bbf98b4497b0a9fcc15f36cdf5) to BO is waiting on the person: BO asked a question only the person can answer, on the task board.\n\nWhich volume?\n\nNothing is asked of you and you cannot answer it. Carry on with your own task.",
+      "coalesced": 0,
+      "createdAt": 1791762070502,
+      "fromChatKey": "chat:orch-d25090870c954b9f8a354537c41fcbe6",
+      "id": "octiq-notification-3a7005790e8249b7a930281ed2146bd3",
+      "kind": "peer_waiting",
+      "lastError": null,
+      "nextAttemptAt": 1791762070502,
+      "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "source": "peer-gate:gate_3cd75b41602248148ab1f31e6152a0a3",
+      "state": "pending",
+      "targetChatKey": "chat:orch-2d43af63a89e489c826499b178908d46",
+      "updatedAt": 1791762070502
+    },
+    {
+      "attempts": 0,
+      "body": "ADA asked its teammate BO to do \"Report volume usage\" as a peer request: task task_c87801bbf98b4497b0a9fcc15f36cdf5. It waits on the plan card for the person's approval and does not start before that; the tasks they have already approved keep starting. It runs as BO's registered identity for at most 30 minutes of working time; waiting for a decision does not count, and it is not extended. Accept its result as usual; the report also goes to ADA while its attempt runs. reportsTo is unchanged for both.",
+      "coalesced": 0,
+      "createdAt": 1791762070501,
+      "fromChatKey": "chat:orch-2d43af63a89e489c826499b178908d46",
+      "id": "octiq-notification-81390a9f9c8c4a719d891bdff7ed35a3",
+      "kind": "peer_request",
+      "lastError": null,
+      "nextAttemptAt": 1791762070501,
+      "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "source": "peer-request:task_c87801bbf98b4497b0a9fcc15f36cdf5",
+      "state": "pending",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791762070501
+    },
+    {
+      "attempts": 0,
+      "body": "BO is waiting on the person: it opened gate gate_3cd75b41602248148ab1f31e6152a0a3 on the peer request \"Report volume usage\" (task task_c87801bbf98b4497b0a9fcc15f36cdf5).\n\nWhich volume?\n\nOnly the person answers a peer request's gate, on the task board; orchestration_gate_resolve is refused for it, and no message reaches the teammate. Tell the person it is waiting if they may not have seen it.",
+      "coalesced": 0,
+      "createdAt": 1791762070502,
+      "fromChatKey": "chat:orch-d25090870c954b9f8a354537c41fcbe6",
+      "id": "octiq-notification-fd27b7561f4446f69451f31deb9089d5",
+      "kind": "decision",
+      "lastError": null,
+      "nextAttemptAt": 1791762070502,
+      "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "source": "gate:gate_3cd75b41602248148ab1f31e6152a0a3",
+      "state": "pending",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791762070502
+    }
+  ],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1791762070312,
+      "id": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "planApproval": {
+        "consent": {
+          "at": 1791762070502,
+          "revision": 1,
+          "via": "button"
+        },
+        "decidedAt": 1791762070502,
+        "requestedAt": 1791762070501,
+        "revisedAt": 1791762070501,
+        "revision": 1,
+        "scope": "6e4795197f87d5cf57a2c42fd5cac685033f2b379363c1601f11b6996d4f5621",
+        "status": "approved"
+      },
+      "rootPath": "/tmp",
+      "status": "waiting",
+      "updatedAt": 1791762070502,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_254fe03c7066420ba692d54d4d8ea43c",
+      "approved": {
+        "at": 1791762070502,
+        "by": "ledger",
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      "approvedAt": 1791762070502,
+      "createdAt": 1791762070392,
+      "dependsOn": [],
+      "heldByPlan": false,
+      "id": "task_1a968145ae4f4a11a8a74b5d13d4c57b",
+      "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "running",
+      "title": "Implement",
+      "updatedAt": 1791762070393,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762070350,
+        "provisional": true
+      }
+    },
+    {
+      "activeAttemptId": "attempt_34b162d3ff3c4fcbb0716913d108a50a",
+      "approved": {
+        "assignee": {
+          "id": "bo",
+          "name": "BO"
+        },
+        "at": 1791762070502,
+        "by": "plan",
+        "worker": {
+          "access": "edits",
+          "agent": "codex",
+          "effort": "medium",
+          "model": "gpt-5.6-terra",
+          "recovery": null
+        }
+      },
+      "approvedAt": 1791762070502,
+      "assignee": {
+        "id": "bo",
+        "name": "BO"
+      },
+      "createdAt": 1791762070501,
+      "dependsOn": [],
+      "heldByPlan": false,
+      "id": "task_c87801bbf98b4497b0a9fcc15f36cdf5",
+      "peerRequest": {
+        "maxMinutes": 30,
+        "output": "One line per volume: name, used, total.",
+        "requestedAt": 1791762070501,
+        "requestedBy": {
+          "id": "ada",
+          "name": "ADA"
+        },
+        "requesterAttemptId": "attempt_254fe03c7066420ba692d54d4d8ea43c",
+        "requesterChatKey": "chat:orch-2d43af63a89e489c826499b178908d46"
+      },
+      "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+      "size": "medium",
+      "spec": "Inspect the NAS and read each volume's usage.\n\nExpected output\nOne line per volume: name, used, total.",
+      "status": "blocked",
+      "title": "Report volume usage",
+      "updatedAt": 1791762070502,
+      "worker": {
+        "access": "edits",
+        "agent": "codex",
+        "effort": "medium",
+        "model": "gpt-5.6-terra",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762070439
+      }
+    }
+  ]
+}

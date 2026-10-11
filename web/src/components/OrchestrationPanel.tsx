@@ -1283,11 +1283,17 @@ function RunGroup({ group, holds, children }: {
 
 /** The mark at the end of a row's first line. A running row has none: the
  *  strip above the composer is the one thing that moves. */
-function RowMark({ state }: { state: RowState }) {
+function RowMark({ state, held = false }: {
+  state: RowState;
+  /** Something holds the task and a start of it would be refused
+   *  (`lib/taskHold`): it is not merely planned. */
+  held?: boolean;
+}) {
   if (state === "running") return null;
-  const label = { needs: "Needs you", failed: "Failed", done: "Done", planned: "Planned", closed: "Closed" }[state];
+  const label = held ? "Held" : { needs: "Needs you", failed: "Failed", done: "Done", planned: "Planned", closed: "Closed" }[state];
   return <span className="run-row-mark" role="img" aria-label={label} title={label}>
-    {state === "needs" ? "?" : state === "failed" ? "!" : state === "done" ? "✓" : state === "closed" ? "–"
+    {held ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M9 6v12M15 6v12" /></svg>
+      : state === "needs" ? "?" : state === "failed" ? "!" : state === "done" ? "✓" : state === "closed" ? "–"
       : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4l2.5 2" /></svg>}
   </span>;
 }
@@ -1349,7 +1355,10 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   // (`lib/runWaits`): a decision the coordinator has, or one nobody can
   // approve, leaves the worker's own state word.
   const parkedOn = attempt ? pendingDecisions(snapshot, attempt.id) : [];
-  const stateWord = taskStateLabel(task, attempt, row.state === "needs" ? parkedOn : []);
+  // A task something holds says that, and never "Ready" or "Failed": a
+  // start of it would be refused (`lib/taskHold`).
+  const stateWord = row.hold?.label ?? taskStateLabel(task, attempt, row.state === "needs" ? parkedOn : []);
+  const hint = [row.hold?.detail, row.hint].filter(Boolean).join("\n") || null;
   const provider = attempt?.agent ?? task.worker?.agent;
   const who = assigneeFace?.name ?? task.assignee?.name ?? (provider ? AGENT_NAME[provider] : null);
   const branch = task.workspace?.plan.branch || attempt?.branch;
@@ -1376,8 +1385,8 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
         <button type="button" className="orch-task-summary" disabled={!attempt} data-attention={owed || undefined}
           aria-current={open || beside ? "page" : undefined}
           aria-label={`Open task chat: ${task.title}`}
-          title={[attempt ? `Open task chat: ${task.title}` : "No worker chat yet", row.hint].filter(Boolean).join("\n")}
-          aria-description={row.hint ?? undefined}
+          title={[attempt ? `Open task chat: ${task.title}` : "No worker chat yet", hint].filter(Boolean).join("\n")}
+          aria-description={hint ?? undefined}
           onClick={() => attempt && onOpenChat(attempt.workerChatKey)}>
           <span className={`run-row-face${task.assignee || provider ? "" : " is-none"}`} aria-hidden="true">
             {task.assignee
@@ -1385,7 +1394,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
               : provider ? <AgentLogo agent={provider} size={14} /> : null}
           </span>
           <span className="orch-task-title">{task.title}</span>
-          <RowMark state={row.state} />
+          <RowMark state={row.state} held={!!row.hold} />
           {/* Who has it, on which model: the registration's name, and the
               host's own record of the attempt. Never the worker's words. */}
           <span className="run-row-who">
@@ -1404,7 +1413,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
           </span>
           {note && <span className="run-row-nums">
             <span className="run-row-note" data-tone={row.tone ?? undefined}
-              title={[steps ? `${stateWord} · ${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}` : stateWord, row.hint].filter(Boolean).join("\n")}>{note}</span>
+              title={[steps ? `${stateWord} · ${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}` : stateWord, hint].filter(Boolean).join("\n")}>{note}</span>
             {figures && <span className="run-row-figures">{figures}</span>}
           </span>}
           {row.percent !== null && <span className="orch-task-track run-row-bar" aria-hidden="true"><span style={{ width: `${row.percent}%` }} /></span>}
@@ -1449,6 +1458,8 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
           {reportedStage && !step && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
           {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
         </div>
+        {/* Why a task that could start does not, in the host's own words. */}
+        {row.hold && <p className="orch-task-hold" data-hold={row.hold.kind} data-tone={row.hold.tone ?? undefined}>{row.hold.detail}</p>}
         {/* The standard plan card: where it runs (planned until the host
             prepares it), who owns it on which model, and what done means. */}
         <TaskPlanCard task={task} run={run} attempt={attempt} projectName={projectName} />

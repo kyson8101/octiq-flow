@@ -1,0 +1,116 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "worker",
+      "createdAt": 1791762070109,
+      "cwd": "/tmp",
+      "execution": {
+        "currentOperation": "Dispatching provider request",
+        "lastActivityAt": 1791762070109,
+        "lastProgress": null,
+        "lastProgressAt": null,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "queued"
+      },
+      "filesModified": [],
+      "id": "attempt_3f1d1fe939af45c39616c91b1dc2d8e7",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_0989952afd26490dbfcb0ed6bf94c812",
+      "status": "running",
+      "taskId": "task_0e6bee2e5d02450f82f8c49119e54234",
+      "updatedAt": 1791762070109,
+      "workerChatKey": "chat:orch-021a69a5f9f743608077e2c3cdd96f44"
+    }
+  ],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [
+    {
+      "attemptId": "attempt_3f1d1fe939af45c39616c91b1dc2d8e7",
+      "awaits": "nobody",
+      "blockedAction": "eas update --branch production --message 'OTA 1.4.2'",
+      "chatKey": "chat:orch-021a69a5f9f743608077e2c3cdd96f44",
+      "continuation": "unavailable",
+      "groupId": null,
+      "id": "915835fa-262c-4fc8-9e5d-016fa636f895",
+      "kind": "safety",
+      "observedAt": 1791762070111,
+      "reason": "Claude's auto mode blocked an action: Production Deploy",
+      "recovery": "Claude's auto mode refused this call without asking anyone, and OctiqFlow cannot approve it: there is no supported way to allow one refused call before it runs. The card only records the refusal. Do not retry the call or reword it to get past the classifier. Continue another safe way, or settle the attempt blocked and name the refused command so the person can decide.",
+      "runId": "run_0989952afd26490dbfcb0ed6bf94c812",
+      "status": "pending",
+      "taskId": "task_0e6bee2e5d02450f82f8c49119e54234"
+    }
+  ],
+  "notifications": [],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1791762070021,
+      "id": "run_0989952afd26490dbfcb0ed6bf94c812",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "rootPath": "/tmp",
+      "status": "running",
+      "updatedAt": 1791762070109,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_3f1d1fe939af45c39616c91b1dc2d8e7",
+      "createdAt": 1791762070109,
+      "dependsOn": [],
+      "id": "task_0e6bee2e5d02450f82f8c49119e54234",
+      "runId": "run_0989952afd26490dbfcb0ed6bf94c812",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "running",
+      "title": "Implement",
+      "updatedAt": 1791762070109,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762070068,
+        "provisional": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "worker",
+      "createdAt": 1791762070307,
+      "cwd": "/tmp",
+      "execution": {
+        "currentOperation": "Waiting for a decision",
+        "lastActivityAt": 1791762070307,
+        "lastProgress": null,
+        "lastProgressAt": null,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "blocked"
+      },
+      "filesModified": [],
+      "id": "attempt_7eb0c7f19e61423faf7139dfaa6a1e1f",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+      "status": "blocked",
+      "taskId": "task_ff36110d3806419b9b71c2c87a441a27",
+      "updatedAt": 1791762070307,
+      "workerChatKey": "chat:orch-954b9b145830422c82d0955e54671e7a"
+    }
+  ],
+  "bridges": [],
+  "gates": [
+    {
+      "awaits": "coordinator",
+      "createdAt": 1791762070307,
+      "createdByChatKey": "chat:orch-954b9b145830422c82d0955e54671e7a",
+      "id": "gate_6ae8227501184fbca7a0ec5c0774d5d7",
+      "options": [],
+      "question": "Which sprite size?",
+      "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+      "status": "open",
+      "targetChatKey": "chat:master",
+      "taskId": "task_ff36110d3806419b9b71c2c87a441a27",
+      "updatedAt": 1791762070307
+    },
+    {
+      "awaits": "person",
+      "createdAt": 1791762070309,
+      "createdByChatKey": "chat:master",
+      "id": "gate_71958e6407534d75ba6173987aa5dc38",
+      "options": [],
+      "question": "Ship today?",
+      "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+      "status": "open",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791762070309
+    }
+  ],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [
+    {
+      "attempts": 0,
+      "body": "Worker needs a decision for gate gate_6ae8227501184fbca7a0ec5c0774d5d7.\n\nWhich sprite size?\n\nRead orchestration_snapshot and resolve through orchestration_gate_resolve. Only ask the person if their decision is needed.",
+      "coalesced": 0,
+      "createdAt": 1791762070307,
+      "fromChatKey": "chat:orch-954b9b145830422c82d0955e54671e7a",
+      "id": "octiq-notification-cb2241ac25e846e2b0b66ed31416925f",
+      "kind": "decision",
+      "lastError": null,
+      "nextAttemptAt": 1791762070307,
+      "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+      "source": "gate:gate_6ae8227501184fbca7a0ec5c0774d5d7",
+      "state": "pending",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791762070307
+    }
+  ],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1791762070215,
+      "id": "run_203d00d32e01414fbad1e4d3987816d4",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "rootPath": "/tmp",
+      "status": "waiting",
+      "updatedAt": 1791762070309,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_7eb0c7f19e61423faf7139dfaa6a1e1f",
+      "createdAt": 1791762070307,
+      "dependsOn": [],
+      "id": "task_ff36110d3806419b9b71c2c87a441a27",
+      "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "blocked",
+      "title": "Implement",
+      "updatedAt": 1791762070307,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762070261,
+        "provisional": true
+      }
+    }
+  ]
+}

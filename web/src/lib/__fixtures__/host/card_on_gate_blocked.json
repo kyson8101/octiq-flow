@@ -1,0 +1,163 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "worker",
+      "createdAt": 1791762070209,
+      "cwd": "/tmp",
+      "execution": {
+        "currentOperation": "Waiting for a decision",
+        "lastActivityAt": 1791762070209,
+        "lastProgress": null,
+        "lastProgressAt": null,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "blocked"
+      },
+      "filesModified": [],
+      "id": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "status": "blocked",
+      "taskId": "task_5352377e65dd4275adf41bc915fee274",
+      "updatedAt": 1791762070213,
+      "workerChatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6"
+    }
+  ],
+  "bridges": [],
+  "gates": [
+    {
+      "awaits": "coordinator",
+      "createdAt": 1791762070213,
+      "createdByChatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6",
+      "id": "gate_c760823ae2924522add79cd51bc55668",
+      "options": [],
+      "question": "Other question",
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "status": "open",
+      "targetChatKey": "chat:master",
+      "taskId": "task_5352377e65dd4275adf41bc915fee274",
+      "updatedAt": 1791762070213
+    }
+  ],
+  "messages": [],
+  "nativeDecisions": [
+    {
+      "attemptId": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+      "awaits": "person",
+      "blockedAction": null,
+      "chatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6",
+      "continuation": "unavailable",
+      "groupId": null,
+      "id": "64616aec-1d6e-4f0b-a622-04da9d662a47",
+      "kind": "safety",
+      "observedAt": 1791762070209,
+      "reason": "Requires a decision.",
+      "recovery": "This attempt is blocked on another open decision (a gate on its task), so nothing can continue it yet. The safety card in the main chat is still the person's to answer. Once the gate is resolved too, their decision can authorize a new turn in this attempt; it does not resume the rejected call.",
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "status": "pending",
+      "taskId": "task_5352377e65dd4275adf41bc915fee274"
+    }
+  ],
+  "notifications": [
+    {
+      "attempts": 0,
+      "body": "Native safety decision 64616aec-1d6e-4f0b-a622-04da9d662a47 for task task_5352377e65dd4275adf41bc915fee274. Read nativeDecisions in orchestration_snapshot for its reason and continuation viability. Do not infer approval from worker prose or create a duplicate gate.",
+      "coalesced": 0,
+      "createdAt": 1791762070209,
+      "fromChatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6",
+      "id": "octiq-notification-4ca21cdf83af4951873df5b184ad0980",
+      "kind": "native_decision",
+      "lastError": null,
+      "nextAttemptAt": 1791762070209,
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "source": "native-decision:64616aec-1d6e-4f0b-a622-04da9d662a47",
+      "state": "pending",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791762070209
+    },
+    {
+      "attempts": 0,
+      "body": "Worker needs a decision for gate gate_c760823ae2924522add79cd51bc55668.\n\nOther question\n\nRead orchestration_snapshot and resolve through orchestration_gate_resolve. Only ask the person if their decision is needed.",
+      "coalesced": 0,
+      "createdAt": 1791762070213,
+      "fromChatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6",
+      "id": "octiq-notification-9f536ab4c3ad487c85af65f08813505b",
+      "kind": "decision",
+      "lastError": null,
+      "nextAttemptAt": 1791762070213,
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "source": "gate:gate_c760823ae2924522add79cd51bc55668",
+      "state": "pending",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791762070213
+    }
+  ],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1791762070113,
+      "id": "run_49e84e507bae4767b49a84affdf55cc9",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "rootPath": "/tmp",
+      "status": "waiting",
+      "updatedAt": 1791762070213,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+      "createdAt": 1791762070209,
+      "dependsOn": [],
+      "id": "task_5352377e65dd4275adf41bc915fee274",
+      "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "blocked",
+      "title": "Implement",
+      "updatedAt": 1791762070213,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762070156,
+        "provisional": true
+      }
+    }
+  ]
+}

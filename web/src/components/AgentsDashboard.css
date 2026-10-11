@@ -75,6 +75,9 @@
 .dash-item-copy { flex: 1 1 auto; min-width: 0; display: grid; gap: 1px; }
 .dash-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-0); }
 .dash-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--fg-3); font-size: 11.5px; min-width: 0; }
+/* A hold that has lasted (lib/taskHold): the reason takes the warning
+   colour. The dot stays the state's own. */
+.dash-item[data-tone="warn"] .dash-item-state { color: var(--warn); }
 .dash-item-project { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; }
 .dash-item-project bdi { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dash-item-open { flex: 0 0 auto; color: var(--fg-3); font-size: 11.5px; opacity: 0; transition: opacity 130ms ease-out; }

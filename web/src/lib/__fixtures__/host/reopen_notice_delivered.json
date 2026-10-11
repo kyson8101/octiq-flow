@@ -1,0 +1,132 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "",
+      "createdAt": 1791762070704,
+      "cwd": "",
+      "execution": {
+        "currentOperation": "Preparing workspace",
+        "lastActivityAt": 1791762070704,
+        "lastProgress": null,
+        "lastProgressAt": null,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "queued"
+      },
+      "filesModified": [],
+      "id": "attempt_f4192891b1d7493484bbe6f93ac036e5",
+      "isWorktree": false,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_ac64338be37a46d9a12fbb958b524a20",
+      "status": "completed",
+      "taskId": "task_78f938c4d2e0432c838707fa9896fc4f",
+      "updatedAt": 1791762070704,
+      "workerChatKey": "chat:orch-7787fcdb70b041f38abf350efb7e986c"
+    }
+  ],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:reopen-c1ef9d63aebe44dba191bde4d268fac8",
+      "createdAt": 1791762070510,
+      "id": "run_ac64338be37a46d9a12fbb958b524a20",
+      "maxConcurrent": 4,
+      "objective": "Build feature",
+      "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+      "status": "running",
+      "updatedAt": 1791762070837,
+      "workerDefaults": null,
+      "workspaceId": "project",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_f4192891b1d7493484bbe6f93ac036e5",
+      "createdAt": 1791762070703,
+      "dependsOn": [],
+      "id": "task_78f938c4d2e0432c838707fa9896fc4f",
+      "reopens": [
+        {
+          "at": 1791762070837,
+          "attempt": 2,
+          "byChatKey": "chat:reopen-c1ef9d63aebe44dba191bde4d268fac8",
+          "noticeDelivered": true,
+          "previousSpec": "Make the requested change",
+          "spec": "Entirely new instructions"
+        }
+      ],
+      "runId": "run_ac64338be37a46d9a12fbb958b524a20",
+      "size": "medium",
+      "spec": "Entirely new instructions",
+      "status": "ready",
+      "title": "Implement",
+      "updatedAt": 1791762070837,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspace": {
+        "abandoned": false,
+        "cleanupIntent": null,
+        "delivery": null,
+        "leaseAttemptId": "attempt_f4192891b1d7493484bbe6f93ac036e5",
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "state": "retained",
+        "validationPaths": []
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791762070602,
+        "provisional": true
+      }
+    }
+  ]
+}
