@@ -40,7 +40,7 @@ import { RunBridges } from "./RunBridges";
 import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import {
-  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, minutesLabel, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
+  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
 import { gateWaitsOn, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
@@ -1260,8 +1260,9 @@ function RunGroup({ group, holds, children }: {
     revealedFrom.current = null;
     bodyRef.current?.querySelectorAll<HTMLElement>(":scope > .run-row .orch-task-summary")[from]?.focus();
   }, [all]);
-  const label = `${group.label} · ${group.rows.length}`;
-  return <section className="run-group" data-group={group.key} aria-label={`${group.label}, ${group.rows.length}`}>
+  // What the heading counts is said with it (`groupHeading`).
+  const { label, spoken } = groupHeading(group);
+  return <section className="run-group" data-group={group.key} aria-label={spoken}>
     {folds
       ? <button type="button" className="run-group-head" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
         <svg className="run-group-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>

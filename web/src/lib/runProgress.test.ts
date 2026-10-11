@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  chatStrip, contextPercent, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, minutesLabel, parseDismissed, runProgress, shownRows,
+  chatStrip, contextPercent, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, groupHeading, minutesLabel, parseDismissed, runProgress, shownRows,
   stepsLabel, stripHidden, stripRun, tasksLabel, tokensLabel, usageTotal, type ProgressRow, type Waiting,
 } from "./runProgress";
 import { chatSnapshot } from "./chatWorkflow";
@@ -715,6 +715,24 @@ describe("the strip", () => {
     expect(stripRun([old])?.id).toBe("old");
     expect(stripRun([run({ id: "a", status: "stopped" }), run({ id: "b", status: "completed", archivedAt: 1 })])).toBeNull();
     expect(stripRun([])).toBeNull();
+  });
+});
+
+describe("a group's heading", () => {
+  it("counts decisions under Needs you, like the strip, and tasks everywhere else, and says which", () => {
+    const worker = going("Build", "running", "running", { attempt: { execution: { state: "waiting_tool", retryCount: 0 } } });
+    const made = ledger([worker, going("Other", "running", "running"), { task: task("Later", "pending") }]);
+    const two = runProgress(made.snapshot, made.run, NOW, cards(worker.task.id, ["permission", "p1"], ["permission", "p2"]));
+    // Two cards of one worker: one row, two decisions, on the heading as on
+    // the strip.
+    expect(two.strip).toMatchObject({ needs: 2, side: [{ text: "2 decisions", strong: true }, { text: "1 working" }] });
+    expect(two.groups.map((group) => [group.key, groupHeading(group)])).toEqual([
+      ["needs", { label: "Needs you · 2 decisions", spoken: "Needs you, 2 decisions in 1 task" }],
+      ["running", { label: "Running · 1", spoken: "Running, 1 task" }],
+      ["planned", { label: "Planned · 1", spoken: "Planned, 1 task" }],
+    ]);
+    const one = runProgress(made.snapshot, made.run, NOW, cards(worker.task.id, ["permission", "p1"]));
+    expect(groupHeading(one.groups[0])).toEqual({ label: "Needs you · 1 decision", spoken: "Needs you, 1 decision in 1 task" });
   });
 });
 

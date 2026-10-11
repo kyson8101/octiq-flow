@@ -364,6 +364,19 @@ export function shownRows(group: ProgressGroup, all: boolean): { rows: ProgressR
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
+/** A group's heading, and what it counts. Needs you counts what the strip
+ *  counts, decisions, and says the word: two cards of one worker are "2
+ *  decisions" in one row, and a bare "1" beside the strip's "2" read as a
+ *  disagreement. The other groups have only tasks to count. A decision of
+ *  the run itself (its plan, a gate with no task) is no row, and is drawn in
+ *  its own box above the groups. */
+export function groupHeading(group: ProgressGroup): { label: string; spoken: string } {
+  const tasks = group.rows.length;
+  if (group.key !== "needs") return { label: `${group.label} · ${tasks}`, spoken: `${group.label}, ${plural(tasks, "task", "tasks")}` };
+  const decisions = plural(group.rows.reduce((sum, row) => sum + row.decisions, 0), "decision", "decisions");
+  return { label: `${group.label} · ${decisions}`, spoken: `${group.label}, ${decisions} in ${plural(tasks, "task", "tasks")}` };
+}
+
 /** The counts beside the bar: the reason for the state first, said whole,
  *  then one more. A zero is left out. */
 function stripSide(strip: Pick<RunStrip, "state" | "needs" | "planOnly" | "failed" | "working" | "runs">, elapsedMs: number | null): StripSide[] {

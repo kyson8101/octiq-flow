@@ -222,7 +222,7 @@ describe("a task row's reported checklist", () => {
     queued.attempts = [];
     const html = render(queued);
     expect(html).toContain('data-status="pending" data-state="planned"');
-    expect(html).toContain('aria-label="Planned, 1"');
+    expect(html).toContain('aria-label="Planned, 1 task"');
     expect(row(queued)).not.toContain("steps");
     expect(detail(queued)).toContain('<span class="orch-task-state">Queued</span>');
   });
@@ -314,7 +314,7 @@ describe("OrchestrationPanel", () => {
       "Task 5", "Task 7", "Task 2", "Task 6", "Task 0", "Task 8", "Task 3", "Task 4", "Task 1",
     ]);
     expect([...html.matchAll(/<section class="run-group" data-group="([a-z]+)" aria-label="([^"]+)"/g)].map((match) => match[2])).toEqual([
-      "Running, 4", "Finished, 3", "Planned, 2",
+      "Running, 4 tasks", "Finished, 3 tasks", "Planned, 2 tasks",
     ]);
     expect(html).not.toContain("Needs you");
     expect([...html.matchAll(/data-state="failed" data-tone="danger"/g)]).toHaveLength(2);
@@ -859,7 +859,7 @@ describe("who a run waits on", () => {
 
   it("keeps a gate the host says is the person's under Needs you, in the decision colour", () => {
     const html = panel(gateOf({ awaits: "person" }));
-    expect(groups(html)).toEqual(["Needs you, 1"]);
+    expect(groups(html)).toEqual(["Needs you, 1 decision in 1 task"]);
     expect(html).toMatch(/<section class="orch-decisions" aria-labelledby="[^"]+" data-attention="true" tabindex="-1"><h3 id="[^"]+">Needs you<\/h3>/);
     expect(html).toContain('data-tone="decide"');
     expect(html).toContain(">Asks a decision</span>");
@@ -868,7 +868,7 @@ describe("who a run waits on", () => {
 
   it("lists a gate the coordinator has under Running, as a warning, and never as Needs you", () => {
     const html = panel(gateOf({ awaits: "coordinator" }));
-    expect(groups(html)).toEqual(["Running, 1"]);
+    expect(groups(html)).toEqual(["Running, 1 task"]);
     expect(html).not.toContain("Needs you");
     expect(html).not.toContain("decision waiting");
     expect(html).toMatch(/<article class="orch-task[^"]*run-row" data-status="blocked" data-state="running" data-tone="warn">/);
@@ -881,7 +881,7 @@ describe("who a run waits on", () => {
 
   it("does not guess on a host that does not say who a gate waits on, and says so in the tooltip", () => {
     const html = panel(gateOf({}));
-    expect(groups(html)).toEqual(["Running, 1"]);
+    expect(groups(html)).toEqual(["Running, 1 task"]);
     expect(html).not.toContain("Needs you");
     expect(html).not.toContain("decision waiting");
     // No colour of a decision, a warning or a failure: it is open, no more.
@@ -893,7 +893,7 @@ describe("who a run waits on", () => {
 
   it.each([{ awaits: "nobody" }, {}])("never says Awaiting approval for a refusal nobody can approve (%j)", (over) => {
     const html = panel(refused(over));
-    expect(groups(html)).toEqual(["Running, 1"]);
+    expect(groups(html)).toEqual(["Running, 1 task"]);
     expect(html).not.toContain("Needs you");
     expect(html).not.toContain("Awaiting approval");
     expect(html).not.toContain("Awaiting review");
@@ -905,7 +905,7 @@ describe("who a run waits on", () => {
   it("says Needs you for that refusal once the page holds its card, or the host says it is the person's", () => {
     const card: PendingAction = { key: "safety:nd_1", kind: "safety", rowId: "master", openChatId: "master", surface: "chat", runId: "run_1", taskId: "task_1" };
     for (const html of [panel(refused({}), [card]), panel(refused({ awaits: "person" }))]) {
-      expect(groups(html)).toEqual(["Needs you, 1"]);
+      expect(groups(html)).toEqual(["Needs you, 1 decision in 1 task"]);
       expect(html).toMatch(/<span class="run-row-note" data-tone="decide"[^>]*>Awaiting review<\/span>/);
     }
   });
