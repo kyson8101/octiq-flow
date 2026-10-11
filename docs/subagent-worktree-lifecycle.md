@@ -92,8 +92,12 @@ none, and one naming an attempt from before the handoff once the new owner has
 had any attempt of their own, whatever became of it. Until then the first
 start keeps to the approved settings. The coordinator's explicit start reaches
 the host only through its hook (`orchestration_worker_start_in_chat`, which
-the socket refuses), and stays its manual override. Runs that are not
-missions keep the plain run panel.
+the socket refuses). On a task the person approved it chooses nothing: every
+start, the coordinator's, the host's and the page's, is refused unless it asks
+for the worker, assignee, destination and base branch the approval fixed
+([What an approval fixes](agents-mode.md#what-an-approval-fixes)). On a task
+nobody approved, in a run with no plan, the settings are still the
+coordinator's choice. Runs that are not missions keep the plain run panel.
 
 ## State and ownership
 
@@ -176,7 +180,10 @@ PR creation, review and merge remain explicit external actions. This feature
 records their observed result and does not publish messages or changes itself.
 
 **Continue after review** reopens a completed task with new instructions and
-keeps its workspace. The next worker is a new attempt. Already-started dependent
+keeps its workspace. The next worker is a new attempt. An approved task keeps
+its approval and starts only as what was approved; the reopen is recorded on
+the task and shown in the coordinator's chat (`octiq_task_reopened`), and the
+person can stop that one task (`orchestration_task_stop`). Already-started dependent
 tasks, a recorded merge, abandonment, or cleanup prevent reopening; create a
 separate follow-up task in those cases. Unstarted dependants wait for the
 reopened prerequisite to finish again.

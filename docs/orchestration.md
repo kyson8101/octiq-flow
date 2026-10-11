@@ -145,7 +145,11 @@ and reuses the task's existing workspace, branch, uncommitted files and prior
 checklist context. The previous process stops before the lease transfers.
 Late reports cannot settle a replacement. Inspect `nextRetryAt`, `retryCount`
 and `retryModel` before starting a manual retry, which supersedes scheduled
-recovery. Pausing ready-wave dispatch does not cancel already scheduled recovery;
+recovery. A task the person approved recovers under the policy that was in
+effect at its approval, fallback model included, whatever the run's defaults
+have become since; a retry that asks for another model is refused
+([What an approval fixes](agents-mode.md#what-an-approval-fixes)).
+Replacing a task (`supersedes`) cancels the recovery scheduled for it. Pausing ready-wave dispatch does not cancel already scheduled recovery;
 stopping the run does. A plan waiting for the person (a task or a peer request
 was added to it) holds only what they have not approved, so the recovery of a
 task they approved runs on time. A recovery that comes due for a task whose own

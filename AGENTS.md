@@ -895,6 +895,58 @@ fixes reuse the task's persisted workspace with a new attempt ID. Current
 checkout mode never deletes a directory. The main chat coordinates while a
 worker owns the write lease; it must not also edit that checkout.
 
+**An approval fixes what a task runs as, and a time stamp or a parent id is
+not that approval.** `approved_at` says a task was approved. `Task::approved`
+(`orchestration/approval.rs`) says as what: the worker in effect when the
+person approved (provider, model, effort, access, recovery policy with its
+fallback model), the assignee, the destination and the base branch. Every
+start is compared with it in `reserve_attempt_for`, the one door, before an
+attempt is reserved: the coordinator's, the host's dispatch and recovery, the
+page's. Nothing but an approval writes it. So:
+
+- A new way to start a task goes through `reserve_attempt_for`, and a new
+  thing an approval should fix is added to `Approved` and to
+  `approval::keeps_to`, never checked at one caller.
+- The run's defaults reach only tasks not yet approved. Read a task's worker
+  through `automation::settings_for_task` or `approval::worker_of`, never
+  `task.worker` or `run.worker_defaults` alone: a start leaves on
+  `task.worker` whatever it launched, a recovery's fallback model included.
+- Only a subtask its parent's own manager split goes by the parent's approval
+  (`Task::split_by`, read through `approval_parent`). A task the coordinator
+  creates with `parentTaskId` is new work: on the plan card, held, and not
+  the parent's manager's to accept. A new rule about subtasks asks
+  `approval_parent`, never `parent_task_id.is_some()`.
+- `reopen_task` keeps the approval and changes only the words. It records
+  each reopen on the task and writes `octiq_task_reopened` into the
+  coordinator's transcript, so the person sees every one. A new field a
+  reopen could change belongs in that event.
+- A replaced task (`superseded_by`) and a task the person stopped
+  (`Task::stopped`, from the socket-only `orchestration_task_stop`) do not
+  start again; only the person starts the second.
+- A review of an approval boundary checks the shape that actually runs
+  against a durable source of authority.
+
+**Removing an agent and starting its work take two locks in one order: the
+roster's (`team.rs` `LOCK`), then the ledger's (`OrchestrationStore::inner`).**
+`team::delete_checked` hands its write to a guard (`team::Leave`); the host's
+(`agent_work::Departure`) holds the ledger across that write and records the
+agent in `Stored::removed_agents` before it lets go, and `reserve_attempt_for`
+refuses a removed agent under the same lock. Nothing that holds the ledger's
+lock may call into `team.rs`, and the chats are asked with `try_lock` only
+(`ChatManager::turn_may_be_in_flight`). A removal made any other way (a bare
+check, then a write) reopens the window a task started in. What stops a
+removal is in `agent_work.rs`: a task in progress, a run one of the agent's
+own conversations coordinates that has not finished or been stopped, a turn
+in flight in one. An idle head or front desk is removed.
+
+**Facts the page reads that are derived for the answer are never stored and
+never taken from an agent**: `heldByPlan` on a task, `awaits` on an open gate
+and a pending native decision, `usage` and `context` on an attempt,
+`coordinatesRun` on a chat's index entry. Each is `skip_deserializing` or
+added at the dispatch arm, and absent rather than zero or guessed when the
+host does not know (`docs/agents-mode.md`, What the run panel reads from the
+host).
+
 **A mid-turn instruction that loosens a permission or safety rule goes through
 a decision gate.** When a coordinator's `orchestration_message_send` would add
 an MCP tool to `permission::host_bookkeeping` or Claude's `--allowedTools`,

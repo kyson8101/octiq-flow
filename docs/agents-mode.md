@@ -384,20 +384,49 @@ a peer-help team, through seven MCP tools (`team_tools.rs`,
   card until it ends. The refusal names how many tasks and in which runs,
   and what to do: `Nova still has 2 tasks in progress in 1 run: 2 in "Ship
   the feature" (run_…). Nothing was removed. Stop them or wait for them to
-  finish, then remove Nova.` The tool is refused before any card. Because a
-  card can wait while a task starts, the same question is asked again when
-  the person answers, under the lock the removal is written with
-  (`team::delete_unchanged`'s `idle`), and refused in the same words; the
-  page's command asks it there too (`team::delete_idle`). A task start does
-  not take that lock, so a start in the instant between that check and the
-  write is not excluded. A lease left on a settled task's retained workspace
-  is not work in progress: it stays until cleanup.
-- **Unfinished tasks do not stop a removal.** A task of the agent's that is
-  planned, ready, failed or blocked with nobody working on it keeps the
-  agent's name (`TaskAssignee` is a copy) and its provider and model, and
-  starts without its role, brief and memory. The card says how many there
-  are, in an `Unfinished tasks` row, so the person can reassign them first.
-  The count is not part of what the Allow is held to.
+  finish, then remove Nova.` A lease left on a settled task's retained
+  workspace is not work in progress: it stays until cleanup.
+- **Coordinating is work in progress too**, and so is answering. Neither is
+  a task: a coordinator is not the assignee of anything in its own run. Both
+  are asked of the conversations the agent speaks in as itself
+  (`team::OwnChat`: the ones it leads, the head's cross-project one among
+  them, and its front-desk chat). One of them coordinating a run that has
+  neither finished nor been stopped refuses the removal: `Lead is
+  coordinating "Ship the feature" (run_…), which has not finished. Nothing
+  was removed. Stop that run from its chat or wait for it to finish, then
+  remove Lead.` So does a turn in flight in one of them: `Lead is in the
+  middle of a turn in a conversation it leads (chat:…). Nothing was removed.
+  Stop that turn or wait for it to end, then remove Lead.` A front desk's
+  says `its front-desk conversation`. A head or front desk that is merely
+  idle is not held: the card already says the seat empties.
+- **The check and the removal are one step, and a start cannot land between
+  them.** The tool is refused before any card. A card can wait while a task
+  starts, so everything above is asked again when the person answers, and the
+  page's `team_delete` asks it there too. That second asking is not a check
+  followed by a write. The roster's `delete` hands its write to a guard
+  (`team::Leave`), and the host's guard (`agent_work::Departure`) takes the
+  ledger's lock, asks, writes the roster without the agent, records the agent
+  as removed in the ledger (`removedAgents`), and only then lets go. Every
+  start takes that same lock to reserve its attempt
+  (`reserve_attempt_for`). So one of the two always goes first, and the other
+  is refused: a start that got there first is work in progress and the
+  removal is refused; a removal that got there first has the start refused,
+  `Nova is no longer a registered agent: it was removed, and nothing starts
+  as an agent that is gone.` The lock order is the roster's lock, then the
+  ledger's, and nothing takes them the other way round. The chats are asked
+  for a turn in flight without waiting for any lock of theirs; when that
+  cannot be told at once, the answer is that one is, and the removal is
+  refused and can be asked again.
+- **Unfinished tasks do not stop a removal, and do not start afterwards.** A
+  task of the agent's that is planned, ready, failed or blocked with nobody
+  working on it keeps the agent's name (`TaskAssignee` is a copy). The card
+  says how many there are, in an `Unfinished tasks` row with the count as its
+  summary, so the person can reassign them first. Once the agent is gone no
+  start of such a task is accepted, by anyone: it waits until the lead hands
+  it to another agent (`orchestration_task_reassign`, which goes to the plan
+  card). Before this rule such a task started with the agent's provider and
+  model and none of its role, brief or memory. The count is not part of what
+  the Allow is held to.
 - `agent_policy_update` only **proposes** a whole new agent policy (`""`
   clears it), on the same card. It is saved with `team::set_policy_unchanged`,
   so a policy edited meanwhile is not overwritten.
@@ -467,7 +496,8 @@ or a policy may itself hold a line that reads `Access: edits → full`.
   say than the value, and a row without it is sent exactly as it was before
   the key existed. `value` is unchanged by it and still whole.
 
-One row carries a summary today, the reports row of `agent_delete`:
+Four rows carry a summary today. The first is the reports row of
+`agent_delete`:
 
 ```json
 {
@@ -483,10 +513,24 @@ to X` (`team_tools.rs` `reports_summary`). `N` is counted from the roster and
 neither is read out of `value`. A manager's name too long for the line keeps
 its start and ends in `…`, and the count and `will report to` are never cut;
 a name saved through OctiqFlow is at most 60 characters and always fits. A
-line break or other control character in a name is a space in the summary. A
-removal that moves nobody has no reports row. `Head`, `Front desk` and
-`Memory note` are short sentences and carry none, and no row of the other
-cards does.
+removal that moves nobody has no reports row.
+
+The other three are counts of what their value lists or says at length:
+
+| Card | Row | Summary |
+| --- | --- | --- |
+| `agent_delete` | `Unfinished tasks` | `3 unfinished tasks in 2 runs still name it` (`1 unfinished task in 1 run still names it`), the ledger's own count. |
+| `team_create`, `team_update` | `Other teams` | `2 agents leave another team` (`1 agent leaves another team`). The row says what the change does to teams the card is not about, which a folded card would otherwise show as a size. |
+| `team_create` | `Members` | `5 members` (`1 member`), when the team starts with any. |
+
+A summary is one line whatever it is made from. A character that ends a line
+is a space in it: a line feed, a carriage return or any other control
+character, and Unicode's own line and paragraph separators (U+2028, U+2029),
+which are not control characters and which the page refuses a summary for
+(`askDetail.rowSummary`). `Head`, `Front desk` and `Memory note` are short
+sentences and carry none. A row that moves never carries one: a changed
+team's `Members` is a move, and who joins and who leaves are the `Added` and
+`Removed` rows beside it.
 
 A page's check of `changeFacts` is all or nothing, an unknown key included
 (`web/src/lib/askDetail.ts`), so a page that does not know `summary` shows the
@@ -499,10 +543,10 @@ Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
 | --- | --- |
 | `agent_register` | A plain row for each of `Name`, `Role`, `Provider`, `Model`, `Effort`, `Access`, `Available in`, `Reports to`, `Team`, then `Persistent prompt` when one is proposed. |
 | `agent_update` | A move for each of those fields that changes, and no row for one that stays. `Persistent prompt` comes last when the change touches it: plain when it is set where there was none, a move when it is replaced or cleared. |
-| `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, `Unfinished tasks` when tasks nobody is working on still name it, and `Memory note` last. |
+| `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom (with a summary), `Unfinished tasks` when tasks nobody is working on still name it (with a summary), and `Memory note` last. |
 | `agent_policy_update` | One `Policy` row: plain when a policy is set where there was none, a move when it is replaced or cleared. |
-| `team_create` | Plain rows `Available in` (always `every project`) and `Members` (the names, or `none`), then `Other teams` when a member is on another team, then `Membership`. |
-| `team_update` | `Name` as a move when the team is renamed. When its members change: plain rows `Added` and `Removed`, each only when there are any, then `Members` as a move from every member before to every member after (`none` for an empty team). `Other teams` when an agent it adds is on another team, then `Membership`. |
+| `team_create` | Plain rows `Available in` (always `every project`) and `Members` (the names, with how many as its summary, or `none`), then `Other teams` when a member is on another team (with a summary), then `Membership`. |
+| `team_update` | `Name` as a move when the team is renamed. When its members change: plain rows `Added` and `Removed`, each only when there are any, then `Members` as a move from every member before to every member after (`none` for an empty team). `Other teams` when an agent it adds is on another team (with a summary), then `Membership`. |
 
 `Other teams` holds one sentence for each agent that leaves a team to join
 this one: `Bo leaves Ops. Cy leaves Web.` `Membership` closes every team card
@@ -878,7 +922,9 @@ Delegation follows the chart, at most **three levels**: lead → manager → wor
    split its own task once more among **its** direct reports. It calls
    `orchestration_task_create` with `parentTaskId` set to its own task and an
    `assignee`, then settles its own attempt. Anything that depended on its task
-   now also depends on the subtasks. Subtasks cannot be split again.
+   now also depends on the subtasks. Subtasks cannot be split again. The host
+   stamps such a subtask `splitBy` with the manager's attempt, and that stamp,
+   never the parent id, is what lets it go by its parent's approval.
 3. Everyone else only does their own task.
 
 The host enforces each rule. In `dispatch.rs`, `orchestration_task_create`
@@ -889,7 +935,10 @@ when the coordinator of an agents-mode run creates the task, or the parent
 task's assignee when a worker splits its own task. A task with no assignee in
 an agents-mode run is refused. The store accepts a task from a non-coordinator
 only from the active worker of the named parent, and only when the parent is
-top-level and has an assignee. The assignee's provider, model, effort and
+top-level and has an assignee. A coordinator may put `parentTaskId` on a task
+of its own, and that makes it nothing but a task with a parent named on it: it
+is routed as the lead's direct report, waits on the plan card and is approved
+on its own. The assignee's provider, model, effort and
 access become the task's worker settings, so a lead cannot misquote a teammate.
 
 ## Plan approval
@@ -1018,7 +1067,121 @@ Approval is for exactly the plan you saw:
   it is marked **New** in the review. Running workers carry on, and so does
   every task you had already approved.
 
-Only the top plan needs you. Managers split their tasks further without asking.
+Only the top plan needs you. Managers split their tasks further without
+asking, and only a manager's own split does (see **What an approval fixes**).
+
+### What an approval fixes
+
+`approvedAt` says that you approved a task. It does not say as what, and
+until 2026-10-11 nothing held a start to it: an approved Manual task could be
+started with Full access, and the run's defaults could change under a task
+that had none of its own. An approval now records what it fixed, on the task
+as `approved` (`orchestration/approval.rs`), from the values **in effect**
+when you approved, so a task with no worker of its own takes the run's
+defaults as they were:
+
+| Fixed | What it is |
+| --- | --- |
+| `worker.agent`, `worker.model` | The provider and its model. |
+| `worker.effort` | The effort, or none. |
+| `worker.access` | The access level. |
+| `worker.recovery` | The recovery policy, with its fallback model. |
+| `assignee` | The registered agent the task was handed to. |
+| `destination` | The project and the repository. |
+| `baseBranch` | The base of the workspace the host planned. |
+
+Every start is compared with it in `reserve_attempt_for`, the one door every
+start goes through, before an attempt is reserved or anything is written: the
+coordinator's `orchestration_worker_start`, the host's dispatch and its
+automatic recovery, and the page's Start. A start that asks for anything else
+is refused in words that name each difference, and nothing is started:
+
+> The person approved this task as codex:terra at manual access for Dev in
+> the run's own folder. This start asks for the worker codex:sol instead of
+> codex:terra, and full access instead of manual. Nothing was started. Start
+> it as approved; a change to what a task runs as goes back to the person on
+> the plan card (orchestration_task_reassign, or a new task).
+
+One model besides the approved one passes: the fallback the approved recovery
+policy names, which you approved with it. A start that names no base branch
+asks for the planned one. The record is never written by a start, a retry, a
+recovery or `orchestration_automation_configure`; it is cleared with
+`approvedAt` when a task goes back to the plan card (a new owner, a new size),
+restored if you reject that amendment, and taken again when you approve it.
+
+- **The run's defaults reach only what you have not approved.**
+  `orchestration_automation_configure` after an approval changes the defaults
+  and nothing about an approved task: its dispatch, its recovery policy and
+  every start of it read `approved`. A task you approve later is fixed under
+  the defaults of that later approval.
+- **The page's Start is you, and changes nothing an approval fixed.** It
+  retries an attempt with that attempt's settings and is held to the same
+  comparison. What it may do that no agent's start may: start a task you
+  stopped, and say the base branch of a peer request. A changed shape goes
+  back to the plan card from the page too.
+- **A task approved with no worker chosen** (none of its own and no run
+  defaults, which only a run outside agents mode allows) has nothing of a
+  worker for the approval to fix. Its first start chooses, as it always did
+  there, and fixes it for every later one.
+- **A ledger from before this record** gets one for each approved task on its
+  first write, from what the ledger holds then (`by: "ledger"`).
+
+**A parent id is not an approval.** Only a subtask its parent's own manager
+split off goes by the parent's approval: the split path checks that the caller
+is the live worker of that parent, routes the subtask to one of that
+manager's direct reports, and stamps it `splitBy` with the manager's attempt.
+Such a subtask is never on the plan card, and it runs only as the worker it
+was routed to (`approved.by: "split"`). A task the **coordinator** creates
+with `parentTaskId` is ordinary new work with a label on it: `approvedAt` is
+null, the plan goes back to you with it on the card, `heldByPlan` is true, and
+the parent's manager cannot accept it.
+
+**A reopened task keeps its approval, and its shape** (your decision of
+2026-10-11). `orchestration_task_reopen` gives a completed task new
+instructions and makes it ready again without a new plan card. It changes
+only the words: the next start is held to `approved` like any other, so a
+reopened task runs as the same worker, for the same assignee, in the same
+place, or not at all. The words are never changed out of sight. The task
+keeps each reopen in `reopens` (`byChatKey`, `at`, `attempt`, `previousSpec`,
+`spec`; the newest twelve), and the host writes one durable event into the
+coordinator's chat transcript, which the page draws as a folded line you can
+open to read the new instructions:
+
+```json
+{
+  "type": "octiq_task_reopened",
+  "runId": "run_7dc2e15caa264c52a440ceaeb8d71636",
+  "taskId": "task_4f1bc81246b94af4b1bd512f87e9487a",
+  "title": "Three host rules",
+  "assignee": { "id": "agent_eb4c4db810a5", "name": "OCTIQ BE" },
+  "attempt": 2,
+  "spec": "Address the review: …",
+  "previousSpecChars": 5210,
+  "at": 1791720931688
+}
+```
+
+`attempt` is the number of the attempt the instructions are for, the next
+one. `assignee` is the task's, or `null`. `at` is the host's clock, and
+`previousSpecChars` counts characters. A reopen that is refused writes
+nothing. A peer request is still never reopened.
+
+**You can stop one task and leave the run going.** `orchestration_task_stop
+{ taskId, reason? }` is the page's command and no hook action maps to it. It
+cancels the task's unsettled attempt, with any decision it was waiting on,
+stops that worker's process, leaves the task failed with `Stopped by the
+person.` as its result and its workspace kept, and tells the coordinator
+once. The task then carries `stopped { at, attemptId, reason? }`, and while
+it does no agent and no host recovery starts it: your Start on its row
+(`orchestration_worker_start` with `retryOf` the stopped attempt) does, and so
+does your approval of a plan it is put back on. Before this the only stop the
+page had was the whole run (`orchestration_run_stop`).
+
+**A replaced task does not start again.** Superseding a blocked or failed
+task (`supersedes` on `orchestration_task_create`) takes back the retry the
+host had scheduled for it and leaves it failed, and every later start or
+recovery of it is refused by name: `This task was replaced by "Do it another
+way" (task_…) and no longer starts.`
 
 ### What a waiting plan holds
 
@@ -1029,8 +1192,9 @@ behind a card that was about other work). A task may start when you approved
 cleared by every change to what it covered: a new owner, a new size) and no
 task it depends on, however far down, is still waiting for you. So a task the
 lead created, revised, re-routed or resized since your last approval waits, and
-so does whatever depends on it; a manager's subtask is never on the card and
-goes by its parent's approval. The rule is one function,
+so does whatever depends on it; a manager's own split is never on the card and
+goes by its parent's approval, and a task the coordinator put under a parent
+is not one (`approval_parent`). The rule is one function,
 `orchestration::held_by_plan`, read by every way a task comes to run: the
 single door every start goes through (`reserve_attempt_for`: a first dispatch,
 a reopened task, a coordinator's retry, the page's Start, the host's automatic
@@ -1050,7 +1214,129 @@ with that card.
 
 `orchestration_task_reopen` puts new follow-up instructions in a completed
 task's spec and keeps its approval, as it always has: the reopened task starts
-without the new words going on the plan card.
+without the new words going on the plan card, as what was approved and
+nothing else, and you are shown each reopen
+(see **What an approval fixes** above).
+
+## What the run panel reads from the host
+
+Three facts the page needs and cannot work out. Each is derived from what the
+host already holds when it answers, like `heldByPlan`: none is stored, so none
+goes stale, and none is an agent's to set (a value sent in for one is not
+read).
+
+**Who a wait is for.** Every open gate and every pending native decision in
+`orchestration_snapshot` carries `awaits`: `"person"`, `"coordinator"` or
+`"nobody"`. A gate that has settled, and a decision whose card is no longer
+up, carry no such key.
+
+| `awaits` | When |
+| --- | --- |
+| `person` | The host knows only you can answer. A gate on a peer-request task, which no agent resolves. A gate the run's coordinator opened itself, which is that coordinator asking for a decision it will not make alone. A provider's safety card still up on a live attempt whose answer can start a new turn in it (`continuation: "new_turn_same_attempt"`). |
+| `coordinator` | A worker's gate on an ordinary task. The coordinator may resolve it; whether it asks you first is its own judgment, which the host cannot see. |
+| `nobody` | Nothing waits on it. A Claude auto-mode refusal, which no one can approve; an outage refusal, which the worker was told to carry on past; a card whose attempt is no longer running, because it settled, was replaced, or is itself waiting on an open gate (that gate then says who it waits for). |
+
+A plan revision waiting for you is not a gate: it is `run.planApproval` with
+`status: "pending"`, and always yours.
+
+```json
+{
+  "id": "gate_3f0c9a51b7de4c1b",
+  "runId": "run_7dc2e15caa264c52a440ceaeb8d71636",
+  "taskId": "task_1b8ece4b05a04885b70e5fc9cf394e2b",
+  "createdByChatKey": "chat:orch-43c6f761cfbe4b47be55a9f8fd818f47",
+  "targetChatKey": "chat:9eb9909a-fc30-4307-889e-4622ab14630b",
+  "question": "Which sprite size?",
+  "options": [],
+  "status": "open",
+  "createdAt": 1791724600000,
+  "updatedAt": 1791724600000,
+  "awaits": "coordinator"
+}
+```
+
+```json
+{
+  "id": "block_81c2",
+  "runId": "run_7dc2e15caa264c52a440ceaeb8d71636",
+  "taskId": "task_1b8ece4b05a04885b70e5fc9cf394e2b",
+  "attemptId": "attempt_6a76b069e5724acb8cdc2e4bd2a7489b",
+  "chatKey": "chat:orch-43c6f761cfbe4b47be55a9f8fd818f47",
+  "reason": "Upload requires a decision.",
+  "blockedAction": null,
+  "status": "pending",
+  "continuation": "new_turn_same_attempt",
+  "recovery": "Use the existing safety card in the main chat. The rejected call already ended; a decision can authorize a new turn in this attempt, not resume that call.",
+  "observedAt": 1791724600000,
+  "kind": "safety",
+  "groupId": null,
+  "awaits": "person"
+}
+```
+
+**What a worker has used and holds.** Each attempt may carry `usage` and
+`context`, both optional and absent until known, never a row of zeros and
+never worked out from anything else.
+
+- `usage` is what the host has counted for that attempt's worker chat
+  (`agent_usage.rs`): `input`, `cachedInput`, `cacheWrite`, `output`,
+  `reasoning`, with the subsets inside their totals as that file explains. It
+  is absent until the provider has reported any usage for the chat, and for a
+  chat that runs as no registered agent, which that store does not record.
+- `context` is what the worker's session holds of its model's context
+  (`tokens`) and how much that model can hold (`window`), each as the
+  provider last reported it and read by the rules the meter beside Send uses.
+  It is there only once both are known: a count without a window is not
+  shown. Antigravity reports no window, so its attempts never have one. It
+  describes a live session and is kept in memory, so it is gone after a
+  server restart.
+
+Both are as of the read. A peer request's worker, whose snapshot holds its
+own task alone, reads its own attempts' figures and nobody else's.
+
+```json
+{
+  "id": "attempt_6a76b069e5724acb8cdc2e4bd2a7489b",
+  "taskId": "task_1b8ece4b05a04885b70e5fc9cf394e2b",
+  "number": 1,
+  "workerChatKey": "chat:orch-43c6f761cfbe4b47be55a9f8fd818f47",
+  "agent": "codex",
+  "model": "gpt-5.6-terra",
+  "access": "auto",
+  "status": "running",
+  "usage": {
+    "input": 41000,
+    "cachedInput": 39500,
+    "cacheWrite": 0,
+    "output": 2300,
+    "reasoning": 1100
+  },
+  "context": { "tokens": 41000, "window": 272000 }
+}
+```
+
+(An attempt has more fields than these; the two at the end are the new ones.)
+
+**Which chats coordinate a run.** The page draws the chat list before it has
+the ledger. A chat's entry in `chat_index_list` carries `coordinatesRun: true`
+while that chat coordinates a run you have not archived, finished or not, so
+the page can hold the run column open from its first paint. A chat that
+coordinates none has no such key. It is worked out from the ledger for each
+answer; the index stores nothing of it, and an entry saved back with it
+(`chat_index_save`) is taken without it. It is for that first paint: once the
+ledger is read, the ledger is the truth, and `chat-index-changed` does not
+fire when a run is created or archived.
+
+```json
+{
+  "id": "9eb9909a-fc30-4307-889e-4622ab14630b",
+  "projectId": "fa08eadd-cfe5-4314-8eae-47b185abfe39",
+  "title": "Five handed-over items",
+  "createdAt": 1791680900000,
+  "updatedAt": 1791724600000,
+  "coordinatesRun": true
+}
+```
 
 ## Memory
 
@@ -1167,8 +1453,9 @@ words them.
   tool `orchestration_task_accept` (hook action `task_accept` →
   `orchestration_task_accept_in_chat`). The host allows that only from the
   run's coordinator chat (whose lead comes from `team.json`), or, for a
-  subtask, from a worker chat of the parent task, where the manager is the
-  parent's assignee. Nobody accepts their own work. Every accept names the
+  subtask its manager split (`splitBy`), from a worker chat of the parent
+  task, where the manager is the parent's assignee. A task the coordinator
+  put under that parent is not the manager's to accept. Nobody accepts their own work. Every accept names the
   completed attempt it reviewed; a newer result refuses it.
 - **Who is calling.** Two callers, two credentials. The person holds the
   server token, which opens the browser's routes (`/ws`, `/file`, `/auth`):
