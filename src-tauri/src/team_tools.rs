@@ -568,7 +568,7 @@ fn summed(label: &'static str, value: impl Into<String>, summary: String) -> Fac
     debug_assert!(
         !summary.is_empty()
             && summary.chars().count() <= SUMMARY_MAX
-            && !summary.chars().any(char::is_control),
+            && !summary.chars().any(ends_a_line),
         "{summary:?}"
     );
     FactRow::Plain {
@@ -578,6 +578,22 @@ fn summed(label: &'static str, value: impl Into<String>, summary: String) -> Fac
             summary: Some(summary),
         },
     }
+}
+
+/// A character a summary's one line cannot hold: a control character, a
+/// line feed and a carriage return among them, or one of Unicode's own line
+/// and paragraph separators (U+2028, U+2029), which are not control
+/// characters and end a line all the same. The page drops a summary that
+/// holds any of them (`askDetail.rowSummary`).
+fn ends_a_line(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+/// `text` on one line: each character that would end the line is a space.
+fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if ends_a_line(c) { ' ' } else { c })
+        .collect()
 }
 
 /// `text`, or its start and an ellipsis when it is longer than `max`
@@ -794,10 +810,7 @@ fn reports_summary(count: usize, to: &str) -> String {
     );
     // Nothing refuses a name with a line break in it, and the summary is one
     // line whatever the name holds.
-    let to: String = to
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
+    let to = one_line(to);
     let room = SUMMARY_MAX.saturating_sub(said.chars().count());
     said + &clipped(&to, room)
 }
@@ -1193,6 +1206,11 @@ fn names(list: &[String]) -> String {
 /// agent is on one team at a time, so joining this one takes it off that one,
 /// and the card says which. `Membership` closes every card: what the people
 /// on a team may do with each other (`MEMBERSHIP_GRANTS`).
+///
+/// Two rows carry a summary (`summed`): `Other teams`, how many agents leave
+/// another team, and a new team's `Members`, how many there are. A changed
+/// team's `Members` is a move, which has no summary; who joins and who
+/// leaves are the `Added` and `Removed` rows beside it.
 fn team_rows(roster: &Roster, change: &TeamChange) -> Vec<FactRow> {
     let of = |members: &[crate::team::TeamMember]| {
         names(&members.iter().map(|m| m.name.clone()).collect::<Vec<_>>())
@@ -1204,7 +1222,16 @@ fn team_rows(roster: &Roster, change: &TeamChange) -> Vec<FactRow> {
                 "Available in",
                 roster.project_name(change.project_id.as_deref()),
             ));
-            rows.push(plain("Members", of(&change.after)));
+            // Every name, so it also says how many: a folded card keeps
+            // that line where it would show only the row's size.
+            rows.push(match change.after.len() {
+                0 => plain("Members", of(&change.after)),
+                n => summed(
+                    "Members",
+                    of(&change.after),
+                    format!("{n} member{}", if n == 1 { "" } else { "s" }),
+                ),
+            });
         }
         Some(was) => {
             if was != &change.name {
@@ -1236,7 +1263,14 @@ fn team_rows(roster: &Roster, change: &TeamChange) -> Vec<FactRow> {
         .filter_map(|j| Some(format!("{} leaves {}.", j.name, j.leaves.as_ref()?)))
         .collect();
     if !moved.is_empty() {
-        rows.push(plain("Other teams", moved.join(" ")));
+        // What the change does to teams the card is not about. Folded, the
+        // row would be a size and nothing else, and the person would approve
+        // without seeing that anybody leaves a team: the count stays.
+        let summary = match moved.len() {
+            1 => "1 agent leaves another team".to_string(),
+            n => format!("{n} agents leave another team"),
+        };
+        rows.push(summed("Other teams", moved.join(" "), summary));
     }
     rows.push(plain("Membership", MEMBERSHIP_GRANTS));
     rows
@@ -2668,9 +2702,21 @@ mod tests {
         );
         for row in facts["rows"].as_array().unwrap() {
             let label = row["label"].as_str().unwrap();
-            if row.get("summary").is_some() {
+            if label.starts_with("Direct report") {
                 the_reports_row_says_what_the_text_says(change, row);
                 continue;
+            }
+            // Any other row's summary is one line the page will draw, next
+            // to a value the text states like any plain row's.
+            if let Some(summary) = row.get("summary") {
+                let summary = summary.as_str().unwrap();
+                assert!(
+                    !summary.is_empty()
+                        && summary.chars().count() <= SUMMARY_MAX
+                        && !summary.chars().any(ends_a_line),
+                    "{row}"
+                );
+                assert!(row.get("before").is_none(), "a move has no summary: {row}");
             }
             let text = label == "Persistent prompt" || label == "Policy";
             match (row.get("value"), row.get("before"), row.get("after")) {
@@ -3380,6 +3426,14 @@ mod tests {
             summary_under("Line one\nLine two"),
             format!("{counts}Line one Line two")
         );
+        // Unicode's own line and paragraph separators end a line too, and
+        // are not control characters: the page drops a summary that holds
+        // one (`askDetail.rowSummary`), so they are spaces here as well.
+        let separated = summary_under("Line\u{2028}one\u{2029}two\r\nthree\u{0085}four");
+        assert_eq!(separated, format!("{counts}Line one two  three four"));
+        assert!(!separated.chars().any(ends_a_line), "{separated:?}");
+        assert!(ends_a_line('\u{2028}') && ends_a_line('\u{2029}') && ends_a_line('\n'));
+        assert!(!ends_a_line(' ') && !ends_a_line('管'));
 
         // The count is never what gives way.
         let summary = reports_summary(usize::MAX, &"M".repeat(400));
@@ -3770,7 +3824,7 @@ mod tests {
                 "lead": "Create the team Leads.",
                 "rows": [
                     { "label": "Available in", "value": "every project" },
-                    { "label": "Members", "value": "Potato, Nas" },
+                    { "label": "Members", "value": "Potato, Nas", "summary": "2 members" },
                     { "label": "Membership", "value": "Teammates may ask each other questions and request bounded work, and each request for work is approved separately." },
                 ],
             })
@@ -3981,7 +4035,11 @@ mod tests {
         );
         assert_eq!(
             input["changeFacts"]["rows"][2],
-            json!({ "label": "Other teams", "value": "Bo leaves Ops." })
+            json!({
+                "label": "Other teams",
+                "value": "Bo leaves Ops.",
+                "summary": "1 agent leaves another team",
+            })
         );
         rows_say_what_the_text_says(&input);
         assert_eq!(members_of(&team, "Web"), ["Ada", "Bo", "Cy"]);
@@ -4003,6 +4061,19 @@ mod tests {
         assert_eq!(
             input["change"],
             format!("Create the team Leads.\n\nAvailable in: every project\nMembers: Ada, Cy\nOther teams: Ada leaves Web. Cy leaves Ops.\nMembership: {MEMBERSHIP_GRANTS}")
+        );
+        // What a folded card keeps of the two rows that list names: how
+        // many start on the team, and how many of them leave another for it.
+        assert_eq!(
+            input["changeFacts"]["rows"].as_array().unwrap()[1..3],
+            [
+                json!({ "label": "Members", "value": "Ada, Cy", "summary": "2 members" }),
+                json!({
+                    "label": "Other teams",
+                    "value": "Ada leaves Web. Cy leaves Ops.",
+                    "summary": "2 agents leave another team",
+                }),
+            ]
         );
         rows_say_what_the_text_says(&input);
         assert_eq!(members_of(&team, "Leads"), ["Ada", "Cy"]);
