@@ -129,7 +129,19 @@ describe("a stage on one line", () => {
 
 describe("awaitingApproval", () => {
   it("is the lead's own unapproved tasks, never a manager's subtasks", () => {
-    const tasks = [task("a", [], { approvedAt: 1 }), task("b"), task("c", [], { parentTaskId: "a" })];
+    const tasks = [
+      task("a", [], { approvedAt: 1 }),
+      task("b"),
+      task("c", [], { parentTaskId: "a", splitBy: "attempt_manager" }),
+    ];
     expect(awaitingApproval(tasks)).toEqual(["b"]);
+  });
+
+  // The host's rule (`approval_parent`): a parent id alone is not a split.
+  // A task the lead put under an approved parent is new work, and the host
+  // refuses an approval whose task set leaves it out.
+  it("includes a task the lead put under a parent, which no manager split", () => {
+    const tasks = [task("a", [], { approvedAt: 1 }), task("c", [], { parentTaskId: "a" })];
+    expect(awaitingApproval(tasks)).toEqual(["c"]);
   });
 });

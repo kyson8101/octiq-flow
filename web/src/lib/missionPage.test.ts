@@ -124,7 +124,9 @@ describe("reassignment", () => {
     expect(reassignBlocker(run, tasks[1], attempts)).toMatch(/not finished/);
     expect(reassignBlocker(run, task("x", {}), [])).toMatch(/registered agent/);
     expect(reassignBlocker({ ...run, status: "closed" }, tasks[2], [])).toMatch(/ended/);
-    expect(reassignBlocker(run, { ...tasks[2], parentTaskId: "p" }, [])).toMatch(/subtask/);
+    expect(reassignBlocker(run, { ...tasks[2], parentTaskId: "p", splitBy: "attempt_manager" }, [])).toMatch(/subtask/);
+    // A parent id alone is not a manager's split: the lead's own task.
+    expect(reassignBlocker(run, { ...tasks[2], parentTaskId: "p" }, [])).toBeNull();
     expect(reassignBlocker(run, tasks[2], [])).toBeNull();
     expect(reassignBlocker(run, { ...tasks[0], status: "failed" }, [{ ...attempts[0], status: "failed" }])).toBeNull();
   });

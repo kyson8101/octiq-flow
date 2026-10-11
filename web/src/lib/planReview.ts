@@ -161,11 +161,13 @@ export function stageSummary(
 }
 
 /** The tasks the person is approving now: the lead's own, not yet approved.
- *  A manager's subtasks never wait for the person. Mirrors the host's check,
- *  which refuses an approval of any other set. */
+ *  A manager's own split (`splitBy`) never waits for the person. A task the
+ *  lead put under a parent does: a parent id alone is not a split. Mirrors
+ *  the host's check (`awaiting_approval`), which refuses an approval of any
+ *  other set. */
 export function awaitingApproval(tasks: OrchestrationTask[]): string[] {
   return tasks
-    .filter((task) => !task.parentTaskId && !task.approvedAt && task.status !== "cancelled")
+    .filter((task) => !task.splitBy && !task.approvedAt && task.status !== "cancelled")
     .map((task) => task.id);
 }
 

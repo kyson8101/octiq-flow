@@ -19,7 +19,7 @@ export function commandApprovalChoice(
   run: Pick<OrchestrationRun, "planApproval" | "workerDefaults" | "status">,
 ): CommandApproval | null {
   if (run.planApproval?.status !== "pending" || run.status === "stopped") return null;
-  if (task.approvedAt || task.parentTaskId || task.activeAttemptId) return null;
+  if (task.approvedAt || task.splitBy || task.activeAttemptId) return null;
   if (task.status !== "pending" && task.status !== "ready") return null;
   const defaults = run.workerDefaults;
   const settings = task.worker ?? (defaults?.agent ? { ...defaults, agent: defaults.agent } : undefined);

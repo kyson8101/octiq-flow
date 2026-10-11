@@ -69,7 +69,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   const numbers = useMemo(() => planNumbers(stages), [stages]);
   const waiting = useMemo(() => awaitingApproval(tasks), [tasks]);
   // Some of the plan was approved before: mark what is new since.
-  const amended = !approved && waiting.length > 0 && waiting.length < tasks.filter((task) => !task.parentTaskId).length;
+  const amended = !approved && waiting.length > 0 && waiting.length < tasks.filter((task) => !task.splitBy).length;
   const blocked = stages.some((stage) => stage.blocked);
   const empty = tasks.length === 0;
   const revision = run.planApproval?.revision;

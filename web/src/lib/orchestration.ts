@@ -182,6 +182,11 @@ export type OrchestrationTask = {
   workspaceProposal?: WorkspaceProposal;
   dependsOn: string[];
   parentTaskId?: string;
+  /** Set by the host on a subtask its parent's own manager split off: the
+   *  attempt that split it. Only such a subtask goes by its parent's
+   *  approval. A task the coordinator made under a parent has none, and is
+   *  ordinary new work: on the plan card and approved on its own. */
+  splitBy?: string;
   status: TaskStatus;
   activeAttemptId?: string;
   result?: string;

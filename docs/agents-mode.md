@@ -1134,7 +1134,11 @@ Such a subtask is never on the plan card, and it runs only as the worker it
 was routed to (`approved.by: "split"`). A task the **coordinator** creates
 with `parentTaskId` is ordinary new work with a label on it: `approvedAt` is
 null, the plan goes back to you with it on the card, `heldByPlan` is true, and
-the parent's manager cannot accept it.
+the parent's manager cannot accept it. The page reads the same stamp
+(`planReview.awaitingApproval`, `taskAccess`, `missionPage.reassignBlocker`),
+because the host refuses an approval whose task set is not exactly the one it
+would approve. A subtask split before the stamp existed has none, so it is
+treated as ordinary by both: under a pending plan it is on the card.
 
 **A reopened task keeps its approval, and its shape** (your decision of
 2026-10-11). `orchestration_task_reopen` gives a completed task new

@@ -200,12 +200,12 @@ const OPEN_FOR_HANDOFF = new Set(["pending", "ready", "failed", "blocked"]);
  *  same rules `reassign_task` enforces, said before the person tries. */
 export function reassignBlocker(
   run: Pick<OrchestrationRun, "status" | "archivedAt">,
-  task: Pick<OrchestrationTask, "status" | "assignee" | "parentTaskId" | "activeAttemptId">,
+  task: Pick<OrchestrationTask, "status" | "assignee" | "parentTaskId" | "splitBy" | "activeAttemptId">,
   attempts: readonly Pick<OrchestrationAttempt, "id" | "status">[],
 ): string | null {
   if (!task.assignee) return "Only a task handed to a registered agent can change hands.";
   if (["stopped", "completed", "failed", "closed"].includes(run.status) || run.archivedAt != null) return "This mission has ended.";
-  if (task.parentTaskId) return "This is a manager's subtask; its manager hands it on.";
+  if (task.splitBy) return "This is a manager's subtask; its manager hands it on.";
   const active = attempts.find((attempt) => attempt.id === task.activeAttemptId);
   if (active && (active.status === "preparing" || active.status === "running")) {
     return `${task.assignee.name} is still working on it. Stop that attempt first.`;
