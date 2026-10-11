@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { Message } from "../lib/chat";
 import type { Conversation } from "../lib/store";
 import type { OrchestrationSnapshot } from "../lib/orchestration";
-import type { PendingAction } from "../lib/pendingActions";
+import { pendingByTask, type PendingAction } from "../lib/pendingActions";
 import { NO_PENDING_ACTIONS, PendingActionsContext, type PendingActionsView } from "./PendingActionBadge";
 import { Sidebar, type Project } from "./Sidebar";
 
@@ -342,6 +342,7 @@ describe("task-oriented Sidebar", () => {
     expect(html({ conversations, orchestration: ledger("executing") }, {
       ...NO_PENDING_ACTIONS,
       forTask: (taskId) => taskId === "t" ? [permission] : [],
+      held: pendingByTask([permission]),
     })).not.toContain("is-tasks-running");
 
     const pinned = { ...ledger("executing"), runs: [{ ...ledger("executing").runs[0], coordinatorChatKey: "chat:pinned-lead" }] };

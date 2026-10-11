@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { EMPTY_ORCHESTRATION, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
-import { attentionLabel, mainChatTarget, nextRunTab, runAttention, runPeople, splitArchived, stopRun, taskColumnCounts } from "./runPanel";
+import { attentionLabel, mainChatTarget, nextRunTab, runAttention as attentionOf, runPeople as peopleOf, splitArchived, stopRun, taskColumnCounts } from "./runPanel";
+import { runWaits, type Waiting } from "./runWaits";
 
 const run = (id: string, coordinatorChatKey: string, extra: Partial<OrchestrationRun> = {}): OrchestrationRun => ({
   id, objective: id, coordinatorChatKey, workspaceId: "project", rootPath: "/repo",
@@ -14,6 +15,16 @@ const gate = (id: string, taskId?: string, awaits: OrchestrationGate["awaits"] |
   id, runId: "a", taskId, createdByChatKey: "chat:w", targetChatKey: "chat:main", question: "?", options: [],
   status: "open", createdAt: 1, updatedAt: 1, ...(awaits ? { awaits } : {}),
 });
+
+/** The run's attention as the panel reads it: off `lib/runWaits`' reading of
+ *  the ledger, and of the cards the page holds. */
+const runAttention = (
+  a: OrchestrationRun, tasks: OrchestrationTask[], attempts: OrchestrationAttempt[], gates: OrchestrationGate[], held?: Waiting,
+) => attentionOf(a, tasks, attempts, runWaits({ ...EMPTY_ORCHESTRATION, runs: [a], tasks, attempts, gates }, a, held));
+const runPeople = (
+  a: OrchestrationRun, tasks: OrchestrationTask[], attempts: OrchestrationAttempt[], gates: OrchestrationGate[],
+  roster: Parameters<typeof peopleOf>[4],
+) => peopleOf(a, tasks, attempts, runWaits({ ...EMPTY_ORCHESTRATION, runs: [a], tasks, attempts, gates }, a).gated, roster);
 
 describe("run tabs", () => {
   it("moves with arrows, wraps, and jumps with Home/End", () => {
@@ -31,8 +42,12 @@ describe("run attention", () => {
     const a = run("a", "chat:main", { planApproval: { status: "pending", requestedAt: 1 } });
     const tasks = [task("gated", "blocked"), task("stuck", "failed"), task("fine", "running")];
     const attention = runAttention(a, tasks, [], [gate("g", "gated")]);
-    expect(attention).toEqual({ decisions: 2, blocked: 1, total: 3 });
-    expect(attentionLabel(attention, true)).toBe("2 to decide");
+    expect(attention).toEqual({ decisions: 2, planOnly: false, blocked: 1, total: 3 });
+    expect(attentionLabel(attention)).toBe("2 to decide");
+    // The plan alone is an approval, said as one.
+    const alone = runAttention(a, tasks.slice(1), [], []);
+    expect(alone).toMatchObject({ decisions: 1, planOnly: true });
+    expect(attentionLabel(alone)).toBe("Approval needed");
   });
 
   it("counts as a decision only a gate that is the person's", () => {
@@ -41,7 +56,7 @@ describe("run attention", () => {
     for (const awaits of ["coordinator", "nobody", null] as const) {
       // Not a decision of the person's, and not a stuck task either: it is
       // waiting on a gate that is open.
-      expect(runAttention(a, tasks, [], [gate("g", "gated", awaits)]), String(awaits)).toEqual({ decisions: 0, blocked: 0, total: 0 });
+      expect(runAttention(a, tasks, [], [gate("g", "gated", awaits)]), String(awaits)).toEqual({ decisions: 0, planOnly: false, blocked: 0, total: 0 });
     }
     expect(runAttention(a, tasks, [], [gate("g", "gated", "person"), gate("h", undefined, "coordinator")]).decisions).toBe(1);
   });
@@ -49,8 +64,8 @@ describe("run attention", () => {
   it("owes nothing for a blocked task the coordinator replaced (feedback 6b0870f9)", () => {
     const a = run("a", "chat:main");
     const tasks = [task("old-review", "blocked", { supersededBy: "new-review" }), task("new-review", "pending")];
-    expect(runAttention(a, tasks, [], [])).toEqual({ decisions: 0, blocked: 0, total: 0 });
-    expect(attentionLabel(runAttention(a, tasks, [], []), false)).toBeNull();
+    expect(runAttention(a, tasks, [], [])).toEqual({ decisions: 0, planOnly: false, blocked: 0, total: 0 });
+    expect(attentionLabel(runAttention(a, tasks, [], []))).toBeNull();
     expect(runAttention(a, [task("old-review", "blocked")], [], []).blocked).toBe(1);
   });
 
@@ -58,8 +73,8 @@ describe("run attention", () => {
     const a = run("a", "chat:main");
     const attempt = { id: "at", runId: "a", taskId: "t", execution: { state: "stalled", retryCount: 0 } } as OrchestrationAttempt;
     const stalled = runAttention(a, [task("t", "running", { activeAttemptId: "at" })], [attempt], []);
-    expect(attentionLabel(stalled, false)).toBe("1 blocked");
-    expect(attentionLabel(runAttention(a, [task("t", "completed")], [], []), false)).toBeNull();
+    expect(attentionLabel(stalled)).toBe("1 blocked");
+    expect(attentionLabel(runAttention(a, [task("t", "completed")], [], []))).toBeNull();
     // A plan on a stopped run is no longer waiting on anyone.
     const stopped = run("a", "chat:main", { status: "stopped", planApproval: { status: "pending", requestedAt: 1 } });
     expect(runAttention(stopped, [], [], []).total).toBe(0);

@@ -602,6 +602,39 @@ describe("the strip", () => {
     }
   });
 
+  it("is drawn for such a run while something in it still waits on the person", () => {
+    // A decision of the run itself, before the lead has written a task: the
+    // badge and the panel count it, so the line says it, with no count of
+    // tasks it does not have.
+    const asked = ledger([], { gates: [gate(undefined)] });
+    expect(runProgress(asked.snapshot, asked.run, NOW).strip).toMatchObject({
+      state: "needs", needs: 1, total: 0, percent: 0, label: "No tasks yet", side: [{ text: "1 decision", strong: true }], live: false,
+    });
+    // A card still on the page for a worker of a run that was stopped.
+    const worker = going("Build", "running", "running");
+    const stopped = ledger([worker], {}, run({ status: "stopped" }));
+    expect(runProgress(stopped.snapshot, stopped.run, NOW).strip).toBeNull();
+    const held = runProgress(stopped.snapshot, stopped.run, NOW, cards(worker.task.id, ["permission", "p1"]));
+    expect(held.strip).toMatchObject({ state: "needs", needs: 1 });
+    expect(held.rows.map((row) => [row.state, row.why, row.decisions])).toEqual([["needs", "Awaiting approval", 1]]);
+  });
+
+  it("is one line for the chat, and its count is every decision of the chat's runs", () => {
+    const first = going("A", "running", "running", { attempt: { execution: { state: "executing", retryCount: 0 } } });
+    const second = going("B", "blocked", "blocked", { task: { runId: "run_2" }, attempt: { runId: "run_2" } });
+    const snapshot: OrchestrationSnapshot = {
+      runs: [run(), run({ id: "run_2", status: "completed", createdAt: START - 1 })],
+      tasks: [first.task, second.task], attempts: [first.attempt, second.attempt], messages: [],
+      // A run that has finished with the person's gate still open in it is
+      // not live, and is still asked about: it is counted on the line.
+      gates: [{ ...gate(second.task.id), runId: "run_2" }],
+    };
+    const picked = chatStrip(chatSnapshot(snapshot, "chat:main"), NOW)!;
+    expect(picked.run.id).toBe("run_2");
+    expect(picked.strip).toMatchObject({ state: "needs", needs: 1, runs: 2 });
+    expect(picked.strip.notes[0]).toBe("The bar is one of 2 runs of this chat, the one that waits on you.");
+  });
+
   it("names no repository, branch, model or path", () => {
     const made = ledger(mix(2, 2, 6));
     const text = JSON.stringify(runProgress(made.snapshot, made.run, NOW).strip);

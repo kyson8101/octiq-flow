@@ -15,7 +15,7 @@ import { boardCounts, EXECUTION_LABELS } from "../lib/agentTaskBoard";
 import type { ExecutionState } from "../lib/orchestration";
 import { OrchestrationPanel, retryLaunchArgs, ROW_FOCUS, type OrchestrationSnapshot } from "./OrchestrationPanel";
 import { PendingActionsContext } from "./PendingActionBadge";
-import type { PendingAction } from "../lib/pendingActions";
+import { pendingByTask, type PendingAction } from "../lib/pendingActions";
 
 const snapshot: OrchestrationSnapshot = {
   runs: [{
@@ -664,12 +664,18 @@ describe("embedded chat runs", () => {
   it("keeps approval attention visible on a collapsed goal and hides Settings behind options", () => {
     const planning = { ...snapshot.runs[0], id: "run_2", objective: "Second goal", status: "planning" as const,
       planApproval: { status: "pending" as const, requestedAt: 2 } };
-    const ledger = { ...snapshot, runs: [snapshot.runs[0], planning] };
-    const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading allowManualRun={false}
+    const planned = { ...snapshot.tasks[0], id: "task_p", runId: "run_2", status: "pending" as const, activeAttemptId: undefined };
+    const ledger = { ...snapshot, runs: [snapshot.runs[0], planning], tasks: [...snapshot.tasks, planned] };
+    const goals = (current: OrchestrationSnapshot) => renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading allowManualRun={false}
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
-      initialSnapshot={ledger} onOpenChat={() => {}} onClose={() => {}} />);
+      initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
+    const html = goals(ledger);
     const second = html.slice(html.indexOf("Second goal"));
     expect(second).toContain("Approval needed");
+    // A plan with nothing in it yet cannot be approved: the lead is still
+    // writing it, and nothing says the person is waited on (`lib/runWaits`).
+    const empty = goals({ ...ledger, tasks: snapshot.tasks });
+    expect(empty.slice(empty.indexOf("Second goal"))).not.toContain("Approval needed");
     expect(second).toContain('id="orch-goal-run_2" hidden=""');
     expect(html).toContain('aria-label="Mission options"');
     expect(html).not.toContain(">Settings</span>");
@@ -839,7 +845,7 @@ describe("compact run panel", () => {
    the panel reads the same function the strip does. */
 describe("who a run waits on", () => {
   const panel = (current: OrchestrationSnapshot, held: PendingAction[] = []) => renderToStaticMarkup(
-    <PendingActionsContext.Provider value={{ forRow: () => [], forTask: (id) => held.filter((action) => action.taskId === id), reveal: () => {} }}>
+    <PendingActionsContext.Provider value={{ forRow: () => [], forTask: (id) => held.filter((action) => action.taskId === id), held: pendingByTask(held), reveal: () => {} }}>
       <OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
         initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />
     </PendingActionsContext.Provider>);

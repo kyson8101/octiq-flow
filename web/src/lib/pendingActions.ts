@@ -19,11 +19,20 @@
 //   failed or could not be confirmed) is never re-sent on its own — only the
 //   card's Retry or Cancel closes it — so it is an action, but a different
 //   one: its answers are in, and it is never called unanswered;
-// - an open decision gate the host says waits on the person, keyed by gate
-//   id. A gate the run's coordinator is dealing with, one nobody can answer,
-//   and one the host put no name to are not the person's (`lib/runWaits`);
-// - a plan waiting for approval, keyed by run AND revision, so a plan the lead
-//   changes after approval comes back as a new action rather than the old one.
+// - whatever a run waits on the person for, as `lib/runWaits` reads the
+//   ledger: an open decision gate the host says is theirs (keyed by gate id),
+//   a plan waiting for approval (keyed by run AND revision, so a plan the
+//   lead changes after approval comes back as a new action rather than the
+//   old one), and a native decision the host says waits on them, under the
+//   key its safety card carries. That last one is listed even when the page
+//   has no card for it yet (the card list not read, or its request failed):
+//   the host said the person is waited on, and a missing list is no reason to
+//   say nothing.
+//
+// The ledger is read in ONE place. This module reads the page's own card
+// lists (`heldCards`), hands them to `runWaits`, and lists what it says is
+// the person's; it never looks at a gate or a native decision itself. So a
+// badge, the strip, the panel and the chat list's line cannot disagree.
 //
 // Nothing is read from prose: not a question mark in a message, not a worker
 // waiting on provider capacity, not unread or blocked status. All of these
@@ -32,7 +41,7 @@
 // its chat was ever opened, and costs no request of its own.
 import { waitsOnPerson } from "./handover";
 import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
-import { gateWaitsOn, planWaits } from "./runWaits";
+import { ledgerWaits, type LedgerWaits, type Waiting } from "./runWaits";
 import type { Question } from "../components/UserQuestion";
 
 export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "plan" | "handover";
@@ -51,6 +60,12 @@ export type PendingAction = {
   surface: "chat" | "run";
   runId?: string;
   taskId?: string;
+  /** The conversation whose own card this is. Absent for what the ledger
+   *  alone records. */
+  chatId?: string;
+  /** The host says it waits on the person and the page holds no card for it
+   *  yet: the list it comes in was not read, or its request failed. */
+  cardMissing?: true;
 };
 
 type Request = {
@@ -106,12 +121,12 @@ const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, out
 
 const chatId = (chatKey: string | undefined) => chatKey?.startsWith("chat:") ? chatKey.slice(5) || null : null;
 
-/** Every action waiting on the person, once each, most urgent first. */
-export function pendingActions(input: PendingActionInput): PendingAction[] {
-  const { orchestration, parents } = input;
-  const found = new Map<string, PendingAction>();
-  const add = (action: PendingAction) => { if (!found.has(action.key)) found.set(action.key, action); };
-  const rowOf = (id: string) => mainChatId(id, parents) ?? id;
+/** One reading of everything that waits on the person. `held` is the page's
+ *  own cards per task, which is what every surface hands `lib/runWaits`;
+ *  `waits` is that module's reading of the whole ledger with them. */
+export type PendingReading = { actions: PendingAction[]; held: Waiting; waits: LedgerWaits };
+
+const taskOfChat = (orchestration: OrchestrationSnapshot) => {
   // A worker's own task, from the newest attempt its chat ran.
   const taskOf = new Map<string, { runId: string; taskId: string; number: number }>();
   for (const attempt of orchestration.attempts) {
@@ -121,6 +136,17 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
       taskOf.set(id, { runId: attempt.runId, taskId: attempt.taskId, number: attempt.number });
     }
   }
+  return taskOf;
+};
+
+/** The cards the page itself holds for the person, once each: its request
+ *  lists and nothing of the ledger's own records. */
+export function heldCards(input: PendingActionInput): PendingAction[] {
+  const { orchestration, parents } = input;
+  const found = new Map<string, PendingAction>();
+  const add = (action: PendingAction) => { if (!found.has(action.key)) found.set(action.key, action); };
+  const rowOf = (id: string) => mainChatId(id, parents) ?? id;
+  const taskOf = taskOfChat(orchestration);
 
   // `prefix` is the card's own key kind: an outage card is a safety card.
   const request = (kind: PendingActionKind, identity: string, conversationId: string, prefix: string = kind) => {
@@ -130,7 +156,7 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
       key: `${prefix}:${identity}`, kind, rowId: row,
       // Worker cards are drawn in the main chat, where they are answered.
       openChatId: task ? row : conversationId, surface: "chat",
-      runId: task?.runId, taskId: task?.taskId,
+      runId: task?.runId, taskId: task?.taskId, chatId: conversationId,
     });
   };
   const requests = (kind: "permission" | "safety", lists: Requests | undefined) => {
@@ -156,33 +182,52 @@ export function pendingActions(input: PendingActionInput): PendingAction[] {
     // One card holds a whole batch, so the batch is the action.
     for (const [identity, kind] of questionActions(list ?? [])) request(kind, identity, conversationId);
   }
-
-  const runs = new Map(orchestration.runs.map((run) => [run.id, run]));
-  for (const gate of orchestration.gates) {
-    const run = runs.get(gate.runId);
-    const coordinator = chatId(run?.coordinatorChatKey);
-    if (gate.status !== "open" || !run || !coordinator || run.archivedAt != null) continue;
-    if (gateWaitsOn(gate, orchestration.tasks) !== "person") continue;
-    add({
-      key: `gate:${gate.id}`, kind: "gate", rowId: rowOf(coordinator), openChatId: coordinator,
-      surface: "run", runId: run.id, taskId: gate.taskId,
-    });
-  }
-  for (const run of orchestration.runs) {
-    const coordinator = chatId(run.coordinatorChatKey);
-    // An empty plan cannot be approved yet: the lead is still writing it.
-    const plan = coordinator ? planWaits(run, orchestration.tasks) : null;
-    if (!coordinator || !plan) continue;
-    add({ key: plan, kind: "plan", rowId: rowOf(coordinator), openChatId: coordinator, surface: "chat", runId: run.id });
-  }
   for (const handover of input.handovers ?? []) {
     const source = chatId(handover.sourceChatKey);
     // A route waits in a front-desk chat, which no list shows: walking away
     // from it leaves nothing to badge.
     if (!source || !waitsOnPerson(handover) || handover.kind === "route") continue;
-    add({ key: `handover:${handover.id}`, kind: "handover", rowId: rowOf(source), openChatId: source, surface: "chat" });
+    add({ key: `handover:${handover.id}`, kind: "handover", rowId: rowOf(source), openChatId: source, surface: "chat", chatId: source });
   }
-  return [...found.values()].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);
+  return [...found.values()];
+}
+
+/** Everything waiting on the person: the page's cards, and what
+ *  `lib/runWaits` says the ledger holds for them, under one key each. */
+export function pendingReading(input: PendingActionInput): PendingReading {
+  const { orchestration, parents } = input;
+  const cards = heldCards(input);
+  const held = pendingByTask(cards);
+  const waits = ledgerWaits(orchestration, held);
+  const found = new Map(cards.map((card) => [card.key, card]));
+  const rowOf = (id: string) => mainChatId(id, parents) ?? id;
+  const runs = new Map(orchestration.runs.map((run) => [run.id, run]));
+  for (const wait of waits.person) {
+    // A card is already listed, where its conversation is.
+    if (found.has(wait.key)) continue;
+    const coordinator = chatId(runs.get(wait.runId)?.coordinatorChatKey);
+    if (!coordinator) continue;
+    const row = rowOf(coordinator);
+    if (wait.kind === "plan") {
+      found.set(wait.key, { key: wait.key, kind: "plan", rowId: row, openChatId: coordinator, surface: "chat", runId: wait.runId });
+    } else if (wait.kind === "gate") {
+      found.set(wait.key, { key: wait.key, kind: "gate", rowId: row, openChatId: coordinator, surface: "run", runId: wait.runId, taskId: wait.taskId });
+    } else if (wait.kind === "native") {
+      // Its card is drawn in the main chat when the page has it. Until then
+      // the badge still says so, and leads to where the card will be.
+      found.set(wait.key, {
+        key: wait.key, kind: wait.card ?? "safety", rowId: row, openChatId: row, surface: "chat",
+        runId: wait.runId, taskId: wait.taskId, cardMissing: true,
+      });
+    }
+  }
+  const actions = [...found.values()].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);
+  return { actions, held, waits };
+}
+
+/** Every action waiting on the person, once each, most urgent first. */
+export function pendingActions(input: PendingActionInput): PendingAction[] {
+  return pendingReading(input).actions;
 }
 
 /** Grouped by row, for a list that asks once per row. */

@@ -43,7 +43,7 @@ import {
   COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
-import { gateWaitsOn, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
+import { gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
 import "./RunProgress.css";
 
 import {
@@ -57,30 +57,6 @@ export type { OrchestrationSnapshot } from "../lib/orchestration";
 type ProjectRef = { id: string; name: string; primary_path?: string };
 
 const ACTIVE_RUNS = new Set<RunStatus>(["planning", "running", "waiting"]);
-
-export function OrchestrationButton({ open, onToggle, snapshot }: {
-  open: boolean;
-  onToggle: () => void;
-  snapshot: OrchestrationSnapshot;
-}) {
-  const active = snapshot.runs.filter((run) => ACTIVE_RUNS.has(run.status)).length;
-  const gates = snapshot.gates.filter((gate) => gate.status === "open").length;
-  const count = gates || active;
-  return (
-    <button
-      className={`orch-toggle${open ? " is-on" : ""}${gates ? " needs-decision" : ""}`}
-      type="button"
-      aria-label={`Orchestrator${gates ? `, ${gates} decisions waiting` : active ? `, ${active} active runs` : ""}`}
-      aria-expanded={open}
-      title="Orchestrator"
-      onClick={onToggle}
-    >
-      <OrchestratorIcon />
-      <span className="topbar-action-label">Orchestrator</span>
-      {count > 0 && <span className="orch-toggle-count">{count}</span>}
-    </button>
-  );
-}
 
 export function OrchestrationPanel({
   project,
@@ -147,6 +123,9 @@ export function OrchestrationPanel({
   const snapshot = feed.snapshot ?? initialSnapshot;
   const initialRuns = splitArchived(embedded ? chatSnapshot(initialSnapshot, coordinatorKey).runs : initialSnapshot.runs).live;
   const [selectedId, setSelectedId] = useState<string | null>(initialRuns[0]?.id ?? null);
+  // The cards the page holds, per task: with the ledger, the one reading of
+  // who each run waits on (`lib/runWaits`).
+  const pendingView = usePendingActions();
   const [disclosures, setDisclosures] = useState(() => initialRunDisclosures(initialRuns));
   const [creating, setCreating] = useState(initialRuns.length === 0 && !readOnly && allowManualRun);
   const [objective, setObjective] = useState("");
@@ -426,7 +405,6 @@ export function OrchestrationPanel({
   const runDetail = (run: OrchestrationRun) => {
     const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
     const runAttempts = snapshot.attempts.filter((attempt) => attempt.runId === run.id);
-    const runGates = snapshot.gates.filter((gate) => gate.runId === run.id);
     const runMessages = snapshot.messages.filter((message) => message.runId === run.id);
     return <RunDetail
       key={run.id}
@@ -434,7 +412,6 @@ export function OrchestrationPanel({
       snapshot={snapshot}
       tasks={runTasks}
       attempts={runAttempts}
-      gates={runGates}
       messages={runMessages}
       notifications={(snapshot.notifications ?? []).filter((notification) => notification.runId === run.id)}
       answers={answers}
@@ -506,7 +483,9 @@ export function OrchestrationPanel({
               {runs.map((run) => {
                 const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
                 const done = runTasks.filter((task) => task.status === "completed").length;
-                const openGates = snapshot.gates.filter((gate) => gate.runId === run.id && gate.status === "open").length;
+                // What waits on the person in it, by the one reading
+                // (`lib/runWaits`): the number its strip says.
+                const toDecide = runWaits(snapshot, run, pendingView.held).person.length;
                 return (
                   <button
                     className={`orch-run-pick${!creating && selectedId === run.id ? " is-on" : ""}`}
@@ -520,7 +499,7 @@ export function OrchestrationPanel({
                       <span>{run.objective}</span>
                       <small>
                         {done}/{runTasks.length} tasks
-                        {openGates > 0 ? ` · ${openGates} waiting` : ""}
+                        {toDecide > 0 ? ` · ${toDecide} to decide` : ""}
                       </small>
                     </span>
                   </button>
@@ -542,7 +521,8 @@ export function OrchestrationPanel({
                 {runs.map((run) => {
                   const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
                   const runAttempts = snapshot.attempts.filter((attempt) => attempt.runId === run.id);
-                  const attention = runAttention(run, runTasks, runAttempts, snapshot.gates);
+                  const waits = runWaits(snapshot, run, pendingView.held);
+                  const attention = runAttention(run, runTasks, runAttempts, waits);
                   const planPending = run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
                   const expanded = disclosures.expanded.has(run.id);
                   const bodyId = `orch-goal-${run.id}`;
@@ -561,13 +541,13 @@ export function OrchestrationPanel({
                           {/* Open, its tiles are right under this line. */}
                           <RunLine snapshot={snapshot} run={run} tasks={runTasks} attempts={runAttempts}
                             tiled={expanded && runTasks.length > 0 && !planPending} />
-                          <RunPeople run={run} tasks={runTasks} attempts={runAttempts} gates={snapshot.gates} />
+                          <RunPeople run={run} tasks={runTasks} attempts={runAttempts} gated={waits.gated} />
                         </span>
                       </button>
                       {run.archivedAt != null
                         ? !readOnly && <button type="button" className="orch-run-restore" disabled={busy}
                           onClick={() => void archiveRun(run, false)}>Restore</button>
-                        : <AttentionButton attention={attention} planPending={planPending} onShow={() => showAttention(run)} />}
+                        : <AttentionButton attention={attention} onShow={() => showAttention(run)} />}
                     </div>
                     <div className="orch-run-accordion-body" id={bodyId} hidden={!expanded}>
                       {expanded && runDetail(run)}
@@ -708,7 +688,6 @@ function RunDetail({
   snapshot,
   tasks,
   attempts,
-  gates,
   messages,
   notifications,
   answers,
@@ -746,7 +725,6 @@ function RunDetail({
   snapshot: OrchestrationSnapshot;
   tasks: OrchestrationTask[];
   attempts: OrchestrationAttempt[];
-  gates: OrchestrationGate[];
   messages: OrchestrationMessage[];
   notifications: OrchestrationNotification[];
   answers: Record<string, string>;
@@ -786,7 +764,12 @@ function RunDetail({
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState<"close" | "abandon" | null>(null);
   const mission = isMission(run);
-  const crew = useMissionCrew(run, tasks, attempts, gates);
+  // What the page holds for the person, per task, and with it the one
+  // reading of who this run waits on (`lib/runWaits`). The rows, the
+  // decision boxes and "N to decide" below are all drawn from `waits`.
+  const pendingView = usePendingActions();
+  const waits = runWaits(snapshot, run, pendingView.held);
+  const crew = useMissionCrew(run, tasks, attempts, waits.gated);
   const closed = run.status === "closed";
   const settingsId = useId();
   const tabsId = useId();
@@ -798,16 +781,18 @@ function RunDetail({
   // Plan mode: until the person approves, the plan IS the run.
   const planPending = !readOnly && run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
   const now = useElapsedTick(runIsLive(snapshot, run.id));
-  const openGates = gates.filter((gate) => gate.status === "open");
-  const gateBlockedTasks = new Set(openGates.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
-  const attention = runAttention(run, tasks, attempts, gates);
+  const open = openGates(snapshot, run.id);
+  const gateBlockedTasks = waits.gated;
+  // The gates `waits` counts as the person's. Every other open one is shown
+  // as somebody else's.
+  const mineGates = new Set(waits.person.flatMap((wait) => wait.kind === "gate" ? [wait.key] : []));
+  const attention = runAttention(run, tasks, attempts, waits);
   const taskNames = new Map(tasks.map((task) => [task.id, task.title]));
-  const archiveSnapshot = { runs: [run], tasks, attempts, gates, messages };
-  const archivable = attempts.filter((attempt) => attempt.archivedAt == null && !workerArchiveDisabledReason(archiveSnapshot, attempt));
+  const archivable = attempts.filter((attempt) => attempt.archivedAt == null && !workerArchiveDisabledReason(snapshot, attempt));
   const archiveControl = (attempt: OrchestrationAttempt) => {
     if (readOnly) return null;
     const archivedWorker = attempt.archivedAt != null;
-    const reason = archivedWorker ? null : workerArchiveDisabledReason(archiveSnapshot, attempt);
+    const reason = archivedWorker ? null : workerArchiveDisabledReason(snapshot, attempt);
     return <button type="button" disabled={busy || !!reason}
       title={reason ?? (archivedWorker ? "Return this worker to the chat list." : "Hide this worker; its chat and task history are kept.")}
       onClick={() => onWorkspaceAction("orchestration_worker_archive", { attemptId: attempt.id, archived: !archivedWorker })}>
@@ -824,10 +809,9 @@ function RunDetail({
   // rows are where the next change of hands, or the correction of a wrong one,
   // is made. So they stay, unfiltered, with every start held by the host.
   const pendingRows = planPending && mission;
-  // What the page holds for the person, per task: a row that waits on one of
-  // those cards says so, in the group that asks.
-  const pendingView = usePendingActions();
-  const progress = runProgress(snapshot, run, now, new Map(tasks.map((task) => [task.id, pendingView.forTask(task.id)])));
+  // A row that waits on one of the page's cards says so, in the group that
+  // asks.
+  const progress = runProgress(snapshot, run, now, pendingView.held);
   // A plan still waiting has nothing to total yet.
   const tiled = tasks.length > 0 && !planPending;
   const awaitingReceipt = notifications.filter((item) => item.state === "pending" || item.state === "delivering").length;
@@ -888,7 +872,7 @@ function RunDetail({
         <RunLine snapshot={snapshot} run={run} tasks={tasks} attempts={attempts} tiled={tiled} />
         {archived
           ? !readOnly && <button type="button" className="orch-run-restore" disabled={busy} onClick={() => onArchive(false)}>Restore</button>
-          : <AttentionButton attention={attention} planPending={planPending} onShow={onShowAttention} />}
+          : <AttentionButton attention={attention} onShow={onShowAttention} />}
       </div>}
 
       {/* The run's totals, over everything else: whichever tab is open. */}
@@ -930,7 +914,7 @@ function RunDetail({
           The others are shown, each saying whose it is, in no decision
           colour: the person may still write to the main chat about one. */}
       {[true, false].map((mine) => {
-        const listed = openGates.filter((gate) => (gateWaitsOn(gate, tasks) === "person") === mine);
+        const listed = open.filter((gate) => mineGates.has(`gate:${gate.id}`) === mine);
         if (!listed.length) return null;
         const headId = `${tabsId}-${mine ? "decisions" : "open"}`;
         return <section key={headId} className={`orch-decisions${mine ? "" : " is-others"}`} aria-labelledby={headId}
@@ -939,8 +923,10 @@ function RunDetail({
           {listed.map((gate) => (
             <article className="orch-gate" key={gate.id} data-pending-keys={`gate:${gate.id}`} tabIndex={-1}>
               <p className="orch-gate-task" title={gate.taskId ? taskNames.get(gate.taskId) : undefined}>{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This mission"}</p>
-              {!mine && <p className="orch-gate-waits" data-on={gateWaitsOn(gate, tasks)}
-                title={gateWaitsOn(gate, tasks) === "unsaid" ? UNSAID_NOTE : undefined}>{GATE_WAITS[gateWaitsOn(gate, tasks)]}</p>}
+              {!mine && (waits.ended
+                ? <p className="orch-gate-waits" data-on="ended">Left open when the mission ended</p>
+                : <p className="orch-gate-waits" data-on={gateWaitsOn(gate, tasks)}
+                  title={gateWaitsOn(gate, tasks) === "unsaid" ? UNSAID_NOTE : undefined}>{GATE_WAITS[gateWaitsOn(gate, tasks)]}</p>)}
               <p>{gate.question}</p>
               {!readOnly && gate.options.length > 0 && (
                 <div className="orch-gate-options">
@@ -1069,7 +1055,8 @@ function RunDetail({
           return <RunGroup key={group.key} group={group}
             // The task on screen is never behind a fold or a "more" line.
             holds={group.rows.findIndex((row) => chatOf(row, currentChatKey) || chatOf(row, besideChatKey))}>
-            {(row) => <RunTask key={row.task.id} run={run} snapshot={snapshot} row={row} attempts={attempts} gates={gates} sandboxes={sandboxes}
+            {(row) => <RunTask key={row.task.id} run={run} snapshot={snapshot} row={row} attempts={attempts} sandboxes={sandboxes}
+              taskGate={open.find((item) => item.taskId === row.task.id)}
               taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
               archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
               onOpenBeside={onOpenBeside}
@@ -1155,14 +1142,14 @@ const PEOPLE_SHOWN = 3;
 /** Who a goal is with, readable collapsed: face and name, and what each is
  *  doing — so "handed a task" never reads as "working". Names are text, not
  *  tooltips. The full list is spoken once; the chips are its picture. */
-function RunPeople({ run, tasks, attempts, gates }: {
+function RunPeople({ run, tasks, attempts, gated }: {
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
   attempts: OrchestrationAttempt[];
-  gates: OrchestrationGate[];
+  gated: ReadonlySet<string>;
 }) {
   const roster = useContext(AgentRosterContext);
-  const people = runPeople(run, tasks, attempts, gates, roster);
+  const people = runPeople(run, tasks, attempts, gated, roster);
   if (!people.length) return null;
   const spoken = people.map((person) => `${person.name}${person.removed ? " (no longer registered)" : ""}, ${PERSON_LABEL[person.state]}`).join("; ");
   return <span className="orch-people">
@@ -1181,8 +1168,8 @@ function RunPeople({ run, tasks, attempts, gates }: {
 }
 
 /** The one count of what a run owes, and the way to it. */
-function AttentionButton({ attention, planPending, onShow }: { attention: RunAttention; planPending: boolean; onShow: () => void }) {
-  const label = attentionLabel(attention, planPending);
+function AttentionButton({ attention, onShow }: { attention: RunAttention; onShow: () => void }) {
+  const label = attentionLabel(attention);
   if (!label) return null;
   const parts = [
     attention.decisions ? `${attention.decisions} ${attention.decisions === 1 ? "decision" : "decisions"} waiting` : null,
@@ -1305,7 +1292,7 @@ function RowMark({ state }: { state: RowState }) {
   </span>;
 }
 
-function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName, mission }: {
+function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName, mission }: {
   projectName?: (id: string) => string | undefined;
   /** A mission's crew: the row names its owner, kind and size, and offers
    *  reassignment. Absent for every other run, whose row is unchanged. */
@@ -1321,9 +1308,10 @@ function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, ga
    *  it, and the figures the host sent. */
   row: ProgressRow;
   attempts: OrchestrationAttempt[];
-  gates: OrchestrationGate[];
   taskNames: Map<string, string>;
-  gateBlockedTasks: Set<string>;
+  /** The open gate that holds this task, when one does. */
+  taskGate?: OrchestrationGate;
+  gateBlockedTasks: ReadonlySet<string>;
   now: number;
   busy: boolean;
   readOnly: boolean;
@@ -1360,11 +1348,11 @@ function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, ga
   // "Awaiting approval" is said only of a row whose wait is the person's
   // (`lib/runWaits`): a decision the coordinator has, or one nobody can
   // approve, leaves the worker's own state word.
-  const stateWord = taskStateLabel(task, attempt, row.state === "needs" ? snapshot.nativeDecisions : []);
+  const parkedOn = attempt ? pendingDecisions(snapshot, attempt.id) : [];
+  const stateWord = taskStateLabel(task, attempt, row.state === "needs" ? parkedOn : []);
   const provider = attempt?.agent ?? task.worker?.agent;
   const who = assigneeFace?.name ?? task.assignee?.name ?? (provider ? AGENT_NAME[provider] : null);
   const branch = task.workspace?.plan.branch || attempt?.branch;
-  const gate = gates.find((item) => item.taskId === task.id && item.status === "open");
   const reviewReady = task.status === "ready" && attempt?.status === "completed";
   const retryable = !!attempt
     && ["blocked", "failed"].includes(task.status)
@@ -1379,7 +1367,7 @@ function RunTask({ run, snapshot, row, attempts, gates, sandboxes, taskNames, ga
   // Its test environment has a state of its own: a done task's services may
   // be stopped, and a running task's may have gone stale.
   const environment = taskEnvironment(task, attempts, sandboxes, (at) => agoLabel(at, now));
-  const decision = task.activeAttemptId === attempt?.id ? pendingDecision(attempt, snapshot.nativeDecisions) : undefined;
+  const decision = task.activeAttemptId === attempt?.id ? pendingDecision(attempt, parkedOn) : undefined;
 
   return (
     <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""} run-row`} data-status={task.status} data-state={row.state}
@@ -1618,10 +1606,6 @@ export function retryLaunchArgs(task: OrchestrationTask, attempt: OrchestrationA
     // overtook cannot launch the replaced settings under the new owner.
     retryOf: attempt.id,
   };
-}
-
-function OrchestratorIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M12 7.5v4M12 11.5H5v4M12 11.5h7v4"/></svg>;
 }
 
 function OrchestratorGlyph() {

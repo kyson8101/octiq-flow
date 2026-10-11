@@ -1,7 +1,7 @@
 import type { Conversation } from "./store";
 import { workerArchiveChatList } from "./workerArchive";
 import { EMPTY_ORCHESTRATION, isStuck, type OrchestrationSnapshot, type OrchestrationRun } from "./orchestration";
-import { gateWaitsOn } from "./runWaits";
+import { ledgerWaits, runWaits, type Waiting } from "./runWaits";
 
 export const isActiveRun = (run: OrchestrationRun) => ["planning", "running", "waiting"].includes(run.status);
 
@@ -22,15 +22,24 @@ export function chatSnapshot(snapshot: OrchestrationSnapshot, coordinatorKey: st
     notifications: snapshot.notifications?.filter((notification) => ids.has(notification.runId)) };
 }
 
-export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRun): string {
+/** The run a chat's row speaks for: one that waits on the person before a
+ *  newer one that does not, else its latest that is not put away. `snapshot`
+ *  is the chat's own (`chatSnapshot`), `held` the cards the page holds. */
+export function rowRun(snapshot: OrchestrationSnapshot, held?: Waiting): OrchestrationRun | undefined {
+  const waits = ledgerWaits(snapshot, held);
+  return snapshot.runs.find((run) => waits.runs.get(run.id)?.person.length)
+    ?? snapshot.runs.find((run) => run.archivedAt == null) ?? snapshot.runs[0];
+}
+
+export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): string {
   const tasks = snapshot.tasks.filter((task) => task.runId === run.id);
-  const gates = snapshot.gates.filter((gate) => gate.runId === run.id && gate.status === "open");
+  const waits = runWaits(snapshot, run, held);
   const progress = `${tasks.filter((task) => task.status === "completed").length}/${tasks.length} done`;
-  // A decision is said only of a gate that is the person's (`lib/runWaits`).
-  // A task parked on any other open gate is waiting, not stuck.
-  if (gates.some((gate) => gateWaitsOn(gate, tasks) === "person")) return `Needs decision · ${progress}`;
-  const gated = new Set(gates.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
-  if (tasks.some((task) => isStuck(task) && !gated.has(task.id)) && isActiveRun(run)) return `Needs attention · ${progress}`;
+  // A decision is said of exactly what `lib/runWaits` says is the person's:
+  // the strip above the composer counts the same list.
+  if (waits.person.length) return `Needs decision · ${progress}`;
+  // A task parked on an open decision of anybody's is waiting, not stuck.
+  if (tasks.some((task) => isStuck(task) && !waits.gated.has(task.id)) && isActiveRun(run)) return `Needs attention · ${progress}`;
   const label = run.status.charAt(0).toUpperCase() + run.status.slice(1);
   return `${label} · ${progress}`;
 }
@@ -42,8 +51,8 @@ export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRu
  * "2 tasks" counted across every run, and read as a contradiction.
  * `snapshot` is the chat's own (`chatSnapshot`).
  */
-export function chatRunStatus(snapshot: OrchestrationSnapshot, run: OrchestrationRun): string {
-  const summary = runSummary(snapshot, run);
+export function chatRunStatus(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): string {
+  const summary = runSummary(snapshot, run, held);
   const total = snapshot.tasks.length;
   const inRun = snapshot.tasks.filter((task) => task.runId === run.id).length;
   if (snapshot.runs.length < 2 || total === inRun) return summary;

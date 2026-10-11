@@ -140,5 +140,19 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
     };
   }, []);
 
-  return { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests };
+  // The safety cards again, outside a connect: the ledger says one waits on
+  // the person and this page holds no card for it (`lib/pendingActions`).
+  // The first read can fail and is not tried again within a connection.
+  // Stable: the store and its publisher are made once, so an effect that
+  // depends on this runs when its own facts change and not on every render.
+  const { store: safetyStore, publish: publishSafety } = safety;
+  const refillSafetyBlocks = useCallback(() => {
+    const token = safetyStore.begin();
+    bridge.invoke<SafetyBlockNotice[]>("safety_block_pending").then((list) => {
+      const reconciled = safetyStore.finish(token, list);
+      if (reconciled) publishSafety(reconciled);
+    }).catch(() => safetyStore.cancel(token));
+  }, [safetyStore, publishSafety]);
+
+  return { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks };
 }

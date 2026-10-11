@@ -136,10 +136,16 @@ describe("what a run waits for", () => {
     expect([...waits.tasks.keys()].sort()).toEqual(["t", "u"]);
   });
 
-  it("waits for nothing once the run is stopped, closed or archived", () => {
+  it("keeps nothing of the ledger's own records once the run is stopped, closed or archived, and still the cards on the page", () => {
     const over = { gates: [gate("g", { taskId: "t", awaits: "person" })], nativeDecisions: [decision("d", "t", { awaits: "person" })] };
     for (const ended of [run({ status: "stopped" }), run({ status: "closed" }), run({ archivedAt: 9 })]) {
-      expect(read(ledger({ ...over, runs: [ended] }), held("t", ["permission", "permission:p"]))).toEqual(NOTHING);
+      expect(read(ledger({ ...over, runs: [ended] }))).toEqual(NOTHING);
+      // A card the page still holds has its buttons on the person's screen:
+      // it is theirs whatever became of the run, and every surface says so.
+      expect(read(ledger({ ...over, runs: [ended] }), held("t", ["permission", "permission:p"]))).toEqual({ ...NOTHING, person: ["permission:p"] });
+      // What a gate holds is still said to be held, for the row's own words.
+      expect([...runWaits(ledger({ ...over, runs: [ended] }), ended).gated]).toEqual(["t"]);
+      expect(runWaits(ledger({ ...over, runs: [ended] }), ended).ended).toBe(true);
     }
     // A run that failed or finished with a gate still open is still asked.
     expect(read(ledger({ ...over, runs: [run({ status: "failed" })] })).person).toEqual(["gate:g", "safety:d"]);

@@ -13,7 +13,7 @@ import {
   CREW_ROLE_LABEL, missionAcceptance, missionCrew, missionWhere, placeStanding, reassignBlocker, reassignChoices,
   reassignRequest, type CrewMember, type Destinations, type ReassignChoice,
 } from "../lib/missionPage";
-import type { OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
+import type { OrchestrationAttempt, OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 import type { PersonState } from "../lib/runPanel";
 import { AgentAvatar } from "./AgentAvatar";
 import "./MissionPage.css";
@@ -27,11 +27,12 @@ export function useMissionCrew(
   run: OrchestrationRun,
   tasks: readonly OrchestrationTask[],
   attempts: readonly OrchestrationAttempt[],
-  gates: readonly OrchestrationGate[],
+  /** The tasks an open decision holds (`runWaits(...).gated`). */
+  gated: ReadonlySet<string>,
 ): CrewMember[] {
   const roster = useContext(AgentRosterContext);
   const personaOf = useContext(ChatPersonaContext);
-  return missionCrew(run, tasks, attempts, gates, roster, personaOf(run.coordinatorChatKey));
+  return missionCrew(run, tasks, attempts, gated, roster, personaOf(run.coordinatorChatKey));
 }
 
 export function MissionSections({ run, tasks, crew }: {

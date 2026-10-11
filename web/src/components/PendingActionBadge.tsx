@@ -7,17 +7,21 @@
 // dismissed by looking.
 import { createContext, useContext } from "react";
 import { pendingDescription, pendingLabel, pendingSelector, type PendingAction } from "../lib/pendingActions";
+import type { Waiting } from "../lib/runWaits";
 import "./PendingActionBadge.css";
 
 export type PendingActionsView = {
   forRow: (chatId: string) => readonly PendingAction[];
   forTask: (taskId: string) => readonly PendingAction[];
+  /** The cards the page itself holds, per task: what a surface hands
+   *  `lib/runWaits` to read who a run waits on. */
+  held: Waiting;
   /** Open the conversation, run and task holding the card, and show it. */
   reveal: (action: PendingAction) => void;
 };
 
 const NONE: readonly PendingAction[] = [];
-export const NO_PENDING_ACTIONS: PendingActionsView = { forRow: () => NONE, forTask: () => NONE, reveal: () => {} };
+export const NO_PENDING_ACTIONS: PendingActionsView = { forRow: () => NONE, forTask: () => NONE, held: new Map(), reveal: () => {} };
 export const PendingActionsContext = createContext<PendingActionsView>(NO_PENDING_ACTIONS);
 
 export function usePendingActions(): PendingActionsView {

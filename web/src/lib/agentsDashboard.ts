@@ -18,7 +18,7 @@
 import {
   taskHeldByPlan, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
-import { gateWaitsOn, type WaitsOn } from "./runWaits";
+import { ledgerWaits, NO_WAITS, type LedgerWaits, type Waiting, type Waits } from "./runWaits";
 // Types only: agentsMode opens the socket bridge on import, and this module
 // is pure.
 import type { AgentTeam, TeamAgent } from "./agentsMode";
@@ -149,8 +149,12 @@ export type RosterInput = {
   /** The conversation still exists in this profile. */
   chatExists: (chatKey: string) => boolean;
   leadActivity: (chatKey: string) => ChatActivity;
-  /** Cards open on this chat that only the person can answer. */
+  /** Cards open on this chat itself that only the person can answer: a
+   *  lead's own. A worker's are in `held`, by task. */
   waitingOn: (chatKey: string) => number;
+  /** The cards the page holds, per task (`lib/pendingActions`): what
+   *  `lib/runWaits` reads with the ledger to say who a task waits on. */
+  held?: Waiting;
 };
 
 const LIVE_RUN: OrchestrationRun["status"][] = ["planning", "running", "waiting"];
@@ -167,24 +171,27 @@ export function taskState(
   task: OrchestrationTask,
   run: OrchestrationRun | undefined,
   attempt: OrchestrationAttempt | undefined,
-  /** Who the task's open gate waits on (`lib/runWaits.gateWaitsOn`), or
-   *  `false` when it has none. */
-  gate: WaitsOn | false,
-  waiting: number,
+  /** What the task waits for, and on whom: its entry in
+   *  `runWaits(...).tasks`, which is the only place that is decided. */
+  waits: Waits,
   /** A start of it would be refused until the person approves it
    *  (`taskHeldByPlan`). Left out: the run's own approval, as before the
    *  host said it per task. */
   held: boolean = run?.planApproval?.status === "pending",
 ): { state: AgentState; label: string } | null {
-  if (!run || run.archivedAt || !LIVE_RUN.includes(run.status)) return null;
+  if (!run) return null;
+  // "Needs you" for exactly what `lib/runWaits` says is the person's, and
+  // first: a card still on their screen is theirs whatever became of the
+  // task or its run.
+  const mine = waits.person[0];
+  if (mine) return { state: "needs_you", label: mine.kind === "gate" ? "Waiting on a decision" : "Needs your approval" };
+  if (run.archivedAt || !LIVE_RUN.includes(run.status)) return null;
   // A replaced task is history: the agent is on its replacement, if anyone.
   if (task.status === "completed" || task.status === "cancelled" || task.supersededBy) return null;
-  if (waiting > 0) return { state: "needs_you", label: "Needs your approval" };
-  // "Needs you" only for a gate that is the person's. The coordinator's, or
-  // one the host put no name to, parks the task without asking them.
-  if (gate === "person") return { state: "needs_you", label: "Waiting on a decision" };
-  if (gate === "coordinator") return { state: "blocked", label: "Waiting on the coordinator" };
-  if (gate) return { state: "blocked", label: "Decision open" };
+  // The coordinator's, or an open gate the host put no name to, parks the
+  // task without asking the person.
+  if (waits.coordinator.length) return { state: "blocked", label: "Waiting on the coordinator" };
+  if ([...waits.nobody, ...waits.unsaid].some((wait) => wait.kind === "gate")) return { state: "blocked", label: "Decision open" };
   if (task.status === "failed") return { state: "blocked", label: "Failed" };
   if (task.status === "blocked") return { state: "blocked", label: "Blocked" };
   if (task.status === "pending" || task.status === "ready") {
@@ -227,30 +234,20 @@ export function taskState(
  *  waiting on the person, stalled, failed and settled tasks are not work, and
  *  nor is anything in a run that is over or archived. Pass a chat's own
  *  snapshot (`chatSnapshot`) to ask about one main chat and none of the others
- *  sharing its project. `waitingOnTask` should use the same task-scoped
- *  pending-action classification as the row's badges. */
-export function workingTaskCount(snapshot: OrchestrationSnapshot, waitingOnTask: (taskId: string) => number): number {
+ *  sharing its project. `held` is the cards the page holds, per task, the
+ *  same ones the row's badges are drawn from. */
+export function workingTaskCount(snapshot: OrchestrationSnapshot, held?: Waiting): number {
   const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
-  const gated = taskGates(snapshot);
+  const waits = ledgerWaits(snapshot, held);
   return snapshot.tasks.filter((task) => {
     const attempt = latestAttempt(snapshot, task);
-    const waiting = waitingOnTask(task.id);
     const run = runs.get(task.runId);
-    return taskState(task, run, attempt, gated.get(task.id) ?? false, waiting, taskHeldByPlan(task, run, snapshot.tasks))?.state === "working";
+    return taskState(task, run, attempt, taskWaits(waits, task), taskHeldByPlan(task, run, snapshot.tasks))?.state === "working";
   }).length;
 }
 
-/** Who each task's open gate waits on. With several open on one task, the
- *  person's is the one that is said. */
-function taskGates(snapshot: OrchestrationSnapshot): Map<string, WaitsOn> {
-  const gated = new Map<string, WaitsOn>();
-  for (const gate of snapshot.gates) {
-    if (gate.status !== "open" || !gate.taskId) continue;
-    const on = gateWaitsOn(gate, snapshot.tasks);
-    if (on === "person" || !gated.has(gate.taskId)) gated.set(gate.taskId, on);
-  }
-  return gated;
-}
+const taskWaits = (waits: LedgerWaits, task: Pick<OrchestrationTask, "id" | "runId">): Waits =>
+  waits.runs.get(task.runId)?.tasks.get(task.id) ?? NO_WAITS;
 
 /** A lead conversation's current state, or null when it is not doing
  *  anything: ended, or idle between turns. */
@@ -275,7 +272,7 @@ export function agentRoster(input: RosterInput): AgentRow[] {
   if (!team) return [];
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const runs = new Map((snapshot?.runs ?? []).map((run) => [run.id, run]));
-  const gated = snapshot ? taskGates(snapshot) : new Map<string, WaitsOn>();
+  const waits = snapshot ? ledgerWaits(snapshot, input.held) : null;
 
   const activitiesFor = new Map<string, AgentActivity[]>();
   const recentFor = new Map<string, AgentRow["recent"]>();
@@ -293,8 +290,7 @@ export function agentRoster(input: RosterInput): AgentRow[] {
     const run = runs.get(task.runId);
     const attempt = latestAttempt(snapshot, task);
     if (attempt && input.chatExists(attempt.workerChatKey)) touch(assignee, attempt.workerChatKey, task.title, attempt.updatedAt);
-    const current = taskState(task, run, attempt, gated.get(task.id) ?? false, attempt ? input.waitingOn(attempt.workerChatKey) : 0,
-      taskHeldByPlan(task, run, snapshot.tasks));
+    const current = taskState(task, run, attempt, waits ? taskWaits(waits, task) : NO_WAITS, taskHeldByPlan(task, run, snapshot.tasks));
     if (!current) continue;
     const destination = task.destination;
     add(assignee, {
@@ -312,13 +308,19 @@ export function agentRoster(input: RosterInput): AgentRow[] {
 
   for (const record of leads) {
     if (!input.chatExists(record.chatKey)) continue;
-    const plan = snapshot ? pendingPlan(snapshot, record.chatKey) : null;
     const coordinated = snapshot?.runs
       .filter((run) => run.coordinatorChatKey === record.chatKey && !run.archivedAt)
       .sort((a, b) => b.updatedAt - a.updatedAt)[0];
     const title = input.chatTitle(record.chatKey) ?? coordinated?.objective ?? "Conversation";
     touch(record.leadId, record.chatKey, title, Math.max(record.createdAt, coordinated?.updatedAt ?? 0));
-    const current = leadState(input.leadActivity(record.chatKey), !!plan, input.waitingOn(record.chatKey));
+    // What the lead's own runs wait on the person for and no task holds: a
+    // plan to approve, a decision of the run itself (`lib/runWaits`). A
+    // task's waits are said on the task's row.
+    const mine = (snapshot?.runs ?? []).filter((run) => run.coordinatorChatKey === record.chatKey)
+      .flatMap((run) => waits?.runs.get(run.id)?.person.filter((wait) => !wait.taskId) ?? []);
+    const plan = mine.find((wait) => wait.kind === "plan");
+    const current = leadState(input.leadActivity(record.chatKey), !!plan,
+      input.waitingOn(record.chatKey) + mine.filter((wait) => wait.kind !== "plan").length);
     if (!current) continue;
     add(record.leadId, {
       key: `lead:${record.chatKey}`,
@@ -328,7 +330,7 @@ export function agentRoster(input: RosterInput): AgentRow[] {
       project: record.crossProject ? null : projectById.get(record.projectId) ?? null,
       crossProject: !!record.crossProject,
       chatKey: record.chatKey,
-      runId: plan?.run.id ?? coordinated?.id,
+      runId: plan?.runId ?? coordinated?.id,
       at: coordinated?.updatedAt ?? record.createdAt,
     });
   }

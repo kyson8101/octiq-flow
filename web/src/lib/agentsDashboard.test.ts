@@ -147,7 +147,7 @@ describe("agents dashboard", () => {
     const carded = byId(roster({
       snapshot: snap({ tasks: [task("a", "running", "ada", { activeAttemptId: "att_a" })],
         attempts: [attempt("a", { execution: { state: "waiting_tool", retryCount: 0 } })] }),
-      waitingOn: (key) => key === "chat:orch-a" ? 1 : 0,
+      held: new Map([["a", [{ key: "permission:p1", kind: "permission" }]]]),
     }));
     expect(carded.ada).toMatchObject({ state: "needs_you", stateLabel: "Needs your approval" });
   });
@@ -328,7 +328,7 @@ describe("agents dashboard", () => {
 describe("working tasks, for the chat row's running ring", () => {
   const executing = (taskId: string, state: NonNullable<OrchestrationAttempt["execution"]>["state"] = "executing", over: Partial<OrchestrationAttempt> = {}) =>
     attempt(taskId, { execution: { state, retryCount: 0 }, ...over });
-  const none = () => 0;
+  const none = undefined;
 
   it("follows one task from queued through executing to each way it can end", () => {
     const at = (status: OrchestrationTask["status"], attempts: OrchestrationAttempt[] = []) =>
@@ -352,7 +352,7 @@ describe("working tasks, for the chat row's running ring", () => {
 
   it("does not count a worker waiting on the person, by card or by decision", () => {
     const snapshot = snap({ tasks: [task("a", "running")], attempts: [executing("a", "waiting_tool")] });
-    expect(workingTaskCount(snapshot, (taskId) => taskId === "a" ? 1 : 0)).toBe(0);
+    expect(workingTaskCount(snapshot, new Map([["a", [{ key: "permission:p1", kind: "permission" }]]]))).toBe(0);
     const gate = { id: "g", runId: "run_1", taskId: "a", createdByChatKey: "chat:orch-a", targetChatKey: "chat:lead",
       question: "Which?", options: [], status: "open" as const, createdAt: 1, updatedAt: 1 };
     expect(workingTaskCount({ ...snapshot, gates: [gate] }, none)).toBe(0);

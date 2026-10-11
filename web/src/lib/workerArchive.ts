@@ -1,4 +1,5 @@
 import type { OrchestrationAttempt, OrchestrationSnapshot } from "./orchestration";
+import { openGates } from "./runWaits";
 import type { Conversation } from "./store";
 
 export function workerArchiveDisabledReason(snapshot: OrchestrationSnapshot, attempt: OrchestrationAttempt): string | null {
@@ -7,7 +8,7 @@ export function workerArchiveDisabledReason(snapshot: OrchestrationSnapshot, att
     other.taskId === task.id && ["preparing", "running"].includes(other.status))) {
     return "Complete the task and settle its workers before archiving.";
   }
-  if (snapshot.gates.some((gate) => gate.runId === task.runId && gate.status === "open" && (!gate.taskId || gate.taskId === task.id))) {
+  if (openGates(snapshot, task.runId).some((gate) => !gate.taskId || gate.taskId === task.id)) {
     return "Resolve the open decision before archiving.";
   }
   const workspace = task.workspace;

@@ -8,7 +8,7 @@ vi.mock("../lib/bridge", () => ({
 
 import type { Conversation } from "../lib/store";
 import { workerChatParents, type OrchestrationSnapshot } from "../lib/orchestration";
-import { pendingActions, pendingByRow, pendingByTask, type PendingActionInput } from "../lib/pendingActions";
+import { pendingByRow, pendingByTask, pendingReading, type PendingActionInput } from "../lib/pendingActions";
 import { PendingActionBadge, PendingActionsContext, type PendingActionsView } from "./PendingActionBadge";
 import { Sidebar } from "./Sidebar";
 import { ProjectsPage } from "./ProjectsPage";
@@ -39,10 +39,10 @@ const ledger: OrchestrationSnapshot = {
 };
 
 function view(input: Partial<PendingActionInput> = {}): PendingActionsView {
-  const actions = pendingActions({ orchestration: ledger, parents: workerChatParents(ledger), ...input });
+  const { actions, held } = pendingReading({ orchestration: ledger, parents: workerChatParents(ledger), ...input });
   const rows = pendingByRow(actions);
   const tasks = pendingByTask(actions);
-  return { forRow: (id) => rows.get(id) ?? [], forTask: (id) => tasks.get(id) ?? [], reveal: () => {} };
+  return { forRow: (id) => rows.get(id) ?? [], forTask: (id) => tasks.get(id) ?? [], held, reveal: () => {} };
 }
 const withView = (value: PendingActionsView, element: ReactElement) =>
   renderToStaticMarkup(<PendingActionsContext.Provider value={value}>{element}</PendingActionsContext.Provider>);

@@ -7,7 +7,7 @@ import { recall, remember } from "../lib/remember";
 import { latestResponse, plainSnippet } from "../lib/chatPreview";
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
-import { chatRunStatus, chatSnapshot, workflowChatList } from "../lib/chatWorkflow";
+import { chatRunStatus, chatSnapshot, rowRun, workflowChatList } from "../lib/chatWorkflow";
 import { workingTaskCount } from "../lib/agentsDashboard";
 import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
@@ -288,8 +288,10 @@ export function Sidebar({
     const archived = attempt?.archivedAt != null;
     const archiveReason = attempt && !archived ? workerArchiveDisabledReason(orchestration, attempt) : null;
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
-    // An archived run was put away by the person; it does not speak for the row.
-    const run = workflow.runs.find((item) => item.archivedAt == null) ?? workflow.runs[0];
+    // An archived run was put away by the person; it does not speak for the
+    // row. A run that waits on the person does, before a newer one that only
+    // runs: the line and the badge beside it are one reading (`lib/runWaits`).
+    const run = rowRun(workflow, pendingView.held);
     const ownsRun = !showArchived && workflow.runs.length > 0;
     // A run's worker chats are not listed here. Its task list opens beside the
     // chat list when this row is picked, and stays while a worker is open, so
@@ -301,8 +303,8 @@ export function Sidebar({
     // A main chat idle between turns while its workers run is still running:
     // its ring goes round for them. Only this chat's own runs count, so a
     // neighbour in the same project keeps still.
-    const tasksWorking = workingTaskCount(workflow, (taskId) => pendingView.forTask(taskId).length);
-    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? chatRunStatus(workflow, run) : null;
+    const tasksWorking = workingTaskCount(workflow, pendingView.held);
+    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? chatRunStatus(workflow, run, pendingView.held) : null;
     const branch = projectInfo.status === "home" ? (attempt?.branch || (parent ? "" : branches[chat.projectId])) : "";
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);

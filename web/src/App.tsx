@@ -180,7 +180,7 @@ import {
 } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
-import { isQuietWorkerRefusal, pendingActions, pendingByRow, pendingByTask, type PendingAction } from "./lib/pendingActions";
+import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type PendingAction } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
@@ -676,7 +676,6 @@ export default function App() {
   // takes all of it. See TASKS_KEY.
   const [tasksShut, setTasksShut] = useState(() => recall(TASKS_KEY) === "1");
   const runSplit = workflowSplit && !tasksShut;
-  const taskCounts = useMemo(() => taskColumnCounts(runWorkflow), [runWorkflow]);
   const [displayedRuns, setDisplayedRuns] = useState<Record<string, string | null>>({});
   const displayedRunKey = runChatKey ?? "new";
   const onSelectedRunChange = useCallback((runId: string | null) => {
@@ -698,13 +697,6 @@ export default function App() {
   const workerRequestIds = useMemo(() => conversationId && !workerChat
     ? [...chatParents.keys()].filter((id) => mainChatId(id, chatParents) === conversationId)
     : [], [conversationId, workerChat, chatParents]);
-  // Safety cards that wait on the person. A worker's Claude refusal does not:
-  // nobody can approve it, so it is folded away, not counted.
-  const safetyWaiting = (id: string) => {
-    const cards = safetyBlocks[id] ?? [];
-    const worker = (mainChatId(id, chatParents) ?? id) !== id;
-    return worker ? cards.filter((card) => !isQuietWorkerRefusal(card)).length : cards.length;
-  };
   const [themeId, setThemeId] = useState(savedThemeId);
 
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
@@ -743,7 +735,7 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests } =
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks } =
     useChatRequests(conn, (...args) => announceOnce(...args));
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
@@ -4741,11 +4733,27 @@ export default function App() {
 
   // What each row and task is waiting on the person for (lib/pendingActions),
   // from state this tab already holds for every chat: nothing is fetched per
-  // row, and a chat never opened still says so.
-  const pendingList = useMemo(
-    () => pendingActions({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, handovers }),
+  // row, and a chat never opened still says so. This is the page's ONE
+  // reading of who is waited on: `held` is its own cards, which every surface
+  // below hands to `lib/runWaits`, and the list is what that says.
+  const pendingRead = useMemo(
+    () => pendingReading({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, handovers }),
     [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, handovers],
   );
+  const pendingList = pendingRead.actions;
+  const pendingHeld = pendingRead.held;
+  // The host says a decision waits on the person and the page has no card
+  // for it: the list it comes in was not read, or its request failed. Ask
+  // for the list again, once for each such set, so the card can be drawn
+  // where the badge leads. Nothing polls: a set that stays missing is not
+  // asked for twice.
+  const missingCards = useMemo(
+    () => pendingList.filter((action) => action.cardMissing).map((action) => action.key).sort().join(" "),
+    [pendingList],
+  );
+  useEffect(() => {
+    if (missingCards && conn === "open") refillSafetyBlocks();
+  }, [missingCards, conn, refillSafetyBlocks]);
   // A badge's way to its card: open the chat (and its run, for a decision),
   // then show the card once it is drawn. `runFocus` tells the run panel which
   // run to open; `cardFocus` is the card being looked for.
@@ -4763,7 +4771,9 @@ export default function App() {
     else setWorkflowViews((before) => ({ ...before, [conversation.id]: "chat" }));
     openConversation(conversation);
     setCardFocus({ action, nonce: Date.now() });
-  }, [openConversation, showRunFor]);
+    // Its card is not on the page yet: asked to be shown it, ask the host.
+    if (action.cardMissing) refillSafetyBlocks();
+  }, [openConversation, showRunFor, refillSafetyBlocks]);
   useEffect(() => {
     if (!cardFocus) return;
     const { action } = cardFocus;
@@ -4797,9 +4807,11 @@ export default function App() {
     return {
       forRow: (chatId) => rows.get(chatId) ?? NO_ACTIONS,
       forTask: (taskId) => pendingTasks.get(taskId) ?? NO_ACTIONS,
+      held: pendingHeld,
       reveal: revealPending,
     };
-  }, [pendingList, pendingTasks, revealPending]);
+  }, [pendingList, pendingTasks, pendingHeld, revealPending]);
+  const taskCounts = useMemo(() => taskColumnCounts(runWorkflow, pendingHeld), [runWorkflow, pendingHeld]);
 
   // The run's one line above the composer, for the chat that coordinates it.
   // Read off the ledger this tab already holds; it shows no clock, so it
@@ -4809,8 +4821,8 @@ export default function App() {
     if (workerChat || !conversationId) return null;
     // One line for the chat, whichever of its runs it has to be about: a
     // run that waits on the person is never behind a newer one that runs.
-    return chatStrip(currentWorkflow, Date.now(), pendingTasks);
-  }, [workerChat, conversationId, currentWorkflow, pendingTasks]);
+    return chatStrip(currentWorkflow, Date.now(), pendingHeld);
+  }, [workerChat, conversationId, currentWorkflow, pendingHeld]);
   const stripShown = !!runStrip && !stripHidden(stripDismissed, runStrip.strip);
   const hideStrip = () => {
     if (!runStrip) return;
@@ -4955,8 +4967,10 @@ export default function App() {
     </>
   );
 
-  const pendingApprovals = [conversationId, ...workerRequestIds].reduce((count, id) =>
-    count + (id ? (asks[id]?.length ?? 0) + safetyWaiting(id) + (questions[id]?.length ?? 0) : 0), 0);
+  // What waits on the person in this chat's own transcript: its cards and
+  // its workers', as the one reading has them.
+  const pendingApprovals = conversationId
+    ? pendingList.filter((action) => action.surface === "chat" && action.openChatId === conversationId).length : 0;
 
   return (
     <WorkspaceSlotsContext.Provider value={workspaceSlots}>
@@ -5209,9 +5223,10 @@ export default function App() {
               projects={[...workspaces, ...shelved]}
               running={running}
               busy={busySet}
+              held={pendingHeld}
               waitingOn={(chatKey) => {
                 const id = chatKey.replace(/^chat:/, "");
-                return (asks[id]?.length ?? 0) + (questions[id]?.length ?? 0) + safetyWaiting(id);
+                return pendingList.filter((action) => action.chatId === id).length;
               }}
               chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
               chatExists={(chatKey) => conversations.some((c) => keyFor(c.id) === chatKey)}

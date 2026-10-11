@@ -1,8 +1,7 @@
 import { executionNeedsAttention } from "./agentTaskBoard";
-import { gateWaitsOn } from "./runWaits";
+import { ledgerWaits, type RunWaits, type Waiting } from "./runWaits";
 import {
-  isStuck, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationSnapshot,
-  type OrchestrationTask,
+  isStuck, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
 
 /** The run panel's three views of one run. Decisions and plan approval are
@@ -24,53 +23,52 @@ export function nextRunTab(current: RunTab, key: string): RunTab | null {
 }
 
 export type RunAttention = {
-  /** Open decisions plus a plan waiting for approval: things only the
-   *  person can settle. */
+  /** What waits on the person in this run, once each: exactly
+   *  `runWaits(...).person`, the number the strip says. */
   decisions: number;
+  /** The one decision is the plan's approval. */
+  planOnly: boolean;
   /** Blocked or failing tasks not already named by a decision. */
   blocked: number;
   total: number;
 };
 
-/** What in this run is owed, counted once each. A task blocked BY a decision
- *  is the decision; saying it twice reads as two problems when there is one. */
+/** What in this run is owed, counted once each. `waits` is `lib/runWaits`'
+ *  reading of the run: who is waited on is decided there and nowhere here.
+ *  A task blocked BY a decision is the decision; saying it twice reads as
+ *  two problems when there is one. */
 export function runAttention(
   run: OrchestrationRun,
   tasks: readonly OrchestrationTask[],
   attempts: readonly OrchestrationAttempt[],
-  gates: readonly OrchestrationGate[],
+  waits: RunWaits,
 ): RunAttention {
-  const open = gates.filter((gate) => gate.runId === run.id && gate.status === "open");
-  const gated = new Set(open.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
-  const plan = run.planApproval?.status === "pending" && ["planning", "running", "waiting"].includes(run.status) ? 1 : 0;
   // A stopped run cannot retry anything, so its failures are history, not owed.
-  const blocked = run.status === "stopped" ? 0 : tasks.filter((task) => task.runId === run.id && !gated.has(task.id)
+  const blocked = run.status === "stopped" ? 0 : tasks.filter((task) => task.runId === run.id && !waits.gated.has(task.id)
+    && !waits.tasks.get(task.id)?.person.length
     && (isStuck(task)
       || executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId)))).length;
-  // Only what the host says is the person's: a gate the coordinator is
-  // dealing with is no decision of theirs (`lib/runWaits`).
-  const decisions = open.filter((gate) => gateWaitsOn(gate, tasks) === "person").length + plan;
-  return { decisions, blocked, total: decisions + blocked };
+  const decisions = waits.person.length;
+  return { decisions, planOnly: decisions === 1 && waits.person[0].kind === "plan", blocked, total: decisions + blocked };
 }
 
 /** What the top bar's Tasks button carries for one chat's runs: how many
- *  tasks the column holds, and how many decisions in it wait on the person.
- *  Archived runs are history and count for neither. */
-export function taskColumnCounts(snapshot: OrchestrationSnapshot): { tasks: number; decisions: number } {
-  const runs = snapshot.runs.filter((run) => run.archivedAt == null);
-  const ids = new Set(runs.map((run) => run.id));
+ *  tasks the column holds, and how many decisions in it wait on the person
+ *  (`lib/runWaits`, with the cards the page holds). Archived runs are
+ *  history and their tasks are not counted. */
+export function taskColumnCounts(snapshot: OrchestrationSnapshot, held?: Waiting): { tasks: number; decisions: number } {
+  const ids = new Set(snapshot.runs.filter((run) => run.archivedAt == null).map((run) => run.id));
   return {
     tasks: snapshot.tasks.filter((task) => ids.has(task.runId)).length,
-    decisions: runs.reduce((sum, run) =>
-      sum + runAttention(run, snapshot.tasks, snapshot.attempts, snapshot.gates).decisions, 0),
+    decisions: ledgerWaits(snapshot, held).person.length,
   };
 }
 
 /** Short enough for a collapsed row. Decisions lead: they wait on the person. */
-export function attentionLabel(attention: RunAttention, planPending: boolean): string | null {
+export function attentionLabel(attention: RunAttention): string | null {
   if (!attention.total) return null;
   if (attention.decisions) {
-    if (planPending && attention.decisions === 1) return "Approval needed";
+    if (attention.planOnly) return "Approval needed";
     return `${attention.decisions} to decide`;
   }
   return `${attention.blocked} blocked`;
@@ -112,15 +110,15 @@ function personState(
 
 /** Everyone a run's tasks were handed to, once each, with their most urgent
  *  state across their tasks: people working first, then stuck, then waiting
- *  their turn, then finished. */
+ *  their turn, then finished. `gated` is the tasks an open decision holds
+ *  (`runWaits(...).gated`). */
 export function runPeople(
   run: OrchestrationRun,
   tasks: readonly OrchestrationTask[],
   attempts: readonly OrchestrationAttempt[],
-  gates: readonly OrchestrationGate[],
+  gated: ReadonlySet<string>,
   roster: readonly RosterEntry[],
 ): RunPerson[] {
-  const gated = new Set(gates.filter((gate) => gate.runId === run.id && gate.status === "open").flatMap((gate) => gate.taskId ? [gate.taskId] : []));
   const people = new Map<string, RunPerson>();
   for (const task of tasks) {
     if (task.runId !== run.id || !task.assignee) continue;

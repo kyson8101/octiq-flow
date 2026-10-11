@@ -17,7 +17,7 @@ import {
 import type {
   AttemptUsage, OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask,
 } from "./orchestration";
-import { NO_WAITS, runWaits, UNSAID_NOTE, type RunWaits, type WaitKind, type Waiting, type Waits } from "./runWaits";
+import { ledgerWaits, NO_WAITS, runWaits, UNSAID_NOTE, type RunWaits, type WaitKind, type Waiting, type Waits } from "./runWaits";
 
 export type { Waiting } from "./runWaits";
 
@@ -228,6 +228,12 @@ function read(
   attempt: OrchestrationAttempt | undefined,
   waits: Waits,
 ): Reading {
+  // The person's, and only then "Needs you". It is asked first: whatever
+  // `lib/runWaits` says waits on them is counted on the strip, so the row
+  // that holds it says so too, whatever became of the task. For a task that
+  // is settled or a run that is over that is only ever a card still on
+  // their screen.
+  if (waits.person.length) return { state: "needs", why: PERSON_WORD[waits.person[0].kind], tone: "decide" };
   if (task.status === "completed") {
     // Finished is not passed: a check that failed still holds what depends
     // on it, until it is replaced or run again.
@@ -238,8 +244,6 @@ function read(
   if (task.supersededBy) return { state: "closed", why: "Replaced", tone: null };
   // A stopped run retries nothing: what it left is history, not owed.
   if (run.status === "stopped") return { state: "closed", why: "Stopped", tone: null };
-  // The person's, and only then "Needs you".
-  if (waits.person.length) return { state: "needs", why: PERSON_WORD[waits.person[0].kind], tone: "decide" };
   // The coordinator's: a wait, in the warning colour, that asks nothing of
   // the person.
   if (waits.coordinator.length) return { state: "running", why: COORDINATOR_WORD, tone: "warn" };
@@ -402,8 +406,8 @@ export function runProgress(
   run: OrchestrationRun,
   now: number,
   waiting?: Waiting,
+  waits: RunWaits = runWaits(snapshot, run, waiting),
 ): RunProgress {
-  const waits = runWaits(snapshot, run, waiting);
   const tasks = snapshot.tasks.filter((task) => task.runId === run.id);
   const attempts = snapshot.attempts.filter((attempt) => attempt.runId === run.id);
   const rows = tasks.map((task) => progressRow(snapshot, run, task, now, waiting, waits));
@@ -430,7 +434,9 @@ export function runProgress(
   let strip: RunStrip | null = null;
   // History and a run with nothing to count draw no strip: a stopped,
   // closed or archived run is not progressing, and "0/0" says nothing.
-  if (total > 0 && run.archivedAt == null && run.status !== "closed" && run.status !== "stopped") {
+  // Unless something in it waits on the person: that is said wherever it is
+  // counted, and the badge and the panel count it.
+  if (needs > 0 || (total > 0 && run.archivedAt == null && run.status !== "closed" && run.status !== "stopped")) {
     // Failed only while a failed row exists and nothing waits on the person.
     const state: StripState = needs ? "needs" : failed ? "failed" : done === total ? "done" : "running";
     const notes = [
@@ -442,8 +448,8 @@ export function runProgress(
       ...counts,
       word: STRIP_WORD[state],
       done, total,
-      percent: Math.round(done / total * 100),
-      label: state === "done" ? `Done · ${done}/${total}` : `Tasks ${done}/${total}`,
+      percent: total ? Math.round(done / total * 100) : 0,
+      label: !total ? "No tasks yet" : state === "done" ? `Done · ${done}/${total}` : `Tasks ${done}/${total}`,
       side: stripSide(counts, elapsedMs),
       live: state === "running" && active && working > 0,
       notes,
@@ -474,18 +480,23 @@ export function chatStrip(
   now: number,
   waiting?: Waiting,
 ): { run: OrchestrationRun; strip: RunStrip } | null {
-  const fallback = stripRun(snapshot.runs);
-  if (!fallback) return null;
+  // One reading of every run of the chat (`lib/runWaits`): the number of
+  // decisions on the line is `waits.person.length`, the same list the badge,
+  // the Tasks button and the panel count.
+  const waits = ledgerWaits(snapshot, waiting);
+  const read = (run: OrchestrationRun) => {
+    const strip = runProgress(snapshot, run, now, waiting, waits.runs.get(run.id)).strip;
+    return strip ? [{ run, strip }] : [];
+  };
+  // The live runs, and any other that still holds something for the person
+  // (a card left on their screen by a run that is over).
   const live = snapshot.runs
-    .filter((run) => ACTIVE_RUN.has(run.status) && run.archivedAt == null)
-    .flatMap((run) => {
-      const strip = runProgress(snapshot, run, now, waiting).strip;
-      return strip ? [{ run, strip }] : [];
-    });
+    .filter((run) => (ACTIVE_RUN.has(run.status) && run.archivedAt == null) || !!waits.runs.get(run.id)?.person.length)
+    .flatMap(read);
   if (live.length < 2) {
     if (live.length === 1) return live[0];
-    const strip = runProgress(snapshot, fallback, now, waiting).strip;
-    return strip ? { run: fallback, strip } : null;
+    const fallback = stripRun(snapshot.runs);
+    return fallback ? read(fallback)[0] ?? null : null;
   }
   const picked = live.find((item) => item.strip.state === "needs")
     ?? live.find((item) => item.strip.state === "failed")
@@ -499,13 +510,14 @@ export function chatStrip(
     failed: picked.strip.failed, working: picked.strip.working, runs: live.length,
   };
   const others = live.length - 1;
+  const allLive = live.every((item) => ACTIVE_RUN.has(item.run.status) && item.run.archivedAt == null);
   return {
     run: picked.run,
     strip: {
       ...picked.strip, ...counts,
       side: stripSide(counts, null),
       notes: [
-        `The bar is one of ${live.length} live runs of this chat${picked.strip.state === "needs" ? ", the one that waits on you" : ""}.`,
+        `The bar is one of ${live.length} ${allLive ? "live runs" : "runs"} of this chat${picked.strip.state === "needs" ? ", the one that waits on you" : ""}.`,
         ...(needs > picked.strip.needs ? [`${plural(needs - picked.strip.needs, "decision", "decisions")} in ${others === 1 ? "the other run" : "the other runs"}.`] : []),
         ...live.flatMap((item) => item.strip.notes),
       ],

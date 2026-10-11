@@ -19,7 +19,9 @@ function Side({ item, lead }: { item: StripSide; lead: boolean }) {
 }
 
 export function stripSpoken(strip: RunStrip): string {
-  return [`Run: ${strip.word}`, `${strip.done} of ${strip.total} tasks done`, ...strip.side.map((item) => item.text)].join(", ");
+  // A run that asks before it has a task has nothing to count yet.
+  const tasks = strip.total ? `${strip.done} of ${strip.total} tasks done` : "no tasks yet";
+  return [`Run: ${strip.word}`, tasks, ...strip.side.map((item) => item.text)].join(", ");
 }
 
 /** The tooltip: what a click does, then what the line leaves out, whole.

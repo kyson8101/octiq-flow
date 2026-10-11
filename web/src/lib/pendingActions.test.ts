@@ -46,7 +46,7 @@ describe("pending actions", () => {
   it("rolls a worker's card up to the main chat row while keeping its task", () => {
     const actions = pendingActions(input(ledger(), { asks: { w1: [{ id: "p1" }] } }));
     expect(actions).toEqual([{
-      key: "permission:p1", kind: "permission", rowId: "main", openChatId: "main", surface: "chat", runId: "r1", taskId: "t1",
+      key: "permission:p1", kind: "permission", rowId: "main", openChatId: "main", surface: "chat", runId: "r1", taskId: "t1", chatId: "w1",
     }]);
     expect(pendingByTask(actions).get("t1")?.map((a) => a.key)).toEqual(["permission:p1"]);
   });
@@ -165,7 +165,7 @@ describe("pending actions", () => {
 
   it("names a failed delivery as its own action, never as an unanswered question", () => {
     const failed = questions([{ id: "q1", batch: "b", status: "failed", answer: "Yes", error: "Could not continue", retryable: true }, { id: "q2", batch: "b", status: "failed", answer: "No" }]);
-    expect(failed).toEqual([{ key: "delivery:b", kind: "delivery", rowId: "c", openChatId: "c", surface: "chat", runId: undefined, taskId: undefined }]);
+    expect(failed).toEqual([{ key: "delivery:b", kind: "delivery", rowId: "c", openChatId: "c", surface: "chat", runId: undefined, taskId: undefined, chatId: "c" }]);
     expect(pendingLabel(failed)).toBe("Delivery failed");
     expect(pendingDescription(failed)).toBe("1 failed answer delivery");
     // An unconfirmed delivery (not retryable) still waits on the person: the
@@ -233,7 +233,7 @@ describe("pending actions", () => {
       { id: "h3", sourceChatKey: "chat:other", status: "declined" },
     ];
     const actions = pendingActions(input(ledger(), { handovers }));
-    expect(actions).toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat" }]);
+    expect(actions).toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat", chatId: "main" }]);
     expect(pendingLabel(actions)).toBe("Handover to confirm");
   });
 
@@ -244,7 +244,7 @@ describe("pending actions", () => {
       { id: "h3", sourceChatKey: "chat:main", status: "abandoned", error: "CLI unavailable" },
     ];
     expect(pendingActions(input(ledger(), { handovers })))
-      .toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat" }]);
+      .toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat", chatId: "main" }]);
   });
 
   it("keys a plan by revision, so a revision after approval is a new action", () => {
