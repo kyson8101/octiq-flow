@@ -5,13 +5,20 @@
 // because a 0% bar over a column of "pending" rows says nothing about a plan.
 // No worker starts until Approve: the host refuses them, this view only asks.
 // Specs are the agent's prose, so each sits behind its task's disclosure.
-import { useEffect, useMemo, useRef, useState } from "react";
+//
+// In the lead's own chat it is a card among the others that wait on the
+// person, and arrives folded like them (`folds`): its counts, each stage on
+// one line, the answers. One control in the heading opens the tasks under
+// their stages (`components/CardFold`).
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { approvePlan, rejectPlan } from "../lib/agentsMode";
 import { modelFromReported } from "../lib/agentProviders";
 import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 import {
-  awaitingApproval, planDestination, planNumbers, planOwner, planStages, planTasks, type PlanStage,
+  awaitingApproval, planDestination, planNumbers, planOwner, planStages, planTasks, stageSummary, type PlanStage,
 } from "../lib/planReview";
+import { planLabel } from "../lib/cardFold";
+import { FoldBody, FoldToggle, useFold } from "./CardFold";
 import { planHandle } from "../lib/chatPlans";
 import { approveOnce, useApproving } from "../lib/planApproving";
 import { cardView, nextShown, PLAN_SETTLE_MS, settling, type PlanShown } from "../lib/planShown";
@@ -22,7 +29,7 @@ import { CommandApprovalChoice } from "./CommandApprovalChoice";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
 
-export function PlanReview({ run, tasks: allTasks, drafting, projectName, onApproved, onRequestChanges, chatHint, approved = false, surface = "panel" }: {
+export function PlanReview({ run, tasks: allTasks, drafting, projectName, onApproved, onRequestChanges, chatHint, approved = false, surface = "panel", folds = false, startOpen = false }: {
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
   /** The main agent is still in its turn: the plan may not be finished. */
@@ -39,6 +46,12 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   approved?: boolean;
   /** Which card this is, recorded with an approval as what was clicked. */
   surface?: "chat" | "panel";
+  /** Arrive folded: each stage on one line, its tasks behind the card's one
+   *  disclosure. The chat's card; the run panel is the plan's own page and
+   *  draws it out. */
+  folds?: boolean;
+  /** Draw a folded card opened: for the tests, which cannot press the control. */
+  startOpen?: boolean;
 }) {
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
@@ -57,6 +70,11 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   const empty = tasks.length === 0;
   const revision = run.planApproval?.revision;
   const handle = planHandle(run.id);
+  // Folded, the one control opens the tasks under every stage, and after
+  // them the line on how to answer in chat.
+  const folded = folds && !approved && !empty;
+  const fold = useFold(run.id, { parts: stages.length + 1, startOpen });
+  const metaId = useId();
   // What this card has shown, and since when (see lib/planShown).
   const shownRef = useRef<PlanShown | null>(null);
   shownRef.current = nextShown(shownRef.current, revision, Date.now());
@@ -130,18 +148,23 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   return (
     <section className="plan-review" aria-labelledby={titleId} data-drafting={stillDrafting || undefined}
       data-compact={empty || undefined} data-updated={holding || undefined}
-      data-approved={approved || undefined} data-plan={run.id} data-revision={revision}>
+      data-approved={approved || undefined} data-folds={folded || undefined} data-plan={run.id} data-revision={revision}>
       <header className="plan-review-head">
         <div className="plan-review-state">
           <span className="plan-review-dot" aria-hidden="true" />
           <h3 id={titleId}>{approved ? "Plan approved" : stillDrafting ? "Drafting the plan…" : empty ? "No tasks yet" : "Plan ready for review"}</h3>
         </div>
-        <p className="plan-review-meta">
-          {/* Which plan and which version of it: what a chat approval names,
-              and what tells an approved plan from a changed one. */}
-          <span className="plan-review-id">Plan {handle}{revision ? ` · revision ${revision}` : ""}</span>
-          {!empty && <> · {count(tasks.length, "task")} · {count(stages.length, "stage")}</>}
-        </p>
+        <div className="plan-review-more">
+          <p className="plan-review-meta" id={metaId}>
+            {/* Which plan and which version of it: what a chat approval names,
+                and what tells an approved plan from a changed one. */}
+            <span className="plan-review-id">Plan {handle}{revision ? ` · revision ${revision}` : ""}</span>
+            {!empty && (folded
+              ? <> · {planLabel(tasks.length, stages.length)}</>
+              : <> · {count(tasks.length, "task")} · {count(stages.length, "stage")}</>)}
+          </p>
+          {folded && <FoldToggle fold={fold} describedBy={metaId} what="the tasks" />}
+        </div>
       </header>
 
       {/* Nothing to decide yet: one line and what it is waiting for. No ghost
@@ -156,13 +179,9 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
         <div className="plan-review-body" data-arrived={arrived.current || undefined}>
           <div className="plan-review-body-in">
             <ol className="plan-stages">
-              {stages.map((stage, index) => (
-                <li className="plan-stage" key={index} data-blocked={stage.blocked || undefined}>
-                  <div className="plan-stage-head">
-                    <span className="plan-stage-num" aria-hidden="true">{stage.blocked ? "!" : index + 1}</span>
-                    <span className="plan-stage-title">{stageTitle(stage, index)}</span>
-                    {!stage.blocked && stage.tasks.length > 1 && <span className="plan-stage-note">{stage.tasks.length} side by side</span>}
-                  </div>
+              {stages.map((stage, index) => {
+                const added = amended ? stage.tasks.filter((task) => waiting.includes(task.id)).length : 0;
+                const list = (
                   <ul className="plan-stage-tasks">
                     {stage.tasks.map((task) => (
                       <PlanTask key={task.id} task={task} run={run} projectName={projectName}
@@ -170,14 +189,33 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                         number={numbers.get(task.id) ?? 0} numbers={numbers} />
                     ))}
                   </ul>
-                </li>
-              ))}
+                );
+                return (
+                  <li className="plan-stage" key={index} data-blocked={stage.blocked || undefined}>
+                    <div className="plan-stage-head">
+                      <span className="plan-stage-num" aria-hidden="true">{stage.blocked ? "!" : index + 1}</span>
+                      <span className="plan-stage-title">{stageTitle(stage, index)}</span>
+                      {folded
+                        ? <span className="plan-stage-note plan-stage-sum">{stageSummary(stage, run, projectName)}</span>
+                        : !stage.blocked && stage.tasks.length > 1 && <span className="plan-stage-note">{stage.tasks.length} side by side</span>}
+                      {folded && added > 0 && <span className="plan-task-new">{added} new</span>}
+                    </div>
+                    {folded ? <FoldBody fold={fold} part={index} bounded={false}>{list}</FoldBody> : list}
+                  </li>
+                );
+              })}
             </ol>
+
+            {folded && chatHint && (
+              <FoldBody fold={fold} part={stages.length} bounded={false}>
+                <p className="plan-review-chat-hint">{chatHint}</p>
+              </FoldBody>
+            )}
 
             {errorLine}
 
             {!approved && <footer className="plan-review-actions">
-              {chatHint ? <p className="plan-review-chat-hint">{chatHint}</p> : <div className="plan-review-change">
+              {folded && chatHint ? null : chatHint ? <p className="plan-review-chat-hint">{chatHint}</p> : <div className="plan-review-change">
                 <textarea
                   value={note}
                   rows={1}
@@ -197,7 +235,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                 rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
                 onCancel={() => { setRejecting(false); setReason(""); }} />}
               <div className="plan-review-approve">
-                <span className="plan-review-hint">{waitReason || (blocked ? "Some tasks wait on each other and will never start." : "No worker starts until you approve.")}</span>
+                <span className="plan-review-hint" title={folded ? chatHint : undefined}>{waitReason || (blocked ? "Some tasks wait on each other and will never start." : "No worker starts until you approve.")}</span>
                 {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || holding} onClick={() => setRejecting(true)}>
                   Reject
                 </button>}

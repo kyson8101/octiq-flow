@@ -41,6 +41,14 @@
 //
 // Being missed is not the risk it looks like: a question is announced when it
 // arrives (announceOnce in App.tsx), and the strip keeps the pulsing dot.
+//
+// Opened, nothing on it is folded, unlike the other cards that ask
+// (`components/CardFold`). The question, the options and what each option
+// means are the whole of what is being chosen, and this card has controls
+// above and below any place a disclosure could go (close, the options, the
+// answer box, the send): whichever way the card is anchored, opening or
+// shutting one would slide a control under the pointer that pressed it. So
+// its lines are short instead: the strip is its folded state.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
 import { choicesOf, optionIsOn, pendingAnswer, togglePick } from "../lib/questionAnswer";
@@ -269,7 +277,7 @@ export function UserQuestion({
           {questions.map((q) => <section className="qa-question-item" key={q.id}>
             <p className="qa-question">{q.question}</p><p className="qa-hint">{savedAnswer(q)}</p>
           </section>)}
-          <p className="qa-hint">Your answers are saved. You can leave this page while the agent continues.</p>
+          <p className="qa-hint">Saved. You can leave this page.</p>
           {(sendError || deliveryError) && <p className="qa-hint" role="alert">{sendError || deliveryError}</p>}
           {deliveryError && questions.some((q) => q.error && q.retryable !== false) && <button className="ask-btn is-primary" disabled={sending} onClick={() => void retry()}>Retry delivery</button>}
           <button className="ask-btn" disabled={sending} onClick={() => void cancel()}>Cancel pending delivery</button>
@@ -365,9 +373,7 @@ export function UserQuestion({
           <section className={"qa-question-item qa-review is-" + dir}>
             <div className="qa-question-number">Review</div>
             <p className="qa-question">Your answers</p>
-            <p className="qa-hint">
-              Press a line to change it. Anything still blank goes back as declined.
-            </p>
+            <p className="qa-hint" title="Press a line to change it.">Blank answers go back as declined</p>
             <ul className="qa-review-list">
               {questions.map((question, index) => {
                 const answer = answers[question.id];
@@ -420,7 +426,7 @@ export function UserQuestion({
                   you. */}
               {options.length > 0 && (
                 <p className="qa-hint">
-                  {many ? "Pick as many as you like, or add your own answer" : "Pick one or type another answer"}
+                  {many ? "Pick any, or add your own" : "Pick one, or type your own"}
                 </p>
               )}
 

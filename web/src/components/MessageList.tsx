@@ -23,6 +23,8 @@ import type { Persona } from "../lib/agentPersona";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
+import { LiveArrivals, useLiveEntry } from "./Arrive";
+import { liveAppend } from "../lib/arrival";
 import { useRunningCalls } from "./Background";
 import { SentFiles } from "./Thumb";
 import { roughTokens } from "../lib/tokens";
@@ -437,7 +439,8 @@ function SubAgent({
  *  inside, saying what it did. Quiet, and set apart from both bubbles, because
  *  drawn as either it would claim a speaker that does not exist. */
 function Notice({ text }: { text: string }) {
-  return <div className="cli-note">{text}</div>;
+  const entry = useLiveEntry();
+  return <div className={`cli-note${entry ? ` ${entry}` : ""}`}>{text}</div>;
 }
 
 /** How much of somebody else's message is short enough to simply read.
@@ -482,9 +485,10 @@ function PeerNote({ block }: { block: Extract<Block, { kind: "peer" }> }) {
       ? `subagent ${shortId(block.from)} reported back`
       : `${block.from || "another session"} sent a message`;
   const opening = opener(block.text);
+  const entry = useLiveEntry();
 
   return (
-    <div className={`peer-note ${open ? "is-open" : ""}`} data-peer={block.source}>
+    <div className={`peer-note ${open ? "is-open" : ""}${entry ? ` ${entry}` : ""}`} data-peer={block.source}>
       <button
         type="button"
         className="peer-note-head"
@@ -1646,6 +1650,11 @@ const MessageListBody = function MessageList({
       }
     });
     observer.observe(inner);
+    // And the pane itself. A card coming in above the composer takes its
+    // height from this scroller, not from what is in it: the content is the
+    // same size and the bottom of it is now under the card. With the card
+    // opening over a few frames, each one is a step this follows.
+    observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
@@ -1739,6 +1748,15 @@ const MessageListBody = function MessageList({
   const tints = useMemo(() => seatTints(messages), [messages]);
 
   const { fresh, nth } = useJustArrived(turns);
+  // Whether the blocks this render mounts were just said. Asked of the turns
+  // actually drawn, so an older page coming in above them is not an arrival.
+  const drawn = useRef<string[] | null>(null);
+  const live = useRef(false);
+  {
+    const ids = visibleTurns.map((turn) => turn[0].id);
+    live.current = liveAppend(drawn.current, ids);
+    drawn.current = ids;
+  }
   const mapTurns = useMemo(() => conversationMapTurns(visibleTurns), [visibleTurns]);
 
   // A map point is another way of deliberately reading back. Its programmatic
@@ -1797,6 +1815,7 @@ const MessageListBody = function MessageList({
     <div className="msgs" ref={scrollerRef}>
       <ConversationMap turns={mapTurns} scrollerRef={scrollerRef} innerRef={innerRef} onJump={mapJumped} />
       <ConfigWorldProvider say={world.say} said={world.said} readOnly={!onSetting}>
+      <LiveArrivals.Provider value={live}>
       <div className="msgs-inner" ref={innerRef}>
         {hasMore && (
           <div className="history-more">
@@ -1852,6 +1871,7 @@ const MessageListBody = function MessageList({
             was streaming. */}
         <div ref={endRef} />
       </div>
+      </LiveArrivals.Provider>
       {/* Outside `.msgs-inner` and after it: it takes no height and must not
           take the column's 18px gap either, and it sticks to the bottom of the
           SCROLLER, which is this element rather than that one. */}

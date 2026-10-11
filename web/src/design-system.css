@@ -54,6 +54,12 @@
   --shadow: 0 16px 48px rgb(0 0 0 / 24%);
   --scrim: rgb(0 0 0 / 44%);
   --focus-ring: 0 0 0 3px color-mix(in srgb, var(--focus) 24%, transparent);
+  /* How a thing that arrives after first paint comes in. One motion for all
+     of them, the same in every mode: palettes set colours and radii only. */
+  --enter-duration: 180ms;
+  --enter-reveal-duration: 200ms;
+  --enter-ease: cubic-bezier(0.33, 1, 0.68, 1);
+  --enter-distance: 4px;
   --font: "Inter Variable", "LXGW WenKai Screen", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "Sarasa Mono SC", "JetBrains Mono", Menlo, ui-monospace, SFMono-Regular, "SF Mono", monospace;
   --prose-font: var(--font);
@@ -110,6 +116,70 @@
 
 @media (pointer: coarse) {
   :is(.ow, .os-shell) button.appearance-toggle { width: var(--control-touch); height: var(--control-touch); }
+}
+
+/* ---- Entry ---------------------------------------------------------------
+   What a late arrival does instead of appearing. Who counts as late is decided
+   in `lib/arrival`, never here: a class that is always on would run again
+   every time its element mounted, which is every time a chat is reopened.
+
+   Two shapes, and a thing takes exactly one.
+
+   `.enter-fade` / `.enter-rise` are for a thing whose space was already held:
+   opacity, and for the second a few pixels of travel. Neither touches layout.
+
+   `.arrive` is for a thing that has to push what is below it: a one-row grid
+   whose row opens from nothing, with the content clipped only while it does
+   (`enter-clip` holds `overflow: hidden` for the run and then lets go, so a
+   focus ring or a menu is never cut off afterwards). It is the only entry
+   that moves layout, and it is bounded: one row, once.
+
+   `ease-out` with no overshoot throughout; nothing here bounces. */
+@keyframes enter-fade {
+  from { opacity: 0; }
+}
+
+@keyframes enter-rise {
+  from { opacity: 0; transform: translateY(var(--enter-distance)); }
+}
+
+@keyframes enter-reveal {
+  from { grid-template-rows: 0fr; }
+  to { grid-template-rows: 1fr; }
+}
+
+@keyframes enter-clip {
+  from, to { overflow: hidden; }
+}
+
+.enter-fade { animation: enter-fade var(--enter-duration) var(--enter-ease); }
+.enter-rise { animation: enter-rise var(--enter-duration) var(--enter-ease); }
+
+.arrive {
+  display: grid;
+  grid-template-rows: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.arrive > .arrive-body { display: block; min-width: 0; min-height: 0; }
+.arrive.is-late { animation: enter-reveal var(--enter-reveal-duration) var(--enter-ease); }
+.arrive.is-late > .arrive-body {
+  animation:
+    enter-clip var(--enter-reveal-duration) linear,
+    enter-fade var(--enter-reveal-duration) var(--enter-ease);
+}
+
+/* A gate that opens once (`useEntry`): what it holds keeps its place unseen
+   until the answer is in, then comes in together. The gate is the element
+   itself or anything above it. `visibility`, not `display`,
+   so the space is theirs from the first paint. */
+.gate-held .enter-gated, .gate-held.enter-gated { visibility: hidden; }
+.gate-entering .enter-gated, .gate-entering.enter-gated { animation: enter-fade var(--enter-duration) var(--enter-ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  .enter-fade, .enter-rise, .arrive.is-late, .arrive.is-late > .arrive-body,
+  .gate-entering .enter-gated, .gate-entering.enter-gated { animation: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { HandoverCards, HandoverLines } from "./HandoverCards";
+import { briefLabels, HandoverCards, HandoverLines } from "./HandoverCards";
 import { handover } from "../lib/handover.fixture";
 import { handoverPlaces, handoversFor, type Handover } from "../lib/handover";
 
@@ -13,6 +13,9 @@ const render = (list: Handover[], chatKey: string) => {
     lines: renderToStaticMarkup(<HandoverLines incoming={incoming} outgoing={settled} onOpen={() => {}} />),
   };
 };
+/** The card at the end of a chat with its one disclosure open. */
+const opened = (list: Handover[], chatKey: string) => renderToStaticMarkup(
+  <HandoverCards outgoing={handoverPlaces(handoversFor(list, chatKey)).tail} onDecide={noop} startOpen />);
 
 describe("HandoverCards", () => {
   it("asks the person to confirm, with the recipient, settings and checkout from git", () => {
@@ -26,13 +29,41 @@ describe("HandoverCards", () => {
     expect(html).toContain("Uncommitted changes travel with it");
     expect(html).toContain("Hand over to Mango");
     expect(html).toContain("Keep it here");
-    expect(html).toContain("Nothing starts until you choose.");
-    // The brief and the paths are folded away, and carried permissions are
-    // shown as the agent's words.
-    expect(html).toContain("<details class=\"handover-brief\">");
+    expect(html).toContain("Nothing starts until you choose");
+    // The brief and the paths are folded away behind the card's one control,
+    // named by what they are and how much: the agent's words stay unread
+    // until asked for, the fact that there are some does not.
+    expect(html).toContain('<span>Brief · 1 line</span><span>1 said to carry over</span><span>1 not authorized</span><span>Checkout</span>');
+    expect(html).toMatch(/<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="[^"]+" aria-describedby="[^"]+" aria-label="Show the brief" title="Show the brief">/);
+    expect(html).not.toContain("Finish the login fix");
+    expect(html).not.toContain("commit on the task branch");
+    expect(html).not.toContain("<details");
+  });
+
+  it("opens the brief whole above the buttons, with the agent's words marked as such", () => {
+    const html = opened([handover()], "chat:source");
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain("Finish the login fix");
     expect(html).toContain("Potato says these carry over");
     expect(html).toContain("“commit on the task branch”");
     expect(html).toContain("approvals stay with each chat");
+    expect(html).toContain("Not authorized");
+    expect(html).toContain("HEAD abc1234");
+    // The facts and the answers are the same in both states.
+    for (const drawn of [html, render([handover()], "chat:source").tail]) {
+      expect(drawn).toContain("Uncommitted changes travel with it");
+      expect(drawn).toContain("Hand over to Mango");
+      expect(drawn).toContain("Keep it here");
+    }
+    // The line, what it opens, then the answers.
+    expect(html.indexOf("card-fold-line")).toBeLessThan(html.indexOf("handover-brief-body"));
+    expect(html.indexOf("handover-brief-body")).toBeLessThan(html.indexOf("handover-actions"));
+  });
+
+  it("sizes a brief by every section of it", () => {
+    expect(briefLabels(handover({
+      brief: { objective: "Fix login.\nKeep the old flow.", doneSoFar: "Found it.", remaining: "a\nb\nc" },
+    }))).toEqual(["Brief · 6 lines", "Checkout"]);
   });
 
   it("shows why a confirm failed, and keeps the card confirmable", () => {
@@ -53,7 +84,8 @@ describe("HandoverCards", () => {
     expect(failed.tail).not.toContain("Give up");
     const running = render([handover({ status: "starting", targetChatKey: "chat:new" })], "chat:source");
     expect(running.tail).toContain("Starting the new chat.");
-    expect(running.tail).not.toContain("<button");
+    // No answer left to give; the brief still opens.
+    expect(running.tail).not.toMatch(/handover-(go|quiet)/);
   });
 
   it("marks a failed start as waiting on the person, and a start under way as not", () => {

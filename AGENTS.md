@@ -412,6 +412,52 @@ pending key and what the buttons send are the card's.
   connect or on reopening a chat (`safety_block_pending`) never does, and
   leaving the chat drops it.
 
+### A card that waits on the person arrives folded
+
+Folded, a decision card is the ask, its short facts and the buttons. What is
+short is `web/src/lib/cardFold.ts`'s to say (one line of about 60 characters,
+or a move whose two sides both are); everything longer is behind the card's
+ONE disclosure (`components/CardFold`). It applies to the permission card
+(tool calls and roster or policy changes), the access request, the handover
+and route cards, and the plan card in the lead's chat (`PlanReview` with
+`folds`; the run panel draws the plan out). The safety cards have their own
+folded line and are not part of this.
+
+- **Folding is never hiding.** A folded part keeps its label on the card with
+  its size and, for a change, the fact that it changes: `Role · changed · 4
+  lines`, `Persistent prompt · cleared`, `6 more lines`, `+7 −2 in chat.ts`,
+  `Brief · 8 lines`, `3 tasks in 2 stages`. The tool, the path, a warning, the
+  countdown and the buttons are never folded.
+- **What a removal does to the chart is never folded to a size.** The rows
+  `Head`, `Front desk` and `Direct report(s)` (`team_tools::delete_facts`) are
+  drawn whole, and a list of reports too long for that keeps its end, where
+  the sentence says whom they go to. `cardFold.STRUCTURAL` holds those labels,
+  and `cardFold.test.ts` reads `team_tools.rs` to check them: rename one in
+  Rust and that test fails, which is the point.
+- **Opened is whole.** `askDetail` carries no limit and nothing slices a body
+  where it is drawn. A long detail scrolls inside the card. The one cap is
+  `HARD_CAP` (200,000 characters), and past it the card says how many
+  characters it shows and how many it does not. A silent cut of something the
+  person approves is the bug this replaced (1,200 / 8,000 / 16,000 characters,
+  with no sign of it).
+- **The control is above what it opens, which is above the buttons.** However
+  the card is anchored (on the composer and growing up, or in the transcript
+  and growing down), the pointer that opened it is never left over that
+  card's own answer.
+- **A repeated press is dropped** (`cardFold.strayPress`, `CardFold`'s
+  document listener). Shutting the lower of two stacked cards brings the upper
+  one down, and its Allow can arrive under a pointer that has not moved. A
+  press within 700 ms and 8 px of the one on a disclosure, landing on anything
+  but that disclosure, does nothing; a pointer that moved, or a press made
+  later, goes through.
+- **The question card folds nothing.** Its options and what each means are the
+  decision, and it has controls on every side of where a disclosure could go,
+  so opening or shutting one would slide a control under the pointer. Its
+  folded state is the strip it arrives as.
+- **State is the component's.** Folded for every new card; one the person
+  opened stays open while it is on screen, by the id of what it asks. Nothing
+  is remembered past that, and there is no setting.
+
 ### Both agents' full stops carry their closing words
 
 `turn_is_over` reads `result` (Claude) and `turn.completed` / `turn.failed`

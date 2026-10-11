@@ -97,6 +97,8 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
+import { Arrive } from "./components/Arrive";
+import { useEntry, entryClass, useLateKeys } from "./lib/useArrival";
 import { backgroundCalls } from "./lib/background";
 import { MOBILE, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
@@ -413,6 +415,12 @@ export default function App() {
   const [projectBranches, setProjectBranches] = useState<Record<string, string>>({});
   const [projectId, setProjectId] = useState<string | null>(null);
   const [shelved, setShelved] = useState<Workspace[]>([]);
+  // Whether the project list has been answered at all. Until it has, a chat's
+  // project is not "unknown", it is not known YET: what names it holds its
+  // place and comes in once (`lib/arrival`), instead of saying one thing and
+  // then another.
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  const identity = useEntry(workspacesLoaded);
   const [shelfOpen, setShelfOpen] = useState(false);
   const [deletedChats, setDeletedChats] = useState<DeletedIndexEntry[]>([]);
   const [trashOpen, setTrashOpen] = useState(false);
@@ -1107,6 +1115,7 @@ export default function App() {
       .then((list) => {
         const active = (list ?? []).filter((w) => !w.shelved);
         setWorkspaces(active);
+        setWorkspacesLoaded(true);
         // Kept separately rather than dropped. Shelving used to remove a project
         // from the only list that renders it, and the control that brings it
         // back lives behind that project's own gear — so a shelved project was
@@ -1128,7 +1137,7 @@ export default function App() {
           return null;
         });
       })
-      .catch(() => setWorkspaces([]));
+      .catch(() => { setWorkspaces([]); setWorkspacesLoaded(true); });
   }, []);
 
   useEffect(loadWorkspaces, [loadWorkspaces]);
@@ -2583,20 +2592,22 @@ export default function App() {
           const problem = err instanceof Error ? err.message : String(err);
           setResumed((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], problem } } : prev));
         })
-        .finally(() =>
+        .finally(() => {
+          // With the transcript, not ahead of it: see `openConversation`.
+          flushChats();
           setReading((prev) => {
             if (!prev[id]) return prev;
             const next = { ...prev };
             delete next[id];
             return next;
-          }),
-        );
+          });
+        });
       setProjectId(forProject);
       setConversationId(id);
       setProjectsScreen(false);
     },
     // `chats` is read through its ref, for one length, at the moment this runs.
-    [workspaces, projectId, conversationId, access, effort, patch, catchUpChat],
+    [workspaces, projectId, conversationId, access, effort, patch, catchUpChat, flushChats],
   );
 
   /** Put a conversation's transcript in front of the reader: seed what is
@@ -2652,6 +2663,13 @@ export default function App() {
         // Whatever came back — the conversation, nothing at all, or a failure —
         // the waiting is over. An empty answer falls through to the ordinary
         // empty page, which is then the truth about this chat.
+        //
+        // The transcript goes up in the SAME commit that ends the waiting. A
+        // chat's state is otherwise drawn on the next frame, or a quarter of a
+        // second on for one that was not on screen when the read began; ending
+        // the wait first left the empty page — "What do you want to do?" — on
+        // screen for that long between "opening…" and the conversation.
+        flushChats();
         setReading((prev) => {
           if (!prev[c.id]) return prev;
           const next = { ...prev };
@@ -2659,7 +2677,7 @@ export default function App() {
           return next;
         });
       });
-  }, [catchUpChat, writeChats]);
+  }, [catchUpChat, writeChats, flushChats]);
 
   const openConversation = useCallback((c: Conversation) => {
     setUnavailableChat(null);
@@ -4414,21 +4432,28 @@ export default function App() {
     }));
   }, [conversationId, setSafetyBlocks]);
   const continueSafety = useCallback<Continue>((message, options) => send(message, [], options), [send]);
+  // Which of the cards at the end of the transcript turned up after this chat
+  // was drawn. Those come in; one already waiting when the chat opens does not.
+  const lateTail = useLateKeys(conversationId ?? "", [
+    ...plansHere.filter((plan) => plan.pending).map((plan) => `plan:${plan.run.id}`),
+    ...handoverPlace.tail.map((handover) => `handover:${handover.id}`),
+    ...(workerChat ? [] : safetySplit.folded.map((block) => `safety:${block.id}`)),
+  ]);
   const planTail = useMemo(
     () => {
       const plans = plansHere.some((plan) => plan.pending)
-        ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : null;
+        ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} late={lateTail} /> : null;
       const handed = handoverPlace.tail.length
-        ? <HandoverCards outgoing={handoverPlace.tail} onDecide={decideAndGo} />
+        ? <HandoverCards outgoing={handoverPlace.tail} onDecide={decideAndGo} late={lateTail} />
         : null;
       const refused = !workerChat && safetySplit.folded.length
-        ? <SafetyLines blocks={safetySplit.folded} reveal={safetyReveal}
+        ? <SafetyLines blocks={safetySplit.folded} reveal={safetyReveal} late={lateTail}
           onSafetyAnswered={answeredSafety} onContinue={continueSafety} />
         : null;
       return plans || handed || refused ? <>{refused}{handed}{plans}</> : undefined;
     },
     [plansHere, planDrafting, planProjectName, handoverPlace, decideAndGo,
-      workerChat, safetySplit, safetyReveal, answeredSafety, continueSafety],
+      workerChat, safetySplit, safetyReveal, answeredSafety, continueSafety, lateTail],
   );
 
   const changeAccess = useCallback(
@@ -4815,6 +4840,8 @@ export default function App() {
           screen of its own again — see `.app.projects-screen`. */}
       <Sidebar
         projects={workspaces}
+        projectsReady={workspacesLoaded}
+        chatsReady={indexReady}
         shelved={shelved}
         deletedCount={deletedChats.length}
         onShowDeleted={() => setTrashOpen(true)}
@@ -4920,7 +4947,7 @@ export default function App() {
           {/* A page's heading renders into this (components/WorkspaceHeader). */}
           <div className="topbar-page" ref={setHeadingSlot} hidden={!mainPage || showingProjects} />
           {!showingProjects && !mainPage && (
-            <span className="topbar-chat" title={project?.primary_path}>
+            <span className={`topbar-chat enter-gated ${entryClass(identity)}`} title={project?.primary_path}>
               {project && <ProjectAvatar project={project} size="small" className="topbar-project-avatar" />}
               <span className="topbar-name">{project?.name ?? (conversationId ? "Chat" : agentsMode ? (head?.name ?? "CTO") : "New chat")}</span>
             </span>
@@ -4931,7 +4958,7 @@ export default function App() {
           <ConnectionStatus state={conn} />
         </div>
 
-        <div className="topbar-actions">
+        <div className={`topbar-actions ${entryClass(identity)}`}>
           {!isMobile && <div className="topbar-page-actions" ref={setActionsSlot} hidden={!mainPage} />}
           {showingProjects ? (
             <button className="projects-return" type="button"
@@ -5065,7 +5092,7 @@ export default function App() {
               onClose={() => setAgentsDashboard(false)}
             />
           )}
-          <div className="chat-app-surface" hidden={mainPage}>
+          <div className={`chat-app-surface ${entryClass(identity)}`} hidden={mainPage}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {(!workerChat || workflowVisible) && <ChatWorkflowBar snapshot={runWorkflow} orchestrated={workflowVisible} view={workflowView} focusMode={focusMode} split={workflowSplit}
             unified={workflowVisible} selectedRun={displayedRun} worker={workerChat}
@@ -5127,7 +5154,7 @@ export default function App() {
               line is not drawn, it rides here. */}
           {workerChat && !workflowVisible && <div className="read-only-strip"><ReadOnlyBadge /></div>}
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
-            <div className="chat-sync-note" role="status">Updating conversation…</div>
+            <div className="chat-sync-note" role="status"><span>Updating conversation…</span></div>
           )}
           {chat.messages.length === 0 && conversationId && reading[conversationId] ? (
             // Reading the transcript back. Until it lands this conversation
@@ -5153,7 +5180,7 @@ export default function App() {
           ) : chat.messages.length === 0 && currentWorkflow.runs.length > 0 ? (
             <div className="hero"><h2 className="hero-title">Main chat</h2><p className="hero-sub">Talk with the main agent here. Select a task to follow its conversation.</p></div>
           ) : chat.messages.length === 0 ? (
-            <div className={`hero ${project ? "" : "hero-start"}${newTask ? " is-agent-welcome" : ""}`}>
+            <div className={`hero enter-gated ${project ? "" : "hero-start"}${newTask ? " is-agent-welcome" : ""}`}>
               <h1 className="hero-title">{newTask && lead
                 ? `Talk to ${lead.name}`
                 : newTask && recipients.length > 0
@@ -5332,7 +5359,7 @@ export default function App() {
             </div>
           )}
 
-          {(failure || autoResume) && conversationId && (
+          {conversationId && <Arrive when={!!(failure || autoResume)} scope={conversationId}>{(failure || autoResume) && (
             <div className={`failure ${failure?.outOfCredit || autoResume ? "is-quota" : ""}`} role="alert">
               {/* Read, and now done with. Speaking again clears it too, but the
                   failure people actually sit with is a quota one — where the
@@ -5396,7 +5423,7 @@ export default function App() {
                 </a>
               )}
             </div>
-          )}
+          )}</Arrive>}
 
           {conversationId && !workerChat && (
             <RemovedFolderBanner
@@ -5406,15 +5433,20 @@ export default function App() {
             />
           )}
 
-          {conversationId && visibleNotices.length > 0 && (
-            <ChatNotices
-              notices={visibleNotices}
-              onClear={() => patch(conversationId, (s) => ({ ...s, notices: [] }))}
-            />
+          {/* Mounted for as long as the chat is, so it can tell a notice that
+              turned up from one that was here when the chat opened. */}
+          {conversationId && (
+            <Arrive when={visibleNotices.length > 0} scope={conversationId}>
+              <ChatNotices
+                notices={visibleNotices}
+                onClear={() => patch(conversationId, (s) => ({ ...s, notices: [] }))}
+              />
+            </Arrive>
           )}
 
           {conversationId && !workerChat && (
             <ChatRequests
+              scope={conversationId}
               asks={asks[conversationId] ?? []}
               safetyBlocks={safetySplit.cards}
               questions={questions[conversationId] ?? []}
@@ -5431,9 +5463,11 @@ export default function App() {
             />
           )}
 
-          {conversationId && sandboxes.snapshot?.environments[keyFor(conversationId)]?.enabled &&
-            <SandboxStatus key={conversationId} environment={sandboxes.snapshot.environments[keyFor(conversationId)]}
-              running={chat.busy} onRefresh={sandboxes.refresh} />}
+          {conversationId && <Arrive when={!!sandboxes.snapshot?.environments[keyFor(conversationId)]?.enabled} scope={conversationId}>
+            {sandboxes.snapshot?.environments[keyFor(conversationId)]?.enabled &&
+              <SandboxStatus key={conversationId} environment={sandboxes.snapshot.environments[keyFor(conversationId)]}
+                running={chat.busy} onRefresh={sandboxes.refresh} />}
+          </Arrive>}
 
           {/* Keyed by project: switching project gets that project's own
               terminals, and coming back reattaches to them rather than

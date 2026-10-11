@@ -306,6 +306,25 @@ body {
 }
 
 .topbar-context { flex: 1 1 auto; }
+
+/* Until the project list has answered, the bar does not know which project
+   this is or which of its buttons apply. What it would have drawn stays out of
+   sight in its place, and comes in once, where it belongs — instead of two
+   buttons that jump aside for three more. The usage number has its own gate
+   (components/Usage): it is answered later, and separately. */
+.topbar-actions.gate-held > :not(.usage) { visibility: hidden; }
+.topbar-actions.gate-entering > :not(.usage) { animation: enter-fade var(--enter-duration) var(--enter-ease); }
+
+/* The same gate in the chat list: whose project a row is. */
+.sidebar.gate-held :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) { visibility: hidden; }
+.sidebar.gate-entering :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) {
+  animation: enter-fade var(--enter-duration) var(--enter-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar-actions.gate-entering > :not(.usage),
+  .sidebar.gate-entering :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) { animation: none; }
+}
 .topbar-workflow {
   display: flex;
   align-items: center;
@@ -10661,8 +10680,9 @@ body.is-ultra .eff {
 
 /* One grid for every row, so the names share a column as wide as the longest
    of them, and never more than two fifths of the card: a name is whatever the
-   host sent, and on a phone a long one would leave its value no room. A long
-   list scrolls in place, as the text it replaces did. */
+   host sent, and on a phone a long one would leave its value no room. Every
+   row is on the card, with no scroll to hide the last of them in: a long
+   value is folded to its size (`lib/cardFold`), so a row is a line or two. */
 .ask-change-rows {
   display: grid;
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
@@ -10670,9 +10690,6 @@ body.is-ultra .eff {
   gap: 3px 12px;
   min-width: 0;
   margin: 0;
-  max-height: 220px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 .ask-change-rows > div {
@@ -10737,6 +10754,48 @@ body.is-ultra .eff {
   white-space: normal;
 }
 
+/* A folded row (`lib/cardFold`): its name stays in the column with the rest,
+   and where its value would be is what stays of it, said quietly: that it
+   changes, and how much there is to read. */
+.ask-change-rows dd.is-folded {
+  color: var(--fg-2);
+  font-size: 12px;
+  white-space: normal;
+}
+
+/* The end of a consequence too long to draw whole: the names fold, the fact
+   they lead up to does not. */
+.ask-change-tail {
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+.ask-change-tail + .ask-change-size::before {
+  content: " · ";
+  color: var(--fg-3);
+}
+
+/* The folded rows opened: each whole, in the detail's own scroll. */
+.ask-change-rows.is-whole {
+  margin-top: 4px;
+}
+
+/* The opening of a text whose rest is folded: its first line, on at most two
+   rows of the card. The fold line under it says how much more there is. */
+.ask-card-body.is-first {
+  max-height: none;
+  overflow: hidden;
+}
+
+/* Clamped inside the block's padding, where a third line cannot show through. */
+.ask-card-first {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
 /* What holds the agent on the left, the answer on the right. On a narrow card
    the note takes its own line above and the three answers keep one row. */
 .ask-card-foot {
@@ -10749,7 +10808,7 @@ body.is-ultra .eff {
 }
 
 .ask-card-wait {
-  flex: 1 1 240px;
+  flex: 1 1 180px;
   min-width: 0;
   margin: 0;
   font-size: 12px;
@@ -10813,6 +10872,18 @@ body.is-ultra .eff {
   line-height: 1.5;
   color: var(--fg-1);
   overflow-wrap: anywhere;
+}
+
+/* A reason that runs on: one line of it, and the fold line says how much
+   more. The whole of it is in the detail. */
+.access-card-reason.is-first {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.card-fold-in .access-card-reason {
+  white-space: pre-wrap;
 }
 
 .access-card-error {
@@ -14082,12 +14153,38 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
-/* Cached messages remain readable during transcript synchronization. */
+/* Cached messages remain readable during transcript synchronization.
+
+   The note takes no height of its own. It was a 30px strip above the
+   transcript, there for as long as the catch-up took: every time a chat was
+   opened again, the whole conversation stepped down and, a third of a second
+   later, back up. It rides over the top corner of the transcript instead, and
+   waits a beat before showing at all, so a catch-up that is already answered
+   says nothing. */
 .chat-sync-note {
-  flex-shrink: 0;
-  padding: 6px 16px;
+  position: relative;
+  z-index: 2;
+  flex: 0 0 0;
+  height: 0;
+  pointer-events: none;
+}
+.chat-sync-note > span {
+  position: absolute;
+  top: 6px;
+  left: 16px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-1);
   color: var(--fg-2);
   font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  animation: enter-fade var(--enter-duration) var(--enter-ease) 160ms backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-sync-note > span { animation: none; }
 }
 
 .history-more {

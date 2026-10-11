@@ -4,7 +4,7 @@ import { askDetail, changeFacts } from "./askDetail";
 describe("askDetail", () => {
   it("shows a command in full, because what it runs is the whole question", () => {
     const d = askDetail({ command: "rm -rf build" });
-    expect(d).toEqual({ label: "command", body: "rm -rf build", limit: 1200 });
+    expect(d).toEqual({ label: "command", body: "rm -rf build" });
   });
 
   it("shows what a write is about to put in the file", () => {
@@ -18,14 +18,14 @@ describe("askDetail", () => {
     // card that cannot read `plan` shows three buttons and no plan — approval
     // for something you were never shown.
     const plan = "## Step 1\nAdd the flag.\n\n## Step 2\nPrint and exit.";
-    expect(askDetail({ plan })).toEqual({ label: "plan", body: plan, limit: 8000 });
+    expect(askDetail({ plan })).toEqual({ label: "plan", body: plan });
   });
 
   it("shows a change to the registered agents whole", () => {
     // The host words it (team_tools); a role can run to 2000 characters, and
     // the person is approving every line of it.
     const change = `Register a new agent, Nova.\n\nRole: ${"r".repeat(2000)}\nModel: gpt-5.5`;
-    expect(askDetail({ change })).toEqual({ label: "change", body: change, limit: 16000 });
+    expect(askDetail({ change })).toEqual({ label: "change", body: change });
   });
 
   it("never cuts the longest change the host can word", () => {
@@ -36,17 +36,20 @@ describe("askDetail", () => {
       `Role: ${"a".repeat(2000)} → ${"b".repeat(2000)}`,
       `Persistent prompt (8000 characters, replaces the current one):\n${"p".repeat(8000)}`,
     ].join("\n");
-    const d = askDetail({ change });
-    expect(d && d.body.slice(0, d.limit)).toBe(change);
+    expect(askDetail({ change })?.body).toBe(change);
   });
 
-  it("does not trim a plan to the length of a file preview", () => {
-    // A preview is a sample and may stop early. A plan is the thing being
-    // decided, and one cut off part-way cannot be judged at all.
-    const long = "x".repeat(5000);
-    const d = askDetail({ plan: long });
-    expect(d!.limit).toBeGreaterThan(long.length);
-    expect(askDetail({ content: long })!.limit).toBeLessThan(long.length);
+  it("hands every body over whole, with no limit to cut it by", () => {
+    // A body used to carry a limit (1,200 characters for a command or a
+    // write, 8,000 for a plan, 16,000 for a change) and the card cut at it
+    // with no sign that it had. Folding is the card's now (`lib/cardFold`),
+    // and what it opens is all of this.
+    const long = "x".repeat(50_000);
+    for (const key of ["command", "change", "plan", "content", "new_string"]) {
+      const d = askDetail({ [key]: long });
+      expect(d?.body, key).toBe(long);
+      expect(Object.keys(d!), key).toEqual(["label", "body"]);
+    }
   });
 
   it("says nothing rather than dumping arguments it does not understand", () => {
@@ -66,11 +69,7 @@ describe("askDetail", () => {
   it("still says 'replacing with' when the replacement is nothing", () => {
     // An edit whose new_string is empty is a DELETION, and that is worth
     // showing. Only the key being absent means there is nothing to say.
-    expect(askDetail({ new_string: "" })).toEqual({
-      label: "replacing with",
-      body: "",
-      limit: 1200,
-    });
+    expect(askDetail({ new_string: "" })).toEqual({ label: "replacing with", body: "" });
   });
 });
 

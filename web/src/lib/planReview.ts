@@ -7,6 +7,7 @@
 // not this plan's to order), and a cycle is not solved: whatever is left over
 // lands in one final stage flagged `blocked`, because as written it never
 // starts.
+import { nameList } from "./cardFold";
 import type { OrchestrationRun, OrchestrationTask, WorkerSettings } from "./orchestration";
 
 export type PlanStage = { tasks: OrchestrationTask[]; blocked: boolean };
@@ -54,6 +55,22 @@ export function planDestination(
     ?? projectName?.(run.workspaceId)
     ?? "This project";
   return { project, repository: folderName(path), path };
+}
+
+/** A stage on one line, for a plan drawn folded: how many tasks, who does
+ *  them and which repositories they land in. Names past the third are a
+ *  number; the tasks themselves open under the line. */
+export function stageSummary(
+  stage: PlanStage,
+  run: Pick<OrchestrationRun, "workspaceId" | "rootPath">,
+  projectName?: (id: string) => string | undefined,
+): string {
+  const n = stage.tasks.length;
+  return [
+    `${n} task${n === 1 ? "" : "s"}`,
+    nameList(stage.tasks.map((task) => planOwner(task).label)),
+    nameList(stage.tasks.map((task) => planDestination(task, run, projectName).repository)),
+  ].filter(Boolean).join(" · ");
 }
 
 /** The tasks the person is approving now: the lead's own, not yet approved.

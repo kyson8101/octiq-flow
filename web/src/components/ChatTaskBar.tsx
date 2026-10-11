@@ -22,6 +22,8 @@ import {
   mergeLine,
   phaseOf,
   prCompletionLine,
+  recallTaskStatus,
+  rememberTaskStatus,
   releaseBasis,
   releaseLine,
   stepProgress,
@@ -31,6 +33,7 @@ import {
 import { EVIDENCE_LABEL, taskEnvironment, type EnvironmentInput } from "../lib/taskEnvironment";
 import type { Persona } from "../lib/agentPersona";
 import { copyText } from "../lib/clipboard";
+import { entryClass, useEntry } from "../lib/useArrival";
 import { AgentAvatar } from "./AgentAvatar";
 import "./ChatTaskBar.css";
 
@@ -65,7 +68,17 @@ export function ChatTaskBar({
    *  server would otherwise leave a permanent "Unverified" chip in the bar
    *  with nothing behind it. Better absent than dead. */
   const [unsupported, setUnsupported] = useState(false);
-  const shown = status?.chatId === chatId ? status : undefined;
+  /** The chat whose first ask has come back, with an answer or without one.
+   *  Until then the line holds its place unseen rather than saying
+   *  "Unverified" and then something else; a failed ask lets it through, so
+   *  the panel behind it is never out of reach. */
+  const [asked, setAsked] = useState("");
+  // What this chat said last time stands in until it answers again, so coming
+  // back to a chat draws its line whole instead of in two steps.
+  const shown = status?.chatId === chatId ? status : recallTaskStatus(chatId);
+  useEffect(() => {
+    if (status) rememberTaskStatus(status);
+  }, [status]);
 
   const load = useCallback(
     (refresh: boolean): Promise<void> => {
@@ -78,7 +91,8 @@ export function ChatTaskBar({
         // the conversation; the second one takes the bar away with it.
         .catch((error: unknown) => {
           if (String(error).includes("not available on this backend")) setUnsupported(true);
-        });
+        })
+        .finally(() => setAsked(chatId));
     },
     [chatId, connected],
   );
@@ -153,6 +167,8 @@ export function ChatTaskBar({
   return (
     <ChatTaskBarView
       status={shown}
+      scope={chatId}
+      ready={!!shown || asked === chatId || !connected}
       busy={busy}
       waiting={waiting}
       open={open}
@@ -183,8 +199,15 @@ export function ChatTaskBarView({
   onReleaseCheck,
   context,
   action = false,
+  scope = "",
+  ready = true,
 }: {
   status?: TaskStatus;
+  /** The chat this line is for, and whether its status has been answered.
+   *  A line drawn before the answer holds its place and comes in once, whole
+   *  (`lib/arrival`); one that already knew is drawn in place. */
+  scope?: string;
+  ready?: boolean;
   context?: PanelContext;
   open: boolean;
   now: number;
@@ -197,11 +220,13 @@ export function ChatTaskBarView({
   const phase = phaseOf(status, { busy, waiting });
   const progress = stepProgress(status?.report);
   const branch = status?.workspace?.branch ?? "";
+  // The action button says nothing that is waited for: only the line does.
+  const gate = entryClass(useEntry(action || ready, scope));
   return (
     <div className={`chat-task${action ? " is-action" : ""}`}>
       <button
         type="button"
-        className={`chat-task-trigger${action ? " chat-task-action" : ""}`}
+        className={`chat-task-trigger enter-gated${action ? " chat-task-action" : ""}${gate ? ` ${gate}` : ""}`}
         aria-expanded={open}
         aria-label={action ? "Task details" : `Task and workspace — ${phase.label}${branch ? ` on ${branch}` : ""}`}
         title={action ? "Task details" : `${phase.label}${branch ? ` · ${branch}` : ""} — ${locationOf(status?.workspace)}`}

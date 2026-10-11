@@ -42,9 +42,12 @@ const cards = (list: Handover[], chatKey: string) => {
     lines: renderToStaticMarkup(<HandoverLines incoming={incoming} outgoing={settled} onOpen={() => {}} />),
   };
 };
+/** The confirm card with its one disclosure open. */
+const opened = (list: Handover[], chatKey: string) => renderToStaticMarkup(
+  <HandoverCards outgoing={handoverPlaces(handoversFor(list, chatKey)).tail} onDecide={noop} startOpen />);
 
 describe("the front desk's confirm card", () => {
-  it("shows the agent, the project and the whole brief, and creates nothing until the person chooses", () => {
+  it("shows the agent and the project, names the brief by its size, and creates nothing until the person chooses", () => {
     const { tail: html, lines } = cards([route()], "chat:desk");
     expect(lines).toBe("");
     expect(html).toContain('data-kind="route"');
@@ -58,19 +61,45 @@ describe("the front desk's confirm card", () => {
     // Where: the project first, what is worth knowing about the place after it.
     expect(html).toContain('<span class="route-project">starfall-novel</span><span class="route-scope"> · new worktree</span>');
     expect(html).toContain('<span class="route-repo" title="/src/starfall">/src/starfall</span>');
-    // What: the whole brief as prose, and who wrote it.
-    expect(html).toContain('<h4>Brief<span class="route-brief-from"> · from Front desk</span></h4>');
-    expect(html).toContain("Draft chapter 3: the crossing.\nKeep Lyra&#x27;s voice; 3,000 words.");
+    // What: a brief over several lines is folded, named with its size, and
+    // so is the exact first message. Neither is on the card until asked for.
+    expect(html).toContain('<span>Brief · 2 lines</span><span>Exact first message · 7 lines</span>');
+    expect(html).toMatch(/<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="[^"]+"/);
+    expect(html).not.toContain("Draft chapter 3");
+    expect(html).not.toContain("route-handover_r1/map.png (image)");
     expect(html).toContain('<span class="chip"><span class="chip-name">map.png</span></span>');
+    // A file that was not passed on is a warning, and is never folded.
     expect(html).toContain("Not passed on: hosts (not a file the person attached in OctiqFlow)");
-    // The exact first message, paths and all, is one click away.
-    expect(html).toContain("Exact first message");
-    expect(html).toContain("route-handover_r1/map.png (image)");
-    expect(html).toContain("Nothing opens until you choose.");
+    expect(html).toContain("Nothing opens until you choose");
     expect(html).toContain("Open chat with Vesper");
     expect(html).toContain(">Cancel<");
     // A hidden chat badges nothing.
     expect(html).not.toContain("data-pending-keys");
+  });
+
+  it("opens the whole brief and the exact first message above the buttons", () => {
+    const html = opened([route()], "chat:desk");
+    expect(html).toContain('aria-expanded="true"');
+    // The whole brief as prose, and who wrote it.
+    expect(html).toContain('<h4>Brief<span class="route-brief-from"> · from Front desk</span></h4>');
+    expect(html).toContain("Draft chapter 3: the crossing.\nKeep Lyra&#x27;s voice; 3,000 words.");
+    // The message to the letter, paths and all.
+    expect(html).toContain("<h4>Exact first message</h4>");
+    expect(html).toContain("route-handover_r1/map.png (image)");
+    expect(html).toContain("once the person confirmed it.)</pre>");
+    expect(html).not.toContain("card-fold-cut");
+    expect(html.indexOf("card-fold-line")).toBeLessThan(html.indexOf("route-message-text"));
+    expect(html.indexOf("route-message-text")).toBeLessThan(html.indexOf("handover-actions"));
+    expect(html).toContain("Open chat with Vesper");
+    expect(html).toContain(">Cancel<");
+  });
+
+  it("leaves a one-line brief on the card: it is a short fact", () => {
+    const { tail } = cards([route({ brief: { objective: "Brainstorm the series." }, route: { message: "Brainstorm the series." } })], "chat:desk");
+    expect(tail).toContain('<p class="route-brief-text">Brainstorm the series.</p>');
+    // Only the first message is behind the control.
+    expect(tail).toContain("<span>Exact first message · 22 characters</span>");
+    expect(tail).not.toContain("<span>Brief ·");
   });
 
   it("offers a retry and, when nothing started, a way to give up", () => {
@@ -124,7 +153,7 @@ describe("the front desk's confirm card", () => {
   });
 
   it("sets the ids, paths and branches of a brief in mono, and leaves its words alone", () => {
-    const { tail } = cards([route({
+    const tail = opened([route({
       brief: { objective: "Ask STAR LEAD (agent_ee96a6613d0c) to review /src/starfall/ch3.md on feature/ch3 & co.\nRun `pnpm test` <first>." },
     })], "chat:desk");
     expect(tail).toContain('<p class="route-brief-text">Ask STAR LEAD (<code>agent_ee96a6613d0c</code>) to review '
