@@ -317,26 +317,43 @@ missing. The order:
    because either can be the one that survived. The same path keeps the chat's
    sandbox, which is bound to its folder, and the agent's own session folder.
 2. **Else move the chat to a folder that exists**: the worktree's root when
-   only a subfolder went, the repository's primary checkout, the folder the
-   chat was planned in, then the project's folder the page sends as
-   `fallbackCwd`. `chat_index::set_cwd` records it, and a Claude session is
-   hard-linked into the new folder's `~/.claude/projects/<encoded cwd>/`
+   only a subfolder went, the repository's primary checkout as `chat_task`
+   last verified it, then a folder registered for the chat's project.
+   `chat_index::set_cwd` records it, and a Claude session is hard-linked into
+   the new folder's `~/.claude/projects/<encoded cwd>/`
    (`carry_claude_session`). Claude Code 2.1.292 resumes by id from any
    folder, so that link is for older CLIs; Codex resumes by id regardless.
 3. **Else say why** in words: `The chat's folder … was removed and could not
    be restored: …`, which the page shows under the unsent message.
 
+- **It is refused before it changes anything** (`recover_from`). A chat that
+  already has a process answers `already running`, the words the page falls
+  back to sending on. A worker's chat, and a folder a task holds on a lease,
+  is preparing or is cleaning up, are refused by
+  `require_no_owner_of_removed`. What passed is then held until the chat has
+  been started (`chat_recover::Held`): the workspace lifecycle lock, so no
+  worker is handed the checkout and no cleanup begins, and a claim on the chat
+  (`ChatManager::claim_start`), which makes `start_session` refuse every
+  other start of it. Two tabs sending at once rebuild the worktree once.
+- **A chat is moved only to a folder the host can vouch for**
+  (`Remembered::vouched`): the recorded primary checkout, or a folder
+  registered for the project its index entry names. The page's `fallbackCwd`
+  and the planned folder only choose among those and add none. A filesystem
+  root and the home folder are never moved into (`too_broad`), registered or
+  not, and a plain folder made where a worktree was removed is not that
+  worktree (`still_checkout_of`).
 - **Nothing is overwritten.** A path that exists is never rebuilt over, and
   git refuses a branch another worktree holds, which falls through to step 2.
-  Uncommitted work in the removed folder is gone, and both notices say so.
+  Uncommitted and untracked files in the removed folder are gone, and both
+  notices and the banner say so.
 - **Sandbox ownership is unchanged.** `sandbox::Store::select` still runs,
   after the recovery, with the recovered folder. A chat that had to move with
   an enabled sandbox is refused as before ("belongs to a different folder").
-- **It is told twice, once each.** `Recovery::settle` runs only after the
-  start is admitted: a durable `octiq_chat_recovered` event draws a notice in
-  the chat and moves the page's `cwd`, and the agent's next prompt carries a
-  one-line note (`chat_recover::with_note`, taken in `start_session`) that
-  stays out of the person's bubble.
+- **It is told twice, once each.** `Recovery::settle` runs after those
+  refusals and inside what is held: a durable `octiq_chat_recovered` event
+  draws a notice in the chat and moves the page's `cwd`, and the agent's next
+  prompt carries a one-line note (`chat_recover::with_note`, taken in
+  `start_session`) that stays out of the person's bubble.
 - **Before any of that, the page says it is coming.** `RemovedFolderBanner`
   reads `chat_task`'s `workspace.exists` and shows one line above the
   composer (`removedFolderNote`). It never blocks a send.
@@ -572,6 +589,17 @@ scope clarification needs no gate.
   `command` carries the line in an environment variable on Windows instead.
   The ceiling that remains is Windows' own 32,767 characters for the agent's
   command line, so a prompt that keeps growing belongs in a file.
+- **Carry a session or history file to a second name atomically, and never
+  over what is there.** `hard_link` answering `AlreadyExists` is success, not
+  a reason to copy: the loser of a race that then copies writes through its
+  own link, which opens the file it is reading and empties the conversation
+  under both names (24 threads reproduced it in `chat_recover`). A carry that
+  must copy, across devices, writes a whole copy under a temporary name and
+  publishes it with a link or `create_new`, so it cannot replace anything; a
+  target that is already there is kept unless the source is newer, and then
+  it is swapped by a rename. A concurrency test asserts that BOTH the source
+  and the target are intact and byte-identical to the original
+  (`chat_recover::carry_file`).
 - **The `src-tauri/` folder name is historical.** There is no Tauri in it. It
   was left alone so paths, the service plist and muscle memory keep working;
   renaming it is a separate job.
