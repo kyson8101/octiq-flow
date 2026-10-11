@@ -8,7 +8,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
@@ -308,9 +307,11 @@ fn transcript_stamp(path: &Path) -> Option<String> {
 fn index_transcript(path: &Path) -> Result<Vec<SearchDocument>, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut documents = Vec::new();
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let Ok(event) = serde_json::from_str::<Value>(&line) else {
-            continue;
+    // A line that cannot be decoded is passed over, never the end of the
+    // read (`transcript::for_each_line`).
+    crate::transcript::for_each_line(file, |_, line| {
+        let Ok(event) = serde_json::from_slice::<Value>(line) else {
+            return;
         };
         for entry in conversation_entries(&event) {
             for text in entry_chunks(&entry.text) {
@@ -329,7 +330,7 @@ fn index_transcript(path: &Path) -> Result<Vec<SearchDocument>, String> {
                 documents.push(document);
             }
         }
-    }
+    });
     Ok(documents)
 }
 

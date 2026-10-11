@@ -274,22 +274,49 @@ pub(crate) fn of_type(key: &str, kind: &str) -> Vec<Value> {
     let Some(file) = path_for(key).and_then(|path| File::open(path).ok()) else {
         return Vec::new();
     };
-    let mut reader = BufReader::new(file);
-    let (mut line, mut found) = (Vec::new(), Vec::new());
-    while reader
-        .read_until(b'\n', &mut line)
-        .is_ok_and(|read| read > 0)
-    {
+    let mut found = Vec::new();
+    for_each_line(file, |_, line| {
         found.extend(
-            std::str::from_utf8(&line)
+            std::str::from_utf8(line)
                 .ok()
                 .filter(|text| text.contains(kind))
                 .and_then(|text| serde_json::from_str::<Value>(text).ok())
                 .filter(|event| event["type"] == kind),
         );
+    });
+    found
+}
+
+/// Hand `see` every line of a record with its `seq`: the bytes between two
+/// line ends, whatever they are.
+///
+/// **A line's position is its `seq`, so every reader of a record and the
+/// count that numbers the next line go through this one walk.** A line
+/// that cannot be decoded (not UTF-8: a write cut inside a character; not
+/// JSON: a write cut anywhere else) is still a line. Its reader skips it
+/// and reads on; it never ends the read, and it never shifts the number of
+/// a line after it. `BufRead::lines` does both: it answers an error for
+/// such a line, and `map_while(Result::ok)` stops there.
+///
+/// The line is handed over without its line end (`\n` or `\r\n`).
+pub(crate) fn for_each_line(file: File, mut see: impl FnMut(u64, &[u8])) {
+    let mut reader = BufReader::new(file);
+    let (mut line, mut seq) = (Vec::new(), 0u64);
+    while reader
+        .read_until(b'\n', &mut line)
+        .is_ok_and(|read| read > 0)
+    {
+        seq += 1;
+        let mut body = line.as_slice();
+        if let [rest @ .., b'\n'] = body {
+            body = rest;
+            if let [rest @ .., b'\r'] = body {
+                body = rest;
+            }
+        }
+        see(seq, body);
         line.clear();
     }
-    found
 }
 
 /// Start a chat's record with `events`, but only a record that has nothing in
@@ -392,19 +419,23 @@ fn ends_in_newline(file: &mut File) -> bool {
     }
 }
 
-/// How many events are already recorded. Read once per chat per run.
-fn count(path: &PathBuf) -> u64 {
+/// How many lines are already recorded, whatever is on them: the next line
+/// written is numbered one past this. Read once per chat per run.
+fn count(path: &Path) -> u64 {
     let Ok(file) = File::open(path) else {
         return 0;
     };
-    BufReader::new(file).lines().map_while(Result::ok).count() as u64
+    let mut lines = 0;
+    for_each_line(file, |seq, _| lines = seq);
+    lines
 }
 
 /// Everything after `after`. `after = 0` is the whole conversation.
 ///
-/// A line that will not parse is skipped rather than ending the read: the last
-/// line of a file written by a process that died mid-write can be half a JSON
-/// object, and one torn line must not hide every event before it.
+/// A line that cannot be decoded is skipped rather than ending the read: the
+/// last line of a file written by a process that died mid-write can be half
+/// a JSON object or half a character, lines are written after it when the
+/// chat goes on, and one torn line must hide none of them.
 pub fn since(key: &str, after: u64) -> Vec<Recorded> {
     let Some(path) = path_for(key) else {
         return Vec::new();
@@ -413,19 +444,14 @@ pub fn since(key: &str, after: u64) -> Vec<Recorded> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for (index, line) in BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .enumerate()
-    {
-        let seq = index as u64 + 1;
+    for_each_line(file, |seq, line| {
         if seq <= after {
-            continue;
+            return;
         }
-        if let Ok(event) = serde_json::from_str::<Value>(&line) {
+        if let Ok(event) = serde_json::from_slice::<Value>(line) {
             out.push(Recorded { seq, event });
         }
-    }
+    });
     out
 }
 
@@ -729,13 +755,13 @@ fn page_forward(
     let mut bytes = 0;
     let mut busy = false;
     let mut context: HashMap<String, Recorded> = HashMap::new();
-    for (index, line) in BufReader::new(file).lines().enumerate() {
-        let seq = index as u64 + 1;
+    let mut lines = Vec::new();
+    for_each_line(file, |seq, line| lines.push((seq, line.to_vec())));
+    for (seq, line) in lines {
         if before.is_some_and(|cursor| seq >= cursor) {
             break;
         }
-        let line = line.map_err(|e| e.to_string())?;
-        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+        let Ok(event) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         let host = event["parent_tool_use_id"].is_null() && event["octiq_speaker"].is_null();
