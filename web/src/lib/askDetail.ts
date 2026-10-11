@@ -17,10 +17,19 @@ export type AskDetail = { label: string; body: string };
 
 /** One row of a change: a field stated whole, or one that moves from
  *  `before` to `after`. An empty `after` is a field being cleared. Every text
- *  is whole and keeps its newlines. */
+ *  is whole and keeps its newlines.
+ *
+ *  `summary` is the host's own one line for a value too long to sit on a
+ *  folded card ("300 direct reports will report to Potato Juice"). The card
+ *  draws it whole in the value's place until the row is opened; it is never
+ *  made here, by cutting the value or by reading it. The host sends it on a
+ *  stated value only, never on a move. */
 export type ChangeRow =
-  | { label: string; value: string }
+  | { label: string; value: string; summary?: string }
   | { label: string; before: string; after: string };
+
+/** The longest summary a row may carry, in characters. */
+export const SUMMARY_MAX = 160;
 
 /** A change as the host sends it beside its text (`tool_input.changeFacts`,
  *  `team_tools::ChangeFacts`): one sentence, then its rows. */
@@ -38,11 +47,35 @@ const hasOnly = (bag: Record<string, unknown>, keys: readonly string[]): boolean
 /** A text with something in it to read. */
 const said = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
 
+/** A row's `summary`, when it is one the card can draw in a value's place:
+ *  a text on one line, of at most `SUMMARY_MAX` characters. Anything else is
+ *  no summary at all, and the row folds to its size as a row without one
+ *  does. It never costs the rows: a summary the card leaves out hides
+ *  nothing, because the value it stood for is still there to open. */
+export function rowSummary(raw: unknown): string | undefined {
+  if (!said(raw) || /[\n\r\u2028\u2029]/.test(raw)) return undefined;
+  // Characters, not the units they are stored in. Twice the limit in units
+  // is past it however they pair up, and is not worth counting.
+  if (raw.length > SUMMARY_MAX * 2) return undefined;
+  return [...raw].length <= SUMMARY_MAX ? raw : undefined;
+}
+
 function changeRow(raw: unknown): ChangeRow | null {
   if (!isBag(raw) || !said(raw.label)) return null;
   if (hasOnly(raw, ["label", "value"])) {
     return said(raw.value) ? { label: raw.label, value: raw.value } : null;
   }
+  // The one key a stated value may have besides its own, read on its own
+  // terms: a summary the card cannot draw is left out, and the row is kept.
+  if (hasOnly(raw, ["label", "value", "summary"])) {
+    if (!said(raw.value)) return null;
+    const summary = rowSummary(raw.summary);
+    return summary === undefined
+      ? { label: raw.label, value: raw.value }
+      : { label: raw.label, value: raw.value, summary };
+  }
+  // A move has no such key. The host never sends one there, so one that
+  // turns up is a key the card does not know, like any other.
   if (hasOnly(raw, ["label", "before", "after"])) {
     // What it was is never empty (a text set where there was none is a plain
     // row). What it becomes is empty for a field that is cleared, and for
@@ -56,7 +89,8 @@ function changeRow(raw: unknown): ChangeRow | null {
 
 /** The host's `changeFacts`, when it is exactly the shape the card can draw:
  *  a sentence and at least one row, each row a name with one text or with a
- *  before and an after, and no key besides. `null` for anything else, an
+ *  before and an after, and no key besides but `summary`. `null` for
+ *  anything else, an
  *  older host's payload with no such key included, and the caller then shows
  *  the `change` text itself.
  *
@@ -78,6 +112,16 @@ export function changeFacts(raw: unknown): ChangeFacts | null {
   return { lead: raw.lead, rows };
 }
 
+/** The arguments that are a script: text a shell or an interpreter runs as
+ *  written. `command` is Bash and Codex's `command_execution`; `script` and
+ *  `code` are what MCP tools that run something call theirs. */
+const COMMAND_KEYS = ["command", "script", "code"] as const;
+
+/** Whether a detail is something that runs, as against something to read. */
+export function isCommand(detail: AskDetail | null): boolean {
+  return !!detail && (COMMAND_KEYS as readonly string[]).includes(detail.label);
+}
+
 export function askDetail(input: Record<string, unknown> | null | undefined): AskDetail | null {
   const bag = input ?? {};
   const read = (key: string): string => {
@@ -87,7 +131,11 @@ export function askDetail(input: Record<string, unknown> | null | undefined): As
     return typeof v === "string" ? v : "";
   };
 
-  if (read("command")) return { label: "command", body: read("command") };
+  // What will be run, under the names tools give it. Each is drawn by the
+  // command's rule (`isCommand`): whole on the card, never as a first line.
+  for (const key of COMMAND_KEYS) {
+    if (read(key)) return { label: key, body: read(key) };
+  }
   // A change to the registered agents, worded by the host (`team_tools`), and
   // the plan `ExitPlanMode` asks to have approved: the thing being decided.
   if (read("change")) return { label: "change", body: read("change") };

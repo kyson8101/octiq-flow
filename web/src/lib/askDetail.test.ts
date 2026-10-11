@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { askDetail, changeFacts } from "./askDetail";
+import { askDetail, changeFacts, isCommand, rowSummary, SUMMARY_MAX } from "./askDetail";
 
 describe("askDetail", () => {
   it("shows a command in full, because what it runs is the whole question", () => {
@@ -175,5 +175,87 @@ describe("changeFacts", () => {
     expect(changeFacts(Object.create({ lead, rows }))).toBeNull();
     expect(changeFacts({ lead, rows: [Object.create({ label: "Access", value: "auto" })] })).toBeNull();
     expect(changeFacts(JSON.parse(`{"lead":"x","rows":[{"label":"a","value":"b"}],"__proto__":{"x":1}}`))).toBeNull();
+    // A summary a prototype lent the row is not the host's either.
+    const lent = Object.assign(Object.create({ summary: "Nothing changes" }), { label: "Access", value: "auto" });
+    expect(changeFacts({ lead, rows: [lent] })?.rows).toEqual([{ label: "Access", value: "auto" }]);
+  });
+});
+
+describe("a row's summary", () => {
+  const lead = "Remove the agent HEAD.";
+  const value = `${Array.from({ length: 300 }, (_, i) => `Report ${i + 1}`).join(", ")} will report to Potato Juice.`;
+  const summary = "300 direct reports will report to Potato Juice";
+  const row = (extra: Record<string, unknown>) => changeFacts({ lead, rows: [{ label: "Direct reports", value, ...extra }] })?.rows;
+
+  it("is kept when it is one line of at most 160 characters", () => {
+    // The host's own example (`team_tools`, task K).
+    expect(row({ summary })).toEqual([{ label: "Direct reports", value, summary }]);
+    expect(rowSummary("s".repeat(SUMMARY_MAX))).toBe("s".repeat(SUMMARY_MAX));
+    // Characters, as the host counts them: 160 emoji are 320 units and fit.
+    expect(rowSummary("😀".repeat(SUMMARY_MAX))).toBe("😀".repeat(SUMMARY_MAX));
+    // Whichever order the keys arrive in.
+    expect(changeFacts(JSON.parse(JSON.stringify({ lead, rows: [{ summary, value, label: "Direct reports" }] })))?.rows)
+      .toEqual([{ label: "Direct reports", value, summary }]);
+  });
+
+  it("is dropped when it is not, and the row is still a row", () => {
+    const bad: unknown[] = [
+      "s".repeat(SUMMARY_MAX + 1), "😀".repeat(SUMMARY_MAX + 1), "two\nlines", "two\r\nlines", "a\rb", "a b",
+      "", "   ", 300, null, true, ["300 reports"], { text: "300 reports" },
+    ];
+    for (const item of bad) {
+      // No summary, never no rows: the value it stood for is still there to open.
+      expect(row({ summary: item }), JSON.stringify(item)).toEqual([{ label: "Direct reports", value }]);
+      expect(rowSummary(item), JSON.stringify(item)).toBeUndefined();
+    }
+  });
+
+  it("is absent on a host that sends none", () => {
+    expect(row({})).toEqual([{ label: "Direct reports", value }]);
+    expect(Object.keys(row({})![0])).toEqual(["label", "value"]);
+  });
+
+  it("is the only key a stated value may have besides its own", () => {
+    expect(row({ summary, note: "also grants push" })).toBeUndefined();
+    expect(changeFacts({ lead, rows: [{ label: "Role", summary }] })).toBeNull();
+    expect(changeFacts({ lead, rows: [{ summary }] })).toBeNull();
+  });
+
+  it("is an unknown key on a move, which the host never puts one on", () => {
+    // Unknown keys cost the rows: the card would draw the move and not the
+    // line beside it, so it shows the text instead.
+    expect(changeFacts({ lead, rows: [{ label: "Role", before: "a\nb", after: "c", summary: "Role shortened" }] })).toBeNull();
+    expect(changeFacts({ lead, rows: [{ label: "Role", before: "a", after: "", summary: 3 }] })).toBeNull();
+  });
+
+  it("reads the rows the host really sends", () => {
+    // `team_tools::delete_facts`, as its own tests print it (task K).
+    const sent = JSON.parse('{"lead":"Remove the agent Lead.","rows":[{"label":"Role","value":"Writes code."},'
+      + '{"label":"Reports to","value":"Manager"},'
+      + '{"label":"Direct reports","value":"Report 000, Report 001 will report to Manager.","summary":"2 direct reports will report to Manager"},'
+      + '{"label":"Memory note","value":"Kept in the vault."}]}');
+    const facts = changeFacts(sent);
+    expect(facts?.rows).toHaveLength(4);
+    expect(facts?.rows[2]).toEqual({
+      label: "Direct reports", value: "Report 000, Report 001 will report to Manager.", summary: "2 direct reports will report to Manager",
+    });
+  });
+});
+
+describe("what runs", () => {
+  it("is a command under any of the names tools give it", () => {
+    expect(askDetail({ command: "ls" })).toEqual({ label: "command", body: "ls" });
+    expect(askDetail({ script: "make\nmake install" })).toEqual({ label: "script", body: "make\nmake install" });
+    expect(askDetail({ code: "await page.goto(url)" })).toEqual({ label: "code", body: "await page.goto(url)" });
+    for (const key of ["command", "script", "code"]) expect(isCommand(askDetail({ [key]: "x" })), key).toBe(true);
+    // The command comes first when a call names more than one.
+    expect(askDetail({ code: "x", command: "y" })?.label).toBe("command");
+  });
+
+  it("is not a plan, a change or what a write puts in a file", () => {
+    for (const key of ["plan", "change", "content", "new_string"]) {
+      expect(isCommand(askDetail({ [key]: "one\ntwo" })), key).toBe(false);
+    }
+    expect(isCommand(null)).toBe(false);
   });
 });

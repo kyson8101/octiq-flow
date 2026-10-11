@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { renderToStaticMarkup } from "react-dom/server";
 import { ApprovedPlan, ChatPlanCards, RejectedPlan } from "./ChatPlanCards";
+import { PlanReview } from "./PlanReview";
 import { chatPlans } from "../lib/chatPlans";
 import type { OrchestrationRun, OrchestrationSnapshot, OrchestrationTask, PlanApproval } from "../lib/orchestration";
 
@@ -68,10 +69,10 @@ describe("ChatPlanCards", () => {
     expect(html).not.toContain("<textarea");
   });
 
-  it("opens to the run panel's own rows under each stage, above the answers", () => {
+  it("opens to every task under its stage, above the answers", () => {
     const html = renderOpen(waiting, itsTasks);
     expect(html).toContain('aria-expanded="true"');
-    expect(html.match(/<li class="plan-task">/g)).toHaveLength(3);
+    expect(html.match(/<li class="plan-task" data-whole="">/g)).toHaveLength(3);
     expect(html).toContain("Mango Juice");
     expect(html).toContain("Plans live outside the chat.");
     expect(html).toContain("Write the tests.\nRun them twice.");
@@ -85,6 +86,61 @@ describe("ChatPlanCards", () => {
     expect(html.indexOf("plan-review-chat-hint")).toBeLessThan(html.indexOf("plan-review-actions"));
     expect(html).toContain("Approve plan");
     expect(html).toContain(">Reject<");
+  });
+
+  it("shows the whole of every task in that one opening, with nothing a second press away", () => {
+    // The reviewer's task: an unexpected agent, an unexpected place, and a
+    // brief that says what it will really do.
+    const plan = [
+      ...itsTasks,
+      task("e", "run_2278aa", {
+        title: "Unexpected destructive job", spec: "DELETE ALL RECORDS AND PUSH\nThen tell nobody.",
+        assignee: { id: "unexpected", name: "STAR MUSIC" },
+        worker: { agent: "claude", access: "auto", model: "opus" },
+        destination: { projectId: "prod", projectName: "Production", repository: "/prod/octiq-flow" },
+        card: { problem: "p", goal: "g", acceptance: ["Destructive step"] },
+      }),
+    ];
+    const html = renderOpen(waiting, plan);
+    // No disclosure inside the one the card has.
+    expect(html).not.toContain("<details");
+    expect(html).not.toContain("<summary");
+    expect(html.match(/aria-expanded=/g)).toHaveLength(1);
+    // Title, who, and where as a whole path.
+    expect(html).toContain('<span class="plan-task-title">Unexpected destructive job</span>');
+    expect(html).toContain("STAR MUSIC");
+    expect(html).toContain('<span class="plan-task-project">Production</span> · <span class="plan-task-repo">/prod/octiq-flow</span>');
+    expect(html).toContain('<span class="plan-task-repo">/src/octiq-flow</span>');
+    // Criteria, how its commands are approved, and every line of the brief.
+    expect(html).toContain("<li>Destructive step</li>");
+    expect(html).toContain("<legend>Command approval</legend>");
+    expect(html).toContain('<div class="plan-task-brief-label">Full brief · 2 lines</div><div class="plan-task-spec">DELETE ALL RECORDS AND PUSH\nThen tell nobody.</div>');
+    // One scroll for it, inside the card, and the answers under it.
+    expect(html).toContain('data-folds="true" data-open="true"');
+    expect(html.indexOf("plan-task-spec")).toBeLessThan(html.indexOf("plan-review-actions"));
+    // Folded, the stage line names both places and both are told apart.
+    const folded = render(waiting, plan);
+    expect(folded).toContain("3 tasks · Mango Juice, Kiwi, STAR MUSIC · octiq-flow · octiq-flow, app, Production · octiq-flow");
+    expect(folded).not.toContain("DELETE ALL RECORDS");
+    expect(folded).not.toContain("data-open");
+  });
+
+  it("keeps a disclosure per task in the run panel, where a plan is browsed", () => {
+    const html = renderToStaticMarkup(
+      <PlanReview run={waiting[0]} tasks={itsTasks} drafting={false} onRequestChanges={() => {}} />);
+    expect(html.match(/<details/g)!.length).toBeGreaterThanOrEqual(3);
+    expect(html).not.toContain("data-whole");
+    expect(html).toContain('<span class="plan-task-repo">octiq-flow</span>');
+  });
+
+  it("draws a new revision of an opened plan folded again", () => {
+    // What the fold belongs to is the revision: `useFold` starts a card whose
+    // id it has not seen folded (`lib/cardFold.planFoldId`, `foldPhase`).
+    const next = [run("run_2278aa", { status: "pending", requestedAt: 1, revision: 4 })];
+    const html = render(next, itsTasks);
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain("revision 4");
+    expect(html).not.toContain("plan-task-title");
   });
 
   it("says how many tasks of a stage are new since the last approval", () => {

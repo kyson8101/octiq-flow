@@ -1,11 +1,14 @@
 // What a card that waits on the person shows before they ask for more.
 //
 // Folded, a decision card is the ask, its short facts and the buttons. A long
-// part (a role, a brief, a command over several lines, a diff) is folded, and
-// folding is never hiding: its label stays on the card with its size and, for
-// a change, the fact that it changes. The person can tell from the folded
-// card what kinds of things they are approving and that there is more to
-// read; opening shows all of it.
+// part (a role, a brief, a diff) is folded, and folding is never hiding: its
+// label stays on the card with its size and, for a change, the fact that it
+// changes. The person can tell from the folded card what kinds of things they
+// are approving and that there is more to read; opening shows all of it.
+//
+// What stays of a folded part is its name and its size, or a line the host
+// wrote for it. Never a piece of it: the first line of a script, or the last
+// sixty characters of a list of names, reads as the whole and is not.
 //
 // This is the half that can be wrong, so it is here and not in the cards: a
 // part taken for short that is not is cut on screen, and a part folded with
@@ -15,13 +18,15 @@ import type { ChangeRow } from "./askDetail";
 /** The longest single line that still reads as a fact beside its label. */
 export const SHORT_FACT = 60;
 
-/** The longest one-line command or text drawn whole on the folded card. */
+/** The longest one-line text drawn whole on the folded card. A command has
+ *  its own rule (`commandFold`). */
 export const SHORT_TEXT = 200;
 
 /** A removal's rows that say what it does to the chart (`team_tools::
  *  delete_facts`): the seat that empties, the reports that move. A
- *  consequence, so never folded to a size alone. The host's own labels,
- *  checked against its source by the test. */
+ *  consequence, so a sentence of it is drawn whole where any other value of
+ *  that length would fold to its size. The host's own labels, checked against
+ *  its source by the test. */
 export const STRUCTURAL = new Set(["Head", "Front desk", "Direct report", "Direct reports"]);
 
 /** How long a consequence may run and still be drawn whole. */
@@ -42,10 +47,27 @@ export function lineCount(text: string): number {
   return textLines(text).length;
 }
 
+/** How many characters a text is: Unicode code points, so an emoji is one
+ *  and not the two units JavaScript stores it in. Every size a card states
+ *  is counted this way. */
+export function chars(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    // The second half of a pair was counted with the first.
+    if (unit >= 0xdc00 && unit <= 0xdfff && i > 0) {
+      const lead = text.charCodeAt(i - 1);
+      if (lead >= 0xd800 && lead <= 0xdbff) continue;
+    }
+    n += 1;
+  }
+  return n;
+}
+
 /** One line, and short enough to sit beside a label. */
 export function isShort(text: string, limit = SHORT_FACT): boolean {
   const lines = textLines(text);
-  return lines.length <= 1 && (lines[0] ?? "").trim().length <= limit;
+  return lines.length <= 1 && chars((lines[0] ?? "").trim()) <= limit;
 }
 
 /** 12345 → "12,345". Written out: a locale would word it per browser. */
@@ -58,28 +80,25 @@ export function count(n: number, noun: string): string {
   return `${digits(n)} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-/** How much a folded text is: its lines when it has several, else its length. */
+/** How much a folded text is: its lines when it has several, else its
+ *  characters, not counting the blank space it opens or ends with. */
 export function sizeLabel(text: string): string {
   const lines = textLines(text);
-  return lines.length > 1 ? count(lines.length, "line") : count(text.trim().length, "character");
+  return lines.length > 1 ? count(lines.length, "line") : count(chars(text.trim()), "character");
 }
 
-/** The end of a long line, for a sentence whose point comes last ("… will
- *  report to Potato."). A cut by length, never a reading of the text. */
-export function tail(text: string, keep = SHORT_FACT): string {
-  const line = text.trim();
-  return line.length <= keep ? line : `…${line.slice(line.length - keep)}`;
-}
-
-/** How one row of a change is drawn folded: whole, or as what stays of it. */
+/** How one row of a change is drawn folded: whole, or as what stays of it.
+ *  What stays is never a piece of the value: a cut of a long text is not the
+ *  fact it holds, and reads as if it were. */
 export type RowFold =
   | { folded: false }
   | {
       folded: true;
-      /** What stays beside the label: "changed · 2 lines", "cleared", "14 lines". */
+      /** What stays beside the label: "changed · 2 lines → 14 lines",
+       *  "cleared · was 14 lines", "3,627 characters". */
       note: string;
-      /** The end of a consequence too long to draw whole. */
-      tail?: string;
+      /** The host's own one line for the value, drawn whole before the size. */
+      summary?: string;
     };
 
 export function rowFold(row: ChangeRow): RowFold {
@@ -87,14 +106,14 @@ export function rowFold(row: ChangeRow): RowFold {
     const short = isShort(row.before) && isShort(row.after);
     if (short) return { folded: false };
     // What was there is the long part; that it goes is the fact.
-    if (row.after === "") return { folded: true, note: "cleared" };
-    return { folded: true, note: `changed · ${sizeLabel(row.after)}` };
+    if (row.after === "") return { folded: true, note: `cleared · was ${sizeLabel(row.before)}` };
+    // Both sizes: either side may be the long one, and the one on the card
+    // must not pass for the whole of the change.
+    return { folded: true, note: `changed · ${sizeLabel(row.before)} → ${sizeLabel(row.after)}` };
   }
-  if (STRUCTURAL.has(row.label)) {
-    if (isShort(row.value, STRUCTURAL_WHOLE)) return { folded: false };
-    return { folded: true, note: sizeLabel(row.value), tail: tail(row.value.replace(/\s*\n\s*/g, " ")) };
-  }
-  return isShort(row.value) ? { folded: false } : { folded: true, note: sizeLabel(row.value) };
+  const whole = STRUCTURAL.has(row.label) ? STRUCTURAL_WHOLE : SHORT_FACT;
+  if (isShort(row.value, whole)) return { folded: false };
+  return { folded: true, note: sizeLabel(row.value), ...(row.summary ? { summary: row.summary } : {}) };
 }
 
 /** The fold line of a change: how many of its rows are folded. */
@@ -113,15 +132,98 @@ export type TextFold =
       rest: string;
     };
 
-/** A command, a plan, an older host's change: whole when it is one short
- *  line, else its first line and how much more there is. */
+/** A plan, an older host's change: whole when it is one short line, else
+ *  its first line and how much more there is. Prose, which opens with what
+ *  it is about; a command does not (`commandFold`). */
 export function textFold(text: string, limit = SHORT_TEXT): TextFold {
   const lines = textLines(text);
   if (lines.length <= 1) {
     const line = lines[0] ?? "";
-    return line.length <= limit ? { whole: true } : { whole: false, first: line, rest: count(line.length, "character") };
+    return chars(line) <= limit ? { whole: true } : { whole: false, first: line, rest: count(chars(line), "character") };
   }
   return { whole: false, first: lines[0], rest: count(lines.length - 1, "more line") };
+}
+
+/* ---- A command ----------------------------------------------------------
+   A command is the thing being approved, not detail about it, so it is on the
+   folded card whole for as long as a card can hold it: twelve lines. A first
+   line is never left to stand for the rest. Past that the card shows the
+   lines it can, says how many it does not, and will not take an Allow until
+   the whole command has been opened. */
+
+/** The most lines of a command a folded card draws. */
+export const COMMAND_LINES = 12;
+
+/** The most characters of a command a folded card draws: twelve full lines.
+ *  A line is never cut to fit, so a line that would pass this is not drawn
+ *  folded at all, and nor are the lines after it. */
+export const COMMAND_CHARS = 1200;
+
+export type CommandFold = {
+  /** Its lines, without the blank ones at either end. */
+  lines: number;
+  /** What the folded card draws: every line, or the first whole lines. */
+  head: string;
+  /** The lines after those, drawn once the card is opened. Empty when the
+   *  folded card already shows the whole command. */
+  rest: string;
+  /** How many lines `rest` is. */
+  more: number;
+};
+
+export function commandFold(text: string): CommandFold {
+  const lines = textLines(text);
+  let kept = 0;
+  let budget = COMMAND_CHARS;
+  while (kept < lines.length && kept < COMMAND_LINES) {
+    const size = chars(lines[kept]);
+    if (size > budget) break;
+    budget -= size;
+    kept += 1;
+  }
+  return {
+    lines: lines.length,
+    head: lines.slice(0, kept).join("\n"),
+    rest: lines.slice(kept).join("\n"),
+    more: lines.length - kept,
+  };
+}
+
+/** The lines the folded card left out, as they are drawn once it is opened:
+ *  all of them, or up to the hard cap with what the cap left out. `total` is
+ *  the whole command's size, the lines on the folded card included. */
+export function commandOpened(fold: CommandFold): { rest: string; hidden: number; total: number } {
+  // The line break between what was on the card and the rest counts as one.
+  const before = fold.head === "" ? 0 : chars(fold.head) + 1;
+  const { shown, hidden } = capped(fold.rest, Math.max(0, HARD_CAP - before));
+  return { rest: shown, hidden, total: before + chars(fold.rest) };
+}
+
+/** What the folded card says under the lines it shows. Full strength on the
+ *  card: it is the one thing standing between a person and an Allow of lines
+ *  they have not seen. */
+export function unseenLines(fold: CommandFold): string {
+  if (fold.more === 0) return "";
+  // Nothing of it is on the card: a line too long to draw whole.
+  if (fold.head === "") {
+    return fold.lines === 1
+      ? `${count(chars(fold.rest), "character")} not shown`
+      : `${count(fold.lines, "line")} not shown`;
+  }
+  return `${count(fold.more, "more line")} not shown`;
+}
+
+/** "3-line script": what a command over several lines is called in the
+ *  card's title, which must not name the first of them as if it were all. */
+export function scriptLabel(lines: number): string {
+  return `${digits(lines)}-line script`;
+}
+
+/** Whether Allow is held back: the folded card does not show the whole
+ *  command, and it has not been opened. Opening it once is enough; folding it
+ *  again does not take the answer away. */
+export function allowHeld(fold: CommandFold | null, opened: boolean): boolean {
+  return !!fold && fold.more > 0 && !opened;
 }
 
 /** "+12 −3 in chat.ts": a diff as its counts, for the folded card. */
@@ -134,28 +236,51 @@ export function diffLabel(diff: { added: number; removed: number; path: string; 
   return diff.kind === "create" ? `${label} · new file` : label;
 }
 
+/** What a plan card's fold belongs to: one revision of one plan. A changed
+ *  plan is a new thing to approve, so its card starts folded whatever the
+ *  revision before it was left at. */
+export function planFoldId(runId: string, revision: number | undefined): string {
+  return `${runId}:${revision ?? 0}`;
+}
+
 /** "3 tasks in 2 stages". */
 export function planLabel(tasks: number, stages: number): string {
   return `${count(tasks, "task")} in ${count(stages, "stage")}`;
 }
 
 /** A detail as it is drawn opened: all of it, or up to the cap with what the
- *  cap left out. */
+ *  cap left out. Counted in characters like every size here, so the cut
+ *  never lands inside one. */
 export function capped(text: string, cap = HARD_CAP): { shown: string; hidden: number } {
-  return text.length <= cap ? { shown: text, hidden: 0 } : { shown: text.slice(0, cap), hidden: text.length - cap };
+  // Never more characters than units, so this is most texts, at no cost.
+  if (text.length <= cap) return { shown: text, hidden: 0 };
+  const total = chars(text);
+  if (total <= cap) return { shown: text, hidden: 0 };
+  let seen = 0;
+  let end = 0;
+  while (seen < cap) {
+    const unit = text.charCodeAt(end);
+    end += unit >= 0xd800 && unit <= 0xdbff && end + 1 < text.length ? 2 : 1;
+    seen += 1;
+  }
+  return { shown: text.slice(0, end), hidden: total - cap };
 }
 
-/** What a capped detail says under itself. Never drawn for a text that fits. */
+/** What a capped detail says under itself. Never drawn for a text that fits.
+ *  `total` is the text's `chars`. */
 export function cutNote(total: number, hidden: number): string {
   const verb = hidden === 1 ? "is" : "are";
   return `The first ${digits(total - hidden)} of ${count(total, "character")} are shown. ${count(hidden, "character")} ${verb} not shown.`;
 }
 
-/** Names in a line, with the rest as a number: "Ada, Bo, Cy +2". */
-export function nameList(names: readonly string[], keep = 3): string {
-  const unique = [...new Set(names.filter(Boolean))];
-  if (unique.length <= keep) return unique.join(", ");
-  return `${unique.slice(0, keep).join(", ")} +${digits(unique.length - keep)}`;
+/** Names in a line, and the rest said in words: "Ada, Bo, Cy +2 more agents".
+ *  Never a bare number, which reads as decoration. `noun` is what one of
+ *  them is. */
+export function nameList(names: readonly string[], keep: number, noun: string): string {
+  const said = names.filter(Boolean);
+  if (said.length <= keep) return said.join(", ");
+  const rest = said.length - keep;
+  return `${said.slice(0, keep).join(", ")} +${digits(rest)} more ${noun}${rest === 1 ? "" : "s"}`;
 }
 
 /* ---- The fold itself ----------------------------------------------------

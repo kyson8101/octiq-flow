@@ -424,22 +424,49 @@ and route cards, and the plan card in the lead's chat (`PlanReview` with
 folded line and are not part of this.
 
 - **Folding is never hiding.** A folded part keeps its label on the card with
-  its size and, for a change, the fact that it changes: `Role · changed · 4
-  lines`, `Persistent prompt · cleared`, `6 more lines`, `+7 −2 in chat.ts`,
-  `Brief · 8 lines`, `3 tasks in 2 stages`. The tool, the path, a warning, the
-  countdown and the buttons are never folded.
-- **What a removal does to the chart is never folded to a size.** The rows
-  `Head`, `Front desk` and `Direct report(s)` (`team_tools::delete_facts`) are
-  drawn whole, and a list of reports too long for that keeps its end, where
-  the sentence says whom they go to. `cardFold.STRUCTURAL` holds those labels,
-  and `cardFold.test.ts` reads `team_tools.rs` to check them: rename one in
-  Rust and that test fails, which is the point.
+  its size and, for a change, the fact that it changes and the size of both
+  sides: `Role · changed · 2 lines → 4 lines`, `Persistent prompt · cleared ·
+  was 8,000 characters`, `6 more lines`, `+7 −2 in chat.ts`, `Brief · 8
+  lines`, `3 tasks in 2 stages`. The tool, the path, a warning, the countdown
+  and the buttons are never folded. Sizes are Unicode characters
+  (`cardFold.chars`), never UTF-16 units.
+- **What stays of a folded part is never a piece of it.** Not its first line,
+  not its last sixty characters: a slice reads as the fact and is only where
+  the text happened to start or end. A long row shows its label, whether it
+  changes and its size, or the host's own `summary` for it (optional, on a
+  stated value only, one line, at most 160 characters, validated in
+  `askDetail.rowSummary`; an invalid one is dropped and the rows are kept; on
+  a move it is an unknown key like any other). The rows `Head` and `Front
+  desk` (`team_tools::delete_facts`) are sentences drawn whole up to 160
+  characters; `cardFold.STRUCTURAL` holds those labels and `cardFold.test.ts`
+  reads `team_tools.rs` to check them.
+- **A command is what is being approved, not detail.** `command`, `script`
+  and `code` (`askDetail.isCommand`) are on the folded card whole, up to
+  twelve lines and 1,200 characters, no line cut and no scroll of their own.
+  Over several lines the title is the tool and `N-line script`, never the
+  first command. Past that the card shows the leading whole lines, says `N
+  more lines not shown` at full strength, and holds Allow once and Always
+  (`aria-disabled`, with `Open the full command to allow it`) until the
+  command has been opened once (`cardFold.allowHeld`). Deny always answers.
+  A diff keeps its `+a −b` line, and prose (a plan, an older host's change)
+  its first line and size.
+- **A plan's stage line names every place and agent it can.** Destinations
+  are told apart by project and whole path (`planReview.planPlaceNames`): a
+  shared folder name gets its project, then its parent folder, then the path.
+  Up to four destinations and six agents are named; the rest are counted in
+  words (`+2 more agents`). The chat's card opens to every task whole (path,
+  criteria, command approval, the full brief) in one scroll; only the run
+  panel keeps a disclosure per task. The fold belongs to one revision
+  (`cardFold.planFoldId`), so a changed plan arrives folded.
 - **Opened is whole.** `askDetail` carries no limit and nothing slices a body
   where it is drawn. A long detail scrolls inside the card. The one cap is
   `HARD_CAP` (200,000 characters), and past it the card says how many
   characters it shows and how many it does not. A silent cut of something the
   person approves is the bug this replaced (1,200 / 8,000 / 16,000 characters,
-  with no sign of it).
+  with no sign of it). A diff draws its first 600 rows on opening
+  (`DiffView.FIRST_OPENED`) and keeps its own `Show N more lines` past that:
+  5,000 rows at once stop the page for about 0.4 s, and drawing them a
+  stretch a frame was slower still.
 - **The control is above what it opens, which is above the buttons.** However
   the card is anchored (on the composer and growing up, or in the transcript
   and growing down), the pointer that opened it is never left over that

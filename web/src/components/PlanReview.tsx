@@ -9,7 +9,11 @@
 // In the lead's own chat it is a card among the others that wait on the
 // person, and arrives folded like them (`folds`): its counts, each stage on
 // one line, the answers. One control in the heading opens the tasks under
-// their stages (`components/CardFold`).
+// their stages (`components/CardFold`), and that one opening is all of it:
+// every task with who does it, where, its criteria, how its commands are
+// approved and its whole brief, scrolling inside the card. Nothing the person
+// approves is a second press away. The run panel is where a plan is browsed,
+// and keeps a disclosure per task.
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { approvePlan, rejectPlan } from "../lib/agentsMode";
 import { modelFromReported } from "../lib/agentProviders";
@@ -17,7 +21,7 @@ import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 import {
   awaitingApproval, planDestination, planNumbers, planOwner, planStages, planTasks, stageSummary, type PlanStage,
 } from "../lib/planReview";
-import { planLabel } from "../lib/cardFold";
+import { planFoldId, planLabel, sizeLabel } from "../lib/cardFold";
 import { FoldBody, FoldToggle, useFold } from "./CardFold";
 import { planHandle } from "../lib/chatPlans";
 import { approveOnce, useApproving } from "../lib/planApproving";
@@ -73,7 +77,9 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   // Folded, the one control opens the tasks under every stage, and after
   // them the line on how to answer in chat.
   const folded = folds && !approved && !empty;
-  const fold = useFold(run.id, { parts: stages.length + 1, startOpen });
+  // The fold is this revision's. A plan the lead changed is a new thing to
+  // approve, and arrives folded whatever the last one was left at.
+  const fold = useFold(planFoldId(run.id, revision), { parts: stages.length + 1, startOpen });
   const metaId = useId();
   // What this card has shown, and since when (see lib/planShown).
   const shownRef = useRef<PlanShown | null>(null);
@@ -148,7 +154,8 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   return (
     <section className="plan-review" aria-labelledby={titleId} data-drafting={stillDrafting || undefined}
       data-compact={empty || undefined} data-updated={holding || undefined}
-      data-approved={approved || undefined} data-folds={folded || undefined} data-plan={run.id} data-revision={revision}>
+      data-approved={approved || undefined} data-folds={folded || undefined}
+      data-open={(folded && fold.shown) || undefined} data-plan={run.id} data-revision={revision}>
       <header className="plan-review-head">
         <div className="plan-review-state">
           <span className="plan-review-dot" aria-hidden="true" />
@@ -184,7 +191,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                 const list = (
                   <ul className="plan-stage-tasks">
                     {stage.tasks.map((task) => (
-                      <PlanTask key={task.id} task={task} run={run} projectName={projectName}
+                      <PlanTask key={task.id} task={task} run={run} projectName={projectName} whole={folded}
                         added={amended && waiting.includes(task.id)}
                         number={numbers.get(task.id) ?? 0} numbers={numbers} />
                     ))}
@@ -196,7 +203,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                       <span className="plan-stage-num" aria-hidden="true">{stage.blocked ? "!" : index + 1}</span>
                       <span className="plan-stage-title">{stageTitle(stage, index)}</span>
                       {folded
-                        ? <span className="plan-stage-note plan-stage-sum">{stageSummary(stage, run, projectName)}</span>
+                        ? <span className="plan-stage-note plan-stage-sum">{stageSummary(stage, run, projectName, tasks)}</span>
                         : !stage.blocked && stage.tasks.length > 1 && <span className="plan-stage-note">{stage.tasks.length} side by side</span>}
                       {folded && added > 0 && <span className="plan-task-new">{added} new</span>}
                     </div>
@@ -277,7 +284,7 @@ export function PlanRejectConfirmation({ reason, busy, disabled, rejecting, onRe
   </div>;
 }
 
-function PlanTask({ task, run, projectName, added, number, numbers }: {
+function PlanTask({ task, run, projectName, added, number, numbers, whole = false }: {
   task: OrchestrationTask;
   run: OrchestrationRun;
   projectName?: (id: string) => string | undefined;
@@ -285,6 +292,9 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
   added: boolean;
   number: number;
   numbers: Map<string, number>;
+  /** Drawn out in full, with nothing of it behind a disclosure of its own:
+   *  the chat's card, whose one opening has to show what is being approved. */
+  whole?: boolean;
 }) {
   const owner = planOwner(task);
   const assigneeFace = useRosterAgent(task.assignee?.id);
@@ -300,7 +310,9 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
         </svg>
-        <span><span className="plan-task-project">{where.project}</span>{" · "}<span className="plan-task-repo">{where.repository}</span></span>
+        {/* Drawn out, a destination is its whole path: two repositories can
+            share a folder name, and the name alone would pass for either. */}
+        <span><span className="plan-task-project">{where.project}</span>{" · "}<span className="plan-task-repo">{whole ? where.path : where.repository}</span></span>
       </span>
     </span>
     {added && <span className="plan-task-new">New</span>}
@@ -312,6 +324,21 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
     </span>
     {after.length > 0 && <span className="plan-task-after">after {after.map((n) => `#${n}`).join(", ")}</span>}
   </>;
+  if (whole) {
+    return (
+      <li className="plan-task" data-whole="">
+        <div className="plan-task-row">{summary}</div>
+        <TaskPlanCard task={task} run={run} projectName={projectName} />
+        <CommandApprovalChoice task={task} run={run} />
+        {spec && (
+          <div className="plan-task-brief">
+            <div className="plan-task-brief-label">Full brief · {sizeLabel(spec)}</div>
+            <div className="plan-task-spec">{spec}</div>
+          </div>
+        )}
+      </li>
+    );
+  }
   return (
     <li className="plan-task">
       {/* The standard plan card first; the lead's full brief stays one

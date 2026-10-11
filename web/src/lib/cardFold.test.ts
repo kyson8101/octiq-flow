@@ -8,9 +8,10 @@ import { describe, expect, it } from "vitest";
 // Loaded through Vite's `?raw`, not node:fs: this is a browser tsconfig.
 import host from "../../../src-tauri/src/team_tools.rs?raw";
 import {
-  capped, count, cutNote, diffLabel, digits, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, HARD_CAP,
-  isShort, lineCount, longRowsLabel, nameList, planLabel, STRAY_MS, STRAY_RADIUS, strayPress,
-  rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, tail, textFold, textLines,
+  allowHeld, capped, chars, COMMAND_CHARS, COMMAND_LINES, commandFold, commandOpened, count, cutNote, diffLabel, digits,
+  foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, HARD_CAP,
+  isShort, lineCount, longRowsLabel, nameList, planFoldId, planLabel, scriptLabel, STRAY_MS, STRAY_RADIUS, strayPress,
+  rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, textFold, textLines, unseenLines,
 } from "./cardFold";
 
 describe("short fact or long part", () => {
@@ -48,6 +49,27 @@ describe("the size a folded part is named with", () => {
     expect(count(8000, "character")).toBe("8,000 characters");
     expect(count(1, "line")).toBe("1 line");
   });
+
+  it("counts characters, not the units they are stored in", () => {
+    // The reviewer's two: 101 emoji read "202 characters", and one between
+    // tabs read "2".
+    expect("😀".length).toBe(2);
+    expect(chars("😀")).toBe(1);
+    expect(sizeLabel("😀".repeat(101))).toBe("101 characters");
+    expect(sizeLabel("\t😀\t")).toBe("1 character");
+    expect(chars("a😀b")).toBe(3);
+    // Half a pair on its own is still something there.
+    expect(chars("\ud83d")).toBe(1);
+    expect(chars("\ude00\ude00")).toBe(2);
+    expect(chars("")).toBe(0);
+    // Sixty emoji are a short fact; sixty-one are not.
+    expect(isShort("😀".repeat(SHORT_FACT))).toBe(true);
+    expect(isShort("😀".repeat(SHORT_FACT + 1))).toBe(false);
+    // Lines are lines whatever ends them, and whichever way the text reads.
+    expect(sizeLabel("a\r\nb")).toBe("2 lines");
+    expect(sizeLabel("مرحبا بالعالم")).toBe("13 characters");
+    expect(sizeLabel("a\tb")).toBe("3 characters");
+  });
 });
 
 describe("a row of a change", () => {
@@ -64,17 +86,28 @@ describe("a row of a change", () => {
     expect(rowFold({ label: "Role", value: "r".repeat(2000) })).toEqual({ folded: true, note: "2,000 characters" });
   });
 
-  it("says a folded move changes, and how much it becomes", () => {
+  it("says a folded move changes, and the size of both sides of it", () => {
     expect(rowFold({ label: "Role", before: "Writes notes.", after: "Owns the notes.\nNever invents a fix." }))
-      .toEqual({ folded: true, note: "changed · 2 lines" });
-    // Long before, short after: it still changes, and what it was is the long part.
+      .toEqual({ folded: true, note: "changed · 13 characters → 2 lines" });
+    // Long before, short after: the short side must not pass for the change.
     expect(rowFold({ label: "Role", before: "a\nb\nc", after: "Notes." }))
-      .toEqual({ folded: true, note: "changed · 6 characters" });
+      .toEqual({ folded: true, note: "changed · 3 lines → 6 characters" });
+    // The reviewer's: 20,000 characters replaced by "OK" read "changed · 2 characters".
+    expect(rowFold({ label: "Persistent prompt", before: "p".repeat(20_000), after: "OK" }))
+      .toEqual({ folded: true, note: "changed · 20,000 characters → 2 characters" });
   });
 
-  it("says a long text that is cleared is cleared", () => {
+  it("says a long text that is cleared is cleared, and how much it was", () => {
     expect(rowFold({ label: "Persistent prompt", before: "p".repeat(8000), after: "" }))
-      .toEqual({ folded: true, note: "cleared" });
+      .toEqual({ folded: true, note: "cleared · was 8,000 characters" });
+  });
+
+  it("puts the host's own line for a long value on the card, whole", () => {
+    const summary = "300 direct reports will report to Potato Juice";
+    expect(rowFold({ label: "Direct reports", value: "n".repeat(3627), summary }))
+      .toEqual({ folded: true, note: "3,627 characters", summary });
+    // A value short enough to draw is drawn; a line standing in for it is not wanted.
+    expect(rowFold({ label: "Provider", value: "Codex", summary: "A provider" })).toEqual({ folded: false });
   });
 
   it("counts the rows it folded", () => {
@@ -97,15 +130,20 @@ describe("what a removal does to the chart", () => {
     expect(rowFold({ label: "Role", value: noHead })).toEqual({ folded: true, note: "73 characters" });
   });
 
-  it("folds the names of a long list of reports, never where they go", () => {
-    const names = Array.from({ length: 300 }, (_, i) => `Dev${i}`).join(", ");
-    const value = `${names} will report to Manager.`;
-    expect(value.length).toBeGreaterThan(STRUCTURAL_WHOLE);
-    const fold = rowFold({ label: "Direct reports", value });
-    expect(fold).toEqual({ folded: true, note: `${digits(value.length)} characters`, tail: tail(value) });
-    const kept = fold.folded ? fold.tail ?? "" : "";
-    expect(kept).toMatch(/^….*Dev299 will report to Manager\.$/);
-    expect(kept.length).toBe(SHORT_FACT + 1);
+  it("folds a long list of reports to its size, and never to a piece of it", () => {
+    // The reviewer's payload. The last sixty characters of it read as the
+    // fact ("…Report 300 will report to Potato Juice.") and held no count;
+    // under a long manager name they held nothing but x's.
+    const names = Array.from({ length: 300 }, (_, i) => `Report ${String(i + 1).padStart(3, "0")}`).join(", ");
+    for (const manager of ["Potato Juice", `Manager ${"x".repeat(100)}`]) {
+      const value = `${names} will report to ${manager}.`;
+      expect(value.length).toBeGreaterThan(STRUCTURAL_WHOLE);
+      const fold = rowFold({ label: "Direct reports", value });
+      expect(fold).toEqual({ folded: true, note: `${digits(value.length)} characters` });
+      expect(JSON.stringify(fold)).not.toMatch(/Report|report|x{4}|…/);
+    }
+    expect(rowFold({ label: "Direct reports", value: `${names} will report to Potato Juice.` }))
+      .toEqual({ folded: true, note: "3,627 characters" });
   });
 
   it("keys on the labels the host really sends", () => {
@@ -117,9 +155,85 @@ describe("what a removal does to the chart", () => {
     expect(host).toContain(`const NO_FRONT_DESK: &str = "${noFrontDesk[0].toLowerCase()}${noFrontDesk.slice(1)}"`);
   });
 
-  it("cuts a tail by length alone", () => {
-    expect(tail("Dev will report to Potato.")).toBe("Dev will report to Potato.");
-    expect(tail("abcdefghij", 4)).toBe("…ghij");
+});
+
+describe("a command", () => {
+  const lines = (n: number) => Array.from({ length: n }, (_, i) => `step ${i + 1}`).join("\n");
+
+  it("is on the folded card whole, up to twelve lines", () => {
+    expect(commandFold("pnpm test")).toEqual({ lines: 1, head: "pnpm test", rest: "", more: 0 });
+    // The reviewer's: the second line is the one that matters.
+    const danger = 'echo "Routine check"\nrm -rf /tmp/example-review-data';
+    expect(commandFold(danger)).toEqual({ lines: 2, head: danger, rest: "", more: 0 });
+    expect(commandFold("pwd\ngit push origin main").head).toBe("pwd\ngit push origin main");
+    expect(commandFold(lines(COMMAND_LINES))).toEqual({ lines: 12, head: lines(12), rest: "", more: 0 });
+    expect(unseenLines(commandFold(lines(12)))).toBe("");
+  });
+
+  it("past twelve lines shows the first twelve whole and counts the rest", () => {
+    const fold = commandFold(lines(13));
+    expect(fold).toEqual({ lines: 13, head: lines(12), rest: "step 13", more: 1 });
+    expect(unseenLines(fold)).toBe("1 more line not shown");
+    const long = commandFold(lines(5000));
+    expect(long.more).toBe(4988);
+    expect(unseenLines(long)).toBe("4,988 more lines not shown");
+    // Head and rest are the command, line for line.
+    expect(`${long.head}\n${long.rest}`).toBe(lines(5000));
+  });
+
+  it("never cuts a line to make it fit", () => {
+    // One line past what a card can hold: none of it is drawn folded.
+    const one = "x".repeat(COMMAND_CHARS + 1);
+    expect(commandFold(one)).toEqual({ lines: 1, head: "", rest: one, more: 1 });
+    expect(unseenLines(commandFold(one))).toBe("1,201 characters not shown");
+    expect(commandFold("x".repeat(COMMAND_CHARS)).more).toBe(0);
+    // A short line, then a long one: the short one whole, the long one unseen
+    // along with everything after it.
+    const mixed = `echo ok\n${"y".repeat(5000)}\nrm -rf /`;
+    expect(commandFold(mixed)).toEqual({ lines: 3, head: "echo ok", rest: `${"y".repeat(5000)}\nrm -rf /`, more: 2 });
+    expect(unseenLines(commandFold(mixed))).toBe("2 more lines not shown");
+    // Several lines with nothing drawn are counted as lines.
+    expect(unseenLines(commandFold(`${one}\nls`))).toBe("2 lines not shown");
+  });
+
+  it("counts its lines without the blank ones at either end", () => {
+    expect(commandFold("\n\npwd\nls\n\n")).toEqual({ lines: 2, head: "pwd\nls", rest: "", more: 0 });
+  });
+
+  it("is called a script once it has more than one line", () => {
+    expect(scriptLabel(2)).toBe("2-line script");
+    expect(scriptLabel(5000)).toBe("5,000-line script");
+  });
+
+  it("holds Allow back until a command the card does not show whole has been opened", () => {
+    expect(allowHeld(commandFold(lines(13)), false)).toBe(true);
+    // Opened once is enough, folded again or not.
+    expect(allowHeld(commandFold(lines(13)), true)).toBe(false);
+    // Whole on the card: nothing to open, nothing held.
+    expect(allowHeld(commandFold(lines(12)), false)).toBe(false);
+    expect(allowHeld(commandFold('echo "Routine check"\nrm -rf /tmp/example-review-data'), false)).toBe(false);
+    // Not a command at all.
+    expect(allowHeld(null, false)).toBe(false);
+  });
+
+  it("opens to every line it left out, up to the hard cap", () => {
+    expect(commandOpened(commandFold(lines(13)))).toEqual({ rest: "step 13", hidden: 0, total: lines(13).length });
+    const huge = commandFold(`echo start\n${"c".repeat(HARD_CAP + 77)}`);
+    const opened = commandOpened(huge);
+    expect(opened.total).toBe(HARD_CAP + 88);
+    expect(opened.hidden).toBe(88);
+    expect(opened.rest.length).toBe(HARD_CAP - 11);
+  });
+});
+
+describe("the fold of a plan", () => {
+  it("belongs to one revision of it", () => {
+    // The reviewer's: revision 3 left open, revision 4 arrived open.
+    const open = foldPressed(foldStart(planFoldId("run_1", 3)), planFoldId("run_1", 3), true);
+    expect(foldIsOpen(foldPhase(open, planFoldId("run_1", 3)))).toBe(true);
+    expect(foldIsOpen(foldPhase(open, planFoldId("run_1", 4)))).toBe(false);
+    expect(planFoldId("run_1", undefined)).toBe("run_1:0");
+    expect(planFoldId("run_1", 3)).not.toBe(planFoldId("run_13", undefined));
   });
 });
 
@@ -163,9 +277,11 @@ describe("the other size labels", () => {
     expect(planLabel(1, 1)).toBe("1 task in 1 stage");
   });
 
-  it("lists a few names and counts the rest", () => {
-    expect(nameList(["Ada", "Bo", "Ada", ""])).toBe("Ada, Bo");
-    expect(nameList(["Ada", "Bo", "Cy", "Di", "Ed"])).toBe("Ada, Bo, Cy +2");
+  it("lists names and counts the rest in words, never as a bare number", () => {
+    expect(nameList(["Ada", "Bo", ""], 3, "agent")).toBe("Ada, Bo");
+    expect(nameList(["Ada", "Bo", "Cy"], 3, "agent")).toBe("Ada, Bo, Cy");
+    expect(nameList(["Ada", "Bo", "Cy", "Di"], 3, "agent")).toBe("Ada, Bo, Cy +1 more agent");
+    expect(nameList(["Ada", "Bo", "Cy", "Di", "Ed"], 3, "destination")).toBe("Ada, Bo, Cy +2 more destinations");
   });
 });
 
@@ -184,6 +300,20 @@ describe("a detail opened", () => {
       "The first 200,000 of 201,234 characters are shown. 1,234 characters are not shown.",
     );
     expect(cutNote(HARD_CAP + 1, 1)).toBe("The first 200,000 of 200,001 characters are shown. 1 character is not shown.");
+  });
+
+  it("never stops in the middle of a character", () => {
+    // Three emoji, room for two: the cut falls between characters.
+    expect(capped("😀😀😀", 2)).toEqual({ shown: "😀😀", hidden: 1 });
+    // A cut by units would have left half of the second one.
+    expect(capped("a😀b", 2)).toEqual({ shown: "a😀", hidden: 1 });
+    expect(capped("😀😀", 2)).toEqual({ shown: "😀😀", hidden: 0 });
+    // More units than the cap, but not more characters: all of it.
+    const emoji = "😀".repeat(HARD_CAP);
+    expect(capped(emoji)).toEqual({ shown: emoji, hidden: 0 });
+    const over = capped(`${emoji}😀x`);
+    expect(over.hidden).toBe(2);
+    expect(over.shown).toBe(emoji);
   });
 });
 

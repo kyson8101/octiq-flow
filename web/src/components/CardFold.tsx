@@ -23,7 +23,7 @@
 // while it is on screen, by the id of what it asks; nothing is kept past that.
 import { useEffect, useId, useState, type AnimationEvent, type ReactNode } from "react";
 import {
-  capped, cutNote, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, strayPress,
+  capped, chars, cutNote, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, strayPress,
   type FoldPhase, type FoldState, type Press,
 } from "../lib/cardFold";
 import "./CardFold.css";
@@ -127,6 +127,36 @@ export function FoldToggle({ fold, describedBy, what = "details" }: {
   );
 }
 
+/** The same control said in words, for the one card where opening is what
+ *  the person has to do next: a command the folded card cannot show whole
+ *  (`lib/cardFold.allowHeld`). A button like the card's answers, above what
+ *  it opens. */
+export function FoldButton({ fold, describedBy, shut, open, className }: {
+  fold: Fold;
+  describedBy?: string;
+  /** What it says while folded: "Open the full command". */
+  shut: string;
+  /** What it says while open. */
+  open: string;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={`card-fold-button${className ? ` ${className}` : ""}`}
+      aria-expanded={fold.open}
+      aria-controls={fold.controls}
+      aria-describedby={describedBy}
+      onClick={(event) => {
+        notePress(event);
+        fold.toggle();
+      }}
+    >
+      {fold.open ? open : shut}
+    </button>
+  );
+}
+
 /** What is folded, by name and size, and the control at the end of it. A card
  *  with nothing folded draws no line. */
 export function FoldLine({ fold, labels, what }: {
@@ -183,7 +213,7 @@ export function WholeText({ text, className = "ask-card-body" }: { text: string;
   return (
     <>
       <pre className={`${className} is-whole`}>{shown}</pre>
-      {hidden > 0 && <p className="card-fold-cut" role="note">{cutNote(text.length, hidden)}</p>}
+      {hidden > 0 && <p className="card-fold-cut" role="note">{cutNote(chars(text), hidden)}</p>}
     </>
   );
 }

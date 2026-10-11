@@ -144,7 +144,7 @@ describe("PermissionAsk", () => {
         changeFacts: { lead: "Change the agent Nova.", rows: [{ label: "Role", before, after }] },
       },
     };
-    expect(draw(ask)).toContain('<dt>Role</dt><dd class="is-folded"><span class="ask-change-size">changed · 2 lines</span></dd>');
+    expect(draw(ask)).toContain('<dt>Role</dt><dd class="is-folded"><span class="ask-change-size">changed · 2 lines → 2 lines</span></dd>');
     expect(drawOpen(ask)).toContain(
       `<dt>Role</dt><dd class="is-stacked"><span class="ask-change-was">${before}</span>`
       + `<span class="ask-change-arrow"> → </span><span class="ask-change-now">${after}</span></dd>`,
@@ -194,7 +194,7 @@ describe("PermissionAsk", () => {
     // The rows stand in for the `change` text and for nothing else: a command
     // is what is being approved here, and it is what the card shows.
     const html = draw({ id: "a8", toolName: "Bash", toolInput: { command: "rm -rf build", changeFacts } });
-    expect(html).toContain('<pre class="ask-card-body">rm -rf build</pre>');
+    expect(html).toContain('<pre class="ask-card-body is-command">rm -rf build</pre>');
     expect(html).not.toContain("ask-change");
   });
 
@@ -208,7 +208,7 @@ describe("PermissionAsk", () => {
     // A built-in tool keeps the name the chat's own cards give it, and no chips.
     expect(html).toContain("Claude wants to use <strong>bash(pnpm)</strong>");
     expect(html).not.toContain("label-pill");
-    expect(html).toContain('<pre class="ask-card-body">pnpm test</pre>');
+    expect(html).toContain('<pre class="ask-card-body is-command">pnpm test</pre>');
     expect(askNote({ id: "b1" })).toBe(
       "Paused until you answer. No answer within three minutes counts as Deny. “Always” lasts until this chat is stopped.",
     );
@@ -285,38 +285,42 @@ describe("the permission card, folded and opened", () => {
     return { expanded, controls, label };
   };
 
-  const script = "cd web\npnpm install\npnpm test\nrm -rf dist";
-  const bash: AskProp = { id: "f1", toolName: "Bash", toolInput: { command: script } };
+  /** A long text that is not a command: an older host's change. */
+  const prose = "Change the agent Nova.\n\nRole: Owns the notes.\nNever invents a fix.";
+  const old: AskProp = { id: "f1", toolName: "mcp__octiq__agent_update", once: true, toolInput: { change: prose } };
 
   it("shows a one-line command whole, with nothing to open", () => {
     const html = draw({ id: "f0", toolName: "Bash", toolInput: { command: "pnpm test" } });
-    expect(html).toContain('<pre class="ask-card-body">pnpm test</pre>');
+    expect(html).toContain('<pre class="ask-card-body is-command">pnpm test</pre>');
     expect(html).not.toContain("card-fold");
+    expect(html).not.toContain("aria-disabled");
     answers(html);
   });
 
-  it("folds a command over several lines to its first, and says how many more", () => {
-    const html = draw(bash);
-    expect(html).toContain('<div class="ask-card-label">command</div><pre class="ask-card-body is-first"><span class="ask-card-first">cd web</span></pre>');
+  it("folds a text over several lines to its first, and says how many more", () => {
+    const html = draw(old);
+    expect(html).toContain('<div class="ask-card-label">change</div><pre class="ask-card-body is-first"><span class="ask-card-first">Change the agent Nova.</span></pre>');
     expect(html).toContain('<span>3 more lines</span>');
-    expect(html).not.toContain("rm -rf dist");
+    expect(html).not.toContain("Never invents a fix.");
     const { expanded, controls, label } = control(html);
     expect(expanded).toBe("false");
     expect(label).toBe("Show details");
-    // Shut, the box is there to be named and holds nothing.
+    // Shut, the box is there to be named and holds nothing. One box: the
+    // control names nothing that is not on the page.
+    expect(controls).not.toContain(" ");
     expect(html).toContain(`<div id="${controls}" class="card-fold" hidden=""></div>`);
     answers(html);
   });
 
   it("opens it whole, above the answers", () => {
-    const html = drawOpen(bash);
-    expect(html).toContain(`<pre class="ask-card-body is-whole">${script}</pre>`);
+    const html = drawOpen(old);
+    expect(html).toContain(`<pre class="ask-card-body is-whole">${prose}</pre>`);
     const { expanded, controls, label } = control(html);
     expect(expanded).toBe("true");
     expect(label).toBe("Hide details");
     expect(html).toContain(`<div id="${controls}" class="card-fold"><div class="card-fold-in is-bounded">`);
     // The sentences the foot shortens are the last thing in it.
-    expect(html).toContain('<p class="card-fold-note">Paused until you answer. No answer within three minutes counts as Deny. “Always” lasts until this chat is stopped.</p>');
+    expect(html).toContain('<p class="card-fold-note">Paused until you answer. No answer within three minutes counts as Deny.</p>');
     // The line, then what it opens, then the answers: a click on the line can
     // never be left over a button.
     const line = html.indexOf("card-fold-line");
@@ -325,14 +329,14 @@ describe("the permission card, folded and opened", () => {
     expect(line).toBeGreaterThan(-1);
     expect(line).toBeLessThan(box);
     expect(box).toBeLessThan(foot);
-    expect(html.indexOf(">Allow once<")).toBeGreaterThan(html.indexOf("card-fold-note"));
+    expect(html.indexOf(">Allow<")).toBeGreaterThan(html.indexOf("card-fold-note"));
     answers(html);
   });
 
   it("never opens with an entry animation it was not asked for", () => {
     // The class is for a press. A card drawn open, or folded, has neither.
-    expect(drawOpen(bash)).not.toMatch(/is-opening|is-closing/);
-    expect(draw(bash)).not.toMatch(/is-opening|is-closing/);
+    expect(drawOpen(old)).not.toMatch(/is-opening|is-closing/);
+    expect(draw(old)).not.toMatch(/is-opening|is-closing/);
   });
 
   it("shows a diff as its counts, and the diff itself on request", () => {
@@ -374,8 +378,9 @@ describe("the permission card, folded and opened", () => {
     expect(html).toContain('<p class="ask-change-lead">Change the agent Nova.</p>');
     // A short move stays as it is.
     expect(html).toContain('<dt>Access</dt><dd><span class="ask-change-was">edits</span>');
-    expect(html).toContain('<dt>Role</dt><dd class="is-folded"><span class="ask-change-size">changed · 2 lines</span></dd>');
-    expect(html).toContain('<dt>Persistent prompt</dt><dd class="is-folded"><span class="ask-change-size">cleared</span></dd>');
+    // Both sizes of a move, and the size of what a cleared field was.
+    expect(html).toContain('<dt>Role</dt><dd class="is-folded"><span class="ask-change-size">changed · 13 characters → 2 lines</span></dd>');
+    expect(html).toContain('<dt>Persistent prompt</dt><dd class="is-folded"><span class="ask-change-size">cleared · was 8,000 characters</span></dd>');
     expect(html).toContain("<span>2 long fields</span>");
     expect(html).not.toContain("Does not push.");
     expect(html).not.toContain(prompt);
@@ -388,36 +393,72 @@ describe("the permission card, folded and opened", () => {
     answers(open);
   });
 
-  it("never folds what a removal does to the chart", () => {
-    const reports = Array.from({ length: 300 }, (_, i) => `Dev${i}`).join(", ");
-    const ask: AskProp = {
+  describe("what a removal does to the chart", () => {
+    // The reviewer's payload: 300 reports under a removed head.
+    const reports = Array.from({ length: 300 }, (_, i) => `Report ${String(i + 1).padStart(3, "0")}`).join(", ");
+    const moved = (to: string, summary?: unknown): AskProp => ({
       id: "f4", toolName: "mcp__octiq__agent_delete", once: true,
       toolInput: {
-        change: "Remove the agent Cto.\n\n…",
+        change: "Remove the agent HEAD.\n\n…",
         changeFacts: {
-          lead: "Remove the agent Cto.",
+          lead: "Remove the agent HEAD.",
           rows: [
             { label: "Role", value: "Leads Octiq.\nReviews every merge." },
             { label: "Head", value: "The cross-project conversation will have no head until another is chosen." },
-            { label: "Direct reports", value: `${reports} will report to Potato.` },
+            { label: "Front desk", value: "Incoming requests will have no front desk until another is chosen." },
+            { label: "Direct reports", value: `${reports} will report to ${to}.`, ...(summary === undefined ? {} : { summary }) },
             { label: "Memory note", value: "Kept in the vault." },
           ],
         },
       },
-    };
-    const html = draw(ask);
-    // The seat that empties, whole, though it is longer than a short fact.
-    expect(html).toContain("<dt>Head</dt><dd>The cross-project conversation will have no head until another is chosen.</dd>");
-    // 300 names fold; that they move, and to whom, does not.
-    expect(html).toMatch(/<dt>Direct reports<\/dt><dd class="is-folded"><span class="ask-change-tail">…[^<]*Dev299 will report to Potato\.<\/span><span class="ask-change-size">[\d,]+ characters<\/span><\/dd>/);
-    expect(html).not.toContain("Dev0, Dev1,");
-    expect(html).toContain('<dt>Role</dt><dd class="is-folded"><span class="ask-change-size">2 lines</span></dd>');
-    expect(html).toContain("<dt>Memory note</dt><dd>Kept in the vault.</dd>");
-    // Opened: every one of the 300, with no cut.
-    const open = drawOpen(ask);
-    expect(open).toContain(`<dt>Direct reports</dt><dd>${reports} will report to Potato.</dd>`);
-    expect(open).not.toContain("card-fold-cut");
-    answers(open);
+    });
+
+    it("draws the host's line for the reports whole, with the size of what it stands for", () => {
+      const html = draw(moved("Potato Juice", "300 direct reports will report to Potato Juice"));
+      // The seats that empty, whole, though each is longer than a short fact.
+      expect(html).toContain("<dt>Head</dt><dd>The cross-project conversation will have no head until another is chosen.</dd>");
+      expect(html).toContain("<dt>Front desk</dt><dd>Incoming requests will have no front desk until another is chosen.</dd>");
+      expect(html).toContain(
+        '<dt>Direct reports</dt><dd class="is-folded"><span class="ask-change-summary">300 direct reports will report to Potato Juice</span>'
+        + '<span class="ask-change-size">3,627 characters</span></dd>',
+      );
+      expect(html).not.toContain("Report 300");
+      expect(html).toContain('<dt>Role</dt><dd class="is-folded"><span class="ask-change-size">2 lines</span></dd>');
+      expect(html).toContain("<dt>Memory note</dt><dd>Kept in the vault.</dd>");
+      answers(html);
+    });
+
+    it("draws no piece of the names when the host sent no line for them", () => {
+      for (const to of ["Potato Juice", `Manager ${"x".repeat(100)}`]) {
+        const html = draw(moved(to));
+        // The label, and how much there is. Not the last sixty characters,
+        // which read as the fact and were only where the text happened to end.
+        expect(html, to).toMatch(/<dt>Direct reports<\/dt><dd class="is-folded"><span class="ask-change-size">[\d,]+ characters<\/span><\/dd>/);
+        expect(html, to).not.toContain("…");
+        expect(html, to).not.toContain("Report 300");
+        expect(html, to).not.toContain("xxxx");
+        expect(html, to).toContain("<dt>Head</dt>");
+        expect(html, to).toContain("<dt>Front desk</dt>");
+      }
+    });
+
+    it("treats a line it cannot draw as no line, and keeps the rows", () => {
+      const bad: unknown[] = ["a\nb", "s".repeat(161), 300, "   ", null, { text: "300" }];
+      for (const summary of bad) {
+        const html = draw(moved("Potato Juice", summary));
+        expect(html, JSON.stringify(summary)).toContain('<dt>Direct reports</dt><dd class="is-folded"><span class="ask-change-size">3,627 characters</span></dd>');
+        // Still rows, not the fallback text.
+        expect(html, JSON.stringify(summary)).toContain('<p class="ask-change-lead">Remove the agent HEAD.</p>');
+        expect(html, JSON.stringify(summary)).not.toContain("ask-change-summary");
+      }
+    });
+
+    it("opens every one of the 300, with no cut", () => {
+      const open = drawOpen(moved("Potato Juice", "300 direct reports will report to Potato Juice"));
+      expect(open).toContain(`<dt>Direct reports</dt><dd>${reports} will report to Potato Juice.</dd>`);
+      expect(open).not.toContain("card-fold-cut");
+      answers(open);
+    });
   });
 
   it("opens a 20,000-character change whole, as rows and as an older host's text", () => {
@@ -445,11 +486,12 @@ describe("the permission card, folded and opened", () => {
 
   it("says exactly how much is left out past the hard cap, and only then", () => {
     const huge = "c".repeat(200_000 + 77);
-    const open = drawOpen({ id: "f7", toolName: "Bash", toolInput: { command: huge } });
+    const ask: AskProp = { id: "f7", toolName: "mcp__octiq__agent_policy_update", once: true, toolInput: { change: huge } };
+    const open = drawOpen(ask);
     expect(open).toContain(`<pre class="ask-card-body is-whole">${"c".repeat(200_000)}</pre>`);
     expect(open).toContain('<p class="card-fold-cut" role="note">The first 200,000 of 200,077 characters are shown. 77 characters are not shown.</p>');
     // Folded, the size is the whole size, not the capped one.
-    expect(draw({ id: "f7", toolName: "Bash", toolInput: { command: huge } })).toContain("<span>200,077 characters</span>");
+    expect(draw(ask)).toContain("<span>200,077 characters</span>");
   });
 
   it("folds a plan to its opening and opens every line of it", () => {
@@ -459,6 +501,135 @@ describe("the permission card, folded and opened", () => {
     expect(draw(ask)).toContain('<span class="ask-card-first">## Step 1</span>');
     expect(draw(ask)).toContain("<span>902 more lines</span>");
     expect(drawOpen(ask)).toContain(`<pre class="ask-card-body is-whole">${plan}</pre>`);
+  });
+});
+
+describe("a command on the permission card", () => {
+  const lines = (n: number) => Array.from({ length: n }, (_, i) => `step ${i + 1}`).join("\n");
+  const bash = (command: string): AskProp => ({ id: "c1", toolName: "Bash", toolInput: { command } });
+  /** The allow buttons as drawn: whether each is held back. */
+  const allows = (html: string) => {
+    const always = /<button class="ask-btn"([^>]*)>Always<\/button>/.exec(html);
+    const once = /<button class="ask-btn is-primary"([^>]*)>Allow once<\/button>/.exec(html);
+    expect(always, "no Always").not.toBeNull();
+    expect(once, "no Allow once").not.toBeNull();
+    return { always: always![1].includes('aria-disabled="true"'), once: once![1].includes('aria-disabled="true"') };
+  };
+  const deny = (html: string) => /<button class="ask-btn is-quiet"([^>]*)>Deny<\/button>/.exec(html)![1];
+
+  it("never names a script by its first command, and shows every line of it", () => {
+    // The reviewer's two: a harmless first line over the one that matters.
+    for (const [first, second] of [['echo "Routine check"', "rm -rf /tmp/example-review-data"], ["pwd", "git push origin main"]]) {
+      const html = draw(bash(`${first}\n${second}`));
+      expect(html).toContain('Claude wants to use <strong>Bash</strong><span class="ask-card-script">2-line script</span>');
+      expect(html).not.toMatch(/bash\(|git\(|shell\(/);
+      // Both lines, in one block, with nothing of it clamped or behind a control.
+      const drawn = `${first}\n${second}`.replace(/"/g, "&quot;");
+      expect(html).toContain(`<pre class="ask-card-body is-command">${drawn}</pre>`);
+      expect(html).toContain(">command · 2 lines<");
+      expect(html).not.toContain("card-fold");
+      expect(html).not.toContain("ask-card-first");
+      expect(html).not.toContain("more line");
+      // Nothing is unseen, so nothing is held.
+      expect(allows(html)).toEqual({ always: false, once: false });
+      // Its icon is a thing that runs, whatever the first line reads like.
+      expect(html).toContain('<span class="tool-icon" data-kind="run"');
+    }
+  });
+
+  it("names a script the same whichever tool runs it, and a one-line command as before", () => {
+    expect(draw({ id: "c2", toolName: "command_execution", toolInput: { command: "cat notes.md\nrm notes.md" } }))
+      .toContain('<strong>command_execution</strong><span class="ask-card-script">2-line script</span>');
+    expect(draw(bash("git push origin main"))).toContain("Claude wants to use <strong>git(push)</strong>");
+  });
+
+  it("shows a command of twelve lines whole, and allows it as it is", () => {
+    const html = draw(bash(lines(12)));
+    expect(html).toContain(`<pre class="ask-card-body is-command">${lines(12)}</pre>`);
+    expect(html).toContain('<span class="ask-card-script">12-line script</span>');
+    expect(html).not.toContain("card-fold");
+    expect(html).not.toContain("not shown");
+    expect(allows(html)).toEqual({ always: false, once: false });
+  });
+
+  it("past twelve lines shows the first twelve, says what it does not, and holds Allow until it is opened", () => {
+    const html = draw(bash(lines(13)));
+    // The first twelve, each whole; the thirteenth is not on the card.
+    expect(html).toContain(`<pre class="ask-command-text">${lines(12)}</pre>`);
+    expect(html).not.toContain("step 13");
+    // Said at full strength, with what to do about it.
+    expect(html).toMatch(/<p class="ask-command-unseen"><strong>1 more line not shown<\/strong><span id="[^"]+"> Open the full command to allow it\.<\/span><\/p>/);
+    // The control is a button in words, above the command it opens.
+    const button = /<button type="button" class="card-fold-button ask-btn is-primary" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)">Open the full command<\/button>/.exec(html);
+    expect(button, "no open button").not.toBeNull();
+    for (const id of button![1].split(" ")) expect(html).toContain(`id="${id}"`);
+    expect(html).toContain(`id="${button![2]}">command · 13 lines<`);
+    expect(html.indexOf("card-fold-button")).toBeLessThan(html.indexOf("ask-command-text"));
+    expect(html.indexOf("ask-command-text")).toBeLessThan(html.indexOf("ask-card-foot"));
+    // Both allows are held, each pointing at the reason; Deny is not.
+    expect(allows(html)).toEqual({ always: true, once: true });
+    const reason = /<span id="([^"]+)"> Open the full command to allow it\.<\/span>/.exec(html)![1];
+    expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${reason}"[^>]*>Allow once</button>`));
+    expect(deny(html)).not.toContain("aria-disabled");
+    expect(deny(html)).not.toContain("disabled");
+    // Held is not `disabled`: the button keeps its place in the tab order.
+    expect(html).not.toMatch(/<button class="ask-btn is-primary" type="button" disabled/);
+  });
+
+  it("opened, it is every line in one scroll, and the answers work", () => {
+    const html = drawOpen(bash(lines(50)));
+    expect(html).toContain('<div class="ask-card-body is-command is-long" data-open="true">');
+    // The first twelve, then the other thirty-eight under them: all fifty.
+    const rest = Array.from({ length: 38 }, (_, i) => `step ${i + 13}`).join("\n");
+    expect(html).toContain(`<pre class="ask-command-text">${lines(12)}</pre>`);
+    expect(html).toContain(`<pre class="ask-command-text">${rest}</pre>`);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain(">Fold the command</button>");
+    expect(html).not.toContain("not shown");
+    expect(allows(html)).toEqual({ always: false, once: false });
+    // The sentences the foot shortens are still the last thing it opens.
+    expect(html).toContain('<p class="card-fold-note">Paused until you answer.');
+    expect(html.indexOf("card-fold-note")).toBeLessThan(html.indexOf("ask-card-foot"));
+  });
+
+  it("draws no part of a line too long to draw whole, and holds Allow the same", () => {
+    const html = draw(bash(`echo ${"A".repeat(5000)} | base64 -d | sh`));
+    expect(html).not.toContain("AAAA");
+    expect(html).not.toContain("base64");
+    expect(html).toMatch(/<strong>5,022 characters not shown<\/strong>/);
+    expect(allows(html)).toEqual({ always: true, once: true });
+    // One line is still a command with a name of its own.
+    expect(html).toContain("Claude wants to use <strong>bash(echo)</strong>");
+  });
+
+  it("stops only at the hard cap, and says exactly how much it left out", () => {
+    const huge = `echo start\n${"c".repeat(200_000 + 77)}`;
+    const open = drawOpen(bash(huge));
+    expect(open).toContain('<p class="card-fold-cut" role="note">The first 200,000 of 200,088 characters are shown. 88 characters are not shown.</p>');
+    expect(open).toContain(`<pre class="ask-command-text">${"c".repeat(200_000 - 11)}</pre>`);
+    expect(draw(bash(huge))).toContain("<strong>1 more line not shown</strong>");
+  });
+
+  it("treats a script or code an MCP tool runs as a command too", () => {
+    const html = draw({ id: "c3", toolName: "mcp__playwright__browser_run_code_unsafe", toolInput: { code: lines(13) } });
+    expect(html).toContain(">code · 13 lines<");
+    expect(html).toContain(">Open the full code</button>");
+    expect(html).toContain("Open the full code to allow it.");
+    expect(html).toMatch(/<button class="ask-btn is-primary"[^>]*aria-disabled="true"[^>]*>Allow once<\/button>/);
+    const short = draw({ id: "c4", toolName: "mcp__sandbox__exec", toolInput: { script: "make\nmake install" } });
+    expect(short).toContain('<pre class="ask-card-body is-command">make\nmake install</pre>');
+  });
+
+  it("opens a diff of 600 rows whole in one step, and counts what it leaves of a longer one", () => {
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i}`).join("\n");
+    const whole = drawOpen({ id: "c5", toolName: "Write", toolInput: { file_path: "/repo/big.txt", content: lines(600) } });
+    expect(whole.match(/diff-row is-add/g)).toHaveLength(600);
+    expect(whole).not.toContain("diff-more");
+    // 5,000 rows at once hold the page for about 0.4 s, so past 600 the rest
+    // stays one press away, and says exactly how much it is.
+    const long = drawOpen({ id: "c6", toolName: "Write", toolInput: { file_path: "/repo/big.txt", content: lines(5000) } });
+    expect(long.match(/diff-row is-add/g)).toHaveLength(600);
+    expect(long).toContain("Show 4400 more lines");
   });
 });
 

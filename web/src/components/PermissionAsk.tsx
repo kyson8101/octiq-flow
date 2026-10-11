@@ -15,15 +15,24 @@
 // It arrives folded (`lib/cardFold`): the tool, the path, the short facts and
 // the answers. A long part is named with its size and opens whole, above the
 // answers; nothing on this card is ever cut without saying how much.
-import { useEffect, useState } from "react";
+//
+// A command is not a long part. It is what is being approved, so it is on the
+// folded card whole, up to twelve lines; past that the card shows the lines
+// it can, says how many it does not, and holds Allow back until the whole
+// command has been opened. Its first line never stands for it, in the title
+// or under it.
+import { useEffect, useId, useMemo, useState } from "react";
 import { ASK_WAIT_SECS, askDeadline, askRemaining, askWaitSecs, clockText } from "../lib/askClock";
-import { askDetail, changeFacts, type ChangeRow } from "../lib/askDetail";
+import { askDetail, changeFacts, isCommand, type ChangeRow } from "../lib/askDetail";
 import { bridge } from "../lib/bridge";
-import { diffLabel, longRowsLabel, rowFold, textFold, type RowFold } from "../lib/cardFold";
+import {
+  allowHeld, commandFold, commandOpened, count, cutNote, diffLabel, longRowsLabel, rowFold, scriptLabel, textFold,
+  unseenLines, type RowFold,
+} from "../lib/cardFold";
 import { fileDiff } from "../lib/diff";
 import { mcpParts, toolLook, toolWords } from "../lib/toolKind";
-import { FoldBody, FoldLine, useFold, WholeText } from "./CardFold";
-import { DiffView } from "./DiffView";
+import { FoldBody, FoldButton, FoldLine, useFold, WholeText } from "./CardFold";
+import { DiffView, FIRST_OPENED } from "./DiffView";
 import { ToolIcon } from "./ToolIcon";
 
 export type Ask = {
@@ -116,12 +125,12 @@ function ChangeValue({ row }: { row: ChangeRow }) {
   );
 }
 
-/** A row that is folded: what stays of it beside its label. The end of a
- *  consequence too long to draw whole comes first, then the size. */
+/** A row that is folded: what stays of it beside its label. The host's own
+ *  line for it comes first, whole, then its size. Never a piece of the value. */
 function FoldedValue({ fold }: { fold: Extract<RowFold, { folded: true }> }) {
   return (
     <dd className="is-folded">
-      {fold.tail && <span className="ask-change-tail">{fold.tail}</span>}
+      {fold.summary && <span className="ask-change-summary">{fold.summary}</span>}
       <span className="ask-change-size">{fold.note}</span>
     </dd>
   );
@@ -154,12 +163,13 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   startOpen?: boolean;
 }) {
   const [sending, setSending] = useState<"allow" | "deny" | "always" | null>(null);
-  const fold = useFold(ask.id, { startOpen });
   const path = target(ask);
   // The same drawing the card will show once the edit has run — asked BEFORE
   // it runs, so it has no line numbers to give. That is the honest half: what
   // is being decided here is the change, not where in the file it lands.
-  const diff = fileDiff(ask.toolName ?? "", ask.toolInput);
+  // Kept between the clock's ticks, so an opened diff is not drawn again
+  // every second.
+  const diff = useMemo(() => fileDiff(ask.toolName ?? "", ask.toolInput), [ask.toolName, ask.toolInput]);
   const extra = diff ? null : askDetail(ask.toolInput);
   // A change to the registered agents, as the rows the host sent beside its
   // text. Rows that are not exactly the shape drawn below leave the text.
@@ -177,13 +187,34 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   // whether or not its value is; a text keeps its first line.
   const rows = (facts?.rows ?? []).map((row) => ({ row, fold: rowFold(row) }));
   const longRows = rows.filter((item) => item.fold.folded);
-  const text = extra && !facts ? textFold(extra.body) : null;
+  // Something that runs is drawn by the command's rule; anything else that
+  // is text (a plan, an older host's change) by its opening and its size.
+  const runs = extra && !facts && isCommand(extra) ? extra.body : null;
+  // Kept between the clock's ticks: a command can be very long.
+  const command = useMemo(() => (runs === null ? null : commandFold(runs)), [runs]);
+  const opened = useMemo(() => (command && command.more > 0 ? commandOpened(command) : null), [command]);
+  // One control. Behind it, a long command's own block and the sentences the
+  // foot shortens are two boxes; every other card has the one.
+  const fold = useFold(ask.id, { parts: opened ? 2 : 1, startOpen });
+  const text = extra && !facts && !command ? textFold(extra.body) : null;
   const folded = [
     diff && diffLabel(diff),
     longRows.length > 0 && longRowsLabel(longRows.length),
     text && !text.whole && text.rest,
   ];
   const folds = folded.some(Boolean);
+  // Over several lines it is a script, and no one of its commands names it.
+  const script = command && command.lines > 1 ? scriptLabel(command.lines) : null;
+  // A command the folded card cannot show whole has to be opened before it
+  // can be allowed. Once is enough: it stays allowed if it is folded again.
+  const [seen, setSeen] = useState<string | null>(startOpen ? ask.id : null);
+  useEffect(() => {
+    if (fold.open) setSeen(ask.id);
+  }, [fold.open, ask.id]);
+  const held = allowHeld(command, fold.open || seen === ask.id);
+  const commandId = useId();
+  const heldId = useId();
+  const what = extra?.label ?? "command";
 
   const answer = async (choice: "allow" | "deny" | "always") => {
     setSending(choice);
@@ -207,8 +238,9 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
     <div className="ask-card permission-card" role="alertdialog" aria-label="Permission needed">
       <div className="ask-card-head">
         <span className="ask-card-dot" aria-hidden="true" />
-        <span className="tool-icon" data-kind={look.kind} aria-hidden="true">
-          <ToolIcon kind={look.kind} />
+        {/* A script is something that runs, whatever its first line reads. */}
+        <span className="tool-icon" data-kind={script ? "run" : look.kind} aria-hidden="true">
+          <ToolIcon kind={script ? "run" : look.kind} />
         </span>
         {mcp ? (
           <span className="ask-card-title">
@@ -218,6 +250,13 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
               <span className="label-pill">{mcp.serverLabel}</span>
               <span className="label-pill is-mono">{mcp.tool}</span>
             </span>
+          </span>
+        ) : script ? (
+          <span className="ask-card-title">
+            {/* The tool and how much it runs. `bash(echo)` over a script whose
+                second line is `rm -rf` was the card naming the harmless part. */}
+            Claude wants to use <strong>{ask.toolName || "a tool"}</strong>
+            <span className="ask-card-script">{script}</span>
           </span>
         ) : (
           <span className="ask-card-title">
@@ -247,6 +286,48 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
         </div>
       )}
 
+      {extra && command && (
+        <div className="ask-card-detail ask-command" data-held={held || undefined}>
+          <div className="ask-command-top">
+            <span className="ask-card-label" id={commandId}>
+              {extra.label}{command.lines > 1 ? ` · ${count(command.lines, "line")}` : ""}
+            </span>
+            {/* Above what it opens, like every disclosure: the answers are on
+                the far side of the command however the card is anchored. */}
+            {opened && (
+              <FoldButton fold={fold} describedBy={commandId} className="ask-btn is-primary"
+                shut={`Open the full ${what}`} open={`Fold the ${what}`} />
+            )}
+          </div>
+          {opened ? (
+            (command.head || fold.shown) && (
+              <div className="ask-card-body is-command is-long" data-open={fold.shown || undefined}>
+                {command.head && <pre className="ask-command-text">{command.head}</pre>}
+                <FoldBody fold={fold} bounded={false}>
+                  <pre className="ask-command-text">{opened.rest}</pre>
+                </FoldBody>
+              </div>
+            )
+          ) : (
+            <pre className="ask-card-body is-command">{command.head}</pre>
+          )}
+          {opened && fold.shown && opened.hidden > 0 && (
+            <p className="card-fold-cut" role="note">{cutNote(opened.total, opened.hidden)}</p>
+          )}
+          {opened && !fold.open && (
+            <p className="ask-command-unseen">
+              <strong>{unseenLines(command)}</strong>
+              {held && <span id={heldId}> Open the full {what} to allow it.</span>}
+            </p>
+          )}
+          {opened && (
+            <FoldBody fold={fold} part={1} bounded={false}>
+              <p className="card-fold-note">{askNote(ask)}</p>
+            </FoldBody>
+          )}
+        </div>
+      )}
+
       {extra && text && (
         <div className="ask-card-detail">
           <div className="ask-card-label">{extra.label}</div>
@@ -261,7 +342,10 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
         {diff && (
           <div className="ask-card-detail">
             <div className="ask-card-label">{diff.kind === "create" ? "writing" : "changing"}</div>
-            <DiffView diff={diff} />
+            {/* This card has one disclosure, so the diff is whole in it as far
+                as the page can draw at once. Past that the diff says how
+                many rows it has left, on a control of its own. */}
+            <DiffView diff={diff} first={FIRST_OPENED} />
           </div>
         )}
         {longRows.length > 0 && (
@@ -310,12 +394,17 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
               className="ask-btn"
               type="button"
               disabled={!!sending}
+              // Held, not disabled: it keeps its place in the tab order with
+              // its reason read out, and Deny beside it still answers.
+              aria-disabled={held || undefined}
+              aria-describedby={held ? heldId : undefined}
               title={
-                ask.toolName?.toLowerCase() === "bash"
+                held ? `Open the full ${what} to allow it`
+                  : ask.toolName?.toLowerCase() === "bash"
                   ? "Stop asking about this program for the rest of this chat"
                   : "Stop asking about this tool for the rest of this chat"
               }
-              onClick={() => void answer("always")}
+              onClick={() => { if (!held) void answer("always"); }}
             >
               {sending === "always" ? "Allowing…" : "Always"}
             </button>
@@ -324,7 +413,10 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
             className="ask-btn is-primary"
             type="button"
             disabled={!!sending}
-            onClick={() => void answer("allow")}
+            aria-disabled={held || undefined}
+            aria-describedby={held ? heldId : undefined}
+            title={held ? `Open the full ${what} to allow it` : undefined}
+            onClick={() => { if (!held) void answer("allow"); }}
           >
             {sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"}
           </button>

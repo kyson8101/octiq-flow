@@ -10763,14 +10763,15 @@ body.is-ultra .eff {
   white-space: normal;
 }
 
-/* The end of a consequence too long to draw whole: the names fold, the fact
-   they lead up to does not. */
-.ask-change-tail {
-  color: var(--fg-1);
+/* The host's own line for a value too long to draw (`summary`): whole, on as
+   many rows as it needs, then the size of what it stands for. */
+.ask-change-summary {
+  color: var(--fg-0);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
-.ask-change-tail + .ask-change-size::before {
+.ask-change-summary + .ask-change-size::before {
   content: " · ";
   color: var(--fg-3);
 }
@@ -10794,6 +10795,83 @@ body.is-ultra .eff {
   -webkit-line-clamp: 2;
   line-clamp: 2;
   overflow: hidden;
+}
+
+/* A command (`lib/cardFold.commandFold`). It is what is being approved, so
+   every line the card draws is drawn in full, with no scroll of its own for
+   one to sit under. */
+.ask-card-body.is-command {
+  max-height: none;
+  overflow: visible;
+}
+
+.ask-command-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+/* How much a script is, beside the tool that runs it. */
+.ask-card-script {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg-1) 10%, transparent);
+  color: var(--fg-1);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Past twelve lines: the lines the card shows, and the rest under them once
+   it is opened. Opened, the whole command scrolls here, inside the card. */
+.ask-card-body.is-command.is-long[data-open] {
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ask-card-body.is-long .ask-command-text {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* What the folded card does not show, at full strength: it is the one thing
+   between the person and an Allow of lines they have not read. */
+.ask-command-unseen {
+  margin: 8px 0 0;
+  color: var(--fg-0);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ask-command-unseen > strong {
+  font-weight: 650;
+}
+
+/* An answer held back until the command has been opened. It keeps its place
+   and its words; the one control that leads is the one that opens. */
+.ask-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+:root .permission-card .ask-card-actions .ask-btn.is-primary[aria-disabled="true"],
+:root .permission-card .ask-card-actions .ask-btn.is-primary[aria-disabled="true"]:hover {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-weight: 400;
+}
+
+.ask-card-actions .ask-btn[aria-disabled="true"]:hover {
+  background: var(--bg-2);
+  color: var(--fg-1);
 }
 
 /* What holds the agent on the left, the answer on the right. On a narrow card
