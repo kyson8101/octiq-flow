@@ -10507,20 +10507,23 @@ body.is-ultra .eff {
 
 /* The answer a decision card leads with: the decision colour as a tint under
    its own outline, never a solid block and never the accent, which here is
-   the model's colour. */
-:is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary {
+   the model's colour. The safety card is among them for this one thing: the
+   card stays amber, because a refusal is a warning, but the answer it leads
+   with ("Keep it local", "Use safer approach") is a decision like any other,
+   and under Claude the accent drew it gold, the colour of the warning. */
+:is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary {
   border-color: var(--decide);
   background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
   color: var(--fg-0);
   font-weight: 600;
 }
 
-:is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary:hover {
+:is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary:hover {
   background: color-mix(in srgb, var(--decide) 28%, var(--bg-1));
   filter: none;
 }
 
-:is(.permission-card, .access-card, .qa-card) .ask-btn:focus-visible {
+:is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn:focus-visible {
   outline-color: var(--decide);
 }
 

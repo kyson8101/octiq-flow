@@ -170,6 +170,9 @@ import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type 
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar, TasksButton } from "./components/ChatWorkflowBar";
 import { taskColumnCounts } from "./lib/runPanel";
+import { dismissStrip, parseDismissed, runProgress, stripHidden, stripRun } from "./lib/runProgress";
+import { RunProgressStrip } from "./components/RunProgressStrip";
+import { besideHeld as heldBesideTask, holdsRunColumn, knownToStore, parseKnown } from "./lib/runColumn";
 import { ChatPlanCards } from "./components/ChatPlanCards";
 import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
 import {
@@ -410,6 +413,14 @@ const RAIL_KEY = "octiq.v2.railShut";
  *  so what is worth remembering is the decision to hide it. One flag for every
  *  chat in this browser, not one per chat. */
 const TASKS_KEY = "octiq.v2.tasksShut";
+/** The run strips the person put away, each as the strip's signature when it
+ *  was hidden (`lib/runProgress.dismissStrip`): one short string per run, the
+ *  oldest dropped, so a dismissed Done stays dismissed across a reload. */
+const STRIP_KEY = "octiq.v2.runStripHidden";
+/** The chats this browser last saw coordinating a run, as ids joined by
+ *  commas (`lib/runColumn`): what holds the run column's place on the next
+ *  load, before the ledger has answered. */
+const RUN_CHATS_KEY = "octiq.v2.runChats";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
@@ -604,6 +615,24 @@ export default function App() {
   ledgerRef.current = orchestrationState.snapshot;
   const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
   const workerChat = isWorkerChat(conversationId, chatParents);
+  // Until the ledger has been read, the run column's place (and the pane of
+  // a task open beside the chat) is held from what the page already knows
+  // (`lib/runColumn`), so the ledger arriving fills a column in rather than
+  // splitting a page that is already drawn.
+  const ledgerRead = orchestrationState.snapshot !== null;
+  const [knownRunChats] = useState(() => parseKnown(recall(RUN_CHATS_KEY)));
+  const heldBeside = ledgerRead || orchestrationState.error ? null
+    : heldBesideTask(beside, conversationId, (id) => conversations.some((item) => item.id === id));
+  const holdsRun = holdsRunColumn({
+    ledgerRead, ledgerFailed: !!orchestrationState.error, chatId: conversationId, besideTask: heldBeside, known: knownRunChats,
+  });
+  const ledgerRuns = orchestrationState.snapshot?.runs;
+  useEffect(() => {
+    if (!ledgerRuns) return;
+    const next = knownToStore({ runs: ledgerRuns }, recall(RUN_CHATS_KEY));
+    if (next !== null) remember(RUN_CHATS_KEY, next);
+  }, [ledgerRuns]);
+  const runColumnEntry = useEntry(!holdsRun, conversationId ?? "");
   /** Which chats the person opened the run surface for with Run, before the
    *  chat has a run of its own. View state only, held in memory: there is no
    *  execution mode. A regular agent decides for itself how to work, and a run
@@ -635,7 +664,7 @@ export default function App() {
   const runChatKey = workerChat ? (coordinatorId ? keyFor(coordinatorId) : null) : conversationId ? keyFor(conversationId) : null;
   const runWorkflow = useMemo(() => workerChat ? chatSnapshot(orchestration, runChatKey) : currentWorkflow,
     [workerChat, orchestration, runChatKey, currentWorkflow]);
-  const workflowVisible = orchestrated || runWorkflow.runs.length > 0;
+  const workflowVisible = orchestrated || runWorkflow.runs.length > 0 || holdsRun;
   const workflowSplit = roomToSplit && !focusMode && workflowVisible;
   // Put away from the top bar's Tasks button: the room is there, but the chat
   // takes all of it. See TASKS_KEY.
@@ -1959,7 +1988,10 @@ export default function App() {
   // without a split. The task beside it is drawn read-only from the same held
   // chats, so nothing here can send to it.
   const besideId = focusMode || mainPage || unavailableChat ? null
-    : besideTask(beside, conversationId, orchestrationState.snapshot, (id) => conversations.some((c) => c.id === id));
+    // Before the ledger is read, the pane is held for the person's own
+    // choice of a task chat; the ledger then confirms it or takes it away.
+    : ledgerRead ? besideTask(beside, conversationId, orchestrationState.snapshot, (id) => conversations.some((c) => c.id === id))
+      : heldBeside;
   const besideConversation = besideId ? conversations.find((c) => c.id === besideId) : undefined;
   const besideFits = roomBeside(chatAreaWidth);
   /** Both side by side, or — without the room — one at a time. */
@@ -2200,6 +2232,13 @@ export default function App() {
     observer.observe(area);
     return () => observer.disconnect();
   }, [chatArea]);
+  // The run column taking its share is known in the commit that draws it,
+  // before any observer says so. Measured there, the panes are never drawn
+  // for one frame against the width the chat had without the column: two
+  // panes that then became one, with the switcher pushing them down.
+  useLayoutEffect(() => {
+    if (chatArea) setChatAreaWidth(Math.round(chatArea.getBoundingClientRect().width));
+  }, [chatArea, runSplit, workflowView]);
 
   // The choice itself outlives a reload from an address that names no chat.
   useEffect(() => {
@@ -4738,15 +4777,39 @@ export default function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [cardFocus, showRunFor]);
+  const pendingTasks = useMemo(() => pendingByTask(pendingList), [pendingList]);
   const pendingView = useMemo<PendingActionsView>(() => {
     const rows = pendingByRow(pendingList);
-    const tasks = pendingByTask(pendingList);
     return {
       forRow: (chatId) => rows.get(chatId) ?? NO_ACTIONS,
-      forTask: (taskId) => tasks.get(taskId) ?? NO_ACTIONS,
+      forTask: (taskId) => pendingTasks.get(taskId) ?? NO_ACTIONS,
       reveal: revealPending,
     };
-  }, [pendingList, revealPending]);
+  }, [pendingList, pendingTasks, revealPending]);
+
+  // The run's one line above the composer, for the chat that coordinates it.
+  // Read off the ledger this tab already holds; it shows no clock, so it
+  // needs no tick of its own.
+  const [stripDismissed, setStripDismissed] = useState(() => parseDismissed(recall(STRIP_KEY)));
+  const runStrip = useMemo(() => {
+    if (workerChat || !conversationId) return null;
+    const run = stripRun(currentWorkflow.runs);
+    const strip = run && runProgress(currentWorkflow, run, Date.now(), pendingTasks).strip;
+    return run && strip ? { run, strip } : null;
+  }, [workerChat, conversationId, currentWorkflow, pendingTasks]);
+  const stripShown = !!runStrip && !stripHidden(stripDismissed, runStrip.strip);
+  const hideStrip = () => {
+    if (!runStrip) return;
+    const next = dismissStrip(stripDismissed, runStrip.strip.signature);
+    setStripDismissed(next);
+    remember(STRIP_KEY, JSON.stringify(next));
+  };
+  /** The strip's click: the Agents panel, on the run the strip is about. */
+  const openAgentsPanel = () => {
+    if (!runStrip || !conversationId) return;
+    showRunFor(conversationId, runStrip.run.id);
+    if (workflowSplit) showTasks(true);
+  };
 
   // Agents mode's creation action always prepares a new conversation, with
   // the configured head until the person picks someone else on its empty
@@ -5159,7 +5222,7 @@ export default function App() {
           <div className={`chat-app-surface ${entryClass(identity)}`} hidden={mainPage}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {(!workerChat || workflowVisible) && <ChatWorkflowBar snapshot={runWorkflow} orchestrated={workflowVisible} view={workflowView} focusMode={focusMode} split={workflowSplit}
-            unified={workflowVisible} selectedRun={displayedRun} worker={workerChat}
+            unified={workflowVisible} selectedRun={displayedRun} worker={workerChat} held={holdsRun}
             // One way back at a time: while the run panel is on screen its
             // Main agent chat button is that way, so the bar does not repeat it.
             onBackToMain={workerChat && (workerCoordinatorKey ?? runChatKey) && !(workflowVisible && (runSplit || workflowView === "run"))
@@ -5174,11 +5237,13 @@ export default function App() {
             pendingApprovals={pendingApprovals}
             onView={showWorkflowView} />}
           <div className={`workflow-surfaces${runSplit ? " is-split" : ""}`}>
-          {workflowVisible && <div className="workflow-run-surface" hidden={workflowSplit ? tasksShut : workflowView !== "run"}
+          {workflowVisible && <div className={`workflow-run-surface ${entryClass(runColumnEntry)}`} hidden={workflowSplit ? tasksShut : workflowView !== "run"}
             style={{ "--run-w": `${runDock.width}px` } as React.CSSProperties}>
             {runSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
-            <OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
+            {/* While its place is only held, the column is empty: the ledger
+                has not said what is in it, and "no missions" would be a guess. */}
+            {!holdsRun && <OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
               allowManualRun={!agentsMode}
               // Cards for the main chat and its workers render in the main
               // chat, so only there does its button carry them.
@@ -5205,7 +5270,7 @@ export default function App() {
                   {MODELS.filter((item) => item.agent !== "pi" && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
                 </select></label>
                 <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
-              </div>} />
+              </div>} />}
           </div>}
           <div className="workflow-chat-surface" hidden={!workflowSplit && workflowView === "run"} ref={setChatArea}>
           {besideId && besideConversation && !besideFits && <BesideBar showing={besideShows}
@@ -5591,6 +5656,14 @@ export default function App() {
               </section>
             );
           })}
+
+          {/* How far the run has got, on the composer. It grows upward like the
+              cards above it, so arriving never moves the composer. */}
+          {conversationId && !workerChat && (
+            <Arrive when={stripShown} scope={conversationId}>
+              {runStrip && <RunProgressStrip strip={runStrip.strip} onOpen={openAgentsPanel} onHide={hideStrip} />}
+            </Arrive>
+          )}
 
           {/* A task chat takes no messages: no composer, and no block in its
               place — the Read-only badge by its title says so. */}

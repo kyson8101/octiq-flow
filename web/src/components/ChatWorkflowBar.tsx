@@ -7,11 +7,19 @@ import { OpenBesideButton } from "./OpenBesideButton";
 import { ReadOnlyBadge } from "./ReadOnlyBadge";
 import "./ChatWorkflowBar.css";
 
+/** What a held title holds its line with: a no-break space, made from its
+ *  code so no invisible character sits in this file. */
+const HELD_TITLE = String.fromCharCode(160);
+
 /** The line over a chat that has work in a run: its title and Tasks/Chat.
  *  Progress and approvals stay in the task details. A chat with no run draws
  *  nothing here; the agent decides how to work, and a run exists only once
  *  one is explicitly started. */
-export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPending = false, split = false, unified = false, selectedRun, onBackToMain, onOpenBeside, besideTitle = "this task", readOnly = false }: {
+export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPending = false, split = false, unified = false, selectedRun, onBackToMain, onOpenBeside, besideTitle = "this task", readOnly = false, held = false }: {
+  /** The ledger has not been read yet and the page is holding this chat's
+   *  run column (`lib/runColumn`): the line holds its place too, with no
+   *  title in it, so the run's arrival fills it in rather than adding it. */
+  held?: boolean;
   snapshot: OrchestrationSnapshot; orchestrated: boolean; view: "chat" | "run";
   onView: (view: "chat" | "run") => void;
   pendingApprovals?: number;
@@ -39,13 +47,15 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
   // The Chat/Run tabs and the run line are how you get back to work in
   // flight, so they stay in focus mode too. A normal chat has neither, so the
   // bar itself goes rather than leaving an empty rule across the column.
-  if (!views && !run) return null;
+  if (!views && !run && !held) return null;
   const title = unified && <>
     {onBackToMain && <button type="button" className="workflow-back-main" title="Back to main chat" aria-label="Back to main chat" onClick={onBackToMain}>
       <BackIcon />
     </button>}
     {onOpenBeside && <OpenBesideButton className="is-bar" title={besideTitle} onClick={onOpenBeside} />}
-    <RunTitle text={run?.objective ?? "New mission"} />
+    {held && !run
+      ? <div className="workflow-heading" aria-hidden="true"><h1 className="workflow-title">{HELD_TITLE}</h1></div>
+      : <RunTitle text={run?.objective ?? "New mission"} />}
     {readOnly && <ReadOnlyBadge className="workflow-read-only" />}
   </>;
   const nav = views ? <nav className="chat-workflow-bar" aria-label="Chat workflow">

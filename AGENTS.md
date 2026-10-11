@@ -411,6 +411,12 @@ pending key and what the buttons send are the card's.
 - **Only a live `safety-blocked` event raises the notice.** The list read on
   connect or on reopening a chat (`safety_block_pending`) never does, and
   leaving the chat drops it.
+- **The card stays amber; the answer it leads with does not.** A refusal is
+  a warning, so a safety card keeps `--warn`. Its primary button ("Keep it
+  local", "Use safer approach") is a decision, and is drawn in `--decide`
+  like every card that asks: never the accent, which the composer rebinds to
+  the model's colour and which came up gold under Claude
+  (`lib/decideColour.test.ts`).
 
 ### A card that waits on the person arrives folded
 
@@ -829,6 +835,61 @@ message starts it again and takes the tick away.
   again, and offers Close only for a mission the host calls `closeEligible`.
   The click asks in the run panel's own words before
   `orchestration_mission_close`.
+
+### A run's progress is one line above the composer, and the Agents panel
+
+The chat that coordinates a run carries one line on its composer
+(`RunProgressStrip`): the state, tasks done of total as a bar, and at most
+two counts. A click opens the run panel, which draws the same run as three
+tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
+`lib/runProgress` off the ledger this tab already holds.
+
+- **Nothing is estimated.** A figure the host did not send is `null` and the
+  part that would draw it is left out; a zero is left out the same way. The
+  host does not send tokens per attempt (`attempt.usage`) or a worker's
+  context (`attempt.context`) yet, so today a row ends in its minutes and
+  there is no Tokens tile. Both fields are typed and read, so they appear
+  when the host sends them.
+- **Four states, in this order:** Needs you (a plan to approve, an open
+  decision, or a card the host holds for a task), Failed (a failed task, a
+  block nobody is asked about, a check whose verdict is fail, none of them
+  replaced), Done, Running. A cancelled or replaced task is counted nowhere,
+  so a run can reach its whole count. A stopped, closed or archived run, and
+  a run with no task, draws no strip.
+- **Groups: Needs you, Running, Finished, Planned.** Finished is the only
+  one that folds and starts folded; Finished and Planned show three rows and
+  a line for the rest. What failed is listed under Needs you, in the danger
+  colour. A stalled, disconnected or retrying worker stays under Running
+  with the host's label in the warning colour. An empty group is not drawn,
+  and the task on screen is never behind a fold.
+- **A row's words are the task's title and the host's own label.** The step
+  a worker says it is on, its summary, a path and a commit are the worker's
+  text and sit behind the row's disclosure with everything the row had
+  before (state word, kind, size, environment, branch, checklist, brief).
+- **Colour is state.** The accent is work in flight, as a tint; `--decide`
+  is what waits on the person, here and on the panel's decisions box, its
+  count on a collapsed goal and the Tasks button; `--warn` is a problem.
+  `RunProgressStrip.test.tsx` and `lib/decideColour.test.ts` read the sheets.
+- **One thing moves:** the texture over the part of the strip still to do,
+  while the run is live. Time is in minutes (`minutesLabel`), never seconds.
+- **Hiding the strip** is remembered against what it said
+  (`octiq.v2.runStripHidden`, one signature per run): it comes back when a
+  task settles, something asks or something fails, and not because a worker
+  started or stopped.
+
+**The run column's place is held before the ledger answers**
+(`lib/runColumn`). The ledger arrives after the chat is drawn, and the page
+used to split in two then. Three things say a chat has a run before the
+ledger does: a task chat's reserved `orch-` id, a task chat open beside the
+chat (the route or the remembered choice), and the chats this browser last
+saw coordinating (`octiq.v2.runChats`). The held column is empty until the
+ledger fills it. A coordinating chat opened for the first time in a browser,
+with no task beside it, still splits once.
+
+**A chat row that changes place moves there** (`lib/rowMotion`): the list is
+sorted by activity, and a row that only changed position used to be
+somewhere else on the next frame. Positions are read as the order changes,
+never on every render.
 
 ### Attention alerts
 

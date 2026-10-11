@@ -498,6 +498,10 @@
   transition: background 130ms ease-out;
 }
 .orch-attention:hover { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+/* Something waiting on the person is the decision colour. Amber stays for
+   the other kind: a task that is stuck. */
+.orch-attention[data-tone="decision"] { border-color: color-mix(in srgb, var(--decide) 55%, var(--border)); color: var(--decide); }
+.orch-attention[data-tone="decision"]:hover { background: var(--decide-tint); }
 .orch-attention:focus-visible,
 .orch-run-restore:focus-visible,
 .orch-tool:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -601,12 +605,14 @@
 /* How the plan was approved: one quiet line, the plan behind it. */
 .orch-plan-record { margin-bottom: 14px; min-width: 0; }
 
+/* Decisions waiting on the person: the decision colour, like every card
+   that asks. Nothing is wrong, so it is never amber. */
 .orch-decisions {
   margin-bottom: 14px;
   padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--decide) 55%, var(--border));
   border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  background: var(--decide-tint);
 }
 
 .orch-decisions h3,

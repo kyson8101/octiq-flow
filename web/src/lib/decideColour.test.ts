@@ -17,6 +17,9 @@ import mangaSheet from "../manga.css?raw";
 import chatPlanCss from "../components/ChatPlanCards.css?raw";
 import handoverCss from "../components/HandoverCards.css?raw";
 import planReviewCss from "../components/PlanReview.css?raw";
+import runPanelCss from "../components/OrchestrationPanel.css?raw";
+import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
+import runProgressCss from "../components/RunProgress.css?raw";
 import { MANAGED, mapTokens, parseOklch, parseThemeCss } from "./theme";
 import { BUILT_IN, THEMES } from "./themeStore";
 
@@ -189,8 +192,9 @@ const DECISION_RULES = [
   // Permission and access request.
   ".ask-card",
   ".ask-card-dot",
-  ":is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary",
-  ":is(.permission-card, .access-card, .qa-card) .ask-btn.is-primary:hover",
+  // The safety card's leading answer is one of them (see below).
+  ":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary",
+  ":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary:hover",
   // A question from the agent.
   ".qa-card",
   ".qa-dot",
@@ -249,11 +253,90 @@ describe("the cards that wait on a decision", () => {
     expect(named(".ask-btn.is-primary.is-danger").some((rule) => /--danger/.test(rule.body))).toBe(true);
   });
 
+  it("draws the safety card's leading answer in the decision colour, whatever the model's colour is", () => {
+    // "Keep it local" and "Use safer approach" used to take `.ask-btn.is-primary`
+    // as it stands: the accent, which the composer rebinds to the model's
+    // colour, so under Claude the answer came up gold on an amber card. The
+    // card stays a warning; the answer it leads with is a decision.
+    const lead = RULES.filter((rule) => /\.safety-card\b[^,{]*\)? \.ask-btn\.is-primary/.test(rule.selector) || /:is\([^)]*\.safety-card[^)]*\) \.ask-btn\.is-primary/.test(rule.selector));
+    expect(lead.map((rule) => rule.selector)).toEqual(expect.arrayContaining([
+      ":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary",
+      ":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary:hover",
+    ]));
+    for (const rule of lead) {
+      expect(rule.body, rule.selector).toMatch(/var\(--decide(-fg)?\)/);
+      expect(rule.body, rule.selector).not.toMatch(NOT_A_DECISION);
+    }
+    // It wins over the plain primary button, which is the accent: it names a
+    // card as well as the button, and it comes later in the sheet.
+    const plain = stylesCss.indexOf("\n.ask-btn.is-primary {");
+    const mine = stylesCss.indexOf("\n:is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary {");
+    expect(plain).toBeGreaterThan(-1);
+    expect(mine).toBeGreaterThan(plain);
+    expect(named(".ask-btn.is-primary")[0].body).toMatch(/var\(--accent\)/);
+    // No sheet draws that button for the safety card alone in another colour.
+    for (const rule of RULES.filter((item) => /\.safety-card[^,]*\.ask-btn/.test(item.selector) && !item.selector.includes(":is("))) {
+      expect(rule.body, rule.selector).not.toMatch(/--(accent|composer-accent|composer-ink|warn)\b/);
+    }
+    // The keyboard's ring on it is the decision colour too.
+    expect(named(":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn:focus-visible")[0].body).toMatch(/outline-color:\s*var\(--decide\)/);
+    // Monochrome: solid ink with its own label, like every card that asks.
+    const manga = RULES.filter((rule) => rule.file === "manga.css" && rule.selector.includes(".safety-card") && rule.selector.includes(".ask-btn.is-primary"));
+    expect(manga).toHaveLength(1);
+    expect(manga[0].body).toMatch(/background:\s*var\(--decide\)/);
+    expect(manga[0].body).toMatch(/(^|;)\s*color:\s*var\(--decide-fg\)/m);
+  });
+
   it("raises the quietest text one step on a tinted card", () => {
     const raised = RULES.filter((rule) => /--fg-3:\s*var\(--fg-2\)/.test(rule.body));
     expect(raised).toHaveLength(1);
     for (const card of [".ask-card:not(.safety-card)", ".qa-card", ".handover-card.is-pending", ".chat-plan[data-pending]"]) {
       expect(raised[0].selector).toContain(card);
     }
+  });
+});
+
+/* ---- A run: what waits on the person, and what is only a problem ------- */
+
+describe("a run's own surfaces", () => {
+  const run = [
+    ...rules(runPanelCss, "OrchestrationPanel.css"),
+    ...rules(workflowBarCss, "ChatWorkflowBar.css"),
+    ...rules(runProgressCss, "RunProgress.css"),
+  ];
+  const of = (selector: string) => run.filter((rule) => rule.selector === selector);
+
+  /** Everything that says "this waits on you" for a run: the strip's Needs
+   *  you state, the panel's group and row, the count on a collapsed goal,
+   *  the decisions box and the count on the Tasks button. */
+  const WAITS_ON_YOU = [
+    '.run-strip[data-state="needs"] .run-strip-dot',
+    '.run-strip[data-state="needs"] .run-strip-fill',
+    '.run-strip[data-state="needs"] .run-strip-reason',
+    '.run-group[data-group="needs"] > .run-group-head',
+    '.orch-task.run-row[data-state="needs"]',
+    '.run-row-note[data-tone="decide"]',
+    '.orch-attention[data-tone="decision"]',
+    ".orch-decisions",
+    ".tasks-toggle-owed",
+  ];
+
+  it.each(WAITS_ON_YOU)("%s is the decision colour, never amber and never the accent", (selector) => {
+    const found = of(selector);
+    expect(found.length, `no rule for ${selector}`).toBeGreaterThan(0);
+    expect(found.some((rule) => /var\(--decide(-tint)?\)/.test(rule.body)), `${selector} does not read --decide`).toBe(true);
+    for (const rule of found) expect(rule.body, selector).not.toMatch(NOT_A_DECISION);
+  });
+
+  it("keeps amber, on the run progress sheet, for a worker in trouble and nothing else", () => {
+    const amber = rules(runProgressCss, "RunProgress.css").filter((rule) => /--warn\b/.test(rule.body));
+    expect(amber.map((rule) => rule.selector)).toEqual(['.run-row-note[data-tone="warn"]']);
+  });
+
+  it("draws a task that is stuck in amber, which is a problem, and not in the decision colour", () => {
+    // The count on a collapsed goal: amber by default (blocked), the
+    // decision colour only when it counts decisions.
+    expect(of(".orch-attention")[0].body).toMatch(/var\(--warn\)/);
+    expect(of('.orch-attention[data-tone="decision"]')[0].body).not.toMatch(/--warn/);
   });
 });
