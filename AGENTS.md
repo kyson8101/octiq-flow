@@ -317,8 +317,9 @@ missing. The order:
    because either can be the one that survived. The same path keeps the chat's
    sandbox, which is bound to its folder, and the agent's own session folder.
 2. **Else move the chat to a folder that exists**: the worktree's root when
-   only a subfolder went, the repository's primary checkout as `chat_task`
-   last verified it, then a folder registered for the chat's project.
+   only a subfolder went and git still calls it that checkout, the
+   repository's primary checkout as `chat_task` last verified it, then a
+   folder registered for the chat's project.
    `chat_index::set_cwd` records it, and a Claude session is hard-linked into
    the new folder's `~/.claude/projects/<encoded cwd>/`
    (`carry_claude_session`). Claude Code 2.1.292 resumes by id from any
@@ -340,8 +341,19 @@ missing. The order:
   registered for the project its index entry names. The page's `fallbackCwd`
   and the planned folder only choose among those and add none. A filesystem
   root and the home folder are never moved into (`too_broad`), registered or
-  not, and a plain folder made where a worktree was removed is not that
-  worktree (`still_checkout_of`).
+  not.
+- **A folder that was a worktree's root is gone to only while git still calls
+  it that repository's checkout, whichever list offers it** (`Former`,
+  `still_checkout_of`). Three places say a folder was one: the worktree the
+  missing folder was found in, the last `chat_task` verification
+  (`is_worktree`), and git's `worktree list` for every vouched repository. A
+  plain folder made where such a worktree was removed is a directory and
+  nothing more, and the project registering it, or a folder inside it, does
+  not bring it back: it is passed over for the next safe folder, and with
+  none left the error says it `is no longer a checkout of the repository it
+  belonged to`. A registered folder that never was a worktree needs no Git
+  history. A folder that still exists never reaches recovery at all, so this
+  is asked only of where a chat is being MOVED.
 - **Nothing is overwritten.** A path that exists is never rebuilt over, and
   git refuses a branch another worktree holds, which falls through to step 2.
   Uncommitted and untracked files in the removed folder are gone, and both
@@ -349,8 +361,8 @@ missing. The order:
 - **Sandbox ownership is unchanged.** `sandbox::Store::select` still runs,
   after the recovery, with the recovered folder. A chat that had to move with
   an enabled sandbox is refused as before ("belongs to a different folder").
-- **It is told twice, once each.** `Recovery::settle` runs after those
-  refusals and inside what is held: a durable `octiq_chat_recovered` event
+- **It is told twice, once each.** `Held::settle` runs after those
+  refusals and is a method of what is held, so it cannot run outside it: a durable `octiq_chat_recovered` event
   draws a notice in the chat and moves the page's `cwd`, and the agent's next
   prompt carries a one-line note (`chat_recover::with_note`, taken in
   `start_session`) that stays out of the person's bubble.
@@ -598,17 +610,30 @@ scope clarification needs no gate.
   `worker_coordinator`), the way `access_handler` and `agents_hook` do. Hiding
   a tool in the MCP server is not authorization. A review of such a hook
   covers the window after a worker settles.
-- **Carry a session or history file to a second name atomically, and never
-  over what is there.** `hard_link` answering `AlreadyExists` is success, not
-  a reason to copy: the loser of a race that then copies writes through its
-  own link, which opens the file it is reading and empties the conversation
-  under both names (24 threads reproduced it in `chat_recover`). A carry that
-  must copy, across devices, writes a whole copy under a temporary name and
-  publishes it with a link or `create_new`, so it cannot replace anything; a
-  target that is already there is kept unless the source is newer, and then
-  it is swapped by a rename. A concurrency test asserts that BOTH the source
-  and the target are intact and byte-identical to the original
-  (`chat_recover::carry_file`).
+- **Carry a session or history file to a second name without ever writing
+  over what is there, and promise no more wholeness than the path gives.**
+  `hard_link` answering `AlreadyExists` is success, not a reason to copy: the
+  loser of a race that then copies writes through its own link, which opens
+  the file it is reading and empties the conversation under both names (24
+  threads reproduced it in `chat_recover`). A carry that must copy, across
+  devices, writes a whole copy under a temporary name and publishes it with a
+  hard link, so the name appears whole and only if nothing has it; a target
+  that is already there is kept unless the source is newer, and then it is
+  swapped by a rename. Only a filesystem with no links at all falls to
+  `create_new` plus a copy (`chat_recover::write_new`), and there the
+  guarantee is narrower: no file is overwritten or truncated, but the name
+  exists before the file is whole, because `std` has no publish that needs
+  neither a link nor a replace. What keeps that from being read as the
+  conversation: carries run one at a time (`Carrying`, a guard every carry
+  function takes, made only by `carrying()` and not lendable to another
+  thread), a copy that fails removes its own file before the next carry's
+  turn, and the agent is started by the thread that settled, after the carry
+  returned, under the claim on the chat (`Held::settle`). Another program
+  reading the folder in that moment, and a server killed mid-copy, can still
+  meet the partial file. Two tests pin it: one asserts that BOTH the source
+  and the target are intact and byte-identical to the original after 24
+  carries at once, the other pauses a last-resort copy and asserts that a
+  second carry does not answer until the file is whole.
 - **The `src-tauri/` folder name is historical.** There is no Tauri in it. It
   was left alone so paths, the service plist and muscle memory keep working;
   renaming it is a separate job.
