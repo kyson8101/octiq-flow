@@ -1040,6 +1040,19 @@ arguments never name the caller. An agent may:
 - propose a new **Lessons** section for its own memory, which the person
   approves on a card.
 
+Both writes are the chat's **own agent's**. An additional agent in a room
+(a seat, `session_key != chat_key`) holds a capability that proves the chat,
+not the chat's registered agent, so the host refuses it
+`vault_agent_memory_append` and `vault_agent_memory_lessons` before reading
+their arguments (`web.rs` `memory_seat_refusal`): `Only the chat's own agent
+can add to its working memory. An additional agent in a room is one voice in
+the chat, not its registered agent.` The person decided the append on
+2026-10-11 although `vault_patch` and `vault_write` can reach the same note,
+and those two are unchanged: only an agent's own chat writes its working
+memory through the tool that names it, the one whose saved entry OctiqFlow
+draws in the chat. A seat may still read. A worker's chat is its own voice,
+and appends to its assignee's memory as before.
+
 ### Lessons and the newest entries (`memory_lessons.rs`)
 
 A note has two parts: a curated `## Lessons` section under its header, and the
@@ -1068,7 +1081,7 @@ second file it has to know to read and decide which one to write.
   It records entries, and curates them the next time it leads a chat.
 - **An additional agent in a room cannot propose them.** Its capability proves
   the chat, not the chat's registered agent, so the host refuses it before
-  any card (`web.rs` `lessons_seat_refusal`).
+  any card (`web.rs` `memory_seat_refusal`).
 - **The read nudges.** With no Lessons and more than 8 entries, or with
   entries left out, the read carries a `lessonsHint` to propose some.
 - **A lesson for every agent goes up, not sideways.** The brief tells an agent

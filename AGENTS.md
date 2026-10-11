@@ -827,7 +827,7 @@ time limit).
   a tool in the MCP server is not authorization. A review of such a hook
   covers the window after a worker settles. A hook that speaks for the chat's
   registered agent refuses a room seat (`session_key != chat_key`) before any
-  card, as `seat_refusal`, `roster_seat_refusal` and `lessons_seat_refusal`
+  card, as `seat_refusal`, `roster_seat_refusal` and `memory_seat_refusal`
   do. Such a hook keeps the `HookCaller`: `task_hook_caller` hands back the
   chat key alone, which is how a seat was once taken for the chat's agent.
 - **Carry a session or history file to a second name without ever writing
