@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 // Loaded through Vite's `?raw`, not node:fs: this is a browser tsconfig.
 import host from "../../../src-tauri/src/team_tools.rs?raw";
+import { changeFacts, SUMMARY_MAX } from "./askDetail";
 import {
   allowHeld, capped, chars, COMMAND_CHARS, COMMAND_LINES, commandFold, commandOpened, count, cutNote, diffLabel, digits,
   foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, HARD_CAP,
@@ -153,6 +154,59 @@ describe("what a removal does to the chart", () => {
     for (const label of STRUCTURAL) expect(facts, label).toContain(`"${label}"`);
     expect(host).toContain(`const NO_HEAD: &str = "${noHead[0].toLowerCase()}${noHead.slice(1)}"`);
     expect(host).toContain(`const NO_FRONT_DESK: &str = "${noFrontDesk[0].toLowerCase()}${noFrontDesk.slice(1)}"`);
+  });
+
+  it("holds a summary to the length the host holds it to", () => {
+    // `team_tools::SUMMARY_MAX`, read from its source: a host that let a
+    // summary grow would have every one of them dropped here.
+    expect(host).toContain(`pub const SUMMARY_MAX: usize = ${SUMMARY_MAX};`);
+    // And the host counts characters, as the page does.
+    expect(host).toContain("summary.chars().count() <= SUMMARY_MAX");
+  });
+
+  describe("the removal card the host really sends", () => {
+    // `team_tools::delete_facts` for an agent with 300 reports, as its own
+    // test prints it (task K): ten rows, and the summary on one of them.
+    const names = Array.from({ length: 300 }, (_, i) => `Report ${String(i).padStart(3, "0")}`).join(", ");
+    const sent = (reports: Record<string, string>) => JSON.parse(JSON.stringify({
+      lead: "Remove the agent Lead.",
+      rows: [
+        { label: "Role", value: "Writes code." }, { label: "Provider", value: "Claude" },
+        { label: "Model", value: "sonnet" }, { label: "Effort", value: "high" }, { label: "Access", value: "auto" },
+        { label: "Available in", value: "every project" }, { label: "Reports to", value: "Manager" },
+        { label: "Team", value: "none" }, reports, { label: "Memory note", value: "Kept in the vault." },
+      ],
+    }));
+
+    it("folds 300 reports to the host's count of them, whole, and the size of the names", () => {
+      const value = `${names} will report to Manager.`;
+      expect(value.length).toBe(3622);
+      const facts = changeFacts(sent({ label: "Direct reports", value, summary: "300 direct reports will report to Manager" }));
+      expect(facts?.rows).toHaveLength(10);
+      const folds = facts!.rows.map((row) => rowFold(row));
+      // One row folds, and what stays of it is the host's line and a size.
+      expect(folds.filter((fold) => fold.folded)).toEqual([
+        { folded: true, note: "3,622 characters", summary: "300 direct reports will report to Manager" },
+      ]);
+    });
+
+    it("draws two reports as the sentence itself, which is short enough to be the fact", () => {
+      const facts = changeFacts(sent({
+        label: "Direct reports", value: "Report 000, Report 001 will report to Manager.",
+        summary: "2 direct reports will report to Manager",
+      }));
+      expect(facts?.rows.map((row) => rowFold(row)).every((fold) => !fold.folded)).toBe(true);
+    });
+
+    it("takes a manager's name the host shortened to fit, as the host wrote it", () => {
+      // 160 characters exactly, the name ending in the host's own "…".
+      const counts = "300 direct reports will report to ";
+      const summary = `${counts}${"M".repeat(SUMMARY_MAX - counts.length - 1)}…`;
+      expect([...summary]).toHaveLength(SUMMARY_MAX);
+      const value = `${names} will report to ${"M".repeat(400)}.`;
+      const facts = changeFacts(sent({ label: "Direct reports", value, summary }));
+      expect(rowFold(facts!.rows[8])).toEqual({ folded: true, note: `${digits(value.length)} characters`, summary });
+    });
   });
 
 });
