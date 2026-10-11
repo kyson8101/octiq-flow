@@ -31,6 +31,11 @@ export type ChangeRow =
 /** The longest summary a row may carry, in characters. */
 export const SUMMARY_MAX = 160;
 
+/** The most rows a change is drawn as. The host sends about a dozen (a
+ *  field each); 10,000 made by hand held the page for about four seconds.
+ *  Past this the card shows the host's text, as it does for an older host. */
+export const MAX_ROWS = 50;
+
 /** A change as the host sends it beside its text (`tool_input.changeFacts`,
  *  `team_tools::ChangeFacts`): one sentence, then its rows. */
 export type ChangeFacts = { lead: string; rows: ChangeRow[] };
@@ -103,6 +108,9 @@ function changeRow(raw: unknown): ChangeRow | null {
 export function changeFacts(raw: unknown): ChangeFacts | null {
   if (!isBag(raw) || !hasOnly(raw, ["lead", "rows"])) return null;
   if (!said(raw.lead) || !Array.isArray(raw.rows) || raw.rows.length === 0) return null;
+  // More rows than a change has fields is not a change the card can lay out:
+  // the text says it instead, folded like any other.
+  if (raw.rows.length > MAX_ROWS) return null;
   const rows: ChangeRow[] = [];
   for (const item of raw.rows) {
     const row = changeRow(item);

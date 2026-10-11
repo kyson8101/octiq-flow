@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { askDetail, changeFacts, isCommand, rowSummary, SUMMARY_MAX } from "./askDetail";
+import { askDetail, changeFacts, isCommand, MAX_ROWS, rowSummary, SUMMARY_MAX } from "./askDetail";
 
 describe("askDetail", () => {
   it("shows a command in full, because what it runs is the whole question", () => {
@@ -159,6 +159,16 @@ describe("changeFacts", () => {
       expect(changeFacts({ lead, rows: [good, row] }), JSON.stringify(row)).toBeNull();
     }
     expect(changeFacts({ lead, rows: [good, good] })?.rows).toHaveLength(2);
+  });
+
+  it("is nothing past fifty rows, however well formed each is", () => {
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ label: `Field ${i}`, value: `v${i}` }));
+    expect(changeFacts({ lead, rows: rows(MAX_ROWS) })?.rows).toHaveLength(50);
+    expect(changeFacts({ lead, rows: rows(MAX_ROWS + 1) })).toBeNull();
+    // What held the page for four seconds: refused before a row is read.
+    const started = performance.now();
+    expect(changeFacts({ lead, rows: rows(10_000) })).toBeNull();
+    expect(performance.now() - started).toBeLessThan(50);
   });
 
   it("is nothing when there is a key the card would not draw", () => {

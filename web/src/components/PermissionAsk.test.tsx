@@ -190,6 +190,27 @@ describe("PermissionAsk", () => {
     }
   });
 
+  it("shows a change of more than fifty rows as the host's text, folded like an older host's", () => {
+    const fields = Array.from({ length: 10_000 }, (_, i) => ({ label: `Field ${i}`, value: `v${i}` }));
+    const text = `Change the agent Nova.\n\n${fields.map((row) => `${row.label}: ${row.value}`).join("\n")}`;
+    const many: AskProp = {
+      id: "a9", toolName: "mcp__octiq__agent_update", once: true,
+      toolInput: { change: text, changeFacts: { lead: "Change the agent Nova.", rows: fields } },
+    };
+    const old: AskProp = { id: "a9", toolName: "mcp__octiq__agent_update", once: true, toolInput: { change: text } };
+    // No rows at all: not ten thousand, and not the first fifty of them.
+    const folded = draw(many);
+    expect(folded).not.toContain("ask-change");
+    // The same card an older host's text gets, to the character: its first
+    // line, how much more there is, and the whole of it once opened.
+    expect(folded).toBe(draw(old));
+    expect(folded).toContain('<span class="ask-card-first">Change the agent Nova.</span>');
+    expect(folded).toContain("<span>10,001 more lines</span>");
+    expect(drawOpen(many)).toBe(drawOpen(old));
+    expect(drawOpen(many)).toContain("Field 9999: v9999</pre>");
+    expect(folded).toContain(">Allow<");
+  });
+
   it("draws no rows for a tool that sent rows and no change", () => {
     // The rows stand in for the `change` text and for nothing else: a command
     // is what is being approved here, and it is what the card shows.

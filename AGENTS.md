@@ -439,7 +439,9 @@ folded line and are not part of this.
   a move it is an unknown key like any other). The rows `Head` and `Front
   desk` (`team_tools::delete_facts`) are sentences drawn whole up to 160
   characters; `cardFold.STRUCTURAL` holds those labels and `cardFold.test.ts`
-  reads `team_tools.rs` to check them.
+  reads `team_tools.rs` to check them. A change of more than 50 rows
+  (`askDetail.MAX_ROWS`; the host sends about a dozen) is shown as the host's
+  text instead, folded like an older host's.
 - **A command is what is being approved, not detail.** `command`, `script`
   and `code` (`askDetail.isCommand`) are on the folded card whole, up to
   twelve lines and 1,200 characters, no line cut and no scroll of their own.
