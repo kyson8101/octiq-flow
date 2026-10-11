@@ -20,18 +20,21 @@
 @keyframes plan-review-pulse { 50% { opacity: 0.25; } }
 .plan-review-meta { margin: 0; color: var(--fg-2); font-size: 12px; font-variant-numeric: tabular-nums; }
 
-/* Nothing written yet: three ghost rows hold the place the tasks will take. */
-.plan-review-empty { display: grid; gap: 8px; padding: 16px 0 4px; border-top: 1px solid var(--border); }
-.plan-review-empty p { margin: 4px 0 0; color: var(--fg-2); font-size: 12px; }
-.plan-review-ghost {
-  height: 34px; border-radius: var(--r-sm);
-  background: linear-gradient(90deg, var(--bg-1), var(--bg-2), var(--bg-1));
-  background-size: 200% 100%;
-  animation: plan-review-shimmer 1.6s ease-in-out infinite;
-}
-.plan-review-ghost:nth-child(2) { width: 82%; }
-.plan-review-ghost:nth-child(3) { width: 64%; }
-@keyframes plan-review-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+/* Nothing written yet: the state line and one line under it, nothing else.
+   The line sits under the heading's words, clear of the dot. */
+.plan-review[data-compact] { gap: 3px; }
+.plan-review-sub { margin: 0; padding-left: 17px; color: var(--fg-2); font-size: 12px; line-height: 1.4; }
+
+/* The tasks and the answers under them. When they arrive under the one-line
+   card it opens to them rather than jumping: `0fr → 1fr` is a height nobody
+   had to measure. `clip`, not `hidden`, so the answers still pin to the
+   panel's own scroll. A card that starts out full is drawn as it always was. */
+.plan-review-body { display: grid; grid-template-rows: 1fr; min-width: 0; }
+.plan-review-body-in { display: grid; gap: 18px; min-width: 0; }
+.plan-review-body[data-arrived] { overflow-y: clip; animation: plan-review-open 220ms ease-out; }
+.plan-review-body[data-arrived] > .plan-review-body-in { min-height: 0; animation: plan-review-arrive 220ms ease-out; }
+@keyframes plan-review-open { from { grid-template-rows: 0fr; } }
+@keyframes plan-review-arrive { from { opacity: 0; } }
 
 /* Stages: a number on a rail, the tasks hanging off it. */
 .plan-stages { min-width: 0; max-width: 100%; margin: 0; padding: 0; list-style: none; display: grid; }
@@ -202,5 +205,5 @@
   .plan-review-reject-confirm input { flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .plan-review, .plan-review-dot, .plan-review-ghost { animation: none !important; }
+  .plan-review, .plan-review-dot, .plan-review-body, .plan-review-body-in { animation: none !important; }
 }

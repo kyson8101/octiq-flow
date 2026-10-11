@@ -115,18 +115,26 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   // notification — and must not lock an approval of them. The approval names
   // the tasks it saw, and the host refuses it if the plan changed since.
   const stillDrafting = !approved && drafting && empty;
-  const waitReason = stillDrafting ? "The main agent is still writing the plan." : empty ? "The plan has no tasks yet."
-    : holding ? `Updated just now to revision ${revision}. Look it over, then decide.`
+  // The tasks have just arrived under the one-line card: it opens to them
+  // rather than jumping. A card that starts out full has nothing to open from.
+  const wasEmpty = useRef(empty);
+  const arrived = useRef(false);
+  if (wasEmpty.current !== empty) {
+    arrived.current = wasEmpty.current && !empty;
+    wasEmpty.current = empty;
+  }
+  const waitReason = holding ? `Updated just now to revision ${revision}. Look it over, then decide.`
     : drafting ? "The main agent is still active. Approving covers the tasks shown." : "";
   const titleId = `plan-review-title-${run.id}`;
+  const errorLine = error && <p className="plan-review-error" role="alert">{error}</p>;
   return (
     <section className="plan-review" aria-labelledby={titleId} data-drafting={stillDrafting || undefined}
-      data-updated={holding || undefined}
+      data-compact={empty || undefined} data-updated={holding || undefined}
       data-approved={approved || undefined} data-plan={run.id} data-revision={revision}>
       <header className="plan-review-head">
         <div className="plan-review-state">
           <span className="plan-review-dot" aria-hidden="true" />
-          <h3 id={titleId}>{approved ? "Plan approved" : stillDrafting ? "Drafting the plan" : "Plan ready for review"}</h3>
+          <h3 id={titleId}>{approved ? "Plan approved" : stillDrafting ? "Drafting the plan…" : empty ? "No tasks yet" : "Plan ready for review"}</h3>
         </div>
         <p className="plan-review-meta">
           {/* Which plan and which version of it: what a chat approval names,
@@ -136,64 +144,71 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
         </p>
       </header>
 
-      {empty ? (
-        <div className="plan-review-empty" aria-hidden={!drafting}>
-          {drafting && [0, 1, 2].map((row) => <span key={row} className="plan-review-ghost" />)}
-          <p>{drafting ? "Tasks appear here as the main agent writes them." : "No tasks yet. Ask the main agent for a plan in Chat."}</p>
-        </div>
-      ) : (
-        <ol className="plan-stages">
-          {stages.map((stage, index) => (
-            <li className="plan-stage" key={index} data-blocked={stage.blocked || undefined}>
-              <div className="plan-stage-head">
-                <span className="plan-stage-num" aria-hidden="true">{stage.blocked ? "!" : index + 1}</span>
-                <span className="plan-stage-title">{stageTitle(stage, index)}</span>
-                {!stage.blocked && stage.tasks.length > 1 && <span className="plan-stage-note">{stage.tasks.length} side by side</span>}
+      {/* Nothing to decide yet: one line and what it is waiting for. No ghost
+          rows and no answers, because a disabled Approve over an empty plan
+          says nothing the heading has not. */}
+      {empty ? <>
+        {stillDrafting
+          ? <p className="plan-review-sub" role="status" aria-live="polite">Tasks appear here as the main agent writes them.</p>
+          : !approved && <p className="plan-review-sub">Ask the main agent for a plan in Chat.</p>}
+        {errorLine}
+      </> : (
+        <div className="plan-review-body" data-arrived={arrived.current || undefined}>
+          <div className="plan-review-body-in">
+            <ol className="plan-stages">
+              {stages.map((stage, index) => (
+                <li className="plan-stage" key={index} data-blocked={stage.blocked || undefined}>
+                  <div className="plan-stage-head">
+                    <span className="plan-stage-num" aria-hidden="true">{stage.blocked ? "!" : index + 1}</span>
+                    <span className="plan-stage-title">{stageTitle(stage, index)}</span>
+                    {!stage.blocked && stage.tasks.length > 1 && <span className="plan-stage-note">{stage.tasks.length} side by side</span>}
+                  </div>
+                  <ul className="plan-stage-tasks">
+                    {stage.tasks.map((task) => (
+                      <PlanTask key={task.id} task={task} run={run} projectName={projectName}
+                        added={amended && waiting.includes(task.id)}
+                        number={numbers.get(task.id) ?? 0} numbers={numbers} />
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ol>
+
+            {errorLine}
+
+            {!approved && <footer className="plan-review-actions">
+              {chatHint ? <p className="plan-review-chat-hint">{chatHint}</p> : <div className="plan-review-change">
+                <textarea
+                  value={note}
+                  rows={1}
+                  placeholder="What should change?"
+                  aria-label="Changes to ask for"
+                  onChange={(event) => setNote(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      requestChanges();
+                    }
+                  }}
+                />
+                <button className="plan-review-quiet" type="button" disabled={!note.trim()} onClick={requestChanges}>Request changes</button>
+              </div>}
+              {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding}
+                rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
+                onCancel={() => { setRejecting(false); setReason(""); }} />}
+              <div className="plan-review-approve">
+                <span className="plan-review-hint">{waitReason || (blocked ? "Some tasks wait on each other and will never start." : "No worker starts until you approve.")}</span>
+                {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || holding} onClick={() => setRejecting(true)}>
+                  Reject
+                </button>}
+                <button className="orch-primary" type="button" disabled={busy || holding} onClick={() => void approve()}>
+                  {busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"}
+                </button>
               </div>
-              <ul className="plan-stage-tasks">
-                {stage.tasks.map((task) => (
-                  <PlanTask key={task.id} task={task} run={run} projectName={projectName}
-                    added={amended && waiting.includes(task.id)}
-                    number={numbers.get(task.id) ?? 0} numbers={numbers} />
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ol>
-      )}
-
-      {error && <p className="plan-review-error" role="alert">{error}</p>}
-
-      {!approved && <footer className="plan-review-actions">
-        {chatHint ? <p className="plan-review-chat-hint">{chatHint}</p> : <div className="plan-review-change">
-          <textarea
-            value={note}
-            rows={1}
-            placeholder="What should change?"
-            aria-label="Changes to ask for"
-            onChange={(event) => setNote(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                requestChanges();
-              }
-            }}
-          />
-          <button className="plan-review-quiet" type="button" disabled={!note.trim()} onClick={requestChanges}>Request changes</button>
-        </div>}
-        {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={empty || holding}
-          rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
-          onCancel={() => { setRejecting(false); setReason(""); }} />}
-        <div className="plan-review-approve">
-          <span className="plan-review-hint">{waitReason || (blocked ? "Some tasks wait on each other and will never start." : "No worker starts until you approve.")}</span>
-          {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || empty || holding} onClick={() => setRejecting(true)}>
-            Reject
-          </button>}
-          <button className="orch-primary" type="button" disabled={busy || empty || holding} onClick={() => void approve()}>
-            {busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"}
-          </button>
+            </footer>}
+          </div>
         </div>
-      </footer>}
+      )}
     </section>
   );
 }

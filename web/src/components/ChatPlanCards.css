@@ -8,6 +8,15 @@
   background: var(--bg-1);
 }
 .chat-plan .plan-review { margin-top: 14px; }
+/* A plan with no tasks yet is one line, and the card closes round it. It
+   opens again as the tasks arrive, so the padding moves with them. */
+.chat-plan[data-pending] { transition: padding 200ms ease-out; }
+.chat-plan[data-pending] > .plan-review { transition: margin-top 200ms ease-out; }
+.chat-plan[data-pending]:has(> .plan-review[data-compact]) { min-height: 40px; padding: 10px 14px; }
+.chat-plan[data-pending] > .plan-review[data-compact] { margin-top: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .chat-plan[data-pending], .chat-plan[data-pending] > .plan-review { transition: none; }
+}
 /* The transcript scrolls under it: nothing inside pins. */
 .chat-plan .plan-review-actions { position: static; box-shadow: none; background: var(--bg-0, var(--bg-1)); }
 
