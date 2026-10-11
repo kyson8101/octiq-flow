@@ -200,7 +200,8 @@ export type OrchestrationTask = {
   /** The task the coordinator created to replace this blocked or failed one. */
   supersededBy?: string;
   /** Set on a task a teammate asked for (orchestration/peer_request.rs): who
-   *  asked, the result they expect back and how long its attempt may run. */
+   *  asked, the result they expect back, and `maxMinutes` of working time
+   *  (waiting for a decision does not count, and it is not extended). */
   peerRequest?: {
     requestedBy: { id: string; name: string };
     requesterChatKey: string;
@@ -242,6 +243,11 @@ export type OrchestrationAttempt = {
   /** A read-only worker's closing words, held when its turn ended without a
    *  report. Not a settlement until the coordinator confirms this id. */
   proposedReport?: ProposedReport | null;
+  /** An attempt of a peer-request task: what its limit of working time
+   *  needs beyond the stamps here. `carriedMs` is what earlier attempts used;
+   *  each of `cardWaits` is a stretch it sat on a card only the person can
+   *  answer, which is not counted (`to` is absent while the card is up). */
+  peerClock?: { carriedMs: number; cardWaits?: { from: number; to?: number }[] };
   createdAt: number;
   updatedAt: number;
 };
@@ -284,6 +290,9 @@ export type OrchestrationGate = {
   resolution?: string;
   createdAt: number;
   updatedAt: number;
+  /** When it was resolved or cancelled. Absent while open, and on a gate
+   *  closed before this was recorded. */
+  closedAt?: number;
 };
 
 export type OrchestrationMessage = {

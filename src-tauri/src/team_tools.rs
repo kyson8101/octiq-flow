@@ -961,7 +961,8 @@ fn names(list: &[String]) -> String {
 /// who is `Removed`, and `Members` whole, before and after. `Other teams`
 /// comes last on either card when an agent that joins is on another team: an
 /// agent is on one team at a time, so joining this one takes it off that one,
-/// and the card says which.
+/// and the card says which. `Membership` closes every card: what the people
+/// on a team may do with each other (`MEMBERSHIP_GRANTS`).
 fn team_rows(roster: &Roster, change: &TeamChange) -> Vec<FactRow> {
     let of = |members: &[crate::team::TeamMember]| {
         names(&members.iter().map(|m| m.name.clone()).collect::<Vec<_>>())
@@ -1007,8 +1008,13 @@ fn team_rows(roster: &Roster, change: &TeamChange) -> Vec<FactRow> {
     if !moved.is_empty() {
         rows.push(plain("Other teams", moved.join(" ")));
     }
+    rows.push(plain("Membership", MEMBERSHIP_GRANTS));
     rows
 }
+
+/// What being on a team grants, said on every team card in the same words:
+/// the card moves who is on a team, and this is what that is for.
+pub const MEMBERSHIP_GRANTS: &str = "Teammates may ask each other questions and request bounded work, and each request for work is approved separately.";
 
 /// The first sentence of a team card.
 fn team_lead(change: &TeamChange) -> String {
@@ -3073,7 +3079,7 @@ mod tests {
         let input = input_of(&shown);
         assert_eq!(
             input["change"],
-            "Create the team Leads.\n\nAvailable in: every project\nMembers: Potato, Nas"
+            "Create the team Leads.\n\nAvailable in: every project\nMembers: Potato, Nas\nMembership: Teammates may ask each other questions and request bounded work, and each request for work is approved separately."
         );
         assert_eq!(
             input["changeFacts"],
@@ -3082,6 +3088,7 @@ mod tests {
                 "rows": [
                     { "label": "Available in", "value": "every project" },
                     { "label": "Members", "value": "Potato, Nas" },
+                    { "label": "Membership", "value": "Teammates may ask each other questions and request bounded work, and each request for work is approved separately." },
                 ],
             })
         );
@@ -3129,7 +3136,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             card_of(&shown),
-            "Create the team Later.\n\nAvailable in: every project\nMembers: none"
+            format!("Create the team Later.\n\nAvailable in: every project\nMembers: none\nMembership: {MEMBERSHIP_GRANTS}")
         );
         assert!(members_of(&team, "Later").is_empty());
     }
@@ -3179,7 +3186,7 @@ mod tests {
         let input = input_of(&shown);
         assert_eq!(
             input["change"],
-            "Change the team Web.\n\nName: Web → Site\nAdded: Cy, Di\nRemoved: Bo\nMembers: Ada, Bo → Ada, Cy, Di"
+            format!("Change the team Web.\n\nName: Web → Site\nAdded: Cy, Di\nRemoved: Bo\nMembers: Ada, Bo → Ada, Cy, Di\nMembership: {MEMBERSHIP_GRANTS}")
         );
         assert_eq!(
             input["changeFacts"],
@@ -3190,6 +3197,7 @@ mod tests {
                     { "label": "Added", "value": "Cy, Di" },
                     { "label": "Removed", "value": "Bo" },
                     { "label": "Members", "before": "Ada, Bo", "after": "Ada, Cy, Di" },
+                    { "label": "Membership", "value": MEMBERSHIP_GRANTS },
                 ],
             })
         );
@@ -3238,7 +3246,7 @@ mod tests {
         let input = input_of(&shown);
         assert_eq!(
             input["change"],
-            "Change the team Site.\n\nRemoved: Ada, Cy, Di\nMembers: Ada, Cy, Di → none"
+            format!("Change the team Site.\n\nRemoved: Ada, Cy, Di\nMembers: Ada, Cy, Di → none\nMembership: {MEMBERSHIP_GRANTS}")
         );
         rows_say_what_the_text_says(&input);
         assert!(members_of(&team, "Site").is_empty());
@@ -3254,7 +3262,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(card_of(&shown), "Change the team Site.\n\nName: Site → Web");
+        assert_eq!(
+            card_of(&shown),
+            format!("Change the team Site.\n\nName: Site → Web\nMembership: {MEMBERSHIP_GRANTS}")
+        );
     }
 
     /// One team per agent: an agent added while it is on another team leaves
@@ -3283,7 +3294,7 @@ mod tests {
         let input = input_of(&shown);
         assert_eq!(
             input["change"],
-            "Change the team Web.\n\nAdded: Bo, Cy\nMembers: Ada → Ada, Bo, Cy\nOther teams: Bo leaves Ops."
+            format!("Change the team Web.\n\nAdded: Bo, Cy\nMembers: Ada → Ada, Bo, Cy\nOther teams: Bo leaves Ops.\nMembership: {MEMBERSHIP_GRANTS}")
         );
         assert_eq!(
             input["changeFacts"]["rows"][2],
@@ -3308,7 +3319,7 @@ mod tests {
         let input = input_of(&shown);
         assert_eq!(
             input["change"],
-            "Create the team Leads.\n\nAvailable in: every project\nMembers: Ada, Cy\nOther teams: Ada leaves Web. Cy leaves Ops."
+            format!("Create the team Leads.\n\nAvailable in: every project\nMembers: Ada, Cy\nOther teams: Ada leaves Web. Cy leaves Ops.\nMembership: {MEMBERSHIP_GRANTS}")
         );
         rows_say_what_the_text_says(&input);
         assert_eq!(members_of(&team, "Leads"), ["Ada", "Cy"]);

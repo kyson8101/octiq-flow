@@ -2088,8 +2088,10 @@ const ORCHESTRATION_PEER_REQUEST = {
     "attempt runs) and stays on the task in orchestration_snapshot (peerRequest.requestedBy, " +
     "status, result). The run's coordinator accepts the task as usual. Nobody's reportsTo " +
     "changes. Limits: 2 requests per worker attempt, 3 open at once per lead chat, request " +
-    "text up to 4000 characters, and maxMinutes of running time, after which the host ends " +
-    "the attempt as failed (peer request time limit). Refused: someone off your team (the " +
+    "text up to 4000 characters, and maxMinutes: minutes of working time; waiting for a decision " +
+    "does not count, and it is not extended. When they are used the host ends the attempt as " +
+    "failed (peer request time limit). There is no way to add time: a longer job is a new " +
+    "request, and only the person can start a failed one again. Refused: someone off your team (the " +
     "refusal names your teammates), yourself, a teammate on a lead-only model, a project or " +
     "repository the teammate or you may not work in, a front desk, and an additional agent " +
     "in a room. A peer-request task cannot be split, revised or passed on, and its worker " +
@@ -2098,12 +2100,12 @@ const ORCHESTRATION_PEER_REQUEST = {
     type: "object",
     properties: {
       peer: { type: "string", description: "The teammate: its agent id or exact name, from your brief or agent_list." },
-      title: { type: "string", description: "A short outcome-based title for the task, at most 240 characters." },
-      request: { type: "string", description: "The bounded work to do, self-contained, at most 4000 characters." },
-      output: { type: "string", description: "The defined result you expect back, at most 1000 characters." },
+      title: { type: "string", minLength: 1, maxLength: 240, description: "A short outcome-based title for the task, at most 240 characters." },
+      request: { type: "string", minLength: 1, maxLength: 4000, description: "The bounded work to do, self-contained, at most 4000 characters." },
+      output: { type: "string", minLength: 1, maxLength: 1000, description: "The defined result you expect back, at most 1000 characters." },
       project: { type: "string", description: "Optional registered project id or name. Default: your task's or chat's project when the teammate may work there; a teammate confined to one project works in that one." },
       repository: { type: "string", description: "Optional registered repository path or folder name, when the project has more than one." },
-      maxMinutes: { type: "integer", minimum: 1, maximum: 120, description: "How long the teammate's attempt may run. Default 30." },
+      maxMinutes: { type: "integer", minimum: 1, maximum: 120, description: "The teammate's limit, in minutes of working time; waiting for a decision does not count, and it is not extended. Default 30." },
     },
     required: ["peer", "title", "request", "output"],
   },
@@ -2292,14 +2294,19 @@ const TEAM_MEMBERS = (description) => ({ type: "array", maxItems: 50, items: { t
 const TEAM_ONLY =
   " It changes membership only: no agent's manager, access, provider, model or project, and not the project a team belongs to, which is set in Settings. " +
   "An agent is on one team at a time, so adding one that is on another team takes it off that team; the card says which.";
+/** What being on a team grants. The card says the same on its Membership
+ *  row (`team_tools::MEMBERSHIP_GRANTS`). */
+const TEAM_GRANTS =
+  " Teammates may ask each other questions (orchestration_peer_ask) and request bounded work from each other (orchestration_peer_request), " +
+  "and each request for work is approved by the person separately; a team never changes who reports to whom.";
 function teamTool(name, description, properties, required) {
   return { ...agentTool(name, description, properties, required, false), name: `team_${name}` };
 }
-const TEAM_CREATE = teamTool("create", "Agents mode: propose a new peer-help team, available in every project, with the agents named as its members. Teammates may ask each other questions while they work; a team never changes who reports to whom." + TEAM_ONLY + AGENT_APPROVAL, {
+const TEAM_CREATE = teamTool("create", "Agents mode: propose a new peer-help team, available in every project, with the agents named as its members." + TEAM_GRANTS + TEAM_ONLY + AGENT_APPROVAL, {
   name: { type: "string", minLength: 1, maxLength: 60, description: "The team's name. No other team may have it." },
   members: TEAM_MEMBERS("The agents to put on the team: ids or names from agent_list. Absent: the team starts empty."),
 }, ["name"]);
-const TEAM_UPDATE = teamTool("update", "Agents mode: propose renaming one peer-help team, adding agents to it or removing agents from it. Pass only what changes." + TEAM_ONLY + AGENT_APPROVAL, {
+const TEAM_UPDATE = teamTool("update", "Agents mode: propose renaming one peer-help team, adding agents to it or removing agents from it. Pass only what changes." + TEAM_GRANTS + TEAM_ONLY + AGENT_APPROVAL, {
   team: { type: "string", minLength: 1, description: "The team to change: its id or name from agent_list." },
   name: { type: "string", minLength: 1, maxLength: 60, description: "Its new name." },
   addMembers: TEAM_MEMBERS("Agents to add: ids or names from agent_list."),

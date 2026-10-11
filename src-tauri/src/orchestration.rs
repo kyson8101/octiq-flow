@@ -649,6 +649,10 @@ pub struct Attempt {
     /// ended without a report (feedback e15fabde). See `ProposedReport`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_report: Option<ProposedReport>,
+    /// An attempt of a peer-request task: what its limit of working time
+    /// needs beyond the stamps already here (`peer_request::PeerClock`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_clock: Option<peer_request::PeerClock>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -725,6 +729,22 @@ pub struct Gate {
     pub resolution: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When it stopped being open: resolved or cancelled. Its own stamp,
+    /// written once by `close`, because a peer request's working time is
+    /// counted around it (`peer_request::worked_ms`) and `updated_at` is free
+    /// to move for any other reason. A gate closed before this was recorded
+    /// has none and is read by its `updated_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<i64>,
+}
+
+impl Gate {
+    /// Settle an open gate, once.
+    fn close(&mut self, status: GateStatus, now: i64) {
+        self.status = status;
+        self.updated_at = now;
+        self.closed_at.get_or_insert(now);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2508,6 +2528,16 @@ impl OrchestrationStore {
                 .saturating_add(1) as u32;
             let id = format!("attempt_{}", compact_id());
             let now = now_ms();
+            // A peer request's working time carries on from the attempts
+            // before this one, unless the person starts it again.
+            let peer_clock = task
+                .peer_request
+                .as_ref()
+                .map(|request| {
+                    let by_person = matches!(by, StartedBy::Page { .. });
+                    peer_request::clock_for(data, &task, request, by_person, now)
+                })
+                .transpose()?;
             let mut execution = execution::Execution::queued(
                 now,
                 recovery_of
@@ -2540,6 +2570,7 @@ impl OrchestrationStore {
                 finished_at: None,
                 archived_at: None,
                 proposed_report: None,
+                peer_clock,
                 created_at: now,
                 updated_at: now,
             };
@@ -2786,7 +2817,10 @@ impl OrchestrationStore {
             }
         }
         if let Some(request) = &task.peer_request {
-            prompt.push_str(&peer_request::worker_brief(request));
+            prompt.push_str(&peer_request::worker_brief(
+                request,
+                reserved.peer_clock.as_ref(),
+            ));
         }
         // Agents mode: a second-level assignee that manages agents may split.
         // Never a peer request, which is one teammate's own piece of work.
@@ -3408,6 +3442,7 @@ impl OrchestrationStore {
                 resolution: None,
                 created_at: now,
                 updated_at: now,
+                closed_at: None,
             };
             if let Some(task) = gate.task_id.as_ref().and_then(|id| data.tasks.get_mut(id)) {
                 task.status = TaskStatus::Blocked;
@@ -3471,9 +3506,8 @@ impl OrchestrationStore {
                 .gates
                 .get_mut(&gate_id)
                 .expect("the gate was read above");
-            gate_mut.status = GateStatus::Resolved;
+            gate_mut.close(GateStatus::Resolved, now);
             gate_mut.resolution = Some(resolution);
-            gate_mut.updated_at = now;
             let resolved = gate_mut.clone();
             if let Some(task) = resolved
                 .task_id
@@ -3831,8 +3865,7 @@ fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec
     }
     for gate in data.gates.values_mut().filter(|gate| gate.run_id == run_id) {
         if gate.status == GateStatus::Open {
-            gate.status = GateStatus::Cancelled;
-            gate.updated_at = now;
+            gate.close(GateStatus::Cancelled, now);
         }
     }
     let run = data
@@ -4752,8 +4785,7 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
                 .as_ref()
                 .is_some_and(|id| recovered.contains_key(id))
         {
-            gate.status = GateStatus::Cancelled;
-            gate.updated_at = now;
+            gate.close(GateStatus::Cancelled, now);
         }
     }
     let mut run_ids = BTreeSet::new();

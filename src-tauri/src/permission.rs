@@ -204,6 +204,15 @@ pub fn pending() -> Vec<Asked> {
     with_pending(|p| p.values().map(|w| w.asked.clone()).collect())
 }
 
+/// Whether a question from this chat is still waiting on the person: its
+/// agent is parked on the card, not working.
+pub(crate) fn awaits(chat_key: &str) -> bool {
+    with_pending(|p| {
+        p.values()
+            .any(|w| w.asked.request.chat_key.as_deref() == Some(chat_key))
+    })
+}
+
 /// Grants made with "Always", as `chat key` + NUL + `signature`.
 ///
 /// Per CHAT, not per machine and not for ever: the answer to "may you run

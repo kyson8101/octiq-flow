@@ -58,6 +58,8 @@ test("agent tools are offered to both providers, list-only for a worker, none ou
       assert.equal(tool.annotations.readOnlyHint, false);
       assert.match(tool.description, /approves or declines it on a card/);
       assert.match(tool.description, /takes it off that team; the card says which/);
+      // What being on a team grants, as the card's Membership row says it.
+      assert.match(tool.description, /Teammates may ask each other questions \(orchestration_peer_ask\) and request bounded work from each other \(orchestration_peer_request\), and each request for work is approved by the person separately/);
     }
     // The listing says what it now carries.
     assert.match(listed.tools.find(tool => tool.name === "agent_list").description, /teamId with team/);

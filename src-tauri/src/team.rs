@@ -1247,9 +1247,11 @@ pub fn peer_brief(
 /// How a peer request is described in a brief: the same words for a worker
 /// and a lead, with the limit that applies to each.
 fn peer_request_brief(limit: usize, per: &str) -> String {
-    use crate::orchestration::peer_request::{DEFAULT_MINUTES, MAX_MINUTES, MAX_REQUEST_CHARS};
+    use crate::orchestration::peer_request::{
+        DEFAULT_MINUTES, MAX_MINUTES, MAX_REQUEST_CHARS, TIME_LIMIT_TERMS,
+    };
     format!(
-        " Work is orchestration_peer_request: one bounded piece of work a teammate fits better than you, with a defined result. Pass peer (their id or name), title, request (the work, at most {MAX_REQUEST_CHARS} characters), output (the result you expect back), and optionally project, repository and maxMinutes (default {DEFAULT_MINUTES}, at most {MAX_MINUTES}). It becomes one task for that teammate, running as their own registered agent where they may work, and it waits on the plan card: nothing starts until the person approves it. Their report comes back to you and stays on the task in orchestration_snapshot. It changes nobody's manager. At most {limit} {per}; a peer request cannot be split or passed on."
+        " Work is orchestration_peer_request: one bounded piece of work a teammate fits better than you, with a defined result. Pass peer (their id or name), title, request (the work, at most {MAX_REQUEST_CHARS} characters), output (the result you expect back), and optionally project, repository and maxMinutes (default {DEFAULT_MINUTES}, at most {MAX_MINUTES}: minutes of {TIME_LIMIT_TERMS}). It becomes one task for that teammate, running as their own registered agent where they may work, and it waits on the plan card: nothing starts until the person approves it. Their report comes back to you and stays on the task in orchestration_snapshot. It changes nobody's manager. At most {limit} {per}; a peer request cannot be split or passed on."
     )
 }
 

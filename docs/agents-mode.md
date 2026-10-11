@@ -440,12 +440,16 @@ Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
 | `agent_update` | A move for each of those fields that changes, and no row for one that stays. `Persistent prompt` comes last when the change touches it: plain when it is set where there was none, a move when it is replaced or cleared. |
 | `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, and `Memory note` last. |
 | `agent_policy_update` | One `Policy` row: plain when a policy is set where there was none, a move when it is replaced or cleared. |
-| `team_create` | Plain rows `Available in` (always `every project`) and `Members` (the names, or `none`), then `Other teams` when a member is on another team. |
-| `team_update` | `Name` as a move when the team is renamed. When its members change: plain rows `Added` and `Removed`, each only when there are any, then `Members` as a move from every member before to every member after (`none` for an empty team). `Other teams` last, when an agent it adds is on another team. |
+| `team_create` | Plain rows `Available in` (always `every project`) and `Members` (the names, or `none`), then `Other teams` when a member is on another team, then `Membership`. |
+| `team_update` | `Name` as a move when the team is renamed. When its members change: plain rows `Added` and `Removed`, each only when there are any, then `Members` as a move from every member before to every member after (`none` for an empty team). `Other teams` when an agent it adds is on another team, then `Membership`. |
 
 `Other teams` holds one sentence for each agent that leaves a team to join
-this one: `Bo leaves Ops. Cy leaves Web.` The team rows are `team_tools.rs`
-`team_rows`, and the `change` text is those rows, one to a line.
+this one: `Bo leaves Ops. Cy leaves Web.` `Membership` closes every team card
+with the same fixed sentence (`team_tools::MEMBERSHIP_GRANTS`), because the
+card moves who is on a team and this is what being on one grants: `Teammates
+may ask each other questions and request bounded work, and each request for
+work is approved separately.` The team rows are `team_tools.rs` `team_rows`,
+and the `change` text is those rows, one to a line.
 
 A replaced or cleared prompt or policy carries the current text in `before`.
 The `change` text leaves that out, so this is the one place the rows say more
@@ -581,8 +585,9 @@ workspace.
 person.** It is how a lead hands a peer one piece of work without becoming its
 manager. Arguments: `peer` (id or name), `title`, `request` (the work, at most
 4000 characters), `output` (the result expected back, at most 1000), optional
-`project` / `repository`, and `maxMinutes` (default 30, at most 120). The host
-(`orchestration/peer_request.rs`):
+`project` / `repository`, and `maxMinutes` (default 30, at most 120): N
+minutes of working time; waiting for a decision does not count; it is not
+extended. The host (`orchestration/peer_request.rs`):
 
 - **records one ordinary task and starts nothing.** The task is assigned to
   the teammate and carries `peerRequest` (`requestedBy`, `requesterChatKey`,
@@ -612,11 +617,11 @@ manager. Arguments: `peer` (id or name), `title`, `request` (the work, at most
   page retry, a recovery with a fallback model) is refused.
 - **bounds it** (named constants): 2 requests per worker attempt
   (`MAX_REQUESTS_PER_ATTEMPT`), 3 open at once per lead chat
-  (`MAX_OPEN_REQUESTS_PER_LEAD_CHAT`), and `maxMinutes` of running time. The
-  scheduler's own pass (`expire_peer_requests`, no timer per request) ends an
-  attempt past its time as **failed** with the reason `peer request time
-  limit`, never retried; the same pass stops its process. The clock is the
-  attempt's and starts again when a gate it waited on is resolved.
+  (`MAX_OPEN_REQUESTS_PER_LEAD_CHAT`), and `maxMinutes`. The scheduler's own
+  pass (`expire_peer_requests`, no timer per request) ends an attempt that has
+  used its time as **failed** with the reason `peer request time limit`, never
+  retried; the same pass stops its process. See
+  [The time limit](#the-time-limit) below.
 - **keeps it one level deep.** A peer-request task cannot be split (no
   `parentTaskId` under it, by its worker or the coordinator), revised or
   reassigned (it can be withdrawn), and its worker cannot make a peer request.
@@ -631,10 +636,54 @@ for a lead requester is the requester; the notice says it is a peer request. A
 requesting **worker** gets a `peer_report` notice of its own, delivered
 between its turns or in the answer to its next call to the host
 (`coordinatorMessages`), only while its attempt is still running; it also
-hears when the person rejects the request or the time limit ends it. Either
+hears when the person rejects the request, when the time limit ends it, and
+when the host's automatic retry of a failed attempt cannot start (a fallback
+model that is not the teammate's registered one, say), with the failure and
+what stopped the retry. Either
 way the report stays on the task (`result`, with `peerRequest.requestedBy` and
 `status`) in `orchestration_snapshot`, and the run's coordinator accepts the
 task as usual.
+
+#### The time limit
+
+**`maxMinutes` is N minutes of working time; waiting for a decision does not
+count; it is not extended.** The plan row says it (`requested by <agent> · N
+min working time`), and so do the teammate's brief and the coordinator's
+notice.
+
+- **What counts.** The attempt's life, from the moment it is reserved to the
+  moment it settles, less every stretch it was parked (`worked_ms`): while a
+  decision gate of its task was open, and while it sat on a card only the
+  person can answer (a Codex safety approval that continues the work, or a
+  permission question). When the wait is over the clock carries on from what
+  was already used. An answered decision gives nothing back: a peer that asks
+  a question every 59 seconds of a one-minute request is ended at 60 seconds
+  of work.
+- **Where it is kept.** In the ledger, as stamps, never as a counter: the
+  attempt's `createdAt` and `finishedAt`, each gate's `createdAt` and
+  `closedAt` (written once when the gate is resolved or cancelled; `updatedAt`
+  is not read), and the attempt's `peerClock` (`cardWaits`, each `{from, to}`,
+  stamped by the scheduler's pass when it first sees the card and when it
+  first sees it gone, so exact to that pass's two seconds; and `carriedMs`).
+  Overlapping waits are merged, and each is clipped to the attempt's life. A
+  restart loses none of it.
+- **It is never ended under the person.** An attempt parked on a gate or a
+  card is not ended, even past its limit. It is ended on the first pass after
+  that wait is over, and the reason says the limit was reached and that the
+  host held it.
+- **Nothing extends it.** There is no tool, argument or message that adds
+  time. A longer job is a new request, which the person approves like the
+  first.
+- **A later attempt carries on; only the person starts a new limit.** The
+  limit belongs to the request, not to one attempt of it. The host's own
+  recovery after a provider failure, and a start the run's coordinator makes
+  (an agent: a lead chat coordinates its own requests), begin with what the
+  attempts before them used (`peerClock.carriedMs`) and are refused once
+  nothing is left. A restart ends every live attempt, so the attempt after it
+  carries on the same way; the time the server was down before the restart
+  counts as used. The page's **Start retry** on the task is the person's own
+  decision, as approving the request was: that attempt has the whole N
+  minutes. No hook reaches it (`StartedBy::Page`).
 
 A mission has one writer per repository at a time, so a writing worker's
 request into its own repository starts only after that worker settles; the

@@ -224,6 +224,11 @@ pub fn route_lateral(
         .map_err(|error| crate::outcome::refuse(crate::outcome::ReasonClass::ScopeRefused, error))
 }
 
+/// What a requester can do about a peer request refused for where it would
+/// run. A task's own refusals say what to pass instead; a requester cannot
+/// reassign, so it is told its two ways on.
+const LATERAL_SCOPE_HINT: &str = " A peer request runs only in a project both of you may work in: ask again with `project` set to one, or ask your own lead to assign the work.";
+
 fn resolve(
     team: &[TeamAgent],
     projects: &[Workspace],
@@ -246,6 +251,27 @@ fn resolve(
     let who = nonempty(req.who);
     let project_spec = nonempty(req.project);
     let repository_spec = nonempty(req.repository);
+    let scope_hint = if lateral { LATERAL_SCOPE_HINT } else { "" };
+    // A teammate that cannot work in `project`, said in a peer request's own
+    // words before `resolve_in` says it in a task's ("assign someone else").
+    let teammate_may_work_in = |project: &str| -> Result<(), String> {
+        let teammate = who.filter(|_| lateral).and_then(|who| {
+            team.iter()
+                .find(|a| a.id == who || a.name.eq_ignore_ascii_case(who))
+        });
+        match teammate {
+            Some(teammate) if !team::may_work_in(teammate, project) => Err(format!(
+                "{} works only in {}.{LATERAL_SCOPE_HINT}",
+                teammate.name,
+                teammate
+                    .project_id
+                    .as_deref()
+                    .and_then(name_of)
+                    .unwrap_or_else(|| "another project".into()),
+            )),
+            _ => Ok(()),
+        }
+    };
 
     let target: Option<(&Workspace, Option<&str>)> = match (project_spec, repository_spec) {
         (Some(project), repository) => Some((find_project(projects, project)?, repository)),
@@ -291,11 +317,11 @@ fn resolve(
         // No destination: the run's own root, as before destinations existed.
         // Still only where the manager may work.
         if !allowed(req.run_project) {
-            return Err(
-                "This run's project is outside your scope. Name a destination in your own project."
-                    .into(),
-            );
+            return Err(format!(
+                "This run's project is outside your scope. Name a destination in your own project.{scope_hint}"
+            ));
         }
+        teammate_may_work_in(req.run_project)?;
         let assignee = who
             .map(|who| team::resolve_in(team, req.run_project, who, reports_to, &name_of))
             .transpose()?;
@@ -308,7 +334,7 @@ fn resolve(
     if !allowed(&project.id) {
         let manager = manager.expect("only a manager restricts projects");
         return Err(format!(
-            "You work only in {}, so you cannot send work to {}.",
+            "You work only in {}, so you cannot send work to {}.{scope_hint}",
             manager
                 .project_id
                 .as_deref()
@@ -317,6 +343,7 @@ fn resolve(
             project.name
         ));
     }
+    teammate_may_work_in(&project.id)?;
     let repository = resolve_repository(project, repository)?;
     if !Path::new(&repository).is_dir() {
         return Err(format!(

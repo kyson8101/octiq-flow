@@ -266,9 +266,10 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
       </span>
     </span>
     {added && <span className="plan-task-new">New</span>}
-    {/* A peer request: a teammate asked for it, not the owner's manager. */}
+    {/* A peer request: a teammate asked for it, not the owner's manager. Its
+        limit is working time (`peer_request.rs`), and the row says so. */}
     {task.peerRequest && (
-      <span className="plan-task-after">requested by <bdi>{task.peerRequest.requestedBy.name}</bdi> · {task.peerRequest.maxMinutes} min</span>
+      <span className="plan-task-after" title={`${task.peerRequest.maxMinutes} minutes of working time; waiting for a decision does not count, and it is not extended.`}>requested by <bdi>{task.peerRequest.requestedBy.name}</bdi> · {task.peerRequest.maxMinutes} min working time</span>
     )}
     <span className="plan-task-owner" title={[owner.label, model].filter(Boolean).join(" · ")}>
       {task.assignee

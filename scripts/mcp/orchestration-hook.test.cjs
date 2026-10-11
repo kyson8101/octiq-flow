@@ -113,6 +113,14 @@ test("a peer request names a teammate, the work and its result, and never who is
   assert.deepEqual(
     [tool.inputSchema.properties.maxMinutes.type, tool.inputSchema.properties.maxMinutes.minimum, tool.inputSchema.properties.maxMinutes.maximum],
     ["integer", 1, 120]);
+  // The text bounds are the host's (peer_request.rs), stated in the schema too.
+  assert.deepEqual(
+    ["title", "request", "output"].map(name => tool.inputSchema.properties[name].maxLength),
+    [240, 4000, 1000]);
+  // The limit is working time, and nothing extends it.
+  assert.match(tool.inputSchema.properties.maxMinutes.description, /working time; waiting for a decision does not count, and it is not extended/);
+  assert.match(tool.description, /minutes of working time; waiting for a decision\s+does not count, and it is not extended/);
+  assert.match(tool.description, /There is no way to add time: a longer job is a new\s+request/);
   // The requester is the chat the capability proves: no argument names it.
   for (const name of ["requester", "requestedBy", "agent", "chatKey", "attemptId", "runId"]) {
     assert.ok(!(name in tool.inputSchema.properties), `${name} is not an argument`);
