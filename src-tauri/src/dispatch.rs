@@ -1745,9 +1745,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             crate::bus::emit("team-changed", serde_json::json!({ "policy": true }));
             to_value(Ok::<_, String>(saved))
         }
-        "team_delete" => unit(crate::team::delete(
+        // Not while any of its work is running, asked under the lock the
+        // removal is written with (`orchestration::agent_work`).
+        "team_delete" => unit(crate::team::delete_idle(
             &crate::team::default_path(),
             &arg::<String>(&args, "id")?,
+            &|agent| {
+                svc.orchestrations
+                    .removal_of(&agent.id, &agent.name)
+                    .map(|_| ())
+            },
         )),
         // Peer-help teams: a lateral grouping beside the org chart.
         "agent_team_list" => to_value(crate::team::teams(&crate::team::default_path())),

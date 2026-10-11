@@ -2301,6 +2301,49 @@ pub(super) mod tests {
         );
     }
 
+    /// agent_delete review, M3: a workspace the host is preparing or
+    /// cleaning up for a task of the agent's is work in progress. A lease
+    /// left on a settled task's retained workspace is not: it stays there
+    /// until cleanup, and would keep every agent that ever finished a task.
+    #[test]
+    fn a_workspace_being_prepared_or_cleaned_up_keeps_its_agent_from_removal() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+        let ada = TaskAssignee {
+            id: "agent_ada".into(),
+            name: "Ada".into(),
+        };
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&task.id).unwrap().assignee = Some(ada.clone());
+                Ok(())
+            })
+            .unwrap();
+        let attempt = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!(store.agent_work(&ada.id).unwrap().running.len(), 1);
+        report(&store, &attempt, WorkerOutcome::Completed);
+        let settled = store.owned_task("chat:master", &task.id).unwrap().1;
+        let workspace = settled.workspace.unwrap();
+        assert_eq!(workspace.state, WorkspaceState::Retained);
+        assert!(workspace.lease_attempt_id.is_some(), "the lease is kept");
+        assert_eq!(store.removal_of(&ada.id, "Ada"), Ok(None));
+        for (state, busy) in [
+            (WorkspaceState::Cleaning, true),
+            (WorkspaceState::Preparing, true),
+            (WorkspaceState::Ready, false),
+            (WorkspaceState::Cleaned, false),
+        ] {
+            store
+                .mutate(|data| {
+                    let task = data.tasks.get_mut(&task.id).unwrap();
+                    task.workspace.as_mut().unwrap().state = state.clone();
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(store.removal_of(&ada.id, "Ada").is_err(), busy, "{state:?}");
+        }
+    }
+
     #[test]
     fn a_legacy_flag_cannot_override_auto_policy_for_a_first_writer() {
         let repo = Repo::new();

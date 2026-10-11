@@ -24,6 +24,7 @@ use crate::agent_chat::{Access, ChatAgent, ChatManager};
 use crate::workspaces::{Workspace, WorkspaceState};
 
 pub mod agent_view;
+pub mod agent_work;
 mod archive;
 pub mod automation;
 pub mod bridge;
@@ -5372,6 +5373,38 @@ pub(crate) mod tests {
                     base_branch: String::new(),
                 },
             )
+            .unwrap();
+        store
+            .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
+            .unwrap()
+    }
+
+    /// A task the run's coordinator handed to `assignee`, not started.
+    pub(crate) fn task_of(store: &OrchestrationStore, run: &Run, assignee: &TaskAssignee) -> Task {
+        store
+            .create_task_for(
+                &run.coordinator_chat_key,
+                run.id.clone(),
+                "Implement".into(),
+                "Make the requested change".into(),
+                Vec::new(),
+                None,
+                None,
+                Some(assignee.clone()),
+                None,
+            )
+            .unwrap()
+    }
+
+    /// A worker running a task that was handed to `assignee`.
+    pub(crate) fn running_worker_of(
+        store: &OrchestrationStore,
+        run: &Run,
+        assignee: &TaskAssignee,
+    ) -> Attempt {
+        let task = task_of(store, run, assignee);
+        let (_, _, attempt, _) = store
+            .reserve_attempt(&run.coordinator_chat_key, &launch_for(&task.id))
             .unwrap();
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)

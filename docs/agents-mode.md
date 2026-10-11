@@ -374,6 +374,30 @@ a peer-help team, through seven MCP tools (`team_tools.rs`,
   removed and the agent is told to propose it again. A report that moves up
   becomes a new version of itself, so a card still waiting on that report is
   refused too.
+- **An agent with work in progress is not removed** (decided 2026-10-11), by
+  the tool or by the page's `team_delete`. Work in progress, read from the
+  ledger by agent id (`orchestration/agent_work.rs`), is a task with an
+  unsettled attempt of the agent's (being prepared, running, or blocked on an
+  open decision), a task whose automatic retry the host has scheduled, a
+  task of its whose workspace the host is preparing or cleaning up, and a
+  peer request in flight that it asked for or is asked to do, from the plan
+  card until it ends. The refusal names how many tasks and in which runs,
+  and what to do: `Nova still has 2 tasks in progress in 1 run: 2 in "Ship
+  the feature" (run_…). Nothing was removed. Stop them or wait for them to
+  finish, then remove Nova.` The tool is refused before any card. Because a
+  card can wait while a task starts, the same question is asked again when
+  the person answers, under the lock the removal is written with
+  (`team::delete_unchanged`'s `idle`), and refused in the same words; the
+  page's command asks it there too (`team::delete_idle`). A task start does
+  not take that lock, so a start in the instant between that check and the
+  write is not excluded. A lease left on a settled task's retained workspace
+  is not work in progress: it stays until cleanup.
+- **Unfinished tasks do not stop a removal.** A task of the agent's that is
+  planned, ready, failed or blocked with nobody working on it keeps the
+  agent's name (`TaskAssignee` is a copy) and its provider and model, and
+  starts without its role, brief and memory. The card says how many there
+  are, in an `Unfinished tasks` row, so the person can reassign them first.
+  The count is not part of what the Allow is held to.
 - `agent_policy_update` only **proposes** a whole new agent policy (`""`
   clears it), on the same card. It is saved with `team::set_policy_unchanged`,
   so a policy edited meanwhile is not overwritten.
@@ -442,7 +466,7 @@ Which rows each card carries (`team_tools.rs`: `facts`, `delete_facts`,
 | --- | --- |
 | `agent_register` | A plain row for each of `Name`, `Role`, `Provider`, `Model`, `Effort`, `Access`, `Available in`, `Reports to`, `Team`, then `Persistent prompt` when one is proposed. |
 | `agent_update` | A move for each of those fields that changes, and no row for one that stays. `Persistent prompt` comes last when the change touches it: plain when it is set where there was none, a move when it is replaced or cleared. |
-| `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, and `Memory note` last. |
+| `agent_delete` | A plain row for each field but `Name`, which the lead carries. Then what the removal does to the chart, each a plain row holding a sentence: `Head` or `Front desk` when that seat empties, `Direct report` or `Direct reports` naming who moves up and to whom, `Unfinished tasks` when tasks nobody is working on still name it, and `Memory note` last. |
 | `agent_policy_update` | One `Policy` row: plain when a policy is set where there was none, a move when it is replaced or cleared. |
 | `team_create` | Plain rows `Available in` (always `every project`) and `Members` (the names, or `none`), then `Other teams` when a member is on another team, then `Membership`. |
 | `team_update` | `Name` as a move when the team is renamed. When its members change: plain rows `Added` and `Removed`, each only when there are any, then `Members` as a move from every member before to every member after (`none` for an empty team). `Other teams` when an agent it adds is on another team, then `Membership`. |

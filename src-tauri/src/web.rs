@@ -1916,11 +1916,15 @@ async fn agents_hook(
         return Err(Refusal::new(ReasonClass::ScopeRefused, "An orchestration worker cannot change the registered agents. Tell your coordinator what you need instead."));
     }
     if action == "delete" {
-        let gone = crate::team_tools::propose_delete(
+        // Not while any of its work is running: asked of the ledger before
+        // the card and again when it is answered (`agent_work`).
+        let orchestrations = ctx.services.orchestrations.clone();
+        let gone = crate::team_tools::propose_delete_when(
             &roster,
             &team,
             chat_key,
             serde_json::from_value(args).map_err(invalid)?,
+            &|agent| orchestrations.removal_of(&agent.id, &agent.name),
             crate::permission::ask,
         )
         .await?;
@@ -3119,6 +3123,107 @@ mod tests {
         assert_eq!(answer["outcome"]["origin"], "octiqflow", "{answer}");
         assert_eq!(crate::team::list(&team, None, true).unwrap().len(), 1);
         chats.test_end("chat:lead");
+    }
+
+    /// agent_delete review, M3 (the person's decision of 2026-10-11): an
+    /// agent with work running is not removed, by the tool or by the page.
+    /// The tool refuses before any card; the page's command refuses under
+    /// the lock the removal is written with. Once the work has ended, both
+    /// go on as before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_with_work_running_is_not_removed_by_the_tool_or_by_the_page() {
+        use crate::orchestration::tests::{run, running_worker_of};
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let wiring = crate::handover::Wiring::scratch();
+        let team = wiring.team.clone();
+        // The page's command reads the roster from its usual place.
+        let _team = crate::team::use_test_path(team.clone());
+        let nova = crate::team::save(
+            &team,
+            crate::team::TeamDraft {
+                id: None,
+                name: "Nova".into(),
+                role: "Builds.".into(),
+                agent: crate::agent_chat::ChatAgent::Claude,
+                model: "sonnet".into(),
+                effort: None,
+                access: None,
+                project_id: None,
+                reports_to: None,
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap();
+        let run = run(&store);
+        let worker = running_worker_of(
+            &store,
+            &run,
+            &crate::orchestration::TaskAssignee {
+                id: nova.id.clone(),
+                name: nova.name.clone(),
+            },
+        );
+        let busy = format!(
+            "Nova still has 1 task in progress in 1 run: 1 in \"Ship the feature\" ({}). Nothing was removed. Stop it or wait for it to finish, then remove Nova.",
+            run.id
+        );
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        let (ctx, base) = test_server_handing_over(cfg, chats.clone(), store.clone(), wiring).await;
+        // A key no other test uses: the list of waiting cards is one for the
+        // whole process.
+        let lead = chats.test_launch("chat:removes-nova");
+        let remove = json!({ "chatKey": "chat:removes-nova", "action": "delete", "args": { "agent": "Nova" } });
+
+        let (status, answer) = post_hook(&base, "agents", None, Some(&lead), remove.clone()).await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(answer["error"], busy.as_str(), "{answer}");
+        let waiting = serde_json::to_string(&crate::permission::pending()).unwrap();
+        assert!(
+            !waiting.contains("chat:removes-nova"),
+            "no card was shown: {waiting}"
+        );
+        let page =
+            crate::dispatch::dispatch(&ctx.services, "team_delete", json!({ "id": nova.id }))
+                .unwrap_err();
+        assert_eq!(page, busy);
+        assert_eq!(
+            crate::team::list(&team, None, true).unwrap(),
+            vec![nova.clone()]
+        );
+
+        // The task reports: nothing of Nova's is running any more.
+        store
+            .report_worker(
+                &worker.worker_chat_key,
+                crate::orchestration::WorkerReport {
+                    attempt_id: worker.id.clone(),
+                    outcome: crate::orchestration::WorkerOutcome::Completed,
+                    summary: "Done".into(),
+                    files_modified: Vec::new(),
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        // The tool is past the check and at its card, which nobody is there
+        // to answer; the page's command removes it.
+        let (status, answer) = post_hook(&base, "agents", None, Some(&lead), remove).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("Nobody has OctiqFlow open to approve this"),
+            "{answer}"
+        );
+        crate::dispatch::dispatch(&ctx.services, "team_delete", json!({ "id": nova.id })).unwrap();
+        assert!(crate::team::list(&team, None, true).unwrap().is_empty());
+        chats.test_end("chat:removes-nova");
     }
 
     /// agent_delete review, H2: a worker is refused by what its chat IS, not

@@ -638,8 +638,21 @@ fn apply(
 
 /// Remove one agent. Its reports move up to its own manager, so the chart
 /// never points at someone who is gone.
+#[cfg(test)]
 pub fn delete(path: &Path, id: &str) -> Result<(), String> {
-    delete_checked(path, id, None).map(|_| ())
+    delete_checked(path, id, None, &|_| Ok(())).map(|_| ())
+}
+
+/// What may still stop a removal at the moment it is made. Asked of the
+/// agent as stored, with the roster's lock held, so nothing is removed on an
+/// answer that was true only when a card was drawn or a page was loaded. An
+/// error is the refusal, in words for whoever asked.
+pub type Idle<'a> = &'a dyn Fn(&TeamAgent) -> Result<(), String>;
+
+/// `delete`, as the page asks for it: refused while `idle` says the agent
+/// has work running (`orchestration::agent_work`).
+pub fn delete_idle(path: &Path, id: &str, idle: Idle) -> Result<(), String> {
+    delete_checked(path, id, None, idle).map(|_| ())
 }
 
 /// Everything a removal card states about the chart: the version of the agent
@@ -716,13 +729,25 @@ pub fn removal(
 /// of the roster the card was made from): the agent is the version shown,
 /// reports to the same manager, has the same direct reports and holds the
 /// same seats. What the person approved is that removal, never one the chart
-/// has since turned into. The removed agent comes back, so the caller can say
-/// who went.
-pub fn delete_unchanged(path: &Path, id: &str, shown: &Removal) -> Result<TeamAgent, String> {
-    delete_checked(path, id, Some(shown))
+/// has since turned into. Nor one made while the agent has work running: the
+/// card may have waited while a task of its started, so `idle` is asked
+/// again here, under the lock the removal is written with. The removed agent
+/// comes back, so the caller can say who went.
+pub fn delete_unchanged(
+    path: &Path,
+    id: &str,
+    shown: &Removal,
+    idle: Idle,
+) -> Result<TeamAgent, String> {
+    delete_checked(path, id, Some(shown), idle)
 }
 
-fn delete_checked(path: &Path, id: &str, shown: Option<&Removal>) -> Result<TeamAgent, String> {
+fn delete_checked(
+    path: &Path,
+    id: &str,
+    shown: Option<&Removal>,
+    idle: Idle,
+) -> Result<TeamAgent, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut stored = read(path)?;
     let gone = stored
@@ -743,6 +768,7 @@ fn delete_checked(path: &Path, id: &str, shown: Option<&Removal>) -> Result<Team
             ));
         }
     }
+    idle(&gone)?;
     stored.agents.retain(|a| a.id != id);
     if stored.head.as_deref() == Some(id) {
         stored.head = None;
@@ -3435,7 +3461,7 @@ mod tests {
 
         // The seat given up while a card waited: refused, nothing written.
         set_head(&path, None).unwrap();
-        let refused = delete_unchanged(&path, &cto.id, &shown).unwrap_err();
+        let refused = delete_unchanged(&path, &cto.id, &shown, &|_| Ok(())).unwrap_err();
         assert_eq!(
             refused,
             "Cto was changed while this waited for approval, so nothing was removed: it is no longer the head. Read it again and propose the removal again."
@@ -3450,6 +3476,59 @@ mod tests {
             assert!(after.updated_at > moved.updated_at);
         }
         assert_eq!(left.iter().find(|a| a.id == ceo.id), Some(&ceo));
+    }
+
+    /// agent_delete review, M3: a removal asks whether the agent is idle at
+    /// the moment it is made, with the roster's lock held, of the agent as
+    /// stored. Refused, nothing is written; the refusal is the asker's words.
+    #[test]
+    fn a_removal_is_not_made_while_the_agent_is_not_idle() {
+        let path = temp();
+        let lead = save(&path, draft("Lead", None)).unwrap();
+        let dev = save(
+            &path,
+            TeamDraft {
+                reports_to: Some(lead.id.clone()),
+                ..draft("Dev", None)
+            },
+        )
+        .unwrap();
+        let before = list(&path, None, true).unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let busy = |agent: &TeamAgent| {
+            asked.borrow_mut().push(agent.clone());
+            // The lock the removal is written under is held while this runs.
+            assert!(LOCK.try_lock().is_err());
+            Err(format!("{} still has 1 task in progress.", agent.name))
+        };
+        let shown = removal(&before, None, None, &lead.id).unwrap();
+        for refused in [
+            delete_idle(&path, &lead.id, &busy).unwrap_err(),
+            delete_unchanged(&path, &lead.id, &shown, &busy).unwrap_err(),
+        ] {
+            assert_eq!(refused, "Lead still has 1 task in progress.");
+        }
+        assert_eq!(asked.borrow().as_slice(), [lead.clone(), lead.clone()]);
+        assert_eq!(list(&path, None, true).unwrap(), before);
+
+        // A card the chart has since left behind is refused for that, and
+        // the ledger is not asked about a removal that cannot be made.
+        let stale = Removal {
+            reports: Vec::new(),
+            ..shown.clone()
+        };
+        let refused = delete_unchanged(&path, &lead.id, &stale, &busy).unwrap_err();
+        assert!(refused.contains("changed while this waited"), "{refused}");
+        assert_eq!(asked.borrow().len(), 2);
+        assert!(delete_idle(&path, "agent_nobody", &busy).is_err());
+        assert_eq!(asked.borrow().len(), 2);
+
+        // Idle: removed, and its report moves up.
+        delete_idle(&path, &lead.id, &|_| Ok(())).unwrap();
+        let left = list(&path, None, true).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, dev.id);
+        assert_eq!(left[0].reports_to, None);
     }
 
     /// Two saves of one agent in the same millisecond are still two versions.

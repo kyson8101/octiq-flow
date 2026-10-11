@@ -1299,6 +1299,7 @@ impl OrchestrationStore {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::super::agent_work::AgentWork;
     use super::super::tests::{launch_for, run, running_worker_on};
     use super::*;
     use crate::test_dir::{TestDir, TestPath};
@@ -3493,6 +3494,63 @@ pub(crate) mod tests {
             assert_eq!(after.len(), 2, "approve {approve}: the retry started");
             assert_eq!(after[1].execution.retry_count, 1);
             assert!(after[0].execution.next_retry_at.is_none());
+        }
+    }
+
+    /// agent_delete review, M3: a peer request in flight keeps both of its
+    /// agents from removal, the one who asked and the teammate asked, from
+    /// the moment it is on the plan card until it has ended.
+    #[test]
+    fn a_peer_request_in_flight_keeps_both_its_agents_from_removal() {
+        let busy = |store: &OrchestrationStore, id: &str| {
+            let work = store.agent_work(id).unwrap();
+            assert!(work.running.len() <= 1);
+            work.running.first().map(|run| run.tasks)
+        };
+        // Waiting on the plan card: nothing has started, and it is in flight.
+        let store = OrchestrationStore::default();
+        let made = from_lead(&store, work("bo")).unwrap();
+        assert_eq!(task_of(&store, &made.task_id).status, TaskStatus::Ready);
+        for id in ["ada", "bo"] {
+            assert_eq!(busy(&store, id), Some(1), "{id}");
+        }
+        assert_eq!(busy(&store, "cy"), None);
+        let refused = store.removal_of("bo", "BO").unwrap_err();
+        assert!(
+            refused.starts_with(
+                "BO still has 1 task in progress in 1 run: 1 in \"Peer requests from ADA\""
+            ),
+            "{refused}"
+        );
+        // Running, then reported: over, and neither is held any longer.
+        let peer = approved_and_started(&store, &made.task_id);
+        for id in ["ada", "bo"] {
+            assert_eq!(busy(&store, id), Some(1), "{id}");
+        }
+        report(&store, &peer, "One line per volume.");
+        for id in ["ada", "bo"] {
+            assert_eq!(store.agent_work(id).unwrap(), AgentWork::default(), "{id}");
+        }
+
+        // Rejected on the card: it will not happen, so it holds nobody.
+        let store = OrchestrationStore::default();
+        let made = from_lead(&store, work("bo")).unwrap();
+        store
+            .reject_plan_from_card(
+                LEAD_CHAT,
+                &made.run_id,
+                Some(&[made.task_id.clone()]),
+                Some(run_of(&store, &made.run_id).plan_approval.unwrap().revision),
+                None,
+                CardView {
+                    surface: "chat".into(),
+                    shown_ms: Some(5_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+        for id in ["ada", "bo"] {
+            assert_eq!(store.agent_work(id).unwrap(), AgentWork::default(), "{id}");
         }
     }
 
