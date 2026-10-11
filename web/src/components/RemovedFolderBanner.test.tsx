@@ -32,7 +32,7 @@ describe("the line that says a chat's folder is gone", () => {
   it("names the removed task worktree and what the next message does", () => {
     const html = renderToStaticMarkup(<RemovedFolderLine workspace={workspace()} projectPath="/repos/octiq-flow" />);
     expect(html).toContain("Task worktree removed: /trees/octiq-flow/feature/chat-context");
-    expect(html).toContain("Your next message restores it.");
+    expect(html).toContain("Your next message rebuilds it from its branch with committed work only.");
     // It reports; it does not ask. Nothing here can hold a message back.
     expect(html).toContain('role="status"');
     expect(html).not.toContain("<button");
@@ -46,6 +46,6 @@ describe("the line that says a chat's folder is gone", () => {
       />,
     );
     expect(html).toContain("Directory removed: /repos/old");
-    expect(html).toContain("Your next message continues in /repos/octiq-flow.");
+    expect(html).toContain("Your next message moves this chat to /repos/octiq-flow.");
   });
 });

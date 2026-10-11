@@ -204,10 +204,12 @@ export function locationOf(workspace?: TaskWorkspace): string {
  *  nothing when it is there.
  *
  *  The host puts it right before the next message starts the agent
- *  (`chat_recover.rs`): a task worktree is rebuilt at the same path, anything
- *  else continues in the repository's primary checkout or the project's
- *  folder. So this line promises only what that will do, and never blocks the
- *  send. `projectPath` is the project's folder as the page has it now. */
+ *  (`chat_recover.rs`): a task worktree is rebuilt at the same path from its
+ *  branch, anything else moves to the repository's primary checkout or the
+ *  project's folder. So this line promises only what that does, and never
+ *  blocks the send: a rebuilt worktree holds committed work and nothing else,
+ *  and a chat that moves is in a different folder afterwards. `projectPath`
+ *  is the project's folder as the page has it now. */
 export function removedFolderNote(
   workspace?: TaskWorkspace,
   projectPath = "",
@@ -216,7 +218,8 @@ export function removedFolderNote(
   if (workspace.isWorktree) {
     return {
       title: `Task worktree removed: ${workspace.cwd}`,
-      detail: "Your next message restores it.",
+      detail:
+        "Your next message rebuilds it from its branch with committed work only. Uncommitted and untracked files are not restored. If it cannot be rebuilt, this chat moves to the project's own folder.",
     };
   }
   const plain = (path: string) => path.replace(/[\\/]+$/, "");
@@ -226,7 +229,7 @@ export function removedFolderNote(
   return {
     title: `Directory removed: ${workspace.cwd}`,
     detail: next
-      ? `Your next message continues in ${next}.`
+      ? `Your next message moves this chat to ${next}. Nothing from the removed folder is restored.`
       : "There is no other folder to continue in. Start a new chat.",
   };
 }

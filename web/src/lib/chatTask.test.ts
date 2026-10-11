@@ -142,12 +142,15 @@ describe("where the chat is", () => {
     expect(removedFolderNote(workspace())).toBeUndefined();
   });
 
-  it("promises a removed task worktree back on the next message", () => {
+  it("promises a removed task worktree no more than a rebuild gives back", () => {
     const gone = workspace({ exists: false, cwd: "/trees/app/task-1" });
     expect(removedFolderNote(gone, "/repos/app")).toEqual({
       title: "Task worktree removed: /trees/app/task-1",
-      detail: "Your next message restores it.",
+      detail:
+        "Your next message rebuilds it from its branch with committed work only. Uncommitted and untracked files are not restored. If it cannot be rebuilt, this chat moves to the project's own folder.",
     });
+    // Review R4: "restores it" read as the folder coming back as it was.
+    expect(removedFolderNote(gone, "/repos/app")?.detail).not.toContain("restores it");
   });
 
   it("names where a chat that was never in a worktree continues", () => {
@@ -159,11 +162,12 @@ describe("where the chat is", () => {
     });
     expect(removedFolderNote(gone, "/repos/app/")).toEqual({
       title: "Directory removed: /repos/old-app",
-      detail: "Your next message continues in /repos/app/.",
+      detail:
+        "Your next message moves this chat to /repos/app/. Nothing from the removed folder is restored.",
     });
     // The repository's own checkout outranks the project's folder.
     expect(removedFolderNote({ ...gone, cwd: "/repos/old-app/packages/web" }, "/repos/app")?.detail)
-      .toBe("Your next message continues in /repos/old-app.");
+      .toBe("Your next message moves this chat to /repos/old-app. Nothing from the removed folder is restored.");
   });
 
   it("does not promise a folder it cannot name", () => {
