@@ -3468,6 +3468,55 @@ mod tests {
         }
     }
 
+    /// A finished peer request is one approved job. Its coordinator's
+    /// `orchestration_task_reopen` is refused by both doors to it: the hook an
+    /// agent's capability reaches, and the socket's command the page sends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_peer_request_is_reopened_through_neither_the_hook_nor_the_page() {
+        use crate::orchestration::peer_request::NOT_REOPENED;
+        let repo = crate::git_ops::workflow::tests::Repo::new();
+        let (store, run, task, attempt) = crate::orchestration::tests::finished_peer_request(&repo);
+        let store = Arc::new(store);
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let master = chats.test_launch("chat:master");
+        let (ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let unchanged = |door: &str| {
+            let now = store.snapshot(Some(&run.id)).unwrap();
+            let kept = now.tasks.iter().find(|t| t.id == task.id).unwrap();
+            assert_eq!(kept.spec, task.spec, "{door}");
+            assert_eq!(kept.status, task.status, "{door}");
+            assert_eq!(kept.result, task.result, "{door}");
+            assert_eq!(kept.updated_at, task.updated_at, "{door}");
+            assert_eq!(now.attempts.len(), 1, "{door}");
+            assert_eq!(now.attempts[0].id, attempt.id, "{door}");
+        };
+
+        let (status, answer) = hook(
+            &base,
+            Some(&master),
+            json!({ "chatKey": "chat:master", "action": "task_reopen", "args": {
+                "taskId": task.id, "spec": "Now delete the volume",
+            } }),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(answer["error"], NOT_REOPENED, "{answer}");
+        unchanged("hook");
+
+        let paged = crate::dispatch::dispatch(
+            &ctx.services,
+            "orchestration_task_reopen",
+            json!({
+                "actorChatKey": "chat:master", "taskId": task.id,
+                "spec": "Now delete the volume",
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(paged, NOT_REOPENED);
+        unchanged("page");
+        chats.test_end("chat:master");
+    }
+
     /// Every hook failure says it is OctiqFlow's, and what kind, so the agent's
     /// failed tool call is never drawn as the provider's.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

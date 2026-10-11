@@ -845,6 +845,10 @@ impl OrchestrationStore {
         self.mutate(|data| {
             let task = data.tasks.get(task_id).ok_or("Task does not exist.")?.clone();
             let run = coordinator(data, &task.run_id, actor)?;
+            // What the person approved was this request's own words. New
+            // instructions on it would be work nobody approved, started by an
+            // agent: a lead chat coordinates its own requests.
+            if task.peer_request.is_some() { return Err(super::peer_request::NOT_REOPENED.into()); }
             if run.status == RunStatus::Stopped { return Err("A stopped run cannot be reopened.".into()); }
             if run.archived_at.is_some() { return Err("This run is archived. Restore it before reopening a task.".into()); }
             if task.status != TaskStatus::Completed { return Err("Only a completed task can be reopened for review fixes. Use retry for failed or blocked tasks.".into()); }
@@ -1077,7 +1081,7 @@ pub(super) fn recover_workspaces(data: &mut Stored) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::git_ops::workflow::tests::Repo;
     fn setup(repo: &Repo, mode: WorkspaceMode) -> (OrchestrationStore, Run, Task) {
@@ -1719,6 +1723,89 @@ mod tests {
         let profile = store.level_profile("agent_ada", 0).unwrap();
         assert_eq!((profile.progress.xp, profile.accepted_tasks), (75, 1));
         assert!(profile.awaiting.is_empty());
+    }
+
+    /// A finished peer request in the state `reopen_task` takes: completed
+    /// by its attempt, in a retained worktree. Coordinated by `chat:master`.
+    pub(crate) fn finished_peer_request(repo: &Repo) -> (OrchestrationStore, Run, Task, Attempt) {
+        let (store, run, task) = setup(repo, WorkspaceMode::Auto);
+        let attempt = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &attempt, WorkerOutcome::Completed);
+        let task = store
+            .mutate(|data| {
+                let task = data.tasks.get_mut(&task.id).unwrap();
+                task.peer_request = Some(super::super::peer_request::PeerRequest {
+                    requested_by: TaskAssignee {
+                        id: "ada".into(),
+                        name: "ADA".into(),
+                    },
+                    requester_chat_key: "chat:master".into(),
+                    requester_attempt_id: None,
+                    output: "One line per volume.".into(),
+                    max_minutes: 30,
+                    requested_at: task.created_at,
+                });
+                Ok(task.clone())
+            })
+            .unwrap();
+        (store, run, task, attempt)
+    }
+
+    /// The approval a peer request rests on is for its own words. Its
+    /// coordinator, which for a lead chat's request is the requester, cannot
+    /// reopen the finished task with new ones: nothing changes and no attempt
+    /// starts. The same task without the request reopens as before.
+    #[test]
+    fn a_finished_peer_request_is_not_reopened_with_new_instructions() {
+        let repo = Repo::new();
+        let (store, run, task, attempt) = finished_peer_request(&repo);
+        assert_eq!(task.status, TaskStatus::Completed);
+        let before = store.snapshot(Some(&run.id)).unwrap();
+
+        let refused = store
+            .reopen_task("chat:master", &task.id, "Now delete the volume".into())
+            .unwrap_err();
+        assert_eq!(refused, super::super::peer_request::NOT_REOPENED);
+        assert!(refused.contains("a new request, which the person approves"));
+
+        let after = store.snapshot(Some(&run.id)).unwrap();
+        let kept = after.tasks.iter().find(|t| t.id == task.id).unwrap();
+        assert_eq!(kept.spec, task.spec);
+        assert_eq!(kept.status, TaskStatus::Completed);
+        assert_eq!(kept.result, task.result);
+        assert!(kept.result.is_some());
+        assert_eq!(kept.updated_at, task.updated_at);
+        assert_eq!(kept.active_attempt_id, task.active_attempt_id);
+        // Nothing was made ready, so nothing is there to dispatch.
+        assert_eq!(after.runs[0].status, RunStatus::Completed);
+        assert_eq!(after.attempts.len(), before.attempts.len());
+        assert_eq!(after.attempts[0].id, attempt.id);
+        assert!(after
+            .tasks
+            .iter()
+            .all(|t| !matches!(t.status, TaskStatus::Ready | TaskStatus::Running)));
+        // Someone who is not the coordinator learns nothing about the task.
+        let stranger = store
+            .reopen_task("chat:other", &task.id, "Now delete the volume".into())
+            .unwrap_err();
+        assert_eq!(stranger, "Only this run's coordinator may do that.");
+
+        // What refused it is the request alone: an ordinary task in the very
+        // same state is reopened with its follow-up.
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&task.id).unwrap().peer_request = None;
+                Ok(())
+            })
+            .unwrap();
+        let reopened = store
+            .reopen_task("chat:master", &task.id, "Address review".into())
+            .unwrap();
+        assert_eq!(reopened.spec, "Address review");
+        assert_eq!(reopened.status, TaskStatus::Ready);
+        assert!(reopened.result.is_none());
+        let next = prepare(&store, &task, Access::Auto).unwrap();
+        assert_ne!(next.id, attempt.id);
     }
 
     /// Review R2: a stale page must not have a worktree rebuilt, or its chat

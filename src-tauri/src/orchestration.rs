@@ -5028,6 +5028,7 @@ fn announce(run_id: &str, change: &str) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    pub(crate) use super::workspaces::tests::finished_peer_request;
     use super::*;
 
     pub(crate) fn run(store: &OrchestrationStore) -> Run {

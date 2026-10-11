@@ -631,6 +631,10 @@ extended. The host (`orchestration/peer_request.rs`):
   reassigned (it can be withdrawn), and its worker cannot make a peer request.
   It may still ask a question. The lead → report → report's report rule is
   otherwise unchanged.
+- **is one approved job.** A finished request is not reopened
+  (`orchestration_task_reopen` is refused, from a chat and from the page): a
+  follow-up is a new request, which the person approves. The teammate's brief
+  says the same of a message or a decision that asks for more than the request.
 - **never touches the roster.** Nothing in it reads `reportsTo` as changed or
   writes `team.json`; the store method is not given the file.
 
