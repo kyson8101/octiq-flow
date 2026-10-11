@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { RollingText } from "./RollingNumber";
+import { entryClass, useEntry } from "../lib/useArrival";
 
 type Window = { percent: number; resetsAt?: number | null };
 type Provider = {
@@ -96,6 +97,10 @@ export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
   const [open, setOpen] = useState<null | "hover" | "pin">(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAt = useRef(0);
+  // Whether the first reading has come back at all, with or without numbers.
+  const [asked, setAsked] = useState(false);
+  const has = !!(data.claude || data.codex);
+  const entry = useEntry(has);
 
   const cancelClose = useCallback(() => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
@@ -143,6 +148,8 @@ export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
       });
     } catch {
       setStale({ claude: true, codex: true });
+    } finally {
+      setAsked(true);
     }
   }, []);
 
@@ -160,12 +167,22 @@ export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
     };
   }, [refresh]);
 
-  if (!data.claude && !data.codex) return null;
+  // A browser with no reading cached has nothing to show until the first one
+  // lands, about a second in. Its place in the bar is held from the start, so
+  // the buttons beside it are already where they will be, and the number
+  // comes in once. A first answer with no numbers at all gives the place up.
+  if (!has) {
+    return asked ? null : (
+      <div className="usage gate-held" aria-hidden="true">
+        <span className="usage-btn enter-gated"><GaugeIcon /><span className="usage-val">00%</span></span>
+      </div>
+    );
+  }
   const summary = usageSummary(data);
 
   return (
     <div
-      className="usage"
+      className={`usage ${entryClass(entry)}`}
       // The whole thing, button and popup together, so moving the pointer from
       // one into the other is not "leaving".
       onPointerEnter={(e) => {
@@ -185,7 +202,7 @@ export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
       }}
     >
       <button
-        className={`usage-btn${summary && stale[summary.provider] ? " is-stale" : ""}`}
+        className={`usage-btn enter-gated${summary && stale[summary.provider] ? " is-stale" : ""}`}
         type="button"
         aria-label={usageLabel(data)}
         aria-haspopup="dialog"

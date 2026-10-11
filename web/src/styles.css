@@ -306,6 +306,25 @@ body {
 }
 
 .topbar-context { flex: 1 1 auto; }
+
+/* Until the project list has answered, the bar does not know which project
+   this is or which of its buttons apply. What it would have drawn stays out of
+   sight in its place, and comes in once, where it belongs — instead of two
+   buttons that jump aside for three more. The usage number has its own gate
+   (components/Usage): it is answered later, and separately. */
+.topbar-actions.gate-held > :not(.usage) { visibility: hidden; }
+.topbar-actions.gate-entering > :not(.usage) { animation: enter-fade var(--enter-duration) var(--enter-ease); }
+
+/* The same gate in the chat list: whose project a row is. */
+.sidebar.gate-held :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) { visibility: hidden; }
+.sidebar.gate-entering :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) {
+  animation: enter-fade var(--enter-duration) var(--enter-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar-actions.gate-entering > :not(.usage),
+  .sidebar.gate-entering :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) { animation: none; }
+}
 .topbar-workflow {
   display: flex;
   align-items: center;
@@ -14082,12 +14101,38 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
-/* Cached messages remain readable during transcript synchronization. */
+/* Cached messages remain readable during transcript synchronization.
+
+   The note takes no height of its own. It was a 30px strip above the
+   transcript, there for as long as the catch-up took: every time a chat was
+   opened again, the whole conversation stepped down and, a third of a second
+   later, back up. It rides over the top corner of the transcript instead, and
+   waits a beat before showing at all, so a catch-up that is already answered
+   says nothing. */
 .chat-sync-note {
-  flex-shrink: 0;
-  padding: 6px 16px;
+  position: relative;
+  z-index: 2;
+  flex: 0 0 0;
+  height: 0;
+  pointer-events: none;
+}
+.chat-sync-note > span {
+  position: absolute;
+  top: 6px;
+  left: 16px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-1);
   color: var(--fg-2);
   font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  animation: enter-fade var(--enter-duration) var(--enter-ease) 160ms backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-sync-note > span { animation: none; }
 }
 
 .history-more {

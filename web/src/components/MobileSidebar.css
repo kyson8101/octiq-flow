@@ -108,10 +108,22 @@
    with the title, so it outranks the snippet without pushing anything aside.
    The row's own button gives up the room it would have padded with. */
 .sidebar .task-chat-list .chat.has-pending .chat-btn { min-height: 66px; padding-bottom: 3px; }
-.sidebar .task-chat-list .chat-pending {
+/* The badge turns up after the row was drawn, so its line opens rather than
+   appearing (`.arrive`), and the room the button gives up goes over the same
+   time on the same curve: together the row only ever grows. */
+.sidebar .task-chat-list .chat-btn {
+  transition:
+    opacity 160ms ease-out,
+    min-height var(--enter-reveal-duration) var(--enter-ease),
+    padding-bottom var(--enter-reveal-duration) var(--enter-ease);
+}
+.sidebar .task-chat-list .chat-pending-slot {
   grid-column: 1;
   grid-row: 2;
   justify-self: start;
+  max-width: 100%;
+}
+.sidebar .task-chat-list .chat-pending {
   margin: 0 6px 9px 45px;
 }
 

@@ -10,28 +10,34 @@
 // waiting again, and comes back.
 import { approvalLabel, chatApprovalHint, type ChatPlan } from "../lib/chatPlans";
 import { PlanReview } from "./PlanReview";
+import { Arrive } from "./Arrive";
 import "./ChatPlanCards.css";
 
 /** Changes are asked for in the message box under the card, so the card's
  *  own change box is not drawn and never called. */
 const inChat = () => {};
 
-export function ChatPlanCards({ plans, drafting, projectName }: {
+export function ChatPlanCards({ plans, drafting, projectName, late }: {
   plans: ChatPlan[];
   /** The lead is mid-turn. */
   drafting: boolean;
   projectName?: (id: string) => string | undefined;
+  /** The `plan:<run>` keys that turned up after the chat was drawn; those
+   *  cards come in (`components/Arrive`), the rest are drawn in place. */
+  late?: ReadonlySet<string>;
 }) {
   const pending = plans.filter((plan) => plan.pending);
   if (!pending.length) return null;
   return (
     <div className="chat-plans">
       {pending.map((plan) => (
-        <div className="chat-plan" key={plan.run.id} data-pending="" tabIndex={-1}
-          data-pending-keys={`plan:${plan.run.id}:${plan.revision}`}>
-          <PlanReview run={plan.run} tasks={plan.tasks} drafting={drafting} projectName={projectName}
-            chatHint={chatApprovalHint(plan, pending.length)} onRequestChanges={inChat} surface="chat" />
-        </div>
+        <Arrive key={plan.run.id} late={!!late?.has(`plan:${plan.run.id}`)}>
+          <div className="chat-plan" data-pending="" tabIndex={-1}
+            data-pending-keys={`plan:${plan.run.id}:${plan.revision}`}>
+            <PlanReview run={plan.run} tasks={plan.tasks} drafting={drafting} projectName={projectName}
+              chatHint={chatApprovalHint(plan, pending.length)} onRequestChanges={inChat} surface="chat" />
+          </div>
+        </Arrive>
       ))}
     </div>
   );
