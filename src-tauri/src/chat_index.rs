@@ -17,6 +17,7 @@
 //! and it is exactly the copy that grows without limit. Opening a chat replays
 //! its transcript instead, so this file stays small enough to rewrite whole on
 //! every change.
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -272,6 +273,10 @@ fn preserve_unreadable() {
 /// that dies mid-write leaves the previous list intact rather than half of the
 /// new one — losing the last change beats losing every chat.
 fn write(index: &Index) -> Result<(), String> {
+    #[cfg(test)]
+    if tests::WRITES_FAIL.get() {
+        return Err("the disk is full".into());
+    }
     let Some(path) = path() else {
         return Err("could not find the profile folder".into());
     };
@@ -504,33 +509,74 @@ pub fn set_done(id: &str, at: Option<i64>) -> Result<(), String> {
     write(&index)
 }
 
+/// How many times each chat's agent has been started since this server came
+/// up (`reopen`). In memory, like the completion it guards: a completion does
+/// not outlive the server either.
+static STARTS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+
+/// The number `complete` has to be shown again: read when a wrap-up turn
+/// reaches its full stop, it is unchanged only while nothing has started the
+/// chat since.
+pub fn starts(id: &str) -> u64 {
+    STARTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Why `complete` did not tick a chat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unticked {
+    /// The chat was started again after the turn that earned the tick ended.
+    /// That start wins: it would have taken the tick away had it come later.
+    StartedAgain,
+    /// The index does not list the chat, or lists it as deleted.
+    Unlisted,
+    /// The index could not be read or written, with why.
+    Unsaved(String),
+}
+
 /// Tick a chat off because its completion ended (`agent_chat`), stamped no
 /// earlier than the activity already recorded, and held (see `done_held`).
-/// Answers the stamp, or `None` for a chat the index does not list.
-pub fn complete(id: &str, at: i64) -> Result<Option<i64>, String> {
+/// Answers the stamp.
+///
+/// `starts` is what `starts(id)` answered when the wrap-up turn ended. This
+/// and `reopen` take the same lock, so of a completion and a start of one
+/// chat exactly one of two things happens: the start came first and nothing
+/// is ticked, or the tick is written and the start then takes it away.
+pub fn complete(id: &str, at: i64, starts: u64) -> Result<i64, Unticked> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(mut index) = read_checked() else {
-        return Ok(None);
-    };
+    if self::starts(id) != starts {
+        return Err(Unticked::StartedAgain);
+    }
+    let mut index =
+        read_checked().map_err(|_| Unticked::Unsaved("the chat index could not be read".into()))?;
     let Some(existing) = index
         .chats
         .iter_mut()
         .find(|c| c.id == id && c.deleted_at.is_none())
     else {
-        return Ok(None);
+        return Err(Unticked::Unlisted);
     };
     let at = at.max(existing.updated_at);
     existing.done_at = Some(at);
     existing.done_held = true;
-    write(&index).map(|()| Some(at))
+    write(&index).map(|()| at).map_err(Unticked::Unsaved)
 }
 
-/// A completed chat was started again: its held tick goes, whatever the
-/// page's save of that message says and whichever of the two lands first.
-/// Answers whether anything changed. A tick made by hand is left to
-/// `is_done`.
+/// A chat's agent was started: counted (`starts`), and a completed chat's
+/// held tick goes, whatever the page's save of that message says and
+/// whichever of the two lands first. Answers whether the row changed. A tick
+/// made by hand is left to `is_done`.
 pub fn reopen(id: &str) -> Result<bool, String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    *STARTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(id.to_string())
+        .or_default() += 1;
     let Ok(mut index) = read_checked() else {
         return Ok(false);
     };
@@ -794,7 +840,7 @@ pub fn reconcile() -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     static LIFECYCLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -903,6 +949,25 @@ mod tests {
         for id in ids {
             let _ = remove(id);
         }
+    }
+
+    thread_local! {
+        /// Set by `while_writes_fail`, for the thread that asked only: the
+        /// index is one file shared by every test in the suite.
+        pub(super) static WRITES_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Run `work` with every write of the index by this thread failing.
+    pub(crate) fn while_writes_fail<T>(work: impl FnOnce() -> T) -> T {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                WRITES_FAIL.set(false);
+            }
+        }
+        let _restore = Restore;
+        WRITES_FAIL.set(true);
+        work()
     }
 
     #[test]
@@ -1122,7 +1187,7 @@ mod tests {
         let row = || list().into_iter().find(|c| c.id == id).unwrap();
 
         // The wrap-up turn ends: the host ticks the chat...
-        assert_eq!(complete(id, 900).unwrap(), Some(900));
+        assert_eq!(complete(id, 900, starts(id)), Ok(900));
         assert!(row().is_done());
         // ...and each open tab then saves the turn's end, on its own clock,
         // after the tick. An ordinary tick would be retired by that.
@@ -1145,13 +1210,60 @@ mod tests {
         cleanup(&[id]);
         // A page whose clock runs ahead saved the turn's end first.
         upsert(meta(id, 5_000)).unwrap();
-        assert_eq!(complete(id, 900).unwrap(), Some(5_000));
+        assert_eq!(complete(id, 900, starts(id)), Ok(5_000));
         assert!(list().into_iter().find(|c| c.id == id).unwrap().is_done());
         assert_eq!(
-            complete("test-index-done-held-unknown", 900).unwrap(),
-            None,
+            complete("test-index-done-held-unknown", 900, 0),
+            Err(Unticked::Unlisted),
             "a chat the index does not list has nothing to tick"
         );
+        cleanup(&[id]);
+    }
+
+    /// Review of 2fd3231, H1: a completion and a start of one chat. The start
+    /// that got in first is seen by `complete` and nothing is ticked; the one
+    /// that comes after finds the tick and takes it.
+    #[test]
+    fn a_chat_started_again_since_its_wrap_up_ended_is_not_ticked() {
+        let id = "test-index-done-started-again";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        let row = || list().into_iter().find(|c| c.id == id).unwrap();
+
+        // The wrap-up ends; before the tick is written the chat is started.
+        let ended_at = starts(id);
+        assert_eq!(reopen(id), Ok(false), "no tick to take yet");
+        assert_eq!(complete(id, 900, ended_at), Err(Unticked::StartedAgain));
+        assert_eq!(row().done_at, None);
+        assert!(!row().done_held);
+
+        // The other order: ticked, and the start then reopens it.
+        let ended_at = starts(id);
+        assert_eq!(complete(id, 900, ended_at), Ok(900));
+        assert!(row().done_held);
+        assert_eq!(reopen(id), Ok(true));
+        assert_eq!(row().done_at, None);
+        assert!(!row().done_held);
+        // And that start is counted, so a completion from before it is late.
+        assert_eq!(complete(id, 950, ended_at), Err(Unticked::StartedAgain));
+        cleanup(&[id]);
+    }
+
+    /// Review of 2fd3231, M2: a tick that could not be written is an error
+    /// with its reason, never a quiet "nothing to tick".
+    #[test]
+    fn a_tick_that_cannot_be_written_says_so() {
+        let id = "test-index-done-unsaved";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+
+        let unsaved = while_writes_fail(|| complete(id, 900, starts(id)));
+        assert_eq!(unsaved, Err(Unticked::Unsaved("the disk is full".into())));
+        let row = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(row.done_at, None);
+        assert!(!row.done_held);
+        // Only that thread's writes failed, and only for that long.
+        assert_eq!(complete(id, 900, starts(id)), Ok(900));
         cleanup(&[id]);
     }
 
@@ -1162,7 +1274,7 @@ mod tests {
         // The page's save of the new message lands before the start...
         cleanup(&[id]);
         upsert(meta(id, 100)).unwrap();
-        complete(id, 900).unwrap();
+        complete(id, 900, starts(id)).unwrap();
         let mut sent = meta(id, 100);
         sent.updated_at = 2_000;
         upsert(sent).unwrap();
@@ -1175,7 +1287,7 @@ mod tests {
         // ...or after it.
         cleanup(&[id]);
         upsert(meta(id, 100)).unwrap();
-        complete(id, 900).unwrap();
+        complete(id, 900, starts(id)).unwrap();
         assert_eq!(reopen(id), Ok(true));
         let mut sent = meta(id, 100);
         sent.updated_at = 2_000;
@@ -1197,7 +1309,7 @@ mod tests {
 
         // Ticking again by hand over a completion's tick makes it ordinary:
         // the next activity retires it, as it always did.
-        complete(id, 900).unwrap();
+        complete(id, 900, starts(id)).unwrap();
         set_done(id, Some(900)).unwrap();
         assert!(!row().done_held);
         let mut sent = meta(id, 100);
