@@ -231,6 +231,22 @@ export function isPeerRequestGate(
   return !!gate.taskId && tasks.some((task) => task.id === gate.taskId && !!task.peerRequest);
 }
 
+/** Whether a start of this task would be refused because the person has not
+ *  approved it. The task's own `heldByPlan` says, when the host sends it; a
+ *  task that carries none, in a run where another task does, is not held.
+ *  Only when no task of the run carries it (a host that does not say) is the
+ *  run's own approval read instead, which is what the page did before and
+ *  calls every unstarted task of a run with a pending plan held. */
+export function taskHeldByPlan(
+  task: Pick<OrchestrationTask, "runId" | "heldByPlan">,
+  run: Pick<OrchestrationRun, "planApproval"> | undefined,
+  tasks: readonly Pick<OrchestrationTask, "runId" | "heldByPlan">[],
+): boolean {
+  if (typeof task.heldByPlan === "boolean") return task.heldByPlan;
+  if (tasks.some((other) => other.runId === task.runId && typeof other.heldByPlan === "boolean")) return false;
+  return run?.planApproval?.status === "pending";
+}
+
 export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy">): boolean {
   return (task.status === "blocked" || task.status === "failed") && !task.supersededBy;
 }

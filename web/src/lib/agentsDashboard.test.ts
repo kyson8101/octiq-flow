@@ -6,7 +6,7 @@ import {
   type ChatActivity, type LeadRecord, type RosterInput,
 } from "./agentsDashboard";
 import {
-  EMPTY_ORCHESTRATION,
+  EMPTY_ORCHESTRATION, taskHeldByPlan,
   type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
 import type { TeamAgent } from "./agentsMode";
@@ -131,13 +131,19 @@ describe("agents dashboard", () => {
   });
 
   it("puts a person-only wait ahead of everything but work, and names it", () => {
-    const gated = byId(roster({ snapshot: snap({
+    const gatedOn = (awaits?: "person" | "coordinator" | "nobody") => byId(roster({ snapshot: snap({
       tasks: [task("a", "running", "ada", { activeAttemptId: "att_a" })],
       attempts: [attempt("a", { status: "blocked" })],
       gates: [{ id: "g", runId: "run_1", taskId: "a", createdByChatKey: "chat:orch-a", targetChatKey: "chat:lead",
-        question: "?", options: [], status: "open", createdAt: 1, updatedAt: 1 }],
-    }) }));
-    expect(gated.ada).toMatchObject({ state: "needs_you", stateLabel: "Waiting on a decision" });
+        question: "?", options: [], status: "open", createdAt: 1, updatedAt: 1, ...(awaits ? { awaits } : {}) }],
+    }) })).ada;
+    expect(gatedOn("person")).toMatchObject({ state: "needs_you", stateLabel: "Waiting on a decision" });
+    // A gate that is not the person's parks the task without asking them:
+    // the coordinator's, one nobody can answer, and one the host put no name
+    // to (`lib/runWaits`).
+    expect(gatedOn("coordinator")).toMatchObject({ state: "blocked", stateLabel: "Waiting on the coordinator" });
+    expect(gatedOn("nobody")).toMatchObject({ state: "blocked", stateLabel: "Decision open" });
+    expect(gatedOn()).toMatchObject({ state: "blocked", stateLabel: "Decision open" });
     const carded = byId(roster({
       snapshot: snap({ tasks: [task("a", "running", "ada", { activeAttemptId: "att_a" })],
         attempts: [attempt("a", { execution: { state: "waiting_tool", retryCount: 0 } })] }),
@@ -186,6 +192,44 @@ describe("agents dashboard", () => {
     expect(rows.ada).toMatchObject({ state: "needs_you", stateLabel: "Plan awaiting approval" });
     expect(rows.ada.activities[0]).toMatchObject({ kind: "lead", chatKey: "chat:lead", project: { name: "octiq-flow" } });
     expect(rows.bo).toMatchObject({ state: "queued", stateLabel: "Waiting for plan approval" });
+  });
+
+  it("says a task waits for plan approval only when the host says the plan holds that task", () => {
+    // A plan that went back for approval for one task's sake: the task the
+    // person already approved is not held by it.
+    const pending = run({ planApproval: { status: "pending", requestedAt: 1 } });
+    const label = (tasks: OrchestrationTask[]) => {
+      const rows = byId(roster({ snapshot: snap({ runs: [pending], tasks }) }));
+      return [rows.ada?.stateLabel, rows.bo?.stateLabel];
+    };
+    expect(label([task("a", "ready", "ada", { heldByPlan: false }), task("b", "pending", "bo", { heldByPlan: true })]))
+      .toEqual(["Ready to start", "Waiting for plan approval"]);
+    // A host that sends the field only where it is true: the task without it
+    // is not held, because another task of the run says the host speaks it.
+    expect(label([task("a", "pending", "ada"), task("b", "ready", "bo", { heldByPlan: true })]))
+      .toEqual(["Queued", "Waiting for plan approval"]);
+    // A host that does not say at all: every unstarted task of the pending
+    // plan reads as before.
+    expect(label([task("a", "ready", "ada"), task("b", "pending", "bo")]))
+      .toEqual(["Waiting for plan approval", "Waiting for plan approval"]);
+    // Held with the plan already approved (a task added later): the host's
+    // word, not the run's.
+    const approved = run({ planApproval: { status: "approved", requestedAt: 1 } });
+    expect(byId(roster({ snapshot: snap({ runs: [approved], tasks: [task("a", "ready", "ada", { heldByPlan: true })] }) })).ada.stateLabel)
+      .toBe("Waiting for plan approval");
+  });
+
+  it("reads who holds a task from the task, then its run's other tasks, then the run", () => {
+    const pending = { planApproval: { status: "pending" as const, requestedAt: 1 } };
+    const of = (heldByPlan?: boolean, runId = "r") => ({ runId, ...(heldByPlan === undefined ? {} : { heldByPlan }) });
+    expect(taskHeldByPlan(of(true), {}, [])).toBe(true);
+    expect(taskHeldByPlan(of(false), pending, [])).toBe(false);
+    expect(taskHeldByPlan(of(), pending, [of(), of(true)])).toBe(false);
+    // Another run's tasks say nothing about this one.
+    expect(taskHeldByPlan(of(), pending, [of(true, "other")])).toBe(true);
+    expect(taskHeldByPlan(of(), pending, [of()])).toBe(true);
+    expect(taskHeldByPlan(of(), {}, [of()])).toBe(false);
+    expect(taskHeldByPlan(of(), undefined, [])).toBe(false);
   });
 
   it("reads a direct lead conversation's turn: working while busy, idle once it ends", () => {

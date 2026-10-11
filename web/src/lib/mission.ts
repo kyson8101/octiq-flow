@@ -52,7 +52,15 @@ export function missionState(run: OrchestrationRun, tasks: readonly Orchestratio
       return state(delivery.every((d) => d.released === true) ? "released" : "merged");
     }
   }
-  if (!live.length || run.planApproval?.status === "pending" || run.planApproval?.status === "rejected") {
+  // A plan waiting for approval is a draft while it holds the work. Once the
+  // host says, per task, what the plan holds (`heldByPlan`), a mission whose
+  // plan went back for one task's sake keeps the stage of the work the
+  // person already approved: it is a draft only while every task still open
+  // is held. A host that does not say leaves it as it was: pending is draft.
+  const pending = run.planApproval?.status === "pending";
+  const said = live.some((task) => typeof task.heldByPlan === "boolean");
+  const held = pending && (!said || open.every((task) => task.heldByPlan === true));
+  if (!live.length || held || run.planApproval?.status === "rejected") {
     return state("draft");
   }
   if (!open.length) return state("ready");

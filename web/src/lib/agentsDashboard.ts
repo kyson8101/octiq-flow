@@ -15,9 +15,10 @@
 //
 // Everything is keyed on the agent's stable id, so a rename, or a change of
 // provider or model, keeps its work where it was.
-import type {
-  OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask,
+import {
+  taskHeldByPlan, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
+import { gateWaitsOn, type WaitsOn } from "./runWaits";
 // Types only: agentsMode opens the socket bridge on import, and this module
 // is pure.
 import type { AgentTeam, TeamAgent } from "./agentsMode";
@@ -166,19 +167,31 @@ export function taskState(
   task: OrchestrationTask,
   run: OrchestrationRun | undefined,
   attempt: OrchestrationAttempt | undefined,
-  gated: boolean,
+  /** Who the task's open gate waits on (`lib/runWaits.gateWaitsOn`), or
+   *  `false` when it has none. */
+  gate: WaitsOn | false,
   waiting: number,
+  /** A start of it would be refused until the person approves it
+   *  (`taskHeldByPlan`). Left out: the run's own approval, as before the
+   *  host said it per task. */
+  held: boolean = run?.planApproval?.status === "pending",
 ): { state: AgentState; label: string } | null {
   if (!run || run.archivedAt || !LIVE_RUN.includes(run.status)) return null;
   // A replaced task is history: the agent is on its replacement, if anyone.
   if (task.status === "completed" || task.status === "cancelled" || task.supersededBy) return null;
   if (waiting > 0) return { state: "needs_you", label: "Needs your approval" };
-  if (gated) return { state: "needs_you", label: "Waiting on a decision" };
+  // "Needs you" only for a gate that is the person's. The coordinator's, or
+  // one the host put no name to, parks the task without asking them.
+  if (gate === "person") return { state: "needs_you", label: "Waiting on a decision" };
+  if (gate === "coordinator") return { state: "blocked", label: "Waiting on the coordinator" };
+  if (gate) return { state: "blocked", label: "Decision open" };
   if (task.status === "failed") return { state: "blocked", label: "Failed" };
   if (task.status === "blocked") return { state: "blocked", label: "Blocked" };
   if (task.status === "pending" || task.status === "ready") {
-    // The plan is the lead's to have approved; its tasks are only waiting.
-    if (run.planApproval?.status === "pending") return { state: "queued", label: "Waiting for plan approval" };
+    // The plan is the lead's to have approved; a task it holds is only
+    // waiting. One the person already approved is not held by a later
+    // revision of the plan, and says what it is doing.
+    if (held) return { state: "queued", label: "Waiting for plan approval" };
     return { state: "queued", label: task.status === "ready" ? "Ready to start" : "Queued" };
   }
   // Running, as the ledger has it. Whether anything is executing is the
@@ -218,13 +231,25 @@ export function taskState(
  *  pending-action classification as the row's badges. */
 export function workingTaskCount(snapshot: OrchestrationSnapshot, waitingOnTask: (taskId: string) => number): number {
   const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
-  const gated = new Set(snapshot.gates
-    .filter((gate) => gate.status === "open" && gate.taskId).map((gate) => gate.taskId!));
+  const gated = taskGates(snapshot);
   return snapshot.tasks.filter((task) => {
     const attempt = latestAttempt(snapshot, task);
     const waiting = waitingOnTask(task.id);
-    return taskState(task, runs.get(task.runId), attempt, gated.has(task.id), waiting)?.state === "working";
+    const run = runs.get(task.runId);
+    return taskState(task, run, attempt, gated.get(task.id) ?? false, waiting, taskHeldByPlan(task, run, snapshot.tasks))?.state === "working";
   }).length;
+}
+
+/** Who each task's open gate waits on. With several open on one task, the
+ *  person's is the one that is said. */
+function taskGates(snapshot: OrchestrationSnapshot): Map<string, WaitsOn> {
+  const gated = new Map<string, WaitsOn>();
+  for (const gate of snapshot.gates) {
+    if (gate.status !== "open" || !gate.taskId) continue;
+    const on = gateWaitsOn(gate, snapshot.tasks);
+    if (on === "person" || !gated.has(gate.taskId)) gated.set(gate.taskId, on);
+  }
+  return gated;
 }
 
 /** A lead conversation's current state, or null when it is not doing
@@ -250,8 +275,7 @@ export function agentRoster(input: RosterInput): AgentRow[] {
   if (!team) return [];
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const runs = new Map((snapshot?.runs ?? []).map((run) => [run.id, run]));
-  const gated = new Set((snapshot?.gates ?? [])
-    .filter((gate) => gate.status === "open" && gate.taskId).map((gate) => gate.taskId!));
+  const gated = snapshot ? taskGates(snapshot) : new Map<string, WaitsOn>();
 
   const activitiesFor = new Map<string, AgentActivity[]>();
   const recentFor = new Map<string, AgentRow["recent"]>();
@@ -269,7 +293,8 @@ export function agentRoster(input: RosterInput): AgentRow[] {
     const run = runs.get(task.runId);
     const attempt = latestAttempt(snapshot, task);
     if (attempt && input.chatExists(attempt.workerChatKey)) touch(assignee, attempt.workerChatKey, task.title, attempt.updatedAt);
-    const current = taskState(task, run, attempt, gated.has(task.id), attempt ? input.waitingOn(attempt.workerChatKey) : 0);
+    const current = taskState(task, run, attempt, gated.get(task.id) ?? false, attempt ? input.waitingOn(attempt.workerChatKey) : 0,
+      taskHeldByPlan(task, run, snapshot.tasks));
     if (!current) continue;
     const destination = task.destination;
     add(assignee, {
