@@ -892,6 +892,9 @@ second file it has to know to read and decide which one to write.
 - **A worker cannot rewrite its Lessons.** Its attempt is not paused for a
   card, so the MCP does not offer the tool to a worker and the host refuses one.
   It records entries, and curates them the next time it leads a chat.
+- **An additional agent in a room cannot propose them.** Its capability proves
+  the chat, not the chat's registered agent, so the host refuses it before
+  any card (`web.rs` `lessons_seat_refusal`).
 - **The read nudges.** With no Lessons and more than 8 entries, or with
   entries left out, the read carries a `lessonsHint` to propose some.
 - **A lesson for every agent goes up, not sideways.** The brief tells an agent

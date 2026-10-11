@@ -1689,10 +1689,21 @@ async fn vault_handler(
     headers: axum::http::HeaderMap,
     Json(request): Json<TaskHook>,
 ) -> Response {
-    let chat_key = match task_hook_caller(&ctx, &headers, &request) {
-        Ok(chat_key) => chat_key,
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: None,
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim)
+        .and_then(|caller| not_front_desk(&ctx, caller))
+    {
+        Ok(caller) => caller,
         Err(refused) => return hook_refusal(refused),
     };
+    if let Some(refused) = lessons_seat_refusal(&request.action, &caller) {
+        return hook_failed(StatusCode::BAD_REQUEST, refused);
+    }
+    let chat_key = caller.chat_key;
     // A proposed Lessons section waits on the person's card, so it is answered
     // here rather than on the synchronous command path.
     if request.action == "agent_memory_lessons" {
@@ -1713,6 +1724,21 @@ async fn vault_handler(
         Ok(result) => axum::Json(json!({"result": result})).into_response(),
         Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
     }
+}
+
+/// A Lessons proposal is put to the person as the chat's registered agent, on
+/// a card in that chat, and rewrites that agent's own section. A room seat's
+/// capability proves the chat, not that identity, so it is refused before
+/// any card. The other vault actions stay open to a seat: the memory notes
+/// are ordinary notes of the shared vault, which its own vault tools reach
+/// under the same chat key, so they give it nothing those do not.
+fn lessons_seat_refusal(action: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
+    (action == "agent_memory_lessons" && caller.session_key != caller.chat_key).then(|| {
+        crate::outcome::Refusal::new(
+            crate::outcome::ReasonClass::ScopeRefused,
+            "Only the chat's own agent can propose its Lessons. An additional agent in a room is one voice in the chat, not its registered agent.",
+        )
+    })
 }
 
 /// An agent proposing a new Lessons section for its own memory
@@ -3315,6 +3341,131 @@ mod tests {
             assert!(roster_seat_refusal(action, &own).is_none(), "{action}");
         }
         assert!(roster_seat_refusal("list", &seat).is_none());
+    }
+
+    /// The same rule on `/hook/vault`: a Lessons proposal is the chat's
+    /// registered agent rewriting its own section, on a card in that chat. A
+    /// room seat is refused before its arguments are read and before any
+    /// card, while the chat's own process is past that check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_room_seat_cannot_propose_the_chats_lessons() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let wiring = crate::handover::Wiring::scratch();
+        let team = wiring.team.clone();
+        let chat = format!("chat:lessons-seated-{}", uuid::Uuid::new_v4().simple());
+        let seat_key = format!("{chat}#2");
+        let potato = crate::team::save(
+            &team,
+            crate::team::TeamDraft {
+                id: None,
+                name: "Potato".into(),
+                role: "Leads.".into(),
+                agent: crate::agent_chat::ChatAgent::Claude,
+                model: "opus".into(),
+                effort: None,
+                access: None,
+                project_id: None,
+                reports_to: None,
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap();
+        crate::team::record_lead(&team, &chat, &potato, "project", false).unwrap();
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        let (_ctx, base) = test_server_handing_over(cfg, chats.clone(), store, wiring).await;
+        let own = chats.test_launch(&chat);
+        let seat = chats.test_launch_in(&seat_key, &chat);
+        let lessons = |session: &str, args: Value| {
+            json!({
+                "chatKey": chat, "sessionKey": session,
+                "action": "agent_memory_lessons", "args": args,
+            })
+        };
+        // Arguments no proposal could have, and then a real one: the seat is
+        // answered the same, because neither was read.
+        for args in [json!({ "lessons": 5 }), json!({ "lessons": "- Forged." })] {
+            let (status, answer) =
+                post_hook(&base, "vault", None, Some(&seat), lessons(&seat_key, args)).await;
+            assert_eq!(status, 400, "{answer}");
+            assert_eq!(
+                answer["outcome"]["reasonClass"], "scope-refused",
+                "{answer}"
+            );
+            assert_eq!(
+                answer["error"],
+                "Only the chat's own agent can propose its Lessons. An additional agent in a room is one voice in the chat, not its registered agent.",
+            );
+        }
+        let waiting = serde_json::to_string(&crate::permission::pending()).unwrap();
+        assert!(!waiting.contains(chat.as_str()), "{waiting}");
+        // The chat's own process is past it: what answers is the proposal's
+        // own check of its arguments, as Potato.
+        let (status, answer) = post_hook(
+            &base,
+            "vault",
+            None,
+            Some(&own),
+            lessons(&chat, json!({ "lessons": 5 })),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(answer["outcome"]["reasonClass"], "validation", "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("Those arguments are not valid"),
+            "{answer}"
+        );
+        // Reading stays open to the seat: it reaches the command, which
+        // refuses a chat the index does not hold before any vault is opened.
+        let read = json!({
+            "chatKey": chat, "sessionKey": seat_key, "action": "agent_memory_read", "args": {},
+        });
+        let (status, answer) = post_hook(&base, "vault", None, Some(&seat), read).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"].as_str().unwrap().contains("chat index"),
+            "{answer}"
+        );
+        chats.test_end(&seat_key);
+        chats.test_end(&chat);
+    }
+
+    /// The pure half: only the Lessons proposal is refused a seat on
+    /// `/hook/vault`, and the chat's own process is refused nothing.
+    #[test]
+    fn a_room_seat_is_refused_the_lessons_proposal_and_no_other_vault_action() {
+        let own = HookCaller {
+            chat_key: "chat:lead".into(),
+            session_key: "chat:lead".into(),
+            launch_id: "l1".into(),
+        };
+        let seat = HookCaller {
+            session_key: "chat:lead#2".into(),
+            ..own.clone()
+        };
+        let refused = lessons_seat_refusal("agent_memory_lessons", &seat).unwrap();
+        assert_eq!(
+            refused.outcome.reason_class,
+            crate::outcome::ReasonClass::ScopeRefused
+        );
+        assert!(lessons_seat_refusal("agent_memory_lessons", &own).is_none());
+        for action in [
+            "agent_memory_read",
+            "agent_memory_append",
+            "read",
+            "search",
+            "patch",
+        ] {
+            assert!(lessons_seat_refusal(action, &seat).is_none(), "{action}");
+        }
     }
 
     /// Every hook failure says it is OctiqFlow's, and what kind, so the agent's
