@@ -1889,7 +1889,9 @@ const ORCHESTRATION_SNAPSHOT = {
     "left out and long text is clipped; pass taskId for one task in full. This is the source of truth; never " +
     "infer task state from chat prose. nativeDecisions identifies observed safety cards and continuation viability; " +
     "absence is not proof of approval. services reports registered local listener reachability and checkedAt, " +
-    "independent of task completion; verify application health before use. A peer request's worker is shown its " +
+    "independent of task completion; verify application health before use. heldByPlan on a task means a start " +
+    "of it is refused for now: the plan card is waiting for the person and their approval does not cover that " +
+    "task, or one it depends on; tasks they have already approved keep starting. A peer request's worker is shown its " +
     "own task only, in full, and is refused another runId or taskId.",
   inputSchema: {
     type: "object",
@@ -2133,7 +2135,7 @@ const ORCHESTRATION_RUN_STOP = {
 const WORKSPACE_TOOLS = [
   { name: "orchestration_automation_configure", description: "Enable host dispatch with workerDefaults={access:'auto'} using the main agent's per-task worker selections, or pause ready-wave dispatch with workerDefaults=null. Transient provider recovery uses each task's recovery policy; worker-reported failures and blocks still need explicit retries. Coordinator only.",
     inputSchema: { type: "object", properties: { runId: { type: "string" }, workerDefaults: WORKER_DEFAULTS_SCHEMA }, required: ["runId", "workerDefaults"] } },
-  { name: "orchestration_dispatch_ready", description: "Immediately dispatch the configured run's full ready wave up to its capacity. Repeated calls do not duplicate active workers. The scheduler also does this automatically.",
+  { name: "orchestration_dispatch_ready", description: "Immediately dispatch the configured run's full ready wave up to its capacity. Repeated calls do not duplicate active workers. The scheduler also does this automatically. While a plan revision waits for the person, the wave is the ready tasks they have already approved: a task they have not approved, and whatever depends on it, is left out and shows heldByPlan in orchestration_snapshot.",
     inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
   { name: "orchestration_workspace_refresh", description: "Refresh Git and remote delivery evidence for a task: exact commit, dirty state, push, PR/review, and merge. Requires GitHub CLI for PR evidence. Worker completion alone is not delivery.",
     inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },

@@ -12,8 +12,8 @@
 //!   own team (`team::teammates`) may be asked.
 //! - A request becomes ONE ordinary task assigned to the teammate, marked
 //!   with who asked (`Task::peer_request`). It waits on the plan card like any
-//!   task added to an approved plan, and no worker starts before the person
-//!   approves. A worker's request lives in the worker's own run; a lead
+//!   task added to an approved plan, and no worker starts on it before the
+//!   person approves. A worker's request lives in the worker's own run; a lead
 //!   chat's in the live run that chat coordinates, which the host opens when
 //!   the chat has none.
 //! - The teammate runs as its registered identity (provider, model, effort,
@@ -903,6 +903,7 @@ impl OrchestrationStore {
                     max_minutes,
                     requested_at: now,
                 }),
+                held_by_plan: false,
                 created_at: now,
                 updated_at: now,
             };
@@ -937,7 +938,7 @@ impl OrchestrationStore {
                     format!("peer-request:{}", task.id),
                     "peer_request",
                     format!(
-                        "{} asked its teammate {} to do \"{}\" as a peer request: task {}. It waits on the plan card for the person's approval with the rest of the plan, and nothing starts before that. It runs as {}'s registered identity for at most {} minutes of {TIME_LIMIT_TERMS}. Accept its result as usual; the report also goes to {} while its attempt runs. reportsTo is unchanged for both.",
+                        "{} asked its teammate {} to do \"{}\" as a peer request: task {}. It waits on the plan card for the person's approval and does not start before that; the tasks they have already approved keep starting. It runs as {}'s registered identity for at most {} minutes of {TIME_LIMIT_TERMS}. Accept its result as usual; the report also goes to {} while its attempt runs. reportsTo is unchanged for both.",
                         current.requester.name,
                         teammate.name,
                         task.title,
@@ -1547,7 +1548,7 @@ pub(crate) mod tests {
         let early = store
             .reserve_attempt(LEAD_CHAT, &host_launch(&store, &task))
             .unwrap_err();
-        assert!(early.contains("has not approved this plan"), "{early}");
+        assert!(early.contains("has not approved this task yet"), "{early}");
         assert!(snapshot.attempts.is_empty());
 
         // Approved: the host's own wave picks it up with the PEER's settings.
@@ -3303,16 +3304,101 @@ pub(crate) mod tests {
         assert!(heard[0].body.contains(terms), "{}", heard[0].body);
     }
 
-    /// Review M3: a worker's request puts its run's plan back with the
-    /// person. A task they had already approved, whose attempt failed for a
-    /// passing reason, keeps its retry through that wait.
+    /// The person's decision of 2026-10-11: a worker's request puts its
+    /// run's plan back with the person, and that holds only what they have
+    /// not approved. A task they had approved, whose attempt failed for a
+    /// passing reason, recovers on time while the request's card waits.
     #[test]
-    fn a_recovery_due_while_the_plan_waits_is_held_and_runs_once_it_is_decided() {
+    fn a_recovery_of_an_approved_task_runs_while_the_plan_waits() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        store.require_plan_approval(&run.id).unwrap();
+        let asking = super::super::tests::task(&store, &run, Vec::new());
+        let failing = super::super::tests::task(&store, &run, Vec::new());
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        let started = |task: &Task| {
+            let (_, _, attempt, _) = store
+                .reserve_attempt("chat:master", &launch_for(&task.id))
+                .unwrap();
+            store
+                .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
+                .unwrap()
+        };
+        let worker = started(&asking);
+        store
+            .mutate(|data| {
+                data.attempts.get_mut(&worker.id).unwrap().assignee = Some(TaskAssignee {
+                    id: "ada".into(),
+                    name: "ADA".into(),
+                });
+                Ok(())
+            })
+            .unwrap();
+        let other = started(&failing);
+        store
+            .observe_worker_event(
+                &other.worker_chat_key,
+                &json!({"type":"turn.failed", "error":{"message":"Selected model is at capacity"}}),
+            )
+            .unwrap();
+        from_worker(&store, &worker, work("bo")).unwrap();
+        assert!(run_of(&store, &run.id).awaiting_plan_approval());
+        assert!(task_of(&store, &other.task_id).approved_at.is_some());
+        store
+            .mutate(|data| {
+                let failed = data.attempts.get_mut(&other.id).unwrap();
+                assert!(failed.execution.next_retry_at.is_some(), "a retry is owed");
+                failed.execution.next_retry_at = Some(now_ms() - 1);
+                // Where its retry would run is gone, so the start reserves
+                // an attempt and launches no process: the test's stand-in
+                // for a launch.
+                data.tasks.get_mut(&other.task_id).unwrap().destination = Some(TaskDestination {
+                    project_id: "gone".into(),
+                    project_name: "Gone".into(),
+                    repository: "/nowhere".into(),
+                });
+                Ok(())
+            })
+            .unwrap();
+        let workspaces =
+            crate::workspaces::WorkspaceState::with_projects(vec![project("workspace", "/tmp")]);
+        store
+            .recover_due_workers(Arc::new(ChatManager::default()), &workspaces, now_ms())
+            .unwrap();
+        let mut tried: Vec<Attempt> = store
+            .snapshot(None)
+            .unwrap()
+            .attempts
+            .into_iter()
+            .filter(|a| a.task_id == other.task_id)
+            .collect();
+        tried.sort_by_key(|a| a.number);
+        assert_eq!(tried.len(), 2, "the retry started while the card waits");
+        assert_eq!(tried[1].execution.retry_count, 1);
+        assert!(tried[0].execution.next_retry_at.is_none());
+        assert!(run_of(&store, &run.id).awaiting_plan_approval());
+        assert!(
+            notices(&store, "chat:master", "provider")
+                .iter()
+                .all(|told| !told.body.contains("The retry is kept")),
+            "nothing was held"
+        );
+    }
+
+    /// Review M3, under the rule above: a recovery is held only when its own
+    /// task is not approved. This run asked for no approval until a worker's
+    /// request put a plan in front of the person, so they have approved none
+    /// of its tasks, and the failed one keeps its retry through that wait.
+    #[test]
+    fn a_recovery_of_an_unapproved_task_is_held_and_runs_once_the_plan_is_decided() {
         for approve in [true, false] {
             let store = OrchestrationStore::default();
             let run = run(&store);
             let worker = worker_ada(&store, &run);
             let other = super::super::tests::running_worker(&store, &run);
+            assert!(task_of(&store, &other.task_id).approved_at.is_none());
             store
                 .observe_worker_event(
                     &other.worker_chat_key,
@@ -3354,7 +3440,7 @@ pub(crate) mod tests {
                 all.sort_by_key(|a| a.number);
                 all
             };
-            // Two passes while the plan waits: held, said once, nothing lost.
+            // Two passes while its task waits: held, said once, nothing lost.
             for _ in 0..2 {
                 store
                     .recover_due_workers(chats.clone(), &workspaces, now_ms())
@@ -3378,8 +3464,8 @@ pub(crate) mod tests {
                     told[0].body
                 );
             }
-            // Decided either way, the approved task's retry runs: a rejected
-            // amendment leaves the plan the person approved before in force.
+            // Decided either way, the retry runs: once no plan is waiting,
+            // nothing in the run is held by one.
             if approve {
                 store
                     .approve_plan("chat:master", &run.id, None, None)

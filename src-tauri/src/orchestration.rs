@@ -119,8 +119,8 @@ pub struct Run {
     pub workspace_mode: WorkspaceMode,
     #[serde(default)]
     pub worker_defaults: Option<automation::WorkerDefaults>,
-    /// Agents mode: the lead's plan waits for the person before any worker
-    /// starts. Absent on every other run.
+    /// Agents mode: the lead's plan waits for the person, and no worker
+    /// starts on a task they have not approved. Absent on every other run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_approval: Option<PlanApproval>,
     pub created_at: i64,
@@ -313,7 +313,8 @@ pub struct PersonTurn {
 }
 
 impl Run {
-    /// No worker may start while this is true.
+    /// The plan is with the person. What that holds is decided per task
+    /// (`held_by_plan`): only work they have not approved.
     pub fn awaiting_plan_approval(&self) -> bool {
         self.plan_approval
             .as_ref()
@@ -427,6 +428,16 @@ pub struct Task {
     /// creation; it is what makes the task a peer request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_request: Option<peer_request::PeerRequest>,
+    /// A start of this task would be refused because the plan is with the
+    /// person and their approval does not cover it, or a task it depends on
+    /// (`held_by_plan`). Derived for each read in `snapshot`, for a task
+    /// nobody is working on; never stored, so it cannot go stale.
+    #[serde(
+        default,
+        skip_deserializing,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub held_by_plan: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1064,6 +1075,16 @@ impl OrchestrationStore {
             .cloned()
             .collect();
         tasks.sort_by_key(|task| (task.created_at, task.id.clone()));
+        // Why a task nobody is working on is not starting, for the page and
+        // the coordinator: the plan card, not its dependencies or a slot.
+        for task in &mut tasks {
+            task.held_by_plan = matches!(
+                task.status,
+                TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Failed | TaskStatus::Blocked
+            ) && inner.data.runs.get(&task.run_id).is_some_and(|run| {
+                held_by_plan(run, task, &|id| inner.data.tasks.get(id)).is_some()
+            });
+        }
         let mut attempts: Vec<_> = inner
             .data
             .attempts
@@ -1969,6 +1990,7 @@ impl OrchestrationStore {
                 handoffs: Vec::new(),
                 superseded_by: None,
                 peer_request: None,
+                held_by_plan: false,
                 created_at: now,
                 updated_at: now,
             };
@@ -2411,10 +2433,12 @@ impl OrchestrationStore {
                 .cloned()
                 .ok_or("The task does not exist.")?;
             let run = coordinator(data, &task.run_id, actor_chat_key)?.clone();
-            if run.awaiting_plan_approval() {
-                return Err(
-                    "The person has not approved this plan yet. Workers start once they do.".into(),
-                );
+            // The one door every start goes through: a first dispatch, a
+            // reopened task, a retry, the page's Start and the host's own
+            // recovery. A pending revision holds only what it has not
+            // approved.
+            if let Some(waiting) = held_by_plan(&run, &task, &|id| data.tasks.get(id)) {
+                return Err(plan_hold_reason(&task, waiting));
             }
             // Checked here, under the lock that writes `task.worker` below, so
             // a start the handoff overtook can neither run nor record the
@@ -4180,6 +4204,65 @@ fn awaiting_approval<'a>(data: &'a Stored, run_id: &'a str) -> impl Iterator<Ite
     })
 }
 
+/// Agents mode: the task whose missing approval holds `task` while its run's
+/// plan is with the person, or `None` when nothing does.
+///
+/// A pending revision holds only what the person has not approved. A task
+/// they approved as it stands keeps starting, by every door: its first
+/// dispatch, a reopened task, a retry, the host's recovery. `approved_at` is
+/// that approval, stamped by the plan decision and cleared by every change
+/// to what it covered (`reassign_task`, `set_task_size`), so a task made or
+/// changed since the last approval waits, and so does whatever depends on
+/// one, however far down. A manager's subtask is never on the card: it goes
+/// by its parent's approval.
+///
+/// A run whose plan is not pending holds nothing here, as before.
+pub(crate) fn held_by_plan<'a>(
+    run: &Run,
+    task: &'a Task,
+    find: &dyn Fn(&str) -> Option<&'a Task>,
+) -> Option<&'a Task> {
+    if !run.awaiting_plan_approval() {
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    let mut open = vec![task];
+    while let Some(task) = open.pop() {
+        if !seen.insert(task.id.as_str()) {
+            continue;
+        }
+        let decided = match task.parent_task_id.as_deref() {
+            Some(parent) => find(parent),
+            None => Some(task),
+        };
+        match decided {
+            Some(top) if top.approved_at.is_some() => {}
+            Some(top) => return Some(top),
+            None => return Some(task),
+        }
+        open.extend(task.depends_on.iter().filter_map(|id| find(id)));
+    }
+    None
+}
+
+/// Why a start of `task` is refused, naming `waiting`: the task
+/// `held_by_plan` found.
+fn plan_hold_reason(task: &Task, waiting: &Task) -> String {
+    if waiting.id == task.id {
+        "The person has not approved this task yet: it is waiting on the plan card. Workers start on it once they do.".into()
+    } else if task.parent_task_id.as_deref() == Some(waiting.id.as_str()) {
+        format!(
+            "This is part of \"{}\", which the person has not approved yet: it is waiting on the plan card. This task starts once they do.",
+            waiting.title
+        )
+    } else {
+        format!(
+            "This task depends on \"{}\", which the person has not approved yet: it is waiting on the plan card. This task starts once they do.",
+            waiting.title
+        )
+    }
+}
+
 /// The one place a plan is decided, whichever answer or surface supplied it.
 fn approve_in(
     data: &mut Stored,
@@ -4982,7 +5065,7 @@ pub fn master_prompt(run: &Run) -> String {
     let brief = format!("{brief}\n\nChoose the provider, model, and reasoning effort suitable for EACH task and include them in orchestration_task_create's worker settings (agent, model, access, effort). You may mix Claude and Codex workers in one run. Use Sol (codex, gpt-5.6-sol) or Opus (claude, opus) for demanding implementation or review, Terra (codex, gpt-5.6-terra) or Sonnet (claude, sonnet) for everyday execution, and Luna (codex, gpt-5.6-luna) or Haiku (claude, haiku) for small, well-bounded tasks. Match effort to complexity. Use access=auto unless the task needs another boundary, such as read for investigation. Fable and Astra are reserved for main agents orchestrating other agents; NEVER choose either for an execution worker, including retries or review tasks. Do not inherit the main agent's model or leave worker selection to a CLI default. Explain the assignment briefly in the task spec. For manual dispatch and retries, pass the chosen settings to orchestration_worker_start.");
     let brief = format!("{brief}\n\nUse attempt.execution as host evidence of activity: state, lastActivityAt, lastProgressAt, lastProgress, currentOperation, and latestError. Task status running alone does not mean a worker is executing. Capacity-blocked, retrying, stalled, and disconnected workers need attention. The host records provider failures and durable notifications even when the worker cannot respond. Before a manual retry, inspect nextRetryAt and retryCount; an automatic recovery may already be scheduled. Recovery preserves the workspace and creates a new attempt. Do not replay a tool merely because it is quiet.");
     let brief = if run.awaiting_plan_approval() {
-        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses every dispatch until then. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval. The plan card (plan {}) shows in this chat. When the person's own message is just an approval of it, such as \"approve this plan\", call orchestration_plan_approve with the runId and the plan revision from orchestration_snapshot. The host reads their message itself and refuses anything else, so never call it for a message that asks for a change, is conditional or a question, or is a notification. The person can also reject the card; the host then gives you one continuation naming the rejected revision, tasks and optional reason. It records their decision, not an instruction to re-plan, so decide what to do next. When they ask for changes, apply them with orchestration_task_revise (or withdraw a task there) and orchestration_task_create. Then end your turn so they see and approve the new revision. Plan approval never covers deploying, restarting, gates or permission prompts.\n\nGive each task a size on orchestration_task_create: small, medium (the default) or large, by scope and risk. It sets the XP its assignee earns when the result is accepted, and it is fixed once the task starts. A worker reporting completed is not acceptance: check each completed task's result against its acceptance criteria, then accept it with orchestration_task_accept (taskId and the completed attemptId) only if it meets them. Otherwise reopen or retry it. Never accept a task you did not review.", consent::plan_handle(&run.id))
+        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses to start a task they have not approved. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval. Later, a task you add puts the plan back in front of them: that task, and whatever depends on it, waits (heldByPlan in orchestration_snapshot), while the tasks they already approved keep starting. The plan card (plan {}) shows in this chat. When the person's own message is just an approval of it, such as \"approve this plan\", call orchestration_plan_approve with the runId and the plan revision from orchestration_snapshot. The host reads their message itself and refuses anything else, so never call it for a message that asks for a change, is conditional or a question, or is a notification. The person can also reject the card; the host then gives you one continuation naming the rejected revision, tasks and optional reason. It records their decision, not an instruction to re-plan, so decide what to do next. When they ask for changes, apply them with orchestration_task_revise (or withdraw a task there) and orchestration_task_create. Then end your turn so they see and approve the new revision. Plan approval never covers deploying, restarting, gates or permission prompts.\n\nGive each task a size on orchestration_task_create: small, medium (the default) or large, by scope and risk. It sets the XP its assignee earns when the result is accepted, and it is fixed once the task starts. A worker reporting completed is not acceptance: check each completed task's result against its acceptance criteria, then accept it with orchestration_task_accept (taskId and the completed attemptId) only if it meets them. Otherwise reopen or retry it. Never accept a task you did not review.", consent::plan_handle(&run.id))
     } else {
         brief
     };
@@ -5583,6 +5666,377 @@ pub(crate) mod tests {
             .remove(0)
             .plan_approval
             .unwrap()
+    }
+
+    /// A plan the person approved with `count` ready tasks on it, oldest
+    /// first.
+    fn approved_plan(store: &OrchestrationStore, count: usize) -> (Run, Vec<Task>) {
+        let (run, first) = pending_plan(store);
+        let mut tasks = vec![first];
+        tasks.extend((1..count).map(|_| task(store, &run, Vec::new())));
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        // Created in one millisecond they would sort by their random ids.
+        store
+            .mutate(|data| {
+                for (age, task) in tasks.iter().rev().enumerate() {
+                    data.tasks.get_mut(&task.id).unwrap().created_at -= 10 * (age as i64 + 1);
+                }
+                Ok(())
+            })
+            .unwrap();
+        (run, tasks)
+    }
+
+    fn held(store: &OrchestrationStore, run_id: &str) -> BTreeSet<String> {
+        store
+            .snapshot(Some(run_id))
+            .unwrap()
+            .tasks
+            .into_iter()
+            .filter(|task| task.held_by_plan)
+            .map(|task| task.id)
+            .collect()
+    }
+
+    fn wave(store: &OrchestrationStore, run_id: &str) -> Vec<String> {
+        let snapshot = store.snapshot(Some(run_id)).unwrap();
+        automation::ready_wave(&snapshot, &snapshot.runs[0])
+            .into_iter()
+            .map(|task| task.id)
+            .collect()
+    }
+
+    fn ids(tasks: &[&Task]) -> BTreeSet<String> {
+        tasks.iter().map(|task| task.id.clone()).collect()
+    }
+
+    /// The person's decision of 2026-10-11: a plan back in front of them
+    /// holds only what they have not approved. On the run that prompted it,
+    /// three approved tasks sat ready for 25 minutes behind two new ones.
+    #[test]
+    fn a_pending_revision_holds_only_what_the_person_has_not_approved() {
+        let store = OrchestrationStore::default();
+        let (run, approved) = approved_plan(&store, 2);
+        let added = task(&store, &run, Vec::new());
+        let after_added = task(&store, &run, vec![added.id.clone()]);
+        assert!(plan_of(&store, &run.id).status == PlanStatus::Pending);
+
+        // What waits is the new task and what depends on it; the page and
+        // the coordinator read it off each task.
+        assert_eq!(held(&store, &run.id), ids(&[&added, &after_added]));
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        for task in &snapshot.tasks {
+            let json = serde_json::to_value(task).unwrap();
+            assert_eq!(
+                json.get("heldByPlan").and_then(|held| held.as_bool()),
+                (task.id == added.id || task.id == after_added.id).then_some(true),
+            );
+        }
+        // The host's wave is the approved ones, in order.
+        assert_eq!(
+            wave(&store, &run.id),
+            [approved[0].id.clone(), approved[1].id.clone()]
+        );
+        // And by the door every start goes through.
+        for new in [&added, &after_added] {
+            let refused = store
+                .reserve_attempt("chat:master", &launch_for(&new.id))
+                .unwrap_err();
+            assert!(
+                refused.contains("has not approved this task yet"),
+                "{refused}"
+            );
+        }
+        let started = start_task(&store, &approved[0].id);
+        assert_eq!(started.status, AttemptStatus::Running);
+        assert!(plan_of(&store, &run.id).status == PlanStatus::Pending);
+
+        // Approved, the new task starts and its dependant waits on it only.
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        assert!(held(&store, &run.id).is_empty());
+        finish_attempt(&store, started, WorkerOutcome::Completed);
+        assert_eq!(
+            wave(&store, &run.id),
+            [approved[1].id.clone(), added.id.clone()]
+        );
+    }
+
+    /// A held task is left out before the wave is cut to the run's slots,
+    /// so it never takes one from a task the person approved.
+    #[test]
+    fn a_held_task_takes_no_slot_and_the_limit_still_counts() {
+        let store = OrchestrationStore::default();
+        let (run, approved) = approved_plan(&store, 4);
+        assert_eq!(run.max_concurrent, 2);
+        // The two oldest are resized: their approval is withdrawn.
+        for task in &approved[..2] {
+            store.set_task_size(&task.id, TaskSize::Large).unwrap();
+        }
+        assert_eq!(held(&store, &run.id), ids(&[&approved[0], &approved[1]]));
+        assert_eq!(
+            wave(&store, &run.id),
+            [approved[2].id.clone(), approved[3].id.clone()]
+        );
+        // maxConcurrent is unchanged: one running leaves one slot, two none.
+        start_task(&store, &approved[2].id);
+        assert_eq!(wave(&store, &run.id), [approved[3].id.clone()]);
+        start_task(&store, &approved[3].id);
+        assert!(wave(&store, &run.id).is_empty());
+        // Approving the resize does not start a third worker either.
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        assert!(wave(&store, &run.id).is_empty());
+        let full = store
+            .reserve_attempt("chat:master", &launch_for(&approved[0].id))
+            .unwrap_err();
+        assert!(full.contains("allowed workers active"), "{full}");
+    }
+
+    /// Whatever depends on an unapproved task waits with it, however far
+    /// down, even where the ledger says the dependency has finished.
+    #[test]
+    fn what_depends_on_an_unapproved_task_waits_with_it() {
+        let store = OrchestrationStore::default();
+        let (run, base) = pending_plan(&store);
+        let next = task(&store, &run, vec![base.id.clone()]);
+        let last = task(&store, &run, vec![next.id.clone()]);
+        let apart = task(&store, &run, Vec::new());
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        assert!(held(&store, &run.id).is_empty());
+        // The base is resized: only it is on the card, and three tasks wait.
+        store.set_task_size(&base.id, TaskSize::Large).unwrap();
+        let waiting: Vec<String> = {
+            let inner = store.inner.lock().unwrap();
+            awaiting_approval(&inner.data, &run.id)
+                .map(|task| task.id.clone())
+                .collect()
+        };
+        assert_eq!(waiting, [base.id.clone()]);
+        assert_eq!(held(&store, &run.id), ids(&[&base, &next, &last]));
+        // Not for want of a finished dependency alone: with the ledger made
+        // to say the base is done, the plan still holds what follows it.
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&base.id).unwrap().status = TaskStatus::Completed;
+                data.tasks.get_mut(&next.id).unwrap().status = TaskStatus::Ready;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(wave(&store, &run.id), [apart.id.clone()]);
+        for dependant in [&next, &last] {
+            let refused = store
+                .reserve_attempt("chat:master", &launch_for(&dependant.id))
+                .unwrap_err();
+            assert!(
+                refused.contains("depends on \"Implement\", which the person has not approved yet"),
+                "{refused}"
+            );
+        }
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        assert!(held(&store, &run.id).is_empty());
+        assert_eq!(
+            wave(&store, &run.id).into_iter().collect::<BTreeSet<_>>(),
+            ids(&[&next, &apart])
+        );
+    }
+
+    /// A manager's subtask is never on the plan card: it goes by the
+    /// approval of the task it is part of.
+    #[test]
+    fn a_subtask_goes_by_its_parents_approval() {
+        let store = OrchestrationStore::default();
+        let (run, approved) = approved_plan(&store, 1);
+        let part = store
+            .create_task(
+                "chat:master",
+                run.id.clone(),
+                "Part".into(),
+                "One part of it".into(),
+                Vec::new(),
+                Some(approved[0].id.clone()),
+                None,
+            )
+            .unwrap();
+        task(&store, &run, Vec::new());
+        assert!(plan_of(&store, &run.id).status == PlanStatus::Pending);
+        assert!(!held(&store, &run.id).contains(&part.id));
+        assert!(wave(&store, &run.id).contains(&part.id));
+        // Its parent's approval withdrawn, it waits with it.
+        store
+            .set_task_size(&approved[0].id, TaskSize::Large)
+            .unwrap();
+        assert!(held(&store, &run.id).contains(&part.id));
+        let refused = store
+            .reserve_attempt("chat:master", &launch_for(&part.id))
+            .unwrap_err();
+        assert!(
+            refused.contains("part of \"Implement\", which the person has not approved yet"),
+            "{refused}"
+        );
+    }
+
+    /// A task changed while it waits is still unapproved: the revision the
+    /// person has not seen starts nothing.
+    #[test]
+    fn a_revised_task_waits_until_the_person_approves_its_revision() {
+        let store = OrchestrationStore::default();
+        let (run, approved) = approved_plan(&store, 1);
+        let added = task(&store, &run, Vec::new());
+        let before = plan_of(&store, &run.id).revision;
+        store
+            .revise_task(
+                "chat:master",
+                &added.id,
+                TaskRevision {
+                    spec: Some("Do it another way".into()),
+                    ..TaskRevision::default()
+                },
+            )
+            .unwrap();
+        assert!(plan_of(&store, &run.id).revision > before);
+        assert_eq!(held(&store, &run.id), ids(&[&added]));
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&added.id))
+            .unwrap_err()
+            .contains("has not approved this task yet"));
+        assert_eq!(wave(&store, &run.id), [approved[0].id.clone()]);
+        // An approval of the revision they did not see is refused, and
+        // nothing starts on it.
+        assert!(store
+            .approve_plan("chat:master", &run.id, None, Some(before))
+            .is_err());
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&added.id))
+            .is_err());
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        start_task(&store, &added.id);
+    }
+
+    /// Rejecting an amendment withdraws the new work and leaves the plan
+    /// the person approved before in force, its tasks starting as they did
+    /// while the card waited.
+    #[test]
+    fn a_rejected_amendment_leaves_the_approved_tasks_starting() {
+        let store = OrchestrationStore::default();
+        let (run, approved) = approved_plan(&store, 2);
+        let added = task(&store, &run, Vec::new());
+        let running = start_task(&store, &approved[0].id);
+        store
+            .reject_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&[added.id.clone()]),
+                Some(plan_of(&store, &run.id).revision),
+                None,
+                CardView {
+                    surface: "chat".into(),
+                    shown_ms: Some(5_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let by_id = |id: &str| snapshot.tasks.iter().find(|task| task.id == id).unwrap();
+        assert_eq!(by_id(&added.id).status, TaskStatus::Cancelled);
+        assert_eq!(by_id(&running.task_id).status, TaskStatus::Running);
+        assert_ne!(snapshot.runs[0].status, RunStatus::Stopped);
+        assert!(snapshot.tasks.iter().all(|task| !task.held_by_plan));
+        assert_eq!(wave(&store, &run.id), [approved[1].id.clone()]);
+        start_task(&store, &approved[1].id);
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&added.id))
+            .unwrap_err()
+            .contains("no longer accepts workers"));
+    }
+
+    /// A coordinator's retry is one of the ways an approved task comes to
+    /// run again, and a card waiting for other work does not hold it.
+    #[test]
+    fn a_retry_of_an_approved_task_starts_while_a_revision_waits() {
+        let store = OrchestrationStore::default();
+        let (run, approved) = approved_plan(&store, 1);
+        finish_attempt(
+            &store,
+            start_task(&store, &approved[0].id),
+            WorkerOutcome::Failed,
+        );
+        let added = task(&store, &run, Vec::new());
+        assert_eq!(held(&store, &run.id), ids(&[&added]));
+        let retry = start_task(&store, &approved[0].id);
+        assert_eq!(retry.number, 2);
+        finish_attempt(&store, retry, WorkerOutcome::Blocked);
+        assert_eq!(start_task(&store, &approved[0].id).number, 3);
+        assert!(plan_of(&store, &run.id).status == PlanStatus::Pending);
+    }
+
+    /// Stopping a run stops its approved tasks too, a pending card or not.
+    #[test]
+    fn a_stopped_run_starts_nothing_however_approved() {
+        let store = OrchestrationStore::default();
+        let (run, approved) = approved_plan(&store, 2);
+        task(&store, &run, Vec::new());
+        assert_eq!(wave(&store, &run.id).len(), 2);
+        store
+            .stop_run("chat:master", run.id.clone(), "Not now".into())
+            .unwrap();
+        assert!(wave(&store, &run.id).is_empty());
+        let refused = store
+            .reserve_attempt("chat:master", &launch_for(&approved[0].id))
+            .unwrap_err();
+        assert!(refused.contains("no longer accepts workers"), "{refused}");
+    }
+
+    /// `orchestration_dispatch_ready` and the scheduler start the approved
+    /// tasks of a plan that is back with the person, and only those.
+    #[test]
+    fn dispatch_ready_starts_the_approved_tasks_of_a_pending_plan() {
+        let store = OrchestrationStore::default();
+        let (run, approved) = approved_plan(&store, 2);
+        let added = task(&store, &run, Vec::new());
+        enable_automatic_dispatch(&store, &run.id);
+        // Where each would run is gone, so a start reserves an attempt and
+        // launches no process: the test's stand-in for a launch.
+        store
+            .mutate(|data| {
+                for task in data.tasks.values_mut() {
+                    task.destination = Some(TaskDestination {
+                        project_id: "gone".into(),
+                        project_name: "Gone".into(),
+                        repository: "/nowhere".into(),
+                    });
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(held(&store, &run.id), ids(&[&added]));
+        let workspaces =
+            crate::workspaces::WorkspaceState::with_projects(vec![serde_json::from_value(json!({
+                "id": "workspace", "name": "Project", "primary_path": "/tmp", "paths": [],
+            }))
+            .unwrap()]);
+        store
+            .dispatch_ready(
+                Arc::new(ChatManager::default()),
+                &workspaces,
+                "chat:master",
+                &run.id,
+            )
+            .unwrap();
+        let attempts = store.snapshot(Some(&run.id)).unwrap().attempts;
+        let tried: BTreeSet<String> = attempts.iter().map(|a| a.task_id.clone()).collect();
+        assert_eq!(tried, ids(&[&approved[0], &approved[1]]));
+        assert!(attempts.iter().all(|a| a.number == 1));
     }
 
     /// A one-part message and what was on screen when it was sent.
@@ -7073,7 +7527,17 @@ pub(crate) mod tests {
         let protected: BTreeMap<_, _> = approved_ids
             .iter()
             .map(|id| {
-                let task = before.tasks.iter().find(|task| task.id == *id).unwrap();
+                // What is stored, not `held_by_plan`: that is derived from
+                // the pending plan, which the rejection ends.
+                let task = Task {
+                    held_by_plan: false,
+                    ..before
+                        .tasks
+                        .iter()
+                        .find(|task| task.id == *id)
+                        .unwrap()
+                        .clone()
+                };
                 (id.clone(), serde_json::to_value(task).unwrap())
             })
             .collect();

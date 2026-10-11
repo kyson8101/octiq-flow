@@ -2264,6 +2264,43 @@ pub(super) mod tests {
         );
     }
 
+    /// The person's decision of 2026-10-11: a task they approved keeps
+    /// starting while a later revision waits, and reopening it is one of the
+    /// ways it comes to run again. The follow-up instructions replace its
+    /// spec without going on the plan card, as they did before this rule.
+    #[test]
+    fn a_reopened_approved_task_starts_while_a_later_revision_waits() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+        store.require_plan_approval(&run.id).unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &first, WorkerOutcome::Completed);
+        let added = super::super::tests::task(&store, &run, vec![]);
+        let reopened = store
+            .reopen_task("chat:master", &task.id, "Address review".into())
+            .unwrap();
+        assert!(reopened.approved_at.is_some());
+        assert_eq!(reopened.spec, "Address review");
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        assert!(snapshot.runs[0].awaiting_plan_approval());
+        let wave: Vec<String> = automation::ready_wave(&snapshot, &snapshot.runs[0])
+            .into_iter()
+            .map(|task| task.id)
+            .collect();
+        assert_eq!(wave, [task.id.clone()]);
+        let next = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!(next.cwd, first.cwd);
+        assert_eq!(next.number, 2);
+        let refused = prepare(&store, &added, Access::Auto).unwrap_err();
+        assert!(
+            refused.contains("has not approved this task yet"),
+            "{refused}"
+        );
+    }
+
     #[test]
     fn a_legacy_flag_cannot_override_auto_policy_for_a_first_writer() {
         let repo = Repo::new();

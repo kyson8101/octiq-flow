@@ -597,9 +597,10 @@ extended. The host (`orchestration/peer_request.rs`):
   the teammate and carries `peerRequest` (`requestedBy`, `requesterChatKey`,
   `requesterAttemptId` for a worker, `output`, `maxMinutes`). It waits on the
   **normal plan card**, like any task added to an approved plan: the plan goes
-  back to pending, its revision covers who asked and the bounds, and no worker
-  starts before the person approves. A run that never asked for approval asks
-  from then on. There is no new card type.
+  back to pending, its revision covers who asked and the bounds, and the
+  request does not start before the person approves. Tasks they had already
+  approved keep starting (see **What a waiting plan holds**). A run that never
+  asked for approval asks from then on. There is no new card type.
 - **puts the task where the requester's work is.** A worker's request joins
   the worker's own run, and that run's coordinator is told. A lead chat's
   joins the live run the chat coordinates; when it coordinates none, the host
@@ -837,8 +838,9 @@ access become the task's worker settings, so a lead cannot misquote a teammate.
 ## Plan approval
 
 Every run a lead opens waits for you (`run.planApproval`, always required).
-Until you approve it, the host refuses every worker start, manual or automatic,
-and the scheduler skips the run. The lead creates all its tasks, replies with
+The host starts a task only once you have approved it: until then it refuses
+every start of that task, manual or automatic, and the scheduler leaves it out
+(see **What a waiting plan holds** below). The lead creates all its tasks, replies with
 the plan as a short list, and ends its turn. The run's **Plan ready for
 review** view lists each task with who it goes to and **where it runs** —
 project and repository, the full path in its tooltip; a task without a
@@ -955,11 +957,43 @@ Approval is for exactly the plan you saw:
   (`shownMs`). A revision that replaced another less than 1.5 s before the
   click is refused, and the card holds its button that long after a change.
   Once approved, the plan leaves the chat; its record stays in the run panel.
-- A task the lead adds **after** approval puts the whole run back to waiting
-  for you; it is marked **New** in the review, and no worker starts (retries
-  included) until you approve again. Running workers carry on.
+- A task the lead adds **after** approval puts the plan back in front of you;
+  it is marked **New** in the review. Running workers carry on, and so does
+  every task you had already approved.
 
 Only the top plan needs you. Managers split their tasks further without asking.
+
+### What a waiting plan holds
+
+A plan back in front of you holds only what you have not approved (decided
+2026-10-11; before that it froze the whole run, and approved tasks sat ready
+behind a card that was about other work). A task may start when you approved
+**that task as it stands** (`task.approvedAt`, stamped by the plan decision and
+cleared by every change to what it covered: a new owner, a new size) and no
+task it depends on, however far down, is still waiting for you. So a task the
+lead created, revised, re-routed or resized since your last approval waits, and
+so does whatever depends on it; a manager's subtask is never on the card and
+goes by its parent's approval. The rule is one function,
+`orchestration::held_by_plan`, read by every way a task comes to run: the
+single door every start goes through (`reserve_attempt_for`: a first dispatch,
+a reopened task, a coordinator's retry, the page's Start, the host's automatic
+recovery, `orchestration_worker_start`), the scheduler's and
+`orchestration_dispatch_ready`'s wave (`ready_wave`, where a held task takes no
+slot), and the recovery pass, which keeps a held task's retry instead of
+dropping it. Each task in a snapshot carries `heldByPlan: true` while a start
+of it would be refused for this reason, so the page and the coordinator can say
+"waiting for plan approval" apart from "ready"; it is derived on every read and
+never stored. Unchanged: a task you have not approved never starts; rejecting
+an amendment withdraws the new work and leaves the earlier approved plan in
+force; stopping a run, closing or abandoning a mission and `maxConcurrent`
+behave as before; a peer request still waits for its own approval on the card.
+A run that asked for no approval until a peer request put a plan in front of
+you has no approved task at all, so everything in it not already running waits
+with that card.
+
+`orchestration_task_reopen` puts new follow-up instructions in a completed
+task's spec and keeps its approval, as it always has: the reopened task starts
+without the new words going on the plan card.
 
 ## Memory
 

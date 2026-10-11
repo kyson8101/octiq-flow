@@ -193,8 +193,7 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
     if matches!(
         run.status,
         RunStatus::Stopped | RunStatus::Completed | RunStatus::Closed
-    ) || run.awaiting_plan_approval()
-    {
+    ) {
         return Vec::new();
     }
     // A run-level decision pauses new work. Task gates keep only their own
@@ -222,6 +221,13 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
         .tasks
         .iter()
         .filter(|t| t.status == TaskStatus::Ready)
+        // A plan back with the person holds only what they have not
+        // approved; the rest of the wave goes on. Before the filters below,
+        // so a held task takes neither a slot nor a mission's worktree.
+        .filter(|t| {
+            let find = |id: &str| snapshot.tasks.iter().find(|other| other.id == id);
+            super::held_by_plan(run, t, &find).is_none()
+        })
         // Unassigned legacy tasks must not consume capacity or inherit a CLI
         // default. The coordinator can still dispatch them explicitly.
         .filter(|t| {
