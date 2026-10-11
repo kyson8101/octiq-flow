@@ -274,20 +274,38 @@ fn service_notice(data: &mut Stored, service: &Service, reason: &str) {
         format!("Service {} for task {} is {}. {reason} Completed task status is unchanged and is not live readiness. Recovery guidance (not executed): {}. Read orchestration_snapshot before dependent work.", service.name, service.task_id, service.state, service.recovery));
 }
 
+/// What a pending safety card says while its attempt is blocked on a gate
+/// the worker opened: the card is still to be answered, and answering it
+/// alone continues nothing.
+const BLOCKED_ON_GATE_RECOVERY: &str = "This attempt is blocked on another open decision (a gate on its task), so nothing can continue it yet. The safety card in the main chat is still the person's to answer. Once the gate is resolved too, their decision can authorize a new turn in this attempt; it does not resume the rejected call.";
+
 pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
     let pending: BTreeSet<String> = crate::safety_block::decision_summaries()
         .into_iter()
         .map(|d| d.id)
         .collect();
     for decision in &mut snapshot.native_decisions {
-        let live = snapshot.attempts.iter().any(|a| {
+        // Two different questions of the attempt the card belongs to. Can a
+        // decision continue it right now (`live`)? And is it still the
+        // task's attempt with its work unsettled at all (`owed`)? An
+        // attempt blocked on an open gate is the second and not the first.
+        let attempt = snapshot.attempts.iter().find(|a| {
             a.id == decision.attempt_id
-                && matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running)
                 && snapshot
                     .tasks
                     .iter()
                     .any(|t| t.active_attempt_id.as_deref() == Some(&a.id))
         });
+        let live = attempt
+            .is_some_and(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running));
+        let on_gate = attempt.is_some_and(|a| {
+            a.status == AttemptStatus::Blocked
+                && snapshot.gates.iter().any(|gate| {
+                    gate.status == GateStatus::Open
+                        && gate.task_id.as_deref() == Some(a.task_id.as_str())
+                })
+        });
+        let owed = live || on_gate;
         if decision.status == "pending" && !pending.contains(&decision.id) {
             // What the person chose, when this server saw it; "closed" says
             // only that the card went away, never that it was approved. An
@@ -318,7 +336,9 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
             decision.recovery = "Use the existing safety card in the main chat. The rejected call already ended; a decision can authorize a new turn in this attempt, not resume that call.".into();
         } else {
             decision.continuation = "unavailable".into();
-            if !live {
+            if on_gate && decision.status == "pending" && !claude_refusal {
+                decision.recovery = BLOCKED_ON_GATE_RECOVERY.into();
+            } else if !live {
                 decision.recovery = "This attempt has settled or was superseded. Its old card cannot resume it. Inspect the task and explicitly retry if needed; a retry grants no permission.".into();
             } else if claude_refusal && decision.status == "allowed_exact" {
                 // Recorded by an earlier build that offered a one-time
@@ -340,13 +360,18 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
             }
         }
         // Whose move it is, for a card still up. Only one kind of card
-        // holds a worker until the person answers: a provider's block whose
-        // decision can start a new turn in this attempt, which is what
-        // `continuation` says above. A Claude refusal nobody can approve, an
-        // outage the worker was told to carry on past, and a card whose
-        // attempt has gone wait for nobody.
+        // holds a worker until the person answers: a provider's block that
+        // the person's decision answers. A Claude refusal nobody can
+        // approve, an outage the worker was told to carry on past, and a
+        // card whose attempt has gone wait for nobody.
+        //
+        // Who must decide is not whether the attempt can go on this minute
+        // (review of 931b5f0, C2). A card whose attempt is blocked on an
+        // open gate is still the person's to answer; `continuation` says
+        // apart that nothing continues the attempt until the gate is
+        // answered too.
         decision.awaits = (decision.status == "pending").then(|| {
-            if decision.continuation == "new_turn_same_attempt" {
+            if decision.kind != "outage" && !claude_refusal && owed {
                 Awaits::Person
             } else {
                 Awaits::Nobody
@@ -702,6 +727,73 @@ mod tests {
         forged["awaits"] = json!("nobody");
         let read: Gate = serde_json::from_value(forged).unwrap();
         assert_eq!(read.awaits, None);
+    }
+
+    /// Review of 931b5f0, C2: who must decide a card does not depend on
+    /// whether its attempt can go on this minute. A worker's safety card is
+    /// up, and the worker then opens a gate of its own, which blocks the
+    /// attempt. The card is still the person's to answer. What changed is
+    /// said apart: nothing can continue the attempt until the gate is
+    /// answered too.
+    #[test]
+    fn a_safety_card_waits_for_the_person_while_its_attempt_is_blocked_on_a_gate() {
+        let store = OrchestrationStore::default();
+        let (run, attempt) = worker(&store);
+        let chat = attempt.worker_chat_key.clone();
+        crate::safety_block::observe(ChatAgent::Codex, &chat,
+            "codex_core::tools::router: error=This action was rejected due to unacceptable risk.\\nReason: Requires a decision.");
+        let card = |store: &OrchestrationStore| {
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            let decision = snapshot.native_decisions[0].clone();
+            let sent = serde_json::to_value(&decision).unwrap()["awaits"].clone();
+            (
+                decision.awaits,
+                decision.continuation,
+                decision.recovery,
+                sent,
+            )
+        };
+        let (awaits, continuation, _, sent) = card(&store);
+        assert_eq!(awaits, Some(Awaits::Person));
+        assert_eq!(continuation, "new_turn_same_attempt");
+        assert_eq!(sent, "person");
+
+        let gate = store
+            .create_gate(&chat, run.id.clone(), None, "Other question".into(), vec![])
+            .unwrap();
+        let blocked = store.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(
+            blocked
+                .attempts
+                .iter()
+                .find(|a| a.id == attempt.id)
+                .unwrap()
+                .status,
+            AttemptStatus::Blocked
+        );
+        assert!(crate::safety_block::awaits_decision(&chat));
+        let (awaits, continuation, recovery, sent) = card(&store);
+        assert_eq!(awaits, Some(Awaits::Person), "still theirs to answer");
+        assert_eq!(sent, "person");
+        assert_eq!(continuation, "unavailable", "and said apart");
+        assert_eq!(recovery, BLOCKED_ON_GATE_RECOVERY);
+
+        store
+            .resolve_gate("chat:master", gate.id, "Resolved".into())
+            .unwrap();
+        let (awaits, continuation, _, _) = card(&store);
+        assert_eq!(awaits, Some(Awaits::Person));
+        assert_eq!(continuation, "new_turn_same_attempt");
+
+        // The run is stopped with the card still up: the attempt is over,
+        // and nothing a person answers on that card can continue it.
+        store
+            .stop_run("chat:master", run.id.clone(), "Not now".into())
+            .unwrap();
+        let (awaits, continuation, _, _) = card(&store);
+        assert_ne!(awaits, Some(Awaits::Person));
+        assert_eq!(continuation, "unavailable");
+        crate::safety_block::forget_chat(&chat);
     }
 
     #[test]
