@@ -194,6 +194,27 @@ pub(crate) fn is_waiting(id: &str) -> bool {
     WAITERS.lock().unwrap().contains_key(id)
 }
 
+/// How long a test gives another task to get somewhere. A machine that is
+/// also compiling takes seconds over what takes milliseconds alone, and a run
+/// that passes never waits this out.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Poll `check` until it answers, for a state another task reaches with no
+/// signal to await. Panics saying that `what` never happened.
+pub(crate) async fn eventually<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + PATIENCE;
+    loop {
+        if let Some(found) = check() {
+            return found;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never happened in {PATIENCE:?}: {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 /// The store `FakeHost::break_store` broke, put back as it was.
 pub(crate) fn mend_store(store: &Path) {
     fs::remove_dir(store).unwrap();
@@ -946,12 +967,10 @@ async fn a_waiting_tool_gets_the_decision_and_nothing_is_sent_twice() {
         None,
     ));
     // Let the tool register before the decision.
-    for _ in 0..100 {
-        if WAITERS.lock().unwrap().contains_key(&record.id) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    eventually("the tool registering its wait", || {
+        is_waiting(&record.id).then_some(())
+    })
+    .await;
     decline(&w.store, &record.id).unwrap();
     assert!(
         hand_off_notice(&w.store, &record.id).unwrap().is_none(),

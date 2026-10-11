@@ -71,7 +71,7 @@ test("MCP lists and calls artifact tool both standalone and chat-bound; errors s
       { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "create_artifact", arguments: { ...sample(), outputDir: dir } } },
       { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_artifact", arguments: {} } },
     ];
-    const proc = spawnSync(process.execPath, [path.join(__dirname, "octiq-ask.cjs")], { env: { ...process.env, OCTIQ_CHAT_KEY: chat }, input: requests.map(v => JSON.stringify(v)).join("\n") + "\n", encoding: "utf8", timeout: 5000 });
+    const proc = spawnSync(process.execPath, [path.join(__dirname, "octiq-ask.cjs")], { env: { ...process.env, OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", OCTIQ_CHAT_KEY: chat }, input: requests.map(v => JSON.stringify(v)).join("\n") + "\n", encoding: "utf8", timeout: 5000 });
     assert.equal(proc.status, 0, proc.stderr);
     const replies = proc.stdout.trim().split("\n").map(v => JSON.parse(v));
     assert.ok(replies.find(v => v.id === 1).result.tools.some(t => t.name === "create_artifact"));
