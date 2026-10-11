@@ -7,6 +7,7 @@ use super::tests::{
     launch_for, plan_of, run, start_as_planned, start_task, task, wave,
 };
 use super::*;
+use serde_json::Value;
 
 fn dev() -> TaskAssignee {
     TaskAssignee {
@@ -927,4 +928,130 @@ fn the_person_stops_one_task_and_only_they_start_it_again() {
         .unwrap();
     assert_eq!(again.number, 2);
     assert!(task.stopped.is_none());
+}
+
+/// `heldByPlan` of the task `id` as each view of the snapshot serialises
+/// it: the page's full read, the coordinator's compact read, and its read
+/// of that one task in detail. `None` is the key left out.
+fn held_as_said(store: &OrchestrationStore, run: &Run, id: &str) -> [Option<Value>; 3] {
+    let snapshot = store.snapshot(Some(&run.id)).unwrap();
+    let said = |tasks: &Value| {
+        tasks
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["id"] == id)
+            .unwrap_or_else(|| panic!("{id} is not in {tasks}"))
+            .get("heldByPlan")
+            .cloned()
+    };
+    let read = |task_id| {
+        agent_view::agent_snapshot(
+            snapshot.clone(),
+            &agent_view::AgentRead {
+                actor: "chat:master",
+                run_id: Some(&run.id),
+                task_id,
+                message_limit: 12,
+            },
+        )
+        .unwrap()
+    };
+    [
+        said(&serde_json::to_value(&snapshot).unwrap()["tasks"]),
+        said(&read(None)["tasks"]),
+        said(&read(Some(id))["tasks"]),
+    ]
+}
+
+/// Review of 931b5f0, M1, and the clash it proved with the page: approve
+/// A, add B, withdraw B. The plan is still with the person and nothing is
+/// held, and a page that was sent no `heldByPlan` at all read A as held.
+/// So it is said of every task of a run that has a plan, `true` or `false`,
+/// in every view, and left out only where there is no plan to be held by.
+#[test]
+fn held_by_plan_is_true_or_false_on_every_task_of_a_run_with_a_plan() {
+    let store = OrchestrationStore::default();
+    let (run, a) = approved(&store, Some(settings(Access::Manual)));
+    let b = task(&store, &run, Vec::new());
+    let (yes, no) = (Some(json!(true)), Some(json!(false)));
+    // The two rows as the coordinator's compact read sends them, for
+    // whoever runs this with --nocapture.
+    let compact = agent_view::agent_snapshot(
+        store.snapshot(Some(&run.id)).unwrap(),
+        &agent_view::AgentRead {
+            actor: "chat:master",
+            run_id: Some(&run.id),
+            task_id: None,
+            message_limit: 12,
+        },
+    )
+    .unwrap();
+    println!("held and not held: {}", compact["tasks"]);
+    assert_eq!(
+        held_as_said(&store, &run, &b.id),
+        [(); 3].map(|_| yes.clone())
+    );
+    assert_eq!(
+        held_as_said(&store, &run, &a.id),
+        [(); 3].map(|_| no.clone())
+    );
+
+    // B is withdrawn. The plan stays pending, A is in the wave, and both
+    // say so in as many words.
+    store
+        .revise_task(
+            "chat:master",
+            &b.id,
+            TaskRevision {
+                withdraw: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Pending);
+    assert_eq!(wave(&store, &run.id), [a.id.clone()]);
+    for id in [&a.id, &b.id] {
+        assert_eq!(held_as_said(&store, &run, id), [(); 3].map(|_| no.clone()));
+    }
+    let full = serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap();
+    let sent: Vec<&Value> = full["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| &task["heldByPlan"])
+        .collect();
+    assert_eq!(sent, [&json!(false), &json!(false)], "{full}");
+
+    // Finished work says it too: the compact view keeps few of its keys.
+    store
+        .mutate(|data| {
+            data.tasks.get_mut(&a.id).unwrap().status = TaskStatus::Completed;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        held_as_said(&store, &run, &a.id),
+        [(); 3].map(|_| no.clone())
+    );
+
+    // A run nobody was asked to approve a plan for has nothing to be held
+    // by, and says nothing.
+    let plain = OrchestrationStore::default();
+    let unplanned = super::tests::run(&plain);
+    let free = task(&plain, &unplanned, Vec::new());
+    assert!(plan_approval_of(&plain, &unplanned.id).is_none());
+    assert_eq!(
+        held_as_said(&plain, &unplanned, &free.id),
+        [None, None, None]
+    );
+}
+
+fn plan_approval_of(store: &OrchestrationStore, run_id: &str) -> Option<PlanApproval> {
+    store
+        .snapshot(Some(run_id))
+        .unwrap()
+        .runs
+        .remove(0)
+        .plan_approval
 }

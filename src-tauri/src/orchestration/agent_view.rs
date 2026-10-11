@@ -354,6 +354,9 @@ fn compact(
                             "assignee",
                             "activeAttemptId",
                             "peerRequest",
+                            // `false` here, said all the same: a reader
+                            // tells "not held" from "not said" by it.
+                            "heldByPlan",
                         ]
                     } else {
                         &[

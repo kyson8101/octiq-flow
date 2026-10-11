@@ -459,16 +459,18 @@ pub struct Task {
     /// creation; it is what makes the task a peer request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_request: Option<peer_request::PeerRequest>,
-    /// A start of this task would be refused because the plan is with the
-    /// person and their approval does not cover it, or a task it depends on
-    /// (`held_by_plan`). Derived for each read in `snapshot`, for a task
-    /// nobody is working on; never stored, so it cannot go stale.
-    #[serde(
-        default,
-        skip_deserializing,
-        skip_serializing_if = "std::ops::Not::not"
-    )]
-    pub held_by_plan: bool,
+    /// Whether a start of this task would be refused because the plan is
+    /// with the person and their approval does not cover it, or a task it
+    /// depends on (`held_by_plan`). Derived for each read in `snapshot`;
+    /// never stored, so it cannot go stale.
+    ///
+    /// Said outright, `true` or `false`, of every task of a run that has a
+    /// plan approval, finished ones included, and left out only for a run
+    /// with none. A reader must be able to tell "not held" from "this host
+    /// does not say": a page sent nothing for an approved task beside a
+    /// pending plan read it as held (review of 931b5f0, M1).
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub held_by_plan: Option<bool>,
     /// A start of this task would be refused because it was reopened and
     /// the notice of that is not in the coordinator's chat yet
     /// (`TaskReopen::notice_delivered`). Derived for each read in
@@ -1265,12 +1267,20 @@ impl OrchestrationStore {
         // Why a task nobody is working on is not starting, for the page and
         // the coordinator: the plan card, not its dependencies or a slot.
         for task in &mut tasks {
-            task.held_by_plan = matches!(
+            let waiting = matches!(
                 task.status,
                 TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Failed | TaskStatus::Blocked
-            ) && inner.data.runs.get(&task.run_id).is_some_and(|run| {
-                held_by_plan(run, task, &|id| inner.data.tasks.get(id)).is_some()
-            });
+            );
+            // `true` or `false` wherever there is a plan to be held by,
+            // nothing where there is none.
+            task.held_by_plan = inner
+                .data
+                .runs
+                .get(&task.run_id)
+                .filter(|run| run.plan_approval.is_some())
+                .map(|run| {
+                    waiting && held_by_plan(run, task, &|id| inner.data.tasks.get(id)).is_some()
+                });
             // And the other thing that holds a task whatever asks for it.
             task.held_by_reopen = workspaces::untold_reopen(task).is_some();
         }
@@ -2233,7 +2243,7 @@ impl OrchestrationStore {
                 reopens: Vec::new(),
                 stopped: None,
                 peer_request: None,
-                held_by_plan: false,
+                held_by_plan: None,
                 held_by_reopen: false,
                 created_at: now,
                 updated_at: now,
@@ -6185,7 +6195,7 @@ pub(crate) mod tests {
             .unwrap()
             .tasks
             .into_iter()
-            .filter(|task| task.held_by_plan)
+            .filter(|task| task.held_by_plan == Some(true))
             .map(|task| task.id)
             .collect()
     }
@@ -6221,7 +6231,7 @@ pub(crate) mod tests {
             let json = serde_json::to_value(task).unwrap();
             assert_eq!(
                 json.get("heldByPlan").and_then(|held| held.as_bool()),
-                (task.id == added.id || task.id == after_added.id).then_some(true),
+                Some(task.id == added.id || task.id == after_added.id),
             );
         }
         // The host's wave is the approved ones, in order.
@@ -6467,7 +6477,10 @@ pub(crate) mod tests {
         assert_eq!(by_id(&added.id).status, TaskStatus::Cancelled);
         assert_eq!(by_id(&running.task_id).status, TaskStatus::Running);
         assert_ne!(snapshot.runs[0].status, RunStatus::Stopped);
-        assert!(snapshot.tasks.iter().all(|task| !task.held_by_plan));
+        assert!(snapshot
+            .tasks
+            .iter()
+            .all(|task| task.held_by_plan == Some(false)));
         assert_eq!(wave(&store, &run.id), [approved[1].id.clone()]);
         start_task(&store, &approved[1].id);
         assert!(store
@@ -8098,7 +8111,7 @@ pub(crate) mod tests {
                 // What is stored, not `held_by_plan`: that is derived from
                 // the pending plan, which the rejection ends.
                 let task = Task {
-                    held_by_plan: false,
+                    held_by_plan: None,
                     ..before
                         .tasks
                         .iter()
@@ -8130,7 +8143,13 @@ pub(crate) mod tests {
         let after = store.snapshot(Some(&run.id)).unwrap();
         for (id, expected) in protected {
             let task = after.tasks.iter().find(|task| task.id == id).unwrap();
-            assert_eq!(serde_json::to_value(task).unwrap(), expected);
+            // Derived on both sides, and `false` once the plan is decided.
+            assert_eq!(task.held_by_plan, Some(false));
+            let stored = Task {
+                held_by_plan: None,
+                ..task.clone()
+            };
+            assert_eq!(serde_json::to_value(stored).unwrap(), expected);
         }
         assert_eq!(
             after
