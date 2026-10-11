@@ -1,0 +1,479 @@
+/* Run progress: the line above the composer and the Agents panel's rows.
+
+   Colour is state and nothing else. The accent marks a turn in flight
+   (`data-live`), as a tint, and nothing else: a run that is all planned, or
+   whose only worker has stalled, is drawn in the page's own greys; `--decide` is something waiting on the person; `--ok` is done;
+   `--danger` is a failure; `--warn` is a worker in trouble. Nothing here is
+   amber for emphasis, and nothing draws text on a solid fill.
+
+   One thing moves: the texture over the part of the strip still to do, while
+   a turn is in flight. Rows do not animate. */
+
+/* ---- The strip above the composer --------------------------------------- */
+
+.run-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(var(--chat-column) - 32px);
+  width: calc(100% - 32px);
+  min-height: 28px;
+  margin: 0 auto;
+  padding: 0 2px 8px;
+  color: var(--fg-2);
+  font-size: 13px;
+}
+
+.run-strip-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.run-strip-open:focus-visible,
+.run-strip-hide:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.run-strip-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-3);
+}
+
+.run-strip[data-live] .run-strip-dot { background: var(--accent); }
+.run-strip[data-state="needs"] .run-strip-dot { background: var(--decide); }
+.run-strip[data-state="done"] .run-strip-dot { background: var(--ok); }
+.run-strip[data-state="failed"] .run-strip-dot { background: var(--danger); }
+
+.run-strip-word {
+  flex: 0 0 auto;
+  color: var(--fg-0);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.run-strip-meter {
+  position: relative;
+  flex: 1 1 160px;
+  min-width: 104px;
+  max-width: 280px;
+  height: 22px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+}
+
+.run-strip-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--fg-3) 30%, var(--bg-2));
+  transition: width 200ms ease-out;
+}
+
+.run-strip[data-live] .run-strip-fill { background: color-mix(in srgb, var(--accent) 22%, var(--bg-2)); }
+
+.run-strip[data-state="needs"] .run-strip-fill { background: color-mix(in srgb, var(--decide) 30%, var(--bg-2)); }
+.run-strip[data-state="done"] .run-strip-fill { background: color-mix(in srgb, var(--ok) 30%, var(--bg-2)); }
+.run-strip[data-state="failed"] .run-strip-fill { background: color-mix(in srgb, var(--danger) 28%, var(--bg-2)); }
+
+.run-strip-label {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--fg-0);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The one moving thing: the part still to do, while a turn is in flight. */
+.run-strip[data-live] .run-strip-meter::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--fg-3) 55%, transparent) 1px, transparent 1.4px);
+  background-size: 6px 6px;
+  opacity: 0.55;
+  -webkit-mask-image: linear-gradient(90deg, transparent var(--at), #000 calc(var(--at) + 6%));
+  mask-image: linear-gradient(90deg, transparent var(--at), #000 calc(var(--at) + 6%));
+  animation: run-strip-drift 2.4s linear infinite;
+}
+
+@keyframes run-strip-drift {
+  to { background-position: 12px 0; }
+}
+
+.run-strip-pct {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-strip-side {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-strip-side b {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.run-strip[data-state="needs"] .run-strip-reason { color: var(--decide); }
+.run-strip[data-state="failed"] .run-strip-reason { color: var(--danger); }
+
+.run-strip-hide {
+  display: grid;
+  place-items: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  transition: background 130ms ease-out, color 130ms ease-out;
+}
+
+.run-strip-hide:hover {
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+@media (hover: hover) {
+  .run-strip-open:hover .run-strip-word { text-decoration: underline; text-underline-offset: 3px; }
+}
+
+/* A phone: the percent says what the bar and its count already do, and the
+   second count gives way before the first is cut. */
+@media (max-width: 520px) {
+  .run-strip-open { gap: 8px; }
+  .run-strip-pct { display: none; }
+  .run-strip-meter { flex-basis: 104px; }
+}
+
+@media (max-width: 400px) {
+  .run-strip-then { display: none; }
+}
+
+/* ---- The Agents panel: totals ------------------------------------------- */
+
+.run-tiles {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.run-tile {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+}
+
+.run-tile dt {
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+.run-tile dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--fg-0);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Groups ------------------------------------------------------------- */
+
+.run-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  text-align: left;
+}
+
+button.run-group-head { cursor: pointer; }
+button.run-group-head:hover { color: var(--fg-1); }
+button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
+
+.run-group[data-group="needs"] > .run-group-head { color: var(--decide); }
+
+.run-group-chevron { flex: 0 0 auto; transition: transform 160ms ease-out; }
+.run-group-head[aria-expanded="true"] .run-group-chevron { transform: rotate(90deg); }
+
+.run-group-rows[hidden] { display: none; }
+
+.run-group-more {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+  width: 100%;
+  padding: 9px 6px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 130ms ease-out, color 130ms ease-out;
+}
+
+.run-group-more:hover { background: var(--accent-tint); color: var(--fg-0); }
+.run-group-more:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+/* ---- One row ------------------------------------------------------------
+   Three lines and a bar: the task, who has it on which model, then how far
+   it is and what it has cost. The row's controls sit at the end of line one,
+   over the summary button's corner, so the whole row still opens the chat. */
+
+.orch-task.run-row {
+  --task-control: 24px;
+  --task-pad: 9px;
+  --row-color: var(--fg-3);
+}
+
+/* The accent is a turn in flight and nothing else: a row that is preparing,
+   parked or stalled keeps the grey, and a warning has its own colour. */
+.orch-task.run-row[data-flight] { --row-color: color-mix(in srgb, var(--accent) 60%, var(--bg-2)); }
+.orch-task.run-row[data-tone="warn"] { --row-color: var(--warn); }
+
+.orch-task.run-row[data-state="needs"] { --row-color: var(--decide); }
+.orch-task.run-row[data-state="failed"] { --row-color: var(--danger); }
+.orch-task.run-row[data-state="done"] { --row-color: var(--ok); }
+.orch-task.run-row[data-state="planned"],
+.orch-task.run-row[data-state="closed"] { --row-color: var(--fg-3); }
+
+/* The tab row's rule, or the group's head, already sits over the first. */
+.run-group-rows > .orch-task.run-row:first-child { border-top: 1px solid var(--border); }
+
+.run-row .orch-task-heading {
+  margin: 0;
+  padding: 0 4px 0 6px;
+  border-radius: var(--r-sm);
+}
+
+.run-row .orch-task-heading:has(.orch-task-summary:not(:disabled):hover) { background: var(--accent-tint); }
+
+.run-row .orch-task-summary {
+  grid-template-columns: 28px minmax(0, 1fr) auto var(--task-controls);
+  align-items: start;
+  column-gap: 10px;
+  row-gap: 2px;
+}
+
+.run-row-face {
+  grid-row: 1 / span 3;
+  grid-column: 1;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.run-row[data-state="planned"] .run-row-face.is-none,
+.run-group-more .run-row-face {
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--fg-3);
+}
+
+/* One line, as dense as the list: the whole title is the tooltip, and the
+   row's disclosure lets it wrap. */
+.run-row .orch-task-title {
+  grid-column: 2;
+  padding-top: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-row:has(.orch-task-expand[aria-expanded="true"]) .orch-task-title {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.run-row-mark {
+  grid-row: 1;
+  grid-column: 3;
+  display: grid;
+  place-items: center;
+  min-width: 14px;
+  height: 18px;
+  color: var(--fg-3);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.run-row[data-state="needs"] .run-row-mark { color: var(--decide); }
+.run-row[data-state="failed"] .run-row-mark { color: var(--danger); }
+.run-row[data-state="done"] .run-row-mark { color: var(--ok); }
+
+.run-row-who,
+.run-row-nums {
+  grid-column: 2 / -1;
+  display: flex;
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.run-row-who {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.run-row-who > span {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-row-who > span + span::before {
+  content: " · ";
+  color: var(--fg-3);
+  white-space: pre;
+}
+
+/* What it waits for gives way, alone: sharing the squeeze, however unevenly,
+   takes a fraction of a pixel off the name and costs it a whole word. With
+   nothing to wait for, the name is what gives. The model and effort are
+   short and stay whole. */
+.run-row-who > .run-row-after { flex: 0 1 auto; }
+.run-row-who > .run-row-name,
+.run-row-who > .orch-task-owner { flex: 0 1 auto; color: inherit; }
+.run-row-who:has(> .run-row-after) > :is(.run-row-name, .orch-task-owner) { flex-shrink: 0; }
+
+.run-row-who > .run-row-pill {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.run-row-who > .run-row-pill::before { content: none; }
+.run-row-pill[data-verdict="fail"] { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); color: var(--danger); }
+
+.run-row-nums {
+  justify-content: space-between;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-row-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-row-note[data-tone="decide"] { color: var(--decide); }
+.run-row-note[data-tone="danger"] { color: var(--danger); }
+.run-row-note[data-tone="warn"] { color: var(--warn); }
+
+.run-row-figures {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.run-row-who > .run-row-figures { margin-left: auto; padding-left: 8px; }
+.run-row-who > .run-row-figures::before { content: none; }
+
+.run-row .orch-task-track.run-row-bar {
+  grid-column: 2 / -1;
+  width: auto;
+  height: 3px;
+  margin-top: 5px;
+}
+
+.run-row .orch-task-track.run-row-bar > span { background: var(--row-color); }
+
+.run-row[data-state="planned"] .orch-task-summary { opacity: 0.72; }
+.run-row[data-state="closed"] .orch-task-summary { opacity: 0.6; }
+
+.run-row .orch-task-actions {
+  align-self: start;
+  margin: calc(var(--task-pad) - 3px) 0 0;
+}
+
+.run-row .orch-task-pending { margin: 0 12px 6px 44px; }
+
+/* Under the title: the row's 6px inset + the 28px face + its 10px gap. */
+.run-row .orch-task-detail { padding: 2px 12px 14px 44px; }
+.run-row .orch-task-detail > .orch-task-meta { margin: 0 0 8px; min-height: 0; }
+
+/* A finger needs more than 24px. */
+@media (pointer: coarse) {
+  .orch-task.run-row { --task-control: 32px; }
+  .run-row .orch-task-title { padding: 7px 0; }
+  .run-row .orch-task-actions { margin-top: var(--task-pad); }
+  .run-row-mark { height: 32px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-strip[data-live] .run-strip-meter::after { animation: none; }
+  .run-strip-fill, .run-strip-hide, .run-group-chevron, .run-group-more { transition: none; }
+}

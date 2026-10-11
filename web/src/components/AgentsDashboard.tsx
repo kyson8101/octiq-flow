@@ -15,6 +15,7 @@ import {
   type AgentActivity, type AgentRow, type ChatActivity, type LeadRecord,
 } from "../lib/agentsDashboard";
 import type { OrchestrationSnapshot } from "../lib/orchestration";
+import type { Waiting } from "../lib/runWaits";
 import { bridge } from "../lib/bridge";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentRole } from "./AgentRole";
@@ -28,7 +29,7 @@ const SHOWN = 3;
 type Activity = { key: string; busy: boolean };
 
 export function AgentsDashboard({
-  snapshot, ledgerError, connected, projects, running, busy, waitingOn, chatTitle, chatExists,
+  snapshot, ledgerError, connected, projects, running, busy, waitingOn, held, chatTitle, chatExists,
   onOpenChat, onOpenRun, onManage, onClose,
 }: {
   /** Null until the ledger's first read lands. */
@@ -40,8 +41,10 @@ export function AgentsDashboard({
   /** Chat ids with a live process, and those mid-turn, as this page has seen. */
   running: ReadonlySet<string>;
   busy: ReadonlySet<string>;
-  /** Cards on this chat only the person can answer. */
+  /** Cards on this chat itself only the person can answer. */
   waitingOn: (chatKey: string) => number;
+  /** The cards the page holds, per task (`lib/pendingActions`). */
+  held?: Waiting;
   /** A chat's title by key, when this browser knows it. */
   chatTitle: (chatKey: string) => string | undefined;
   chatExists: (chatKey: string) => boolean;
@@ -135,7 +138,7 @@ export function AgentsDashboard({
   const rows = agentRoster({
     team, leads, snapshot, projects: projectList, teams,
     providerLabel: (agent) => `${AGENT_NAME[agent.agent]} ${teamModelLabel(agent)}`,
-    chatTitle, chatExists, leadActivity, waitingOn,
+    chatTitle, chatExists, leadActivity, waitingOn, held,
   });
   const summary = rosterSummary(rows);
   const stale = !connected || !!ledgerError;

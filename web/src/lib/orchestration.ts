@@ -204,6 +204,10 @@ export type OrchestrationTask = {
   handoffs?: { from?: { id: string; name: string }; to: { id: string; name: string }; reason: string; at: number }[];
   /** The task the coordinator created to replace this blocked or failed one. */
   supersededBy?: string;
+  /** A start of it would be refused because the person has not approved
+   *  it. Absent on a host that does not say: the run's own approval is then
+   *  all the page has (`lib/agentsDashboard`, `lib/mission`). */
+  heldByPlan?: boolean;
   /** Set on a task a teammate asked for (orchestration/peer_request.rs): who
    *  asked, the result they expect back, and `maxMinutes` of working time
    *  (waiting for a decision does not count, and it is not extended). */
@@ -230,6 +234,22 @@ export function isPeerRequestGate(
   tasks: readonly Pick<OrchestrationTask, "id" | "peerRequest">[],
 ): boolean {
   return !!gate.taskId && tasks.some((task) => task.id === gate.taskId && !!task.peerRequest);
+}
+
+/** Whether a start of this task would be refused because the person has not
+ *  approved it. The task's own `heldByPlan` says, when the host sends it; a
+ *  task that carries none, in a run where another task does, is not held.
+ *  Only when no task of the run carries it (a host that does not say) is the
+ *  run's own approval read instead, which is what the page did before and
+ *  calls every unstarted task of a run with a pending plan held. */
+export function taskHeldByPlan(
+  task: Pick<OrchestrationTask, "runId" | "heldByPlan">,
+  run: Pick<OrchestrationRun, "planApproval"> | undefined,
+  tasks: readonly Pick<OrchestrationTask, "runId" | "heldByPlan">[],
+): boolean {
+  if (typeof task.heldByPlan === "boolean") return task.heldByPlan;
+  if (tasks.some((other) => other.runId === task.runId && typeof other.heldByPlan === "boolean")) return false;
+  return run?.planApproval?.status === "pending";
 }
 
 export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy">): boolean {
@@ -264,9 +284,21 @@ export type OrchestrationAttempt = {
    *  running, which is not counted; `usedMs` is the most it was ever found
    *  to have used, and never goes down. */
   peerClock?: { carriedMs: number; usedMs: number; waits?: { from: number; to: number }[] };
+  /** Tokens this attempt's chat has used, as its provider reported them
+   *  (`agent_usage.rs` keeps exactly this per chat). The host does not send
+   *  it yet: a row and the run's Tokens tile leave the figure out until it
+   *  does (`lib/runProgress`), and nothing is worked out in its place. */
+  usage?: AttemptUsage | null;
+  /** What the worker's session holds of its model's context window, both as
+   *  the provider said. Not sent by the host yet; the same rule applies. */
+  context?: { tokens: number; window: number } | null;
   createdAt: number;
   updatedAt: number;
 };
+
+/** `agent_usage::TokenUsage`: `input` and `output` are the whole of each, and
+ *  the other three are parts already inside them. */
+export type AttemptUsage = { input: number; cachedInput?: number; cacheWrite?: number; output: number; reasoning?: number };
 
 export type ProposedReport = {
   id: string;
@@ -309,7 +341,14 @@ export type OrchestrationGate = {
   /** When it was resolved or cancelled. Absent while open, and on a gate
    *  closed before this was recorded. */
   closedAt?: number;
+  /** Who an open gate waits on, as the host says. Absent on a host that does
+   *  not say, and then the page does not guess (`lib/runWaits`). */
+  awaits?: Awaits;
 };
+
+/** Who a decision waits on: the person, the run's coordinator, or nobody at
+ *  all (a refusal no one can approve). */
+export type Awaits = "person" | "coordinator" | "nobody";
 
 export type OrchestrationMessage = {
   id: string;
@@ -421,6 +460,9 @@ export type NativeDecision = {
   kind?: "safety" | "outage";
   /** The outage card this refusal was grouped on. */
   groupId?: string | null;
+  /** Who a pending one waits on, as the host says. Absent on a host that
+   *  does not say (`lib/runWaits`). */
+  awaits?: Awaits;
 };
 
 export type RuntimeService = {

@@ -1,5 +1,6 @@
 import type { NativeDecision, OrchestrationSnapshot } from "../lib/orchestration";
 import { agoLabel } from "../lib/chatTask";
+import { taskDecisions } from "../lib/runWaits";
 
 /** One row per safety refusal, one per outage group: an outage of Claude's
  * check is one event however many calls it refused, and each refused call
@@ -38,7 +39,7 @@ function commandCounts(decisions: readonly NativeDecision[]): [string, number][]
 export function TaskLifecycleEvidence({ snapshot, taskId, now }: {
   snapshot: OrchestrationSnapshot; taskId: string; now: number;
 }) {
-  const decisions = (snapshot.nativeDecisions ?? []).filter((decision) => decision.taskId === taskId);
+  const decisions = taskDecisions(snapshot, taskId);
   return <>
     {(snapshot.services ?? []).filter((service) => service.taskId === taskId).map((service) => (
       <div key={service.id} className="orch-task-lifecycle" role={service.state === "stopped" ? "status" : undefined}>

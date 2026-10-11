@@ -21,9 +21,10 @@ const attempt = (id: string, runId: string, taskId: string, chat: string, number
   id, runId, taskId, number, workerChatKey: `chat:${chat}`, agent: "claude", access: "auto", status: "running",
   cwd: "/r", branch: "b", isWorktree: true, filesModified: [], createdAt: number, updatedAt: number,
 });
+/** An open gate the host says waits on the person, unless told otherwise. */
 const gate = (id: string, runId: string, over: Partial<OrchestrationGate> = {}): OrchestrationGate => ({
   id, runId, createdByChatKey: "chat:w1", targetChatKey: "chat:main", question: "Which?", options: [],
-  status: "open", createdAt: 1, updatedAt: 1, ...over,
+  status: "open", awaits: "person", createdAt: 1, updatedAt: 1, ...over,
 });
 
 /** A main chat with two runs: r1 still running with worker w1, r2 older and
@@ -45,7 +46,7 @@ describe("pending actions", () => {
   it("rolls a worker's card up to the main chat row while keeping its task", () => {
     const actions = pendingActions(input(ledger(), { asks: { w1: [{ id: "p1" }] } }));
     expect(actions).toEqual([{
-      key: "permission:p1", kind: "permission", rowId: "main", openChatId: "main", surface: "chat", runId: "r1", taskId: "t1",
+      key: "permission:p1", kind: "permission", rowId: "main", openChatId: "main", surface: "chat", runId: "r1", taskId: "t1", chatId: "w1",
     }]);
     expect(pendingByTask(actions).get("t1")?.map((a) => a.key)).toEqual(["permission:p1"]);
   });
@@ -61,6 +62,20 @@ describe("pending actions", () => {
     // The finished run's worker keeps its own task for the task row.
     expect(actions[0]).toMatchObject({ runId: "r2", taskId: "t2", openChatId: "main" });
     expect(actions.find((a) => a.kind === "gate")).toMatchObject({ surface: "run", openChatId: "main", taskId: "t1" });
+  });
+
+  it("badges a gate only when it is the person's: not the coordinator's, nobody's, or one the host put no name to", () => {
+    const keys = (over: Partial<OrchestrationGate>, tasks?: OrchestrationTask[]) =>
+      pendingActions(input(ledger({ gates: [gate("g1", "r1", { taskId: "t1", ...over })], ...(tasks ? { tasks } : {}) }))).map((a) => a.key);
+    expect(keys({ awaits: "person" })).toEqual(["gate:g1"]);
+    expect(keys({ awaits: "coordinator" })).toEqual([]);
+    expect(keys({ awaits: "nobody" })).toEqual([]);
+    // A host that does not say: not counted as the person's.
+    expect(keys({ awaits: undefined })).toEqual([]);
+    // A gate on a peer request is answered by the person and by no agent,
+    // on any host.
+    const peer = task("t1", "r1", { peerRequest: { requestedBy: { id: "a", name: "A" }, requesterChatKey: "chat:x", output: "o", maxMinutes: 5, requestedAt: 1 } });
+    expect(keys({ awaits: undefined }, [peer, task("t2", "r2", { status: "completed" })])).toEqual(["gate:g1"]);
   });
 
   it("asks for a review of a refused action, never an approval", () => {
@@ -150,7 +165,7 @@ describe("pending actions", () => {
 
   it("names a failed delivery as its own action, never as an unanswered question", () => {
     const failed = questions([{ id: "q1", batch: "b", status: "failed", answer: "Yes", error: "Could not continue", retryable: true }, { id: "q2", batch: "b", status: "failed", answer: "No" }]);
-    expect(failed).toEqual([{ key: "delivery:b", kind: "delivery", rowId: "c", openChatId: "c", surface: "chat", runId: undefined, taskId: undefined }]);
+    expect(failed).toEqual([{ key: "delivery:b", kind: "delivery", rowId: "c", openChatId: "c", surface: "chat", runId: undefined, taskId: undefined, chatId: "c" }]);
     expect(pendingLabel(failed)).toBe("Delivery failed");
     expect(pendingDescription(failed)).toBe("1 failed answer delivery");
     // An unconfirmed delivery (not retryable) still waits on the person: the
@@ -218,7 +233,7 @@ describe("pending actions", () => {
       { id: "h3", sourceChatKey: "chat:other", status: "declined" },
     ];
     const actions = pendingActions(input(ledger(), { handovers }));
-    expect(actions).toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat" }]);
+    expect(actions).toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat", chatId: "main" }]);
     expect(pendingLabel(actions)).toBe("Handover to confirm");
   });
 
@@ -229,7 +244,7 @@ describe("pending actions", () => {
       { id: "h3", sourceChatKey: "chat:main", status: "abandoned", error: "CLI unavailable" },
     ];
     expect(pendingActions(input(ledger(), { handovers })))
-      .toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat" }]);
+      .toEqual([{ key: "handover:h1", kind: "handover", rowId: "main", openChatId: "main", surface: "chat", chatId: "main" }]);
   });
 
   it("keys a plan by revision, so a revision after approval is a new action", () => {

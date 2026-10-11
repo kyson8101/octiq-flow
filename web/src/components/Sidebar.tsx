@@ -7,7 +7,7 @@ import { recall, remember } from "../lib/remember";
 import { latestResponse, plainSnippet } from "../lib/chatPreview";
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
-import { chatRunStatus, chatSnapshot, workflowChatList } from "../lib/chatWorkflow";
+import { chatRunStatus, chatSnapshot, rowRun, workflowChatList } from "../lib/chatWorkflow";
 import { workingTaskCount } from "../lib/agentsDashboard";
 import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
@@ -28,6 +28,7 @@ import { SidebarMenu } from "./SidebarMenu";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import { pendingLabel } from "../lib/pendingActions";
 import { entryClass, useEntry } from "../lib/useArrival";
+import { useRowMotion } from "../lib/rowMotion";
 import { Arrive } from "./Arrive";
 import "./MobileSidebar.css";
 import "./SidebarArchive.css";
@@ -212,6 +213,12 @@ export function Sidebar({
   const recentNodes = showArchived
     ? archivedConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
     : tree.filter((node) => !hasPin(node));
+  // A chat that answers goes to the top of its list and the rows it passed
+  // drop by one: each of them moves there (`lib/rowMotion`). Only the listed
+  // rows; a chat's own task chats move with the row that holds them.
+  const chatList = useRef<HTMLDivElement | null>(null);
+  useRowMotion(chatList, `${pinnedNodes.map((node) => node.chat.id).join(",")}|${recentNodes.map((node) => node.chat.id).join(",")}`,
+    ".task-chat-list > li.chat-row[data-row]");
   const ancestors = new Set<string>();
   let ancestor = currentConversation ? chatParents.get(currentConversation) : undefined;
   while (ancestor && !ancestors.has(ancestor)) {
@@ -281,8 +288,10 @@ export function Sidebar({
     const archived = attempt?.archivedAt != null;
     const archiveReason = attempt && !archived ? workerArchiveDisabledReason(orchestration, attempt) : null;
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
-    // An archived run was put away by the person; it does not speak for the row.
-    const run = workflow.runs.find((item) => item.archivedAt == null) ?? workflow.runs[0];
+    // An archived run was put away by the person; it does not speak for the
+    // row. A run that waits on the person does, before a newer one that only
+    // runs: the line and the badge beside it are one reading (`lib/runWaits`).
+    const run = rowRun(workflow, pendingView.held);
     const ownsRun = !showArchived && workflow.runs.length > 0;
     // A run's worker chats are not listed here. Its task list opens beside the
     // chat list when this row is picked, and stays while a worker is open, so
@@ -294,8 +303,8 @@ export function Sidebar({
     // A main chat idle between turns while its workers run is still running:
     // its ring goes round for them. Only this chat's own runs count, so a
     // neighbour in the same project keeps still.
-    const tasksWorking = workingTaskCount(workflow, (taskId) => pendingView.forTask(taskId).length);
-    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? chatRunStatus(workflow, run) : null;
+    const tasksWorking = workingTaskCount(workflow, pendingView.held);
+    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? chatRunStatus(workflow, run, pendingView.held) : null;
     const branch = projectInfo.status === "home" ? (attempt?.branch || (parent ? "" : branches[chat.projectId])) : "";
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
@@ -309,7 +318,7 @@ export function Sidebar({
       : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
 
     return (
-      <AnimatedChatRow entering={listed === "settled" && !seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
+      <AnimatedChatRow id={chat.id} entering={listed === "settled" && !seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
         <div className={[
           "chat", chat.id === currentConversation ? "is-on" : "",
           running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
@@ -565,7 +574,7 @@ export function Sidebar({
 
         {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
         {listed === "held" ? null : conversations.length > 0 || showArchived ? (
-          <div className={`task-chat-content${listed === "entering" ? " enter-fade" : ""}`}>
+          <div ref={chatList} className={`task-chat-content${listed === "entering" ? " enter-fade" : ""}`}>
             {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
               <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
               <ul className="chat-list task-chat-list">{pinnedNodes.map(renderChat)}</ul>
@@ -652,14 +661,15 @@ export function chatTime(timestamp: number): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric", ...(date.getFullYear() !== today.getFullYear() ? { year: "numeric" as const } : {}) });
 }
 
-function AnimatedChatRow({ entering, leaving, children }: { entering: boolean; leaving: boolean; children: ReactNode }) {
+function AnimatedChatRow({ id, entering, leaving, children }: { id: string; entering: boolean; leaving: boolean; children: ReactNode }) {
   const [isEntering, setIsEntering] = useState(() => entering && !(typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches));
   useEffect(() => {
     if (!isEntering) return;
     const frame = requestAnimationFrame(() => setIsEntering(false));
     return () => cancelAnimationFrame(frame);
   }, [isEntering]);
-  return <li className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""].filter(Boolean).join(" ")}><div className="chat-row-content">{children}</div></li>;
+  // `data-row` is how a row that changes place is followed (`lib/rowMotion`).
+  return <li data-row={id} className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""].filter(Boolean).join(" ")}><div className="chat-row-content">{children}</div></li>;
 }
 
 function SearchIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>; }

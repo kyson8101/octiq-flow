@@ -411,6 +411,12 @@ pending key and what the buttons send are the card's.
 - **Only a live `safety-blocked` event raises the notice.** The list read on
   connect or on reopening a chat (`safety_block_pending`) never does, and
   leaving the chat drops it.
+- **The card stays amber; the answer it leads with does not.** A refusal is
+  a warning, so a safety card keeps `--warn`. Its primary button ("Keep it
+  local", "Use safer approach") is a decision, and is drawn in `--decide`
+  like every card that asks: never the accent, which the composer rebinds to
+  the model's colour and which came up gold under Claude
+  (`lib/decideColour.test.ts`).
 
 ### A card that waits on the person arrives folded
 
@@ -438,8 +444,12 @@ folded line and are not part of this.
   `askDetail.rowSummary`; an invalid one is dropped and the rows are kept; on
   a move it is an unknown key like any other). The rows `Head` and `Front
   desk` (`team_tools::delete_facts`) are sentences drawn whole up to 160
-  characters; `cardFold.STRUCTURAL` holds those labels and `cardFold.test.ts`
-  reads `team_tools.rs` to check them. A change of more than 50 rows
+  characters, and so are a team card's `Membership` (the one fixed sentence
+  of what teammates may do with each other, which is what is approved) and
+  `Other teams` (who leaves which team by joining this one;
+  `team_tools::team_rows`); `cardFold.STRUCTURAL` holds those labels and
+  `cardFold.test.ts` reads `team_tools.rs` to check them. A change of more
+  than 50 rows
   (`askDetail.MAX_ROWS`; the host sends about a dozen) is shown as the host's
   text instead, folded like an older host's.
 - **A command is what is being approved, not detail.** `command`, `script`
@@ -829,6 +839,159 @@ message starts it again and takes the tick away.
   again, and offers Close only for a mission the host calls `closeEligible`.
   The click asks in the run panel's own words before
   `orchestration_mission_close`.
+
+### A run's progress is one line above the composer, and the Agents panel
+
+The chat that coordinates a run carries one line on its composer
+(`RunProgressStrip`): the state, tasks done of total as a bar, and at most
+two counts. A click opens the run panel, which draws the same run as three
+tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
+`lib/runProgress` off the ledger this tab already holds.
+
+- **Nothing is estimated.** A figure the host did not send is `null` and the
+  part that would draw it is left out; a zero is left out the same way. The
+  host does not send tokens per attempt (`attempt.usage`) or a worker's
+  context (`attempt.context`) yet, so today a row ends in its minutes and
+  there is no Tokens tile. Both fields are typed and read, so they appear
+  when the host sends them.
+- **"Needs you" is a fact, decided in one place** (`lib/runWaits.runWaits`).
+  A wait is the person's when the plan has a revision to approve, when the
+  page itself holds a card for the worker (permission, safety, question, an
+  undelivered answer, a handover), or when the host says so: an open gate
+  or a pending native decision whose `awaits` is `"person"`. A gate on a
+  peer request is the person's on any host, because only their page can
+  answer it. `awaits: "coordinator"` stays under Running in the warning
+  colour as `Waiting on the coordinator`. `awaits: "nobody"` (a refusal no
+  one can approve) changes nothing on the row. A host that sends no
+  `awaits` leaves a gate or native decision unsaid: shown, never counted,
+  and the tooltip says `The host does not say who this waits on.` A native
+  decision and its safety card are one thing under one key, so decisions
+  are counted per card and never per row.
+- **Every surface is drawn from that one reading, and nothing else reads
+  the ledger's waits.** `lib/runWaits` is the only module that names the
+  ledger's `gates`, its `nativeDecisions` or a record's `awaits`; anything
+  else asks it (`runWaits`, `ledgerWaits`, `openGates`, `taskDecisions`,
+  `pendingDecisions`). The page's own cards are read once
+  (`pendingActions.heldCards`) and handed to it as `held`
+  (`PendingActionsView.held`), and from what it returns come: the strip
+  (`chatStrip`), the panel's rows, its decision boxes, its `N to decide`
+  and the run picker's count (`runAttention`), the Tasks button
+  (`taskColumnCounts`), the chat list's line (`rowRun`, `runSummary`) and
+  its badge (`pendingReading`), and the Agents page (`taskState`,
+  `agentRoster`). `runWaits.surfaces.test.tsx` asks every one of them the
+  same count and the same yes or no over a table of ledger shapes (a host
+  that says `awaits` and one that does not; the card list delivered, not
+  arrived, failed), and scans the source for a second reader. A new surface
+  that says or counts a wait takes a `RunWaits`; it does not filter gates.
+- **The host's word does not wait for the card.** A native decision the
+  host says waits on the person is badged and counted with no card on the
+  page (`PendingAction.cardMissing`: the list was not read yet, or its
+  request failed, which is not tried again within a connection). The page
+  then asks for `safety_block_pending` again, once for each set of missing
+  cards and once more when the badge is pressed; nothing polls.
+- **What the ledger alone records is history once a run is stopped, closed
+  or archived; a card the page still holds is not.** Its buttons are on the
+  person's screen, so it is counted wherever it is said, and the row that
+  holds a decision of the person's says Needs you whatever became of its
+  task.
+- **Four states, in this order:** Needs you, Failed (a failed task, a block
+  with no decision open, a check whose verdict is fail, none of them
+  replaced, and only while nothing waits on the person), Done, Running. A
+  cancelled or replaced task is counted nowhere, so a run can reach its
+  whole count. A stopped, closed or archived run, and a run with no task,
+  draws no strip, unless something in it waits on the person: then the
+  line is drawn, and a run with nothing to count yet says `No tasks yet`.
+- **A chat that coordinates several runs has one line** (`chatStrip`): a
+  run that waits on the person outranks a newer one that runs, a failure
+  outranks plain progress, the decisions of every run of the chat are
+  counted (`ledgerWaits`), and with more than one run on the line it says
+  how many (`2 runs`; under 400px that second count gives way and stays in
+  the tooltip).
+- **Groups: Needs you, Running, Finished, Planned. There is no fifth.**
+  A heading says what it counts (`groupHeading`): Needs you counts the
+  decisions of its rows, like the strip (`Needs you · 2 decisions` for two
+  cards of one worker), and the others their tasks (`Running · 4`, spoken
+  `Running, 4 tasks`). A decision of the run itself, its plan or a gate
+  with no task, is no row and is drawn in its own box above the groups.
+  Finished is the only one that folds and starts folded; Finished and
+  Planned show three rows and a line for the rest, which is a disclosure
+  (`aria-expanded`, `aria-controls`); pressing it puts the keyboard on the
+  first row it showed, on the row's summary or, for a task with no worker
+  chat, its details disclosure (`ROW_FOCUS`). What failed is listed first under
+  Running, in the danger colour with the host's word, then a stalled,
+  disconnected or retrying worker with the host's label in the warning
+  colour. An empty group is not drawn, and the task on screen is never
+  behind a fold.
+- **A row's words are the task's title and the host's own label.** The step
+  a worker says it is on, its summary, a path and a commit are the worker's
+  text and sit behind the row's disclosure with everything the row had
+  before (state word, kind, size, environment, branch, checklist, brief).
+- **Colour is state.** The accent is a turn in flight and nothing else, as
+  a tint: `strip.live` and a row's `flight` are true only while an attempt
+  of the run is executing. A run that is all planned, or whose only worker
+  stalled, is "Running" and is drawn in grey. `--decide` is what waits on
+  the person, here and on the panel's decisions box, its count on a
+  collapsed goal and the Tasks button; `--warn` is a problem.
+  `RunProgressStrip.test.tsx` and `lib/decideColour.test.ts` read the sheets.
+- **One thing moves:** the texture over the part of the strip still to do,
+  while a turn is in flight. Time is in minutes (`minutesLabel`), never
+  seconds.
+- **The scoped read and the whole one see the same facts.**
+  `chatWorkflow.chatSnapshot` keeps everything `runWaits` reads for the
+  chat's runs, the native decisions included; a field added to that
+  reading is kept there too.
+- **What the plan holds is the task's to say** (`taskHeldByPlan`): a task
+  is `Waiting for plan approval`, and a mission with a pending plan is a
+  draft, only while the host's `heldByPlan` says the plan holds it. A host
+  that sends the field for no task of the run leaves both reading the
+  run's own approval, as before.
+- **Hiding the strip** is remembered against what it said
+  (`octiq.v2.runStripHidden`, one signature per run): it comes back when a
+  task settles, something asks or something fails, and not because a worker
+  started or stopped.
+
+**The run column's place is held before the ledger answers**
+(`lib/runColumn`). The ledger arrives after the chat is drawn, and the page
+used to split in two then. Four things say a chat has a run before the
+ledger does: the host's `coordinatesRun` on the chat's own index entry, a
+task chat's reserved `orch-` id, a task chat open beside the chat (the route
+or the remembered choice), and the chats this browser last saw coordinating
+(`octiq.v2.runChats`). The held column is empty until the ledger fills it.
+`coordinatesRun` holds the column at first paint only where the page has the
+entry at first paint, which is the chat as this browser cached it the last
+time it was listed (CLS 0.004).
+
+**A chat that was drawn at its full width is not split afterwards**
+(`runColumn.columnAtFirstPaint`, `columnHeldShut`). Where nothing said the
+chat has a run by its first paint (a coordinating chat opened cold for the
+first time in a browser, on a host that does not send `coordinatesRun`, or
+one that sends it only with the chat list's answer), the column the ledger
+then brings starts put away, the state the top bar's Tasks button already
+has: the button arrives with its counts and what waits on the person, the
+line above the composer says what the run is doing, and the person opens
+the column (CLS 0.003, from 0.26). Only that one paint is held to: leaving
+the chat and coming back draws it with the column, a run started while the
+chat is open opens it as before, and from the next load the browser
+remembers that the chat coordinates. The split is never made by the
+ledger's first answer, or by the chat list's, under what is already drawn.
+
+**A task the coordinator reopened is one folded line in its chat**
+(`lib/taskReopened`, `ReopenedNote`). A coordinator may reopen an approved
+task with new instructions and no new approval, and the page has to show
+it: the host's durable `octiq_task_reopened` event draws `Reopened <title>
+for <assignee> · attempt N` through the shared `CardFold`, with the new
+instructions behind it, whole when opened. They are the coordinator's
+prose, so they are folded by default and never on the strip. The line
+enters once as it is said, is not replayed when the chat is read back, and
+the same event read twice draws once. A line is one reopening (the task,
+the attempt it starts and the host's stamp): the host numbers the attempt a
+reopening will start, so a task reopened twice before it is dispatched says
+the same attempt both times and still draws two lines.
+
+**A chat row that changes place moves there** (`lib/rowMotion`): the list is
+sorted by activity, and a row that only changed position used to be
+somewhere else on the next frame. Positions are read as the order changes,
+never on every render.
 
 ### Attention alerts
 

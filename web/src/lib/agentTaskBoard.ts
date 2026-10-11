@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { isStuck, type ExecutionState, type OrchestrationAttempt, type OrchestrationSnapshot, type OrchestrationTask } from "./orchestration";
 import type { TaskReport } from "./chatTask";
+import { taskGated } from "./runWaits";
 
 export function taskAttempts(snapshot: OrchestrationSnapshot, task: OrchestrationTask): OrchestrationAttempt[] {
   return snapshot.attempts.filter((attempt) => attempt.taskId === task.id)
@@ -16,7 +17,7 @@ export function attemptIsLive(snapshot: OrchestrationSnapshot, attempt: Orchestr
   if (attempt.status === "running" || attempt.status === "preparing") return true;
   // A decision gate pauses an attempt; a blocked worker report settles it.
   return attempt.status === "blocked" && snapshot.tasks.some((task) => task.activeAttemptId === attempt.id)
-    && snapshot.gates.some((gate) => gate.taskId === attempt.taskId && gate.status === "open");
+    && taskGated(snapshot, attempt.taskId);
 }
 
 /** Wall time includes preparation and decision waits; parallel workers are not summed. */

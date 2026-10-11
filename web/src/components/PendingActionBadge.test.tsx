@@ -8,7 +8,7 @@ vi.mock("../lib/bridge", () => ({
 
 import type { Conversation } from "../lib/store";
 import { workerChatParents, type OrchestrationSnapshot } from "../lib/orchestration";
-import { pendingActions, pendingByRow, pendingByTask, type PendingActionInput } from "../lib/pendingActions";
+import { pendingByRow, pendingByTask, pendingReading, type PendingActionInput } from "../lib/pendingActions";
 import { PendingActionBadge, PendingActionsContext, type PendingActionsView } from "./PendingActionBadge";
 import { Sidebar } from "./Sidebar";
 import { ProjectsPage } from "./ProjectsPage";
@@ -39,10 +39,10 @@ const ledger: OrchestrationSnapshot = {
 };
 
 function view(input: Partial<PendingActionInput> = {}): PendingActionsView {
-  const actions = pendingActions({ orchestration: ledger, parents: workerChatParents(ledger), ...input });
+  const { actions, held } = pendingReading({ orchestration: ledger, parents: workerChatParents(ledger), ...input });
   const rows = pendingByRow(actions);
   const tasks = pendingByTask(actions);
-  return { forRow: (id) => rows.get(id) ?? [], forTask: (id) => tasks.get(id) ?? [], reveal: () => {} };
+  return { forRow: (id) => rows.get(id) ?? [], forTask: (id) => tasks.get(id) ?? [], held, reveal: () => {} };
 }
 const withView = (value: PendingActionsView, element: ReactElement) =>
   renderToStaticMarkup(<PendingActionsContext.Provider value={value}>{element}</PendingActionsContext.Provider>);
@@ -58,8 +58,10 @@ const sidebar = (value: PendingActionsView, over: Partial<Parameters<typeof Side
 function row(html: string, id: string): string {
   const start = html.indexOf(`>Chat ${id}<`);
   if (start < 0) return "";
-  const open = html.lastIndexOf('<li class="chat-row">', start);
-  const next = html.indexOf('<li class="chat-row">', start);
+  // A row carries its chat's id (`data-row`), which is how a row that changes
+  // place is followed.
+  const open = html.lastIndexOf('<li data-row="', start);
+  const next = html.indexOf('<li data-row="', start);
   return html.slice(open, next < 0 ? undefined : next);
 }
 

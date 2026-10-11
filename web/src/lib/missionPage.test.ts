@@ -35,7 +35,7 @@ const attempts: OrchestrationAttempt[] = [{
 
 describe("mission crew", () => {
   it("puts the lead first, then each task owner once with the roles they hold here", () => {
-    const crew = missionCrew(run, tasks, attempts, [], roster, { id: "cto", name: "CTO" });
+    const crew = missionCrew(run, tasks, attempts, new Set(), roster, { id: "cto", name: "CTO" });
     expect(crew.map((member) => [member.name, member.roles])).toEqual([
       ["CTO", ["lead"]],
       ["Maya", ["developer"]],
@@ -48,15 +48,15 @@ describe("mission crew", () => {
 
   it("gives one agent both roles, and a lead that took a task is one person", () => {
     const both = [...tasks, task("check", { assignee: maya, kind: "check" }), task("own", { assignee: { id: "cto", name: "CTO" } })];
-    const crew = missionCrew(run, both, attempts, [], roster, { id: "cto", name: "CTO" });
+    const crew = missionCrew(run, both, attempts, new Set(), roster, { id: "cto", name: "CTO" });
     expect(crew.find((member) => member.id === "maya")?.roles).toEqual(["developer", "reviewer"]);
     expect(crew.filter((member) => member.id === "cto")).toHaveLength(1);
     expect(crew[0]).toMatchObject({ id: "cto", roles: ["lead", "developer"], tasks: 1 });
   });
 
   it("draws a mission with no registered lead from its owners alone", () => {
-    expect(missionCrew(run, tasks, attempts, [], roster, null)[0].name).toBe("Maya");
-    expect(missionCrew(run, [task("x", {})], [], [], [], null)).toEqual([]);
+    expect(missionCrew(run, tasks, attempts, new Set(), roster, null)[0].name).toBe("Maya");
+    expect(missionCrew(run, [task("x", {})], [], new Set(), [], null)).toEqual([]);
   });
 });
 

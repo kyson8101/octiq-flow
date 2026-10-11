@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  composerPlaceholder, personaFor, personaHue, personaInitials, personaTitle, senderName,
+  composerPlaceholder, keepAssignees, personaFor, personaHue, personaInitials, personaTitle, senderName,
 } from "./agentPersona";
 import type { LeadRecord } from "./agentsDashboard";
 
@@ -28,6 +28,42 @@ describe("personaFor", () => {
   it("gives an ordinary chat no persona", () => {
     expect(personaFor("chat:2", [lead("chat:1", "a1", "Maya")], roster)).toBeNull();
     expect(personaFor(null, [], roster)).toBeNull();
+  });
+});
+
+describe("who each worker chat belongs to, kept by content", () => {
+  const map = (...rows: [string, string, string][]) => new Map(rows.map(([chat, id, name]) => [chat, { id, name }]));
+
+  it("keeps the map it already has when the ledger says the same thing again", () => {
+    const before = map(["chat:orch-1", "a1", "Ada"], ["chat:orch-2", "a2", "Bo"]);
+    // Rebuilt from a ledger in which only a worker's progress moved.
+    expect(keepAssignees(before, map(["chat:orch-1", "a1", "Ada"], ["chat:orch-2", "a2", "Bo"]))).toBe(before);
+    expect(keepAssignees(before, map(["chat:orch-2", "a2", "Bo"], ["chat:orch-1", "a1", "Ada"]))).toBe(before);
+    expect(keepAssignees(before, before)).toBe(before);
+    const empty = map();
+    expect(keepAssignees(empty, map())).toBe(empty);
+  });
+
+  it("takes the new one when a task changed hands, a worker was added, renamed or went", () => {
+    const before = map(["chat:orch-1", "a1", "Ada"], ["chat:orch-2", "a2", "Bo"]);
+    for (const next of [
+      map(["chat:orch-1", "a3", "Cy"], ["chat:orch-2", "a2", "Bo"]),
+      map(["chat:orch-1", "a1", "Ada Lovelace"], ["chat:orch-2", "a2", "Bo"]),
+      map(["chat:orch-1", "a1", "Ada"], ["chat:orch-2", "a2", "Bo"], ["chat:orch-3", "a1", "Ada"]),
+      map(["chat:orch-1", "a1", "Ada"]),
+      map(["chat:orch-1", "a1", "Ada"], ["chat:orch-9", "a2", "Bo"]),
+    ]) expect(keepAssignees(before, next)).toBe(next);
+  });
+
+  it("gives a lead's chat the very same persona across ledger updates that change nobody's task", () => {
+    // What the transcript is handed: a new object here drew it again.
+    const leads = [lead("chat:lead", "a1", "Potato Juice")];
+    const roster = [{ id: "a1", name: "Potato Juice", avatar: "data:image/png;base64,AAAA" }];
+    let held = keepAssignees(new Map(), map(["chat:orch-1", "a2", "Bo"]));
+    const first = held;
+    for (let update = 0; update < 500; update += 1) held = keepAssignees(held, map(["chat:orch-1", "a2", "Bo"]));
+    expect(held).toBe(first);
+    expect(personaFor("chat:lead", leads, roster, held)).toEqual(personaFor("chat:lead", leads, roster, first));
   });
 });
 

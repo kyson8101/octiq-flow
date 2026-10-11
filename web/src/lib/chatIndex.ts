@@ -53,6 +53,11 @@ export type IndexEntry = {
   /** Server-owned lifecycle generation. It changes only when Trash restores a
    *  chat, so an older delete retry cannot hide that restored row again. */
   generation?: number;
+  /** The chat coordinates a run that is live. Said by the host on the list
+   *  the page reads before the ledger, so the run column's place can be held
+   *  at first paint (`lib/runColumn`). Read-only: a save never carries it.
+   *  Absent on a host that does not say. */
+  coordinatesRun?: boolean;
   /** The planned launch environment. Written once by the server: a save
    *  that omits it, or carries another, leaves the recorded plan alone. */
   launch?: LaunchPlan;

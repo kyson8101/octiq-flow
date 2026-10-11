@@ -26,6 +26,22 @@ describe("where a mission stands", () => {
     expect(stage(run({ status: "completed" }), [task("a", "completed")])).toBe("ready");
   });
 
+  it("is a draft for a pending plan only while the plan holds every task still open", () => {
+    const pending = run({ planApproval: { status: "pending", requestedAt: 1 } });
+    // The plan went back for one task; the work the person approved goes on.
+    expect(stage(pending, [task("a", "running", { activeAttemptId: "x", heldByPlan: false }), task("b", "pending", { heldByPlan: true })])).toBe("building");
+    expect(stage(pending, [task("a", "ready", { heldByPlan: false }), task("b", "pending", { heldByPlan: true })])).toBe("approved");
+    // A host that sends the field only where it is true says the same.
+    expect(stage(pending, [task("a", "running", { activeAttemptId: "x" }), task("b", "pending", { heldByPlan: true })])).toBe("building");
+    // Everything still open is held: nothing can start, so it is a draft.
+    expect(stage(pending, [task("a", "ready", { heldByPlan: true }), task("b", "pending", { heldByPlan: true })])).toBe("draft");
+    expect(stage(pending, [task("done", "completed", { heldByPlan: false }), task("b", "pending", { heldByPlan: true })])).toBe("draft");
+    // A host that does not say: pending is a draft, as before.
+    expect(stage(pending, [task("a", "running", { activeAttemptId: "x" }), task("b", "pending")])).toBe("draft");
+    // A rejected plan is a draft whatever the tasks say.
+    expect(stage(run({ planApproval: { status: "rejected", requestedAt: 1 } }), [task("a", "ready", { heldByPlan: false })])).toBe("draft");
+  });
+
   it("takes merged and released from git only, and follows new work back", () => {
     const done = [task("a", "completed")];
     expect(stage(run({ status: "completed", missionDelivery: [delivery(true)] }), done)).toBe("merged");

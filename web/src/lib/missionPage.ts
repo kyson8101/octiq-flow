@@ -15,7 +15,7 @@
 import type { Persona } from "./agentPersona";
 import { runPeople, type PersonState } from "./runPanel";
 import type {
-  MissionDelivery, OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationTask,
+  MissionDelivery, OrchestrationAttempt, OrchestrationRun, OrchestrationTask,
 } from "./orchestration";
 
 export type CrewRole = "lead" | "developer" | "reviewer";
@@ -49,7 +49,8 @@ export function missionCrew(
   run: OrchestrationRun,
   tasks: readonly OrchestrationTask[],
   attempts: readonly OrchestrationAttempt[],
-  gates: readonly OrchestrationGate[],
+  /** The tasks an open decision holds (`runWaits(...).gated`). */
+  gated: ReadonlySet<string>,
   roster: readonly { id: string; name: string; avatar?: string }[],
   lead: Persona | null,
 ): CrewMember[] {
@@ -62,7 +63,7 @@ export function missionCrew(
     roles.set(task.assignee.id, held);
   }
   const ordered = (held: Set<CrewRole>) => ROLE_ORDER.filter((role) => held.has(role));
-  const crew: CrewMember[] = runPeople(run, owned, attempts, gates, roster).map((person) => ({
+  const crew: CrewMember[] = runPeople(run, owned, attempts, gated, roster).map((person) => ({
     id: person.id,
     name: person.name,
     ...(person.avatar ? { avatar: person.avatar } : {}),
