@@ -17,7 +17,42 @@ const DEFAULT_PROFILE: &str = "default";
 
 /// `~/.octiqflow` — holds the fixed bootstrap config and global scratch.
 fn octiqflow_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = STARTED.with(|home| home.borrow().clone()) {
+        return Some(home.join(".octiqflow"));
+    }
     crate::paths::home_dir().map(|h| h.join(".octiqflow"))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The home folder of the process this thread stands in for.
+    static STARTED: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// This thread is a process whose home folder is `home`, until the guard
+/// drops: its profile is resolved from the config there, away from every
+/// other test's.
+#[cfg(test)]
+pub(crate) fn started_in(home: &std::path::Path) -> Started {
+    Started(STARTED.with(|started| started.replace(Some(home.to_path_buf()))))
+}
+
+#[cfg(test)]
+pub(crate) struct Started(Option<PathBuf>);
+
+#[cfg(test)]
+impl Drop for Started {
+    fn drop(&mut self) {
+        let before = self.0.take();
+        STARTED.with(|started| *started.borrow_mut() = before);
+    }
+}
+
+/// Whether this thread stands in for a process of its own (`started_in`).
+#[cfg(test)]
+pub(crate) fn started_here() -> bool {
+    STARTED.with(|started| started.borrow().is_some())
 }
 
 /// Path of the fixed bootstrap pointer.
@@ -96,4 +131,142 @@ pub fn profile_dir() -> PathBuf {
         .join(&cfg.active);
     let _ = fs::create_dir_all(&fallback);
     fallback
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::test_dir::TestDir;
+    use serde_json::json;
+
+    /// A home folder whose config names a base on a drive of its own, with
+    /// the default base beside it.
+    pub(crate) struct Home {
+        pub(crate) dir: TestDir,
+    }
+
+    impl Home {
+        pub(crate) fn with_a_configured_base() -> Self {
+            let home = Self {
+                dir: TestDir::new("profile-home"),
+            };
+            fs::create_dir_all(home.configured()).unwrap();
+            let _process = started_in(&home.dir);
+            save_config(&ProfileConfig {
+                base: home.configured().to_string_lossy().into_owned(),
+                active: DEFAULT_PROFILE.into(),
+            })
+            .unwrap();
+            home
+        }
+
+        pub(crate) fn configured(&self) -> PathBuf {
+            self.dir.join("drive").join("profiles")
+        }
+
+        pub(crate) fn default_base(&self) -> PathBuf {
+            self.dir.join(".octiqflow").join("profiles")
+        }
+
+        /// The drive goes away: a file is where its folder was, so nothing
+        /// can be made under it, on any platform.
+        pub(crate) fn unplug(&self) {
+            fs::rename(self.dir.join("drive"), self.dir.join("drive-away")).unwrap();
+            fs::write(self.dir.join("drive"), b"not a folder").unwrap();
+        }
+
+        pub(crate) fn plug_back(&self) {
+            fs::remove_file(self.dir.join("drive")).unwrap();
+            fs::rename(self.dir.join("drive-away"), self.dir.join("drive")).unwrap();
+        }
+    }
+
+    /// Review of bf9d8cd, finding 2 (feedback b5123faa): `profile_dir` ran
+    /// `create_dir_all` on every call and answered the default base whenever
+    /// the configured one could not be made, so a running server's chats,
+    /// roster and vault moved to another folder while its ledger stayed.
+    #[test]
+    fn the_profile_folder_does_not_move_when_its_base_goes_away_under_a_running_server() {
+        let home = Home::with_a_configured_base();
+        let _process = started_in(&home.dir);
+        let at_start = profile_dir();
+        assert_eq!(at_start, home.configured().join("default"));
+
+        home.unplug();
+        assert_eq!(
+            profile_dir(),
+            at_start,
+            "the profile moved to another base under a running server"
+        );
+        assert!(
+            !home.default_base().exists(),
+            "the default base was made behind the configured one"
+        );
+
+        home.plug_back();
+        assert_eq!(profile_dir(), at_start);
+    }
+
+    /// The other direction: the base was away when the server started, so
+    /// the default base is in use, as documented. It stays in use when the
+    /// configured one comes back; only a restart looks again.
+    #[test]
+    fn a_fallback_chosen_at_startup_is_kept_when_the_configured_base_comes_back() {
+        let home = Home::with_a_configured_base();
+        home.unplug();
+        let _process = started_in(&home.dir);
+        let at_start = profile_dir();
+        assert_eq!(at_start, home.default_base().join("default"));
+
+        home.plug_back();
+        assert_eq!(
+            profile_dir(),
+            at_start,
+            "the profile moved back to the configured base under a running server"
+        );
+    }
+
+    /// Every store reads the one folder: what resolved per call (handovers,
+    /// preferences, the chats folder, the chat index) stays where the
+    /// server started, and writes there or not at all.
+    #[test]
+    fn every_store_keeps_to_the_folder_fixed_at_startup() {
+        let home = Home::with_a_configured_base();
+        let _process = started_in(&home.dir);
+        let at_start = profile_dir();
+        let key = format!("test-pinned-{}", uuid::Uuid::new_v4().simple());
+        let said = json!({ "type": "assistant", "message": { "content": "Before" } });
+        assert_eq!(crate::transcript::append(&key, &said), Some(1));
+        let record = crate::transcript::path_for(&key).unwrap();
+        assert!(record.starts_with(&at_start), "{record:?}");
+
+        home.unplug();
+        assert_eq!(
+            crate::handover::default_path(),
+            at_start.join("handovers.json")
+        );
+        assert_eq!(
+            crate::personal_preferences::default_path(),
+            at_start.join("preferences.json")
+        );
+        assert_eq!(
+            crate::transcript::append(&key, &said),
+            None,
+            "a chat's line was written into another base"
+        );
+        let listed = serde_json::from_value(json!({
+            "id": key, "projectId": "project", "title": "Chat", "updatedAt": 100,
+        }))
+        .unwrap();
+        assert!(
+            crate::chat_index::upsert(listed).is_err(),
+            "a chat was listed in another base"
+        );
+        assert!(!home.default_base().exists());
+
+        // The drive is back: the same record goes on, nothing was moved.
+        home.plug_back();
+        assert_eq!(crate::transcript::append(&key, &said), Some(2));
+        assert_eq!(crate::transcript::path_for(&key), Some(record));
+    }
 }

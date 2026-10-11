@@ -2725,4 +2725,68 @@ mod tests {
         assert!(w.note(&mango).contains("Still Mango."));
         assert!(!w.note(&potato).contains("Still Mango."));
     }
+
+    /// Review of bf9d8cd, the carried Medium: both readers of a transcript
+    /// here ended at the first line that is not UTF-8, so a memory line
+    /// after one was never found and was written a second time.
+    #[test]
+    fn a_line_that_is_not_utf8_hides_no_memory_line_after_it() {
+        let chat = unique("damaged");
+        let id = fresh_id();
+        let mut bytes = b"{\"type\":\"assistant\",\"text\":\"\xE4\xBD\n".to_vec();
+        let line = json!({ "type": EVENT, "id": id, "status": "saved" });
+        bytes.extend_from_slice(line.to_string().as_bytes());
+        bytes.push(b'\n');
+        fs::write(crate::transcript::path_for(&chat).unwrap(), bytes).unwrap();
+
+        assert!(in_transcript(&chat, &id, Status::Saved));
+        assert_eq!(shown_in(&chat).get(&id), Some(&Status::Saved));
+        crate::transcript::forget(&chat);
+    }
+
+    /// The same review: a line found in the transcript was recorded as
+    /// delivered because it could be read. Nothing waits on that record,
+    /// but it is a receipt, and a readable line is not one: it is adopted
+    /// once the record and its folder are confirmed on disk, as a reopen's
+    /// notice is, and until then it stays an intent. Never written twice.
+    #[test]
+    fn a_line_found_in_the_transcript_is_delivered_only_once_confirmed_on_disk() {
+        let ledger = scratch_ledger();
+        let chat = unique("found-unconfirmed");
+        let line = activity(&chat, &fresh_id(), Status::Saved);
+        assert!(crate::transcript::append(&chat, &origin_event(&line)).is_some());
+
+        // The record can be read and cannot be synced: it will not open for
+        // writing, on any platform.
+        let record = crate::transcript::path_for(&chat).unwrap();
+        let read_only = |yes: bool| {
+            let mut permissions = fs::metadata(&record).unwrap().permissions();
+            permissions.set_readonly(yes);
+            fs::set_permissions(&record, permissions).unwrap();
+        };
+        read_only(true);
+        let first = record_at(&ledger, line.clone(), deliver);
+        #[allow(clippy::permissions_set_readonly_false)]
+        read_only(false);
+        let entry = |ledger: &Path| load(ledger).entries.remove(&line.id).unwrap();
+        assert!(
+            entry(&ledger).delivered.is_empty(),
+            "delivered on a line that could only be read"
+        );
+        assert_eq!(entry(&ledger).pending.get(&chat), Some(&Status::Saved));
+        assert_eq!(first.pending, vec![chat.clone()]);
+        assert!(first.shown.is_empty());
+        assert!(first.problem().unwrap().contains("confirmed on disk"));
+        assert_eq!(lines(&chat).len(), 1);
+
+        // The fault is over: the line that is there is confirmed, not repeated.
+        assert_eq!(
+            record_at(&ledger, line.clone(), deliver),
+            Recorded::default()
+        );
+        assert_eq!(entry(&ledger).delivered.get(&chat), Some(&Status::Saved));
+        assert!(entry(&ledger).pending.is_empty());
+        assert_eq!(lines(&chat).len(), 1);
+        crate::transcript::forget(&chat);
+    }
 }

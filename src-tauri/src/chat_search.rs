@@ -682,4 +682,25 @@ mod tests {
         assert!(said[0].contains("4471"));
         assert_eq!(said[1], "HERON");
     }
+
+    /// Review of bf9d8cd, the carried Medium: the index's reader ended at
+    /// the first line that is not UTF-8, so nothing said after one could
+    /// be searched for.
+    #[test]
+    fn a_line_that_is_not_utf8_hides_nothing_said_after_it_from_search() {
+        let file = crate::test_dir::TestPath::new("search-damaged", "chat_damaged.jsonl");
+        let mut bytes = b"{\"type\":\"user\",\"message\":{\"content\":\"first words\"}}\n".to_vec();
+        bytes.extend_from_slice(b"{\"type\":\"assistant\",\"text\":\"\xE4\xBD\n");
+        bytes.extend_from_slice(
+            b"{\"type\":\"user\",\"message\":{\"content\":\"the heron came back\"}}\n",
+        );
+        fs::write(&file, bytes).unwrap();
+
+        let said: Vec<String> = index_transcript(&file)
+            .unwrap()
+            .into_iter()
+            .map(|document| document.text)
+            .collect();
+        assert_eq!(said, ["first words", "the heron came back"]);
+    }
 }

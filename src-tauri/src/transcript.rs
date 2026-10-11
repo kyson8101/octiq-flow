@@ -43,7 +43,8 @@ pub struct Recorded {
 /// not a thing a test should be able to do to someone's chats.
 pub(crate) fn chats_dir() -> Option<PathBuf> {
     #[cfg(test)]
-    if let Some(dir) = test_dir() {
+    if !crate::profile::started_here() {
+        let dir = test_dir()?;
         let _ = fs::create_dir_all(&dir);
         return Some(dir);
     }
@@ -1489,5 +1490,146 @@ mod tests {
         forget(&key);
 
         assert!(seed("chat:with/slash", &[]).is_err());
+    }
+
+    /// A record whose second line is not UTF-8 (a write cut inside a
+    /// character), with whole lines written after it.
+    fn damaged_in_the_middle(name: &str) -> String {
+        let key = unique_key(name);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"{\"type\":\"user\",\"n\":1}\n");
+        bytes.extend_from_slice(b"{\"type\":\"assistant\",\"text\":\"\xE4\xBD\n");
+        bytes.extend_from_slice(b"{\"type\":\"assistant\",\"n\":3}\n");
+        bytes.extend_from_slice(b"{\"type\":\"result\",\"n\":4}\n");
+        fs::write(path_for(&key).unwrap(), bytes).unwrap();
+        key
+    }
+
+    fn seqs(read: &[Recorded]) -> Vec<u64> {
+        read.iter().map(|recorded| recorded.seq).collect()
+    }
+
+    /// Review of bf9d8cd, the carried Medium: `lines().map_while(Result::ok)`
+    /// ended a read at the first line that is not UTF-8, so a catch-up read
+    /// missed every event after it.
+    #[test]
+    fn a_line_that_is_not_utf8_hides_no_line_after_it() {
+        let key = damaged_in_the_middle("damaged-read");
+        assert_eq!(seqs(&since(&key, 0)), [1, 3, 4]);
+        assert_eq!(seqs(&since(&key, 1)), [3, 4]);
+        assert_eq!(since(&key, 3)[0].event["n"], 4);
+        // And a page numbers the same lines the same way.
+        assert_eq!(seqs(&page(&key, None).unwrap().events), [1, 3, 4]);
+        assert_eq!(of_type(&key, "result").len(), 1);
+        forget(&key);
+    }
+
+    /// The same line is still a line when the next one is numbered: a seq
+    /// is the physical line, for the count as for every reader.
+    #[test]
+    fn a_line_that_is_not_utf8_is_counted_when_the_next_line_is_numbered() {
+        let key = damaged_in_the_middle("damaged-count");
+        assert_eq!(append(&key, &json!({"type":"user","n":5})), Some(5));
+        let read = since(&key, 4);
+        assert_eq!(seqs(&read), [5]);
+        assert_eq!(read[0].event["n"], 5);
+        assert_eq!(seqs(&page(&key, None).unwrap().events), [1, 3, 4, 5]);
+        // Nor is such a record an empty one to be seeded.
+        forget_count(&key);
+        assert_eq!(seed(&key, &[json!({"type":"user"})]), Ok(false));
+        forget(&key);
+    }
+
+    /// Review of bf9d8cd, finding 1: the token was a bare number, so two
+    /// files that had both never moved on were taken for one. A token is
+    /// for the record it was read for.
+    #[test]
+    fn a_receipt_is_refused_for_a_record_other_than_the_one_its_token_was_taken_for() {
+        let first = crate::test_dir::TestDir::new("receipt-first");
+        let second = crate::test_dir::TestDir::new("receipt-second");
+        let key = unique_key("receipt-record");
+        let said = json!({"type":"assistant"});
+        let token = {
+            let _there = crate::profile::started_in(&first);
+            assert!(append_synced(&key, &said).is_some());
+            let token = generation(&key).unwrap();
+            assert!(confirm_synced(&key, token).is_some());
+            token
+        };
+
+        let _elsewhere = crate::profile::started_in(&second);
+        assert!(append(&key, &said).is_some());
+        assert!(
+            confirm_synced(&key, token).is_none(),
+            "a receipt for one record was given on another of the same name"
+        );
+        let own = generation(&key).unwrap();
+        assert!(confirm_synced(&key, own).is_some());
+    }
+
+    /// Review of bf9d8cd, finding 3: records were told apart by the text of
+    /// their path, so on a filesystem where two spellings are one file a
+    /// clear under one spelling left the other's receipt and count alone.
+    #[test]
+    fn two_spellings_of_a_record_are_one_record_where_the_filesystem_says_so() {
+        let lower = unique_key("spelling");
+        let upper = lower.to_uppercase();
+        assert_eq!(append(&lower, &json!({"n":1})), Some(1));
+        if !path_for(&upper).unwrap().exists() {
+            // A filesystem that tells them apart: two records, each its own.
+            assert_ne!(generation(&lower), generation(&upper));
+            assert_eq!(append(&upper, &json!({"n":1})), Some(1));
+            forget(&upper);
+            assert_eq!(seqs(&since(&lower, 0)), [1]);
+            forget(&lower);
+            return;
+        }
+
+        assert_eq!(generation(&lower), generation(&upper));
+        assert_eq!(append(&upper, &json!({"n":2})), Some(2));
+        assert_eq!(
+            append(&lower, &json!({"n":3})),
+            Some(3),
+            "one file was numbered by two counters"
+        );
+        assert_eq!(seqs(&since(&lower, 0)), [1, 2, 3]);
+
+        let token = generation(&lower).unwrap();
+        forget(&upper);
+        assert!(!path_for(&lower).unwrap().exists());
+        assert_eq!(
+            append(&lower, &json!({"n":1})),
+            Some(1),
+            "the cleared record's count was kept under its other spelling"
+        );
+        assert!(
+            confirm_synced(&lower, token).is_none(),
+            "a record cleared under its other spelling still gave a receipt"
+        );
+        forget(&lower);
+    }
+
+    /// The same for a record that is not there yet when it is asked about:
+    /// it is the record a later write makes, under either spelling.
+    #[test]
+    fn a_record_not_made_yet_is_the_one_a_write_under_another_spelling_makes() {
+        let lower = unique_key("unmade");
+        let upper = lower.to_uppercase();
+        let before = generation(&lower).unwrap();
+        assert!(append_synced(&upper, &json!({"n":1})).is_some());
+        if !path_for(&lower).unwrap().exists() {
+            forget(&upper);
+            return;
+        }
+        assert_eq!(generation(&upper).unwrap(), before);
+        assert!(confirm_synced(&lower, before).is_some());
+
+        forget(&upper);
+        assert!(append(&lower, &json!({"n":1})).is_some());
+        assert!(
+            confirm_synced(&lower, before).is_none(),
+            "a record cleared under its other spelling still gave a receipt"
+        );
+        forget(&lower);
     }
 }

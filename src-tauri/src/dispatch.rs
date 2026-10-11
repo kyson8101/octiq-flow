@@ -2530,4 +2530,106 @@ mod tests {
             assert!(!source.contains("chat_complete"), "{name}");
         }
     }
+
+    /// The services of a server whose one project is the folder `root`, so
+    /// the page's file editor may save inside it.
+    fn editing_in(root: &std::path::Path) -> Services {
+        let project = serde_json::from_value(json!({
+            "id": "project", "name": "Project", "primary_path": root,
+        }))
+        .unwrap();
+        Services {
+            workspaces: Arc::new(WorkspaceState::with_projects(vec![project])),
+            chats: Arc::new(ChatManager::default()),
+            watch: Arc::new(FileWatchState::default()),
+            git_watch: Arc::new(GitWatchState::default()),
+            orchestrations: Arc::new(OrchestrationStore::default()),
+            ptys: Arc::new(PtyManager::default()),
+            handovers: crate::handover::Wiring::scratch(),
+        }
+    }
+
+    fn editor_saves(services: &Services, path: &std::path::Path, text: &str) -> Result<(), String> {
+        dispatch(
+            services,
+            "write_file",
+            json!({ "path": path, "content": text }),
+        )
+        .map(|_| ())
+    }
+
+    /// Review of bf9d8cd, finding 4, through the door the page's Save uses:
+    /// `write_file` wrote over a chat's record with a bare `fs::write`,
+    /// behind the record's own functions, so a notice the host held a
+    /// receipt for was gone and the record's generation had not moved. The
+    /// home folder is a write root and holds the profile, so every install
+    /// could; here a project that holds the profile stands for it.
+    #[test]
+    fn the_file_editor_does_not_write_over_a_chat_record() {
+        let home = crate::test_dir::TestDir::new("editor-record").canonicalized();
+        let _process = crate::profile::started_in(&home);
+        let key = format!("chat:editor-{}", uuid::Uuid::new_v4().simple());
+        let notice = json!({ "type": "octiq_task_reopened", "taskId": "task_1" });
+        assert!(crate::transcript::append_synced(&key, &notice).is_some());
+        let record = crate::transcript::path_for(&key).unwrap();
+        let before = std::fs::read(&record).unwrap();
+
+        let services = editing_in(&home);
+        let refused = editor_saves(&services, &record, "{\"type\":\"assistant\"}\n");
+        assert_eq!(
+            std::fs::read(&record).unwrap(),
+            before,
+            "the editor wrote over a chat's record"
+        );
+        let why = refused.unwrap_err();
+        assert!(why.contains("OctiqFlow keeps"), "{why}");
+
+        // Reading it is as before.
+        let shown = dispatch(&services, "read_file_preview", json!({ "path": record })).unwrap();
+        assert!(shown["content"]
+            .as_str()
+            .unwrap()
+            .contains("octiq_task_reopened"));
+    }
+
+    /// The rule is the folder, not a list of names: everything in the
+    /// profile folder is some module's state (the roster, the ledger, the
+    /// server's token, the chat index), a file not made yet included. What
+    /// the person keeps there by hand stays theirs to edit.
+    #[test]
+    fn the_file_editor_writes_nothing_a_store_owns_in_the_profile_folder() {
+        let home = crate::test_dir::TestDir::new("editor-profile").canonicalized();
+        let _process = crate::profile::started_in(&home);
+        let profile = crate::profile::profile_dir();
+        let services = editing_in(&home);
+        std::fs::create_dir_all(profile.join("chats")).unwrap();
+        for owned in [
+            "team.json",
+            "orchestrations.json",
+            "web.json",
+            "workspaces.json",
+            "safety-authorizations.json",
+            "owner.lock",
+            "chats/index.json",
+            "chats/questions.json",
+            "chats/chat_never-made.jsonl",
+        ] {
+            let target = profile.join(owned);
+            let refused = editor_saves(&services, &target, "{}");
+            assert!(!target.exists(), "{owned} was written");
+            assert!(refused.unwrap_err().contains("OctiqFlow keeps"), "{owned}");
+        }
+
+        // The person's own: their notify hook and what is on a canvas.
+        std::fs::create_dir_all(profile.join("canvas").join("project")).unwrap();
+        for theirs in ["notify-hook", "canvas/project/plan.md"] {
+            let target = profile.join(theirs);
+            assert_eq!(editor_saves(&services, &target, "mine"), Ok(()), "{theirs}");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "mine");
+        }
+        // And a project file is written as it always was.
+        let note = home.join("notes.md");
+        assert_eq!(editor_saves(&services, &note, "a note"), Ok(()));
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "a note");
+    }
 }
