@@ -719,6 +719,15 @@ message starts it again and takes the tick away.
   itself only ever arrives through the chat index. Every event about a chat
   bumps a revision, so a `chat_activity` or `chat_queue_state` read that was
   in the air when it arrived cannot put the older answer back.
+- **The page matches every event, and the answer to `chat_complete`, by turn
+  id** (`reduceCompletions`: `settled`, `turnEnd`). The answer can arrive
+  after both events of a quick completion, and the events of two completions
+  can interleave. So a start that arrives after its own end is ignored, an
+  end of another turn than the one on screen changes nothing, an end heard
+  while this page's request has no turn yet is held until the answer names
+  one (`receipt`), and `complete()` answers `ended` for a completion that was
+  over before its answer came, which is what keeps `App` from marking a
+  finished chat running again.
 - **The wrap-up's bubble is named, not quoted.** The page knows the turn by
   its id prefix (`isWrapUpTurn`) and draws `Wrap-up` with the host's text
   behind a disclosure. Its take-back says Cancel and returns nothing to the

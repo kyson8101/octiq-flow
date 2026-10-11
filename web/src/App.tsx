@@ -3997,7 +3997,7 @@ export default function App() {
     const home = workspaces.find((w) => w.id === held?.projectId) ?? project;
     // What `send` would start this chat with. The host uses it only when the
     // chat has no process, and then starts it with the wrap-up as its message.
-    const taken = await completions.complete(id, {
+    const outcome = await completions.complete(id, {
       cwd: held?.cwd ?? chatsRef.current[id]?.cwd ?? home?.primary_path ?? "",
       fallbackCwd: home?.primary_path ?? null,
       useSandbox: false,
@@ -4010,7 +4010,10 @@ export default function App() {
       lite,
       resume: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
     }, preview);
-    if (taken) setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    // Running only while it is still completing. A quick one has ended by the
+    // time the host answers, and its end already took the chat out of the
+    // running set: putting it back lit the live dot on a finished chat.
+    if (outcome === "completing") setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
   }, [completions.complete, workspaces, project, choice, access, effort, lite]);
   const confirmAction = useConfirm();
   /** Close a mission the completed chat coordinated. The person's own action,

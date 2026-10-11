@@ -189,19 +189,38 @@ export type Completions = {
   /** Bumped by every event about a chat, so a read that was in the air when
    *  the event arrived cannot put the older answer back. */
   rev: Record<string, number>;
+  /** The wrap-up turns this page has heard the end of, per chat, newest
+   *  last. A completion is one turn, and its start, its end and the answer
+   *  to `chat_complete` all name it; they reach the page in no fixed order
+   *  across completions, and the answer can come after both events. This is
+   *  what lets each be matched to its own completion. */
+  settled: Record<string, { turnId: string; end: Ended }[]>;
 };
 
-export const NO_COMPLETIONS: Completions = { completing: {}, ended: {}, rev: {} };
+export const NO_COMPLETIONS: Completions = { completing: {}, ended: {}, rev: {}, settled: {} };
+
+/** How many ended turns a chat remembers: enough for anything still in the
+ *  air, and a chat is completed a handful of times at most. */
+const SETTLED_KEPT = 8;
+
+/** How the completion that was turn `turnId` ended, when this page has heard. */
+export function turnEnd(state: Completions, chatId: string, turnId: string | undefined): Ended | undefined {
+  if (!turnId) return undefined;
+  return state.settled[chatId]?.find((turn) => turn.turnId === turnId)?.end;
+}
 
 export type CompletionAction =
   /** The person confirmed; `chat_complete` is on its way. */
   | { type: "asked"; chatId: string }
   /** `chat_complete` was refused or never answered. */
   | { type: "refused"; chatId: string; error: string }
-  /** `chat-completing`, or the answer to this page's own `chat_complete`. */
+  /** `chat-completing`. */
   | { type: "completing"; chatId: string; turnId: string; state: "started" | "queued" }
-  /** `chat-completed`. */
-  | { type: "completed"; chatId: string; ok: boolean; reason?: string; doneAt?: number }
+  /** The answer to this page's own `chat_complete`: the turn it became. */
+  | { type: "receipt"; chatId: string; turnId: string; state: "started" | "queued" }
+  /** `chat-completed`. `turnId` is the turn it ends; only an older host
+   *  leaves it out. */
+  | { type: "completed"; chatId: string; turnId?: string; ok: boolean; reason?: string; doneAt?: number }
   /** `chat_activity` on connect: every chat the host says is completing. */
   | { type: "activity"; completing: string[]; rev: Record<string, number> }
   /** `chat_queue_state` for one chat. */
@@ -218,11 +237,21 @@ const without = <T,>(map: Record<string, T>, key: string): Record<string, T> => 
 
 const bump = (rev: Record<string, number>, chatId: string) => ({ ...rev, [chatId]: (rev[chatId] ?? 0) + 1 });
 
+/** The chat's completion is over: nothing is completing, and this is how it
+ *  ended. */
+const finished = (state: Completions, chatId: string, end: Ended): Completions => ({
+  ...state,
+  completing: without(state.completing, chatId),
+  ended: { ...state.ended, [chatId]: end },
+  rev: bump(state.rev, chatId),
+});
+
 export function reduceCompletions(state: Completions, action: CompletionAction): Completions {
   switch (action.type) {
     case "asked":
       if (state.completing[action.chatId]) return state;
       return {
+        ...state,
         completing: { ...state.completing, [action.chatId]: { state: "asked" } },
         ended: without(state.ended, action.chatId),
         rev: bump(state.rev, action.chatId),
@@ -231,31 +260,55 @@ export function reduceCompletions(state: Completions, action: CompletionAction):
       // Only this page's own unanswered request: a completion the host
       // already has is not undone by a second click it turned away.
       if (state.completing[action.chatId]?.state !== "asked") return state;
-      return {
-        completing: without(state.completing, action.chatId),
-        ended: { ...state.ended, [action.chatId]: { ok: false, reason: action.error } },
-        rev: bump(state.rev, action.chatId),
-      };
+      return finished(state, action.chatId, { ok: false, reason: action.error });
     }
     case "completing":
+      // A start that arrives after its own end is news about something over.
+      if (turnEnd(state, action.chatId, action.turnId)) return state;
       return {
+        ...state,
         completing: { ...state.completing, [action.chatId]: { turnId: action.turnId, state: action.state } },
         ended: without(state.ended, action.chatId),
         rev: bump(state.rev, action.chatId),
       };
-    case "completed":
+    case "receipt": {
+      const held = state.completing[action.chatId];
+      // Only this page's own unanswered request is waiting for it. Anything
+      // else the events have already said, and said later.
+      if (held?.state !== "asked") return state;
+      // The whole completion can be over before its answer gets here.
+      const end = turnEnd(state, action.chatId, action.turnId);
+      if (end) return finished(state, action.chatId, end);
       return {
-        completing: without(state.completing, action.chatId),
-        ended: {
-          ...state.ended,
-          [action.chatId]: {
-            ok: action.ok,
-            ...(action.reason ? { reason: action.reason } : {}),
-            ...(action.doneAt != null ? { doneAt: action.doneAt } : {}),
-          },
-        },
+        ...state,
+        completing: { ...state.completing, [action.chatId]: { turnId: action.turnId, state: action.state } },
         rev: bump(state.rev, action.chatId),
       };
+    }
+    case "completed": {
+      const end: Ended = {
+        ok: action.ok,
+        ...(action.reason ? { reason: action.reason } : {}),
+        ...(action.doneAt != null ? { doneAt: action.doneAt } : {}),
+      };
+      if (!action.turnId) return finished(state, action.chatId, end);
+      // Heard once. A second report of the same end changes nothing.
+      if (turnEnd(state, action.chatId, action.turnId)) return state;
+      const heard: Completions = {
+        ...state,
+        settled: {
+          ...state.settled,
+          [action.chatId]: [...(state.settled[action.chatId] ?? []), { turnId: action.turnId, end }].slice(-SETTLED_KEPT),
+        },
+      };
+      const held = state.completing[action.chatId];
+      // The end of another completion: the one on screen is still going.
+      if (held?.turnId && held.turnId !== action.turnId) return heard;
+      // This page's own request has no turn yet, so this may be its end or
+      // an older one's. The answer to `chat_complete` says which (`receipt`).
+      if (held?.state === "asked") return heard;
+      return finished(heard, action.chatId, end);
+    }
     case "activity": {
       // The host's list replaces what this page believed, chat by chat, except
       // where an event arrived while the read was in the air.
@@ -281,6 +334,8 @@ export function reduceCompletions(state: Completions, action: CompletionAction):
         return { ...state, completing: without(state.completing, action.chatId) };
       }
       if (held?.turnId === action.completingTurnId) return state;
+      // A read that names a turn this page has since heard the end of.
+      if (turnEnd(state, action.chatId, action.completingTurnId)) return state;
       return {
         ...state,
         completing: {
@@ -293,6 +348,17 @@ export function reduceCompletions(state: Completions, action: CompletionAction):
       if (!(action.chatId in state.ended)) return state;
       return { ...state, ended: without(state.ended, action.chatId) };
   }
+}
+
+/** What became of this page's own request, once the host has answered it. */
+export type CompleteOutcome = "refused" | "completing" | "ended";
+
+/** Where the completion that `chat_complete` just answered for stands, after
+ *  its `receipt` has been folded in. `ended` when its end was heard before
+ *  the answer: the chat has been ticked and stopped (or not completed), and
+ *  the caller must not go on to treat it as running. */
+export function receiptOutcome(state: Completions, chatId: string, turnId: string): CompleteOutcome {
+  return turnEnd(state, chatId, turnId) ? "ended" : "completing";
 }
 
 /** The ids the sidebar marks. */

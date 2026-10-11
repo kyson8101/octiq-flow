@@ -14,7 +14,9 @@ import {
   endReasonLine,
   isWrapUpTurn,
   missionsOf,
+  receiptOutcome,
   reduceCompletions,
+  turnEnd,
   wrapUpBubble,
   wrapUpWaiting,
   type CompletePreview,
@@ -350,6 +352,146 @@ describe("which chats are completing", () => {
     ]);
     expect([...completingIds(state)]).toEqual(["c2"]);
     expect(state.ended).toEqual({ c1: { ok: true, doneAt: 5 } });
+  });
+});
+
+describe("a completion is one turn, and everything about it names that turn", () => {
+  // The host's contract: `chat-completing { turnId }`, then
+  // `chat-completed { turnId, ok, doneAt?, reason? }`, and the answer to
+  // `chat_complete` carries the same turn id. The answer can arrive after
+  // both events, and the events of two completions can interleave.
+  const T1 = "octiq-complete-1";
+  const T2 = "octiq-complete-2";
+  const start = (turnId: string, state: "started" | "queued" = "started"): CompletionAction =>
+    ({ type: "completing", chatId: "c1", turnId, state });
+  const end = (turnId: string, ok = true, reason?: string): CompletionAction =>
+    ({ type: "completed", chatId: "c1", turnId, ok, ...(ok ? { doneAt: 900 } : { reason }) });
+  const receipt = (turnId: string): CompletionAction => ({ type: "receipt", chatId: "c1", turnId, state: "started" });
+  const asked: CompletionAction = { type: "asked", chatId: "c1" };
+
+  it("does not bring a completion back when its answer arrives after its end", () => {
+    // The reviewer's order: start, end, then the answer to `chat_complete`.
+    const over = fold([asked, start(T1), end(T1)]);
+    expect(over.completing).toEqual({});
+    expect(over.ended.c1).toEqual({ ok: true, doneAt: 900 });
+    const answered = fold([receipt(T1)], over);
+    // Nothing it could say is news.
+    expect(answered).toBe(over);
+    // And the caller is told it has ended, so it does not mark the chat running.
+    expect(receiptOutcome(answered, "c1", T1)).toBe("ended");
+  });
+
+  it("holds an end it cannot place until the answer says whose it was", () => {
+    // The end arrives while this page's request has no turn yet.
+    const waiting = fold([asked, end(T1)]);
+    expect(waiting.completing.c1).toEqual({ state: "asked" });
+    expect(waiting.ended).toEqual({});
+    // It was this request's: the answer names the same turn.
+    const ours = fold([receipt(T1)], waiting);
+    expect(ours.completing).toEqual({});
+    expect(ours.ended.c1).toEqual({ ok: true, doneAt: 900 });
+    expect(receiptOutcome(ours, "c1", T1)).toBe("ended");
+    // It was an older completion's: this one is only starting.
+    const older = fold([receipt(T2)], waiting);
+    expect(older.completing.c1).toEqual({ turnId: T2, state: "started" });
+    expect(older.ended).toEqual({});
+    expect(receiptOutcome(older, "c1", T2)).toBe("completing");
+  });
+
+  it("takes the answer for the start when no event has arrived yet", () => {
+    const answered = fold([asked, receipt(T1)]);
+    expect(answered.completing.c1).toEqual({ turnId: T1, state: "started" });
+    expect(receiptOutcome(answered, "c1", T1)).toBe("completing");
+    // The event that follows says the same, and its end ends it.
+    const done = fold([start(T1), end(T1)], answered);
+    expect(done.completing).toEqual({});
+    expect(done.ended.c1).toEqual({ ok: true, doneAt: 900 });
+  });
+
+  it("ignores a start that arrives after its own end", () => {
+    const over = fold([start(T1), end(T1)]);
+    const late = fold([start(T1, "queued")], over);
+    expect(late).toBe(over);
+    expect(completingIds(late).size).toBe(0);
+    expect(completionLine({ completing: late.completing.c1, ended: late.ended.c1, done: true, messages: [] })?.kind).toBe("done");
+    // The same for a read that was in the air and names that turn.
+    expect(fold([{ type: "queue", chatId: "c1", completingTurnId: T1, rev: over.rev.c1 }], over)).toBe(over);
+  });
+
+  it("does not let an old completion's end clear a newer one", () => {
+    // The first is over on the host and the second has begun, before the
+    // first one's end reaches the page.
+    const second = fold([start(T1), start(T2)]);
+    expect(second.completing.c1).toEqual({ turnId: T2, state: "started" });
+    const stale = fold([end(T1)], second);
+    expect(stale.completing.c1).toEqual({ turnId: T2, state: "started" });
+    expect(stale.ended).toEqual({});
+    expect(completionLine({ completing: stale.completing.c1, ended: stale.ended.c1, done: true, messages: [] }))
+      .toEqual({ kind: "completing", label: "Completing", detail: "Wrapping up" });
+    // The newer one's own end still ends it.
+    const done = fold([end(T2, false, "stopped")], stale);
+    expect(done.completing).toEqual({});
+    expect(done.ended.c1).toEqual({ ok: false, reason: "stopped" });
+  });
+
+  it("shows Completing for a second, real completion of the same chat", () => {
+    const first = fold([asked, start(T1), end(T1), receipt(T1)]);
+    expect(first.ended.c1).toEqual({ ok: true, doneAt: 900 });
+    // The person speaks in the chat again, then completes it again.
+    const again = fold([asked], first);
+    expect(again.completing.c1).toEqual({ state: "asked" });
+    expect(again.ended).toEqual({});
+    const going = fold([start(T2, "queued")], again);
+    expect(going.completing.c1).toEqual({ turnId: T2, state: "queued" });
+    expect(completionLine({ completing: going.completing.c1, done: false, messages: [] })?.kind).toBe("completing");
+    expect(receiptOutcome(fold([receipt(T2)], going), "c1", T2)).toBe("completing");
+    const done = fold([end(T2)], going);
+    expect(done.ended.c1).toEqual({ ok: true, doneAt: 900 });
+    // Both are remembered as over; neither can come back.
+    expect(turnEnd(done, "c1", T1)).toEqual({ ok: true, doneAt: 900 });
+    expect(fold([start(T1), start(T2)], done)).toBe(done);
+  });
+
+  it("shows a start that failed once, though the host reports it twice", () => {
+    // A wrap-up that cannot be written, or a claimed start that fails, ends
+    // `ok: false` with the error as its reason AND fails the request.
+    const why = "The chat's folder /w was removed and could not be restored: gone";
+    const line = (state: Completions) => completionLine({ completing: state.completing.c1, ended: state.ended.c1, done: false, messages: [] });
+    const said = { kind: "not-done", label: "Not completed", detail: why };
+    // The event, then the request's own error.
+    const eventFirst = fold([asked, start(T1), end(T1, false, why), { type: "refused", chatId: "c1", error: why }]);
+    expect(eventFirst.ended).toEqual({ c1: { ok: false, reason: why } });
+    expect(line(eventFirst)).toEqual(said);
+    // The event with no start before it, then the error.
+    const unplaced = fold([asked, end(T1, false, why), { type: "refused", chatId: "c1", error: why }]);
+    expect(unplaced.ended).toEqual({ c1: { ok: false, reason: why } });
+    expect(unplaced.completing).toEqual({});
+    // The error, then the event.
+    const errorFirst = fold([asked, { type: "refused", chatId: "c1", error: why }, end(T1, false, why)]);
+    expect(errorFirst.ended).toEqual({ c1: { ok: false, reason: why } });
+    expect(line(errorFirst)).toEqual(said);
+    // And the same end reported twice is heard once.
+    expect(fold([end(T1, false, why)], errorFirst)).toBe(errorFirst);
+  });
+
+  it("shows the sentence a Complete ends with when the agent never honoured a Stop", () => {
+    const why = "The agent did not stop within 30 seconds, so the wrap-up was not sent.";
+    const state = fold([asked, start(T1, "queued"), end(T1, false, why)]);
+    expect(endReasonLine(state.ended.c1.reason)).toBe(why);
+  });
+
+  it("keeps a completion from an older host, whose end names no turn", () => {
+    const state = fold([start(T1), { type: "completed", chatId: "c1", ok: true, doneAt: 5 }]);
+    expect(state.completing).toEqual({});
+    expect(state.ended.c1).toEqual({ ok: true, doneAt: 5 });
+  });
+
+  it("remembers only the last few turns of a chat", () => {
+    const many = fold(Array.from({ length: 12 }, (_, i) => end(`octiq-complete-${i}`)));
+    expect(many.settled.c1).toHaveLength(8);
+    expect(turnEnd(many, "c1", "octiq-complete-11")).toBeDefined();
+    expect(turnEnd(many, "c1", "octiq-complete-0")).toBeUndefined();
+    expect(turnEnd(many, "c1", undefined)).toBeUndefined();
   });
 });
 
