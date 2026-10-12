@@ -876,6 +876,62 @@ mod tests {
             .unwrap()
         }
     }
+    /// Review of 8169dd3, RULE 1, probe VAULT_RECREATE: the settings were
+    /// read, the profile folder went, and the change's receipt was saved
+    /// with a call that makes its folder and every parent. The answer was
+    /// "saved", an empty profile stood where the real one had been (no
+    /// vault settings in it), and the next line of a chat went into it as
+    /// the second of a record whose first was in the folder that moved.
+    #[test]
+    fn a_change_made_after_the_profile_went_does_not_make_the_profile_again() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let dir = crate::profile::profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        let notes = home.dir.join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        let vault = Vault::profile();
+        let config = vault
+            .configure(Config {
+                path: notes.to_string_lossy().into_owned(),
+                writable: true,
+            })
+            .unwrap();
+        let key = format!("test-vault-{}", uuid::Uuid::new_v4().simple());
+        let said = json!({ "type": "assistant", "message": { "content": "Said" } });
+        assert_eq!(crate::transcript::append(&key, &said), Some(1));
+
+        home.move_away();
+        let made = vault.mutate(
+            "chat:a",
+            Path::new(&config.path),
+            "write",
+            &json!({"path":"new.md","content":"note","requestId":"after-the-profile-went"}),
+            None,
+        );
+        assert!(
+            !dir.exists(),
+            "the vault's receipt made the profile folder again: {made:?}"
+        );
+        assert_eq!(
+            made.unwrap_err(),
+            crate::profile::available().unwrap_err(),
+            "the change did not say why it was not saved"
+        );
+        assert!(
+            !notes.join("new.md").exists(),
+            "a note was written with no receipt"
+        );
+
+        home.move_back();
+        assert_eq!(vault.settings().unwrap().path, config.path);
+        assert_eq!(
+            crate::transcript::append(&key, &said),
+            Some(2),
+            "the chat's record was split between two folders"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn a_vault_saved_with_a_verbatim_path_still_opens() {

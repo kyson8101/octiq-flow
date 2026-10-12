@@ -372,6 +372,66 @@ pub(crate) mod tests {
             fs::remove_file(self.dir.join("drive")).unwrap();
             fs::rename(self.dir.join("drive-away"), self.dir.join("drive")).unwrap();
         }
+
+        /// The profile folder of this home's server.
+        pub(crate) fn profile(&self) -> PathBuf {
+            self.configured().join(DEFAULT_PROFILE)
+        }
+
+        /// Where the profile folder is while it is moved away.
+        pub(crate) fn kept(&self) -> PathBuf {
+            self.configured().join("kept-elsewhere")
+        }
+
+        /// The profile folder is moved away and NOTHING is put where it
+        /// was, so its base is still there: whatever makes a folder and
+        /// its parents under it makes the profile folder again.
+        pub(crate) fn move_away(&self) {
+            fs::rename(self.profile(), self.kept()).unwrap();
+        }
+
+        /// The folder that was moved away is put back, in place of
+        /// whatever was made where it was.
+        pub(crate) fn move_back(&self) {
+            match fs::symlink_metadata(self.profile()) {
+                Ok(meta) if meta.is_dir() => fs::remove_dir_all(self.profile()).unwrap(),
+                Ok(_) => fs::remove_file(self.profile()).unwrap(),
+                Err(_) => {}
+            }
+            fs::rename(self.kept(), self.profile()).unwrap();
+        }
+
+        /// The profile folder is moved away and another folder is made at
+        /// its path: same name, same place, not the same folder.
+        pub(crate) fn replace(&self) {
+            self.move_away();
+            fs::create_dir_all(self.profile().join("chats")).unwrap();
+        }
+    }
+
+    /// Every file and folder under `dir`, with each file's bytes: what a
+    /// write would have to change to have happened.
+    pub(crate) fn everything_in(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut found = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(at) = stack.pop() {
+            for entry in fs::read_dir(&at).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path
+                    .strip_prefix(dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if path.is_dir() {
+                    found.push((format!("{name}/"), Vec::new()));
+                    stack.push(path);
+                } else {
+                    found.push((name, fs::read(&path).unwrap()));
+                }
+            }
+        }
+        found.sort();
+        found
     }
 
     /// Review of bf9d8cd, finding 2 (feedback b5123faa): `profile_dir` ran
@@ -549,6 +609,490 @@ pub(crate) mod tests {
         assert_eq!(pinned.dir, plain.configured().join("default"));
         assert_eq!(pinned.notice(), None);
         assert!(status()["fallbackFrom"].is_null());
+    }
+
+    fn said() -> serde_json::Value {
+        json!({ "type": "assistant", "message": { "content": "Said" } })
+    }
+
+    fn listed(id: &str) -> Result<(), String> {
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({
+                "id": id, "projectId": "project", "title": "Chat", "updatedAt": 100,
+            }))
+            .unwrap(),
+        )
+    }
+
+    /// RULE 1 (review of 8169dd3): nothing the host does makes the profile
+    /// folder after startup. A call that makes a folder and its parents
+    /// makes the profile folder too when the path lies under it, so every
+    /// one goes through this module (`create_dir_all`, `make_dir`), which
+    /// makes only what is below the profile folder. A direct call is found
+    /// here. `bin/octiq.rs` is a binary of its own and cannot call in.
+    #[test]
+    fn no_module_makes_a_folder_but_through_the_profile() {
+        /// The files that may call the standard library, how often, and why.
+        const ALLOWED: &[(&str, usize, &str)] = &[
+            (
+                "profile.rs",
+                4,
+                "the profile folder at startup (configured, then the default base), and the two halves of the one door: outside the profile, and one folder at a time below it",
+            ),
+            (
+                "bin/octiq.rs",
+                2,
+                "a binary of its own that cannot link this crate; it makes ~/.octiqflow/bus, or OCTIQ_BUS_DIR",
+            ),
+        ];
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src.clone()];
+        let mut found = std::collections::BTreeMap::<String, Vec<usize>>::new();
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(&src)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                // A file that is a test module, or the tests' own scratch.
+                if !name.ends_with(".rs") || name.ends_with("tests.rs") || name == "test_dir.rs" {
+                    continue;
+                }
+                let text = fs::read_to_string(&path).unwrap();
+                let lines: Vec<&str> = text.lines().collect();
+                let mut in_tests = false;
+                for (at, line) in lines.iter().enumerate() {
+                    // `#[cfg(test)]` on a module, at the file's top level,
+                    // until the brace that closes it.
+                    if *line == "#[cfg(test)]"
+                        && lines
+                            .get(at + 1)
+                            .is_some_and(|next| next.contains("mod ") && next.ends_with('{'))
+                    {
+                        in_tests = true;
+                    } else if in_tests && *line == "}" {
+                        in_tests = false;
+                    }
+                    let code = line.trim_start();
+                    let makes = [concat!("fs::create", "_dir"), concat!("Dir", "Builder")]
+                        .iter()
+                        .any(|call| code.contains(call))
+                        || (code.starts_with("use ") && code.contains(concat!("create", "_dir")));
+                    if makes && !in_tests && !code.starts_with("//") {
+                        found.entry(name.clone()).or_default().push(at + 1);
+                    }
+                }
+            }
+        }
+        let mut offenders = Vec::new();
+        for (file, lines) in &found {
+            let allowed = ALLOWED.iter().find(|(name, _, _)| name == file);
+            match allowed {
+                Some((_, count, _)) if lines.len() == *count => {}
+                Some((_, count, why)) => offenders.push(format!(
+                    "{file}: {} calls at lines {lines:?}, {count} allowed ({why})",
+                    lines.len()
+                )),
+                None => offenders.push(format!("{file}: lines {lines:?}")),
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "make folders with profile::make_dir or profile::create_dir_all, which never make the profile folder:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// RULE 1, the window itself: `make_dir` asked whether the profile
+    /// folder was there and then made the folder and its parents, so a
+    /// profile that went between the two was made again, empty. One thread
+    /// makes folders under the profile as fast as it can while the folder
+    /// is moved away and back under it; the folder is never there while it
+    /// is away.
+    #[test]
+    fn the_profile_folder_is_never_made_again_however_its_going_is_timed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let home = Home::with_a_configured_base();
+        let (profile, kept) = (home.profile(), home.kept());
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let maker = std::thread::spawn({
+            let (home, stop) = (home.dir.to_path_buf(), stop.clone());
+            move || {
+                let _process = started_in(&home);
+                let dir = profile_dir();
+                let mut made = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    made += 1;
+                    let folder = dir.join(format!("made-{made}"));
+                    let _ = make_dir(&folder.join("deep"));
+                    let _ = fs::remove_dir_all(&folder);
+                }
+            }
+        });
+        while !profile.is_dir() {
+            std::thread::yield_now();
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        let (mut moves, mut remade) = (0, false);
+        while !remade && std::time::Instant::now() < until {
+            // Windows refuses to move a folder something is being made in.
+            if fs::rename(&profile, &kept).is_err() {
+                continue;
+            }
+            moves += 1;
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            remade = profile.exists();
+            if !remade {
+                fs::rename(&kept, &profile).unwrap();
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        maker.join().unwrap();
+        assert!(
+            !remade,
+            "the profile folder was made again while it was away (move {moves})"
+        );
+    }
+
+    /// RULE 2 (review of 8169dd3, probe REPLACE): the folder a server
+    /// started with is that directory, not whatever is at its path. The
+    /// profile is moved away and a new folder is made where it was: the
+    /// host answers as for a profile that is gone and writes nothing into
+    /// the stranger. The original put back is the profile again.
+    #[test]
+    fn a_folder_made_where_the_profile_was_is_not_the_profile() {
+        let home = Home::with_a_configured_base();
+        let _process = started_in(&home.dir);
+        let dir = profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        let key = format!("test-replaced-{}", uuid::Uuid::new_v4().simple());
+        assert_eq!(crate::transcript::append(&key, &said()), Some(1));
+
+        home.replace();
+        let stranger = everything_in(&dir);
+        let why = available().expect_err("a folder made at the profile's path was taken for it");
+        assert!(why.contains(&dir.display().to_string()), "{why}");
+        assert!(
+            why.contains("is not the folder OctiqFlow started with"),
+            "{why}"
+        );
+        assert!(why.contains("nothing was saved"), "{why}");
+        assert_eq!(status()["available"], false);
+        assert_eq!(status()["notice"], why);
+        assert_eq!(make_dir(&dir.join("sandboxes")), Err(why.clone()));
+        assert_eq!(crate::transcript::append(&key, &said()), None);
+        assert_eq!(crate::transcript::append_synced(&key, &said()), None);
+        assert_eq!(listed("in-the-stranger").unwrap_err(), why);
+        assert_eq!(
+            everything_in(&dir),
+            stranger,
+            "something was written into the folder that took the profile's place"
+        );
+
+        home.move_back();
+        assert_eq!(available(), Ok(dir));
+        assert_eq!(crate::transcript::append(&key, &said()), Some(2));
+    }
+
+    /// RULE 2 (probe SYMLINK): the path now leads to another folder, which
+    /// has a `chats` folder and a record of its own under the same name.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_another_folder_where_the_profile_was_is_not_the_profile() {
+        let home = Home::with_a_configured_base();
+        let _process = started_in(&home.dir);
+        let dir = profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        let key = format!("test-linked-{}", uuid::Uuid::new_v4().simple());
+        let notice = json!({ "type": "octiq_task_reopened", "taskId": "task_1" });
+        assert_eq!(crate::transcript::append_synced(&key, &notice), Some(1));
+        let token = crate::transcript::generation(&key).unwrap();
+        let name = crate::transcript::path_for(&key).unwrap();
+        let name = name.file_name().unwrap();
+
+        let other = home.configured().join("other");
+        fs::create_dir_all(other.join("chats")).unwrap();
+        fs::write(other.join("chats").join(name), "{\"type\":\"assistant\"}\n").unwrap();
+        home.move_away();
+        std::os::unix::fs::symlink(&other, &dir).unwrap();
+        let stranger = everything_in(&other);
+
+        let why = available().expect_err("a link to another folder was taken for the profile");
+        assert!(
+            why.contains("is not the folder OctiqFlow started with"),
+            "{why}"
+        );
+        assert_eq!(
+            crate::transcript::confirm_synced(&key, &token),
+            None,
+            "a receipt made for the profile's record was confirmed on another folder's"
+        );
+        assert_eq!(crate::transcript::append(&key, &said()), None);
+        assert_eq!(everything_in(&other), stranger);
+
+        home.move_back();
+        assert_eq!(crate::transcript::confirm_synced(&key, &token), Some(()));
+    }
+
+    /// RULE 2 (probe REPLACE, the receipt): a token is confirmed only on
+    /// the directory it was made for. The folder that took the profile's
+    /// place holds a record under the same name and no notice; the token
+    /// taken in the real one is refused there, and honoured again when the
+    /// real one is back.
+    #[test]
+    fn a_receipt_is_not_confirmed_in_a_folder_that_took_the_profiles_place() {
+        let home = Home::with_a_configured_base();
+        let _process = started_in(&home.dir);
+        crate::profile_lock::acquire("server").unwrap();
+        let key = format!("test-receipt-{}", uuid::Uuid::new_v4().simple());
+        let notice = json!({ "type": "octiq_task_reopened", "taskId": "task_1" });
+        assert_eq!(crate::transcript::append_synced(&key, &notice), Some(1));
+        let token = crate::transcript::generation(&key).unwrap();
+        let record = crate::transcript::path_for(&key).unwrap();
+        assert_eq!(crate::transcript::confirm_synced(&key, &token), Some(()));
+
+        home.replace();
+        fs::write(&record, "{\"type\":\"assistant\"}\n").unwrap();
+        assert_eq!(
+            crate::transcript::confirm_synced(&key, &token),
+            None,
+            "a receipt was given for a record that holds no notice"
+        );
+        assert_eq!(
+            fs::read_to_string(&record).unwrap(),
+            "{\"type\":\"assistant\"}\n",
+            "the stranger's record was written to"
+        );
+
+        home.move_back();
+        assert_eq!(crate::transcript::confirm_synced(&key, &token), Some(()));
+        assert_eq!(
+            crate::transcript::of_type(&key, "octiq_task_reopened").len(),
+            1
+        );
+    }
+
+    /// RULE 2 (probe SECOND): nobody can stop a second server starting in
+    /// a fresh folder at the same path, but the first must notice it is no
+    /// longer in its folder and stop writing there. Every kind of write the
+    /// first one makes is tried; the second server's folder is left as the
+    /// second server made it.
+    #[test]
+    fn a_server_writes_nothing_once_another_started_in_a_folder_made_in_its_place() {
+        let home = Home::with_a_configured_base();
+        let _process = started_in(&home.dir);
+        let dir = profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        let key = format!("test-second-{}", uuid::Uuid::new_v4().simple());
+        assert_eq!(crate::transcript::append(&key, &said()), Some(1));
+        let ledger =
+            crate::orchestration::OrchestrationStore::load(dir.join("orchestrations.json"));
+        let projects = crate::workspaces::WorkspaceState::load();
+        let prefs = crate::personal_preferences::default_path();
+        crate::personal_preferences::save(&prefs, "mine").unwrap();
+        let notes = home.dir.join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        let vault = |writable| crate::memory_vault::Config {
+            path: notes.to_string_lossy().into_owned(),
+            writable,
+        };
+
+        home.replace();
+        // A second server starts there: it finds no owner and takes it.
+        std::thread::spawn({
+            let home = home.dir.to_path_buf();
+            let dir = dir.clone();
+            move || {
+                let _process = started_in(&home);
+                assert_eq!(profile_dir(), dir);
+                crate::profile_lock::acquire("server").unwrap();
+                assert_eq!(available(), Ok(dir));
+                assert_eq!(listed("the-second-servers"), Ok(()));
+            }
+        })
+        .join()
+        .unwrap();
+        let theirs = everything_in(&dir);
+
+        let why = available().expect_err("the first server still takes the folder for its own");
+        assert_eq!(crate::transcript::append(&key, &said()), None);
+        assert_eq!(crate::transcript::append_synced(&key, &said()), None);
+        assert_eq!(listed("the-first-servers").unwrap_err(), why);
+        assert_eq!(
+            ledger
+                .create_run(
+                    "chat:lead".into(),
+                    "After".into(),
+                    "project".into(),
+                    home.dir.to_string_lossy().into_owned(),
+                    Some(2),
+                )
+                .unwrap_err(),
+            why
+        );
+        assert_eq!(
+            crate::workspaces::add_workspace_impl(
+                &projects,
+                "Project".into(),
+                home.dir.to_string_lossy().into_owned(),
+            )
+            .unwrap_err(),
+            why
+        );
+        assert_eq!(
+            crate::personal_preferences::save(&prefs, "written over theirs").unwrap_err(),
+            why
+        );
+        assert_eq!(
+            crate::memory_vault::Vault::profile()
+                .configure(vault(true))
+                .unwrap_err(),
+            why
+        );
+        assert_eq!(make_dir(&dir.join("sandboxes")), Err(why.clone()));
+        crate::web::save_config(&crate::web::WebConfig::default());
+        assert_eq!(
+            everything_in(&dir),
+            theirs,
+            "the first server wrote into the second server's folder"
+        );
+    }
+
+    /// RULE 3 (review of 8169dd3, probe EMPTY): a read from a profile that
+    /// is gone is an error, never the value of a first run. The saved
+    /// preferences and vault settings read as empty, the person saw a blank
+    /// Settings form, and an ordinary Save put the blank form's text over
+    /// their rules once the folder was back.
+    #[test]
+    fn a_read_while_the_folder_is_away_is_an_error_and_never_a_first_runs_value() {
+        let home = Home::with_a_configured_base();
+        let _process = started_in(&home.dir);
+        let dir = profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        let prefs = crate::personal_preferences::default_path();
+        // A first run: no file, in a profile that is there. That is empty.
+        assert_eq!(crate::personal_preferences::load(&prefs).unwrap().text, "");
+        let vault = crate::memory_vault::Vault::profile();
+        assert_eq!(vault.settings().unwrap().path, "");
+        crate::personal_preferences::save(&prefs, "original saved rules").unwrap();
+        let notes = home.dir.join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        let connected = vault
+            .configure(crate::memory_vault::Config {
+                path: notes.to_string_lossy().into_owned(),
+                writable: true,
+            })
+            .unwrap();
+
+        // Gone three ways: its drive, the folder itself, and another folder
+        // in its place.
+        type Way = (fn(&Home), fn(&Home));
+        let ways: [Way; 3] = [
+            (Home::unplug, Home::plug_back),
+            (Home::move_away, Home::move_back),
+            (Home::replace, Home::move_back),
+        ];
+        for (goes, comes_back) in ways {
+            goes(&home);
+            let why = available().expect_err("the profile folder is not there");
+            assert_eq!(
+                crate::personal_preferences::load(&prefs).map(|saved| saved.text),
+                Err(why.clone()),
+                "preferences read as a first run's while the folder was away"
+            );
+            assert_eq!(
+                vault.settings().map(|saved| saved.path),
+                Err(why.clone()),
+                "the vault's settings read as a first run's while the folder was away"
+            );
+            assert_eq!(
+                crate::personal_preferences::save(&prefs, "typed on a blank form")
+                    .map(|saved| saved.text),
+                Err(why)
+            );
+            comes_back(&home);
+            assert_eq!(available(), Ok(dir.clone()));
+            assert_eq!(
+                crate::personal_preferences::load(&prefs).unwrap().text,
+                "original saved rules"
+            );
+            let saved = vault.settings().unwrap();
+            assert_eq!((&saved.path, saved.writable), (&connected.path, true));
+        }
+    }
+
+    /// RULE 3: a store kept in memory goes on answering while the folder
+    /// is away, its saves fail in the profile's words, and once the folder
+    /// is back it writes what it holds: never an empty reload.
+    #[test]
+    fn a_store_kept_in_memory_writes_what_it_holds_once_the_folder_is_back() {
+        let home = Home::with_a_configured_base();
+        let _process = started_in(&home.dir);
+        let dir = profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        let ledger =
+            crate::orchestration::OrchestrationStore::load(dir.join("orchestrations.json"));
+        let run = |objective: &str| {
+            ledger.create_run(
+                "chat:lead".into(),
+                objective.into(),
+                "project".into(),
+                home.dir.to_string_lossy().into_owned(),
+                Some(2),
+            )
+        };
+        let projects = crate::workspaces::WorkspaceState::load();
+        let project = |name: &str| {
+            let folder = home.dir.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            crate::workspaces::add_workspace_impl(
+                &projects,
+                name.into(),
+                folder.to_string_lossy().into_owned(),
+            )
+        };
+        let before = run("Before").unwrap();
+        project("first").unwrap();
+
+        home.move_away();
+        let why = available().unwrap_err();
+        assert_eq!(run("While away").unwrap_err(), why);
+        assert_eq!(project("away").unwrap_err(), why);
+        // Both still answer from memory.
+        let runs = |ledger: &crate::orchestration::OrchestrationStore, id: &str| {
+            ledger.snapshot(Some(id)).unwrap().runs.len()
+        };
+        assert_eq!(runs(&ledger, &before.id), 1);
+        assert!(!crate::workspaces::list_workspaces_impl(&projects)
+            .unwrap()
+            .is_empty());
+        assert!(!dir.exists(), "the profile folder was made again");
+
+        home.move_back();
+        let back = run("Back").unwrap();
+        project("second").unwrap();
+        let reloaded =
+            crate::orchestration::OrchestrationStore::load(dir.join("orchestrations.json"));
+        assert_eq!(
+            runs(&reloaded, &before.id),
+            1,
+            "the ledger was reloaded empty"
+        );
+        assert_eq!(runs(&reloaded, &back.id), 1);
+        let names: Vec<String> =
+            crate::workspaces::list_workspaces_impl(&crate::workspaces::WorkspaceState::load())
+                .unwrap()
+                .into_iter()
+                .map(|project| project.name)
+                .collect();
+        assert!(names.contains(&"first".to_string()), "{names:?}");
+        assert!(names.contains(&"second".to_string()), "{names:?}");
     }
 
     /// A test outside any process of its own never touches this machine's

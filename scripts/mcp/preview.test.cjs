@@ -35,6 +35,22 @@ test("snapshots preserve overwritten sources and isolate conversation slots", (t
   assert.equal(fs.statSync(first.path).mode & 0o777, 0o600);
 });
 
+// Review of 8169dd3, rule 1: nothing makes the profile folder after startup.
+// The preview folder was made with every parent, so publishing into a profile
+// that had gone put an empty profile where the real one was.
+test("a profile folder that is gone is not made again by a preview", (t) => {
+  const { root, source } = setup(t);
+  const profile = path.join(root, "profile");
+  fs.mkdirSync(profile);
+  const first = previewImage({ path: source }, profile, "chat:one");
+  assert.deepEqual(fs.readFileSync(first.path), PNG);
+  fs.renameSync(profile, path.join(root, "moved"));
+  assert.throws(() => previewImage({ path: source }, profile, "chat:two"), /is not available right now/);
+  assert.equal(fs.existsSync(profile), false, "the profile folder was made again");
+  fs.renameSync(path.join(root, "moved"), profile);
+  assert.deepEqual(fs.readFileSync(previewImage({ path: source }, profile, "chat:two").path), PNG);
+});
+
 test("rejects invalid paths, formats, oversized files and redirected stores", (t) => {
   const { root, source } = setup(t);
   assert.throws(() => previewImage({ path: source }, root, "chat:../two"));

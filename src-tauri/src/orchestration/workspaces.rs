@@ -3249,6 +3249,58 @@ pub(super) mod tests {
         assert!(crate::agent_chat::record_chat_event(chat, said).is_some());
     }
 
+    /// Review of 8169dd3, RULE 2, probe GATE_REPLACE: the notice was
+    /// appended and synced, and before the host asked for its receipt the
+    /// profile folder was moved away and another made at its path, with a
+    /// record under the chat's name and no notice in it. The receipt was
+    /// given for that record: delivered, with the notice nowhere the person
+    /// can see, and no later pass put it right. A folder that is not the
+    /// one the server started with gives no receipt and takes no line; the
+    /// real one back, the notice is confirmed where it was written.
+    #[test]
+    fn a_notice_is_not_delivered_in_a_folder_that_took_the_profiles_place() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        crate::profile_lock::acquire("server").unwrap();
+        let chat = format!("chat:replaced-{}", uuid::Uuid::new_v4().simple());
+        let notice =
+            json!({ "type": "octiq_task_reopened", "taskId": "task_1", "attempt": 2, "at": 5 });
+        let record = crate::transcript::path_for(&chat).unwrap();
+        let strangers = "{\"type\":\"assistant\"}\n";
+        before_the_receipt({
+            let (profile, kept, record) = (home.profile(), home.kept(), record.clone());
+            move |_| {
+                fs::rename(&profile, &kept).unwrap();
+                fs::create_dir_all(profile.join("chats")).unwrap();
+                fs::write(&record, strangers).unwrap();
+            }
+        });
+        assert_eq!(
+            notice_receipts(&chat, std::slice::from_ref(&notice)),
+            [false],
+            "delivered on a record that does not hold the notice"
+        );
+        assert_eq!(
+            notice_receipts(&chat, std::slice::from_ref(&notice)),
+            [false]
+        );
+        assert_eq!(
+            fs::read_to_string(&record).unwrap(),
+            strangers,
+            "the notice was written into the folder that took the profile's place"
+        );
+
+        home.move_back();
+        assert_eq!(
+            notice_receipts(&chat, std::slice::from_ref(&notice)),
+            [true]
+        );
+        assert_eq!(
+            crate::transcript::of_type(&chat, "octiq_task_reopened").len(),
+            1
+        );
+    }
+
     /// The types of the events in a chat's record, in order.
     fn recorded_types(chat: &str) -> Vec<String> {
         crate::transcript::since(chat, 0)

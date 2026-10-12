@@ -2629,6 +2629,96 @@ mod tests {
         assert_eq!(status["dir"], json!(dir));
     }
 
+    /// Review of 8169dd3, RULE 3, through the doors the page reads by: a
+    /// read from a profile that is gone is an error carrying the profile's
+    /// one sentence, never what a first run would answer. An empty answer
+    /// drew a blank form the person could save over their own data. Gone
+    /// three ways: its drive, the folder itself, another folder in its
+    /// place. Every one answers again, unchanged, once the folder is back.
+    #[test]
+    fn what_the_page_reads_is_an_error_while_the_profile_folder_is_gone() {
+        use crate::profile::tests::Home;
+        let home = Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let dir = crate::profile::profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        // The roster's path is one global in tests: hold it at the profile's.
+        let _roster = crate::team::use_test_path(dir.join("team.json"));
+        let services = Services {
+            handovers: crate::handover::Wiring::profile(),
+            ..editing_in(&home.dir)
+        };
+        crate::personal_preferences::save(&crate::personal_preferences::default_path(), "my rules")
+            .unwrap();
+        let key = format!("chat:read-{}", uuid::Uuid::new_v4().simple());
+        let said = json!({ "type": "assistant", "message": { "content": "Said" } });
+        assert_eq!(crate::transcript::append(&key, &said), Some(1));
+        let reads = [
+            ("personal_preferences", json!({})),
+            ("memory_vault_settings", json!({})),
+            ("team_list", json!({ "all": true })),
+            ("team_policy", json!({})),
+            ("team_head", json!({})),
+            ("team_home", json!({})),
+            ("team_front_desk", json!({})),
+            ("team_leads", json!({})),
+            ("agent_team_list", json!({})),
+            ("handover_list", json!({})),
+            ("front_desk_unfinished", json!({})),
+            (
+                "feedback_list",
+                json!({ "query": "", "offset": 0, "limit": 30 }),
+            ),
+            ("sandbox_snapshot", json!({})),
+            ("chat_index_list", json!({})),
+            ("chat_index_deleted", json!({})),
+            ("chat_since", json!({ "key": key, "after": 0 })),
+            ("chat_page", json!({ "key": key })),
+            ("chat_task", json!({ "chatId": "read" })),
+            ("image_preview_list", json!({ "key": key })),
+        ];
+        let answers = |when: &str| -> Vec<Value> {
+            reads
+                .iter()
+                .map(|(command, args)| {
+                    dispatch(&services, command, args.clone())
+                        .unwrap_or_else(|why| panic!("{command} {when}: {why}"))
+                })
+                .collect()
+        };
+        let at_first = answers("with the profile there");
+        assert_eq!(at_first[0]["text"], "my rules");
+
+        type Way = (fn(&Home), fn(&Home));
+        let ways: [Way; 3] = [
+            (Home::unplug, Home::plug_back),
+            (Home::move_away, Home::move_back),
+            (Home::replace, Home::move_back),
+        ];
+        for (goes, comes_back) in ways {
+            goes(&home);
+            let why = crate::profile::available().expect_err("the profile folder is not there");
+            let mut answered = Vec::new();
+            for (command, args) in &reads {
+                match dispatch(&services, command, args.clone()) {
+                    Err(said) if said == why => {}
+                    other => answered.push(format!("{command}: {other:?}")),
+                }
+            }
+            assert!(
+                answered.is_empty(),
+                "read as something other than the profile's own error:\n{}",
+                answered.join("\n")
+            );
+            comes_back(&home);
+            // What does not depend on the clock answers exactly as before.
+            let again = answers("with the profile back");
+            for at in [0, 1, 2, 3, 9, 15, 16] {
+                assert_eq!(again[at], at_first[at], "{}", reads[at].0);
+            }
+        }
+    }
+
     /// The rule is the folder, not a list of names: everything in the
     /// profile folder is some module's state (the roster, the ledger, the
     /// server's token, the chat index), a file not made yet included. What
