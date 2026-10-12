@@ -1503,6 +1503,36 @@ fire when a run is created or archived.
 }
 ```
 
+### Completed is not finished well
+
+`completed` is the host's word for a task whose worker settled it. It is not
+"done": a check, review or acceptance task that completed with `verdict:
+"fail"` still holds every task that depends on it (`releases_dependants`).
+A run whose every task has completed is `completed`, failed checks included
+(`recompute_run`). Accepting such a result (`orchestration_task_accept`) pays
+the reviewer and does not release the dependants.
+
+So the page asks three questions of a task and never compares its status with
+the word anywhere else (`web/src/lib/orchestration.ts`):
+
+| Question | True when | Used for |
+| --- | --- | --- |
+| `isSettled` | `status` is `completed` | what is true of any settled task: it takes no worker, its result can be accepted, its worker can be archived, `Tasks settled N of M` |
+| `checkFailed` | settled, `verdict` is `fail`, and not replaced (`supersededBy`) | a failure, wherever a failure is shown |
+| `finishedWell` | settled and not `checkFailed` | the only thing that is called or counted "done" |
+
+A task whose check failed is shown the way a task that failed is: on its row
+in the run panel (`Check failed`, the danger colour, first under Running), in
+the strip above the composer and the chat list's line (`1 failed`, and not in
+`N/M done`), in the run's totals, under its agent on the Agents page (the
+agent's state is `Failed`), in a mission's crew, and in a mission's stage,
+which is `In review`, waiting, and never `Ready to merge` or `Draft` while an
+approved check has failed. A check that was replaced is history, like a
+replaced task that failed. A check that completed with no verdict (only an
+older or hand-edited record holds one) did not fail and reads as done; the
+host still holds its dependants, which the acceptance line says (`1 without a
+verdict`).
+
 ## Memory
 
 Each registered agent has its own working memory: one note in the Memory Vault
@@ -1593,10 +1623,14 @@ convention for the agent-memory tools, not a lock on the vault.
 
 ## Dashboard
 
-**Agents** in the top bar shows the org chart for the current project. Each row
-shows how many tasks the agent has active, stuck (failed or blocked), done and
-led. Expanding a row lists the chats it leads and the tasks it was given, and
-each one opens its conversation.
+**Agents** in the sidebar shows every registered agent in chart order, with
+what each is doing now: one state word (Working, Needs you, Failed, Blocked,
+Stalled, Queued, Idle), counts of its other current items, and the items
+themselves, each opening its conversation or its task. Failed is a task of
+the agent's that failed, is blocked with no decision open, or completed with a
+failed check, in the danger colour; Blocked is a wait, in the warning colour.
+Work that finished well is not listed, and nor is anything in a run that is
+over or archived (see **Completed is not finished well** above).
 
 ## Levels, XP and token usage
 

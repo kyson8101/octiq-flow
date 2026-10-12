@@ -1016,6 +1016,51 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
   `Task: Stopped by you · ledger status: Failed`: never `Task: Ready` of a
   task that cannot start. `AgentTaskBoard` and `TaskMeter` still print the
   raw word and are mounted by nothing (only their tests import them).
+- **"Completed" is not "done", and how a task ended has one reader.** The
+  host calls a task `completed` when its worker settled it, and a review
+  that completed with a failing verdict still holds what depends on it
+  (`releases_dependants`). So the ledger's status word is compared in one
+  place, `lib/orchestration`, beside `isStuck`: `isSettled` (the worker
+  settled it, whatever its check said: it takes no worker, its result can be
+  accepted, its worker can be archived), `checkFailed` (settled with verdict
+  `fail` and not replaced) and `finishedWell` (settled and its check did not
+  fail). Only `finishedWell` is ever called or counted "done"; a surface
+  that counts settled tasks says "settled" (`Tasks settled`). Accepting a
+  result does not lift a failed check, because the host goes on holding its
+  dependants; a replaced one is history; a check with no verdict (old
+  records) did not fail.
+  - **A failed check is a failure wherever a failure is shown:** present,
+    named `Check failed` (`CHECK_FAILED_LABEL`, never "Done · check
+    failed"), in the danger colour, counted failed and not done. The row
+    (`runProgress.taskReading`), the strip, the tile, the run picker and the
+    chat list's line (all `runProgress.runTally` / `runCounts`), the run's
+    `N blocked`, who a run is with and a mission's crew (`failed`, apart
+    from `blocked`, which is a wait), the Agents page, a mission's stage
+    (never Ready to merge, or a draft, while an approved check has failed:
+    `In review`, waiting) and the acceptance line.
+  - **The Agents page asks the panel's reading** (`taskReading`) and does
+    not work a failure out again: what the row calls failed is the agent
+    state `failed` there (chip `Failed`, danger dot and word, `1 failed` in
+    the summary, ranked after Needs you), under the row's own word:
+    `Failed`, `Blocked` with no decision open, `Check failed`. `Blocked`
+    stays the warning colour and is only ever a wait (the coordinator's, an
+    open decision, no capacity). What finished well is folded away there.
+    A run the host calls completed, failed or stopped is history on that
+    page for every kind of failure alike, and the host calls a run
+    completed once every task has settled, failed checks included
+    (`recompute_run`); the strip, the panel and the chat list go on saying
+    the failure until the run is archived, stopped or closed.
+  - **The chat list's line** is `Needs you · 1 failed · 0/2 done`: the
+    strip's own word, what failed, then done of the tasks that count. A
+    wait on the person is the decision colour and a failure the danger
+    colour (`data-tone`); nothing to count is left out, never "0/0".
+  - `finishedWell.surfaces.test.tsx` asks every surface the same done and
+    failed counts over ten ledgers (the host's four `plan_after_*` and one
+    that finished well, each beside a pending plan and with no plan) and
+    scans the source: the string `"completed"` and a task's `.verdict` are
+    allowed per file, with an exact count and a reason. A new filter or
+    count that compares a task's status with the word fails it; ask one of
+    the three readers instead.
 - **A chat that coordinates several runs has one line** (`chatStrip`): a
   run that waits on the person outranks a newer one that runs, a failure
   outranks plain progress, the decisions of every run of the chat are
