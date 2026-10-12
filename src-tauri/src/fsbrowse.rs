@@ -776,6 +776,11 @@ fn rg(flags: &[&str], roots: &[String], pattern: &[&str]) -> Result<String, Stri
 /// the write fails. The frontend only enables Save for text files it read in
 /// full (never a truncated one), so a large file can't be saved back as just its
 /// first chunk and lose the tail.
+///
+/// And when the target is state the host keeps in the profile folder: a
+/// chat's record, the roster, the ledger, the server's token and the rest
+/// (`paths::host_owned`). The home folder is a write root and holds the
+/// profile, so without this the editor is a writer of every one of them.
 pub fn write_file_impl(
     state: &crate::workspaces::WorkspaceState,
     path: String,
@@ -785,6 +790,9 @@ pub fn write_file_impl(
     let target = crate::paths::resolve_writable(Path::new(&path), &roots)?;
     if target.is_dir() {
         return Err(format!("Not a file: {path}"));
+    }
+    if let Some(owned) = crate::paths::host_owned(&target) {
+        return Err(owned);
     }
     fs::write(&target, content).map_err(|e| format!("Cannot save file: {e}"))
 }
