@@ -107,7 +107,8 @@ describe("host execution evidence", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
     expect(html).toContain(EXECUTION_LABELS[state]);
-    expect(html).toContain("Task: Working");
+    // The ledger's status, said as the ledger's, apart from the execution.
+    expect(html).toContain('<p class="orch-task-ledger">Ledger status: Working</p>');
     if (["capacity_blocked", "stalled", "disconnected", "retrying"].includes(state)) expect(boardCounts(current.tasks, current).running).toBe(0);
   });
 });

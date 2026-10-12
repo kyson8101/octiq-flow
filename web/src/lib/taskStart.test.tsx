@@ -15,7 +15,7 @@ vi.mock("./bridge", () => ({
 import { hostFacts } from "./__fixtures__/hostFacts";
 import type { OrchestrationSnapshot } from "./orchestration";
 import {
-  PLAN_DETAIL, REOPEN_DETAIL, REOPEN_LABEL, startBlocker, startControl, statusLine, STOPPED_LABEL,
+  PLAN_DETAIL, PLAN_LABEL, REOPEN_DETAIL, REOPEN_LABEL, startBlocker, startControl, statusLine, STOPPED_LABEL,
 } from "./taskHold";
 import { OrchestrationPanel } from "../components/OrchestrationPanel";
 
@@ -72,7 +72,7 @@ describe("a reopened task whose notice is not confirmed", () => {
     const [button] = starts(rows(panel(told))[0]);
     expect(button).toContain(">Start next attempt</button>");
     expect(button).not.toContain("aria-disabled");
-    expect(rows(panel(told))[0]).toContain('<p class="orch-task-ledger">Task: Ready</p>');
+    expect(rows(panel(told))[0]).toContain('<p class="orch-task-ledger">Ledger status: Ready</p>');
   });
 });
 
@@ -177,11 +177,12 @@ describe("a task that was replaced, or is parked on a decision", () => {
 });
 
 describe("the ledger's status in a task's details", () => {
-  it("stands alone only when it is the task's state", () => {
+  it("is always said as the ledger's, and is led by the hold when something holds the task", () => {
     const [task] = hostFacts.reopenNoticeDelivered().tasks;
-    expect(statusLine(task, "Ready")).toBe("Task: Ready");
-    expect(statusLine({ status: "running" }, "Executing")).toBe("Task: Executing · ledger status: Working");
+    expect(statusLine(task, null)).toBe("Ledger status: Ready");
+    expect(statusLine({ status: "running" }, null)).toBe("Ledger status: Working");
     expect(statusLine({ status: "failed" }, STOPPED_LABEL)).toBe(`Task: ${STOPPED_LABEL} · ledger status: Failed`);
+    expect(statusLine({ status: "ready" }, PLAN_LABEL)).toBe(`Task: ${PLAN_LABEL} · ledger status: Ready`);
   });
 });
 

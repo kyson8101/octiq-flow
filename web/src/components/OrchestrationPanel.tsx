@@ -44,7 +44,7 @@ import {
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
-import { planHoldsEveryStart } from "../lib/taskHold";
+import { planHoldsEveryStart, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
 import "./RunProgress.css";
 
 import {
@@ -1386,16 +1386,15 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   // start of it would be refused (`lib/taskHold`).
   const stateWord = row.hold?.label ?? taskStateLabel(task, attempt, row.state === "needs" ? parkedOn : []);
   const hint = [row.hold?.detail, row.hint].filter(Boolean).join("\n") || null;
-  // The attempt the person stopped: the only one their Start retries.
-  const stoppedAttempt = row.hold?.kind === "stopped" ? attempts.find((candidate) => candidate.id === task.stopped?.attemptId) : undefined;
+  // The one control of this task that starts an attempt, and whether the
+  // host would take it (`lib/taskHold.startControl`): the person's Start of
+  // a task they stopped, the next attempt of one that is ready again, or a
+  // retry. A read-only view offers none.
+  const start = startControl(task, run, snapshot.tasks, attempts, gateBlockedTasks.has(task.id));
+  const begin = () => { if (start) onRetry(task, start.attempt); };
   const provider = attempt?.agent ?? task.worker?.agent;
   const who = assigneeFace?.name ?? task.assignee?.name ?? (provider ? AGENT_NAME[provider] : null);
   const branch = task.workspace?.plan.branch || attempt?.branch;
-  const reviewReady = task.status === "ready" && attempt?.status === "completed";
-  const retryable = !!attempt
-    && ["blocked", "failed"].includes(task.status)
-    && ["blocked", "failed"].includes(attempt.status)
-    && !gateBlockedTasks.has(task.id);
   // What the run's attention count pointed at; a decision names its own task.
   const owed = !gateBlockedTasks.has(task.id)
     && !task.supersededBy && (isStuck(task) || task.verdict === "fail" || executionNeedsAttention(attempt));
@@ -1488,11 +1487,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
         {row.hold && <p className="orch-task-hold" data-hold={row.hold.kind} data-tone={row.hold.tone ?? undefined}>{row.hold.detail}</p>}
         {/* The one start of a task the person stopped: theirs, and of the
             attempt they stopped, as that attempt ran (`retryOf`). */}
-        {stoppedAttempt && !readOnly && run.status !== "stopped" && run.status !== "closed" && run.archivedAt == null && (
-          <div className="orch-task-start">
-            <button type="button" disabled={busy} onClick={() => onRetry(task, stoppedAttempt)}>Start it again</button>
-          </div>
-        )}
+        {start?.kind === "again" && !readOnly && <div className="orch-task-start"><StartButton start={start} busy={busy} onStart={begin} /></div>}
         {/* The standard plan card: where it runs (planned until the host
             prepares it), who owns it on which model, and what done means. */}
         <TaskPlanCard task={task} run={run} attempt={attempt} projectName={projectName} />
@@ -1513,7 +1508,13 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             <p>Test environment: {environment.label}</p>
             <ul>{environment.detail.map((line, index) => <li key={index}>{line}</li>)}</ul>
           </div>}
-          {attempt?.execution && <><p>Task: {TASK_LABELS[task.status]}</p><WorkerExecutionEvidence execution={attempt.execution} /></>}
+          {/* The ledger's own status, said as the ledger's, and led by what
+              holds the task when something does (`statusLine`). Asked of
+              the hold itself: a row that waits on the person keeps none. */}
+          {attempt?.execution && <>
+            <p className="orch-task-ledger">{statusLine(task, (row.hold ?? taskHold(task, run, snapshot.tasks, now))?.label ?? null)}</p>
+            <WorkerExecutionEvidence execution={attempt.execution} />
+          </>}
           {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
           {task.dependsOn.length > 0 && <p className="orch-task-after">After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}
           {mission && (task.handoffs?.length ?? 0) > 0 && <ul className="orch-task-handoffs" aria-label="Changes of hands">
@@ -1531,14 +1532,13 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
               {attempt.isWorktree && <span>worktree</span>}
               {attempt.summary && !attempt.proposedReport?.confirmedAt && <p>{attempt.summary}</p>}
               <ProposedReportNote attempt={attempt} ago={(at) => agoLabel(at, now)} />
-              {/* A mission task handed on waits for the person's approval of
-                  its new owner; the host refuses a start until then. */}
-              {(retryable || reviewReady) && !readOnly && run.status !== "stopped" && !(mission && run.planApproval?.status === "pending") && (
+              {/* The next attempt or a retry. One the host would refuse (the
+                  plan holds the task, its reopen is not told yet, it was
+                  replaced) is drawn switched off with the reason beside it. */}
+              {start && start.kind !== "again" && start.attempt.id === attempt.id && !readOnly && (
                 <div className="orch-attempt-retry">
-                  <small>{attempt.cwd
-                    ? "This attempt settled. Continue in the same workspace with a new authoritative attempt."
-                    : "This attempt settled before a workspace was assigned. Start a fresh authoritative attempt."}</small>
-                  <button type="button" disabled={busy} onClick={() => onRetry(task, attempt)}>{reviewReady ? "Start next attempt" : "Start retry"}</button>
+                  <small>{start.note}</small>
+                  <StartButton start={start} busy={busy} onStart={begin} />
                 </div>
               )}
             </div>
@@ -1566,6 +1566,24 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
       </div>
     </article>
   );
+}
+
+/** Every control of the panel that starts an attempt. What it starts and
+ *  whether the host would take it are `lib/taskHold.startControl`'s to say:
+ *  a start the host would refuse stays on the page, switched off, with the
+ *  reason beside it and read out with it. */
+function StartButton({ start, busy, onStart }: {
+  start: StartControl<OrchestrationAttempt>;
+  busy: boolean;
+  onStart: () => void;
+}) {
+  const whyId = useId();
+  return <>
+    <button type="button" className="orch-start" disabled={busy} aria-disabled={start.blocked ? true : undefined}
+      aria-describedby={start.blocked ? whyId : undefined}
+      onClick={start.blocked ? undefined : onStart}>{start.label}</button>
+    {start.blocked && <span id={whyId} className="orch-start-why">{start.blocked}</span>}
+  </>;
 }
 
 function WorkspaceDelivery({ task, busy, readOnly, active, stopped, onAction }: {

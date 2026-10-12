@@ -19,6 +19,13 @@
 // function reads all three and every surface that names a task's state asks
 // it: the run panel's row, its tooltip and its opened detail
 // (`lib/runProgress`), and the Agents page (`lib/agentsDashboard`).
+//
+// The same reader decides whether the page may start a task
+// (`startControl`, `startBlocker`): every control that starts an attempt is
+// drawn from it, switched off with the reason beside it when the host would
+// refuse. And it says what a pending plan holds of a whole run
+// (`planHoldsEveryStart`).
+import { TASK_LABELS } from "./agentTaskBoard";
 import { taskHeldByPlan, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
 
 export type HoldKind = "stopped" | "plan" | "reopen";
@@ -121,6 +128,112 @@ export function planHoldsEveryStart(
     // What is in flight is not held, whatever a later change did to its plan.
     return task.status !== "running" && task.heldByPlan === true;
   });
+}
+
+/* ---- Starting a task from the page -------------------------------------- */
+
+type Startable = Pick<OrchestrationTask, "id" | "runId" | "status" | "supersededBy" | "stopped" | "heldByPlan" | "heldByReopen" | "activeAttemptId">;
+type Listed = Pick<OrchestrationTask, "id" | "runId" | "title" | "heldByPlan">;
+type StartRun = Pick<OrchestrationRun, "status" | "archivedAt" | "planApproval" | "workspaceMode">;
+
+/** Whether the host would refuse a start of `task` because the plan holds
+ *  it. The host says so per task, of one that has not started and of one
+ *  that failed or is blocked alike. A host that does not say reads as the
+ *  page read it before: an unstarted task waits for a pending plan, and a
+ *  retry is held only in a mission, whose plan goes back to approval when a
+ *  task changes hands. */
+function planHoldsStart(task: Startable, run: StartRun | undefined, tasks: readonly Listed[]): boolean {
+  const unstarted = task.status === "pending" || task.status === "ready";
+  if (!unstarted && task.status !== "failed" && task.status !== "blocked") return false;
+  if (typeof task.heldByPlan === "boolean") return task.heldByPlan;
+  if (tasks.some((other) => other.runId === task.runId && typeof other.heldByPlan === "boolean")) return false;
+  if (run?.planApproval?.status !== "pending") return false;
+  return unstarted || run.workspaceMode === "mission";
+}
+
+/** Why the host would refuse the page's start of `task`, or `null` when it
+ *  would take it. Asked in the host's own order (`reserve_attempt_for`):
+ *  the plan, a reopen whose notice is not confirmed, a task that was
+ *  replaced. The person's stop refuses every start but theirs, so it is no
+ *  refusal here: which start is theirs is `startControl`'s to say. */
+export function startBlocker(task: Startable, run: StartRun | undefined, tasks: readonly Listed[]): string | null {
+  if (planHoldsStart(task, run, tasks)) return PLAN_DETAIL;
+  if (task.heldByReopen === true) return REOPEN_DETAIL;
+  if (task.supersededBy) {
+    const by = tasks.find((other) => other.id === task.supersededBy)?.title;
+    return `This task was replaced${by ? ` by "${by}"` : ""} and no longer starts. Start that task instead; this one keeps its history.`;
+  }
+  return null;
+}
+
+export type StartKind = "again" | "next" | "retry";
+
+/** The one control of a task that starts an attempt. */
+export type StartControl<A> = {
+  kind: StartKind;
+  label: string;
+  /** The attempt the page showed, which the start retries (`retryOf`). */
+  attempt: A;
+  /** What the start does, under the attempt it follows. */
+  note: string | null;
+  /** Why the host would refuse it: the control is drawn switched off, with
+   *  this beside it. `null`: the host would take the start. */
+  blocked: string | null;
+};
+
+const START_LABEL: Record<StartKind, string> = { again: "Start it again", next: "Start next attempt", retry: "Start retry" };
+
+/** The control that starts an attempt of `task`, or `null` when the page
+ *  has none to offer. Every start the page sends is drawn from this, so no
+ *  surface offers one the host would refuse:
+ *
+ *  - a task the person stopped has one way back, their own Start of the
+ *    attempt they stopped, and no retry beside it;
+ *  - a task that is ready again after an attempt completed (reopened, or
+ *    waiting for review fixes) offers its next attempt;
+ *  - a task that failed or is blocked, with nothing open that holds it,
+ *    offers a retry.
+ *
+ *  A run that is over or put away takes no start. `gated`: an open decision
+ *  holds the task (`runWaits(...).gated`). */
+export function startControl<A extends { id: string; taskId: string; number: number; status: string; cwd: string }>(
+  task: Startable,
+  run: StartRun | undefined,
+  tasks: readonly Listed[],
+  attempts: readonly A[],
+  gated: boolean,
+): StartControl<A> | null {
+  if (!run || run.archivedAt != null || run.status === "stopped" || run.status === "closed" || run.status === "completed") return null;
+  const mine = attempts.filter((attempt) => attempt.taskId === task.id).sort((a, b) => b.number - a.number);
+  const active = mine.find((attempt) => attempt.id === task.activeAttemptId) ?? mine[0];
+  let kind: StartKind;
+  let attempt: A | undefined;
+  if (task.stopped) {
+    if (task.status !== "pending" && task.status !== "ready" && task.status !== "failed") return null;
+    [kind, attempt] = ["again", mine.find((candidate) => candidate.id === task.stopped?.attemptId)];
+  } else if (task.status === "ready" && active?.status === "completed") {
+    [kind, attempt] = ["next", active];
+  } else if ((task.status === "blocked" || task.status === "failed") && !gated
+    && (active?.status === "blocked" || active?.status === "failed")) {
+    [kind, attempt] = ["retry", active];
+  } else {
+    return null;
+  }
+  if (!attempt) return null;
+  const note = kind === "again" ? null
+    : attempt.cwd ? "This attempt settled. Continue in the same workspace with a new authoritative attempt."
+    : "This attempt settled before a workspace was assigned. Start a fresh authoritative attempt.";
+  return { kind, label: START_LABEL[kind], attempt, note, blocked: startBlocker(task, run, tasks) };
+}
+
+/** The ledger's own status of a task, for its details, where it is kept
+ *  apart from what the worker's process is doing. It is always said as the
+ *  ledger's, and a task something holds leads with the hold (`held`, its
+ *  `TaskHold.label`): a held task is never "Ready", and one the person
+ *  stopped never "Failed", with nothing beside it. */
+export function statusLine(task: Pick<OrchestrationTask, "status">, held: string | null): string {
+  const ledger = TASK_LABELS[task.status];
+  return held ? `Task: ${held} · ledger status: ${ledger}` : `Ledger status: ${ledger}`;
 }
 
 /** Whether the person's Stop has anything to stop: the host cancels the

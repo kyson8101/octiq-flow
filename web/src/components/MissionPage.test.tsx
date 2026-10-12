@@ -11,6 +11,7 @@ vi.mock("../lib/bridge", () => ({
 
 import { AgentRosterContext, ChatPersonaContext } from "../lib/agentRoster";
 import type { OrchestrationSnapshot, OrchestrationTask } from "../lib/orchestration";
+import { PLAN_DETAIL } from "../lib/taskHold";
 import { OrchestrationPanel, retryLaunchArgs } from "./OrchestrationPanel";
 import { submitReassign } from "./MissionPage";
 
@@ -122,9 +123,15 @@ describe("a mission whose plan waits for approval", () => {
     expect(html).toMatch(/aria-label="Reassign task: Review it" title="Hand &quot;Review it&quot; to another crew member"/);
   });
 
-  it("holds every start until the plan is approved", () => {
+  it("holds every start until the plan is approved, and says why beside the control it switches off", () => {
     const html = render(pending("pending"));
-    expect(html).not.toContain("Start retry");
+    // The failed task's retry stays on the page, switched off, with the
+    // reason beside it (`lib/taskHold.startControl`).
+    const retry = /<button type="button" class="orch-start"[^>]*>Start retry<\/button>/.exec(html)![0];
+    expect(retry).toContain('aria-disabled="true"');
+    const why = /aria-describedby="([^"]+)"/.exec(retry)![1];
+    expect(html).toContain(`<span id="${why}" class="orch-start-why">${PLAN_DETAIL}</span>`);
+    expect(html.match(/class="orch-start"/g)).toHaveLength(1);
     expect(html).not.toContain("Start next attempt");
     // Progress stages and filters belong to a running plan.
     expect(html).not.toContain("orch-task-filters");
