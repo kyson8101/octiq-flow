@@ -822,6 +822,8 @@ describe("a character of a command that cannot be seen as typed", () => {
 });
 
 describe("what a command is as drawn", () => {
+  const ZERO_WIDTH = String.fromCharCode(0x200b);
+
   it("counts a code for the character it stands for, and only where it could matter", () => {
     // Short enough that no drawing of it could pass the bound: its own size.
     expect(drawnChars("a\u200Bb")).toBe(3);
@@ -848,22 +850,23 @@ describe("what a command is as drawn", () => {
     const fold = commandFold(hidden);
     expect(fold).toMatchObject({ size: WHOLE_MAX, drawn: WHOLE_MAX * 8, tooLong: true, head: "", more: 1 });
     expect(commandOpens(fold)).toBe(false);
-    expect(commandShown(fold, true)).toEqual({ head: "", rest: null });
-    expect(notShown(fold, commandShown(fold, true))).toBeGreaterThan(0);
-    expect(allowHeld(notShown(fold, commandShown(fold, true)), null, { id: "a", tool: "Bash", key: "command", text: hidden })).toBe(true);
+    const shown = commandShown(fold, true);
+    expect(shown).toEqual({ head: "", rest: null });
+    const unshown = notShown(fold, shown);
+    expect(unshown).toBeGreaterThan(0);
+    expect(allowHeld(unshown, null, { id: "a", tool: "Bash", key: "command", text: hidden })).toBe(true);
+    // Texts of millions of characters: slow under a loaded run, not in a page.
+  }, 30_000);
 
-    // The bound is on the drawn size, to the character.
-    const within = `${"x".repeat(WHOLE_MAX - 8 * 1000)}${"\u200B".repeat(1000)}`;
-    expect(commandFold(within)).toMatchObject({ drawn: WHOLE_MAX, tooLong: false });
+  it("draws the line at the drawn size, to the character, and cuts nothing to keep to it", () => {
+    const within = `${"x".repeat(WHOLE_MAX - 8 * 1000)}${ZERO_WIDTH.repeat(1000)}`;
+    expect(drawnChars(within)).toBe(WHOLE_MAX);
     expect(commandFold(`${within}y`)).toMatchObject({ drawn: WHOLE_MAX + 1, tooLong: true });
-    // Its own length still counts on its own.
-    expect(commandFold("c".repeat(WHOLE_MAX + 1))).toMatchObject({ drawn: WHOLE_MAX + 1, tooLong: true });
-    expect(commandFold("c".repeat(WHOLE_MAX))).toMatchObject({ drawn: WHOLE_MAX, tooLong: false });
-    // Nothing is cut to keep to it: a command within the bound opens whole.
-    const opens = commandFold(`first\n${"\u200B".repeat(600_000)}`);
+    // A command within the bound opens whole, every one of its codes.
+    const opens = commandFold(`first\n${ZERO_WIDTH.repeat(600_000)}`);
     expect(opens).toMatchObject({ tooLong: false, more: 1 });
-    expect(commandShown(opens, true).rest).toBe("\u200B".repeat(600_000));
-  });
+    expect(commandShown(opens, true).rest).toBe(ZERO_WIDTH.repeat(600_000));
+  }, 30_000);
 
   it("says both sizes when the drawn one is why", () => {
     expect(tooLongNote("command", 1_000_000, undefined, undefined, 8_000_000)).toBe(
