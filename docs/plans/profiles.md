@@ -112,7 +112,8 @@ all state from disk; no live teardown).
   | `orchestration_task_stop`, `orchestration_run_stop` | cancels the attempts, ends the workers | `the stopped task`, `the stopped run` |
   | `orchestration_gate_resolve` (the person's, and a coordinator's) | takes the answer and queues it for the worker | `the gate's answer` |
   | `orchestration_message_send` with `interrupt` | keeps the message, cuts the worker's turn short | `the coordinator's message` |
-  | `chat_retarget`, `chat_set_access` on a run's chat | ends the process, or changes the level | `the forgotten start settings`, `the chat's access level` |
+  | `chat_retarget`, and `chat_set_access` LOWERING a run's chat (a raise is refused: rule C below) | ends the process, or lowers the level | `the forgotten start settings`, `the chat's access level` |
+  | the Sandbox panel's Stop, and the host's stop of services nothing needs (rule A below) | asks Docker to take the project down | `the stopped sandbox` |
   | a peer request's time limit (the scheduler) | ends the attempt and stops its process | `the attempt ended at its time limit` |
 
   Keeps nothing in the profile, so was never held up: `permission_decide`
@@ -151,6 +152,119 @@ all state from disk; no live teardown).
   (or the `unsaved` event) as a notice, and `profile_status.owed`. Until
   then the words are in the reply and on the server's log, and the page
   shows the action as done, which it is.
+- **Four rules that follow, each found as a site the rule above did not
+  list (2026-10-12, review of b894867).** With the folder only moved away:
+  the Sandbox panel's Stop left its services running; a Stop with messages
+  queued behind it answered an error and forgot them; a raise of a
+  coordinator's access level went through with nothing on disk; an answer
+  that was not saved was answered `saved: true` and drawn as "Answers
+  saved".
+
+  **A. Nothing that stops something running reads or saves the profile
+  first.** What a stop needs to find its target is in memory or is asked of
+  the system itself, never of a file in the profile.
+  - The sandbox store keeps what it last read or wrote of its state
+    (`sandbox::Store::known`). The panel's Stop, the host's stop
+    (`host_stop`, from the lifecycle pass and from a workspace cleanup) and
+    `live_keys` go by it; start, check, reset, select and configure read
+    the file and are refused while it cannot be read.
+  - Docker is asked first. With the sandbox's own folder there, through the
+    frozen Compose file as before. With it away, `docker --host <endpoint
+    on record> compose --project-name <id> down`: no file, Docker finds the
+    project's containers and networks by their Compose labels, volumes are
+    kept. Checked against Docker 29.2 / Compose 5.1.
+  - Then it is written down. The outcome (stopped, by whom and why; or in
+    error, with Docker's words) is kept whether or not it can be written,
+    said as `unsaved` (`the stopped sandbox`), and owed: `sandboxes` in
+    `profile_status.owed`, written by `settle_owed`. A state file that
+    cannot be read is never written over.
+  - Limit: a server STARTED with the folder away has read nothing, so it
+    knows no sandbox to stop until the folder is back.
+
+  **B. An action that fails for a missing profile never discards the
+  person's input.** A queued message whose turn cannot start is not a
+  failed message.
+  - A start refused because its record cannot be kept puts the message back
+    at the front of its queue and lists the chat as waiting. Nothing is
+    marked failed, nothing behind it is touched, the order is kept.
+  - The Stop answers `{ stopped: true, waiting: N, notStarted: <the
+    profile's sentence> }`. `chat_queue_state` gains `held` (that sentence,
+    absent otherwise) and the bus says `chat-queue-waiting { chatKey,
+    reason }`.
+  - **When the folder is back the first queued message starts by itself**,
+    within two seconds, which is what each provider's Stop does at once:
+    Claude and Codex, which keep their process, are written it; Antigravity
+    and every command-line agent are started with it in a new process. The
+    person does nothing. The rest follow the ordinary way.
+  - The same for the reaper's carry-over when a command-line turn ends
+    with a message waiting, for a Stop the agent did not honour (its
+    process is ended after the grace), and for "send this one now" (the
+    chosen message is first, the others behind it in their order).
+  - Claude and Codex were written the next message on the stopped turn's
+    full stop even with the folder away: a turn with nothing able to record
+    it. That handover waits now, like a send and like a start.
+  - Meanwhile: a send is refused while the folder is away and joins the
+    back of the waiting queue once it is there; the ✕ takes a message back;
+    the chat is not ended as idle.
+  - Closing the chat (`chat_stop`) still drops its queue: that is the
+    person ending everything that waited on it. The "not sent" line of each
+    dropped message, which could not be written, is said as `unsaved` (`the
+    messages that were not sent`) and written when the folder is back
+    (`unsent messages` in `owed`).
+  - A waiting queue is in memory, like every queue: a restart loses it,
+    and the messages read as not sent, which the page offers again.
+
+  **C. Widening that outlives the moment it is given needs its record;
+  narrowing never waits on a save.**
+  - `chat_set_access` asks which way the level moves. A raise is recorded
+    before the agent is told anything; while it cannot be, it is refused:
+    `The access level was not raised, and nothing was changed: <why>`.
+    Nothing is said as `unsaved`, because nothing happened; the agent is
+    told nothing; nothing is assumed when the folder is back.
+  - A lowering, or the level the chat already has, takes hold at once, is
+    said as `unsaved` (`the chat's access level`), and is written on the
+    retry. On all four paths: Claude's control message, a Codex thread's
+    next turn, Antigravity's next process, a command-line agent's next
+    command.
+  - The page keeps the card that asked open (the agent goes on waiting and
+    is told nothing), and the access picker goes back to the level the chat
+    still runs at with the reason as a notice. It no longer restarts the
+    agent for this refusal (`lib/accessRaise`).
+  - Unchanged, on purpose: the permission card's Always lasts only while
+    the chat runs (memory only, as the card says), and Claude's Always is
+    recorded in Claude's own settings file, outside the profile.
+  - Plan and roster settings (a task's access, a run's worker defaults, an
+    agent's registered access, the shared policy, a chat's index entry, a
+    sandbox's configuration) are record-first in both directions and are
+    refused whole with the folder away. None of them changes anything that
+    is running: they are read by a later start, and every start is itself
+    refused then.
+  - **Known limit, not built:** a lowering made with the folder away and
+    followed by a restart before the folder returns comes back at the
+    disk's older, higher level. The person was told at the time that it was
+    not recorded, and `profile_status.owed` said so until the end.
+
+  **D. No reply and no page says "saved" for what was not recorded.**
+  - `question_answer_batch` answers `{ saved: true }` only for answers on
+    disk, and `{ saved: false, delivered: true, unsaved: <why> }` for
+    answers that reached the waiting tool and could not be written. An
+    answered question the store still owes reads `status: "delivered"` with
+    `unsaved` in `question_pending` and in `question-updated`, and is said
+    again as `saved` once the store has caught up.
+  - The card says `Answers sent · not saved` and `Your answers reached the
+    agent and could not be saved.`, with the profile's sentence behind
+    `Why`. It is not an error.
+  - Everything else that says "saved" was checked and writes first:
+    `question_retry`, the delivery notes on a question (`set_delivery`),
+    memory receipts, roster and policy changes, preferences, feedback, the
+    file editor. The reply frame's `ok: true` beside an `unsaved` list means
+    the command ran, and no reader takes it for a save.
+- **Recorded follow-ups, not built:** drawing `unsaved`, `held` and
+  `profile_status.owed` on the page in general; handover Decline and
+  Abandon, which read the profile first and so leave the parked tool to its
+  600 s wait; the Codex safety card, where dismissing is not delivering and
+  the turn that would deliver is a start; a sandbox known only to a server
+  that has not read its state yet.
 
 ## Target layout
 

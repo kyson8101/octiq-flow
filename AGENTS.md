@@ -505,6 +505,18 @@ card stays up and the agent is told to end its turn. Claude waits as long as a
 permission card, Codex 50 s (its MCP call times out near 60). An Antigravity
 refusal asks on this same card, drawn from `ChatState.accessNeed`.
 
+**A raise is recorded before it is made, and one that cannot be recorded
+changes nothing.** `chat_set_access` asks which way the level moves
+(`access_request::rank`). A raise is written down first (the ledger's resume
+settings, for a chat a run knows) and refused while that cannot be done, in
+words that begin with `agent_chat::NOT_RAISED`; the agent is told nothing. The
+page knows the refusal by those words (`lib/accessRaise`, whose test reads the
+host's constant): the card that asked stays up with the reason and is not
+answered, so a waiting agent goes on waiting, and the access picker goes back
+to the level the chat still runs at instead of restarting the agent, which is
+what it does for every other refusal. A lowering takes hold at once and is
+written when it can be (see **Conventions**, rule C).
+
 ### An auto-mode refusal the agent carries on past is a notice, not a card
 
 Claude's auto mode refuses a call mid-turn and the agent usually goes on
@@ -741,6 +753,29 @@ what `chat_interrupt` is for. Two things hold it up:
   dot goes off and the next message resumes the chat. No prompt is ever
   written to a process that still owes a full stop (`CutOff`,
   `write_user_message_locked`); see **Completing a chat** for why.
+- **A queue whose next message cannot start WAITS; it is never failed for
+  that.** Handing a queued message over starts a turn, and no turn starts
+  while its record cannot be kept (the profile folder is away): a new
+  process is refused by `start_session`, and a running agent is not written
+  to (`dispatch_next_persistent_turn`). The message taken off the queue goes
+  back to its front, nothing behind it is touched, and the chat is listed in
+  `ChatManager::waiting` with the profile's sentence (`keep_waiting`). The
+  Stop that led there answers `{ stopped: true, waiting: N, notStarted:
+  <why> }`, not an error; `chat_queue_state` carries the reason as `held`;
+  the bus says `chat-queue-waiting`. Every carry goes through
+  `carry_queued_turn` (a Stop on a one-shot or Antigravity agent, the
+  reaper's carry-over, the grace of a Stop not honoured, "send this one
+  now"), so all of them wait the same way. Once the folder is back the host
+  hands the first message over itself (`start_waiting_queues`, every two
+  seconds beside the owed saves): written to an agent that kept its
+  process, or the first message of a new one, and the rest follow the
+  ordinary way. Meanwhile a send joins the back of the waiting queue (a
+  start is answered `already running`, which the page answers by sending),
+  the ✕ takes a message back, "send this one now" moves one to the front,
+  and the chat is not ended as idle. An entry goes when its queue empties,
+  so a listed chat has had nothing written to its agent since it was
+  listed. A start that fails for a reason of its own once the folder is
+  back fails as it always did: marked not sent, and dropped.
 
 - **A one-shot provider's queued turn is written to the transcript at enqueue**
   (`QueuedTurn::recorded`) because Codex never echoes a prompt back. Claude's
@@ -1453,6 +1488,65 @@ time limit).
   once and delivered when that turn can start. What is owed lives in
   memory: a restart before the folder is back loses it, and the disk's
   word stands (`docs/plans/profiles.md`).
+
+  Four rules that follow from it, each found as a site the rule above did
+  not list (review of b894867). They are general: check a new path against
+  all four.
+  - **A. Nothing that stops something running reads or saves the profile
+    first.** What a stop needs to find its target is in memory, or is asked
+    of the system itself (the process table, Docker): never of a file in
+    the profile. The Sandbox panel's Stop read `state.json`, saved "about to
+    stop" and ran Docker through files in the sandbox's own folder, so with
+    the folder away the services kept running. `sandbox::Store::known` is
+    what this server last read or wrote, a stop goes by it, and Docker is
+    asked by the project's name alone when the frozen file cannot be read
+    (`down_by_name`). Stop, down and the host's own stop ACT, then save
+    (`save_regardless`), say `unsaved`, and owe the write. Anything that
+    creates (a sandbox start, check or reset) reads the file and stays
+    refused. A sweep for this rule lists everything that kills, downs or
+    ends, and then everything each of them reads on the way there.
+  - **B. An action that fails for a missing profile never discards the
+    person's input.** A refusal is not a failure of the thing refused. A
+    Stop on an agent that goes on only in a new process starts the first
+    queued message in that process; the missing folder refuses the start,
+    and the Stop then forgot the whole queue. A start refused because its
+    record cannot be kept puts the message back at the FRONT of the queue,
+    touches nothing behind it, and lists the chat as waiting
+    (`ChatManager::keep_waiting`); the action that stopped the agent answers
+    what happened (`chat_interrupt`: `{ stopped, waiting, notStarted }`),
+    not an error; and the host hands the first message over itself once the
+    folder is back (`start_waiting_queues`, beside the owed saves), which is
+    what that provider's Stop does at once. Every path that takes a message
+    off a queue to start it goes through `carry_queued_turn`, which is
+    where this lives; a new one does too. Before a failure path calls
+    `forget_queued_turns`, ask what refused: a deliberate ending (closing
+    the chat) drops its queue by design, and even then the "not sent" line
+    each bubble folds by is owed when it cannot be written
+    (`record_unsent`).
+  - **C. Widening that outlives the moment it is given needs its record;
+    narrowing never waits on a save.** The exception above is for ENDING
+    work. It was read as "an access change never waits", and a raise went
+    through with nothing on disk. Ask which way a level or a grant moves. A
+    raise of a chat's, worker's or run's level, a project or stored
+    authorization, anything a later start or another chat reads back: the
+    record comes first, and while it cannot be written the change is
+    refused in words (`agent_chat::NOT_RAISED`), the card that asked stays
+    open, and nothing is assumed when the folder is back. A lowering, a
+    revocation, a stop: at once, said `unsaved`, written on the retry
+    (`chat_set_access_impl` decides by `access_request::rank`;
+    `keep_resume_context` keeps a level without its record only when it is
+    no higher than the one on record). Not this rule's: the permission
+    card's Always, which by design and by what the card says lasts only
+    while the chat runs (memory only), and Claude's Always, whose record is
+    Claude's own settings file outside the profile.
+  - **D. No reply and no page says "saved" for what was not recorded.**
+    `saved: true`, `status: "saved"` and the words "Saved" and "Answers
+    saved" mean on disk and nothing else. An action that happened without
+    its record says both halves apart (`question_answer_batch`: `{ saved:
+    false, delivered: true, unsaved }`; an answered question the store
+    still owes reads `status: "delivered"`), and the page says that, with
+    the reason behind a disclosure and not as an error. Do not bend a
+    receipt to get past a reader that throws without it: change the reader.
 - **Every reader of a chat record walks it with `transcript::for_each_line`
   or a reader built on it** (`since`, `of_type`, `page`). A line's position
   is its `seq`, so a line that cannot be decoded is skipped by the reader
