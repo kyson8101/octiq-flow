@@ -197,6 +197,11 @@ fn what_stop_owes_is_never_written_into_a_folder_put_in_the_profiles_place() {
     assert!(!scheduled_in(&Services::at_profile(), &key));
 }
 
+/// What a Stop answers with nothing queued behind the stopped turn
+/// (`Stopped`; with messages queued, see `reach_tests.rs`).
+static STOPPED: std::sync::LazyLock<Value> =
+    std::sync::LazyLock::new(|| json!({ "stopped": true, "waiting": 0 }));
+
 /// Interrupt, for an agent that is asked to stop over its own channel: the
 /// turn is cut short and the conversation kept.
 #[test]
@@ -208,7 +213,7 @@ fn interrupt_cuts_the_turn_short_while_the_profile_is_away() {
 
     let why = world.folder_goes();
     let cut = told(&world.svc, "chat_interrupt", json!({ "key": key }));
-    done_but_not_recorded(&cut, Value::Null, "the cancelled auto-resume", &why);
+    done_but_not_recorded(&cut, STOPPED.clone(), "the cancelled auto-resume", &why);
     assert!(
         world.chats().unwinding(&key),
         "the agent was not asked to stop"
@@ -233,7 +238,7 @@ fn interrupt_ends_the_process_of_an_agent_that_takes_no_stop_while_the_profile_i
 
     let why = world.folder_goes();
     let cut = told(&world.svc, "chat_interrupt", json!({ "key": key }));
-    done_but_not_recorded(&cut, Value::Null, "the cancelled auto-resume", &why);
+    done_but_not_recorded(&cut, STOPPED.clone(), "the cancelled auto-resume", &why);
     assert!(agent.gone(), "the agent is still running after Stop");
     assert!(!world.is_scheduled(&key));
     world.folder_returns();

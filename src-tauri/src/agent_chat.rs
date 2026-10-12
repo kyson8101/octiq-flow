@@ -237,10 +237,14 @@ pub(crate) fn fresh_turn_id(turn_id: Option<String>) -> String {
 /// Delivery is owned by the backend, independently of provider acknowledgement.
 /// In particular, a process connecting to its API already owns its prompt; that
 /// prompt cannot still be offered as an editable queue entry.
-fn record_delivery(key: &str, turn_id: Option<&str>, state: &str) {
-    let Some(turn_id) = turn_id else { return };
+///
+/// Answers where the line sits in the transcript: `None` for a turn that
+/// has no line (no id, or a host receipt) and for a line that could not be
+/// written, which every open page still heard.
+fn record_delivery(key: &str, turn_id: Option<&str>, state: &str) -> Option<u64> {
+    let turn_id = turn_id?;
     if turn_id.starts_with(crate::orchestration::inbox::RECEIPT_PREFIX) {
-        return;
+        return None;
     }
     let event = json!({ "type": "octiq_user_turn_delivery", "uuid": turn_id, "state": state });
     let seq = crate::transcript::append(key, &event);
@@ -252,7 +256,15 @@ fn record_delivery(key: &str, turn_id: Option<&str>, state: &str) {
             event,
         },
     );
+    seq
 }
+
+/// What the messages a deliberate ending dropped are called when their
+/// "not sent" lines could not be written (`unsaved::say`).
+const UNSENT: &str = "the messages that were not sent";
+
+/// Those lines, in the list of what still owes a save (`profile_status`).
+pub(crate) const UNSENT_OWED: &str = "unsent messages";
 
 /// Tell every reader that two durable person turns now form one pending unit.
 /// The individual envelopes are kept so append-only replay and idempotency
@@ -911,6 +923,41 @@ impl QueuedTurn {
     }
 }
 
+/// Why a chat's queue waits (`ChatManager::waiting`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Waiting {
+    /// The chat the queue's messages are written in.
+    stream_key: String,
+    /// Why the next message did not start: the profile's own sentence.
+    why: String,
+}
+
+/// What became of a queued message carried into its chat's next process
+/// (`carry_queued_turn`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Carried {
+    /// It is that process's first message.
+    Started,
+    /// It could not be started because its record cannot be kept. It is
+    /// back at the front of the queue, which waits, for this reason.
+    Waits(String),
+}
+
+/// What a Stop did (`chat_interrupt`). A Stop that stopped the agent is
+/// never an error because the message behind it could not start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stopped {
+    /// The agent was asked to stop, or its process was ended.
+    pub stopped: bool,
+    /// How many messages the person sent are still queued and not sent.
+    pub waiting: usize,
+    /// Why the first of them did not start, when it should have and could
+    /// not: the queue waits for the profile folder. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_started: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum QueueTurnResult {
     Enqueued,
@@ -939,6 +986,19 @@ pub struct ChatManager {
     /// A one-shot process is being replaced. Sends still join its queue, and a
     /// second client must not start a competing process in this gap.
     handoffs: Mutex<std::collections::HashSet<String>>,
+    /// The chats whose queue waits with nothing taking it: its next message
+    /// could not be started, or handed to the running agent, because the
+    /// record of that turn could not be kept (`keep_waiting`). Nothing in
+    /// such a queue is failed or forgotten; `start_waiting_queues` hands
+    /// the first message over once the profile folder is back. An entry
+    /// goes when its queue empties, so a chat listed here has had nothing
+    /// written to its agent since it was listed. Taken after
+    /// `queued_turns`, never before.
+    waiting: Mutex<std::collections::BTreeMap<String, Waiting>>,
+    /// The "not sent" lines of messages a deliberate ending dropped from a
+    /// queue while they could not be written (`record_unsent`), as (chat,
+    /// turn id): written once the profile folder is back (`settle_unsent`).
+    unsent: Mutex<Vec<(String, String)>>,
     /// What the person sent, as the browser handed it over — see
     /// `TurnEvidence`. Newest last, bounded.
     evidence: Mutex<VecDeque<TurnEvidence>>,
@@ -1873,8 +1933,130 @@ impl ChatManager {
         let next = turns.get_mut(key)?.pop_front();
         if turns.get(key).is_some_and(VecDeque::is_empty) {
             turns.remove(key);
+            self.nothing_waits(key);
         }
         next
+    }
+
+    /// A queue that emptied waits for nothing. Callers hold `queued_turns`.
+    fn nothing_waits(&self, key: &str) {
+        if let Ok(mut waiting) = self.waiting.lock() {
+            waiting.remove(key);
+        }
+    }
+
+    /// Why this chat's queue is waiting, when it is (`waiting`).
+    fn waits_because(&self, key: &str) -> Option<String> {
+        let waiting = self.waiting.lock().ok()?;
+        waiting.get(key).map(|waiting| waiting.why.clone())
+    }
+
+    /// How many messages the person sent are queued for this chat.
+    fn queued_messages(&self, key: &str) -> usize {
+        self.queued_turns.lock().map_or(0, |turns| {
+            turns.get(key).map_or(0, |queue| {
+                queue.iter().map(|turn| turn.turn_ids().count()).sum()
+            })
+        })
+    }
+
+    /// The next message of `session_key`'s queue could not be started, or
+    /// handed to its agent, because the record of that turn cannot be kept:
+    /// the profile folder is away (`why`). Nothing failed and nothing is
+    /// forgotten. A message already taken off the queue (`taken`) goes back
+    /// to its front, so the queue is what it was, in its order; the chat is
+    /// listed as waiting, and `start_waiting_queues` hands the first
+    /// message over once the folder is back, the way a Stop always has.
+    ///
+    /// Review of b894867, H7: a Stop whose next process could not start
+    /// answered an error, marked every queued message failed in a record
+    /// that could not be written, and forgot them. Callers hold the
+    /// session table, like every change to the queue.
+    fn keep_waiting(
+        &self,
+        session_key: &str,
+        stream_key: &str,
+        taken: Option<QueuedTurn>,
+        why: &str,
+    ) {
+        let Ok(mut turns) = self.queued_turns.lock() else {
+            return;
+        };
+        if let Some(turn) = taken {
+            turns
+                .entry(session_key.to_string())
+                .or_default()
+                .push_front(turn);
+        }
+        let queued = turns.get(session_key).map_or(0, VecDeque::len);
+        if queued == 0 {
+            return;
+        }
+        let Ok(mut waiting) = self.waiting.lock() else {
+            return;
+        };
+        let already = waiting.contains_key(session_key);
+        waiting.insert(
+            session_key.to_string(),
+            Waiting {
+                stream_key: stream_key.to_string(),
+                why: why.to_string(),
+            },
+        );
+        if !already {
+            println!("[chat] {session_key}: {queued} queued message(s) wait: {why}");
+            crate::bus::emit(
+                "chat-queue-waiting",
+                json!({ "chatKey": stream_key, "reason": why }),
+            );
+        }
+    }
+
+    /// Say that a message dropped from a queue was not sent. The record
+    /// every reader folds the bubble by is one line in the chat's
+    /// transcript; with the profile folder away that line cannot be
+    /// written, so it is said as not recorded and owed (`settle_unsent`).
+    /// Open pages hear it either way.
+    fn record_unsent(&self, key: &str, turn_id: &str) {
+        if record_delivery(key, Some(turn_id), "failed").is_some() {
+            return;
+        }
+        let Err(why) = crate::profile::available() else {
+            return;
+        };
+        if turn_id.starts_with(crate::orchestration::inbox::RECEIPT_PREFIX) {
+            return;
+        }
+        if let Ok(mut unsent) = self.unsent.lock() {
+            unsent.push((key.to_string(), turn_id.to_string()));
+        }
+        crate::unsaved::say(UNSENT, why);
+    }
+
+    /// Whether a "not sent" line is still to be written.
+    fn owes_unsent(&self) -> bool {
+        self.unsent.lock().is_ok_and(|unsent| !unsent.is_empty())
+    }
+
+    /// Write the "not sent" lines that could not be written when their
+    /// messages were dropped. An error is lines still owed.
+    fn settle_unsent(&self) -> Result<(), String> {
+        let mut unsent = self.unsent.lock().map_err(|e| e.to_string())?;
+        if unsent.is_empty() {
+            return Ok(());
+        }
+        crate::profile::available()?;
+        let owed = std::mem::take(&mut *unsent);
+        for (key, turn_id) in owed {
+            if record_delivery(&key, Some(&turn_id), "failed").is_none() {
+                unsent.push((key, turn_id));
+            }
+        }
+        if unsent.is_empty() {
+            Ok(())
+        } else {
+            Err("some messages are not yet on record as not sent".into())
+        }
     }
 
     /// Take one named message back out of the queue.
@@ -1890,6 +2072,7 @@ impl ChatManager {
         let cancelled = queue.remove(at);
         if queue.is_empty() {
             turns.remove(chat_key);
+            self.nothing_waits(chat_key);
         }
         cancelled
     }
@@ -1927,7 +2110,7 @@ impl ChatManager {
     fn forget_queued_turns(&self, key: &str) {
         for turn in self.take_all_queued_turns(key) {
             for turn_id in turn.turn_ids() {
-                record_delivery(key, Some(turn_id), "failed");
+                self.record_unsent(key, turn_id);
             }
             // A wrap-up that will never run completes nothing.
             self.fail_completion_of(key, &turn, COMPLETION_ENDED);
@@ -1944,7 +2127,7 @@ impl ChatManager {
         };
         if let Some(turn) = self.cancel_queued_turn(key, &wrap_up) {
             for turn_id in turn.turn_ids() {
-                record_delivery(stream_key, Some(turn_id), "failed");
+                self.record_unsent(stream_key, turn_id);
             }
         }
         self.fail_completion_when(key, reason, |id| id == wrap_up);
@@ -1952,12 +2135,11 @@ impl ChatManager {
 
     /// Everything waiting, taken out in one go.
     fn take_all_queued_turns(&self, key: &str) -> Vec<QueuedTurn> {
-        self.queued_turns
-            .lock()
-            .ok()
-            .and_then(|mut turns| turns.remove(key))
-            .map(Vec::from)
-            .unwrap_or_default()
+        let Ok(mut turns) = self.queued_turns.lock() else {
+            return Vec::new();
+        };
+        self.nothing_waits(key);
+        turns.remove(key).map(Vec::from).unwrap_or_default()
     }
 
     /// The wrap-up turn of the completion this chat is in, if it is in one.
@@ -2275,6 +2457,9 @@ pub(crate) fn settle_owed(manager: &ChatManager) -> Vec<&'static str> {
     if manager.questions.settle().is_err() {
         owed.push(crate::question_store::OWED);
     }
+    if manager.settle_unsent().is_err() {
+        owed.push(UNSENT_OWED);
+    }
     owed
 }
 
@@ -2287,19 +2472,125 @@ pub(crate) fn owed(manager: &ChatManager) -> Vec<&'static str> {
     if manager.questions.owes() {
         owed.push(crate::question_store::OWED);
     }
+    if manager.owes_unsent() {
+        owed.push(UNSENT_OWED);
+    }
     owed
 }
 
-/// Start the first message of every queue left waiting because its record
-/// could not be kept, with how it is started left to the caller. Answers
-/// the chats still waiting. Nothing is left waiting yet: a start that
-/// fails forgets its queue.
-#[cfg(test)]
+/// Hand over the first message of every queue that was left waiting
+/// because the record of its turn could not be kept (`keep_waiting`), now
+/// that it can be. Answers the chats whose queue still waits.
+///
+/// This is what each provider's own Stop does the moment it stops, made
+/// later by however long the profile folder was away: an agent that keeps
+/// its process is written the first message, and one that goes on only in
+/// a new process is started with it. The rest stay queued behind it and
+/// are handed over the ordinary way, by that turn's full stop or that
+/// process's exit. The server tries every two seconds
+/// (`dispatch::start_owed_saves`), so the person does nothing.
+pub(crate) fn start_waiting_queues(manager: &Arc<ChatManager>) -> Vec<String> {
+    start_waiting_queues_with(manager, |session_key, stream_key, turn| {
+        start_queued_turn(manager.clone(), session_key, stream_key, turn, false)
+    })
+}
+
+/// `start_waiting_queues`, with how a new process is started left to the
+/// caller.
 fn start_waiting_queues_with(
-    _manager: &Arc<ChatManager>,
-    _start: impl Fn(&str, &str, QueuedTurn) -> Result<(), String>,
+    manager: &Arc<ChatManager>,
+    start: impl Fn(&str, &str, QueuedTurn) -> Result<(), String>,
 ) -> Vec<String> {
-    Vec::new()
+    let listed = || -> Vec<(String, Waiting)> {
+        manager.waiting.lock().map_or_else(
+            |_| Vec::new(),
+            |waiting| {
+                waiting
+                    .iter()
+                    .map(|(k, w)| (k.clone(), w.clone()))
+                    .collect()
+            },
+        )
+    };
+    let waiting = listed();
+    if waiting.is_empty() || crate::profile::available().is_err() {
+        return waiting.into_iter().map(|(key, _)| key).collect();
+    }
+    for (session_key, Waiting { stream_key, .. }) in waiting {
+        // The session table first, like every send and every start: the
+        // queue does not change, and no process takes this key, while its
+        // first message is taken.
+        let Ok(sessions) = manager.sessions.lock() else {
+            continue;
+        };
+        if manager.waits_because(&session_key).is_none() {
+            // Taken back, or handed over by someone else, in between.
+            continue;
+        }
+        if let Some(session) = sessions.get(&session_key).cloned() {
+            let Ok(mut guard) = session.lock() else {
+                continue;
+            };
+            if guard.cut_off != CutOff::No {
+                // A Stop's full stop is still owed: it hands the queue over.
+                continue;
+            }
+            // Listed at a full stop with nothing written since (`waiting`),
+            // so no turn is in flight: this is that full stop's handover.
+            manager.nothing_waits(&session_key);
+            let refused =
+                dispatch_next_persistent_turn(manager, &session_key, &stream_key, &mut guard);
+            let agent = guard.agent;
+            drop(guard);
+            if let Some(why) = refused {
+                manager.forget_queued_turns(&session_key);
+                emit_status(
+                    agent,
+                    ChatStatus {
+                        key: stream_key.clone(),
+                        kind: "error".into(),
+                        text: format!("could not send queued message: {why}"),
+                        code: None,
+                    },
+                );
+            }
+            continue;
+        }
+        let already_carried = manager
+            .handoffs
+            .lock()
+            .map_or(true, |handoffs| handoffs.contains(&session_key));
+        if already_carried {
+            continue;
+        }
+        // Being handed over from here on: the process that takes the first
+        // message carries the rest, as after any Stop. A start that is
+        // refused again lists the queue again (`carry_queued_turn`).
+        manager.nothing_waits(&session_key);
+        let Some(next) = manager.take_queued_turn(&session_key) else {
+            continue;
+        };
+        if let Ok(mut handoffs) = manager.handoffs.lock() {
+            handoffs.insert(session_key.clone());
+        }
+        drop(sessions);
+        let agent = manager.start_context(&session_key).map(|start| start.agent);
+        let carried = carry_queued_turn(manager, &session_key, &stream_key, next, |turn| {
+            start(&session_key, &stream_key, turn)
+        });
+        if let (Err(why), Some(agent)) = (carried, agent) {
+            emit_status(
+                agent,
+                ChatStatus {
+                    key: stream_key.clone(),
+                    kind: "error".into(),
+                    text: format!("could not resume queued message: {why}"),
+                    code: None,
+                },
+            );
+        }
+    }
+    listed().into_iter().map(|(key, _)| key).collect()
 }
 
 /// Explicit browser action from the quota banner.
@@ -2913,7 +3204,7 @@ fn start_queued_command_turn(
     session_key: &str,
     stream_key: &str,
     turn: QueuedTurn,
-) -> Result<(), String> {
+) -> Result<Carried, String> {
     carry_queued_turn(&manager, session_key, stream_key, turn, |turn| {
         start_queued_turn(manager.clone(), session_key, stream_key, turn, true)
     })
@@ -2922,29 +3213,70 @@ fn start_queued_command_turn(
 /// The handoff around starting a queued turn in a chat's next process: the
 /// caller took `turn` off the queue and marked the key as handed off under
 /// the session table, and `start` is what starts it.
+///
+/// A start that fails is one of two things, and they end differently:
+///
+/// - **The record of the turn cannot be kept** (the profile folder is away,
+///   which refuses every start). Nothing failed. The message goes back to
+///   the front of the queue, nothing behind it is touched, and the queue
+///   waits (`keep_waiting`): `Ok(Carried::Waits)`.
+/// - **Anything else.** The message and everything behind it are marked as
+///   not sent and dropped, so that a later, unrelated start is not handed
+///   stale words: `Err`.
 fn carry_queued_turn(
     manager: &ChatManager,
     session_key: &str,
     stream_key: &str,
     turn: QueuedTurn,
     start: impl FnOnce(QueuedTurn) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<Carried, String> {
+    // Asked before the start as well as after it: a folder that comes back
+    // while the start is being refused was still why it was refused.
+    let away = crate::profile::available().err();
     let result = start(turn.clone());
     // Failure cleanup belongs to this handoff, before a new send can start.
     let _sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-    if result.is_err() {
-        for turn_id in turn.turn_ids() {
-            record_delivery(stream_key, Some(turn_id), "failed");
-        }
-        manager.fail_completion_of(session_key, &turn, COMPLETION_ENDED);
-        manager.forget_queued_turns(session_key);
-    }
+    let carried = match result {
+        Ok(()) => Ok(Carried::Started),
+        Err(why) => match away.or_else(|| crate::profile::available().err()) {
+            Some(away) => {
+                manager.keep_waiting(session_key, stream_key, Some(turn), &away);
+                Ok(Carried::Waits(away))
+            }
+            None => {
+                for turn_id in turn.turn_ids() {
+                    record_delivery(stream_key, Some(turn_id), "failed");
+                }
+                manager.fail_completion_of(session_key, &turn, COMPLETION_ENDED);
+                manager.forget_queued_turns(session_key);
+                Err(why)
+            }
+        },
+    };
     manager
         .handoffs
         .lock()
         .map_err(|e| e.to_string())?
         .remove(session_key);
-    result
+    carried
+}
+
+/// A chat whose process is gone and whose queue waits is not running: say
+/// so, since the process that ended had a successor on the way and its own
+/// reaper may have stayed quiet for it.
+fn say_exited(manager: &ChatManager, session_key: &str, stream_key: &str) {
+    let Some(start) = manager.start_context(session_key) else {
+        return;
+    };
+    emit_status(
+        start.agent,
+        ChatStatus {
+            key: stream_key.to_string(),
+            kind: "exit".into(),
+            text: String::new(),
+            code: None,
+        },
+    );
 }
 
 /// Start a process for `session_key` with a queued turn as its first
@@ -3257,14 +3589,18 @@ pub(crate) fn start_session(
     if notification_start && manager.has_queued_turns(&session_key) {
         return Err("User messages are waiting; notification delivery will retry.".into());
     }
+    // A queue that waits for the profile folder counts like a handoff: a
+    // new message does not start a process round what is already waiting.
+    // The page answers "already running" by sending, which queues it behind.
     if sessions.contains_key(&session_key)
         || manager.claimed_elsewhere(&session_key)
         || ((record_user_turn || notification_start)
-            && manager
+            && (manager
                 .handoffs
                 .lock()
                 .map_err(|e| e.to_string())?
-                .contains(&session_key))
+                .contains(&session_key)
+                || manager.waits_because(&session_key).is_some()))
     {
         return Err(format!("chat '{session_key}' is already running"));
     }
@@ -4234,7 +4570,11 @@ pub(crate) fn start_session(
                         &key,
                         turn,
                     ) {
-                        Ok(()) => return,
+                        Ok(Carried::Started) => return,
+                        // Back in the queue, which waits for the profile
+                        // folder: this process is gone all the same, and
+                        // the exit below says so.
+                        Ok(Carried::Waits(_)) => {}
                         Err(why) => {
                             // Do not let a later, unrelated resume receive
                             // stale words after a failed restart.
@@ -4496,22 +4836,28 @@ fn grace_ran_out_with(
     };
     println!("[chat] {session_key} ended: its agent did not stop within the grace of a Stop");
     if let Some(turn) = next {
-        if let Err(why) = carry_queued_turn(manager, session_key, stream_key, turn, start) {
-            // The process this ended had a successor on the way, so its own
-            // reaper may have stayed quiet: say both things here.
-            for (kind, text) in [
-                ("error", format!("could not resume queued message: {why}")),
-                ("exit", String::new()),
-            ] {
-                emit_status(
-                    agent,
-                    ChatStatus {
-                        key: stream_key.to_string(),
-                        kind: kind.into(),
-                        text,
-                        code: None,
-                    },
-                );
+        match carry_queued_turn(manager, session_key, stream_key, turn, start) {
+            Ok(Carried::Started) => {}
+            // The queue is whole and waits for the profile folder. The
+            // process is gone all the same.
+            Ok(Carried::Waits(_)) => say_exited(manager, session_key, stream_key),
+            Err(why) => {
+                // The process this ended had a successor on the way, so its
+                // own reaper may have stayed quiet: say both things here.
+                for (kind, text) in [
+                    ("error", format!("could not resume queued message: {why}")),
+                    ("exit", String::new()),
+                ] {
+                    emit_status(
+                        agent,
+                        ChatStatus {
+                            key: stream_key.to_string(),
+                            kind: kind.into(),
+                            text,
+                            code: None,
+                        },
+                    );
+                }
             }
         }
     }
@@ -4587,6 +4933,15 @@ fn dispatch_next_persistent_turn(
         .input
         .accepts_stdin()
     {
+        return None;
+    }
+    // Handing a message over starts a turn, and no turn starts while its
+    // record cannot be kept: a send is refused then, a start is refused
+    // then, and what is already queued waits here, whole and in order,
+    // rather than run where nothing of it can be written down. It is
+    // handed over once the folder is back (`start_waiting_queues`).
+    if let Err(away) = crate::profile::available() {
+        manager.keep_waiting(session_key, stream_key, None, &away);
         return None;
     }
     let turn = manager.take_queued_turn(session_key)?;
@@ -4906,11 +5261,15 @@ fn chat_send_with_user_turn(
             return Ok(());
         }
         let Some(session) = sessions.get(&session_key).cloned() else {
+            // A queue that waits for the profile folder (`keep_waiting`) is
+            // a queue like any other: this message joins it at the back,
+            // and the host starts the first one (`start_waiting_queues`).
             if manager
                 .handoffs
                 .lock()
                 .map_err(|e| e.to_string())?
                 .contains(&session_key)
+                || manager.waits_because(&session_key).is_some()
             {
                 // The process this would ride is not started for an agent
                 // that is being removed (`start_session`), so it is not
@@ -5122,6 +5481,12 @@ pub fn chat_start_queued_impl(
     // that message, which would turn "send now" into "cancel what I clicked".
     let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     let Some(session) = sessions.get(&session_key).cloned() else {
+        // A queue that waits for the profile folder has no process to
+        // stop: the chosen message goes to the front, and starts first
+        // when the folder is back.
+        if manager.waits_because(&session_key).is_some() {
+            return Ok(manager.promote_queued_turn(&key, &turn_id).is_some());
+        }
         // The one-shot reaper is already carrying it into the next process.
         return Ok(false);
     };
@@ -5156,8 +5521,13 @@ pub fn chat_start_queued_impl(
     drop(guard);
     drop(sessions);
 
-    if let Err(why) = start_queued_command_turn(manager.clone(), &session_key, &key, next) {
-        return Err(format!("could not resume queued message: {why}"));
+    match start_queued_command_turn(manager.clone(), &session_key, &key, next) {
+        Ok(Carried::Started) => {}
+        // The turn ahead was stopped and the chosen message is first in
+        // line, with the others behind it; it starts when the profile
+        // folder is back (`start_waiting_queues`).
+        Ok(Carried::Waits(_)) => say_exited(manager, &session_key, &key),
+        Err(why) => return Err(format!("could not resume queued message: {why}")),
     }
     Ok(true)
 }
@@ -5240,11 +5610,18 @@ fn interrupt_persistent_turn(session: &mut ChatSession) -> Result<(), String> {
 /// A persistent agent that does not honour the Stop within `UNWIND_GRACE`
 /// has its process ended, and the queue's first message starts in the next
 /// one (`grace_ran_out`).
+///
+/// **A next message that cannot start does not make the Stop fail, and
+/// costs nothing that was queued.** Starting the next message is a new
+/// turn, and no turn starts while its record cannot be kept (the profile
+/// folder is away). The Stop has stopped the agent by then: it answers
+/// that, how many messages still wait, and why the first did not start
+/// (`Stopped`); the queue is what it was, in its order (`keep_waiting`).
 fn interrupt_session(
     manager: &Arc<ChatManager>,
     session_key: &str,
     stream_key: &str,
-) -> Result<(), String> {
+) -> Result<Stopped, String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(session_key).cloned().ok_or("no such chat")?
@@ -5263,7 +5640,7 @@ fn interrupt_session(
             .get(session_key)
             .is_some_and(|current| Arc::ptr_eq(current, &session))
         {
-            return Ok(());
+            return Ok(manager.stopped(session_key));
         }
         let mut guard = session.lock().map_err(|e| e.to_string())?;
         // Stopping the wrap-up itself ends the completion; the process this
@@ -5283,10 +5660,13 @@ fn interrupt_session(
         drop(guard);
         drop(sessions);
         if let Some(next) = next {
-            start_queued_command_turn(manager.clone(), session_key, stream_key, next)
+            let carried = start_queued_command_turn(manager.clone(), session_key, stream_key, next)
                 .map_err(|why| format!("could not resume queued message: {why}"))?;
+            if carried != Carried::Started {
+                say_exited(manager, session_key, stream_key);
+            }
         }
-        return Ok(());
+        return Ok(manager.stopped(session_key));
     }
 
     let mut guard = session.lock().map_err(|e| e.to_string())?;
@@ -5306,12 +5686,32 @@ fn interrupt_session(
     // The cut-off wrap-up's own full stop finds no completion left to
     // decide, so a Stop can never tick a chat.
     manager.completion_cut_short(session_key, &guard, COMPLETION_STOPPED);
-    Ok(())
+    drop(guard);
+    // What waits is handed over on the stopped turn's full stop, where a
+    // folder that is away holds it (`dispatch_next_persistent_turn`).
+    let mut stopped = manager.stopped(session_key);
+    if stopped.waiting > 0 && stopped.not_started.is_none() {
+        stopped.not_started = crate::profile::available().err();
+    }
+    Ok(stopped)
+}
+
+impl ChatManager {
+    /// What a Stop that has stopped the agent answers: how many messages
+    /// still wait, and why the first did not start when its queue waits.
+    fn stopped(&self, session_key: &str) -> Stopped {
+        Stopped {
+            stopped: true,
+            waiting: self.queued_messages(session_key),
+            not_started: self.waits_because(session_key),
+        }
+    }
 }
 
 /// The Stop button. Like `chat_stop_impl`, nothing in it waits on a save:
-/// its answer is whether the agent was asked to stop.
-pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {
+/// its answer is whether the agent was asked to stop, and what still waits
+/// behind the stopped turn (`Stopped`).
+pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<Stopped, String> {
     cancel_auto_resume(manager, &key, "cancelled when the user stopped the chat");
     let _delivery = manager
         .questions
@@ -6726,8 +7126,11 @@ fn end_process_when(
                 return Ok(false);
             };
             let session = session.lock().map_err(|e| e.to_string())?;
+            // A chat whose queue waits for the profile folder is not idle:
+            // ending it as idle would drop what the person queued.
             if session.still_for().is_none_or(|still| still < timeout)
                 || manager.background.has_running(key)
+                || manager.waits_because(key).is_some()
             {
                 return Ok(false);
             }
@@ -7312,6 +7715,13 @@ pub struct ChatQueueState {
     /// page shows as Completing. Among `queued_turn_ids` while it waits.
     #[serde(skip_serializing_if = "Option::is_none")]
     completing_turn_id: Option<String>,
+    /// Why the queue waits with nothing taking it, when it does: the next
+    /// message could not start because the record of its turn could not be
+    /// kept (`ChatManager::keep_waiting`). The profile's own sentence.
+    /// Nothing in the queue is lost, and the host starts the first message
+    /// itself once the folder is back. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    held: Option<String>,
 }
 
 pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQueueState, String> {
@@ -7320,6 +7730,7 @@ pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQue
     let handoffs = manager.handoffs.lock().map_err(|e| e.to_string())?;
     let queues = manager.queued_turns.lock().map_err(|e| e.to_string())?;
     Ok(ChatQueueState {
+        held: manager.waits_because(key),
         completing_turn_id: manager.completing_turn(key),
         live: sessions.contains_key(key) || handoffs.contains(key),
         queued_turn_ids: queues

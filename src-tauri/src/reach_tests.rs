@@ -321,6 +321,14 @@ fn a_stop_holds_the_queue_of_an_agent_that_keeps_its_process() {
             "{agent:?} was given a turn whose record cannot be kept"
         );
         still_queued(&world, &key, &ids, &why);
+        // However long the folder stays away, the chat is not ended as
+        // idle with the person's messages in it.
+        assert_eq!(
+            end_process_when(world.chats(), &key, Some(Duration::ZERO)),
+            Ok(false)
+        );
+        assert!(child.alive());
+        still_queued(&world, &key, &ids, &why);
 
         world.folder_returns();
         let started = Started::default();
@@ -373,6 +381,116 @@ fn a_stop_that_is_not_honoured_keeps_the_queue_when_the_next_process_cannot_star
     assert!(world.start_waiting(&started).is_empty());
     assert_eq!(started.texts(), ["first thing"]);
     assert_eq!(world.queued(&key), ids[1..]);
+}
+
+/// Waiting is for a start that could not be RECORDED, and for nothing else.
+/// A start that fails for a reason of its own once the folder is back (here
+/// the chat no longer knows how to resume) fails as it always did: the
+/// messages are on record as not sent, where the page offers them again,
+/// and no later, unrelated start is handed them.
+#[test]
+fn a_start_that_fails_for_its_own_reason_once_the_folder_is_back_fails_as_before() {
+    let world = World::new();
+    let key = fresh("real-failure");
+    let agent = world.working(&key, ChatAgent::Pi);
+    let ids = world.queue(&key, &["first thing", "/second"]);
+
+    let why = world.folder_goes();
+    let stopped = told(&world.svc, "chat_interrupt", json!({ "key": key }));
+    stopped_with_messages_waiting(&stopped, 2, &why);
+    assert!(agent.gone());
+    still_queued(&world, &key, &ids, &why);
+
+    world.folder_returns();
+    world.chats().starts.lock().unwrap().remove(&key);
+    assert!(start_waiting_queues(world.chats()).is_empty());
+    assert!(world.queued(&key).is_empty());
+    assert_eq!(world.queue_state(&key)["held"], Value::Null);
+    for id in &ids {
+        assert_eq!(deliveries(&key, id), ["queued", "failed"]);
+    }
+}
+
+/// A message sent to a chat whose queue is waiting joins that queue at the
+/// back, whichever door the page tries: a start is answered "already
+/// running", which the page answers by sending, and the send is queued.
+/// Nothing goes round what is already waiting.
+#[test]
+fn a_message_sent_while_a_queue_waits_goes_behind_it() {
+    let world = World::new();
+    let key = fresh("behind");
+    let agent = world.working(&key, ChatAgent::Antigravity);
+    let ids = world.queue(&key, &["first thing", "/second"]);
+    let why = world.folder_goes();
+    let stopped = told(&world.svc, "chat_interrupt", json!({ "key": key }));
+    stopped_with_messages_waiting(&stopped, 2, &why);
+    assert!(agent.gone());
+
+    // Away, a send is refused like any other, and the queue is untouched.
+    let later = format!("user-{}", uuid::Uuid::new_v4());
+    let send = json!({ "key": key, "text": "/third", "turnId": later });
+    assert_eq!(
+        told(&world.svc, "chat_send", send.clone()).result,
+        Err(why.clone())
+    );
+    still_queued(&world, &key, &ids, &why);
+
+    world.folder_returns();
+    let start = start_session(
+        world.chats().clone(),
+        Voice::host(key.clone()),
+        "/tmp/project".into(),
+        ChatAgent::Antigravity,
+        None,
+        Some(Access::Read),
+        Some("/third".into()),
+        Some("native-session".into()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(later.clone()),
+        true,
+        None,
+    );
+    assert_eq!(start, Err(format!("chat '{key}' is already running")));
+    assert_eq!(told(&world.svc, "chat_send", send).result, Ok(Value::Null));
+    let all = [ids[0].clone(), ids[1].clone(), later];
+    assert_eq!(world.queued(&key), all);
+
+    let started = Started::default();
+    assert!(world.start_waiting(&started).is_empty());
+    assert_eq!(started.texts(), ["first thing"]);
+    assert_eq!(world.queued(&key), all[1..]);
+}
+
+/// The ✕ on a queued bubble still takes that message back while the queue
+/// waits, and a queue emptied that way waits for nothing.
+#[test]
+fn a_waiting_message_can_still_be_taken_back() {
+    let world = World::new();
+    let key = fresh("taken-back");
+    let agent = world.working(&key, ChatAgent::Antigravity);
+    let ids = world.queue(&key, &["first thing", "/second"]);
+    let why = world.folder_goes();
+    let stopped = told(&world.svc, "chat_interrupt", json!({ "key": key }));
+    stopped_with_messages_waiting(&stopped, 2, &why);
+    assert!(agent.gone());
+
+    for (id, left) in [(&ids[0], 1), (&ids[1], 0)] {
+        let cancel = json!({ "key": key, "turnId": id });
+        assert_eq!(
+            told(&world.svc, "chat_cancel_queued", cancel).result,
+            Ok(json!(true))
+        );
+        assert_eq!(world.queued(&key).len(), left);
+    }
+    assert_eq!(world.queue_state(&key)["held"], Value::Null);
+    world.folder_returns();
+    let started = Started::default();
+    assert!(world.start_waiting(&started).is_empty());
+    assert!(started.texts().is_empty(), "nothing was left to start");
 }
 
 /// Stopping the CHAT (closing it) is the person ending everything that

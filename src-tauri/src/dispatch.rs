@@ -560,6 +560,9 @@ fn start_owed_saves(svc: Services) {
         loop {
             std::thread::sleep(OWED_SWEEP);
             let owed = settle_owed(&svc);
+            // And what could not be STARTED while the folder was away: the
+            // first message of each queue a Stop left waiting.
+            crate::agent_chat::start_waiting_queues(&svc.chats);
             if owed != still {
                 if owed.is_empty() {
                     println!("[unsaved] everything that was owed is on disk now");
@@ -965,7 +968,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
             arg(&args, "turnId")?,
         )),
-        "chat_interrupt" => unit(crate::agent_chat::chat_interrupt_impl(
+        // The Stop button. Answers `{ stopped, waiting, notStarted? }`: a
+        // Stop that stopped the agent is not an error because the message
+        // queued behind it could not start (`agent_chat::Stopped`).
+        "chat_interrupt" => to_value(crate::agent_chat::chat_interrupt_impl(
             &svc.chats,
             arg(&args, "key")?,
         )),
