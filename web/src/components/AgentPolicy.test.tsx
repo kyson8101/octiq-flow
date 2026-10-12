@@ -114,6 +114,21 @@ describe("the agent policy API", () => {
     expect(await loadAgentPolicy()).toEqual({ text: "", updatedAt: 0 });
   });
 
+  // A policy the host could not read (its profile folder is away) is not an
+  // empty one: read as empty, the form drew blank and Save wrote the blank
+  // form's text over the shared rules once the folder was back.
+  it("does not read a policy the host could not read as an empty one", async () => {
+    invoke.mockRejectedValueOnce(new Error("The profile folder /drive/default is not available right now"));
+    await expect(loadAgentPolicy()).rejects.toThrow("is not available right now");
+  });
+
+  it("offers no save over a policy it could not read", () => {
+    const html = policyBlock({ unread: true, text: "typed on a blank form" } as never);
+    expect(html).toMatch(/<textarea[^>]*disabled=""/);
+    expect(html).toMatch(/<button class="vault-button" type="button" disabled="">Clear<\/button>/);
+    expect(html).toMatch(/<button class="settings-primary" type="submit" disabled="">Save policy<\/button>/);
+  });
+
   it("sends the persistent prompt with the agent, and leaves it out to keep it", async () => {
     invoke.mockResolvedValue({});
     await saveTeamAgent(draft({ persistentPrompt: "Build first." }));

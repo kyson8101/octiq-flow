@@ -191,7 +191,11 @@ pub fn load_config() -> WebConfig {
 pub fn save_config(cfg: &WebConfig) {
     let path = config_path();
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        // A profile folder that is gone, or is no longer the one the
+        // server started with, gets no token written into it.
+        if crate::profile::make_dir(dir).is_err() {
+            return;
+        }
         private_dir(dir);
     }
     if let Ok(raw) = serde_json::to_string_pretty(cfg) {
@@ -255,14 +259,122 @@ impl WebState {
 /// Run one command on behalf of a browser without blocking Axum's async
 /// workers. Dispatch includes synchronous terminal and filesystem work, so
 /// calling it directly from a Tokio worker can starve the socket pump.
+#[cfg(test)]
 async fn run_command(ctx: &Ctx, cmd: String, args: Value) -> Result<Value, String> {
+    run_command_told(ctx, cmd, args).await.result
+}
+
+/// `run_command`, with what the command did that could not be recorded
+/// beside its answer (`unsaved.rs`). The page's socket answers with this,
+/// so a Stop that stopped is never reported as failed because its record
+/// could not be written.
+async fn run_command_told(ctx: &Ctx, cmd: String, args: Value) -> crate::dispatch::Told {
     let services = ctx.services.clone();
     gated(git_read_slots(), &cmd.clone(), async move {
-        tokio::task::spawn_blocking(move || crate::dispatch::dispatch(&services, &cmd, args))
+        tokio::task::spawn_blocking(move || crate::dispatch::told(&services, &cmd, args))
             .await
-            .map_err(|error| format!("the backend command did not finish: {error}"))?
+            .unwrap_or_else(|error| crate::dispatch::Told {
+                result: Err(format!("the backend command did not finish: {error}")),
+                unsaved: Vec::new(),
+            })
     })
     .await
+}
+
+/// A page's reply frame. `unsaved` is there only when something was done
+/// and not recorded.
+fn reply_frame(id: u64, told: crate::dispatch::Told) -> Value {
+    let mut reply = match told.result {
+        Ok(result) => json!({ "t": "reply", "id": id, "ok": true, "result": result }),
+        Err(error) => json!({ "t": "reply", "id": id, "ok": false, "error": error }),
+    };
+    if !told.unsaved.is_empty() {
+        reply["unsaved"] = json!(told.unsaved);
+    }
+    reply
+}
+
+/// An agent's hook result with what could not be recorded in it, where the
+/// agent reads it: under `unsaved` in an object, and around anything else.
+fn with_unsaved(result: Value, unsaved: Vec<crate::unsaved::Unsaved>) -> Value {
+    if unsaved.is_empty() {
+        return result;
+    }
+    match result {
+        Value::Object(mut fields) => {
+            fields.insert("unsaved".into(), json!(unsaved));
+            Value::Object(fields)
+        }
+        Value::Null => json!({ "unsaved": unsaved }),
+        other => json!({ "result": other, "unsaved": unsaved }),
+    }
+}
+
+#[cfg(test)]
+mod unsaved_reply_tests {
+    use super::*;
+
+    fn stopped_unrecorded() -> Vec<crate::unsaved::Unsaved> {
+        vec![crate::unsaved::Unsaved {
+            what: "the stopped run".into(),
+            reason: "the folder is away".into(),
+        }]
+    }
+
+    /// A page is told the action happened (`ok`, its ordinary result) and,
+    /// beside that, what was not recorded. A reply with nothing unsaved is
+    /// the frame it always was.
+    #[test]
+    fn a_reply_says_what_was_done_and_what_was_not_recorded() {
+        let plain = reply_frame(
+            7,
+            crate::dispatch::Told {
+                result: Ok(Value::Null),
+                unsaved: Vec::new(),
+            },
+        );
+        assert_eq!(
+            plain,
+            json!({ "t": "reply", "id": 7, "ok": true, "result": null })
+        );
+        let told = reply_frame(
+            8,
+            crate::dispatch::Told {
+                result: Ok(Value::Null),
+                unsaved: stopped_unrecorded(),
+            },
+        );
+        assert_eq!(
+            told,
+            json!({
+                "t": "reply", "id": 8, "ok": true, "result": null,
+                "unsaved": [{ "what": "the stopped run", "reason": "the folder is away" }],
+            })
+        );
+    }
+
+    /// An agent reads its hook result as JSON, so the list goes where it
+    /// will be read whatever the command answers with.
+    #[test]
+    fn an_agents_result_carries_what_was_not_recorded() {
+        let said = json!([{ "what": "the stopped run", "reason": "the folder is away" }]);
+        assert_eq!(
+            with_unsaved(json!({ "id": "g1" }), Vec::new()),
+            json!({ "id": "g1" })
+        );
+        assert_eq!(
+            with_unsaved(json!({ "id": "g1" }), stopped_unrecorded()),
+            json!({ "id": "g1", "unsaved": said })
+        );
+        assert_eq!(
+            with_unsaved(Value::Null, stopped_unrecorded()),
+            json!({ "unsaved": said })
+        );
+        assert_eq!(
+            with_unsaved(json!(true), stopped_unrecorded()),
+            json!({ "result": true, "unsaved": said })
+        );
+    }
 }
 
 /// `run_command` for an agent's hook call: a failure keeps the kind of
@@ -277,7 +389,10 @@ async fn run_hook_command(
     let services = ctx.services.clone();
     gated(git_read_slots(), &cmd.clone(), async move {
         tokio::task::spawn_blocking(move || {
-            crate::outcome::noted(|| crate::dispatch::dispatch(&services, &cmd, args))
+            crate::outcome::noted(|| {
+                let told = crate::dispatch::told(&services, &cmd, args);
+                told.result.map(|result| with_unsaved(result, told.unsaved))
+            })
         })
         .await
         .map_err(|error| {
@@ -2234,14 +2349,14 @@ async fn client(ctx: Ctx, socket: WebSocket) {
         let ctx = ctx.clone();
         let out = sink.clone();
         tokio::spawn(async move {
-            let outcome = match socket_refusal(&cmd) {
-                Some(refused) => Err(refused),
-                None => run_command(&ctx, cmd, args).await,
+            let told = match socket_refusal(&cmd) {
+                Some(refused) => crate::dispatch::Told {
+                    result: Err(refused),
+                    unsaved: Vec::new(),
+                },
+                None => run_command_told(&ctx, cmd, args).await,
             };
-            let reply = match outcome {
-                Ok(result) => json!({ "t": "reply", "id": id, "ok": true, "result": result }),
-                Err(error) => json!({ "t": "reply", "id": id, "ok": false, "error": error }),
-            };
+            let reply = reply_frame(id, told);
             if let Ok(text) = serde_json::to_string(&reply) {
                 let _ = out.lock().await.send(Message::Text(text.into())).await;
             }

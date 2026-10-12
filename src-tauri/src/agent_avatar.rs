@@ -467,7 +467,7 @@ fn launch<C: Process>(
         );
         Ok(())
     })?;
-    let started = fs::create_dir_all(&dir)
+    let started = crate::profile::make_dir(&dir)
         .map_err(|e| format!("Could not prepare the avatar job: {e}"))
         .and_then(|_| spawn(&dir));
     let child = match started {

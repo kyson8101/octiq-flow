@@ -118,11 +118,14 @@ export async function saveTeamAgent(agent: TeamDraft): Promise<TeamAgent> {
   return await bridge.invoke<TeamAgent>("team_save", { agent: { ...agent, teamId } });
 }
 
-/** The shared agent policy. An older backend has none: then it is empty. */
+/** The shared agent policy. An older backend has none: then it is empty.
+ *  A policy the host has and could not read is an error, never an empty one:
+ *  read as empty, the form draws blank and a save replaces the real policy. */
 export async function loadAgentPolicy(): Promise<AgentPolicy> {
   try {
     return (await bridge.invoke<AgentPolicy>("team_policy", {})) ?? { text: "", updatedAt: 0 };
-  } catch {
+  } catch (error) {
+    if (!String(error).includes("not available on this backend")) throw error;
     return { text: "", updatedAt: 0 };
   }
 }

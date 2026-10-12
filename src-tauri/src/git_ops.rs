@@ -112,7 +112,7 @@ pub fn git_prepare_chat_workspace(
     let parent = target
         .parent()
         .ok_or("Could not prepare the worktree folder.")?;
-    std::fs::create_dir_all(parent)
+    crate::profile::create_dir_all(parent)
         .map_err(|error| format!("Could not create the worktree folder: {error}"))?;
 
     let target_text = target.to_string_lossy().into_owned();
@@ -207,7 +207,7 @@ pub(crate) fn restore_worktree(
     // A stale entry for this very path makes `worktree add` refuse it.
     run_git_mut(primary, &["worktree", "prune"], false)?;
     if let Some(parent) = Path::new(target).parent() {
-        std::fs::create_dir_all(parent)
+        crate::profile::create_dir_all(parent)
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
     }
     let branch = branch.trim();

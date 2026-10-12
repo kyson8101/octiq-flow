@@ -27,7 +27,8 @@ pub struct ImagePreview {
 }
 
 pub fn list(key: &str) -> Result<Vec<ImagePreview>, String> {
-    list_at(&crate::profile::profile_dir(), key)
+    // A profile folder that is not there has not "no previews": say why.
+    list_at(&crate::profile::available()?, key)
 }
 
 fn list_at(root: &Path, key: &str) -> Result<Vec<ImagePreview>, String> {

@@ -1235,7 +1235,12 @@ impl OrchestrationStore {
         if !save && due.is_empty() {
             return Ok(Vec::new());
         }
-        let ended = self.mutate(|data| {
+        // An attempt that is due is ended whether or not the ledger can be
+        // written: the limit is what the person approved, and an attempt
+        // that outlived it for as long as a drive was away had no limit.
+        // A pass that only saves the clocks is refused as before.
+        let regardless = (!due.is_empty()).then_some("the attempt ended at its time limit");
+        let ended = self.mutate_as(regardless, |data| {
             let seen: Vec<(String, PeerRequest)> = live(data)
                 .into_iter()
                 .map(|(attempt, request)| (attempt.id.clone(), request.clone()))
@@ -3283,6 +3288,51 @@ pub(crate) mod tests {
             used(&store, &peer.id, ended),
             ended - zero - 40_000,
             "forty seconds of the wait, and no more"
+        );
+    }
+
+    /// Review of 205bca2, H5, for an ending the host makes itself. With the
+    /// profile folder away the limit's write was refused and the pass that
+    /// stops an ended attempt's process stopped at its own first write, so
+    /// an attempt had no limit for as long as a drive was gone. It is ended
+    /// in the ledger's memory, its process is stopped, and the write is
+    /// owed until the folder is back.
+    #[test]
+    fn the_limit_ends_an_attempt_and_its_process_while_the_profile_is_away() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let svc = crate::dispatch::Services::at_profile();
+        let store = &*svc.orchestrations;
+        let (_made, peer) = timed(store, 1);
+        let worker = svc
+            .chats
+            .test_hold(&peer.worker_chat_key, ChatAgent::Claude, true);
+        home.move_away();
+        let why = crate::profile::available().unwrap_err();
+
+        let (ended, said) = crate::unsaved::told(|| {
+            store.expire_peer_requests_with(&|| peer.created_at + 2 * 60_000, &|_| Look::default())
+        });
+        assert_eq!(ended, Ok(vec![peer.worker_chat_key.clone()]));
+        assert!(
+            said.iter().any(
+                |unsaved| unsaved.what == "the attempt ended at its time limit"
+                    && unsaved.reason == why
+            ),
+            "{said:?}"
+        );
+        assert_eq!(attempt_of(store, &peer.id).status, AttemptStatus::Failed);
+        // The scheduler's pass. What it would save cannot be saved, and it
+        // says so; the stop comes first.
+        let _ = store.recover_due_workers(svc.chats.clone(), &svc.workspaces, now_ms());
+        assert!(worker.gone(), "the attempt's process outlived its limit");
+
+        home.move_back();
+        assert!(crate::dispatch::settle_owed(&svc).is_empty());
+        let restarted = OrchestrationStore::load_profile();
+        assert_eq!(
+            attempt_of(&restarted, &peer.id).status,
+            AttemptStatus::Failed
         );
     }
 

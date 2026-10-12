@@ -226,6 +226,36 @@ pub fn forget_chat(chat_key: &str) {
     }
 }
 
+/// A card an agent's call is parked on, with the receiver that call holds.
+#[cfg(test)]
+pub(crate) fn test_ask_waiting(
+    chat_key: &str,
+) -> (String, oneshot::Receiver<(Decision, Option<String>)>) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = oneshot::channel();
+    let asked = Asked {
+        id: id.clone(),
+        chat_key: chat_key.into(),
+        agent: AgentKind::Claude,
+        current: Access::Read,
+        requested: Access::Auto,
+        reason: "to run the tests".into(),
+        takes: Takes::Now,
+        wait: true,
+        answer_within_secs: None,
+    };
+    with_pending(|p| {
+        p.insert(
+            id.clone(),
+            Waiting {
+                tx: Some(tx),
+                asked,
+            },
+        )
+    });
+    (id, rx)
+}
+
 /// The person's answer to a card. `false` when it is already gone: answered
 /// on another page, timed out, or its chat stopped.
 pub fn answer(id: &str, decision: Decision, error: Option<String>) -> bool {

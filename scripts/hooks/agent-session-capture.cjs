@@ -164,7 +164,9 @@ function readStore(file) {
  *  clobbering each other's temp. */
 function writeStore(file, data) {
   const dir = path.dirname(file);
-  fs.mkdirSync(dir, { recursive: true });
+  // The profile folder (OCTIQ_ROOT) is never made here: one that has gone
+  // would come back empty. Only the legacy folder under the home is.
+  if (!(process.env.OCTIQ_ROOT || "").trim()) fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.agent-sessions.${process.pid}.tmp`);
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
   fs.renameSync(tmp, file);

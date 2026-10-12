@@ -121,13 +121,21 @@ fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
 /// line and writes it, once. A compaction keeps every host event and is
 /// not a new record.
 ///
+/// **And for the file it was taken for.** The token names its record's
+/// file as the filesystem tells files apart (`transcript::identity`), so
+/// one taken for a file is refused on any other, whatever their numbers:
+/// two files that were never removed used to read the same. The profile
+/// folder is fixed at startup, so the chat's name cannot come to mean
+/// another file while the server runs; if it ever did, the answer is no
+/// receipt, the task held, and the next pass reading what is there.
+///
 /// The transcript is read once, for the reopen events alone.
 fn notice_receipts(chat: &str, events: &[serde_json::Value]) -> Vec<bool> {
     let none = || vec![false; events.len()];
     let Some(record) = crate::transcript::generation(chat) else {
         return none();
     };
-    let confirmed = || crate::transcript::confirm_synced(chat, record).is_some();
+    let confirmed = || crate::transcript::confirm_synced(chat, &record).is_some();
     let there = crate::transcript::of_type(chat, "octiq_task_reopened");
     let found: Vec<bool> = events
         .iter()
@@ -1276,7 +1284,8 @@ impl OrchestrationStore {
             // configuration. The person's hold is theirs to release.
             if task.environment == super::TaskEnvironment::Sandbox {
                 let sandboxes = crate::sandbox::Store::profile();
-                let envs = sandboxes.snapshot()?;
+                // What leads to a stop goes by what this server knows.
+                let envs = sandboxes.known()?;
                 let live = sandboxes.live_keys();
                 for attempt in snapshot.attempts.iter().filter(|a| a.task_id == task_id) {
                     let key = &attempt.worker_chat_key;
@@ -3205,7 +3214,7 @@ pub(super) mod tests {
         assert!(crate::transcript::append_synced(&work.key, &picture).is_some());
         let record = crate::transcript::generation(&work.key).unwrap();
         assert_eq!(
-            crate::transcript::confirm_synced(&work.key, record),
+            crate::transcript::confirm_synced(&work.key, &record),
             Some(())
         );
         let before = fs::metadata(work.transcript()).unwrap().len();
@@ -3239,6 +3248,58 @@ pub(super) mod tests {
         crate::dispatch::dispatch(&services, "chat_forget", json!({ "key": chat })).unwrap();
         let said = json!({ "type": "assistant", "message": { "content": "After the clear" } });
         assert!(crate::agent_chat::record_chat_event(chat, said).is_some());
+    }
+
+    /// Review of 8169dd3, RULE 2, probe GATE_REPLACE: the notice was
+    /// appended and synced, and before the host asked for its receipt the
+    /// profile folder was moved away and another made at its path, with a
+    /// record under the chat's name and no notice in it. The receipt was
+    /// given for that record: delivered, with the notice nowhere the person
+    /// can see, and no later pass put it right. A folder that is not the
+    /// one the server started with gives no receipt and takes no line; the
+    /// real one back, the notice is confirmed where it was written.
+    #[test]
+    fn a_notice_is_not_delivered_in_a_folder_that_took_the_profiles_place() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        crate::profile_lock::acquire("server").unwrap();
+        let chat = format!("chat:replaced-{}", uuid::Uuid::new_v4().simple());
+        let notice =
+            json!({ "type": "octiq_task_reopened", "taskId": "task_1", "attempt": 2, "at": 5 });
+        let record = crate::transcript::path_for(&chat).unwrap();
+        let strangers = "{\"type\":\"assistant\"}\n";
+        before_the_receipt({
+            let (profile, kept, record) = (home.profile(), home.kept(), record.clone());
+            move |_| {
+                fs::rename(&profile, &kept).unwrap();
+                fs::create_dir_all(profile.join("chats")).unwrap();
+                fs::write(&record, strangers).unwrap();
+            }
+        });
+        assert_eq!(
+            notice_receipts(&chat, std::slice::from_ref(&notice)),
+            [false],
+            "delivered on a record that does not hold the notice"
+        );
+        assert_eq!(
+            notice_receipts(&chat, std::slice::from_ref(&notice)),
+            [false]
+        );
+        assert_eq!(
+            fs::read_to_string(&record).unwrap(),
+            strangers,
+            "the notice was written into the folder that took the profile's place"
+        );
+
+        home.move_back();
+        assert_eq!(
+            notice_receipts(&chat, std::slice::from_ref(&notice)),
+            [true]
+        );
+        assert_eq!(
+            crate::transcript::of_type(&chat, "octiq_task_reopened").len(),
+            1
+        );
     }
 
     /// The types of the events in a chat's record, in order.
@@ -3327,6 +3388,108 @@ pub(super) mod tests {
         assert_eq!(work.told()[0]["spec"], "Found, then cleared");
         assert_eq!(work.start(&task).unwrap().number, 2);
         assert_eq!(work.told().len(), 1);
+    }
+
+    /// The chat `id`, listed in the index of the profile this thread now
+    /// stands in.
+    fn listed_here(id: &str) {
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({
+                "id": id, "projectId": "project", "title": "Lead chat", "updatedAt": 100,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Review of bf9d8cd, finding 1, the reviewer's first transition probe
+    /// (A to B). The notice is read or written in one record, and by the
+    /// time the receipt is asked for the chat's name resolves to another
+    /// file that has never moved on either. The folder is fixed at startup
+    /// now, so the test moves it by standing the thread in another profile:
+    /// the token says which file it was taken for, that file is not the one
+    /// about to be synced, and the answer is no receipt. The task is held,
+    /// and the next pass confirms the notice where it is, once.
+    #[test]
+    fn a_receipt_is_not_given_on_a_record_in_another_folder_than_the_notice_went_into() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let other = crate::test_dir::TestDir::new("m6-other-profile");
+        let elsewhere = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let moved = elsewhere.clone();
+        let home = other.to_path_buf();
+        before_the_receipt(move |chat| {
+            *moved.borrow_mut() = Some(crate::profile::started_in(&home));
+            let said = json!({ "type": "assistant", "message": { "content": "Other history" } });
+            assert!(crate::agent_chat::record_chat_event(chat, said).is_some());
+        });
+        let reopened = work.reopen(&task, "Seen in one folder").unwrap();
+        assert!(
+            !reopened.reopens[0].notice_delivered,
+            "delivered on a record in another folder, which holds no notice"
+        );
+        assert_eq!(recorded_types(&work.key), ["assistant"]);
+        let launch = super::super::tests::launch_for(&task.id);
+        for by in [
+            StartedBy::Coordinator,
+            StartedBy::Page { retry_of: None },
+            StartedBy::Recovery("attempt_before"),
+        ] {
+            let refused = work.store.reserve_attempt_for(&work.key, &launch, by);
+            assert_eq!(refused.map(|_| ()).unwrap_err(), REOPEN_NOT_TOLD);
+        }
+        let there = elsewhere.borrow_mut().take();
+        crate::transcript::forget(&work.key);
+        drop(there);
+
+        // Back in the folder the notice went into.
+        assert_eq!(work.told().len(), 1);
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        assert_eq!(work.told().len(), 1, "never written a second time");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+    }
+
+    /// The reviewer's second transition probe (B to A): the notice went
+    /// into a record in another folder, and the receipt is asked for in the
+    /// folder the page reads, whose record holds none. No receipt; the next
+    /// pass does not find the notice there and writes it, once.
+    #[test]
+    fn a_notice_written_in_another_folder_is_written_again_where_the_receipt_is_asked() {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let said = json!({ "type": "assistant", "message": { "content": "Earlier text" } });
+        assert!(crate::transcript::append(&work.key, &said).is_some());
+
+        let other = crate::test_dir::TestDir::new("m6-other-profile");
+        let elsewhere = std::rc::Rc::new(std::cell::RefCell::new(Some(
+            crate::profile::started_in(&other),
+        )));
+        listed_here(&work.id);
+        let back = elsewhere.clone();
+        before_the_receipt(move |chat| {
+            assert_eq!(recorded_types(chat), ["octiq_task_reopened"]);
+            crate::transcript::forget(chat);
+            drop(back.borrow_mut().take());
+        });
+        let reopened = work.reopen(&task, "Written in another folder").unwrap();
+        assert!(elsewhere.borrow().is_none(), "the pass reached its receipt");
+        assert!(
+            !reopened.reopens[0].notice_delivered,
+            "delivered on a record that does not hold the notice"
+        );
+        assert_eq!(recorded_types(&work.key), ["assistant"]);
+        assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        assert_eq!(
+            recorded_types(&work.key),
+            ["assistant", "octiq_task_reopened"],
+            "one notice, in the record the person sees"
+        );
+        assert_eq!(work.told()[0]["spec"], "Written in another folder");
+        assert_eq!(work.start(&task).unwrap().number, 2);
     }
 
     /// Two notices owed in one chat, one found there and one written now,

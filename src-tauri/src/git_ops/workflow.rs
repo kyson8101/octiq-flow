@@ -357,7 +357,7 @@ pub fn provision(plan: &WorkspacePlan) -> Result<(), String> {
     if branch_exists && existing_owner.as_deref() != Some(plan.checkout_root.as_str()) {
         return Err("The planned branch already exists and is not owned by this workspace.".into());
     }
-    std::fs::create_dir_all(
+    crate::profile::create_dir_all(
         Path::new(&plan.checkout_root)
             .parent()
             .ok_or("Workspace has no parent.")?,

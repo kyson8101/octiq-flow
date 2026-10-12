@@ -169,12 +169,15 @@ impl Store {
     }
 
     fn read(&self) -> Result<Inbox, String> {
-        match fs::read(&self.path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+        let read = crate::profile::read(&self.path, |e| {
+            format!("Feedback inbox could not be read: {e}")
+        })?;
+        match read {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
                 format!("Feedback inbox could not be read: {e}. Its data has been preserved.")
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Inbox::default()),
-            Err(e) => Err(format!("Feedback inbox could not be read: {e}")),
+            // No file, in a profile that is there: nothing reported yet.
+            None => Ok(Inbox::default()),
         }
     }
 
@@ -183,7 +186,7 @@ impl Store {
             .path
             .parent()
             .ok_or("Feedback has no storage directory")?;
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        crate::profile::make_dir(dir)?;
         let tmp = dir.join(format!(".feedback-{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| {
             let bytes = serde_json::to_vec_pretty(inbox).map_err(|e| e.to_string())?;

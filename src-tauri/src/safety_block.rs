@@ -712,17 +712,17 @@ fn authorization_path() -> PathBuf {
 }
 
 fn read_authorizations(path: &Path) -> Result<AuthorizationStore, String> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
+    match crate::profile::read(path, |e| e.to_string())? {
+        Some(bytes) => serde_json::from_slice(&bytes)
             .map_err(|_| "Saved safety authorizations could not be read.".to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AuthorizationStore::default()),
-        Err(e) => Err(e.to_string()),
+        // No file, in a profile that is there: nothing authorized yet.
+        None => Ok(AuthorizationStore::default()),
     }
 }
 
 fn write_authorizations(path: &Path, store: &AuthorizationStore) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        crate::profile::make_dir(parent)?;
     }
     let body = serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?;
     let temp = path.with_extension("json.tmp");
@@ -765,7 +765,13 @@ pub fn authorize_for_project(id: &str) -> Result<bool, String> {
         // grant would look like permission and change nothing.
         return Err("Only Codex safety reviews can be allowed for a whole project.".into());
     }
-    save_authorization(&authorization_path(), &block)?;
+    // The answer IS the stored authorization, so one that cannot be stored
+    // grants nothing and is not assumed later: the card stays up, to be
+    // answered again or another way (Allow once and Keep it local keep
+    // nothing, and work with the profile folder away).
+    save_authorization(&authorization_path(), &block).map_err(|why| {
+        format!("Nothing was allowed for the project, and the card is still open: {why}")
+    })?;
     Ok(dismiss_as(id, "authorized_project"))
 }
 
@@ -1383,6 +1389,32 @@ fn publish_block(block: BlockedAction) -> bool {
     crate::bus::emit("safety-blocked", block);
     crate::push::notify_chat(Some(&chat_key), "permission", title);
     true
+}
+
+/// A Codex safety card for a chat in the project at `cwd`, as a refused
+/// command leaves one. Answers the card's id.
+#[cfg(test)]
+pub(crate) fn test_codex_card(chat_key: &str, cwd: &str) -> String {
+    remember_project(chat_key, cwd);
+    let detail = format!("refused for {chat_key}");
+    assert!(publish(
+        chat_key,
+        "This command reads credentials.".into(),
+        detail.clone()
+    ));
+    with_pending(|pending| {
+        pending
+            .values()
+            .find(|block| block.chat_key == chat_key && block.detail == detail)
+            .map(|block| block.id.clone())
+            .expect("the card just published")
+    })
+}
+
+/// Whether the card `id` is still waiting for an answer.
+#[cfg(test)]
+pub(crate) fn test_is_pending(id: &str) -> bool {
+    with_pending(|pending| pending.contains_key(id))
 }
 
 fn presentation(summary: &str) -> (&'static str, &'static str) {

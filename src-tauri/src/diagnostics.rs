@@ -85,7 +85,7 @@ fn append(path: &Path, entry: &Value) -> std::io::Result<()> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let parent = path.parent().expect("diagnostic log has a parent");
-    fs::create_dir_all(parent)?;
+    crate::profile::create_dir_all(parent)?;
     if path
         .metadata()
         .is_ok_and(|metadata| metadata.len() >= MAX_LOG_BYTES)

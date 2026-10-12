@@ -322,17 +322,17 @@ fn now_ms() -> i64 {
 }
 
 fn read(path: &Path) -> Result<Stored, String> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| format!("Saved agents could not be read: {e}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Stored::default()),
-        Err(e) => Err(format!("Saved agents could not be read: {e}")),
+    let unread = |e: &dyn std::fmt::Display| format!("Saved agents could not be read: {e}");
+    match crate::profile::read(path, |e| unread(&e))? {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| unread(&e)),
+        // No file, in a profile that is there: nobody registered yet.
+        None => Ok(Stored::default()),
     }
 }
 
 fn write(path: &Path, stored: &Stored) -> Result<(), String> {
     let dir = path.parent().ok_or("Agents have no storage directory")?;
-    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    crate::profile::make_dir(dir)?;
     let bytes = serde_json::to_vec_pretty(stored).map_err(|e| e.to_string())?;
     let tmp = dir.join(format!(".team-{}.tmp", uuid::Uuid::new_v4()));
     fs::write(&tmp, bytes).map_err(|e| e.to_string())?;

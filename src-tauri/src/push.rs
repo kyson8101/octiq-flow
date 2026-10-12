@@ -323,7 +323,7 @@ fn load() -> Store {
 fn save(store: &Store) {
     let Some(path) = store_path() else { return };
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        let _ = crate::profile::create_dir_all(parent);
     }
     if let Ok(raw) = serde_json::to_string_pretty(store) {
         let _ = fs::write(&path, raw);
@@ -506,8 +506,10 @@ mod tests {
         // Read off disk rather than through `chat_index::list()`, because under
         // `cfg(test)` that is redirected to an empty temp directory — as it
         // should be, since a test has no business reading the real record. This
-        // one does: it is the real record the phone is about to be sent.
-        let index = crate::profile::profile_dir()
+        // one does: it is the real record the phone is about to be sent. So
+        // is `profile_dir` redirected, and this asks for the real one by name.
+        let index = crate::profile::this_machines_profile()
+            .expect("no profile config on this machine yet — open the app first")
             .join("chats")
             .join("index.json");
         let raw = fs::read_to_string(&index).unwrap_or_default();

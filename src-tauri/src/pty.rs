@@ -688,7 +688,7 @@ pub fn pty_spawn_impl(
     if let Some(key) = canvas_key.as_deref() {
         if !key.is_empty() {
             if let Some(dir) = crate::canvas::canvas_dir_for(key) {
-                if std::fs::create_dir_all(&dir).is_ok() {
+                if crate::profile::make_dir(&dir).is_ok() {
                     cmd.env("OCTIQ_CANVAS_DIR", &dir);
                     cmd.env("OCTIQ_CANVAS_KEY", key);
                 }

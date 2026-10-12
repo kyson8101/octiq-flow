@@ -40,6 +40,26 @@ describe("UserQuestion", () => {
     expect(html).not.toContain("Send answers");
   });
 
+  // Review of b894867 (P3), H9: an answer the agent has and the disk does
+  // not is never drawn as saved. The reason is the profile's own sentence,
+  // behind a disclosure, and it is not an error: the answer did arrive.
+  it("says an answer reached the agent and was not saved, with the reason folded away", () => {
+    const why = "The profile folder /Volumes/drive/profiles/default is not available right now.";
+    const html = draw({ answer: "SQLite", status: "delivered", unsaved: why });
+    expect(html).not.toContain("Answers saved");
+    expect(html).not.toContain("Saved. You can leave this page.");
+    expect(html).toContain("Answers sent · not saved");
+    expect(html).toContain("Your answers reached the agent and could not be saved.");
+    expect(html).toContain("SQLite");
+    expect(html).toContain(`<details class="qa-unsaved"><summary>Why</summary><p class="qa-hint">${why}</p></details>`);
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain("Send answers");
+    // Put aside, the strip says the same.
+    const strip = arrive({ answer: "SQLite", status: "delivered", unsaved: why });
+    expect(strip).toContain("Answers sent · not saved");
+    expect(strip).not.toContain("Answers saved");
+  });
+
   it("keeps a failed delivery visible with the saved answer and retry action", () => {
     const html = draw({ answer: "SQLite", status: "failed", error: "Could not start agent" });
     expect(html).toContain("Could not start agent");

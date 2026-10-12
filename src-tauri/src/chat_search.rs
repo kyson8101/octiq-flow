@@ -8,7 +8,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
@@ -123,8 +122,7 @@ pub fn search(
             .into_iter()
             .map(|workspace| (workspace.id, workspace.name))
             .collect();
-    let root = crate::transcript::chats_dir()
-        .ok_or_else(|| "The chat archive is unavailable.".to_string())?;
+    let root = crate::transcript::chats_folder()?;
     let mut guard = SEARCH_STATE.lock().map_err(|e| e.to_string())?;
     if guard.as_ref().is_none_or(|state| state.root != root) {
         *guard = Some(SearchState {
@@ -284,6 +282,11 @@ fn save_cache(root: &Path, cache: &SearchCache) {
     let Ok(raw) = serde_json::to_vec(cache) else {
         return;
     };
+    // `root` was found when the search state was made: it is asked again
+    // here whether it is still in the folder the server started with.
+    if crate::profile::make_dir(root).is_err() {
+        return;
+    }
     let target = cache_path(root);
     let temp = root.join(format!("search-index.{}.tmp", std::process::id()));
     if fs::write(&temp, raw).is_ok() {
@@ -308,9 +311,11 @@ fn transcript_stamp(path: &Path) -> Option<String> {
 fn index_transcript(path: &Path) -> Result<Vec<SearchDocument>, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut documents = Vec::new();
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let Ok(event) = serde_json::from_str::<Value>(&line) else {
-            continue;
+    // A line that cannot be decoded is passed over, never the end of the
+    // read (`transcript::for_each_line`).
+    crate::transcript::for_each_line(file, |_, line| {
+        let Ok(event) = serde_json::from_slice::<Value>(line) else {
+            return;
         };
         for entry in conversation_entries(&event) {
             for text in entry_chunks(&entry.text) {
@@ -329,7 +334,7 @@ fn index_transcript(path: &Path) -> Result<Vec<SearchDocument>, String> {
                 documents.push(document);
             }
         }
-    }
+    });
     Ok(documents)
 }
 
@@ -681,5 +686,26 @@ mod tests {
         assert_eq!(said.len(), 2, "{said:?}");
         assert!(said[0].contains("4471"));
         assert_eq!(said[1], "HERON");
+    }
+
+    /// Review of bf9d8cd, the carried Medium: the index's reader ended at
+    /// the first line that is not UTF-8, so nothing said after one could
+    /// be searched for.
+    #[test]
+    fn a_line_that_is_not_utf8_hides_nothing_said_after_it_from_search() {
+        let file = crate::test_dir::TestPath::new("search-damaged", "chat_damaged.jsonl");
+        let mut bytes = b"{\"type\":\"user\",\"message\":{\"content\":\"first words\"}}\n".to_vec();
+        bytes.extend_from_slice(b"{\"type\":\"assistant\",\"text\":\"\xE4\xBD\n");
+        bytes.extend_from_slice(
+            b"{\"type\":\"user\",\"message\":{\"content\":\"the heron came back\"}}\n",
+        );
+        fs::write(&file, bytes).unwrap();
+
+        let said: Vec<String> = index_transcript(&file)
+            .unwrap()
+            .into_iter()
+            .map(|document| document.text)
+            .collect();
+        assert_eq!(said, ["first words", "the heron came back"]);
     }
 }

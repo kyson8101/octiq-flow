@@ -156,6 +156,43 @@ impl OrchestrationStore {
         key: &str,
         context: crate::agent_chat::StartContext,
     ) -> Result<(), String> {
+        self.resume_context_as(None, key, context)
+    }
+
+    /// `save_resume_context` for a level that has ALREADY taken hold in the
+    /// running agent (`chat_set_access`) and is no higher than the one on
+    /// record: kept here whether or not it could be saved. Refused instead,
+    /// a host resume would have started the chat at the level the person
+    /// had just left.
+    ///
+    /// **Only ever a lowering.** A level higher than the one on record is
+    /// not kept regardless, whoever asks: it is saved or it is refused
+    /// (review of b894867, H8). `chat_set_access` records a raise before it
+    /// tells the agent, so by the time it gets here a raise is on record
+    /// and this is the same level again.
+    pub(crate) fn keep_resume_context(
+        &self,
+        key: &str,
+        context: crate::agent_chat::StartContext,
+    ) -> Result<(), String> {
+        use crate::access_request::rank;
+        use crate::agent_provider::Access;
+        let level = |start: &crate::agent_chat::StartContext| {
+            rank(start.access_level().unwrap_or(Access::Read))
+        };
+        let widens = self
+            .saved_resume_context(key)
+            .is_none_or(|saved| level(&context) > level(&saved));
+        let regardless = (!widens).then_some("the chat's access level");
+        self.resume_context_as(regardless, key, context)
+    }
+
+    fn resume_context_as(
+        &self,
+        regardless: Option<&str>,
+        key: &str,
+        context: crate::agent_chat::StartContext,
+    ) -> Result<(), String> {
         // Only orchestrated chats need unattended recovery. Never persist the
         // project's environment here; delivery reloads it from the project.
         let known = {
@@ -174,14 +211,17 @@ impl OrchestrationStore {
         if !known {
             return Ok(());
         }
-        self.mutate(|data| {
+        self.mutate_as(regardless, |data| {
             data.resume_contexts
                 .insert(key.into(), context.without_env());
             Ok(())
         })
     }
+    /// Called once a chat's process has been ended for another provider:
+    /// forgotten here whether or not that could be saved, so the old
+    /// settings cannot resume the chat.
     pub(crate) fn forget_resume_context(&self, key: &str) -> Result<(), String> {
-        self.mutate(|data| {
+        self.mutate_regardless("the forgotten start settings", |data| {
             data.resume_contexts.remove(key);
             Ok(())
         })

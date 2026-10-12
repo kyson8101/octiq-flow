@@ -80,7 +80,15 @@ impl Record {
         format!("The user answered your saved OctiqFlow questions (request {}).\n\n{}\n\nContinue the original task using these answers and the conversation context. Check what is already complete before acting; do not repeat completed actions. These answers apply to the questions above, not to unrelated later requests.", self.id, pairs)
     }
 
-    fn views(&self) -> Vec<Asked> {
+    /// The questions as a page draws them. `unsaved` is why the store's
+    /// records are not on disk, when they are not: an answered card is then
+    /// `delivered`, with that reason, and never `saved` (review of b894867,
+    /// H9: the page read `saved` and said "Answers saved" of an answer no
+    /// file held). Derived for the read, never stored.
+    fn views(&self, unsaved: Option<&str>) -> Vec<Asked> {
+        let answered = self.complete();
+        let failed = matches!(self.delivery, Delivery::Failed | Delivery::Uncertain);
+        let unsaved = unsaved.filter(|_| answered && !failed);
         self.questions
             .iter()
             .enumerate()
@@ -90,9 +98,11 @@ impl Record {
                 batch: (self.questions.len() > 1).then(|| self.id.clone()),
                 batch_size: (self.questions.len() > 1).then_some(self.questions.len()),
                 answer: self.answers[i].clone(),
-                status: if matches!(self.delivery, Delivery::Failed | Delivery::Uncertain) {
+                status: if failed {
                     "failed"
-                } else if self.complete() {
+                } else if unsaved.is_some() {
+                    "delivered"
+                } else if answered {
                     "saved"
                 } else {
                     "pending"
@@ -100,16 +110,28 @@ impl Record {
                 .into(),
                 error: self.error.clone(),
                 retryable: self.delivery == Delivery::Failed,
+                unsaved: unsaved.map(str::to_string),
             })
             .collect()
     }
 }
+
+/// This store, in the list of what still owes a save (`profile_status`).
+pub(crate) const OWED: &str = "questions";
+
+/// What an answer handed to its tool is called when the hand-over could not
+/// be recorded (`unsaved::say`).
+const DELIVERED: &str = "the delivered answer";
 
 #[derive(Default)]
 struct State {
     records: BTreeMap<String, Record>,
     waiters: BTreeMap<String, Option<oneshot::Sender<()>>>,
     load_error: Option<String>,
+    /// `records` holds an answer, a hand-over or a cancel the file does
+    /// not, and this is why it could not be written. `None` when the file
+    /// holds everything.
+    owed: Option<String>,
 }
 
 #[derive(Default)]
@@ -176,7 +198,7 @@ impl QuestionStore {
             .records
             .values()
             .filter(|r| r.open())
-            .flat_map(Record::views)
+            .flat_map(|record| record.views(state.owed.as_deref()))
             .collect())
     }
 
@@ -208,13 +230,12 @@ impl QuestionStore {
         Self::check(&state)?;
         let mut next = state.records.clone();
         next.insert(id.clone(), record.clone());
-        self.persist(&next)?;
-        state.records = next;
+        self.save(&mut state, next)?;
         let (tx, rx) = oneshot::channel();
         state.waiters.insert(id.clone(), Some(tx));
         // Ordered with submit/cancel so a late announcement cannot resurrect a
         // question that another device has already closed.
-        for asked in record.views() {
+        for asked in record.views(None) {
             crate::bus::emit("user-question", asked);
         }
         Ok((id, rx))
@@ -222,7 +243,10 @@ impl QuestionStore {
 
     /// Atomic across the entire card, including cards containing several calls.
     /// Retrying the same answers is idempotent; conflicting answers are refused.
-    pub fn answer(&self, answers: &[Answer]) -> Result<(), String> {
+    ///
+    /// `Ok(Some(why))` is an answer a waiting tool was given that is not on
+    /// disk: owed, and for the caller to say.
+    pub fn answer(&self, answers: &[Answer]) -> Result<Option<String>, String> {
         if answers.is_empty() {
             return Err("No answers were submitted".into());
         }
@@ -257,12 +281,31 @@ impl QuestionStore {
                 record.delivery = Delivery::Ready;
             }
         }
-        self.persist(&next)?;
+        // An answer a tool is waiting for reaches it whether or not it can
+        // be saved (review of 205bca2, H5: the save used to come first, and
+        // with the profile folder away the tool waited on for nothing). An
+        // answer nobody is waiting for is only a record, kept for a later
+        // turn, and one that cannot be kept is refused as before: nothing
+        // changed, and no receipt is given for it.
+        let waited_for = changed.iter().any(|id| {
+            next[id].complete()
+                && state
+                    .waiters
+                    .get(id)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|tool| !tool.is_closed())
+        });
+        let unsaved = match self.persist(&next) {
+            Ok(()) => None,
+            Err(why) if waited_for => Some(why),
+            Err(why) => return Err(why),
+        };
         state.records = next;
+        state.owed = unsaved.clone();
         for id in changed {
             let record = &state.records[&id];
             let complete = record.complete();
-            publish(record);
+            publish(record, state.owed.as_deref());
             if complete {
                 // Keep an entry after notification: its presence owns the
                 // original tool path until take_tool or detach wins the lock.
@@ -271,7 +314,48 @@ impl QuestionStore {
                 }
             }
         }
+        Ok(unsaved)
+    }
+
+    /// Write `next` and then keep it: a change that only makes a record is
+    /// refused when it cannot be saved. A save that succeeds writes every
+    /// record, so it also makes good whatever was owed.
+    fn save(&self, state: &mut State, next: BTreeMap<String, Record>) -> Result<(), String> {
+        self.persist(&next)?;
+        state.records = next;
+        state.owed = None;
         Ok(())
+    }
+
+    /// Keep `next` whether or not it could be written, for a change the
+    /// tool waiting on it is told of at once. Answers why it is not on disk.
+    fn keep(&self, state: &mut State, next: BTreeMap<String, Record>) -> Option<String> {
+        let unsaved = self.persist(&next).err();
+        state.records = next;
+        state.owed = unsaved.clone();
+        unsaved
+    }
+
+    /// Whether an answer, a hand-over or a cancel is kept here that is not
+    /// on disk.
+    pub fn owes(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.owed.is_some())
+    }
+
+    /// Write what could not be saved when it happened. `true` when this
+    /// call wrote it; an error when it is still owed. Every open card that
+    /// was drawn as "answered, not saved" is said again, saved now.
+    pub fn settle(&self) -> Result<bool, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        if state.owed.is_none() {
+            return Ok(false);
+        }
+        self.persist(&state.records)?;
+        state.owed = None;
+        for record in state.records.values().filter(|r| r.complete()) {
+            publish(record, None);
+        }
+        Ok(true)
     }
 
     /// Commit ownership to the live tool before returning its answer. A late
@@ -289,10 +373,14 @@ impl QuestionStore {
         let answer = record.report();
         let mut next = state.records.clone();
         next.get_mut(id).unwrap().delivery = Delivery::Delivered;
-        self.persist(&next)?;
-        state.records = next;
+        // The tool is here for its answer and gets it. Were the hand-over
+        // never written, a restart would read the answer as still to be
+        // delivered and say it to the agent a second time, so it is owed.
+        if let Some(why) = self.keep(&mut state, next) {
+            crate::unsaved::say(DELIVERED, why);
+        }
         state.waiters.remove(id);
-        publish(&state.records[id]);
+        publish(&state.records[id], state.owed.as_deref());
         Ok(Some(answer))
     }
 
@@ -316,10 +404,11 @@ impl QuestionStore {
         let answers = record.answers.iter().flatten().cloned().collect::<Vec<_>>();
         let mut next = state.records.clone();
         next.get_mut(id).unwrap().delivery = Delivery::Delivered;
-        self.persist(&next)?;
-        state.records = next;
+        if let Some(why) = self.keep(&mut state, next) {
+            crate::unsaved::say(DELIVERED, why);
+        }
         state.waiters.remove(id);
-        publish(&state.records[id]);
+        publish(&state.records[id], state.owed.as_deref());
         Ok(Some(answers))
     }
 
@@ -376,13 +465,15 @@ impl QuestionStore {
         }
         record.delivery = delivery;
         record.error = error;
-        self.persist(&next)?;
-        state.records = next;
-        publish(&state.records[id]);
+        self.save(&mut state, next)?;
+        publish(&state.records[id], state.owed.as_deref());
         Ok(())
     }
 
-    pub fn cancel(&self, ids: &[String]) -> Result<(), String> {
+    /// Cancel the open questions holding any of `ids`. An error is nothing
+    /// cancelled. `Ok(Some(why))` is cancelled here, with the tools told,
+    /// and not on disk: owed, and for the caller to say.
+    pub fn cancel(&self, ids: &[String]) -> Result<Option<String>, String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         Self::check(&state)?;
         let mut next = state.records.clone();
@@ -395,20 +486,19 @@ impl QuestionStore {
             changed.push(record.id.clone());
         }
         if changed.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         // Stop remains effective in this process even if the disk fails. The
-        // error is still returned so no caller claims durable cancellation.
-        let saved = self.persist(&next);
-        state.records = next;
+        // reason is still returned so no caller claims durable cancellation.
+        let unsaved = self.keep(&mut state, next);
         for id in changed {
             state.waiters.remove(&id);
-            publish(&state.records[&id]);
+            publish(&state.records[&id], state.owed.as_deref());
         }
-        saved
+        Ok(unsaved)
     }
 
-    pub fn cancel_chat(&self, chat_key: &str) -> Result<(), String> {
+    pub fn cancel_chat(&self, chat_key: &str) -> Result<Option<String>, String> {
         let ids = {
             let state = self.state.lock().map_err(|e| e.to_string())?;
             Self::check(&state)?;
@@ -433,14 +523,13 @@ impl QuestionStore {
             record.delivery = Delivery::Ready;
             record.error = None;
         }
-        self.persist(&next)?;
-        state.records = next;
+        self.save(&mut state, next)?;
         for record in state
             .records
             .values()
             .filter(|r| r.ids.iter().any(|id| ids.contains(id)))
         {
-            publish(record);
+            publish(record, state.owed.as_deref());
         }
         Ok(())
     }
@@ -647,9 +736,11 @@ mod tests {
     }
 }
 
-fn publish(record: &Record) {
+/// Say a record's questions as they are now. `unsaved` is why the store's
+/// records are not on disk, when they are not (`State::owed`).
+fn publish(record: &Record, unsaved: Option<&str>) {
     if record.open() {
-        for asked in record.views() {
+        for asked in record.views(unsaved) {
             crate::bus::emit("question-updated", asked);
         }
     } else {
@@ -661,7 +752,7 @@ fn publish(record: &Record) {
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or("Questions have no storage directory")?;
-    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    crate::profile::make_dir(dir)?;
     let tmp = dir.join(format!(".questions-{}.tmp", uuid::Uuid::new_v4()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);

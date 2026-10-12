@@ -81,7 +81,14 @@ impl Services {
             workspaces.clone(),
         );
         crate::orchestration::environments::start_reconciler(orchestrations.clone());
-        Self {
+        // Read the sandbox state once now, so that a sandbox this server
+        // did not start itself (one left running by the server before it)
+        // can still be stopped if the profile folder goes away before
+        // anything else has read it (`sandbox::Store::known`).
+        if let Err(why) = crate::sandbox::Store::profile().known() {
+            eprintln!("[sandbox] could not read the sandbox state at startup: {why}");
+        }
+        let services = Self {
             workspaces,
             chats,
             watch: Arc::new(FileWatchState::default()),
@@ -89,7 +96,12 @@ impl Services {
             orchestrations,
             ptys: Arc::new(PtyManager::default()),
             handovers: crate::handover::Wiring::profile(),
-        }
+        };
+        // What a Stop or an answer could not record is written once the
+        // profile folder is back (`settle_owed`).
+        #[cfg(not(test))]
+        start_owed_saves(services.clone());
+        services
     }
 }
 
@@ -468,6 +480,111 @@ fn route_task(
     Ok((worker, assignee, routed.destination))
 }
 
+#[cfg(test)]
+impl Services {
+    /// The stores a server reads at startup, from the profile folder this
+    /// thread started in, and none of its background threads: a sweeper on a
+    /// thread of its own is another process as far as a test's profile goes.
+    /// Calling it again is what a restart reads.
+    pub(crate) fn at_profile() -> Self {
+        let orchestrations = Arc::new(OrchestrationStore::load_profile());
+        let mut chats = ChatManager::with_saved_questions(
+            crate::profile::profile_dir()
+                .join("chats")
+                .join("questions.json"),
+        );
+        chats.orchestrations = orchestrations.clone();
+        Self {
+            workspaces: Arc::new(WorkspaceState::with_projects(Vec::new())),
+            chats: Arc::new(chats),
+            watch: Arc::new(FileWatchState::default()),
+            git_watch: Arc::new(GitWatchState::default()),
+            orchestrations,
+            ptys: Arc::new(PtyManager::default()),
+            handovers: crate::handover::Wiring::scratch(),
+        }
+    }
+}
+
+/// A command's answer, and what it did that could not be recorded.
+pub struct Told {
+    pub result: Result<Value, String>,
+    /// Empty for almost every call. See `unsaved.rs`.
+    pub unsaved: Vec<crate::unsaved::Unsaved>,
+}
+
+/// `dispatch`, with what the command could not record beside its answer.
+/// Both transports answer through this: an action that happened is not
+/// reported as failed because its record could not be written.
+pub fn told(svc: &Services, cmd: &str, args: Value) -> Told {
+    let (result, unsaved) = crate::unsaved::told(|| dispatch(svc, cmd, args));
+    Told { result, unsaved }
+}
+
+/// Try again every save an ending or answering action could not make, and
+/// name the stores that still owe one.
+///
+/// A store whose save failed keeps what it could not write and a flag that
+/// it owes it. This writes each such store again, whole. With nothing owed
+/// it is a lock and a flag per store, and with the folder still away the
+/// write fails as it did and nothing is made.
+pub fn settle_owed(svc: &Services) -> Vec<&'static str> {
+    let mut owed = crate::agent_chat::settle_owed(&svc.chats);
+    if svc.orchestrations.settle_owed().is_err() {
+        owed.push(crate::orchestration::OWED);
+    }
+    if crate::sandbox::Store::profile().settle().is_err() {
+        owed.push(crate::sandbox::OWED);
+    }
+    owed
+}
+
+/// The stores `settle_owed` would write, without writing them.
+fn owed(svc: &Services) -> Vec<&'static str> {
+    let mut owed = crate::agent_chat::owed(&svc.chats);
+    if svc.orchestrations.owes() {
+        owed.push(crate::orchestration::OWED);
+    }
+    if crate::sandbox::Store::profile().owes() {
+        owed.push(crate::sandbox::OWED);
+    }
+    owed
+}
+
+/// How often `settle_owed` is tried. It is the longest a save can stay
+/// owed once the profile folder is back.
+#[cfg(not(test))]
+const OWED_SWEEP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Make good, for as long as the server runs, every save an ending or
+/// answering action could not make. Not started under test: a thread of
+/// its own is another process as far as a test's profile folder goes, and
+/// a test calls `settle_owed` itself.
+#[cfg(not(test))]
+fn start_owed_saves(svc: Services) {
+    std::thread::spawn(move || {
+        let mut still: Vec<&'static str> = Vec::new();
+        loop {
+            std::thread::sleep(OWED_SWEEP);
+            let owed = settle_owed(&svc);
+            // And what could not be STARTED while the folder was away: the
+            // first message of each queue a Stop left waiting.
+            crate::agent_chat::start_waiting_queues(&svc.chats);
+            if owed != still {
+                if owed.is_empty() {
+                    println!("[unsaved] everything that was owed is on disk now");
+                } else {
+                    println!(
+                        "[unsaved] still owed to the profile folder: {}",
+                        owed.join(", ")
+                    );
+                }
+                still = owed;
+            }
+        }
+    });
+}
+
 pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String> {
     let git_write_path = match cmd {
         "git_commit" | "git_push" | "git_pull" | "git_switch_branch" => {
@@ -550,6 +667,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         _ => {}
     }
     match cmd {
+        // The profile folder this server fixed at startup: its path, the
+        // configured base it fell back from (if it did), whether it is
+        // there now, and the sentence to show when either is not as
+        // configured. Read-only.
+        // `owed` names the stores that hold something a Stop or an answer
+        // could not write (`unsaved.rs`): empty when the disk has caught up.
+        "profile_status" => {
+            let mut status = crate::profile::status();
+            status["owed"] = json!(owed(svc));
+            Ok(status)
+        }
         // ---- projects -----------------------------------------------------
         "feedback_list" => crate::feedback::Store::profile().list(
             serde_json::from_value(args).map_err(|e| format!("Invalid feedback filter: {e}"))?,
@@ -739,6 +867,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             )
         }
         "chat_start" => {
+            // Said first, before the roster is read for the turn: a start
+            // whose record cannot be kept is refused in the profile's words.
+            crate::profile::available()?;
             let key: String = arg(&args, "key")?;
             let turn_id = crate::agent_chat::fresh_turn_id(arg(&args, "turnId")?);
             let prompt: Option<String> = arg(&args, "prompt")?;
@@ -754,6 +885,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // (`agent_chat::chat_complete_impl`). The page's command and nobody
         // else's: no hook routes here and the MCP server has no such tool.
         "chat_complete" => {
+            crate::profile::available()?;
             let key: String = arg(&args, "chatKey")?;
             let text = completion_wrap_up(svc, &key)?;
             if let Some(completing) =
@@ -786,6 +918,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             to_value(completion_preview(svc, &key))
         }
         "chat_send" => {
+            crate::profile::available()?;
             let key: String = arg(&args, "key")?;
             let words: String = arg(&args, "text")?;
             let record_user: Option<bool> = arg(&args, "recordUser")?;
@@ -842,7 +975,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
             arg(&args, "turnId")?,
         )),
-        "chat_interrupt" => unit(crate::agent_chat::chat_interrupt_impl(
+        // The Stop button. Answers `{ stopped, waiting, notStarted? }`: a
+        // Stop that stopped the agent is not an error because the message
+        // queued behind it could not start (`agent_chat::Stopped`).
+        "chat_interrupt" => to_value(crate::agent_chat::chat_interrupt_impl(
             &svc.chats,
             arg(&args, "key")?,
         )),
@@ -876,14 +1012,23 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &svc.chats,
             &arg::<String>(&args, "key")?,
         )),
-        "chat_since" => Ok(json!(crate::agent_chat::chat_since(
-            arg(&args, "key")?,
-            arg(&args, "after")?,
-        ))),
-        "chat_page" => to_value(crate::transcript::page(
-            &arg::<String>(&args, "key")?,
-            arg(&args, "before")?,
-        )),
+        // A record read from a profile folder that is not there is not a
+        // conversation with nothing in it: the page gets the reason, and
+        // keeps what it has drawn.
+        "chat_since" => {
+            crate::profile::available()?;
+            Ok(json!(crate::agent_chat::chat_since(
+                arg(&args, "key")?,
+                arg(&args, "after")?,
+            )))
+        }
+        "chat_page" => {
+            crate::profile::available()?;
+            to_value(crate::transcript::page(
+                &arg::<String>(&args, "key")?,
+                arg(&args, "before")?,
+            ))
+        }
         // The list the page draws first, before it has read the ledger. A
         // chat that coordinates a run the person has not archived says so
         // (`coordinatesRun: true`), so the page can hold the run column
@@ -891,6 +1036,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // answer; the index stores nothing of it, and `chat_index_save`
         // ignores it coming back.
         "chat_index_list" => {
+            // A profile folder that is away is not a list with no chats in
+            // it: the page gets the reason, and keeps the list it has.
+            crate::profile::available()?;
             let coordinating = svc.orchestrations.coordinating_chats();
             let mut chats = json!(crate::agent_chat::chat_index_list());
             for chat in chats.as_array_mut().into_iter().flatten() {
@@ -903,7 +1051,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             }
             Ok(chats)
         }
-        "chat_index_deleted" => Ok(json!(crate::agent_chat::chat_index_deleted())),
+        "chat_index_deleted" => {
+            crate::profile::available()?;
+            Ok(json!(crate::agent_chat::chat_index_deleted()))
+        }
         // Where this chat is and what became of its work. The report half is
         // whatever the agent last said; everything else is checked with git on
         // the way out (`chat_task.rs`).
@@ -1136,22 +1287,43 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
 
         // ---- questions ----------------------------------------------------
         "question_pending" => to_value(svc.chats.questions.pending()),
+        // An answer a tool is waiting for reaches it whether or not it could
+        // be saved; then it is said as not recorded beside this answer, and
+        // the store owes the save.
+        //
+        // The receipt says which of the two happened and never more
+        // (review of b894867, H9). `saved: true` is "these answers are on
+        // disk" and nothing else. An answer that reached its tool and could
+        // not be written is `{ saved: false, delivered: true, unsaved }`,
+        // with the reason. The single-question command predates receipts:
+        // its `true` is "accepted", which is all an older page reads it as.
         "question_answer" => {
-            svc.chats
+            let unsaved = svc
+                .chats
                 .questions
                 .answer(&[crate::question_store::Answer {
                     id: arg(&args, "id")?,
                     answer: arg(&args, "answer")?,
                 }])?;
+            if let Some(why) = unsaved {
+                crate::unsaved::say("the answer", why);
+            }
             Ok(json!(true))
         }
         "question_answer_batch" => {
-            svc.chats
-                .questions
-                .answer(&arg::<Vec<crate::question_store::Answer>>(
-                    &args, "answers",
-                )?)?;
-            Ok(json!({ "saved": true }))
+            let unsaved =
+                svc.chats
+                    .questions
+                    .answer(&arg::<Vec<crate::question_store::Answer>>(
+                        &args, "answers",
+                    )?)?;
+            match unsaved {
+                None => Ok(json!({ "saved": true })),
+                Some(why) => {
+                    crate::unsaved::say("the answer", why.clone());
+                    Ok(json!({ "saved": false, "delivered": true, "unsaved": why }))
+                }
+            }
         }
         "question_cancel" => unit(crate::agent_chat::cancel_questions(
             &svc.chats,
@@ -2068,7 +2240,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             if interrupt && to == "coordinator" {
                 return Err("Only a coordinator interrupts, and only a worker attempt.".into());
             }
-            let message = svc.orchestrations.record_message(
+            let message = svc.orchestrations.record_message_as(
+                interrupt,
                 &actor,
                 arg(&args, "runId")?,
                 to,
@@ -2081,8 +2254,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 // A host call of the worker's took it in the meantime.
                 value["interrupt"] = json!("delivered");
             } else if interrupt {
-                // The message is already durable; an interrupt that fails
-                // leaves it to the ordinary delivery.
+                // The message is kept, on disk or owed to it; an interrupt
+                // that fails leaves it to the ordinary delivery.
                 match crate::agent_chat::interrupt_worker_turn(&svc.chats, &message.to_chat_key) {
                     Ok(worker) => value["interrupt"] = json!(worker),
                     Err(error) => {
@@ -2529,5 +2702,224 @@ mod tests {
         ] {
             assert!(!source.contains("chat_complete"), "{name}");
         }
+    }
+
+    /// The services of a server whose one project is the folder `root`, so
+    /// the page's file editor may save inside it.
+    fn editing_in(root: &std::path::Path) -> Services {
+        let project = serde_json::from_value(json!({
+            "id": "project", "name": "Project", "primary_path": root,
+        }))
+        .unwrap();
+        Services {
+            workspaces: Arc::new(WorkspaceState::with_projects(vec![project])),
+            chats: Arc::new(ChatManager::default()),
+            watch: Arc::new(FileWatchState::default()),
+            git_watch: Arc::new(GitWatchState::default()),
+            orchestrations: Arc::new(OrchestrationStore::default()),
+            ptys: Arc::new(PtyManager::default()),
+            handovers: crate::handover::Wiring::scratch(),
+        }
+    }
+
+    fn editor_saves(services: &Services, path: &std::path::Path, text: &str) -> Result<(), String> {
+        dispatch(
+            services,
+            "write_file",
+            json!({ "path": path, "content": text }),
+        )
+        .map(|_| ())
+    }
+
+    /// Review of bf9d8cd, finding 4, through the door the page's Save uses:
+    /// `write_file` wrote over a chat's record with a bare `fs::write`,
+    /// behind the record's own functions, so a notice the host held a
+    /// receipt for was gone and the record's generation had not moved. The
+    /// home folder is a write root and holds the profile, so every install
+    /// could; here a project that holds the profile stands for it.
+    #[test]
+    fn the_file_editor_does_not_write_over_a_chat_record() {
+        let home = crate::test_dir::TestDir::new("editor-record").canonicalized();
+        let _process = crate::profile::started_in(&home);
+        let key = format!("chat:editor-{}", uuid::Uuid::new_v4().simple());
+        let notice = json!({ "type": "octiq_task_reopened", "taskId": "task_1" });
+        assert!(crate::transcript::append_synced(&key, &notice).is_some());
+        let record = crate::transcript::path_for(&key).unwrap();
+        let before = std::fs::read(&record).unwrap();
+
+        let services = editing_in(&home);
+        let refused = editor_saves(&services, &record, "{\"type\":\"assistant\"}\n");
+        assert_eq!(
+            std::fs::read(&record).unwrap(),
+            before,
+            "the editor wrote over a chat's record"
+        );
+        let why = refused.unwrap_err();
+        assert!(why.contains("OctiqFlow keeps"), "{why}");
+
+        // Reading it is as before.
+        let shown = dispatch(&services, "read_file_preview", json!({ "path": record })).unwrap();
+        assert!(shown["content"]
+            .as_str()
+            .unwrap()
+            .contains("octiq_task_reopened"));
+    }
+
+    /// A message is not sent, and no chat started, while the profile folder
+    /// is away: the turn's record could not be kept. The page shows the
+    /// answer under the message, and reads the same from `profile_status`.
+    #[test]
+    fn a_message_is_refused_in_words_while_the_profile_folder_is_away() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let services = editing_in(&home.dir);
+        let dir = crate::profile::profile_dir();
+        home.unplug();
+        let why = dispatch(
+            &services,
+            "chat_send",
+            json!({ "key": "chat:away", "text": "Hello" }),
+        )
+        .unwrap_err();
+        assert!(why.contains(&dir.display().to_string()), "{why}");
+        assert!(why.contains("nothing was saved"), "{why}");
+        let status = dispatch(&services, "profile_status", json!({})).unwrap();
+        assert_eq!(status["available"], false);
+        assert_eq!(status["notice"], why);
+        assert_eq!(status["dir"], json!(dir));
+    }
+
+    /// Review of 8169dd3, RULE 3, through the doors the page reads by: a
+    /// read from a profile that is gone is an error carrying the profile's
+    /// one sentence, never what a first run would answer. An empty answer
+    /// drew a blank form the person could save over their own data. Gone
+    /// three ways: its drive, the folder itself, another folder in its
+    /// place. Every one answers again, unchanged, once the folder is back.
+    #[test]
+    fn what_the_page_reads_is_an_error_while_the_profile_folder_is_gone() {
+        use crate::profile::tests::Home;
+        let home = Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let dir = crate::profile::profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        // The roster's path is one global in tests: hold it at the profile's.
+        let _roster = crate::team::use_test_path(dir.join("team.json"));
+        let services = Services {
+            handovers: crate::handover::Wiring::profile(),
+            ..editing_in(&home.dir)
+        };
+        crate::personal_preferences::save(&crate::personal_preferences::default_path(), "my rules")
+            .unwrap();
+        let key = format!("chat:read-{}", uuid::Uuid::new_v4().simple());
+        let said = json!({ "type": "assistant", "message": { "content": "Said" } });
+        assert_eq!(crate::transcript::append(&key, &said), Some(1));
+        let reads = [
+            ("personal_preferences", json!({})),
+            ("memory_vault_settings", json!({})),
+            ("team_list", json!({ "all": true })),
+            ("team_policy", json!({})),
+            ("team_head", json!({})),
+            ("team_home", json!({})),
+            ("team_front_desk", json!({})),
+            ("team_leads", json!({})),
+            ("agent_team_list", json!({})),
+            ("handover_list", json!({})),
+            ("front_desk_unfinished", json!({})),
+            (
+                "feedback_list",
+                json!({ "query": "", "offset": 0, "limit": 30 }),
+            ),
+            ("sandbox_snapshot", json!({})),
+            ("chat_index_list", json!({})),
+            ("chat_index_deleted", json!({})),
+            ("chat_since", json!({ "key": key, "after": 0 })),
+            ("chat_page", json!({ "key": key })),
+            ("chat_task", json!({ "chatId": "read" })),
+            ("image_preview_list", json!({ "key": key })),
+        ];
+        let answers = |when: &str| -> Vec<Value> {
+            reads
+                .iter()
+                .map(|(command, args)| {
+                    dispatch(&services, command, args.clone())
+                        .unwrap_or_else(|why| panic!("{command} {when}: {why}"))
+                })
+                .collect()
+        };
+        let at_first = answers("with the profile there");
+        assert_eq!(at_first[0]["text"], "my rules");
+
+        type Way = (fn(&Home), fn(&Home));
+        let ways: [Way; 3] = [
+            (Home::unplug, Home::plug_back),
+            (Home::move_away, Home::move_back),
+            (Home::replace, Home::move_back),
+        ];
+        for (goes, comes_back) in ways {
+            goes(&home);
+            let why = crate::profile::available().expect_err("the profile folder is not there");
+            let mut answered = Vec::new();
+            for (command, args) in &reads {
+                match dispatch(&services, command, args.clone()) {
+                    Err(said) if said == why => {}
+                    other => answered.push(format!("{command}: {other:?}")),
+                }
+            }
+            assert!(
+                answered.is_empty(),
+                "read as something other than the profile's own error:\n{}",
+                answered.join("\n")
+            );
+            comes_back(&home);
+            // What does not depend on the clock answers exactly as before.
+            let again = answers("with the profile back");
+            for at in [0, 1, 2, 3, 9, 15, 16] {
+                assert_eq!(again[at], at_first[at], "{}", reads[at].0);
+            }
+        }
+    }
+
+    /// The rule is the folder, not a list of names: everything in the
+    /// profile folder is some module's state (the roster, the ledger, the
+    /// server's token, the chat index), a file not made yet included. What
+    /// the person keeps there by hand stays theirs to edit.
+    #[test]
+    fn the_file_editor_writes_nothing_a_store_owns_in_the_profile_folder() {
+        let home = crate::test_dir::TestDir::new("editor-profile").canonicalized();
+        let _process = crate::profile::started_in(&home);
+        let profile = crate::profile::profile_dir();
+        let services = editing_in(&home);
+        std::fs::create_dir_all(profile.join("chats")).unwrap();
+        for owned in [
+            "team.json",
+            "orchestrations.json",
+            "web.json",
+            "workspaces.json",
+            "safety-authorizations.json",
+            "owner.lock",
+            "chats/index.json",
+            "chats/questions.json",
+            "chats/chat_never-made.jsonl",
+        ] {
+            let target = profile.join(owned);
+            // The owner lock is there already: the server left its mark.
+            let before = std::fs::read(&target).ok();
+            assert_eq!(before.is_some(), owned == "owner.lock", "{owned}");
+            let refused = editor_saves(&services, &target, "{}");
+            assert_eq!(std::fs::read(&target).ok(), before, "{owned} was written");
+            assert!(refused.unwrap_err().contains("OctiqFlow keeps"), "{owned}");
+        }
+
+        // The person's own: their notify hook and what is on a canvas.
+        std::fs::create_dir_all(profile.join("canvas").join("project")).unwrap();
+        for theirs in ["notify-hook", "canvas/project/plan.md"] {
+            let target = profile.join(theirs);
+            assert_eq!(editor_saves(&services, &target, "mine"), Ok(()), "{theirs}");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "mine");
+        }
+        // And a project file is written as it always was.
+        let note = home.join("notes.md");
+        assert_eq!(editor_saves(&services, &note, "a note"), Ok(()));
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "a note");
     }
 }

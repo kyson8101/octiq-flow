@@ -86,11 +86,12 @@ impl Vault {
     }
 
     fn load_config(&self) -> Result<Config, String> {
-        match fs::read(self.profile.join("memory-vault.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+        let path = self.profile.join("memory-vault.json");
+        match crate::profile::read(&path, |e| e.to_string())? {
+            Some(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|e| format!("Cannot read Memory Vault settings: {e}")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(e.to_string()),
+            // No file, in a profile that is there: no vault connected yet.
+            None => Ok(Config::default()),
         }
     }
 
@@ -117,7 +118,7 @@ impl Vault {
                 .to_string_lossy()
                 .into_owned();
         }
-        fs::create_dir_all(&self.profile).map_err(|e| e.to_string())?;
+        crate::profile::make_dir(&self.profile)?;
         atomic_write(
             &self.profile.join("memory-vault.json"),
             &serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
@@ -255,7 +256,7 @@ impl Vault {
 
     fn save_receipt(&self, receipt: &Receipt) -> Result<(), String> {
         let path = self.receipt_path(&receipt.id)?;
-        fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        crate::profile::make_dir(path.parent().unwrap())?;
         atomic_write(
             &path,
             &serde_json::to_vec_pretty(receipt).map_err(|e| e.to_string())?,
@@ -264,8 +265,9 @@ impl Vault {
     }
 
     fn load_receipt(&self, id: &str) -> Result<Receipt, String> {
-        serde_json::from_slice(&fs::read(self.receipt_path(id)?).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())
+        let bytes = crate::profile::read(&self.receipt_path(id)?, |e| e.to_string())?
+            .ok_or("No receipt has that ID.")?;
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())
     }
 
     fn reconcile(&self, receipt: &mut Receipt) -> Result<(), String> {
@@ -453,14 +455,14 @@ impl Vault {
             }
             if let Some(dest) = &receipt.destination {
                 let target = confined(root, dest, true, action == "archive")?;
-                fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+                crate::profile::make_dir(target.parent().unwrap())?;
                 confined(root, dest, true, action == "archive")?;
                 // Hard-link first to make destination creation no-clobber, then remove
                 // the source. An interrupted move remains visible in the receipt.
                 fs::hard_link(&source, &target).map_err(|e| e.to_string())?;
                 fs::remove_file(&source).map_err(|e| e.to_string())?;
             } else {
-                fs::create_dir_all(source.parent().unwrap()).map_err(|e| e.to_string())?;
+                crate::profile::make_dir(source.parent().unwrap())?;
                 confined(root, relative, true, false)?;
                 atomic_write(&source, after.as_bytes(), creating)?;
             }
@@ -876,6 +878,62 @@ mod tests {
             .unwrap()
         }
     }
+    /// Review of 8169dd3, RULE 1, probe VAULT_RECREATE: the settings were
+    /// read, the profile folder went, and the change's receipt was saved
+    /// with a call that makes its folder and every parent. The answer was
+    /// "saved", an empty profile stood where the real one had been (no
+    /// vault settings in it), and the next line of a chat went into it as
+    /// the second of a record whose first was in the folder that moved.
+    #[test]
+    fn a_change_made_after_the_profile_went_does_not_make_the_profile_again() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let dir = crate::profile::profile_dir();
+        crate::profile_lock::acquire("server").unwrap();
+        let notes = home.dir.join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        let vault = Vault::profile();
+        let config = vault
+            .configure(Config {
+                path: notes.to_string_lossy().into_owned(),
+                writable: true,
+            })
+            .unwrap();
+        let key = format!("test-vault-{}", uuid::Uuid::new_v4().simple());
+        let said = json!({ "type": "assistant", "message": { "content": "Said" } });
+        assert_eq!(crate::transcript::append(&key, &said), Some(1));
+
+        home.move_away();
+        let made = vault.mutate(
+            "chat:a",
+            Path::new(&config.path),
+            "write",
+            &json!({"path":"new.md","content":"note","requestId":"after-the-profile-went"}),
+            None,
+        );
+        assert!(
+            !dir.exists(),
+            "the vault's receipt made the profile folder again: {made:?}"
+        );
+        assert_eq!(
+            made.unwrap_err(),
+            crate::profile::available().unwrap_err(),
+            "the change did not say why it was not saved"
+        );
+        assert!(
+            !notes.join("new.md").exists(),
+            "a note was written with no receipt"
+        );
+
+        home.move_back();
+        assert_eq!(vault.settings().unwrap().path, config.path);
+        assert_eq!(
+            crate::transcript::append(&key, &said),
+            Some(2),
+            "the chat's record was split between two folders"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn a_vault_saved_with_a_verbatim_path_still_opens() {

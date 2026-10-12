@@ -120,7 +120,9 @@ and never again from inside an agent chat:
   cargo test`. A test that needs disk takes `crate::test_dir::TestDir` (or
   `TestPath` for a file), never a name joined onto `std::env::temp_dir()`:
   the guard removes the folder on drop, panics included. Hand-made temp
-  folders left tens of thousands of `octiq-*` entries in `$TMPDIR`. To run
+  folders left tens of thousands of `octiq-*` entries in `$TMPDIR`. The
+  profile folder is a scratch one under test too (`profile::started_in` for
+  a test that needs its own; see **Persistence locations**). To run
   several modules, put the filters after `--`:
   `cargo test --manifest-path src-tauri/Cargo.toml --lib -- feedback:: agent_provider:: permission::`.
   Before `--` cargo takes one positional filter and errors instead of testing.
@@ -257,6 +259,119 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 process owns a profile at a time (a second one refuses to start rather than
 overwrite the first's project list).
 
+**The profile dir is fixed when the server starts.** `profile::pin` is the
+first thing `run_headless` does: `<base>/<active>/` is resolved once from
+`~/.octiqflow/config.json`, and `profile::profile_dir` answers that one path
+until the process exits. It makes nothing and looks nothing up again.
+
+- **The fallback is at startup only.** A configured base that cannot be made
+  then gives way to `~/.octiqflow/profiles`, as before, and the server says
+  so: on its log line, and in `profile_status`'s `fallbackFrom` and `notice`.
+  It stays on that folder when the configured one comes back; only a restart
+  looks again.
+- **A folder that goes away under a running server is an error, never
+  another folder.** `profile::available` answers why in words (`The profile
+  folder … is not available right now: … OctiqFlow keeps to the folder it
+  started with and has not switched to another, so nothing was saved. …`).
+  `chat_send`, `chat_start`, `chat_complete` and `chat_index_list` answer
+  with it first, and no agent is started on a turn whose record cannot be
+  kept. When the folder is back the same calls go through; nothing is
+  restarted. What ran meanwhile: a turn already in flight goes on streaming
+  to the page and its lines are not recorded.
+- **Nothing the host does makes the profile folder after startup.** Folders
+  are made through one door, `profile::create_dir_all` (`make_dir` is the
+  same, in words). For a path in the profile it makes only what is BELOW
+  the profile folder, one `create_dir` each from the profile folder down,
+  so a profile that is gone fails in the filesystem whenever it went. A
+  look followed by a create was tried and was the hole: the folder went
+  between the two and came back empty, and a chat's next line became line
+  2 of a record whose line 1 was in the folder that moved. **No module
+  calls the standard library's `create_dir_all` or `create_dir`**; a
+  source scan fails the suite
+  (`profile::tests::no_module_makes_a_folder_but_through_the_profile`,
+  whose allow-list is `profile.rs` itself and the standalone `bin/octiq.rs`,
+  each with its reason). Whether a path can lie in the profile is not for
+  the caller to judge: a vault, a worktree or `~/.octiqflow/mcp` is inside
+  it when the profile base is set that way. A script the host starts keeps
+  the same rule (`scripts/mcp/preview.cjs` makes `previews/<chat>` and no
+  parent of it).
+- **The folder a server started with is that directory, not whatever is at
+  its path.** A path still answers after its folder is removed and another
+  is made there, or after it is pointed somewhere else. So a process leaves
+  a mark in the folder it takes: a word made up for the run, on the owner
+  lock's line (`pid kind mark`). It is left by the first question a process
+  asks of the profile (`profile::started`, which `pin` reaches first), so
+  the guarantee does not wait on the owner lock; `profile_lock::acquire`
+  writes the line again with the process's kind. A lock another live
+  process holds is never written over: that process keeps its mark, and
+  the one being refused knows the folder by its path alone for the moment
+  it has left. Every "is the profile there" is `Pinned::missing`: the
+  folder at the path holds this run's mark, or it is *gone* (the sentence
+  above) or *replaced* (`… is not the folder OctiqFlow started with: … has
+  not written into it, so nothing was saved. Put the original folder back
+  …, or restart OctiqFlow to use the folder that is there now.`). A new
+  question about the folder asks `profile::available`, never `is_dir` or
+  `exists` on the path.
+  - A replaced folder gets nothing: no folder made in it, no store saved,
+    no line appended, no hook run from it. A second server that starts in
+    a folder made at the path writes its own mark, and the first reads
+    that it is no longer in its folder and stops writing.
+  - `transcript::chats_dir` asks on every call, so a record's count,
+    generation and resolved folder name are never used against a folder
+    that only shares the path, and `confirm_synced` asks again after the
+    sync: a token is confirmed only in the directory it was made for.
+  - Why a mark and not the platform's file identity: device and inode
+    numbers change on a remount and are reused by some filesystems, a held
+    handle blocks an eject and dies with the drive, and stable Rust cannot
+    ask Windows for a directory's identity. The mark is one question with
+    one answer on macOS, Linux and Windows.
+  - What it cannot tell: a copy of the folder, lock and all, made while
+    this process runs and put at the same path, is the folder. A lock that
+    is deleted by hand reads as replaced until a restart. A profile folder
+    that could not be written at startup has no mark and is known by its
+    path alone, which the server says on its log.
+- **A read from a profile that is gone is an error, never a first run's
+  value.** "No file" in a profile that is there is the store's default; "no
+  file" because the folder is away says nothing about what is saved. Read
+  as a default, Settings drew a blank form over the person's saved rules
+  and an ordinary Save wrote the blank form's text over them once the
+  folder was back. A store that reads its file per call reads it with
+  `profile::read`, which answers the bytes, `None` for no file in a
+  profile that is there, or the profile's sentence (asked after the read,
+  never wrapped in the store's own words): preferences, the roster,
+  handovers, the vault's settings and receipts, safety authorizations,
+  feedback, sandbox state, PR workflows, chat task status, the memory
+  activity ledger. What answers the page from a record or the index asks
+  `profile::available` first (`chat_since`, `chat_page`,
+  `chat_index_deleted`, `image_preview_list`, `chat_search`). A store kept
+  in memory (ledger, projects, questions, usage, background tasks,
+  auto-resumes) goes on answering and never reloads while the server
+  runs: its save fails in the profile's words and, once the folder is
+  back, writes what it holds. **There is no global guard in front of
+  every command**: Stop, interrupt and the answer to a card work while the
+  folder is away, whatever they would have saved (Conventions, *An action
+  that ends work or answers a waiting agent never waits on a save*). A page that loads a whole value into a form and saves it
+  back offers no Save when the load failed (`unread` on
+  `PreferencesBlock` and `AgentPolicyBlock`; the vault form is not drawn).
+- **A new store reads `profile::profile_dir()`, makes folders with
+  `profile::make_dir` before every write, and reads its file with
+  `profile::read`.** Never `create_dir_all` on any path, never
+  `NotFound => default` on a path in the profile, never the config read
+  again, never a base worked out by the module.
+- **In tests `profile_dir()` is a scratch profile**, one `TestDir` shared by
+  the test binary and never this machine's own. A test that needs a profile
+  to itself (it takes the folder away, or runs something that sweeps the
+  chats folder, as `chat_index::reconcile` does) stands its thread in one
+  with `profile::started_in(home)`, which resolves from the config under
+  that home exactly as the server does, and takes the folder (leaves its
+  mark) on its first question, as `run_headless` does. A second thread
+  started in the same home is a second server: it takes the folder from
+  the first. `profile::tests::Home` takes the folder away three ways:
+  `unplug` (a file where its drive was), `move_away` (nothing left at the
+  path, so anything that makes a folder and its parents would remake it)
+  and `replace` (another folder at the path); `everything_in(dir)` is what
+  a test compares to show nothing was written.
+
 ### A chat's status is half reported, half verified
 
 The line above the chat (`ChatTaskBar`) answers three questions a chat picked
@@ -389,6 +504,18 @@ the next turn, Antigravity only between turns — so its call does not wait; the
 card stays up and the agent is told to end its turn. Claude waits as long as a
 permission card, Codex 50 s (its MCP call times out near 60). An Antigravity
 refusal asks on this same card, drawn from `ChatState.accessNeed`.
+
+**A raise is recorded before it is made, and one that cannot be recorded
+changes nothing.** `chat_set_access` asks which way the level moves
+(`access_request::rank`). A raise is written down first (the ledger's resume
+settings, for a chat a run knows) and refused while that cannot be done, in
+words that begin with `agent_chat::NOT_RAISED`; the agent is told nothing. The
+page knows the refusal by those words (`lib/accessRaise`, whose test reads the
+host's constant): the card that asked stays up with the reason and is not
+answered, so a waiting agent goes on waiting, and the access picker goes back
+to the level the chat still runs at instead of restarting the agent, which is
+what it does for every other refusal. A lowering takes hold at once and is
+written when it can be (see **Conventions**, rule C).
 
 ### An auto-mode refusal the agent carries on past is a notice, not a card
 
@@ -651,6 +778,29 @@ what `chat_interrupt` is for. Two things hold it up:
   dot goes off and the next message resumes the chat. No prompt is ever
   written to a process that still owes a full stop (`CutOff`,
   `write_user_message_locked`); see **Completing a chat** for why.
+- **A queue whose next message cannot start WAITS; it is never failed for
+  that.** Handing a queued message over starts a turn, and no turn starts
+  while its record cannot be kept (the profile folder is away): a new
+  process is refused by `start_session`, and a running agent is not written
+  to (`dispatch_next_persistent_turn`). The message taken off the queue goes
+  back to its front, nothing behind it is touched, and the chat is listed in
+  `ChatManager::waiting` with the profile's sentence (`keep_waiting`). The
+  Stop that led there answers `{ stopped: true, waiting: N, notStarted:
+  <why> }`, not an error; `chat_queue_state` carries the reason as `held`;
+  the bus says `chat-queue-waiting`. Every carry goes through
+  `carry_queued_turn` (a Stop on a one-shot or Antigravity agent, the
+  reaper's carry-over, the grace of a Stop not honoured, "send this one
+  now"), so all of them wait the same way. Once the folder is back the host
+  hands the first message over itself (`start_waiting_queues`, every two
+  seconds beside the owed saves): written to an agent that kept its
+  process, or the first message of a new one, and the rest follow the
+  ordinary way. Meanwhile a send joins the back of the waiting queue (a
+  start is answered `already running`, which the page answers by sending),
+  the ✕ takes a message back, "send this one now" moves one to the front,
+  and the chat is not ended as idle. An entry goes when its queue empties,
+  so a listed chat has had nothing written to its agent since it was
+  listed. A start that fails for a reason of its own once the folder is
+  back fails as it always did: marked not sent, and dropped.
 
 - **A one-shot provider's queued turn is written to the transcript at enqueue**
   (`QueuedTurn::recorded`) because Codex never echoes a prompt back. Claude's
@@ -1383,11 +1533,17 @@ page's. Nothing but an approval writes it. So:
   line said there makes a file that syncs and holds no notice. So
   `notice_receipts` takes the record's `transcript::Generation` before it
   reads, `confirm_synced` refuses one that has moved, and the next pass
-  writes the notice once into the record that is there. Whatever removes a
-  record, or replaces a host event's line in one, goes through
+  writes the notice once into the record that is there. **The token names
+  its file** (`transcript::identity`: the folder as the filesystem resolves
+  it and the name, folded where two spellings are one file), so one taken
+  for a file is refused on any other whatever their numbers: every file
+  that never moved on used to read the same. Whatever removes a
+  record, or replaces a host event's line in one (known by parsing the
+  line's top-level `type`), goes through
   `transcript::forget`, `forget_file` or `rewrite_numbered`, which move the
   generation under the append lock; a new path that deletes or truncates a
-  record file does the same, never a bare `remove_file`. A `/clear` after
+  record file does the same, never a bare `remove_file`, and the page's file
+  editor refuses one (`paths::host_owned`). A `/clear` after
   delivery removes the notice with the chat's history and is not undone. A
   reopen whose coordinator
   chat the person cannot open (not in the chat list, or in the trash) is
@@ -1537,6 +1693,143 @@ time limit).
   card, as `seat_refusal`, `roster_seat_refusal` and `memory_seat_refusal`
   do. Such a hook keeps the `HookCaller`: `task_hook_caller` hands back the
   chat key alone, which is how a seat was once taken for the chat's agent.
+- **A durability receipt that gates a start or an approval covers the
+  current file, its folder, and that file's identity and life.** All four,
+  taken in one pass under the lock appends take: the file as it is now
+  synced, then the folder it is in, for the file the line was seen in or
+  written to (not another the same name has come to mean), in the record
+  that file holds now (not one made after the first was removed).
+  `transcript::generation` is taken before the look and
+  `transcript::confirm_synced` is the only thing that answers yes. What is
+  not a receipt, each of which was once taken for one: a line that can be
+  read back (the OS holds it), an append's own answer (it syncs the folder
+  only for a file it made), "the file existed", and a number two files
+  share. A new step that waits on "the person was told" or "this is on
+  disk" asks the same call; it does not adopt what it finds.
+- **Profile state is read from the folder fixed at startup.** Every path
+  under the profile comes from `profile::profile_dir()`, and nothing reads
+  `config.json`, falls back to another base, or makes the profile folder
+  after `profile::pin` (see **Persistence locations**). A store pinned at
+  load and a store resolved per call were once in two different folders at
+  the same time. "The folder" is the directory the server took, told by
+  its mark, not the path; a folder is made only through
+  `profile::create_dir_all`; and a file read per call is read with
+  `profile::read`, so a folder that is away is never an empty store. When
+  a rule like these is fixed at one site, list every site it covers before
+  changing one: the review that found the first hole found the next in a
+  minute, twice. And nothing the host offers writes a file there behind the
+  module that owns it: the file editor's `write_file` refuses everything in
+  the profile folder but the person's own `notify-hook` and `canvas/`
+  (`paths::host_owned`).
+- **An action that ends work or answers a waiting agent never waits on a
+  save.** Stop, interrupt, a task or run stop, a cancel, a limit the host
+  enforces, and an answer to a call an agent is parked on all ACT first, or
+  act whatever the save answers. The save is tried; when it fails the
+  action has still happened, so the command answers as it always does and
+  the failure is said beside it, never instead of it. Three parts, and a
+  new ending or answering path needs all three:
+  - *No `?` on a save ahead of the act.* `cancel_auto_resume(…)?` at the
+    top of `chat_stop_impl` returned the schedule's write error and never
+    reached `end_process`: with the profile folder away a person could not
+    stop a running agent (review of 205bca2, H5). The order had always
+    been there and had only worked because `create_dir_all` made the
+    folder again. Ask of every `?` above the kill, the interrupt or the
+    `tx.send`: is this a save? The same goes for a pass that both writes
+    and stops (`recover_due_workers` stops ended workers before the part
+    that writes).
+  - *Say it with `unsaved::say(what, reason)`, where the save failed.*
+    `dispatch::told` collects what one command said on its thread; the
+    socket puts it beside the result (`unsaved: [{ what, reason }]`), an
+    agent's hook result carries the same list, and every page gets the
+    `unsaved` event. Do not return the save's error from a command whose
+    action happened, and do not swallow it.
+  - *Owe it.* The store keeps the change in memory and a flag that its file
+    is behind (`auto_resume::Store::cancel`, `QuestionStore::keep`,
+    `OrchestrationStore::mutate_regardless`), and
+    `dispatch::settle_owed` writes every such store again, every two
+    seconds while the server runs and through the same door as any save,
+    so nothing is written into a missing or a replaced profile folder.
+    `profile_status.owed` names what is still behind. A new store that an
+    ending or answering action writes joins `settle_owed` and `owed`.
+
+  What it does NOT cover, so these stay save-first and are refused whole
+  when they cannot be recorded: an action whose point is the record
+  (`chat_complete`, moving a chat to the trash, an answer to a question no
+  tool is waiting on), anything irreversible (mission Close and Abandon
+  remove worktrees), and anything durable a card offers. On a card, Deny
+  denies and Allow allows THAT call with the save failing; an "always" or a
+  stored authorization that could not be stored is refused in words and
+  never assumed later (`safety_block::authorize_for_project` leaves its
+  card up). Starting work is not ending it: a new turn still waits for a
+  folder its record can be kept in, so an answer that reaches its agent
+  only in a new turn (a gate's, to a worker whose turn ended) is taken at
+  once and delivered when that turn can start. What is owed lives in
+  memory: a restart before the folder is back loses it, and the disk's
+  word stands (`docs/plans/profiles.md`).
+
+  Four rules that follow from it, each found as a site the rule above did
+  not list (review of b894867). They are general: check a new path against
+  all four.
+  - **A. Nothing that stops something running reads or saves the profile
+    first.** What a stop needs to find its target is in memory, or is asked
+    of the system itself (the process table, Docker): never of a file in
+    the profile. The Sandbox panel's Stop read `state.json`, saved "about to
+    stop" and ran Docker through files in the sandbox's own folder, so with
+    the folder away the services kept running. `sandbox::Store::known` is
+    what this server last read or wrote, a stop goes by it, and Docker is
+    asked by the project's name alone when the frozen file cannot be read
+    (`down_by_name`). Stop, down and the host's own stop ACT, then save
+    (`save_regardless`), say `unsaved`, and owe the write. Anything that
+    creates (a sandbox start, check or reset) reads the file and stays
+    refused. A sweep for this rule lists everything that kills, downs or
+    ends, and then everything each of them reads on the way there.
+  - **B. An action that fails for a missing profile never discards the
+    person's input.** A refusal is not a failure of the thing refused. A
+    Stop on an agent that goes on only in a new process starts the first
+    queued message in that process; the missing folder refuses the start,
+    and the Stop then forgot the whole queue. A start refused because its
+    record cannot be kept puts the message back at the FRONT of the queue,
+    touches nothing behind it, and lists the chat as waiting
+    (`ChatManager::keep_waiting`); the action that stopped the agent answers
+    what happened (`chat_interrupt`: `{ stopped, waiting, notStarted }`),
+    not an error; and the host hands the first message over itself once the
+    folder is back (`start_waiting_queues`, beside the owed saves), which is
+    what that provider's Stop does at once. Every path that takes a message
+    off a queue to start it goes through `carry_queued_turn`, which is
+    where this lives; a new one does too. Before a failure path calls
+    `forget_queued_turns`, ask what refused: a deliberate ending (closing
+    the chat) drops its queue by design, and even then the "not sent" line
+    each bubble folds by is owed when it cannot be written
+    (`record_unsent`).
+  - **C. Widening that outlives the moment it is given needs its record;
+    narrowing never waits on a save.** The exception above is for ENDING
+    work. It was read as "an access change never waits", and a raise went
+    through with nothing on disk. Ask which way a level or a grant moves. A
+    raise of a chat's, worker's or run's level, a project or stored
+    authorization, anything a later start or another chat reads back: the
+    record comes first, and while it cannot be written the change is
+    refused in words (`agent_chat::NOT_RAISED`), the card that asked stays
+    open, and nothing is assumed when the folder is back. A lowering, a
+    revocation, a stop: at once, said `unsaved`, written on the retry
+    (`chat_set_access_impl` decides by `access_request::rank`;
+    `keep_resume_context` keeps a level without its record only when it is
+    no higher than the one on record). Not this rule's: the permission
+    card's Always, which by design and by what the card says lasts only
+    while the chat runs (memory only), and Claude's Always, whose record is
+    Claude's own settings file outside the profile.
+  - **D. No reply and no page says "saved" for what was not recorded.**
+    `saved: true`, `status: "saved"` and the words "Saved" and "Answers
+    saved" mean on disk and nothing else. An action that happened without
+    its record says both halves apart (`question_answer_batch`: `{ saved:
+    false, delivered: true, unsaved }`; an answered question the store
+    still owes reads `status: "delivered"`), and the page says that, with
+    the reason behind a disclosure and not as an error. Do not bend a
+    receipt to get past a reader that throws without it: change the reader.
+- **Every reader of a chat record walks it with `transcript::for_each_line`
+  or a reader built on it** (`since`, `of_type`, `page`). A line's position
+  is its `seq`, so a line that cannot be decoded is skipped by the reader
+  and still counted: `lines().map_while(Result::ok)` ends a read at the
+  first line that is not UTF-8 and shifts every number after it.
 - **Carry a session or history file to a second name without ever writing
   over what is there, and promise no more wholeness than the path gives.**
   `hard_link` answering `AlreadyExists` is success, not a reason to copy: the

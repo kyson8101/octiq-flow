@@ -484,6 +484,39 @@ pub(crate) fn test_ask(chat_key: &str, tool_use_id: Option<&str>) -> String {
     id
 }
 
+/// A question an agent's call is parked on, with the receiver that call
+/// holds: what `decide` has to reach. "Always" on it is kept for `chat_key`.
+#[cfg(test)]
+pub(crate) fn test_ask_waiting(chat_key: &str) -> (String, oneshot::Receiver<Decision>) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = oneshot::channel();
+    let asked = Asked {
+        id: id.clone(),
+        request: Request {
+            chat_key: Some(chat_key.into()),
+            tool_name: Some("Bash".into()),
+            ..Default::default()
+        },
+    };
+    with_pending(|p| {
+        p.insert(
+            id.clone(),
+            Waiting {
+                tx,
+                remember: Some((chat_key.into(), format!("test:{id}"))),
+                asked,
+            },
+        )
+    });
+    (id, rx)
+}
+
+/// Whether "Always" on the card `id` of `test_ask_waiting` is standing.
+#[cfg(test)]
+pub(crate) fn test_remembers(chat_key: &str, id: &str) -> bool {
+    with_remembered(|r| r.contains(&remembered_key(chat_key, &format!("test:{id}"))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

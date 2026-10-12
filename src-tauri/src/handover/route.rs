@@ -353,7 +353,7 @@ fn carry(
             .unwrap_or_default();
         let name = display_name(&file_name);
         let target = folder.join(&file_name);
-        let copied = fs::create_dir_all(folder).and_then(|_| copy(&source, &target));
+        let copied = crate::profile::create_dir_all(folder).and_then(|_| copy(&source, &target));
         match copied {
             Ok(_) => files.push(RouteFile {
                 image: is_image(&name),

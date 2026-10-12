@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -329,17 +329,27 @@ fn ledger_path() -> Option<PathBuf> {
 }
 
 fn load(path: &Path) -> Ledger {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            // A torn ledger costs the snapshots and unconfirmed intents, not
-            // the chats' lines or their duplicate guard, which are in the
-            // transcripts. Keep it for a person to read.
-            eprintln!("memory_activity: unreadable ledger, starting over: {error}");
-            let _ = fs::rename(path, path.with_extension("json.corrupt"));
-            Ledger::default()
-        }),
-        Err(_) => Ledger::default(),
-    }
+    load_to_write(path).unwrap_or_default()
+}
+
+/// The ledger, for a call that will write it back. No file, in a profile
+/// that is there, is an empty ledger. A profile folder that is not there is
+/// an error: an empty ledger written back once the folder returned would
+/// replace every intent and snapshot the real one holds.
+fn load_to_write(path: &Path) -> Result<Ledger, String> {
+    Ok(
+        match crate::profile::read(path, |error| error.to_string())? {
+            Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                // A torn ledger costs the snapshots and unconfirmed intents, not
+                // the chats' lines or their duplicate guard, which are in the
+                // transcripts. Keep it for a person to read.
+                eprintln!("memory_activity: unreadable ledger, starting over: {error}");
+                let _ = fs::rename(path, path.with_extension("json.corrupt"));
+                Ledger::default()
+            }),
+            None => Ledger::default(),
+        },
+    )
 }
 
 /// Write the whole ledger in place of the old one: synced, renamed, and the
@@ -364,18 +374,13 @@ fn save(path: &Path, ledger: &Ledger) -> Result<(), String> {
 /// Whether `chat`'s transcript already shows this write at `status` — or as
 /// saved, which no later report can take back.
 ///
-/// Read straight off the file, and a line is only parsed when the id is in
-/// it, so asking costs one pass over the bytes even for a very long chat.
+/// Read through the transcript's own reader of one event type, which
+/// parses only the lines that name it: one pass over the bytes even for a
+/// very long chat, and a line that cannot be decoded hides none after it.
 fn in_transcript(chat: &str, id: &str, status: Status) -> bool {
-    let Some(file) = crate::transcript::path_for(chat).and_then(|p| fs::File::open(p).ok()) else {
-        return false;
-    };
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter(|line| line.contains(id))
-        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-        .filter(|event| event["type"] == EVENT && event["id"] == id)
+    crate::transcript::of_type(chat, EVENT)
+        .into_iter()
+        .filter(|event| event["id"] == id)
         .filter_map(|event| serde_json::from_value::<Status>(event["status"].clone()).ok())
         .any(|shown| shown == status || shown == Status::Saved)
 }
@@ -384,16 +389,7 @@ fn in_transcript(chat: &str, id: &str, status: Status) -> bool {
 /// was shown at. One pass over the file.
 fn shown_in(chat: &str) -> HashMap<String, Status> {
     let mut shown = HashMap::new();
-    let Some(file) = crate::transcript::path_for(chat).and_then(|p| fs::File::open(p).ok()) else {
-        return shown;
-    };
-    for event in BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter(|line| line.contains(EVENT))
-        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-        .filter(|event| event["type"] == EVENT)
-    {
+    for event in crate::transcript::of_type(chat, EVENT) {
         let (Some(id), Ok(status)) = (
             event["id"].as_str(),
             serde_json::from_value::<Status>(event["status"].clone()),
@@ -404,6 +400,14 @@ fn shown_in(chat: &str) -> HashMap<String, Status> {
         *best = (*best).max(status);
     }
     shown
+}
+
+/// Whether the host holds a durability receipt for `chat`'s record as it is
+/// now: the file and then its folder synced, for the record `seen` named
+/// (`transcript::confirm_synced`). The one thing that lets a line be called
+/// delivered here, whether it was found in the record or written just now.
+fn receipt(chat: &str, seen: Option<&crate::transcript::Generation>) -> bool {
+    seen.is_some_and(|seen| crate::transcript::confirm_synced(chat, seen).is_some())
 }
 
 /// A line reaches a chat's transcript and is synced to disk before this
@@ -512,9 +516,16 @@ fn record_locked(
     emit: &impl Fn(&str, Value) -> Option<u64>,
     out: &mut Recorded,
 ) -> Result<(), Crashed> {
+    let ledger = match load_to_write(path) {
+        Ok(ledger) => ledger,
+        Err(error) => {
+            eprintln!("memory_activity: could not read the ledger, nothing recorded: {error}");
+            return Ok(());
+        }
+    };
     let mut book = Book {
         path,
-        ledger: load(path),
+        ledger,
         dirty: true,
     };
     let old = book
@@ -562,11 +573,34 @@ fn show(
 ) -> Result<(), Crashed> {
     let mut owed = Vec::new();
     for (chat, event) in lines {
+        // Which record the chat has, taken before it is read: a receipt is
+        // for the record the line was seen in or written to.
+        let record = crate::transcript::generation(&chat);
         let entry = book.entry(&current.id);
         if in_transcript(&chat, &current.id, current.status) {
             // Already there — written before a crash, or remembered by a
             // transcript the ledger has forgotten about: confirm, never
             // repeat.
+            if entry.delivered.get(&chat) == Some(&current.status)
+                && !entry.pending.contains_key(&chat)
+            {
+                continue;
+            }
+            // A line that can be read is one the OS holds, not yet one the
+            // disk does. The ledger calls it delivered only on a receipt,
+            // as for a line written now; until then it stays an intent,
+            // which `recover` or the next report confirms.
+            if !receipt(&chat, record.as_ref()) {
+                let changed =
+                    entry.pending.insert(chat.clone(), current.status) != Some(current.status);
+                let undone = entry.delivered.remove(&chat).is_some();
+                book.dirty |= changed || undone;
+                out.errors.push(format!(
+                    "the line in chat {chat} could not be confirmed on disk"
+                ));
+                out.pending.push(chat);
+                continue;
+            }
             let was_pending = entry.pending.remove(&chat).is_some();
             let changed =
                 entry.delivered.insert(chat.clone(), current.status) != Some(current.status);
@@ -575,7 +609,7 @@ fn show(
             entry.pending.insert(chat.clone(), current.status);
             entry.delivered.remove(&chat);
             book.dirty = true;
-            owed.push((chat, event));
+            owed.push((chat, event, record));
         }
     }
     if owed.is_empty() {
@@ -584,12 +618,15 @@ fn show(
     if book.save(out, "the intent to show this line").is_err() {
         // Without the intent on disk, a crash after a line would leave
         // nothing to finish or check it by. Say so, and draw nothing.
-        out.pending.extend(owed.into_iter().map(|(chat, _)| chat));
+        out.pending
+            .extend(owed.into_iter().map(|(chat, _, _)| chat));
         return Ok(());
     }
     step()?;
-    for (chat, event) in owed {
-        if emit(&chat, event).is_none() {
+    for (chat, event, record) in owed {
+        // The write's own answer is not the receipt either: it syncs the
+        // folder only for a file it made.
+        if emit(&chat, event).is_none() || !receipt(&chat, record.as_ref()) {
             // Not proven on disk: the intent stays, and a restart or the
             // next report of this write looks for the line and finishes it.
             out.errors
@@ -728,9 +765,12 @@ fn recover_at(
         return out;
     }
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ledger) = load_to_write(path) else {
+        return out;
+    };
     let mut book = Book {
         path,
-        ledger: load(path),
+        ledger,
         dirty: false,
     };
     for (id, chat, owed) in owed {
@@ -2724,5 +2764,69 @@ mod tests {
         assert_eq!(lines(&worker)[0]["agent"]["name"], "Mango Juice");
         assert!(w.note(&mango).contains("Still Mango."));
         assert!(!w.note(&potato).contains("Still Mango."));
+    }
+
+    /// Review of bf9d8cd, the carried Medium: both readers of a transcript
+    /// here ended at the first line that is not UTF-8, so a memory line
+    /// after one was never found and was written a second time.
+    #[test]
+    fn a_line_that_is_not_utf8_hides_no_memory_line_after_it() {
+        let chat = unique("damaged");
+        let id = fresh_id();
+        let mut bytes = b"{\"type\":\"assistant\",\"text\":\"\xE4\xBD\n".to_vec();
+        let line = json!({ "type": EVENT, "id": id, "status": "saved" });
+        bytes.extend_from_slice(line.to_string().as_bytes());
+        bytes.push(b'\n');
+        fs::write(crate::transcript::path_for(&chat).unwrap(), bytes).unwrap();
+
+        assert!(in_transcript(&chat, &id, Status::Saved));
+        assert_eq!(shown_in(&chat).get(&id), Some(&Status::Saved));
+        crate::transcript::forget(&chat);
+    }
+
+    /// The same review: a line found in the transcript was recorded as
+    /// delivered because it could be read. Nothing waits on that record,
+    /// but it is a receipt, and a readable line is not one: it is adopted
+    /// once the record and its folder are confirmed on disk, as a reopen's
+    /// notice is, and until then it stays an intent. Never written twice.
+    #[test]
+    fn a_line_found_in_the_transcript_is_delivered_only_once_confirmed_on_disk() {
+        let ledger = scratch_ledger();
+        let chat = unique("found-unconfirmed");
+        let line = activity(&chat, &fresh_id(), Status::Saved);
+        assert!(crate::transcript::append(&chat, &origin_event(&line)).is_some());
+
+        // The record can be read and cannot be synced: it will not open for
+        // writing, on any platform.
+        let record = crate::transcript::path_for(&chat).unwrap();
+        let read_only = |yes: bool| {
+            let mut permissions = fs::metadata(&record).unwrap().permissions();
+            permissions.set_readonly(yes);
+            fs::set_permissions(&record, permissions).unwrap();
+        };
+        read_only(true);
+        let first = record_at(&ledger, line.clone(), deliver);
+        #[allow(clippy::permissions_set_readonly_false)]
+        read_only(false);
+        let entry = |ledger: &Path| load(ledger).entries.remove(&line.id).unwrap();
+        assert!(
+            entry(&ledger).delivered.is_empty(),
+            "delivered on a line that could only be read"
+        );
+        assert_eq!(entry(&ledger).pending.get(&chat), Some(&Status::Saved));
+        assert_eq!(first.pending, vec![chat.clone()]);
+        assert!(first.shown.is_empty());
+        assert!(first.problem().unwrap().contains("confirmed on disk"));
+        assert_eq!(lines(&chat).len(), 1);
+
+        // The fault is over: the line that is there is confirmed, not repeated.
+        assert_eq!(
+            record_at(&ledger, line.clone(), deliver),
+            Recorded::default()
+        );
+        assert_eq!(entry(&ledger).delivered.get(&chat), Some(&Status::Saved));
+        assert!(entry(&ledger).pending.is_empty());
+        assert_eq!(lines(&chat).len(), 1);
+        crate::transcript::forget(&chat);
     }
 }

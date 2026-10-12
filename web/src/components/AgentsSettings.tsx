@@ -50,6 +50,9 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const [policy, setPolicy] = useState("");
   const [policyText, setPolicyText] = useState("");
   const [policyBusy, setPolicyBusy] = useState(false);
+  // The host could not read the saved policy (its profile folder is away): a
+  // blank box is not offered, because saving it would replace the real one.
+  const [policyUnread, setPolicyUnread] = useState(false);
   const policyRef = useRef(policy);
   policyRef.current = policy;
 
@@ -70,13 +73,18 @@ export function AgentsSettings({ on, onToggle, projects }: {
         setPolicy(shared.text);
         setPolicyText(shared.text);
       })
-      .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); })
+      .catch((reason) => {
+        if (!alive) return;
+        setPolicyUnread(true);
+        setError(String((reason as Error).message ?? reason));
+      })
       .finally(() => { if (alive) setLoading(false); });
     // An agent or the policy changed from a chat, once the person approved it.
     const off = onTeamChanged(() => {
       loadTeam(null, true).then((agents) => { if (alive) setTeam(agents); }).catch(() => {});
       loadAgentPolicy().then((shared) => {
         if (!alive) return;
+        setPolicyUnread(false);
         // Text being typed is kept; an untouched box follows the new policy.
         setPolicyText((typed) => (typed === policyRef.current ? shared.text : typed));
         setPolicy(shared.text);
@@ -331,6 +339,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
         text={policyText}
         loading={loading}
         busy={policyBusy}
+        unread={policyUnread}
         onChange={setPolicyText}
         onSave={() => void writePolicy(policyText)}
         onClear={() => void writePolicy("")}
@@ -483,20 +492,23 @@ export function CharCounter({ text, max }: { text: string; max: number }) {
 /** Settings → Agents: the person's shared rules for every registered agent,
  *  put ahead of each one's own standing instructions and role in every brief
  *  it is launched with. Above the roster, because it applies to all of it. */
-export function AgentPolicyBlock({ saved, text, loading, busy, onChange, onSave, onClear }: {
+export function AgentPolicyBlock({ saved, text, loading, busy, unread = false, onChange, onSave, onClear }: {
   saved: string;
   text: string;
   loading: boolean;
   busy: boolean;
+  /** The saved policy could not be read: nothing can be typed or saved over it. */
+  unread?: boolean;
   onChange: (text: string) => void;
   onSave: () => void;
   onClear: () => void;
 }) {
   const changed = text.trim() !== saved.trim();
   const over = charCount(text) > AGENT_POLICY_MAX;
+  loading = loading || unread;
   return (
     <form className="agent-policy" aria-labelledby="agent-policy-title"
-      onSubmit={(event) => { event.preventDefault(); if (changed && !over) onSave(); }}>
+      onSubmit={(event) => { event.preventDefault(); if (changed && !over && !unread) onSave(); }}>
       <div className="team-field-head">
         <h3 id="agent-policy-title">Agent policy</h3>
         <CharCounter text={text} max={AGENT_POLICY_MAX} />

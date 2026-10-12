@@ -1356,7 +1356,7 @@ fn write_antigravity_plugin(
             continue;
         }
         let parent = path.parent().unwrap_or(&root);
-        std::fs::create_dir_all(parent)
+        crate::profile::create_dir_all(parent)
             .and_then(|()| std::fs::write(&path, &body))
             .map_err(|e| {
                 format!(
@@ -1830,7 +1830,7 @@ const MEMORY_VAULT_PROMPT: &str = "OctiqFlow provides native Shared Memory Vault
 /// effort: a provider without it still starts, just without the extra tools.
 pub(crate) fn ask_mcp_config() -> Option<std::path::PathBuf> {
     let dir = crate::paths::home_dir()?.join(".octiqflow").join("mcp");
-    std::fs::create_dir_all(&dir).ok()?;
+    crate::profile::create_dir_all(&dir).ok()?;
 
     let script = dir.join("octiq-ask.cjs");
     std::fs::write(dir.join("artifact.cjs"), ARTIFACT_MCP).ok()?;

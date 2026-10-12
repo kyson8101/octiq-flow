@@ -45,6 +45,21 @@ describe("personal preferences in Settings", () => {
     expect(long).toMatch(/<button class="settings-primary" type="submit" disabled="">/);
   });
 
+  // Preferences the host could not read (its profile folder is away) are not
+  // empty ones: the form drew blank with Save offered, and an ordinary Save
+  // put the blank form's text over the person's rules once the folder was back.
+  it("offers no save over preferences it could not read", () => {
+    const html = block({ unread: true, text: "typed on a blank form" } as never);
+    expect(html).toMatch(/<textarea[^>]*disabled=""/);
+    expect(html).toMatch(/<button class="vault-button" type="button" disabled="">Clear<\/button>/);
+    expect(html).toMatch(/<button class="settings-primary" type="submit" disabled="">Save preferences<\/button>/);
+  });
+
+  it("does not read preferences the host could not read as empty ones", async () => {
+    invoke.mockRejectedValueOnce(new Error("The profile folder /drive/default is not available right now"));
+    await expect(loadPersonalPreferences()).rejects.toThrow("is not available right now");
+  });
+
   it("reads and writes the host's store", async () => {
     invoke.mockResolvedValueOnce(null);
     expect(await loadPersonalPreferences()).toEqual({ text: "", updatedAt: 0 });

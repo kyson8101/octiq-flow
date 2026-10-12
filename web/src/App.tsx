@@ -216,6 +216,7 @@ import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
 import { requestConversation } from "./lib/pendingRequests";
 import { accessCovers, leastOffered, type AccessRequest } from "./lib/accessRequest";
+import { cardAfterRefusal, pickerAfterRefusal } from "./lib/accessRaise";
 import type { AnswerAccess } from "./components/AccessRequestCard";
 import {
   provesLiveTurn,
@@ -4592,6 +4593,8 @@ export default function App() {
 
   const changeAccess = useCallback(
     (p: AccessLevel) => {
+      // The level the chat runs at now, for a raise the host refuses to make.
+      const was = (conversationId && meta.current[conversationId]?.access) || access;
       setAccess(p);
       // `remember`, for the same reason `changeEffort` uses it: everything that
       // matters happens BELOW this line, and a store at its quota used to throw
@@ -4606,16 +4609,31 @@ export default function App() {
         .invoke("chat_set_access", { key: keyFor(id), access: p })
         .catch((err) => {
           const why = String((err as Error).message ?? err);
+          const then = pickerAfterRefusal(why);
           // The process ended between the tap and the ask. Nothing to change
           // and nothing to restart: the next message starts one on the new
           // level, which is what a restart would have arranged anyway.
-          if (why.includes("no such chat")) return;
+          if (then === "nothing") return;
+          // A raise the host could not record: nothing changed, so the picker
+          // goes back to the level the chat still runs at and the agent is
+          // left running. Restarting it here would end a turn in flight and
+          // start the next one at a level nobody recorded.
+          if (then === "put-back") {
+            delete wantedAccess.current[id];
+            if (meta.current[id]) meta.current[id].access = was;
+            if (id === visibleRef.current) {
+              setAccess(was);
+              remember(ACCESS_KEY, was);
+            }
+            patch(id, (s) => ({ ...s, notices: [...s.notices, why].slice(-8) }));
+            return;
+          }
           // Otherwise the backend is too old to know the command, or the write
           // failed. Either way the change cannot be made in place.
           restartForAccess(id, why);
         });
     },
-    [conversationId, restartForAccess],
+    [conversationId, restartForAccess, access, patch],
   );
 
   /** Raise one chat's access from its access card: the picker's own change,
@@ -4674,8 +4692,13 @@ export default function App() {
       try {
         await raiseAccessFor(id, request.requested);
       } catch (err) {
-        if (!request.wait) throw err;
-        await settle("failed", String((err as Error).message ?? err));
+        // A card nobody waits on stays up with the reason. So does one whose
+        // raise the host could not RECORD: nothing was decided, so the agent
+        // is told nothing and goes on waiting, and the card is there to try
+        // again once the profile folder is back.
+        const why = String((err as Error).message ?? err);
+        if (cardAfterRefusal(why, !!request.wait) === "keep") throw err;
+        await settle("failed", why);
         drop();
         return;
       }

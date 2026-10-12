@@ -824,12 +824,43 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    /// Stop the provider of every attempt that failed with an error and
+    /// still has a process, before it can execute further tools. It reads
+    /// the ledger's memory and saves nothing, so it never waits on a save.
+    pub(super) fn stop_ended_workers(&self, chats: &ChatManager) {
+        let Ok(inner) = self.inner.lock() else {
+            return;
+        };
+        let ended: Vec<String> = inner
+            .data
+            .attempts
+            .values()
+            .filter(|a| a.status == AttemptStatus::Failed && a.execution.latest_error.is_some())
+            .map(|a| a.worker_chat_key.clone())
+            .collect();
+        drop(inner);
+        for key in ended {
+            if !chats.has_process(&key) {
+                continue;
+            }
+            if let Err(error) = crate::agent_chat::chat_stop_impl(chats, key.clone()) {
+                eprintln!("orchestration: could not stop the ended worker {key}: {error}");
+            }
+        }
+    }
+
     pub(super) fn recover_due_workers(
         &self,
         chats: Arc<ChatManager>,
         workspaces: &WorkspaceState,
         now: i64,
     ) -> Result<(), String> {
+        // First, and read from memory: the rest of this pass writes the
+        // ledger, and with the profile folder away its first write ended
+        // the pass before the stop below was reached. A provider whose
+        // attempt has ended (a terminal error, its time limit) is stopped
+        // whether or not anything can be saved.
+        self.stop_ended_workers(&chats);
         self.monitor_workers_with(now, &|key| chats.running_background(key))?;
         let snapshot = self.snapshot(None)?;
         for attempt in snapshot

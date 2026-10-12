@@ -12,7 +12,9 @@
 //
 //   * WRITES are confined. `fsbrowse::write_file` is the only command that
 //     overwrites a caller-supplied path, and it now must resolve inside an
-//     allowed root.
+//     allowed root. Inside the profile folder it writes only what is the
+//     person's own (`host_owned`): never a chat's record or any other file
+//     a module of the host keeps.
 //   * READS stay broad. `list_dir` and `read_file_preview` back a general file
 //     browser: the user expects to open any folder they can read, including one
 //     outside every project. Confining them would break the feature to protect
@@ -284,6 +286,49 @@ pub fn resolve_writable(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, Strin
         ));
     }
     Ok(target)
+}
+
+/// What in the profile folder is the person's own to edit, by its first
+/// path segment: the notify hook they put there (`docs/octiq-notify.md`)
+/// and whatever is on a canvas, which agents and the person write as
+/// documents. Everything else in that folder is some module's state.
+const THEIRS_IN_THE_PROFILE: [&str; 2] = ["notify-hook", "canvas"];
+
+/// Why the file editor may not write `target` (already resolved by
+/// `resolve_writable`), when it is state the host keeps. `None` for any
+/// file that is the person's.
+///
+/// **Nothing the host offers writes a chat's record except `transcript`'s
+/// own functions**, and the same holds for every other file a module owns:
+/// the roster and the ledger hold approvals, `web.json` the server's token,
+/// `safety-authorizations.json` what was allowed, the chat index which
+/// chats exist. Each is read, cached, locked or receipted by its module, so
+/// a write behind it is a change that module never hears of: the editor's
+/// Save wrote over a transcript whose reopen notice the host held a receipt
+/// for, and the record's generation had not moved.
+///
+/// The rule is the folder, not a list of names, so a store added later is
+/// covered and a file not made yet is too. Reads are not affected.
+pub fn host_owned(target: &Path) -> Option<String> {
+    let profile = crate::profile::profile_dir();
+    let profile = profile.canonical().unwrap_or(profile);
+    let inside = target.strip_prefix(&profile).ok()?;
+    let first = inside.components().next()?;
+    if THEIRS_IN_THE_PROFILE
+        .iter()
+        .any(|theirs| first.as_os_str() == *theirs)
+    {
+        return None;
+    }
+    let what = if inside.starts_with("chats") && inside.extension().is_some_and(|e| e == "jsonl") {
+        "a chat's record"
+    } else {
+        "a file one of its own modules owns"
+    };
+    Some(format!(
+        "OctiqFlow keeps its own state in the profile folder, and {} is {what}. The file editor does not write there: a change made behind the module that owns a file is one it never hears of, and a chat's record is changed only through the chat. Opening and reading it is as before.",
+        target.display()
+    ))
 }
 
 #[cfg(test)]
