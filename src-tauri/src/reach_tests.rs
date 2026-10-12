@@ -525,6 +525,45 @@ fn a_chat_stopped_with_messages_queued_says_they_were_not_sent_once_the_folder_i
     }
 }
 
+// ---- Table A: the other ways an agent's process is ended -----------------
+
+/// Every other command that ends a chat's agent, with the profile folder
+/// away: a restart of the agent, a change of agent, and clearing the chat.
+/// None of them is Stop, and each ends the process whatever it could then
+/// write down. So does the idle sweeper's ending.
+#[test]
+fn every_other_way_of_ending_a_chats_agent_ends_it_while_the_profile_is_away() {
+    for command in ["chat_restart", "chat_retarget", "chat_forget"] {
+        let world = World::new();
+        let key = fresh("ending");
+        let agent = world.working(&key, ChatAgent::Claude);
+        world.folder_goes();
+        let ended = told(&world.svc, command, json!({ "key": key }));
+        assert!(
+            agent.gone(),
+            "{command} left the agent running: {:?}",
+            ended.result
+        );
+        assert!(!world.chats().has_process(&key), "{command}");
+        world.folder_returns();
+    }
+
+    let world = World::new();
+    let key = fresh("idle");
+    world
+        .chats()
+        .test_start_at(&key, ChatAgent::Claude, Access::Read);
+    let agent = world.chats().test_hold(&key, ChatAgent::Claude, false);
+    world.folder_goes();
+    assert_eq!(
+        end_process_when(world.chats(), &key, Some(Duration::ZERO)),
+        Ok(true),
+        "the idle sweeper's ending"
+    );
+    assert!(agent.gone());
+    world.folder_returns();
+}
+
 // ---- H6: the Sandbox panel's Stop ----------------------------------------
 
 /// A chat's sandbox as a start leaves it: enabled, frozen, ready.
