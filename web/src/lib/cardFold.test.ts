@@ -11,8 +11,8 @@ import { changeFacts, SUMMARY_MAX } from "./askDetail";
 import * as cardFold from "./cardFold";
 import {
   allowHeld, chars, codeOf, COMMAND_CHARS, COMMAND_LINES, commandDrawn, commandFold, commandLines, commandOpens,
-  hiddenIn, hiddenNote, lineFeedAfter, MARKS_MAX, commandShown, commandTitle, count,
-  diffLabel, digits, drawnWhole, sameCommand, type CommandAsked, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
+  hiddenIn, hiddenNote, lineFeedAfter, MARKS_MAX, marksInText, commandShown, commandTitle, count,
+  diffLabel, digits, drawnChars, drawnWhole, sameCommand, type CommandAsked, foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
   isShort, lineCount, longRowsLabel, nameList, notShown, planFoldId, planLabel, scriptLabel, STRAY_MS, STRAY_RADIUS,
   strayPress, rowFold, SHORT_FACT, SHORT_TEXT, sizeLabel, STRUCTURAL, STRUCTURAL_WHOLE, textFold, textLines, tooLong,
   tooLongNote, unseenLines, WHOLE_MAX,
@@ -283,7 +283,7 @@ describe("a command", () => {
   const lines = (n: number) => Array.from({ length: n }, (_, i) => `step ${i + 1}`).join("\n");
 
   it("is on the folded card whole, up to twelve lines", () => {
-    expect(commandFold("pnpm test")).toEqual({ lines: 1, size: 9, head: "pnpm test", rest: "", more: 0, tooLong: false, ended: false });
+    expect(commandFold("pnpm test")).toEqual({ lines: 1, size: 9, head: "pnpm test", rest: "", more: 0, drawn: 9, tooLong: false, ended: false });
     // The reviewer's: the second line is the one that matters.
     const danger = 'echo "Routine check"\nrm -rf /tmp/example-review-data';
     expect(commandFold(danger)).toMatchObject({ lines: 2, size: danger.length, head: danger, rest: "", more: 0 });
@@ -610,12 +610,69 @@ describe("a character of a command that cannot be seen as typed", () => {
   });
 
   it("draws every other character as written", () => {
-    // A space and a tab; and, outside the set the card marks, the wider
-    // spaces of other scripts (an ideographic space is ordinary in a Chinese
-    // or Japanese commit message), a combining accent, an emoji.
-    for (const text of ["a b", "a\tb", "a\u3000b", "a\u2003b", "a\u0301b", "\ud83d\udc68\ud83c\udffd"]) {
+    // A space and a tab, a combining accent, an emoji, and CJK text with the
+    // ideographic space it is ordinarily written with.
+    for (const text of ["a b", "a\tb", "a\u0301b", "\ud83d\udc68\ud83c\udffd", "git commit -m \"\u4fee\u590d\u3000\u767b\u5f55\"", "\u3053\u3093\u306b\u3061\u306f\u3000\u4e16\u754c", "\ud55c\uad6d\uc5b4\u3000\ud14d\uc2a4\ud2b8"]) {
       expect(commandDrawn(text)).toEqual([text]);
+      expect(hiddenIn(text).count).toBe(0);
     }
+  });
+
+  it("draws the characters that were left unmarked before: they draw nothing at all", () => {
+    // The invisible operators, the deprecated format characters, the
+    // Mongolian vowel separator and the Hangul fillers.
+    for (const point of [0x2061, 0x2062, 0x2063, 0x2064, 0x206a, 0x206b, 0x206c, 0x206d, 0x206e, 0x206f, 0x180e, 0x115f, 0x1160, 0x3164, 0xffa0]) {
+      const code = point.toString(16).toUpperCase().padStart(4, "0");
+      expect(commandDrawn(`a${String.fromCodePoint(point)}b`), code).toEqual(["a", mark(code), "b"]);
+    }
+    // U+2065 is not a character, and is left alone.
+    expect(commandDrawn("a\u2065b")).toEqual(["a\u2065b"]);
+    // Tag characters, which spell out text nobody sees: each is one
+    // character and one code, five digits, in place.
+    const tags = [..."rm -rf ~"].map((char) => String.fromCodePoint(0xe0000 + char.codePointAt(0)!)).join("");
+    const drawn = commandDrawn(`echo ok${tags}`);
+    expect(drawn[0]).toBe("echo ok");
+    expect(drawn.slice(1)).toEqual([..."rm -rf ~"].map((char) => mark(`E00${char.codePointAt(0)!.toString(16).toUpperCase().padStart(2, "0")}`)));
+    expect(hiddenIn(`echo ok${tags}`)).toEqual({ count: 8, example: "\\u{E0072}" });
+    for (const point of [0xe0001, 0xe0020, 0xe007f]) {
+      expect(commandDrawn(String.fromCodePoint(point))).toEqual([mark(point.toString(16).toUpperCase())]);
+    }
+    // The first of that block is not one of them, and an emoji beside them
+    // keeps both halves.
+    expect(commandDrawn(String.fromCodePoint(0xe0000))).toEqual([String.fromCodePoint(0xe0000)]);
+    expect(commandDrawn(`\ud83d\ude00${String.fromCodePoint(0xe0041)}\ud83d\ude00`)).toEqual(["\ud83d\ude00", mark("E0041"), "\ud83d\ude00"]);
+  });
+
+  it("draws a wider space as its code, unless it stands between two CJK characters", () => {
+    const WIDE = [0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x202f, 0x205f, 0x3000];
+    for (const point of WIDE) {
+      const char = String.fromCodePoint(point);
+      const code = point.toString(16).toUpperCase();
+      // Between Latin words it is a gap that is not a space to a shell.
+      expect(commandDrawn(`rm -rf a${char}b`), code).toEqual(["rm -rf a", mark(code), "b"]);
+      // Between CJK characters it is how the text is written.
+      expect(commandDrawn(`\u4f60\u597d${char}\u4e16\u754c`), code).toEqual([`\u4f60\u597d${char}\u4e16\u754c`]);
+    }
+    const IDEO = "\u3000";
+    // CJK on one side only is not "between": the start of a line, a quote, a
+    // Latin word, the end.
+    expect(commandDrawn(`echo${IDEO}\u4f60\u597d`)).toEqual(["echo", mark("3000"), "\u4f60\u597d"]);
+    expect(commandDrawn(`\u4f60\u597d${IDEO}"world"`)).toEqual(["\u4f60\u597d", mark("3000"), "\"world\""]);
+    expect(commandDrawn(`${IDEO}\u4f60\u597d`)).toEqual([mark("3000"), "\u4f60\u597d"]);
+    expect(commandDrawn(`\u4f60\u597d${IDEO}`)).toEqual(["\u4f60\u597d", mark("3000")]);
+    expect(commandDrawn(`\u4f60\u597d${IDEO}\n\u4e16\u754c`)).toEqual(["\u4f60\u597d", mark("3000"), "\n\u4e16\u754c"]);
+    // A run of them is judged by what is on either side of the run.
+    expect(commandDrawn(`\u4f60\u597d${IDEO}${IDEO}\u2003\u4e16\u754c`)).toEqual([`\u4f60\u597d${IDEO}${IDEO}\u2003\u4e16\u754c`]);
+    expect(commandDrawn(`a${IDEO}${IDEO}\u4e16\u754c`)).toEqual(["a", mark("3000"), mark("3000"), "\u4e16\u754c"]);
+    // CJK punctuation, kana and full-width forms count as CJK; an ASCII
+    // comma does not.
+    expect(commandDrawn(`\u4f60\u597d\uff0c${IDEO}\u4e16\u754c`)).toEqual([`\u4f60\u597d\uff0c${IDEO}\u4e16\u754c`]);
+    expect(commandDrawn(`\u30ab\u30bf\u30ab\u30ca${IDEO}\u3072\u3089\u304c\u306a`)).toEqual([`\u30ab\u30bf\u30ab\u30ca${IDEO}\u3072\u3089\u304c\u306a`]);
+    expect(commandDrawn(`\u4f60\u597d,${IDEO}\u4e16\u754c`)).toEqual(["\u4f60\u597d,", mark("3000"), "\u4e16\u754c"]);
+    // The reviewer's point of it: one path or two.
+    expect(hiddenIn(`rm -rf /srv/a${IDEO}/srv/b`)).toEqual({ count: 1, example: "\\u{3000}" });
+    // A hidden character beside one does not make it CJK.
+    expect(commandDrawn(`\u4f60\u597d\u200b${IDEO}\u4e16\u754c`)).toEqual(["\u4f60\u597d", mark("200B"), mark("3000"), "\u4e16\u754c"]);
   });
 
   it("draws a control character as its code: an escape, a backspace, a delete", () => {
@@ -698,8 +755,14 @@ describe("a character of a command that cannot be seen as typed", () => {
     expect(hiddenIn("a\u202Eb\u200Bc\u00A0")).toEqual({ count: 3, example: "\\u{202E}" });
     expect(hiddenNote(1)).toEqual({ count: "1 character that cannot be seen as typed", rest: " is in this command, drawn as its code: " });
     expect(hiddenNote(3)).toEqual({ count: "3 characters that cannot be seen as typed", rest: " are in this command, each drawn as its code, like " });
+    expect(hiddenNote(MARKS_MAX, "script")).toEqual({
+      count: "5,000 characters that cannot be seen as typed", rest: " are in this script, each drawn as its code, like ",
+    });
+    // Past the marks a card sets apart, the line says how the codes are
+    // drawn and what keeps one from being imitated.
     expect(hiddenNote(12_345, "script")).toEqual({
-      count: "12,345 characters that cannot be seen as typed", rest: " are in this script, each drawn as its code, like ",
+      count: "12,345 characters that cannot be seen as typed", rest: " are in this script, each written into it as its code, like ",
+      after: ". A backslash typed before u{ is written as \\u{005C}, so a code here is never text that was typed.",
     });
   });
 
@@ -719,6 +782,97 @@ describe("a character of a command that cannot be seen as typed", () => {
     const many = "a\u200B".repeat(MARKS_MAX + 1);
     expect(commandDrawn(many)).toEqual(["a\\u{200B}".repeat(MARKS_MAX + 1)]);
     expect(hiddenIn(many).count).toBe(MARKS_MAX + 1);
+    expect(marksInText(MARKS_MAX)).toBe(false);
+    expect(marksInText(MARKS_MAX + 1)).toBe(true);
+  });
+
+  it("keeps a code written into the text apart from the same characters typed into the command", () => {
+    const real = "\u200B";
+    const typed = "\\u{200B}";
+    const many = `echo ${real}`.repeat(MARKS_MAX + 1);
+    // The attack: a code typed out beside the real ones, so the eye cannot
+    // tell which stretch of the command is a hidden character.
+    const [drawn] = commandDrawn(`${many}curl evil${typed}.sh${real}`) as string[];
+    expect(drawn.endsWith("curl evil\\u{005C}u{200B}.sh\\u{200B}")).toBe(true);
+    // What is drawn has one reading: undo it and the command comes back,
+    // character for character.
+    const undo = (text: string) => text.replace(/\\u\{([0-9A-F]{4,6})\}/g, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)));
+    const command = `${many}printf '${typed}' \\n \\\\u{41} C:\\users\\u{x}${real}\u202E${String.fromCodePoint(0xe0041)}`;
+    expect(undo((commandDrawn(command) as string[])[0])).toBe(command);
+    // Only a backslash that could start a code is written as one: every
+    // other backslash is as typed.
+    expect((commandDrawn(`${many}a\\nb\\u0041\\\\`) as string[])[0].endsWith("a\\nb\\u0041\\\\")).toBe(true);
+    // A typed code is not counted as a hidden character.
+    expect(hiddenIn(`${many}${typed}`).count).toBe(MARKS_MAX + 1);
+
+    // Up to the marks a card sets apart, a real one is an element of its own
+    // and a typed one is text: the drawing tells them apart, and nothing is
+    // rewritten.
+    expect(commandDrawn(`a${real}b${typed}c`)).toEqual(["a", mark("200B"), `b${typed}c`]);
+  });
+
+  it("writes both texts of one command the same way, as the card says under them", () => {
+    // The folded head holds few of them; the command holds too many to set
+    // apart. The card decides once and both texts follow.
+    expect(commandDrawn(`a\u200Bb\\u{200B}`, false, true)).toEqual(["a\\u{200B}b\\u{005C}u{200B}"]);
+    expect(commandDrawn("plain \\u{41}", false, true)).toEqual(["plain \\u{005C}u{41}"]);
+    expect(commandDrawn("plain", false, true)).toEqual(["plain"]);
+    expect(commandDrawn(`a\u200Bb`, false, false)).toEqual(["a", mark("200B"), "b"]);
+  });
+});
+
+describe("what a command is as drawn", () => {
+  it("counts a code for the character it stands for, and only where it could matter", () => {
+    // Short enough that no drawing of it could pass the bound: its own size.
+    expect(drawnChars("a\u200Bb")).toBe(3);
+    const hidden = "\u200B".repeat(700_000);
+    expect(chars(hidden)).toBe(700_000);
+    expect(drawnChars(hidden)).toBe(700_000 * 8);
+    // A pair is one character, and its code is nine.
+    const tags = String.fromCodePoint(0xe0041).repeat(400_000);
+    expect(chars(tags)).toBe(400_000);
+    expect(drawnChars(tags)).toBe(400_000 * 9);
+    // Where the codes are written into the text, so is each backslash that
+    // is written as one.
+    const typed = `${"\\u{41}".repeat(100_000)}${"\u200B".repeat(MARKS_MAX + 1)}${"x".repeat(100_000)}`;
+    expect(drawnChars(typed)).toBe(chars(typed) + (MARKS_MAX + 1) * 7 + 100_000 * 7);
+    // Plain text of the same length is itself.
+    expect(drawnChars("x".repeat(700_000))).toBe(700_000);
+  });
+
+  it("bounds what is drawn, not what is sent: past it the command is not opened and cannot be allowed", () => {
+    // The reviewer's command: within the limit by its own length, eight
+    // times that as drawn.
+    const hidden = "\u200B".repeat(WHOLE_MAX);
+    expect(tooLong(hidden)).toBe(false);
+    const fold = commandFold(hidden);
+    expect(fold).toMatchObject({ size: WHOLE_MAX, drawn: WHOLE_MAX * 8, tooLong: true, head: "", more: 1 });
+    expect(commandOpens(fold)).toBe(false);
+    expect(commandShown(fold, true)).toEqual({ head: "", rest: null });
+    expect(notShown(fold, commandShown(fold, true))).toBeGreaterThan(0);
+    expect(allowHeld(notShown(fold, commandShown(fold, true)), null, { id: "a", tool: "Bash", key: "command", text: hidden })).toBe(true);
+
+    // The bound is on the drawn size, to the character.
+    const within = `${"x".repeat(WHOLE_MAX - 8 * 1000)}${"\u200B".repeat(1000)}`;
+    expect(commandFold(within)).toMatchObject({ drawn: WHOLE_MAX, tooLong: false });
+    expect(commandFold(`${within}y`)).toMatchObject({ drawn: WHOLE_MAX + 1, tooLong: true });
+    // Its own length still counts on its own.
+    expect(commandFold("c".repeat(WHOLE_MAX + 1))).toMatchObject({ drawn: WHOLE_MAX + 1, tooLong: true });
+    expect(commandFold("c".repeat(WHOLE_MAX))).toMatchObject({ drawn: WHOLE_MAX, tooLong: false });
+    // Nothing is cut to keep to it: a command within the bound opens whole.
+    const opens = commandFold(`first\n${"\u200B".repeat(600_000)}`);
+    expect(opens).toMatchObject({ tooLong: false, more: 1 });
+    expect(commandShown(opens, true).rest).toBe("\u200B".repeat(600_000));
+  });
+
+  it("says both sizes when the drawn one is why", () => {
+    expect(tooLongNote("command", 1_000_000, undefined, undefined, 8_000_000)).toBe(
+      "This command is too long to show in full (1,000,000 characters, 8,000,000 as drawn: the ones that cannot be seen as typed are drawn as their codes), so it cannot be allowed here. Deny it and ask for it in smaller steps.",
+    );
+    // Too long by its own length: one size, as before.
+    expect(tooLongNote("command", 5_000_024, undefined, undefined, 5_000_024)).toBe(
+      "This command is too long to show in full (5,000,024 characters), so it cannot be allowed here. Deny it and ask for it in smaller steps.",
+    );
   });
 });
 

@@ -32,7 +32,7 @@ import { askDetail, changeFacts, isCommand, type ChangeRow } from "../lib/askDet
 import { bridge } from "../lib/bridge";
 import {
   allowHeld, chars, commandDrawn, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, drawnWhole,
-  hiddenIn, hiddenNote, lineFeedAfter, longRowsLabel, notShown,
+  hiddenIn, hiddenNote, lineFeedAfter, longRowsLabel, marksInText, notShown,
   rowFold, textFold, tooLong, tooLongNote, unseenLines, type CommandAsked, type RowFold,
 } from "../lib/cardFold";
 import { fileDiff } from "../lib/diff";
@@ -151,13 +151,17 @@ function Mark({ code }: { code: string }) {
  *  as written, but for the characters that draw nothing or turn the reading
  *  order round, each of which is its code where it stands. A command with
  *  none of them is the one text it always was. */
-function CommandText({ text, lineFeedFollows }: {
+function CommandText({ text, lineFeedFollows, written }: {
   text: string;
   /** A line feed follows this text in the command (`lib/cardFold.lineFeedAfter`). */
   lineFeedFollows: boolean;
+  /** The command's codes are written into its text, with no mark around
+   *  each (`lib/cardFold.marksInText`): decided for the whole command, so
+   *  the two texts drawn of it agree with the line under them. */
+  written: boolean;
 }) {
   // Kept between the clock's ticks: a command can be very long.
-  const parts = useMemo(() => commandDrawn(text, lineFeedFollows), [text, lineFeedFollows]);
+  const parts = useMemo(() => commandDrawn(text, lineFeedFollows, written), [text, lineFeedFollows, written]);
   return <>{parts.map((part, i) => (typeof part === "string" ? part : <Mark key={i} code={part.code} />))}</>;
 }
 
@@ -230,6 +234,9 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   // Characters in it that cannot be seen as typed, in all of it: the ones on
   // lines the folded card does not draw are counted too.
   const hidden = useMemo(() => (runs === null ? null : hiddenIn(runs)), [runs]);
+  // Too many to set each apart: their codes are written into the text, in
+  // both of the texts drawn, and the line under them says so.
+  const written = !!hidden && marksInText(hidden.count);
   const prose = extra && !facts && !command ? extra.body : null;
   // A text the page cannot draw whole is not opened in part. Whichever part
   // of the ask it is, the ask cannot be allowed from this card.
@@ -276,7 +283,10 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   // Held until it is opened, or unavailable for good: either way the reason
   // is a sentence on the card, and the answers point at it.
   const off = held || over > 0;
-  const why = over > 0 ? tooLongNote(what, over) : held ? `Open the full ${what} to allow it.` : "";
+  // A command within the bound by its own length and past it as drawn says
+  // both sizes: the drawn one is why.
+  const why = over > 0 ? tooLongNote(what, over, undefined, undefined, command?.tooLong ? command.drawn : undefined)
+    : held ? `Open the full ${what} to allow it.` : "";
   const commandId = useId();
   const whyId = useId();
 
@@ -370,14 +380,14 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
           {opens ? (
             (shown.head || fold.shown) && (
               <div className="ask-card-body is-command is-long" data-open={fold.shown || undefined}>
-                {shown.head && <pre className="ask-command-text"><CommandText text={shown.head} lineFeedFollows={feeds.head} /></pre>}
+                {shown.head && <pre className="ask-command-text"><CommandText text={shown.head} lineFeedFollows={feeds.head} written={written} /></pre>}
                 <FoldBody fold={fold} bounded={false}>
-                  {shown.rest !== null && <pre className="ask-command-text"><CommandText text={shown.rest} lineFeedFollows={feeds.rest} /></pre>}
+                  {shown.rest !== null && <pre className="ask-command-text"><CommandText text={shown.rest} lineFeedFollows={feeds.rest} written={written} /></pre>}
                 </FoldBody>
               </div>
             )
           ) : (
-            shown.head && <pre className="ask-card-body is-command"><CommandText text={shown.head} lineFeedFollows={feeds.head} /></pre>
+            shown.head && <pre className="ask-card-body is-command"><CommandText text={shown.head} lineFeedFollows={feeds.head} written={written} /></pre>
           )}
           {/* Under the block, at full strength: what the marks in it are,
               and how many the whole command holds. */}
@@ -385,7 +395,7 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
             const note = hiddenNote(hidden.count, what);
             return (
               <p className="ask-command-hidden">
-                <strong>{note.count}</strong>{note.rest}<Mark code={hidden.example} />
+                <strong>{note.count}</strong>{note.rest}<Mark code={hidden.example} />{note.after}
               </p>
             );
           })()}

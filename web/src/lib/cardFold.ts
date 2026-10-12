@@ -218,8 +218,12 @@ export type CommandFold = {
   rest: string;
   /** How many lines `rest` is. */
   more: number;
-  /** Past what the page draws (`WHOLE_MAX`): it cannot be opened whole, so
-   *  it is not opened, and it cannot be allowed here. */
+  /** How many characters it is as the card draws it (`drawnChars`), for the
+   *  bound: `size` for a command no drawing of which could pass it. */
+  drawn: number;
+  /** Past what the page draws (`WHOLE_MAX`), by its own length or by what
+   *  it is drawn as: it cannot be opened whole, so it is not opened, and it
+   *  cannot be allowed here. */
   tooLong: boolean;
   /** A line feed follows its last line in the text the host sent. What
    *  `commandDrawn` needs to tell a carriage return that ends that line (a
@@ -238,13 +242,15 @@ export function commandFold(text: string): CommandFold {
     kept += 1;
   }
   const whole = lines.join("\n");
+  const drawn = drawnChars(whole);
   return {
     lines: lines.length,
     size: chars(whole),
     head: lines.slice(0, kept).join("\n"),
     rest: lines.slice(kept).join("\n"),
     more: lines.length - kept,
-    tooLong: tooLong(whole),
+    drawn,
+    tooLong: tooLong(whole) || drawn > WHOLE_MAX,
     ended,
   };
 }
@@ -374,28 +380,147 @@ export function drawnWhole(was: CommandAsked | null, asked: CommandAsked, unshow
  *    joiner (U+2060) and byte-order mark (U+FEFF); the line and paragraph
  *    separators (U+2028, U+2029).
  *  - The marks that set reading order (U+061C, U+200E, U+200F, U+202A to
- *    U+202E, U+2066 to U+2069). */
-const HIDDEN =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00A0\u00AD\u061C\u200B-\u200F\u2028-\u202E\u2060\u2066-\u2069\uFEFF]|\r(?!\n)/g;
+ *    U+202E, U+2066 to U+2069).
+ *  - The rest of what draws nothing: the invisible operators (U+2061 to
+ *    U+2064), the deprecated format characters (U+206A to U+206F), the
+ *    Mongolian vowel separator (U+180E), the Hangul fillers (U+115F, U+1160,
+ *    U+3164, U+FFA0), and the tag characters (U+E0001 to U+E007F), which
+ *    spell out text nobody sees. */
+const HIDDEN_RANGES: readonly [number, number][] = [
+  [0x0000, 0x0008], [0x000b, 0x000c], [0x000e, 0x001f], [0x007f, 0x007f], [0x00a0, 0x00a0], [0x00ad, 0x00ad],
+  [0x061c, 0x061c], [0x115f, 0x1160], [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x2064],
+  [0x2066, 0x206f], [0x3164, 0x3164], [0xfeff, 0xfeff], [0xffa0, 0xffa0],
+];
 
-/** `\u{202E}`: a character written as its code, at least four digits. */
+/** The tag characters are past the first plane, so each is a pair of units:
+ *  this lead, then a trail from `TAG_FIRST` to `TAG_LAST`. */
+const TAG_LEAD = 0xdb40;
+const TAG_FIRST = 0xdc01;
+const TAG_LAST = 0xdc7f;
+
+/** The spaces wider or narrower than the one a keyboard types: U+2000 to
+ *  U+200A, the narrow no-break space (U+202F), the medium mathematical space
+ *  (U+205F) and the ideographic space (U+3000). Each draws as a gap and none
+ *  is a space to a shell: `rm -rf a<U+3000>b` removes one path, not two.
+ *
+ *  They are ordinary in Chinese and Japanese text, so the rule has one
+ *  exception and no more: a run of them with a CJK character on BOTH sides
+ *  is left as written (two Chinese words in an echoed message). Anywhere
+ *  else in a command, including beside Latin text, at the start or end of a
+ *  line and between a CJK word and a quote, each is drawn as its code. */
+const WIDE_RANGES: readonly [number, number][] = [[0x2000, 0x200a], [0x202f, 0x202f], [0x205f, 0x205f], [0x3000, 0x3000]];
+
+/** What each unit of the first plane is to a command's drawing: 1 for a
+ *  character that cannot be seen as typed, 2 for a wider space. A table, so
+ *  a command of millions of characters is read in one pass of plain
+ *  compares: a pattern matched five million times took seconds. */
+const KIND = (() => {
+  const kind = new Uint8Array(0x10000);
+  for (const [from, to] of HIDDEN_RANGES) kind.fill(1, from, to + 1);
+  for (const [from, to] of WIDE_RANGES) kind.fill(2, from, to + 1);
+  return kind;
+})();
+
+/** What "CJK" means for that exception: Han, kana and Hangul, and the CJK
+ *  and full-width punctuation that sits between them. */
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3001-\u303F\uFF00-\uFF9F\uFFA1-\uFFEF]/u;
+
+/** Whether a character counts as CJK for that exception. One the card marks
+ *  (a Hangul filler) never does: it is not a word beside the space. */
+function isCjk(char: string): boolean {
+  if (char === "") return false;
+  const unit = char.charCodeAt(0);
+  // Nothing below Hangul Jamo is: most neighbours, with no pattern run.
+  return unit >= 0x1100 && KIND[unit] !== 1 && CJK.test(char);
+}
+
+/** The character that ends at `index`, or "" at the start. */
+function charBefore(text: string, index: number): string {
+  if (index <= 0) return "";
+  const low = text.charCodeAt(index - 1);
+  const paired = low >= 0xdc00 && low <= 0xdfff && index >= 2;
+  return text.slice(index - (paired ? 2 : 1), index);
+}
+
+/** The character that starts at `index`, or "" at the end. */
+function charAt(text: string, index: number): string {
+  const point = text.codePointAt(index);
+  return point === undefined ? "" : String.fromCodePoint(point);
+}
+
+/** Every character of a command that is drawn as its code, in order: where
+ *  it stands, how many units it is, and its code point. One pass, and
+ *  nothing is made per character but the call. */
+function eachMarked(text: string, visit: (at: number, units: number, point: number) => void): void {
+  const end = text.length;
+  for (let i = 0; i < end; i += 1) {
+    const unit = text.charCodeAt(i);
+    const kind = KIND[unit];
+    if (kind === 1) {
+      visit(i, 1, unit);
+    } else if (kind === 2) {
+      // A run of wider spaces: ordinary between two CJK characters, a mark
+      // anywhere else.
+      let after = i + 1;
+      while (after < end && KIND[text.charCodeAt(after)] === 2) after += 1;
+      if (!(isCjk(charBefore(text, i)) && isCjk(charAt(text, after)))) {
+        for (let at = i; at < after; at += 1) visit(at, 1, text.charCodeAt(at));
+      }
+      i = after - 1;
+    } else if (unit === 0x0d) {
+      // A carriage return is a line end only with the line feed after it.
+      if (text.charCodeAt(i + 1) !== 0x0a) visit(i, 1, unit);
+    } else if (unit === TAG_LEAD) {
+      const trail = text.charCodeAt(i + 1);
+      if (trail >= TAG_FIRST && trail <= TAG_LAST) {
+        visit(i, 2, 0xe0000 + (trail - 0xdc00));
+        i += 1;
+      }
+    }
+  }
+}
+
+/** `\u{202E}`: a code point written as its code, at least four digits. */
+function codeFor(point: number): string {
+  return `\\u{${point.toString(16).toUpperCase().padStart(4, "0")}}`;
+}
+
+/** The same, of a character. */
 export function codeOf(char: string): string {
-  return `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}}`;
+  return codeFor(char.codePointAt(0) ?? 0);
 }
 
 /** The most marks a card sets apart one by one. Each is an element of its
  *  own, and a command made of a million of them would stop the page; past
  *  this their codes are written into the text where they stand, still in
- *  place and still counted, without the mark around each. */
+ *  place and still counted, without the mark around each (`commandDrawn`). */
 export const MARKS_MAX = 5000;
+
+/** A backslash that could be read as the start of a code: `\u{`. */
+const TYPED_CODE = /\\(?=u\{)/g;
+
+/** What a backslash typed before `u{` is written as where codes are written
+ *  into the text. */
+export const TYPED_BACKSLASH = "\\u{005C}";
 
 /** One stretch of a command as it is drawn: text as written, or the code of
  *  a character that cannot be seen as typed. */
 export type CommandPart = string | { code: string };
 
 /** A command, or the part of one a card draws, as it is drawn, in order: its
- *  text, with every character of `HIDDEN` replaced where it stands by its
- *  code. A text with none is one part, itself, drawn exactly as written.
+ *  text, with every character that cannot be seen as typed (`marked`)
+ *  replaced where it stands by its code. A text with none is one part,
+ *  itself, drawn exactly as written.
+ *
+ *  Up to `MARKS_MAX` of them, each code is a part of its own and the card
+ *  sets it apart as a mark: a code is told from the same eight characters
+ *  typed into the command by how it is drawn. Past that there is no mark
+ *  around each, so they are told apart in the text itself: a backslash
+ *  typed before `u{` is written as its own code (`TYPED_BACKSLASH`). What is
+ *  drawn is then an escaping with one reading: `\u{…}` is always one
+ *  character of the command, and `\u{200B}` typed out reads
+ *  `\u{005C}u{200B}`. Nothing of the command is changed, counted or sent
+ *  differently; only this drawing.
  *
  *  `lineFeedFollows` says the text is followed by a line feed in the command
  *  (`lineFeedAfter`): a carriage return at its end is then a line end and
@@ -403,46 +528,109 @@ export type CommandPart = string | { code: string };
  *  a row of a line that holds nothing else; the return on its own, last in
  *  the block, gets no row at all in Chromium, and the card would state a
  *  line it does not draw. */
-export function commandDrawn(text: string, lineFeedFollows = false): CommandPart[] {
+export function commandDrawn(
+  text: string,
+  lineFeedFollows = false,
+  /** Whether the codes are written into the text (`marksInText`). A card
+   *  draws a command as two texts and says once, under both, which way its
+   *  codes are drawn: it decides for the whole command and passes it here.
+   *  Left out, this text decides for itself. */
+  written?: boolean,
+): CommandPart[] {
   const body = lineFeedFollows && text.endsWith("\r") ? `${text}\n` : text;
-  const { count } = hiddenIn(body);
-  if (count === 0) return [body];
-  if (count > MARKS_MAX) return [body.replace(HIDDEN, (char) => codeOf(char))];
-  const parts: CommandPart[] = [];
+  const inText = written ?? marksInText(hiddenIn(body).count);
   let from = 0;
-  for (const found of body.matchAll(HIDDEN)) {
-    const at = found.index ?? 0;
-    if (at > from) parts.push(body.slice(from, at));
-    parts.push({ code: codeOf(found[0]) });
-    from = at + found[0].length;
+  if (inText) {
+    // Text as written, but for a backslash typed before `u{`, which goes in
+    // as its code so that no stretch of what is typed reads as one.
+    const typed = (to: number) => body.slice(from, to).replace(TYPED_CODE, TYPED_BACKSLASH);
+    const stretches: string[] = [];
+    eachMarked(body, (at, units, point) => {
+      stretches.push(typed(at), codeFor(point));
+      from = at + units;
+    });
+    return [stretches.join("") + typed(body.length)];
   }
+  const parts: CommandPart[] = [];
+  eachMarked(body, (at, units, point) => {
+    if (at > from) parts.push(body.slice(from, at));
+    parts.push({ code: codeFor(point) });
+    from = at + units;
+  });
+  if (parts.length === 0) return [body];
   if (from < body.length) parts.push(body.slice(from));
   return parts;
+}
+
+/** Whether a command with this many of them has their codes written into
+ *  its text, with no mark around each. */
+export function marksInText(count: number): boolean {
+  return count > MARKS_MAX;
 }
 
 /** How many such characters a text holds, and the code of the first. */
 export function hiddenIn(text: string): { count: number; example: string } {
   let count = 0;
   let example = "";
-  for (const found of text.matchAll(HIDDEN)) {
-    if (count === 0) example = codeOf(found[0]);
+  eachMarked(text, (_at, _units, point) => {
+    if (count === 0) example = codeFor(point);
     count += 1;
-  }
+  });
   return { count, example };
 }
 
 /** The line under a command that holds any: how many, at full strength, then
- *  what the card did with them. `what` names the text: "command", "script". */
-export function hiddenNote(n: number, what = "command"): { count: string; rest: string } {
-  return n === 1
-    ? { count: "1 character that cannot be seen as typed", rest: ` is in this ${what}, drawn as its code: ` }
-    : { count: `${digits(n)} characters that cannot be seen as typed`, rest: ` are in this ${what}, each drawn as its code, like ` };
+ *  what the card did with them. `what` names the text: "command", "script".
+ *  Past `MARKS_MAX` the codes are in the text with no mark around each, and
+ *  the line says what keeps one from being imitated. */
+export function hiddenNote(n: number, what = "command"): { count: string; rest: string; after?: string } {
+  if (n === 1) return { count: "1 character that cannot be seen as typed", rest: ` is in this ${what}, drawn as its code: ` };
+  const count = `${digits(n)} characters that cannot be seen as typed`;
+  if (n <= MARKS_MAX) return { count, rest: ` are in this ${what}, each drawn as its code, like ` };
+  return {
+    count,
+    rest: ` are in this ${what}, each written into it as its code, like `,
+    after: `. A backslash typed before u{ is written as ${TYPED_BACKSLASH}, so a code here is never text that was typed.`,
+  };
 }
 
 /** Whether a text is past what the page draws whole. */
 export function tooLong(text: string): boolean {
   // Never more characters than units, so this is most texts, at no cost.
   return text.length > WHOLE_MAX && chars(text) > WHOLE_MAX;
+}
+
+/** How many characters a command is as the card draws it: its own, with each
+ *  one that cannot be seen as typed counted as the code drawn in its place
+ *  (`\u{200B}` is eight characters for one), and, where the codes are written
+ *  into the text, each backslash that is written as a code too.
+ *
+ *  This, and not the command's own length, is what opening costs. A command
+ *  of 5,000,000 zero-width spaces is within `WHOLE_MAX` and draws
+ *  40,000,000 characters, which stopped the page for 8.6 s. So the bound is
+ *  on what is drawn (`commandFold`: `drawn > WHOLE_MAX`), and nothing is cut
+ *  to keep to it: past the bound the command is not opened, and its card
+ *  cannot approve it. */
+export function drawnChars(text: string): number {
+  // A code is at most eight times the unit it stands for, and nine for a
+  // pair, so a text this short cannot pass the bound however it is drawn.
+  // That is most commands, and they are not scanned: the answer for them is
+  // their own size, which is all the bound needs.
+  if (text.length * 8 <= WHOLE_MAX) return chars(text);
+  let extra = 0;
+  let marks = 0;
+  eachMarked(text, (_at, units) => {
+    // Eight characters for one of the first plane; nine for a pair, which
+    // is one character too.
+    extra += units === 2 ? 8 : 7;
+    marks += 1;
+  });
+  if (marksInText(marks)) {
+    let typed = 0;
+    for (let at = text.indexOf("\\u{"); at >= 0; at = text.indexOf("\\u{", at + 3)) typed += 1;
+    extra += typed * (TYPED_BACKSLASH.length - 1);
+  }
+  return chars(text) + extra;
 }
 
 /** What a card says in place of a text it cannot draw whole, beside the
@@ -454,8 +642,14 @@ export function tooLongNote(
   size: number,
   cannot = "be allowed here",
   instead = "Deny it and ask for it in smaller steps.",
+  /** What it comes to as drawn, when that and not its own length is what
+   *  is past the bound (`drawnChars`). */
+  drawn?: number,
 ): string {
-  return `This ${what} is too long to show in full (${count(size, "character")}), so it cannot ${cannot}. ${instead}`;
+  const sized = drawn && drawn > size
+    ? `${count(size, "character")}, ${digits(drawn)} as drawn: the ones that cannot be seen as typed are drawn as their codes`
+    : count(size, "character");
+  return `This ${what} is too long to show in full (${sized}), so it cannot ${cannot}. ${instead}`;
 }
 
 /** "+12 −3 in chat.ts": a diff as its counts, for the folded card. */

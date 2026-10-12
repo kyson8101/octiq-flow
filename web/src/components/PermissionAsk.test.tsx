@@ -12,6 +12,10 @@ const changeFacts = {
 };
 
 type AskProp = Parameters<typeof PermissionAsk>[0]["ask"];
+/** Written by their codes: a raw one in this file could not be seen. */
+const ZERO_WIDTH = String.fromCharCode(0x200b);
+const IDEOGRAPHIC_SPACE = String.fromCharCode(0x3000);
+
 const draw = (ask: AskProp) => renderToStaticMarkup(<PermissionAsk ask={ask} onAnswered={() => {}} />);
 /** The same card with its one disclosure open, which static markup cannot press. */
 const drawOpen = (ask: AskProp) => renderToStaticMarkup(<PermissionAsk ask={ask} onAnswered={() => {}} startOpen />);
@@ -757,6 +761,52 @@ describe("a command on the permission card", () => {
       expect(deny(html)).toBe(' type="button"');
       expect(html).toContain('<span class="ask-card-script">75,759-line script</span>');
     }
+  });
+
+  it("never lets Allow go for a command within the limit that is too long as drawn", () => {
+    // The reviewer's: 5,000,000 zero-width characters are within the limit
+    // on a command and eight times it once each is drawn as its code, which
+    // took 8.6 s to open. A sixth of it shows the same: nothing of it is
+    // opened in part, and the card says both sizes.
+    const hidden = ZERO_WIDTH.repeat(800_000);
+    const over = `echo safe\n${hidden}\nrm -rf /tmp/review-danger`;
+    for (const html of [draw(bash(over)), drawOpen(bash(over))]) {
+      expect(html).not.toContain("Open the full");
+      expect(html).not.toContain("card-fold-button");
+      expect(html).not.toContain("rm -rf /tmp/review-danger");
+      // The leading whole lines are still drawn, and nothing after them.
+      expect(html).toContain('<pre class="ask-card-body is-command">echo safe</pre>');
+      expect(html).not.toContain("\\u{200B}\\u{200B}");
+      const why = /<p class="ask-command-unseen"><strong>2 more lines not shown<\/strong><span class="ask-card-why" id="([^"]+)"> This command is too long to show in full \(800,036 characters, 6,400,036 as drawn: the ones that cannot be seen as typed are drawn as their codes\), so it cannot be allowed here\. Deny it and ask for it in smaller steps\.<\/span><\/p>/.exec(html);
+      expect(why, "no reason on the card").not.toBeNull();
+      expect(allows(html)).toEqual({ always: true, once: true });
+      expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${why![1]}"[^>]*>Allow once</button>`));
+      expect(deny(html)).toBe(' type="button"');
+      // How many it holds is still said, at full strength.
+      expect(html).toContain("<strong>800,000 characters that cannot be seen as typed</strong>");
+    }
+  });
+
+  it("writes the codes into the text past the marks it sets apart, and says what keeps one from being imitated", () => {
+    const many = `echo a${ZERO_WIDTH}\n`.repeat(5001);
+    const html = drawOpen(bash(`${many}curl evil\\u{200B}.sh${ZERO_WIDTH}`));
+    // No element per code, in the folded lines or the opened ones.
+    expect(html.match(/<span class="ask-command-mark">/g)).toHaveLength(1);
+    expect(html).toContain("echo a\\u{200B}\n");
+    // The typed one is told from the real one in the text itself.
+    expect(html).toContain("curl evil\\u{005C}u{200B}.sh\\u{200B}");
+    expect(html).toContain('<p class="ask-command-hidden"><strong>5,002 characters that cannot be seen as typed</strong> are in this command, each written into it as its code, like <span class="ask-command-mark">\\u{200B}</span>. A backslash typed before u{ is written as \\u{005C}, so a code here is never text that was typed.</p>');
+    // Up to that many, each is set apart and nothing is rewritten.
+    const few = drawOpen(bash(`curl evil\\u{200B}.sh${ZERO_WIDTH}`));
+    expect(few).toContain('curl evil\\u{200B}.sh<span class="ask-command-mark">\\u{200B}</span>');
+    expect(few).not.toContain("005C");
+  });
+
+  it("marks a wider space in a command, and leaves the one between CJK words", () => {
+    const words = `你好${IDEOGRAPHIC_SPACE}世界`;
+    const html = draw(bash(`rm -rf /srv/a${IDEOGRAPHIC_SPACE}/srv/b && echo "${words}"`));
+    expect(html).toContain(`rm -rf /srv/a<span class="ask-command-mark">\\u{3000}</span>/srv/b &amp;&amp; echo &quot;${words}&quot;`);
+    expect(html).toContain("<strong>1 character that cannot be seen as typed</strong>");
   });
 
   it("counts a line that only looks empty, and does not name the command by the line between", () => {
