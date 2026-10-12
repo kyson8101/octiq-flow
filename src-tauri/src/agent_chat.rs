@@ -774,6 +774,11 @@ impl StartContext {
     }
 
     #[cfg(test)]
+    pub(crate) fn access_level(&self) -> Option<Access> {
+        self.access
+    }
+
+    #[cfg(test)]
     pub(crate) fn for_test(agent: ChatAgent, session_id: Option<&str>) -> Self {
         Self {
             cwd: "/tmp/project".into(),
@@ -2283,6 +2288,18 @@ pub(crate) fn owed(manager: &ChatManager) -> Vec<&'static str> {
         owed.push(crate::question_store::OWED);
     }
     owed
+}
+
+/// Start the first message of every queue left waiting because its record
+/// could not be kept, with how it is started left to the caller. Answers
+/// the chats still waiting. Nothing is left waiting yet: a start that
+/// fails forgets its queue.
+#[cfg(test)]
+fn start_waiting_queues_with(
+    _manager: &Arc<ChatManager>,
+    _start: impl Fn(&str, &str, QueuedTurn) -> Result<(), String>,
+) -> Vec<String> {
+    Vec::new()
 }
 
 /// Explicit browser action from the quota banner.
@@ -6488,6 +6505,82 @@ impl ChatManager {
         self.test_child(key)
     }
 
+    /// `test_hold`, with everything written to the stand-in kept to be read:
+    /// a control message that should not have been sent has somewhere to
+    /// show up.
+    pub(crate) fn test_hold_heard(
+        &self,
+        key: &str,
+        agent: ChatAgent,
+        busy: bool,
+    ) -> (TestChild, BufReader<ChildStdout>) {
+        let mut child = stand_in::echo()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("a stand-in agent");
+        let stdin = child.stdin.take();
+        let heard = stand_in::echoed(child.stdout.take().expect("the stand-in's stdout"));
+        self.sessions.lock().unwrap().insert(
+            key.to_string(),
+            Arc::new(Mutex::new(ChatSession {
+                launch_id: "test-launch".into(),
+                user_turn_id: None,
+                answering: None,
+                child,
+                stdin,
+                codex: None,
+                agent,
+                busy,
+                last_active: Instant::now(),
+                cut_off: CutOff::No,
+                leaving: None,
+            })),
+        );
+        (self.test_child(key), heard)
+    }
+
+    /// Make the stand-in under `key` a Codex app-server thread running at
+    /// `access`, between turns.
+    pub(crate) fn test_as_codex_thread(&self, key: &str, access: Access) {
+        let session = self.sessions.lock().unwrap().get(key).cloned().unwrap();
+        let mut session = session.lock().unwrap();
+        session.agent = ChatAgent::Codex;
+        session.codex = Some(CodexAppSession {
+            thread_id: "thread-1".into(),
+            active_turn_id: None,
+            interrupt_when_started: false,
+            next_request: 0,
+            model: None,
+            effort: None,
+            access: Some(access),
+            cwd: "/tmp".into(),
+            workspace_roots: vec!["/tmp".into()],
+            has_octiq_mcp: false,
+        });
+    }
+
+    /// The level a Codex app-server stand-in would start its next turn at.
+    pub(crate) fn test_codex_access(&self, key: &str) -> Option<Access> {
+        let session = self.sessions.lock().unwrap().get(key).cloned().unwrap();
+        let session = session.lock().unwrap();
+        session.codex.as_ref().and_then(|codex| codex.access)
+    }
+
+    /// The start settings a chat launched as `agent` at `access` remembers,
+    /// kept the way a launch keeps them: in memory, and in the ledger for a
+    /// chat a run knows.
+    pub(crate) fn test_start_at(&self, key: &str, agent: ChatAgent, access: Access) {
+        let mut start = StartContext::for_test(agent, Some("native-session"));
+        start.access = Some(access);
+        self.remember_start(key, start);
+    }
+
+    /// The level the chat's remembered start settings name.
+    pub(crate) fn test_start_access(&self, key: &str) -> Option<Access> {
+        self.start_context(key).and_then(|start| start.access)
+    }
+
     /// The process under `key`, to ask after once the chat has let go of it.
     pub(crate) fn test_child(&self, key: &str) -> TestChild {
         TestChild(self.sessions.lock().unwrap().get(key).cloned().unwrap())
@@ -6515,6 +6608,18 @@ impl TestChild {
     /// Whether the process is still running.
     pub(crate) fn alive(&self) -> bool {
         matches!(self.0.lock().unwrap().child.try_wait(), Ok(None))
+    }
+
+    /// `gone`, waiting only half a second: for a process that is expected
+    /// to stay.
+    pub(crate) fn gone_soon(&self) -> bool {
+        for _ in 0..50 {
+            if !self.alive() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
     }
 
     /// Whether the process ends within a few seconds: a kill is asked for,
@@ -6951,6 +7056,10 @@ fn decode_attachment(data_base64: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 #[path = "ending_tests.rs"]
 mod ending_tests;
+
+#[cfg(test)]
+#[path = "reach_tests.rs"]
+mod reach_tests;
 
 #[cfg(test)]
 mod upload_tests {

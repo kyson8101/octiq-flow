@@ -14,6 +14,23 @@ describe("question submission receipts", () => {
     await expect(submitQuestionAnswers(vi.fn().mockResolvedValue(receipt), answers)).rejects.toThrow("did not confirm");
   });
 
+  // Review of b894867 (P3), H9. With the profile folder away the host hands
+  // the answers to the agent and cannot write them down. It used to answer
+  // `{ saved: true, recorded: false }` so that this function would not throw,
+  // and the card said "Answers saved". It says what happened now, and so
+  // does the receipt the card is given.
+  it("takes a delivered and unsaved receipt as that, never as saved", async () => {
+    const why = "The profile folder /Volumes/drive/profiles/default is not available right now.";
+    const invoke = vi.fn().mockResolvedValue({ saved: false, delivered: true, unsaved: why });
+    await expect(submitQuestionAnswers(invoke, answers)).resolves.toEqual({ unsaved: why });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not take the old half-true receipt as saved", async () => {
+    const invoke = vi.fn().mockResolvedValue({ saved: true, recorded: false });
+    await expect(submitQuestionAnswers(invoke, answers)).resolves.not.toBe("saved");
+  });
+
   it("surfaces disconnection and storage errors instead of closing the card", async () => {
     const invoke = vi.fn().mockRejectedValue(new Error("Disconnected"));
     await expect(submitQuestionAnswers(invoke, answers)).rejects.toThrow("Disconnected");

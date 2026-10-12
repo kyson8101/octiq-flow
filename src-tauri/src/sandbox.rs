@@ -424,7 +424,7 @@ impl Store {
         let dir = self.directory(env)?;
         private_dir(&dir)?;
         runtime_secrets(&dir)?;
-        let docker = crate::proc::find_executable("docker").ok_or(
+        let docker = docker_program().ok_or(
             "Docker was not found. Install and start a local Docker runtime on the OctiqFlow host.",
         )?;
         let endpoint = docker_endpoint(&docker, &dir)?;
@@ -726,6 +726,46 @@ impl Store {
         .unwrap();
     }
 
+    /// Record `key` as started and checked the way a real start leaves it
+    /// (a frozen configuration and recipe, a local Docker endpoint, state
+    /// ready), without Docker: what a stop then has something to take down.
+    #[cfg(test)]
+    pub(crate) fn start_for_test(&self, key: &str) -> Environment {
+        let env = self.snapshot().unwrap().environments[key].clone();
+        let dir = self.directory(&env).unwrap();
+        private_write(&dir.join("compose.json"), b"{}").unwrap();
+        let recipe = Recipe {
+            version: 1,
+            compose_file: "compose.yaml".into(),
+            check_service: "verify".into(),
+            env_file: None,
+            fixture_version: None,
+            endpoints: BTreeMap::new(),
+        };
+        private_write(
+            &dir.join("recipe.json"),
+            &serde_json::to_vec(&recipe).unwrap(),
+        )
+        .unwrap();
+        self.mutate(|data| {
+            let env = data.environments.get_mut(key).unwrap();
+            env.state = "ready".into();
+            env.checked_at = Some(now());
+            env.host_instance = instance().into();
+            env.docker_endpoint = Some(stand_in::ENDPOINT.into());
+            env.frozen_replays = true;
+            Ok(env.clone())
+        })
+        .unwrap()
+    }
+
+    /// Write every stop that could not be saved when it was made. Nothing
+    /// is owed yet: a stop that cannot be saved is refused.
+    #[cfg(test)]
+    pub(crate) fn settle_owed() -> Result<(), String> {
+        Ok(())
+    }
+
     fn busy(&self, key: &str) -> bool {
         let token = format!("{}:{key}", self.root.display());
         OPERATIONS
@@ -945,7 +985,7 @@ impl Store {
     fn container_problem(&self, env: &Environment) -> Option<String> {
         let dir = self.directory(env).ok()?;
         let config = self.frozen_config(env).ok()?;
-        let Some(docker) = crate::proc::find_executable("docker") else {
+        let Some(docker) = docker_program() else {
             return Some("Docker is no longer available on this host.".into());
         };
         let Some(endpoint) = env.docker_endpoint.clone() else {
@@ -1346,6 +1386,91 @@ fn runtime_secrets(dir: &Path) -> Result<BTreeMap<String, String>, String> {
     Ok(secrets)
 }
 
+/// The Docker program on this host.
+fn docker_program() -> Option<String> {
+    #[cfg(test)]
+    if stand_in::installed() {
+        return Some("docker".into());
+    }
+    crate::proc::find_executable("docker")
+}
+
+/// A stand-in for Docker in tests, one per thread: every command the store
+/// would run on that thread is handed to it instead of being spawned, so a
+/// test can see what was asked of Docker without a Docker to ask.
+#[cfg(test)]
+pub(crate) mod stand_in {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    type Driver = Rc<dyn Fn(&[String]) -> Result<String, String>>;
+
+    thread_local! {
+        static DRIVER: RefCell<Option<Driver>> = const { RefCell::new(None) };
+    }
+
+    /// The stand-in is gone when this drops.
+    pub(crate) struct Installed;
+    impl Drop for Installed {
+        fn drop(&mut self) {
+            DRIVER.with(|driver| *driver.borrow_mut() = None);
+        }
+    }
+
+    pub(crate) fn install(
+        driver: impl Fn(&[String]) -> Result<String, String> + 'static,
+    ) -> Installed {
+        DRIVER.with(|slot| *slot.borrow_mut() = Some(Rc::new(driver)));
+        Installed
+    }
+
+    /// The local endpoint the recording stand-in answers for.
+    pub(crate) const ENDPOINT: &str = "unix:///var/run/docker.sock";
+
+    /// Every command asked of Docker on this thread, in order.
+    pub(crate) type Asked = Rc<RefCell<Vec<Vec<String>>>>;
+
+    /// A Docker that does what it is asked and remembers it: `context
+    /// inspect` answers the local endpoint, everything else succeeds with
+    /// no output.
+    pub(crate) fn recording() -> (Installed, Asked) {
+        let asked = Asked::default();
+        let log = asked.clone();
+        let installed = install(move |args| {
+            log.borrow_mut().push(args.to_vec());
+            Ok(if args.first().is_some_and(|arg| arg == "context") {
+                format!("{ENDPOINT}\n")
+            } else {
+                String::new()
+            })
+        });
+        (installed, asked)
+    }
+
+    /// The `compose … down` commands among `asked`, as the project each
+    /// one named.
+    pub(crate) fn taken_down(asked: &Asked) -> Vec<String> {
+        asked
+            .borrow()
+            .iter()
+            .filter(|args| args.last().is_some_and(|arg| arg == "down"))
+            .filter_map(|args| {
+                let at = args.iter().position(|arg| arg == "--project-name")?;
+                args.get(at + 1).cloned()
+            })
+            .collect()
+    }
+
+    pub(super) fn installed() -> bool {
+        DRIVER.with(|driver| driver.borrow().is_some())
+    }
+
+    pub(super) fn run(args: &[String]) -> Option<Result<String, String>> {
+        let driver = DRIVER.with(|driver| driver.borrow().clone())?;
+        Some(driver(args))
+    }
+}
+
 /// File-backed output avoids a full pipe deadlock; secrets never enter errors/events.
 fn run(
     program: &str,
@@ -1355,6 +1480,10 @@ fn run(
     seconds: u64,
 ) -> Result<String, String> {
     private_dir(dir)?;
+    #[cfg(test)]
+    if let Some(answer) = stand_in::run(args) {
+        return answer;
+    }
     let output = dir.join(format!("command-{}.log", uuid::Uuid::new_v4().simple()));
     private_write(&output, b"")?;
     let stdout = OpenOptions::new()
@@ -2636,5 +2765,152 @@ http.createServer(async (req, res) => {
             "kept"
         );
         compose_cmd(&again, &["down", "--volumes"]).unwrap();
+    }
+
+    /// A store in a profile folder on a drive of its own, with one chat's
+    /// sandbox started the way a real start leaves it.
+    struct Away {
+        store: Store,
+        env: Environment,
+        _process: crate::profile::Started,
+        home: crate::profile::tests::Home,
+    }
+
+    impl Away {
+        const KEY: &'static str = "chat:away";
+
+        fn new() -> Self {
+            let home = crate::profile::tests::Home::with_a_configured_base();
+            let process = crate::profile::started_in(&home.dir);
+            let store = Store::profile();
+            let project = home.dir.join("project");
+            fs::create_dir_all(&project).unwrap();
+            store
+                .select(Self::KEY, project.to_str().unwrap(), Some(true), false)
+                .unwrap();
+            let env = store.start_for_test(Self::KEY);
+            Self {
+                store,
+                env,
+                _process: process,
+                home,
+            }
+        }
+
+        fn folder_goes(&self) -> String {
+            self.home.move_away();
+            crate::profile::available().expect_err("the profile folder is away")
+        }
+
+        fn on_disk(&self) -> Environment {
+            let bytes = fs::read(self.store.root.join("state.json")).unwrap();
+            let saved: Snapshot = serde_json::from_slice(&bytes).unwrap();
+            saved.environments[Self::KEY].clone()
+        }
+    }
+
+    /// Review of b894867 (P3), H6: the host's own stop, when a chat ends or
+    /// nothing needs the services any more, read its state from the profile
+    /// and saved before it asked Docker for anything. With the folder away
+    /// it answered the profile's sentence and the services kept running.
+    /// It acts first now: Docker is asked through the project's name alone,
+    /// the stop is said as not recorded, and the record follows.
+    #[test]
+    fn the_hosts_stop_takes_services_down_while_the_profile_is_away_and_the_record_follows() {
+        let away = Away::new();
+        let (_docker, asked) = stand_in::recording();
+        assert_eq!(
+            away.store.live_keys(),
+            BTreeSet::from([Away::KEY.to_string()])
+        );
+
+        let why = away.folder_goes();
+        let (stopped, unsaved) =
+            crate::unsaved::told(|| away.store.host_stop(Away::KEY, "Nothing needs it."));
+        assert_eq!(stopped, Ok(true), "the services were not stopped");
+        assert_eq!(stand_in::taken_down(&asked), [away.env.id.clone()]);
+        let down = asked.borrow().last().cloned().unwrap();
+        assert!(
+            !down
+                .iter()
+                .any(|arg| arg.contains(&*away.store.root.to_string_lossy())),
+            "Docker was pointed at a file in the folder that is away: {down:?}"
+        );
+        assert_eq!(&down[..2], ["--host", stand_in::ENDPOINT]);
+        assert!(
+            unsaved
+                .iter()
+                .any(|u| u.what == "the stopped sandbox" && u.reason == why),
+            "{unsaved:?}"
+        );
+        // Stopped as far as this server goes: it holds no slot, and a second
+        // pass finds nothing to stop.
+        assert!(away.store.live_keys().is_empty());
+        assert_eq!(away.store.host_stop(Away::KEY, "Again."), Ok(false));
+        assert_eq!(stand_in::taken_down(&asked).len(), 1);
+        assert!(!away.home.profile().exists(), "the folder was made again");
+
+        away.home.move_back();
+        assert_eq!(away.on_disk().state, "ready", "written while away");
+        assert_eq!(Store::settle_owed(), Ok(()));
+        let saved = away.on_disk();
+        assert_eq!(saved.state, "stopped");
+        let stopped = saved.stopped.unwrap();
+        assert_eq!(
+            (stopped.by.as_str(), stopped.reason.as_str()),
+            ("host", "Nothing needs it.")
+        );
+        assert_eq!(
+            away.store.snapshot().unwrap().environments[Away::KEY].state,
+            "stopped"
+        );
+    }
+
+    /// A stop Docker refuses is said as the failure it is, and that too is
+    /// kept for the record: the environment reads as in error, never as
+    /// stopped.
+    #[test]
+    fn a_stop_docker_refuses_while_the_profile_is_away_is_an_error_and_not_a_stop() {
+        let away = Away::new();
+        let _docker = stand_in::install(|_| Err("Cannot connect to the Docker daemon.".into()));
+        away.folder_goes();
+
+        let stopped = away.store.host_stop(Away::KEY, "Nothing needs it.");
+        assert_eq!(
+            stopped,
+            Err("Cannot connect to the Docker daemon.".to_string())
+        );
+        away.home.move_back();
+        assert_eq!(Store::settle_owed(), Ok(()));
+        let saved = away.on_disk();
+        assert_eq!(saved.state, "error");
+        assert_eq!(
+            saved.error.as_deref(),
+            Some("Cannot connect to the Docker daemon.")
+        );
+    }
+
+    /// With the folder there a stop goes through the frozen configuration,
+    /// as it always has, and nothing is owed.
+    #[test]
+    fn a_stop_with_the_profile_there_goes_through_the_frozen_configuration() {
+        let away = Away::new();
+        let (_docker, asked) = stand_in::recording();
+
+        let (stopped, unsaved) =
+            crate::unsaved::told(|| away.store.person_action(Away::KEY, "stop", None, || Ok(())));
+        assert_eq!(stopped.unwrap().state, "stopped");
+        assert!(unsaved.is_empty(), "{unsaved:?}");
+        assert_eq!(stand_in::taken_down(&asked), [away.env.id.clone()]);
+        let down = asked.borrow().last().cloned().unwrap();
+        let frozen = away.store.root.join(&away.env.id).join("compose.json");
+        assert!(
+            down.contains(&frozen.to_string_lossy().into_owned()),
+            "{down:?}"
+        );
+        let saved = away.on_disk();
+        assert_eq!(saved.state, "stopped");
+        assert_eq!(saved.stopped.unwrap().by, "person");
+        assert_eq!(saved.lease, None, "a stop releases the person's hold");
     }
 }

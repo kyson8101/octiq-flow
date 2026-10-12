@@ -47,6 +47,8 @@ pub mod mission;
 pub mod peer;
 pub mod peer_request;
 #[cfg(test)]
+mod raise_tests;
+#[cfg(test)]
 mod reporting_tests;
 mod retention;
 mod workspaces;

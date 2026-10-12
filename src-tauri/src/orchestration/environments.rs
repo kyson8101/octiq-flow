@@ -751,4 +751,52 @@ mod tests {
             vec![("Build".to_string(), second.worker_chat_key.clone())]
         );
     }
+
+    /// Review of b894867 (P3), H6, at the host's own pass. A run is stopped
+    /// while the profile folder is away: nothing needs its worker's
+    /// services any more, and the pass stops them. It used to find nothing
+    /// live, because what is live was read from the folder that is away.
+    #[test]
+    fn the_hosts_pass_stops_a_stopped_runs_services_while_the_profile_is_away() {
+        let _serial = capacity::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let (store, run, _a, _b, attempt) = world(true);
+        let key = attempt.worker_chat_key.clone();
+        let sandboxes = crate::sandbox::Store::profile();
+        let project = home.dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        sandboxes
+            .select(&key, project.to_str().unwrap(), Some(true), false)
+            .unwrap();
+        let env = sandboxes.start_for_test(&key);
+        let (_docker, asked) = crate::sandbox::stand_in::recording();
+        let mut backoff = BTreeMap::new();
+        // A live attempt keeps its services.
+        reconcile(&store, &sandboxes, &mut backoff).unwrap();
+        assert!(crate::sandbox::stand_in::taken_down(&asked).is_empty());
+
+        home.move_away();
+        store
+            .stop_run("chat:master", run.id.clone(), "Wrong plan".into())
+            .unwrap();
+        reconcile(&store, &sandboxes, &mut backoff).unwrap();
+        assert_eq!(
+            crate::sandbox::stand_in::taken_down(&asked),
+            [env.id.clone()],
+            "the stopped run's services are still running"
+        );
+        assert!(backoff.is_empty(), "{backoff:?}");
+        // Once is enough: the next pass finds nothing live.
+        reconcile(&store, &sandboxes, &mut backoff).unwrap();
+        assert_eq!(crate::sandbox::stand_in::taken_down(&asked).len(), 1);
+
+        home.move_back();
+        assert_eq!(crate::sandbox::Store::settle_owed(), Ok(()));
+        let saved = sandboxes.snapshot().unwrap().environments[&key].clone();
+        assert_eq!(saved.state, "stopped");
+        assert_eq!(saved.stopped.unwrap().by, "host");
+    }
 }
