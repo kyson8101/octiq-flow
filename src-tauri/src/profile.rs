@@ -47,9 +47,12 @@ fn octiqflow_dir() -> Option<PathBuf> {
 /// **It is that directory, not whatever is at its path.** A path says where
 /// a folder was; remove the folder and make another there, or point the
 /// path at a different one, and the path still answers. So the process
-/// leaves its own mark in the folder when it takes it (`claim`, from
-/// `profile_lock::acquire`): a word made up for this run, on the owner
-/// lock's line. "Is the profile there" is then "does the folder at that
+/// leaves its own mark in the folder as it resolves it (`started`; and
+/// again from `profile_lock::acquire`, which says what kind of process it
+/// is): a word made up for this run, on the owner lock's line. It is left
+/// by the first question any process asks of the profile, so the guarantee
+/// does not wait on a second call; a lock another live process holds is
+/// not touched. "Is the profile there" is then "does the folder at that
 /// path hold my mark" (`missing`). A folder made in its place has no lock;
 /// a link to another profile has another's; a second server that starts in
 /// a folder made there writes its own, and the first one reads that it is
@@ -114,9 +117,9 @@ impl Pinned {
     /// is not there, or what is at its path is not the folder this process
     /// took. The one question behind every "is the profile there".
     ///
-    /// Before the mark is left (the moments between `pin` and the owner
-    /// lock, or a folder that could not be written at startup) there is
-    /// only the path to ask.
+    /// Where the mark was never left (a folder that could not be written
+    /// at startup, or one another live process holds) there is only the
+    /// path to ask.
     fn missing(&self) -> Option<String> {
         if !self.claimed.load(std::sync::atomic::Ordering::Relaxed) {
             return (!self.dir.is_dir()).then(|| gone(&self.dir));
@@ -172,7 +175,20 @@ fn with_pinned<R>(read: impl FnOnce(&Pinned) -> R) -> R {
     #[cfg(test)]
     return read(&tests_pin());
     #[cfg(not(test))]
-    read(PINNED.get_or_init(resolve))
+    read(PINNED.get_or_init(started))
+}
+
+/// The folder a process starts in: resolved, and taken (`Pinned`), unless
+/// another live process holds its lock. That one's mark is left alone, and
+/// this process, which is about to be refused the profile
+/// (`profile_lock::acquire`), knows the folder by its path alone.
+fn started() -> Pinned {
+    let pinned = resolve();
+    if !crate::profile_lock::held_by_another(&pinned.dir.join(crate::profile_lock::FILE)) {
+        // A folder that cannot be written is said by `claim`, at the lock.
+        let _ = pinned.claim("server");
+    }
+    pinned
 }
 
 /// A process under test: its home folder, and the profile folder it pinned
@@ -246,9 +262,7 @@ fn tests_pin() -> Pinned {
         Some(Some(pinned)) => pinned,
         // Its first question: resolve, with no borrow held, and keep it.
         Some(None) => {
-            // As `run_headless` does: resolve, then take the folder.
-            let pinned = resolve();
-            let _ = pinned.claim("test");
+            let pinned = started();
             STARTED.with(|started| {
                 if let Some(process) = started.borrow_mut().as_mut() {
                     process.pinned = Some(pinned.clone());
@@ -260,7 +274,7 @@ fn tests_pin() -> Pinned {
             .get_or_init(|| {
                 let dir = crate::test_dir::TestDir::new("test-profile").remove_at_exit();
                 let pinned = Pinned::new(dir, None);
-                pinned.claim("test").expect("mark the tests' profile");
+                pinned.claim("server").expect("mark the tests' profile");
                 pinned
             })
             .clone(),
@@ -357,11 +371,11 @@ pub fn available() -> Result<PathBuf, String> {
     })
 }
 
-/// Take the profile folder for this process: leave its mark on the owner
-/// lock's line, so the folder can be told from any other that comes to be
-/// at its path (`Pinned`). For `profile_lock::acquire`, once it has found
-/// no other live owner. A folder that cannot be written is still used, as
-/// it always was, and is then known only by its path: said once, here.
+/// Write the owner lock's line for this process: who it is, what kind, and
+/// its mark (`Pinned`). For `profile_lock::acquire`, once it has found no
+/// other live owner; the mark itself was left when the folder was resolved
+/// (`started`). A folder that cannot be written is still used, as it
+/// always was, and is then known only by its path: said once, here.
 pub(crate) fn claim(kind: &str) {
     with_pinned(|pinned| {
         if let Err(error) = pinned.claim(kind) {

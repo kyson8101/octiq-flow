@@ -299,8 +299,13 @@ until the process exits. It makes nothing and looks nothing up again.
   its path.** A path still answers after its folder is removed and another
   is made there, or after it is pointed somewhere else. So a process leaves
   a mark in the folder it takes: a word made up for the run, on the owner
-  lock's line (`pid kind mark`, written by `profile_lock::acquire` through
-  `profile::claim`). Every "is the profile there" is `Pinned::missing`: the
+  lock's line (`pid kind mark`). It is left by the first question a process
+  asks of the profile (`profile::started`, which `pin` reaches first), so
+  the guarantee does not wait on the owner lock; `profile_lock::acquire`
+  writes the line again with the process's kind. A lock another live
+  process holds is never written over: that process keeps its mark, and
+  the one being refused knows the folder by its path alone for the moment
+  it has left. Every "is the profile there" is `Pinned::missing`: the
   folder at the path holds this run's mark, or it is *gone* (the sentence
   above) or *replaced* (`… is not the folder OctiqFlow started with: … has
   not written into it, so nothing was saved. Put the original folder back

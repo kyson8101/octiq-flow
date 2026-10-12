@@ -121,6 +121,12 @@ fn refused_at(path: &Path) -> Result<(), Owner> {
     }
 }
 
+/// Whether another live process holds the lock at `path`: its line, and the
+/// mark on it, are then not this process's to write over.
+pub(crate) fn held_by_another(path: &Path) -> bool {
+    refused_at(path).is_err()
+}
+
 #[cfg(test)]
 fn acquire_at(path: &Path, kind: &str) -> Result<(), Owner> {
     refused_at(path)?;
