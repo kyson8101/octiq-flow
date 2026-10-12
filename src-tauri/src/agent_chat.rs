@@ -1288,6 +1288,19 @@ impl ChatManager {
         Ok(())
     }
 
+    /// `persist_orchestration_context` for an access level that has already
+    /// taken hold (`chat_set_access_impl`): the change is not undone, or
+    /// reported as failed, because the ledger could not be written. It is
+    /// kept for a host resume, said as not recorded, and owed.
+    fn keep_access_for_resume(&self, key: &str) {
+        let Some(start) = self.start_context(key) else {
+            return;
+        };
+        if let Err(why) = self.orchestrations.keep_resume_context(key, start) {
+            eprintln!("orchestration: could not keep the access level of {key}: {why}");
+        }
+    }
+
     /// A turn of `key` was interrupted and the agent has not reached its own
     /// full stop yet. The interrupt marks the session idle at once, so a host
     /// notification written in that gap went in as the NEXT turn, and the
@@ -2182,22 +2195,96 @@ fn schedule_quota_resume(
     }
 }
 
-fn cancel_auto_resume(manager: &ChatManager, key: &str, reason: &str) -> Result<bool, String> {
-    let Some(entry) = manager.auto_resumes.cancel(key)? else {
-        return Ok(false);
+/// What a cancelled auto-resume is called when it could not be recorded
+/// (`unsaved::say`).
+const CANCELLED_RESUME: &str = "the cancelled auto-resume";
+
+/// Take `key`'s scheduled resume off the schedule. `true` when there was one.
+///
+/// **It answers nothing a caller could stop on.** Stop, interrupt and every
+/// new message cancel first, and a cancel that returned its save's error
+/// with `?` left the agent running under a Stop that had been refused
+/// (review of 205bca2, H5). The cancel holds in this process from here on;
+/// a save that failed is said to whoever asked and owed by the store, which
+/// keeps the entry as a `Cancelled` tombstone until it is on disk
+/// (`settle_cancelled_resumes`).
+fn cancel_auto_resume(manager: &ChatManager, key: &str, reason: &str) -> bool {
+    let cancelled = match manager.auto_resumes.cancel(key) {
+        Ok(Some(cancelled)) => cancelled,
+        Ok(None) => return false,
+        Err(why) => {
+            eprintln!("[chat] could not look for an auto-resume of {key}: {why}");
+            return false;
+        }
     };
-    crate::auto_resume::announce_cancelled(&entry, reason);
-    if let Err(why) = manager.auto_resumes.finish(&entry) {
+    // Every open page drops the banner now; the transcript's line is tried,
+    // and written again once the folder is back when it could not be.
+    crate::auto_resume::announce_cancelled(&cancelled.entry, reason);
+    match cancelled.unsaved {
+        Some(why) => crate::unsaved::say(CANCELLED_RESUME, why),
+        None => clear_cancelled_resume(manager, &cancelled.entry),
+    }
+    true
+}
+
+/// Drop the tombstone of a cancel that is on disk and was announced.
+fn clear_cancelled_resume(manager: &ChatManager, entry: &crate::auto_resume::ScheduledResume) {
+    if let Err(why) = manager.auto_resumes.finish(entry) {
         // `Cancelled` is already durable and the scheduler ignores it. Leaving
         // the tombstone for startup cleanup is safer than blocking the user.
-        eprintln!("[chat] could not finish auto-resume cancellation for {key}: {why}");
+        eprintln!(
+            "[chat] could not finish auto-resume cancellation for {}: {why}",
+            entry.chat_key
+        );
     }
-    Ok(true)
+}
+
+/// Write the cancels that could not be saved when they were made, then say
+/// each in its chat's transcript, where the line could not be written
+/// either, and drop its tombstone. An error is a schedule still owed.
+fn settle_cancelled_resumes(manager: &ChatManager) -> Result<(), String> {
+    if !manager.auto_resumes.settle()? {
+        return Ok(());
+    }
+    for entry in manager.auto_resumes.cancelled()? {
+        crate::auto_resume::announce_cancelled(
+            &entry,
+            "cancelled while the profile folder was away",
+        );
+        clear_cancelled_resume(manager, &entry);
+    }
+    Ok(())
+}
+
+/// Try again every save an ending or answering action of a chat could not
+/// make, and name the stores that still owe one. Cheap when nothing is
+/// owed: a lock and a flag each.
+pub(crate) fn settle_owed(manager: &ChatManager) -> Vec<&'static str> {
+    let mut owed = Vec::new();
+    if settle_cancelled_resumes(manager).is_err() {
+        owed.push(crate::auto_resume::OWED);
+    }
+    if manager.questions.settle().is_err() {
+        owed.push(crate::question_store::OWED);
+    }
+    owed
+}
+
+/// The stores `settle_owed` would write, without writing them.
+pub(crate) fn owed(manager: &ChatManager) -> Vec<&'static str> {
+    let mut owed = Vec::new();
+    if manager.auto_resumes.owes() {
+        owed.push(crate::auto_resume::OWED);
+    }
+    if manager.questions.owes() {
+        owed.push(crate::question_store::OWED);
+    }
+    owed
 }
 
 /// Explicit browser action from the quota banner.
 pub fn chat_cancel_auto_resume_impl(manager: &ChatManager, key: String) -> Result<bool, String> {
-    cancel_auto_resume(manager, &key, "cancelled by user")
+    Ok(cancel_auto_resume(manager, &key, "cancelled by user"))
 }
 
 /// Say that a queued message is not going to be sent after all.
@@ -2453,7 +2540,7 @@ pub fn chat_start_answering_impl(
     turn_id: Option<String>,
     answering: Option<String>,
 ) -> Result<(), String> {
-    cancel_auto_resume(&manager, &key, "superseded by a user message")?;
+    cancel_auto_resume(&manager, &key, "superseded by a user message");
     let chat = key.clone();
     crate::safety_block::person_turn(&chat, answering.as_deref(), || {
         chat_start_with_user_turn(
@@ -2547,9 +2634,23 @@ fn model_handoff_prompt(history: &str, current: &str) -> String {
     )
 }
 
-fn cancel_question_work(manager: &ChatManager, key: &str) -> Result<(), String> {
-    let records = manager.questions.outbox()?;
-    manager.questions.cancel_chat(key)?;
+/// What cancelled questions are called when the cancel could not be
+/// recorded (`unsaved::say`).
+const CANCELLED_QUESTIONS: &str = "the cancelled questions";
+
+/// Cancel every open question of a chat that is being stopped, and take
+/// back the answers queued for it. It answers nothing a Stop could wait on:
+/// the questions are cancelled in this process, the tools waiting on them
+/// are told, and a save that failed is said and owed.
+fn cancel_question_work(manager: &ChatManager, key: &str) {
+    // Read before the cancel takes them out of the outbox. A question file
+    // that could not be read holds nothing here to cancel.
+    let records = manager.questions.outbox().unwrap_or_default();
+    match manager.questions.cancel_chat(key) {
+        Ok(Some(why)) => crate::unsaved::say(CANCELLED_QUESTIONS, why),
+        Ok(None) => {}
+        Err(why) => eprintln!("[chat] could not cancel the questions of {key}: {why}"),
+    }
     for record in records
         .into_iter()
         .filter(|r| r.origin.chat_key == key || r.origin.session_key == key)
@@ -2558,7 +2659,6 @@ fn cancel_question_work(manager: &ChatManager, key: &str) -> Result<(), String> 
             announce_cancelled(&record.origin.chat_key, &turn);
         }
     }
-    Ok(())
 }
 
 /// Whether `chat_key` was started with the turn `turn_id`. The durable user
@@ -2768,7 +2868,11 @@ pub(crate) fn cancel_questions(manager: &ChatManager, ids: &[String]) -> Result<
         .lock()
         .map_err(|e| e.to_string())?;
     let records = manager.questions.outbox()?;
-    manager.questions.cancel(ids)?;
+    // Cancelled here and the waiting tool told, whether or not it could be
+    // saved: a cancel that was only refused left the agent waiting.
+    if let Some(why) = manager.questions.cancel(ids)? {
+        crate::unsaved::say(CANCELLED_QUESTIONS, why);
+    }
     for record in records
         .into_iter()
         .filter(|r| r.ids.iter().any(|id| ids.contains(id)))
@@ -4532,7 +4636,7 @@ pub fn chat_send_answering_impl(
     record_user: Option<bool>,
     answering: Option<String>,
 ) -> Result<(), String> {
-    cancel_auto_resume(&manager, &key, "superseded by a user message")?;
+    cancel_auto_resume(&manager, &key, "superseded by a user message");
     // A safety block is a choice about the NEXT user turn, not a tool call
     // OctiqFlow can resume. Any words the person sends supersede that card.
     // The one exception is the turn an outage card itself sends as its retry
@@ -5185,16 +5289,17 @@ fn interrupt_session(
     Ok(())
 }
 
+/// The Stop button. Like `chat_stop_impl`, nothing in it waits on a save:
+/// its answer is whether the agent was asked to stop.
 pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {
-    cancel_auto_resume(manager, &key, "cancelled when the user stopped the chat")?;
+    cancel_auto_resume(manager, &key, "cancelled when the user stopped the chat");
     let _delivery = manager
         .questions
         .delivery_lock
         .lock()
-        .map_err(|e| e.to_string())?;
-    let cancelled = cancel_question_work(manager, &key);
-    interrupt_session(manager, &key, &key)?;
-    cancelled
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cancel_question_work(manager, &key);
+    interrupt_session(manager, &key, &key)
 }
 
 /// What [`interrupt_worker_turn`] did to a worker's turn.
@@ -5723,7 +5828,7 @@ pub fn chat_set_access_impl(
             access != Access::Read,
         )?;
     }
-    cancel_auto_resume(manager, &key, "cancelled when access changed")?;
+    cancel_auto_resume(manager, &key, "cancelled when access changed");
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&key).cloned().ok_or("no such chat")?
@@ -5741,7 +5846,7 @@ pub fn chat_set_access_impl(
             }
         }
         record_access_for(&key, Some(access));
-        manager.persist_orchestration_context(&key)?;
+        manager.keep_access_for_resume(&key);
         return Ok(());
     }
     if !provider.capabilities().supports_live_access_change {
@@ -5759,7 +5864,7 @@ pub fn chat_set_access_impl(
             start.access = Some(access);
             manager.remember_start(&key, start);
         }
-        manager.persist_orchestration_context(&key)?;
+        manager.keep_access_for_resume(&key);
         if relaunch {
             drop(guard);
             end_process_when(manager, &key, Some(Duration::ZERO))?;
@@ -5782,7 +5887,8 @@ pub fn chat_set_access_impl(
         start.access = Some(access);
         manager.remember_start(&key, start);
     }
-    manager.persist_orchestration_context(&key)
+    manager.keep_access_for_resume(&key);
+    Ok(())
 }
 
 /// What the host asks an agent to do when the person completes its chat.
@@ -5879,7 +5985,7 @@ pub fn chat_complete_impl(
     key: &str,
     text: &str,
 ) -> Result<Option<Completing>, String> {
-    let _ = cancel_auto_resume(manager, key, "superseded by completing the chat")?;
+    cancel_auto_resume(manager, key, "superseded by completing the chat");
     let turn_id = completion_turn_id();
     let state = {
         // The send path's locks, in its order: the reaper either sees the
@@ -6154,14 +6260,10 @@ fn close_completed(
         };
         // Nothing can reach this process any more: the chat is closed, and
         // what follows is tidying, not a decision.
-        if let Err(error) = cancel_question_work(manager, key) {
-            eprintln!("[chat] {key} completed with a question left open: {error}");
-        }
+        cancel_question_work(manager, key);
         done_at
     };
-    if let Err(error) = cancel_auto_resume(manager, key, "cancelled when the chat completed") {
-        eprintln!("[chat] {key} completed with a resume left scheduled: {error}");
-    }
+    cancel_auto_resume(manager, key, "cancelled when the chat completed");
     forget_standing(key);
     if let Ok(mut guard) = session.lock() {
         if let Err(error) = manager.background.interrupt(
@@ -6188,17 +6290,23 @@ fn forget_standing(key: &str) {
 
 /// Stop a chat and drop it. Killing an unknown key is a no-op success, so the
 /// UI can close a chat twice without caring.
+///
+/// **Nothing here waits on a save** (review of 205bca2, H5). The scheduled
+/// resume and the open questions are cancelled in this process whether or
+/// not that could be written, and the process is ended either way; what
+/// could not be recorded is said beside the answer (`unsaved::say`) and
+/// owed by its store. The only error left is the process not ending.
 pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> {
-    cancel_auto_resume(manager, &key, "cancelled when the chat stopped")?;
+    cancel_auto_resume(manager, &key, "cancelled when the chat stopped");
     let _delivery = manager
         .questions
         .delivery_lock
         .lock()
-        .map_err(|e| e.to_string())?;
-    let cancelled = cancel_question_work(manager, &key);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cancel_question_work(manager, &key);
     forget_standing(&key);
     end_process(manager, &key)?;
-    cancelled
+    Ok(())
 }
 
 /// End only the host provider process so the same application conversation can
@@ -6207,13 +6315,16 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
 /// context for the selected provider. Permissions, access, and the transcript
 /// belong to the user conversation and remain intact.
 pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), String> {
-    cancel_auto_resume(manager, &key, "cancelled when the agent changed")?;
+    cancel_auto_resume(manager, &key, "cancelled when the agent changed");
     end_process(manager, &key)?;
     manager
         .starts
         .lock()
         .map_err(|e| e.to_string())?
         .remove(&key);
+    // Forgotten in the ledger's memory whether or not that is saved: the
+    // old provider's settings must not resume the chat after its process
+    // was ended for another.
     manager.orchestrations.forget_resume_context(&key)?;
     Ok(())
 }

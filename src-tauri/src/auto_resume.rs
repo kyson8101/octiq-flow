@@ -55,10 +55,23 @@ impl ScheduledResume {
     }
 }
 
+/// This store, in the list of what still owes a save (`profile_status`).
+pub(crate) const OWED: &str = "auto-resumes";
+
+/// What `Store::cancel` took off the schedule.
+pub(crate) struct Cancelled {
+    pub entry: ScheduledResume,
+    /// Why the cancel is not on disk, when it is not. It holds in this
+    /// process either way.
+    pub unsaved: Option<String>,
+}
+
 #[derive(Default)]
 struct State {
     entries: BTreeMap<String, ScheduledResume>,
     load_error: Option<String>,
+    /// `entries` holds a cancel the file does not.
+    owed: bool,
 }
 
 /// A profile-local schedule. Entries are keyed by chat because one native
@@ -152,14 +165,51 @@ impl Store {
         };
         let mut next = state.entries.clone();
         next.insert(chat_key.to_string(), entry.clone());
+        self.save(&mut state, next)?;
+        Ok(Some(entry))
+    }
+
+    /// Write `next` and then keep it: every change but a cancel is refused
+    /// when it cannot be saved. A save that succeeds writes the whole
+    /// schedule, so it also makes good a cancel that was owed.
+    fn save(
+        &self,
+        state: &mut State,
+        next: BTreeMap<String, ScheduledResume>,
+    ) -> Result<(), String> {
         self.persist(&next)?;
         state.entries = next;
-        Ok(Some(entry))
+        state.owed = false;
+        Ok(())
+    }
+
+    /// Whether a cancel is kept here that is not on disk.
+    pub(crate) fn owes(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.owed)
+    }
+
+    /// Write a cancel that could not be saved when it was made. `true` when
+    /// this call wrote it; an error when it is still owed.
+    pub(crate) fn settle(&self) -> Result<bool, String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        if !state.owed {
+            return Ok(false);
+        }
+        self.persist(&state.entries)?;
+        state.owed = false;
+        Ok(true)
     }
 
     /// Cancel only work which has not begun dispatching. Once a due entry is
     /// marked `Dispatching`, telling the UI it was cancelled would be a lie.
-    pub(crate) fn cancel(&self, chat_key: &str) -> Result<Option<ScheduledResume>, String> {
+    ///
+    /// **A cancel never waits on its save.** It is what Stop, interrupt and
+    /// every new message do first, and a schedule that could not be written
+    /// used to refuse all three with the agent still running. The entry is
+    /// cancelled here whatever the disk says: the scheduler reads this
+    /// memory, so the chat does not resume itself. A save that failed is
+    /// said back (`Cancelled::unsaved`) and owed (`settle`).
+    pub(crate) fn cancel(&self, chat_key: &str) -> Result<Option<Cancelled>, String> {
         let mut state = self.state.lock().map_err(|error| error.to_string())?;
         // A damaged schedule file must not prevent unrelated/new chats from
         // sending messages. There can be nothing known to cancel for this key.
@@ -176,10 +226,11 @@ impl Store {
         let mut next = state.entries.clone();
         let cancelled = next.get_mut(chat_key).expect("entry was checked above");
         cancelled.delivery = Delivery::Cancelled;
-        let cancelled = cancelled.clone();
-        self.persist(&next)?;
+        let entry = cancelled.clone();
+        let unsaved = self.persist(&next).err();
         state.entries = next;
-        Ok(Some(cancelled))
+        state.owed = unsaved.is_some();
+        Ok(Some(Cancelled { entry, unsaved }))
     }
 
     pub(crate) fn scheduled(&self) -> Result<Vec<ScheduledResume>, String> {
@@ -227,8 +278,7 @@ impl Store {
                 due.push(entry.clone());
             }
         }
-        self.persist(&next)?;
-        state.entries = next;
+        self.save(&mut state, next)?;
         Ok(due)
     }
 
@@ -244,8 +294,7 @@ impl Store {
         }
         let mut next = state.entries.clone();
         next.remove(&entry.chat_key);
-        self.persist(&next)?;
-        state.entries = next;
+        self.save(&mut state, next)?;
         Ok(())
     }
 
@@ -268,8 +317,7 @@ impl Store {
         for entry in &uncertain {
             next.remove(&entry.chat_key);
         }
-        self.persist(&next)?;
-        state.entries = next;
+        self.save(&mut state, next)?;
         Ok(uncertain)
     }
 }
@@ -600,6 +648,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let cancelled = store.cancel("chat:one").unwrap().unwrap();
+        assert_eq!(cancelled.unsaved, None);
+        let cancelled = cancelled.entry;
         assert_eq!(cancelled.id, entry.id);
         assert!(store.cancel("chat:one").unwrap().is_none());
         assert_eq!(store.cancelled().unwrap().len(), 1);

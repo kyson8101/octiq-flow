@@ -175,8 +175,12 @@ impl Store {
         running
     }
 
+    /// Called as a process is ended, which never waits on this: the tasks
+    /// are marked and announced whether or not that could be saved, and the
+    /// error is for the log. A record left saying "running" is put right at
+    /// the next start, where `load` marks every such task interrupted.
     pub fn interrupt(&self, chat: &str, launch: &str, reason: &str) -> Result<(), String> {
-        let affected = {
+        let (affected, saved) = {
             let mut tasks = self.tasks.lock().map_err(|e| e.to_string())?;
             let mut affected = Vec::new();
             for task in tasks
@@ -187,15 +191,17 @@ impl Store {
                 task.reason = Some(reason.into());
                 affected.push(task.clone());
             }
-            if !affected.is_empty() {
-                self.save(&tasks)?;
-            }
-            affected
+            let saved = if affected.is_empty() {
+                Ok(())
+            } else {
+                self.save(&tasks)
+            };
+            (affected, saved)
         };
         if !affected.is_empty() {
             announce(chat, &affected);
         }
-        Ok(())
+        saved
     }
 
     pub fn continuation(&self, chat: &str) -> Option<String> {

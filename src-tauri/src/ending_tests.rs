@@ -157,6 +157,38 @@ fn stop_ends_the_agent_while_the_profile_is_away_and_its_resume_does_not_come_ba
     assert!(due.iter().all(|entry| entry.chat_key != key), "{due:?}");
 }
 
+/// The rules of the round before still hold for a save that is owed: with
+/// another folder put where the profile was, Stop stops, and what it owes
+/// is not written into that folder however often it is tried. It is written
+/// once the folder the server started with is back.
+#[test]
+fn what_stop_owes_is_never_written_into_a_folder_put_in_the_profiles_place() {
+    let world = World::new();
+    let key = fresh("replaced");
+    let agent = world.chats().test_hold(&key, ChatAgent::Claude, true);
+    world.schedule(&key);
+
+    world.home.replace();
+    let why = crate::profile::available().expect_err("another folder is in its place");
+    let stopped = told(&world.svc, "chat_stop", json!({ "key": key }));
+    done_but_not_recorded(&stopped, Value::Null, "the cancelled auto-resume", &why);
+    assert!(agent.gone(), "the agent is still running after Stop");
+
+    let put_there = crate::profile::tests::everything_in(&world.home.profile());
+    for _ in 0..3 {
+        assert_eq!(settle_owed(&world.svc), ["auto-resumes"]);
+    }
+    assert_eq!(
+        crate::profile::tests::everything_in(&world.home.profile()),
+        put_there,
+        "the owed save was written into the folder that replaced the profile"
+    );
+
+    world.home.move_back();
+    assert!(settle_owed(&world.svc).is_empty());
+    assert!(!scheduled_in(&Services::at_profile(), &key));
+}
+
 /// Interrupt, for an agent that is asked to stop over its own channel: the
 /// turn is cut short and the conversation kept.
 #[test]

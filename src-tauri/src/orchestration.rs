@@ -1038,7 +1038,12 @@ impl Default for Stored {
 struct Inner {
     data: Stored,
     load_error: Option<String>,
+    /// `data` holds a change the file does not (`mutate_regardless`).
+    owed: bool,
 }
+
+/// The ledger, in the list of what still owes a save (`profile_status`).
+pub(crate) const OWED: &str = "the ledger";
 
 pub struct OrchestrationStore {
     path: Option<PathBuf>,
@@ -1226,6 +1231,53 @@ impl OrchestrationStore {
         &self,
         change: impl FnOnce(&mut Stored) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.mutate_as(None, change)
+    }
+
+    /// `mutate` for a change that ENDS work or ANSWERS a waiting agent: a
+    /// stop, a gate's answer, the message behind an interrupt. It never
+    /// waits on its save (review of 205bca2, H5: a stop the ledger could
+    /// not write was refused, with the worker left running).
+    ///
+    /// The change is validated and applied exactly as `mutate` applies it,
+    /// and an error from `change` is still a refusal with nothing changed.
+    /// What differs is a save that fails: the change is kept in this
+    /// process, which is what every scheduler pass and every start reads,
+    /// `what` is said as not recorded to whoever asked (`unsaved::say`),
+    /// and the ledger owes the write (`settle_owed`). The next write of any
+    /// kind that succeeds carries it, since each write is the whole ledger.
+    fn mutate_regardless<T>(
+        &self,
+        what: &str,
+        change: impl FnOnce(&mut Stored) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.mutate_as(Some(what), change)
+    }
+
+    /// Whether the ledger holds a change the file does not.
+    pub(crate) fn owes(&self) -> bool {
+        self.inner.lock().is_ok_and(|inner| inner.owed)
+    }
+
+    /// Write what `mutate_regardless` could not. `true` when this call
+    /// wrote it; an error when it is still owed.
+    pub(crate) fn settle_owed(&self) -> Result<bool, String> {
+        let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
+        if !inner.owed {
+            return Ok(false);
+        }
+        self.persist(&inner.data)?;
+        inner.owed = false;
+        Ok(true)
+    }
+
+    /// `regardless` names what is kept although its save failed
+    /// (`mutate_regardless`); `None` refuses the change instead (`mutate`).
+    fn mutate_as<T>(
+        &self,
+        regardless: Option<&str>,
+        change: impl FnOnce(&mut Stored) -> Result<T, String>,
+    ) -> Result<T, String> {
         let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
@@ -1243,7 +1295,14 @@ impl OrchestrationStore {
         // In the same write as the change, so no reader ever sees a plan
         // whose scope moved under an unchanged revision.
         refresh_plan_revisions(&mut next);
-        self.persist(&next)?;
+        match (self.persist(&next), regardless) {
+            (Ok(()), _) => inner.owed = false,
+            (Err(why), Some(what)) => {
+                inner.owed = true;
+                crate::unsaved::say(what, why);
+            }
+            (Err(why), None) => return Err(why),
+        }
         inner.data = next;
         Ok(result)
     }
@@ -3909,7 +3968,11 @@ impl OrchestrationStore {
     ) -> Result<Gate, String> {
         let resolution = required_text("gate resolution", resolution, 10_000)?;
         let mut event_run_id = String::new();
-        let resolved = self.mutate(|data| {
+        // The answer is whoever gave it's own, and is taken whether or not
+        // the ledger can be written. A worker whose turn ended when it asked
+        // is given it in a new turn, which waits like every start for a
+        // folder its record can be kept in (`inbox::deliver_pending`).
+        let resolved = self.mutate_regardless("the gate's answer", |data| {
             let gate = data
                 .gates
                 .get(&gate_id)
@@ -3998,8 +4061,30 @@ impl OrchestrationStore {
         decisions_brief(inner.data.gates.values(), task_id)
     }
 
+    /// An ordinary message: `record_message_as` with nothing interrupted.
+    #[cfg(test)]
     pub fn record_message(
         &self,
+        actor_chat_key: &str,
+        run_id: String,
+        to: String,
+        kind: String,
+        subject: String,
+        body: String,
+    ) -> Result<OrchestrationMessage, String> {
+        self.record_message_as(false, actor_chat_key, run_id, to, kind, subject, body)
+    }
+
+    /// Record a message within a run, which may be the one a coordinator
+    /// interrupts a worker for (`interrupting`). An interrupt is a Stop
+    /// with words behind it, so its message is kept whether or not the
+    /// ledger can be written, and the turn is cut short either way. An
+    /// ordinary message stops nothing and is refused when it cannot be
+    /// saved, as before.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_message_as(
+        &self,
+        interrupting: bool,
         actor_chat_key: &str,
         run_id: String,
         to: String,
@@ -4011,7 +4096,7 @@ impl OrchestrationStore {
         let subject = required_text("message subject", subject, 240)?;
         let body = required_text("message body", body, 20_000)?;
         let run_id_for_event = run_id.clone();
-        self.mutate(|data| {
+        self.mutate_as(interrupting.then_some("the coordinator's message"), |data| {
             let run = data
                 .runs
                 .get(&run_id)
@@ -4252,7 +4337,9 @@ impl OrchestrationStore {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let reason = required_text("stop reason", reason, 2_000)?;
         let run_id_for_event = run_id.clone();
-        self.mutate(|data| {
+        // Stopped whether or not the ledger can be written: the caller ends
+        // the workers this names.
+        self.mutate_regardless("the stopped run", |data| {
             coordinator(data, &run_id, actor_chat_key)?;
             let now = now_ms();
             let workers = stop_run_in(data, &run_id, reason, now);
@@ -4287,7 +4374,9 @@ impl OrchestrationStore {
             .map(|reason| required_text("stop reason", reason, 500))
             .transpose()?;
         let mut run_id = String::new();
-        self.mutate(|data| {
+        // Stopped whether or not the ledger can be written: the caller ends
+        // the worker this names, and the task is held in this process.
+        self.mutate_regardless("the stopped task", |data| {
             let task = data.tasks.get(task_id).ok_or("The task does not exist.")?.clone();
             let run = data.runs.get(&task.run_id).ok_or("The run does not exist.")?;
             run_id = run.id.clone();

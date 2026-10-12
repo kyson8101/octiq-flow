@@ -765,7 +765,13 @@ pub fn authorize_for_project(id: &str) -> Result<bool, String> {
         // grant would look like permission and change nothing.
         return Err("Only Codex safety reviews can be allowed for a whole project.".into());
     }
-    save_authorization(&authorization_path(), &block)?;
+    // The answer IS the stored authorization, so one that cannot be stored
+    // grants nothing and is not assumed later: the card stays up, to be
+    // answered again or another way (Allow once and Keep it local keep
+    // nothing, and work with the profile folder away).
+    save_authorization(&authorization_path(), &block).map_err(|why| {
+        format!("Nothing was allowed for the project, and the card is still open: {why}")
+    })?;
     Ok(dismiss_as(id, "authorized_project"))
 }
 

@@ -156,6 +156,28 @@ impl OrchestrationStore {
         key: &str,
         context: crate::agent_chat::StartContext,
     ) -> Result<(), String> {
+        self.resume_context_as(None, key, context)
+    }
+
+    /// `save_resume_context` for a level that has ALREADY taken hold in the
+    /// running agent (`chat_set_access`): kept here whether or not it could
+    /// be saved. Refused instead, the page was told the change failed, an
+    /// access card went unanswered with its agent waiting, and a host resume
+    /// would have started the chat at the level the person had just left.
+    pub(crate) fn keep_resume_context(
+        &self,
+        key: &str,
+        context: crate::agent_chat::StartContext,
+    ) -> Result<(), String> {
+        self.resume_context_as(Some("the chat's access level"), key, context)
+    }
+
+    fn resume_context_as(
+        &self,
+        regardless: Option<&str>,
+        key: &str,
+        context: crate::agent_chat::StartContext,
+    ) -> Result<(), String> {
         // Only orchestrated chats need unattended recovery. Never persist the
         // project's environment here; delivery reloads it from the project.
         let known = {
@@ -174,14 +196,17 @@ impl OrchestrationStore {
         if !known {
             return Ok(());
         }
-        self.mutate(|data| {
+        self.mutate_as(regardless, |data| {
             data.resume_contexts
                 .insert(key.into(), context.without_env());
             Ok(())
         })
     }
+    /// Called once a chat's process has been ended for another provider:
+    /// forgotten here whether or not that could be saved, so the old
+    /// settings cannot resume the chat.
     pub(crate) fn forget_resume_context(&self, key: &str) -> Result<(), String> {
-        self.mutate(|data| {
+        self.mutate_regardless("the forgotten start settings", |data| {
             data.resume_contexts.remove(key);
             Ok(())
         })

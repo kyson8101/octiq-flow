@@ -105,11 +105,20 @@ impl Record {
     }
 }
 
+/// This store, in the list of what still owes a save (`profile_status`).
+pub(crate) const OWED: &str = "questions";
+
+/// What an answer handed to its tool is called when the hand-over could not
+/// be recorded (`unsaved::say`).
+const DELIVERED: &str = "the delivered answer";
+
 #[derive(Default)]
 struct State {
     records: BTreeMap<String, Record>,
     waiters: BTreeMap<String, Option<oneshot::Sender<()>>>,
     load_error: Option<String>,
+    /// `records` holds an answer, a hand-over or a cancel the file does not.
+    owed: bool,
 }
 
 #[derive(Default)]
@@ -208,8 +217,7 @@ impl QuestionStore {
         Self::check(&state)?;
         let mut next = state.records.clone();
         next.insert(id.clone(), record.clone());
-        self.persist(&next)?;
-        state.records = next;
+        self.save(&mut state, next)?;
         let (tx, rx) = oneshot::channel();
         state.waiters.insert(id.clone(), Some(tx));
         // Ordered with submit/cancel so a late announcement cannot resurrect a
@@ -222,7 +230,10 @@ impl QuestionStore {
 
     /// Atomic across the entire card, including cards containing several calls.
     /// Retrying the same answers is idempotent; conflicting answers are refused.
-    pub fn answer(&self, answers: &[Answer]) -> Result<(), String> {
+    ///
+    /// `Ok(Some(why))` is an answer a waiting tool was given that is not on
+    /// disk: owed, and for the caller to say.
+    pub fn answer(&self, answers: &[Answer]) -> Result<Option<String>, String> {
         if answers.is_empty() {
             return Err("No answers were submitted".into());
         }
@@ -257,8 +268,27 @@ impl QuestionStore {
                 record.delivery = Delivery::Ready;
             }
         }
-        self.persist(&next)?;
+        // An answer a tool is waiting for reaches it whether or not it can
+        // be saved (review of 205bca2, H5: the save used to come first, and
+        // with the profile folder away the tool waited on for nothing). An
+        // answer nobody is waiting for is only a record, kept for a later
+        // turn, and one that cannot be kept is refused as before: nothing
+        // changed, and no receipt is given for it.
+        let waited_for = changed.iter().any(|id| {
+            next[id].complete()
+                && state
+                    .waiters
+                    .get(id)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|tool| !tool.is_closed())
+        });
+        let unsaved = match self.persist(&next) {
+            Ok(()) => None,
+            Err(why) if waited_for => Some(why),
+            Err(why) => return Err(why),
+        };
         state.records = next;
+        state.owed = unsaved.is_some();
         for id in changed {
             let record = &state.records[&id];
             let complete = record.complete();
@@ -271,7 +301,44 @@ impl QuestionStore {
                 }
             }
         }
+        Ok(unsaved)
+    }
+
+    /// Write `next` and then keep it: a change that only makes a record is
+    /// refused when it cannot be saved. A save that succeeds writes every
+    /// record, so it also makes good whatever was owed.
+    fn save(&self, state: &mut State, next: BTreeMap<String, Record>) -> Result<(), String> {
+        self.persist(&next)?;
+        state.records = next;
+        state.owed = false;
         Ok(())
+    }
+
+    /// Keep `next` whether or not it could be written, for a change the
+    /// tool waiting on it is told of at once. Answers why it is not on disk.
+    fn keep(&self, state: &mut State, next: BTreeMap<String, Record>) -> Option<String> {
+        let unsaved = self.persist(&next).err();
+        state.records = next;
+        state.owed = unsaved.is_some();
+        unsaved
+    }
+
+    /// Whether an answer, a hand-over or a cancel is kept here that is not
+    /// on disk.
+    pub fn owes(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.owed)
+    }
+
+    /// Write what could not be saved when it happened. `true` when this
+    /// call wrote it; an error when it is still owed.
+    pub fn settle(&self) -> Result<bool, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        if !state.owed {
+            return Ok(false);
+        }
+        self.persist(&state.records)?;
+        state.owed = false;
+        Ok(true)
     }
 
     /// Commit ownership to the live tool before returning its answer. A late
@@ -289,8 +356,12 @@ impl QuestionStore {
         let answer = record.report();
         let mut next = state.records.clone();
         next.get_mut(id).unwrap().delivery = Delivery::Delivered;
-        self.persist(&next)?;
-        state.records = next;
+        // The tool is here for its answer and gets it. Were the hand-over
+        // never written, a restart would read the answer as still to be
+        // delivered and say it to the agent a second time, so it is owed.
+        if let Some(why) = self.keep(&mut state, next) {
+            crate::unsaved::say(DELIVERED, why);
+        }
         state.waiters.remove(id);
         publish(&state.records[id]);
         Ok(Some(answer))
@@ -316,8 +387,9 @@ impl QuestionStore {
         let answers = record.answers.iter().flatten().cloned().collect::<Vec<_>>();
         let mut next = state.records.clone();
         next.get_mut(id).unwrap().delivery = Delivery::Delivered;
-        self.persist(&next)?;
-        state.records = next;
+        if let Some(why) = self.keep(&mut state, next) {
+            crate::unsaved::say(DELIVERED, why);
+        }
         state.waiters.remove(id);
         publish(&state.records[id]);
         Ok(Some(answers))
@@ -376,13 +448,15 @@ impl QuestionStore {
         }
         record.delivery = delivery;
         record.error = error;
-        self.persist(&next)?;
-        state.records = next;
+        self.save(&mut state, next)?;
         publish(&state.records[id]);
         Ok(())
     }
 
-    pub fn cancel(&self, ids: &[String]) -> Result<(), String> {
+    /// Cancel the open questions holding any of `ids`. An error is nothing
+    /// cancelled. `Ok(Some(why))` is cancelled here, with the tools told,
+    /// and not on disk: owed, and for the caller to say.
+    pub fn cancel(&self, ids: &[String]) -> Result<Option<String>, String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         Self::check(&state)?;
         let mut next = state.records.clone();
@@ -395,20 +469,19 @@ impl QuestionStore {
             changed.push(record.id.clone());
         }
         if changed.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         // Stop remains effective in this process even if the disk fails. The
-        // error is still returned so no caller claims durable cancellation.
-        let saved = self.persist(&next);
-        state.records = next;
+        // reason is still returned so no caller claims durable cancellation.
+        let unsaved = self.keep(&mut state, next);
         for id in changed {
             state.waiters.remove(&id);
             publish(&state.records[&id]);
         }
-        saved
+        Ok(unsaved)
     }
 
-    pub fn cancel_chat(&self, chat_key: &str) -> Result<(), String> {
+    pub fn cancel_chat(&self, chat_key: &str) -> Result<Option<String>, String> {
         let ids = {
             let state = self.state.lock().map_err(|e| e.to_string())?;
             Self::check(&state)?;
@@ -433,8 +506,7 @@ impl QuestionStore {
             record.delivery = Delivery::Ready;
             record.error = None;
         }
-        self.persist(&next)?;
-        state.records = next;
+        self.save(&mut state, next)?;
         for record in state
             .records
             .values()

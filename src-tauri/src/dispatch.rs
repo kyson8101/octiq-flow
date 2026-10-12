@@ -81,7 +81,7 @@ impl Services {
             workspaces.clone(),
         );
         crate::orchestration::environments::start_reconciler(orchestrations.clone());
-        Self {
+        let services = Self {
             workspaces,
             chats,
             watch: Arc::new(FileWatchState::default()),
@@ -89,7 +89,12 @@ impl Services {
             orchestrations,
             ptys: Arc::new(PtyManager::default()),
             handovers: crate::handover::Wiring::profile(),
-        }
+        };
+        // What a Stop or an answer could not record is written once the
+        // profile folder is back (`settle_owed`).
+        #[cfg(not(test))]
+        start_owed_saves(services.clone());
+        services
     }
 }
 
@@ -511,8 +516,57 @@ pub fn told(svc: &Services, cmd: &str, args: Value) -> Told {
 
 /// Try again every save an ending or answering action could not make, and
 /// name the stores that still owe one.
-pub fn settle_owed(_svc: &Services) -> Vec<&'static str> {
-    Vec::new()
+///
+/// A store whose save failed keeps what it could not write and a flag that
+/// it owes it. This writes each such store again, whole. With nothing owed
+/// it is a lock and a flag per store, and with the folder still away the
+/// write fails as it did and nothing is made.
+pub fn settle_owed(svc: &Services) -> Vec<&'static str> {
+    let mut owed = crate::agent_chat::settle_owed(&svc.chats);
+    if svc.orchestrations.settle_owed().is_err() {
+        owed.push(crate::orchestration::OWED);
+    }
+    owed
+}
+
+/// The stores `settle_owed` would write, without writing them.
+fn owed(svc: &Services) -> Vec<&'static str> {
+    let mut owed = crate::agent_chat::owed(&svc.chats);
+    if svc.orchestrations.owes() {
+        owed.push(crate::orchestration::OWED);
+    }
+    owed
+}
+
+/// How often `settle_owed` is tried. It is the longest a save can stay
+/// owed once the profile folder is back.
+#[cfg(not(test))]
+const OWED_SWEEP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Make good, for as long as the server runs, every save an ending or
+/// answering action could not make. Not started under test: a thread of
+/// its own is another process as far as a test's profile folder goes, and
+/// a test calls `settle_owed` itself.
+#[cfg(not(test))]
+fn start_owed_saves(svc: Services) {
+    std::thread::spawn(move || {
+        let mut still: Vec<&'static str> = Vec::new();
+        loop {
+            std::thread::sleep(OWED_SWEEP);
+            let owed = settle_owed(&svc);
+            if owed != still {
+                if owed.is_empty() {
+                    println!("[unsaved] everything that was owed is on disk now");
+                } else {
+                    println!(
+                        "[unsaved] still owed to the profile folder: {}",
+                        owed.join(", ")
+                    );
+                }
+                still = owed;
+            }
+        }
+    });
 }
 
 pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String> {
@@ -601,7 +655,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // configured base it fell back from (if it did), whether it is
         // there now, and the sentence to show when either is not as
         // configured. Read-only.
-        "profile_status" => Ok(crate::profile::status()),
+        // `owed` names the stores that hold something a Stop or an answer
+        // could not write (`unsaved.rs`): empty when the disk has caught up.
+        "profile_status" => {
+            let mut status = crate::profile::status();
+            status["owed"] = json!(owed(svc));
+            Ok(status)
+        }
         // ---- projects -----------------------------------------------------
         "feedback_list" => crate::feedback::Store::profile().list(
             serde_json::from_value(args).map_err(|e| format!("Invalid feedback filter: {e}"))?,
@@ -1208,22 +1268,40 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
 
         // ---- questions ----------------------------------------------------
         "question_pending" => to_value(svc.chats.questions.pending()),
+        // An answer a tool is waiting for reaches it whether or not it could
+        // be saved; then it is said as not recorded beside this answer, and
+        // the store owes the save. `saved` is "the host has your answers",
+        // which the page takes as its receipt; `recorded: false` is "not on
+        // disk yet".
         "question_answer" => {
-            svc.chats
+            let unsaved = svc
+                .chats
                 .questions
                 .answer(&[crate::question_store::Answer {
                     id: arg(&args, "id")?,
                     answer: arg(&args, "answer")?,
                 }])?;
+            if let Some(why) = unsaved {
+                crate::unsaved::say("the answer", why);
+            }
             Ok(json!(true))
         }
         "question_answer_batch" => {
-            svc.chats
-                .questions
-                .answer(&arg::<Vec<crate::question_store::Answer>>(
-                    &args, "answers",
-                )?)?;
-            Ok(json!({ "saved": true }))
+            let unsaved =
+                svc.chats
+                    .questions
+                    .answer(&arg::<Vec<crate::question_store::Answer>>(
+                        &args, "answers",
+                    )?)?;
+            let recorded = unsaved.is_none();
+            if let Some(why) = unsaved {
+                crate::unsaved::say("the answer", why);
+            }
+            if recorded {
+                Ok(json!({ "saved": true }))
+            } else {
+                Ok(json!({ "saved": true, "recorded": false }))
+            }
         }
         "question_cancel" => unit(crate::agent_chat::cancel_questions(
             &svc.chats,
@@ -2140,7 +2218,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             if interrupt && to == "coordinator" {
                 return Err("Only a coordinator interrupts, and only a worker attempt.".into());
             }
-            let message = svc.orchestrations.record_message(
+            let message = svc.orchestrations.record_message_as(
+                interrupt,
                 &actor,
                 arg(&args, "runId")?,
                 to,
@@ -2153,8 +2232,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 // A host call of the worker's took it in the meantime.
                 value["interrupt"] = json!("delivered");
             } else if interrupt {
-                // The message is already durable; an interrupt that fails
-                // leaves it to the ordinary delivery.
+                // The message is kept, on disk or owed to it; an interrupt
+                // that fails leaves it to the ordinary delivery.
                 match crate::agent_chat::interrupt_worker_turn(&svc.chats, &message.to_chat_key) {
                     Ok(worker) => value["interrupt"] = json!(worker),
                     Err(error) => {
