@@ -137,7 +137,7 @@ fn folder_identity(folder: &Path) -> Option<(PathBuf, bool)> {
     if let Some(found) = known.get(folder) {
         return Some(found.clone());
     }
-    let resolved = fs::canonicalize(folder).ok()?;
+    let resolved = crate::paths::canonicalize(folder).ok()?;
     let found = (resolved.clone(), folds_case(&resolved));
     known.insert(folder.to_path_buf(), found.clone());
     Some(found)
@@ -162,7 +162,8 @@ fn folds_case(folder: &Path) -> bool {
         })
         .collect();
     respelled != name
-        && fs::canonicalize(folder.with_file_name(respelled)).is_ok_and(|other| other == folder)
+        && crate::paths::canonicalize(folder.with_file_name(respelled))
+            .is_ok_and(|other| other == folder)
 }
 
 /// Which record a chat's file holds now: the file it is (`identity`), and
