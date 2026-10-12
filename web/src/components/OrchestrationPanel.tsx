@@ -1462,7 +1462,9 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             and size, its environment, the decision it is parked on, the step
             its worker said it was on, and its branch. */}
         <div className="orch-task-meta">
-          <span className="orch-task-state">{stateWord}</span>
+          {/* A held row's line is its state word already, and the host's
+              sentences follow: it is not said a third time here. */}
+          {!row.hold && <span className="orch-task-state">{stateWord}</span>}
           {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
           {task.verdict === "fail" && <span className="orch-task-blocker" title="It finished, and what it checked did not pass. Tasks that depend on it wait.">Check failed</span>}
           {requiresVerdict(task) && task.verdict !== "fail" && <span className="orch-task-kind" title="It settles only with a pass or fail verdict, and only a pass releases the tasks that depend on it.">{KIND_LABEL[task.kind!]}</span>}

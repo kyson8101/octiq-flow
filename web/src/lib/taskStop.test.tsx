@@ -126,7 +126,8 @@ describe("the row after a stop", () => {
     const html = article(panel());
     expect(html).toContain('data-status="failed" data-state="planned"');
     expect(html).toContain(`>${STOPPED_LABEL}</span>`);
-    expect(html).toContain('<span class="orch-task-state">Stopped by you</span>');
+    expect(html.match(/>Stopped by you</g)).toHaveLength(1);
+    expect(html).not.toContain('class="orch-task-state"');
     expect(html).toContain('aria-label="Held"');
     expect(html).toContain('<p class="orch-task-hold" data-hold="stopped">You stopped this task&#x27;s worker, so only you start it again: Start on its row, or your approval of a plan it is put back on. Your reason: Not these instructions</p>');
     expect(html).not.toMatch(/>Failed</);

@@ -62,7 +62,9 @@ describe("the run panel's row", () => {
     expect(planned.hold).toMatchObject({ kind: "reopen", detail: REOPEN_DETAIL });
     const html = row(panel(held, SOON));
     expect(html).toContain(`>${REOPEN_LABEL}</span>`);
-    expect(html).toContain('<span class="orch-task-state">Reopened · notice not yet saved</span>');
+    // Said once on the row: the opened detail goes straight to the reason.
+    expect(html.match(/>Reopened · notice not yet saved</g)).toHaveLength(1);
+    expect(html).not.toContain('class="orch-task-state"');
     expect(html).not.toMatch(/>Ready(?: to start)?</);
     // The mark is "Held", not "Planned", and the tooltip gives the host's reason.
     expect(html).toContain('<span class="run-row-mark" role="img" aria-label="Held" title="Held">');
