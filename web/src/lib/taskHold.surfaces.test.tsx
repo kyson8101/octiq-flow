@@ -5,7 +5,7 @@
 // Each surface that names a task's state is asked what it says, and each
 // surface that counts what waits on the person is asked that it counts
 // nothing: nobody can answer this hold.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("./bridge", () => ({
@@ -20,7 +20,7 @@ import { workerChatParents, type OrchestrationSnapshot } from "./orchestration";
 import { pendingReading } from "./pendingActions";
 import { taskColumnCounts } from "./runPanel";
 import { chatStrip, runProgress } from "./runProgress";
-import { REOPEN_DETAIL, REOPEN_LABEL, REOPEN_LASTED_DETAIL, REOPEN_LASTED_LABEL, REOPEN_LASTED_MS } from "./taskHold";
+import { forgetHolds, REOPEN_DETAIL, REOPEN_LABEL, REOPEN_LASTED_DETAIL, REOPEN_LASTED_LABEL, REOPEN_LASTED_MS, seeHolds } from "./taskHold";
 import { OrchestrationPanel } from "../components/OrchestrationPanel";
 
 const held = hostFacts.heldByReopen();
@@ -28,6 +28,13 @@ const REOPENED_AT = held.tasks[0].reopens![0].at;
 const SOON = REOPENED_AT + 2_000;
 const LATER = REOPENED_AT + REOPEN_LASTED_MS + 1_000;
 
+// The page saw the hold as it was made: the minute is counted from the
+// page's first sight of it, on the page's own clock, and a surface drawn
+// later does not start it over (`taskHold.clock.test`).
+beforeEach(() => {
+  forgetHolds();
+  seeHolds(held.tasks, REOPENED_AT);
+});
 afterEach(() => vi.useRealTimers());
 
 const panel = (snapshot: OrchestrationSnapshot, now: number) => {

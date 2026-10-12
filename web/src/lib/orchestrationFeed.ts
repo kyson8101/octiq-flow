@@ -1,6 +1,7 @@
 import { bridge } from "./bridge";
 import type { TaskStatus } from "./chatTask";
 import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot, type WorkerExecution } from "./orchestration";
+import { seeHolds } from "./taskHold";
 
 /** The orchestration ledger one tab holds, shared by the sidebar, the toolbar
  *  and an open run panel.
@@ -149,6 +150,9 @@ export function createOrchestrationFeed() {
 
   const patch = (change: Patch) => {
     state = { ...state, snapshot: change(state.snapshot ?? EMPTY_ORCHESTRATION) };
+    // When this page first saw a reopen hold is when its ledger said so,
+    // whichever surface is open to draw it (`lib/taskHold.seeHolds`).
+    seeHolds(state.snapshot!.tasks, Date.now());
     if (reading) sinceRead.push(change);
     notify();
   };
@@ -166,6 +170,7 @@ export function createOrchestrationFeed() {
         let next = withTexts(read, texts);
         for (const change of sinceRead) next = change(next);
         state = { snapshot: next, error: null };
+        seeHolds(next.tasks, Date.now());
         notify(true);
         settle.resolve();
       },

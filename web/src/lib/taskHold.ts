@@ -66,7 +66,7 @@ export const REOPEN_LASTED_DETAIL = "It has stayed held: the coordinator's chat 
 
 export const PLAN_DETAIL = "The plan is with you, and your approval does not cover this task yet. It starts once you approve the plan.";
 
-type Held = Pick<OrchestrationTask, "runId" | "status" | "supersededBy" | "stopped" | "heldByPlan" | "heldByReopen" | "reopens">;
+type Held = Pick<OrchestrationTask, "id" | "runId" | "status" | "supersededBy" | "stopped" | "heldByPlan" | "heldByReopen" | "reopens">;
 
 /** When the oldest reopen whose notice is still owed was made, by the
  *  host's clock. `null` when the ledger names none. */
@@ -75,14 +75,86 @@ export function reopenOwedSince(task: Pick<OrchestrationTask, "reopens">): numbe
   return owed.length ? Math.min(...owed.map((reopen) => reopen.at)) : null;
 }
 
+/* ---- How long a hold has lasted ---------------------------------------- */
+
+/** When this page first saw each hold, by the page's own clock.
+ *
+ *  A reopen's stamp is the host's, and the host's clock and the browser's
+ *  are two clocks: compared with each other, a browser five minutes fast
+ *  warned at once and one five minutes slow about six minutes late. So the
+ *  minute is counted on one clock, from the moment this page first saw the
+ *  hold (`seeHolds`, called as each ledger is read), to the reader's `now`.
+ *
+ *  Keyed by the task and the stamp of the reopen that is owed, so a later
+ *  reopen of the same task is a new hold. It is in memory: a reload starts
+ *  the minute over, unless the ledger itself shows it has passed
+ *  (`ledgerSaysLasted`). */
+const firstSeen = new Map<string, number>();
+
+type Reopened = Pick<OrchestrationTask, "id" | "heldByReopen" | "reopens">;
+const holdKey = (task: Reopened): string => `${task.id}:${reopenOwedSince(task) ?? 0}`;
+
+/** Record the first sight of every reopen hold in `tasks`, at `now` on the
+ *  page's clock, and forget the holds of these tasks that are over. Seeing
+ *  a hold again changes nothing. Tasks that are not in `tasks` are left
+ *  alone: a chat's own ledger is a part of the whole one. */
+export function seeHolds(tasks: readonly Reopened[], now: number): void {
+  const current = new Map<string, string | null>();
+  for (const task of tasks) {
+    const key = task.heldByReopen === true ? holdKey(task) : null;
+    current.set(task.id, key);
+    if (key !== null && !firstSeen.has(key)) firstSeen.set(key, now);
+  }
+  for (const key of [...firstSeen.keys()]) {
+    const id = key.slice(0, key.lastIndexOf(":"));
+    if (current.has(id) && current.get(id) !== key) firstSeen.delete(key);
+  }
+}
+
+/** Forget every hold: a page that has seen nothing. For the tests. */
+export function forgetHolds(): void {
+  firstSeen.clear();
+}
+
+/** Whether the ledger itself shows the hold has lasted: the host stamped
+ *  another task more than the minute after the reopen, in the same answer
+ *  that still says the notice is owed. Both stamps are the host's, so no
+ *  second clock is involved, and a page loaded late warns at once. */
+function ledgerSaysLasted(task: Reopened, tasks: readonly { updatedAt?: number }[]): boolean {
+  const owed = reopenOwedSince(task);
+  return owed !== null && tasks.some((other) => typeof other.updatedAt === "number" && other.updatedAt - owed >= REOPEN_LASTED_MS);
+}
+
+function reopenLasted(task: Reopened, tasks: readonly { updatedAt?: number }[], now: number): boolean {
+  if (ledgerSaysLasted(task, tasks)) return true;
+  const seen = firstSeen.get(holdKey(task));
+  // A hold nobody has seen is never said to have lasted.
+  return seen !== undefined && now - seen >= REOPEN_LASTED_MS;
+}
+
+/** How long from `now`, on the page's clock, until a reopen hold in `tasks`
+ *  that has not lasted yet does: the one moment a reader has to look again.
+ *  `null` when no hold is waiting to: nothing is held, or every hold has
+ *  lasted. No surface ticks for this; it sets one timer (`useHoldClock`). */
+export function holdDue(tasks: readonly (Reopened & { updatedAt?: number })[], now: number): number | null {
+  let due: number | null = null;
+  for (const task of tasks) {
+    if (task.heldByReopen !== true || ledgerSaysLasted(task, tasks)) continue;
+    const left = (firstSeen.get(holdKey(task)) ?? now) + REOPEN_LASTED_MS - now;
+    if (left > 0 && (due === null || left < due)) due = left;
+  }
+  return due;
+}
+
 /** What holds `task`, or `null` when nothing does: it is settled, running,
  *  replaced, or free to start. `tasks` are the ledger's, for the plan's
- *  reading; `now` is the reader's clock, and only the warning colour of a
- *  reopen that lasts depends on it. */
+ *  reading and for what their stamps say of a hold's age; `now` is the
+ *  reader's clock, the same one `seeHolds` was called with, and only the
+ *  warning colour of a reopen that lasts depends on it. */
 export function taskHold(
   task: Held,
   run: Pick<OrchestrationRun, "planApproval"> | undefined,
-  tasks: readonly Pick<OrchestrationTask, "runId" | "heldByPlan">[],
+  tasks: readonly (Pick<OrchestrationTask, "runId" | "heldByPlan"> & { updatedAt?: number })[],
   now: number,
 ): TaskHold | null {
   if (task.supersededBy) return null;
@@ -97,9 +169,7 @@ export function taskHold(
     return { kind: "stopped", label: STOPPED_LABEL, detail: reason ? `${STOPPED_DETAIL} Your reason: ${reason}` : STOPPED_DETAIL, tone: null };
   }
   if (task.heldByReopen === true) {
-    const since = reopenOwedSince(task);
-    const lasted = since !== null && now - since >= REOPEN_LASTED_MS;
-    return lasted
+    return reopenLasted(task, tasks, now)
       ? { kind: "reopen", label: REOPEN_LASTED_LABEL, detail: `${REOPEN_DETAIL} ${REOPEN_LASTED_DETAIL}`, tone: "warn" }
       : { kind: "reopen", label: REOPEN_LABEL, detail: REOPEN_DETAIL, tone: null };
   }

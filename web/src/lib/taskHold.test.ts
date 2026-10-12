@@ -1,13 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
-  PLAN_LABEL, REOPEN_DETAIL, REOPEN_LABEL, REOPEN_LASTED_DETAIL, REOPEN_LASTED_LABEL, REOPEN_LASTED_MS, reopenOwedSince,
-  stopBlocker, STOPPED_DETAIL, STOPPED_LABEL, taskHold,
+  forgetHolds, PLAN_LABEL, REOPEN_DETAIL, REOPEN_LABEL, REOPEN_LASTED_DETAIL, REOPEN_LASTED_LABEL, REOPEN_LASTED_MS, reopenOwedSince,
+  seeHolds, stopBlocker, STOPPED_DETAIL, STOPPED_LABEL, taskHold,
 } from "./taskHold";
 import type { OrchestrationTask } from "./orchestration";
 import host from "../../../src-tauri/src/orchestration/workspaces.rs?raw";
 import ledger from "../../../src-tauri/src/orchestration.rs?raw";
 
 const AT = 1_791_700_000_000;
+
+// Each test is a page that has seen no hold yet.
+beforeEach(() => forgetHolds());
 
 const task = (over: Partial<OrchestrationTask> = {}): OrchestrationTask => ({
   id: "task_1", runId: "run_1", title: "Implement", spec: "", dependsOn: [], status: "ready", createdAt: AT, updatedAt: AT, ...over,
@@ -54,26 +57,37 @@ describe("what holds a task that has not started", () => {
     // 4 + 8 + 16 + 32 seconds of asking again, then once a minute.
     expect(REOPEN_LASTED_MS).toBe(60_000);
     const held = { heldByReopen: true, reopens: [reopen()] };
+    // The minute is counted from when the page first saw the hold, on the
+    // page's own clock (`taskHold.clock.test` asks what two clocks did).
+    seeHolds([task(held)], AT);
     expect(hold(held, AT + 2_000)!.tone).toBeNull();
     expect(hold(held, AT + REOPEN_LASTED_MS - 1)!.tone).toBeNull();
     const lasted = hold(held, AT + REOPEN_LASTED_MS)!;
     expect(lasted).toMatchObject({ kind: "reopen", label: REOPEN_LASTED_LABEL, tone: "warn" });
     expect(lasted.detail).toBe(`${REOPEN_DETAIL} ${REOPEN_LASTED_DETAIL}`);
-    // A reader's clock behind the host's never warns early.
+    // A reader's clock behind the page's first sight never warns early.
     expect(hold(held, AT - 5_000)!.tone).toBeNull();
   });
 
-  it("measures a hold from the oldest reopen still owed its notice", () => {
+  it("keys a hold by the oldest reopen still owed its notice, so a later reopen is a new hold", () => {
     const reopens = [reopen({ at: AT - 600_000, noticeDelivered: true }), reopen({ at: AT, attempt: 3 }), reopen({ at: AT + 30_000, attempt: 3 })];
     expect(reopenOwedSince({ reopens })).toBe(AT);
+    seeHolds([task({ heldByReopen: true, reopens })], AT);
     expect(hold({ heldByReopen: true, reopens }, AT + 59_000)!.tone).toBeNull();
     expect(hold({ heldByReopen: true, reopens }, AT + 61_000)!.tone).toBe("warn");
+    // The first of them is confirmed: what is owed now is a later reopen,
+    // which this page has not seen yet.
+    const later = [reopen({ at: AT, attempt: 3, noticeDelivered: true }), reopen({ at: AT + 30_000, attempt: 3 })];
+    expect(hold({ heldByReopen: true, reopens: later }, AT + 61_000)!.tone).toBeNull();
     // A record that does not say reads as not delivered, as the host reads it.
     expect(reopenOwedSince({ reopens: [reopen({ noticeDelivered: undefined })] })).toBe(AT);
     expect(reopenOwedSince({ reopens: [reopen({ noticeDelivered: true })] })).toBeNull();
     expect(reopenOwedSince({})).toBeNull();
-    // Held, and the ledger names no reopen: said, and never said to have lasted.
+    // Held, and the ledger names no reopen: said, and it lasts like any
+    // other hold once the page has seen it for the minute.
     expect(hold({ heldByReopen: true }, AT + 3_600_000)).toMatchObject({ kind: "reopen", label: REOPEN_LABEL, tone: null });
+    seeHolds([task({ heldByReopen: true })], AT);
+    expect(hold({ heldByReopen: true }, AT + REOPEN_LASTED_MS)).toMatchObject({ kind: "reopen", label: REOPEN_LASTED_LABEL, tone: "warn" });
   });
 
   it("says a task the person stopped is held until they start it, with their reason", () => {

@@ -46,6 +46,7 @@ import {
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
 import { planHoldsEveryStart, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
 import { dropHeld, notePress } from "../lib/pressGuard";
+import { useHoldClock } from "../lib/useHoldClock";
 import "./RunProgress.css";
 
 import {
@@ -797,7 +798,10 @@ function RunDetail({
   const sandboxes = useSandboxes(tasks.some((task) => task.environment === "sandbox")).snapshot;
   // Plan mode: until the person approves, the plan IS the run.
   const planPending = !readOnly && run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
-  const now = useElapsedTick(runIsLive(snapshot, run.id));
+  // Two clocks, and the later one is read: the beat of a run with a worker
+  // going, and the one moment a reopen hold has lasted (`useHoldClock`),
+  // which has to arrive in a run where nothing else moves.
+  const now = Math.max(useElapsedTick(runIsLive(snapshot, run.id)), useHoldClock(snapshot.tasks));
   const open = openGates(snapshot, run.id);
   const gateBlockedTasks = waits.gated;
   // The gates `waits` counts as the person's. Every other open one is shown

@@ -16,7 +16,7 @@ import {
 } from "../lib/agentsDashboard";
 import type { OrchestrationSnapshot } from "../lib/orchestration";
 import type { Waiting } from "../lib/runWaits";
-import { useElapsedTick } from "../lib/agentTaskBoard";
+import { useHoldClock } from "../lib/useHoldClock";
 import { bridge } from "../lib/bridge";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentRole } from "./AgentRole";
@@ -140,9 +140,9 @@ export function AgentsDashboard({
 
   const projectList = useMemo(() => projects.map(({ id, name }) => ({ id, name })), [projects]);
   // The one reading here that a clock moves: a reopened task whose notice
-  // has stayed unconfirmed takes the warning colour. It ticks only while
-  // some task is held that way.
-  const now = useElapsedTick(!!snapshot?.tasks.some((task) => task.heldByReopen === true));
+  // has stayed unconfirmed takes the warning colour. It moves once per
+  // hold, when that hold has lasted, and never ticks (`useHoldClock`).
+  const now = useHoldClock(snapshot?.tasks);
   const rows = agentRoster({
     team, leads, snapshot, projects: projectList, teams,
     providerLabel: (agent) => `${AGENT_NAME[agent.agent]} ${teamModelLabel(agent)}`,
