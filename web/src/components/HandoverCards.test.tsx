@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { briefLabels, briefOver, HandoverCards, HandoverLines } from "./HandoverCards";
+import sheet from "./HandoverCards.css?raw";
 import { WHOLE_MAX } from "../lib/cardFold";
 import { handover } from "../lib/handover.fixture";
 import { handoverPlaces, handoversFor, type Handover } from "../lib/handover";
@@ -127,9 +128,30 @@ describe("HandoverCards", () => {
     const running = render([handover({ status: "starting", targetChatKey: "chat:new" })], "chat:source").tail;
     expect(waiting(running)).toBe(false);
     // Under way, the face is the one thing that moves; waiting, nothing does.
-    expect(running).toContain('<span class="handover-face is-working">');
-    expect(render([handover()], "chat:source").tail).not.toContain("is-working");
-    expect(render([handover({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable" })], "chat:source").tail).not.toContain("is-working");
+    expect(running).toContain('<span class="handover-face is-opening">');
+    expect(render([handover()], "chat:source").tail).not.toContain("is-opening");
+    expect(render([handover({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable" })], "chat:source").tail).not.toContain("is-opening");
+    // Opening a chat is not a turn in flight: the ring is not the class the
+    // accent's "working" rings are drawn with anywhere else.
+    expect(running).not.toContain("is-working");
+  });
+
+  it("shows the folder's tip from a state, which is shut when the card is drawn", () => {
+    const html = render([handover()], "chat:source").tail;
+    // Drawn shut: nothing has asked for it yet.
+    expect(html).toContain('<span class="handover-place has-tip" tabindex="0"');
+    expect(html).not.toContain("data-open");
+    // The sheet shows the tip for that state and for nothing else. A
+    // pseudo-class would keep it up after Escape, for as long as the pointer
+    // stayed over the word or the focus on it.
+    const rules = [...sheet.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .map((rule) => ({ selector: rule[1].trim(), body: rule[2] }));
+    const shows = rules.filter((rule) => rule.selector.includes(".handover-tip") && /visibility:\s*visible|opacity:\s*1\b/.test(rule.body));
+    expect(shows.map((rule) => rule.selector)).toEqual([".handover-place.has-tip[data-open] .handover-tip"]);
+    const named = rules.filter((rule) => /\.handover-(place|tip)/.test(rule.selector));
+    expect(named.length).toBeGreaterThanOrEqual(4);
+    // (The keyboard's ring on the word is `:focus-visible`, and stays.)
+    for (const rule of named) expect(rule.selector).not.toMatch(/:hover|:focus(?!-visible)/);
   });
 
   it("says where the task goes on for every kind of checkout", () => {

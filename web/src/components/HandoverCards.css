@@ -1,8 +1,8 @@
 /* A handover in the transcript's own column, as a name card: narrow, a face
    and a name first, what will happen as a sentence, and one envelope that
    opens to the brief. The decision colour only as a tint while the person
-   still has to choose. Never the accent: here that is the model's colour,
-   and gold reads as a warning. */
+   still has to choose. Never the accent, anywhere on the card: here that is
+   the model's colour, and gold reads as a warning. */
 .handover-cards { display: grid; gap: 12px; min-width: 0; margin: 4px 0 8px; }
 .handover-card {
   width: 100%; max-width: 520px; min-width: 0;
@@ -19,11 +19,15 @@
 /* Who: the face, the name, the sentence, the settings in small print. */
 .handover-id { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start; min-width: 0; }
 .handover-face { position: relative; display: inline-grid; flex: 0 0 auto; border-radius: 50%; }
-/* Chosen, and now in flight: the accent's one job, and the one thing on the
-   card that moves while it is. Never drawn on a card that waits. */
-.handover-face.is-working::after {
+/* Chosen, and its chat is being opened: the one thing on the card that moves
+   while it is. In the grey of the card's own text, not the accent: no turn
+   is in flight yet (the page may only be finding the chat), and the accent
+   is the model's colour, gold under Claude and in 中国风. Not the decision
+   colour either: nothing waits on the person now. Never drawn on a card
+   that waits. */
+.handover-face.is-opening::after {
   content: ""; position: absolute; inset: -4px; border-radius: 50%;
-  border: 1.5px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--fg-1) 55%, transparent);
   pointer-events: none;
   animation: handover-face-breathe 1.8s ease-in-out infinite;
 }
@@ -55,13 +59,11 @@
   opacity: 0; visibility: hidden; pointer-events: none;
   transition: opacity 130ms ease-out, visibility 130ms;
 }
-/* `:focus`, not `:focus-visible`: a tap on a phone focuses the word too.
-   And hover only where there is a pointer to hover with: a tap leaves a
-   hover behind that Escape, or a tap elsewhere, could not take away. */
-.handover-place.has-tip:focus .handover-tip { opacity: 1; visibility: visible; }
-@media (hover: hover) {
-  .handover-place.has-tip:hover .handover-tip { opacity: 1; visibility: visible; }
-}
+/* Shown by a state and by nothing else (`lib/placeTip`, `data-open`): never
+   `:hover` or `:focus` here. Escape has to take the tip away with the
+   pointer still over the word and the focus still on it, and a pseudo-class
+   is true for as long as either stays. */
+.handover-place.has-tip[data-open] .handover-tip { opacity: 1; visibility: visible; }
 
 .handover-files { margin: 12px 0 0; color: var(--fg-1); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
 /* The one place amber is allowed on this card: a file that was not passed on
@@ -202,7 +204,7 @@
   .handover-hint { flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .handover-face.is-working::after { animation: none; opacity: 0.6; }
+  .handover-face.is-opening::after { animation: none; opacity: 0.6; }
   .handover-tip { transition: none; }
 }
 

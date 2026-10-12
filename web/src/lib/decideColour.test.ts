@@ -195,10 +195,12 @@ const NAME_CARD_PARTS = [
   "over", "error", "actions", "hint", "quiet", "go",
 ];
 const NAME_CARD = new RegExp(`\\.handover-(${NAME_CARD_PARTS.join("|")})(?![\\w-])`);
-/** The two rules of the card that are not the decision colour, on purpose:
- *  the ring round the face while a confirmed chat starts (in flight, so the
- *  accent), and a file that was not passed on (a problem, so amber). */
-const NAME_CARD_APART = new Set([".handover-face.is-working::after", ".handover-unpassed li"]);
+/** The one rule of the card that takes a colour the scan forbids, on
+ *  purpose: a file that was not passed on is a problem, so it is amber.
+ *  Nothing on the card takes the accent: the ring round the face while a
+ *  confirmed chat opens is the grey of the card's text, and the scan covers
+ *  it like every other part. */
+const NAME_CARD_APART = new Set([".handover-unpassed li"]);
 
 /** The border, the dot and the primary answer of each card that asks. */
 const DECISION_RULES = [
@@ -240,7 +242,9 @@ describe("the cards that wait on a decision", () => {
   });
 
   it("has no rule of the permission, handover, route or pending-plan card on amber or on the accent, focus rings apart", () => {
-    const card = /\.ask-card(?![\w-]*safety)|\.permission-card|\.access-card|\.handover-card\.is-pending|\.handover-go|\.route-card|\.chat-plan\[data-pending\]|\.plan-review-(dot|approve|quiet|change)|\.plan-command-approval-options/;
+    // (The handover and route card are named whole by `NAME_CARD`, the card
+    // that waits, `.handover-card.is-waiting`, among them.)
+    const card = /\.ask-card(?![\w-]*safety)|\.permission-card|\.access-card|\.route-card|\.chat-plan\[data-pending\]|\.plan-review-(dot|approve|quiet|change)|\.plan-command-approval-options/;
     const mine = RULES.filter((rule) => (card.test(rule.selector) || NAME_CARD.test(rule.selector))
       && !rule.selector.includes(".safety-card") && !NAME_CARD_APART.has(rule.selector));
     expect(mine.length).toBeGreaterThan(60);
@@ -251,7 +255,7 @@ describe("the cards that wait on a decision", () => {
     }
   });
 
-  it("names every part of the name card in that scan, and sets two rules apart by name", () => {
+  it("names every part of the name card in that scan, and sets one rule apart by name", () => {
     // The scan above goes by class name, so a part of the card it does not
     // name is a part it does not check. Each part has a rule, and is caught.
     const sheet = RULES.filter((rule) => rule.file === "HandoverCards.css");
@@ -263,20 +267,32 @@ describe("the cards that wait on a decision", () => {
     // The envelope is the shared disclosure, dressed for this card.
     expect(sheet.filter((rule) => rule.selector.startsWith(".handover-card .card-fold-")).length).toBeGreaterThan(6);
     // Every other rule of the sheet that reaches for amber or the accent is
-    // one of these, or belongs to a settled line and not to a card.
+    // that one, or belongs to a settled line and not to a card.
     const coloured = sheet
       .filter((rule) => NOT_A_DECISION.test(rule.body.split(";").filter((line) => !/^\s*outline/.test(line)).join(";")))
       .map((rule) => rule.selector);
     expect(coloured.filter((selector) => NAME_CARD.test(selector)).sort()).toEqual([...NAME_CARD_APART].sort());
     for (const selector of coloured.filter((item) => !NAME_CARD.test(item))) expect(selector).toMatch(/^\.handover-(line|outcome|asks)/);
-    // In flight is the accent's one job, and that ring is never drawn on a
-    // card that waits (`HandoverCards.test.tsx` holds the markup to it).
+    // The ring round the face while a confirmed chat opens. Opening a chat is
+    // not a turn in flight (the page may only be finding it), so it is not
+    // the accent, which is gold under Claude and in 中国风; and nothing waits
+    // on the person by then, so it is not the decision colour either. It is
+    // the grey of the card's own text, in every mode, and the scan above
+    // covers it: no rule of it is set apart.
     // (Two rules: the ring, and the one that holds it still for reduced motion.)
-    const ring = named(".handover-face.is-working::after");
+    const ring = named(".handover-face.is-opening::after");
     expect(ring).toHaveLength(2);
-    expect(ring.filter((rule) => /var\(--accent\)/.test(rule.body))).toHaveLength(1);
-    for (const rule of ring) expect(rule.body).not.toMatch(/--warn\b/);
+    for (const rule of ring) {
+      expect(NAME_CARD.test(rule.selector)).toBe(true);
+      expect(NAME_CARD_APART.has(rule.selector)).toBe(false);
+      expect(rule.body).not.toMatch(NOT_A_DECISION);
+      expect(rule.body).not.toMatch(/--decide\b/);
+    }
+    expect(ring.filter((rule) => /border:[^;]*var\(--fg-1\)/.test(rule.body))).toHaveLength(1);
     expect(ring.some((rule) => /animation:\s*none/.test(rule.body))).toBe(true);
+    // The class the accent's "working" rings are drawn with is not on this
+    // card at all, in any sheet.
+    expect(RULES.filter((rule) => /\.handover-[\w-]*\.is-working/.test(rule.selector))).toEqual([]);
     // A file that was not passed on is a problem, not a question: amber.
     const unpassed = named(".handover-unpassed li");
     expect(unpassed).toHaveLength(1);

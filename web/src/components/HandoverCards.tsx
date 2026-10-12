@@ -15,7 +15,7 @@
 // Confirmed, the face and the name go on to where the agent is named next
 // (`lib/identityTravel`): the composer of the chat a route opened, or the
 // line a handover leaves in this one.
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import {
   askBackSummary, canDiscussInstead, chatIdOf, handoverHeadline, handoverWhere, homeShort, isRoute, latestOutcome, noticeLine,
   outcomeText, placeLine, routeFact, routeHeadline, settingsLine, waitsOnPerson,
@@ -25,6 +25,7 @@ import { useRosterAgent } from "../lib/agentRoster";
 import { briefRuns } from "../lib/briefRuns";
 import { chars, count, isShort, lineCount, sizeLabel, tooLong, tooLongNote, WHOLE_MAX } from "../lib/cardFold";
 import { forgetIdentity, landIdentity, leaveIdentity, lineLanding, refreshIdentity, rememberIdentity } from "../lib/identityTravel";
+import { NO_TIP, tipAfter, tipShown } from "../lib/placeTip";
 import { AgentAvatar } from "./AgentAvatar";
 import { Arrive } from "./Arrive";
 import { FoldBody, FoldLine, useFold, WholeText } from "./CardFold";
@@ -139,13 +140,59 @@ function Facts({ handover }: { handover: Handover }) {
  *  away. The folder is not on the card: it is here, and whole inside the
  *  opened brief for a screen with no pointer to hover with. */
 function Place({ name, path }: { name: string; path?: string }) {
-  const id = useId();
   if (!path) return <span className="handover-place">{name}</span>;
-  const leave = (event: KeyboardEvent<HTMLSpanElement>) => {
-    if (event.key === "Escape") event.currentTarget.blur();
-  };
+  return <PlaceTip name={name} path={path} />;
+}
+
+/** The name with its tip. Whether the tip is shown is a state
+ *  (`lib/placeTip`), not `:hover` or `:focus`: Escape takes it away with the
+ *  pointer still over the name and the focus still on it, and it stays away
+ *  until one of them asks again. */
+function PlaceTip({ name, path }: { name: string; path: string }) {
+  const id = useId();
+  const word = useRef<HTMLSpanElement>(null);
+  const [tip, say] = useReducer(tipAfter, NO_TIP);
+  const shown = tipShown(tip);
+  // While it is shown, Escape and a press elsewhere are the page's to hear:
+  // the focus may be on something else, with only the pointer here. Escape
+  // then does this and nothing more (it is also how focus mode is left).
+  useEffect(() => {
+    if (!shown) return;
+    const key = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      say("escape");
+    };
+    const press = (event: PointerEvent) => {
+      if (!word.current?.contains(event.target as Node | null)) say("outside");
+    };
+    document.addEventListener("keydown", key, true);
+    document.addEventListener("pointerdown", press, true);
+    return () => {
+      document.removeEventListener("keydown", key, true);
+      document.removeEventListener("pointerdown", press, true);
+    };
+  }, [shown]);
   return (
-    <span className="handover-place has-tip" tabIndex={0} aria-describedby={id} onKeyDown={leave}>
+    <span
+      ref={word}
+      className="handover-place has-tip"
+      tabIndex={0}
+      aria-describedby={id}
+      data-open={shown ? "" : undefined}
+      // A finger does not hover: its way in is the tap, below.
+      onPointerEnter={(event) => { if (event.pointerType !== "touch") say("enter"); }}
+      onPointerLeave={() => say("leave")}
+      onFocus={() => say("focus")}
+      onBlur={() => say("blur")}
+      onClick={(event) => {
+        // Not every browser gives a tapped word the focus; a press elsewhere
+        // then takes the tip away, as a blur would.
+        event.currentTarget.focus();
+        say("press");
+      }}
+    >
       {name}
       <span className="handover-tip" role="tooltip" id={id}>{homeShort(path)}</span>
     </span>
@@ -153,12 +200,14 @@ function Place({ name, path }: { name: string; path?: string }) {
 }
 
 /** Who the work goes to: the face, the name, what will happen as a sentence
- *  or two (`children`), and the chat's settings in small print. */
-function Identity({ handover, working, children }: { handover: Handover; working: boolean; children: ReactNode }) {
+ *  or two (`children`), and the chat's settings in small print. `opening`:
+ *  confirmed, and its chat is being started or gone to; a grey ring round
+ *  the face breathes meanwhile (never the accent: no turn is in flight). */
+function Identity({ handover, opening, children }: { handover: Handover; opening: boolean; children: ReactNode }) {
   const face = useRosterAgent(handover.to.agentId);
   return (
     <header className="handover-id">
-      <span className={`handover-face${working ? " is-working" : ""}`}>
+      <span className={`handover-face${opening ? " is-opening" : ""}`}>
         <AgentAvatar
           name={face?.name ?? handover.to.name}
           avatar={face?.avatar}
@@ -256,7 +305,7 @@ function SourceCard({ handover, onDecide, startOpen = false }: {
       aria-label={handoverHeadline(handover, "source")}
       {...(waiting ? { "data-pending": "", "data-pending-keys": `handover:${handover.id}`, tabIndex: -1 } : {})}
     >
-      <Identity handover={handover} working={starting && !failed}>
+      <Identity handover={handover} opening={starting && !failed}>
         <p className="handover-fact">Takes over this task · <Place name={handover.destination.projectName} path={where} /></p>
         <p className="handover-fact">
           {handoverWhere(handover).map((run, index) => run.mono ? <code key={index}>{run.text}</code> : run.text)}
@@ -375,7 +424,7 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
       data-kind="route"
       aria-label={routeHeadline(handover)}
     >
-      <Identity handover={handover} working={(starting || going) && !failed}>
+      <Identity handover={handover} opening={(starting || going) && !failed}>
         <p className="handover-fact">
           {fact.lead} · <Place name={fact.project} path={repository} />
           {fact.notes.map((note) => <Fragment key={note}> · {note}</Fragment>)}

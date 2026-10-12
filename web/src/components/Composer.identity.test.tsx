@@ -50,6 +50,16 @@ describe("the composer in agents mode", () => {
     expect(html).not.toContain("perm-auto");
   });
 
+  it("says which chat it is the composer of, where it names the agent", () => {
+    // A confirmed route's face and name land on the composer of the chat it
+    // opened (`lib/identityTravel.composerLanding`), found by this and never
+    // by the name: the same agent has other chats.
+    const html = composer(agentIdentity(ryan, "Ryan", opus), { session: "chat_new" });
+    expect(html).toMatch(/<div class="composer-identity" title="[^"]*" data-chat="chat_new">/);
+    // A conversation not saved yet is no chat, and says none.
+    expect(composer(agentIdentity(ryan, "Ryan", opus))).not.toContain("data-chat");
+  });
+
   it("draws the registered avatar when there is one", () => {
     const withFace = { ...ryan, avatar: "data:image/png;base64,AA==" };
     const html = composer(agentIdentity(withFace, "Ryan", opus));

@@ -141,10 +141,19 @@ main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; display: grid
   user-select: none; position: relative;
 }
 .msg-role .av.is-working { margin: 0 5px; }
-/* A turn in flight, and the one thing on the card that moves while it is. */
+/* A turn in flight, in the new chat: the accent's one job. */
 .av.is-working::after {
   content: ""; position: absolute; inset: -4px; border-radius: 50%;
   border: 1.5px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: av-breathe 1.8s ease-in-out infinite;
+}
+/* On the card, while its chat is being opened: the one thing that moves, in
+   the grey of the card's own text. Not the accent: no turn is in flight yet,
+   and the accent is the model's colour (gold under Claude). Not the decision
+   colour: nothing waits on the person now. */
+.av.is-opening::after {
+  content: ""; position: absolute; inset: -4px; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--fg-1) 55%, transparent);
   animation: av-breathe 1.8s ease-in-out infinite;
 }
 @keyframes av-breathe { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
@@ -303,7 +312,7 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
-  .av.is-working::after { animation: none; opacity: 0.6; }
+  .av.is-working::after, .av.is-opening::after { animation: none; opacity: 0.6; }
 }
 </style>
 </head>
@@ -413,7 +422,7 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
         <li>信封行是卡上唯一的展开控件，折叠时只写标签和大小，不露正文的任何一截。展开后是全文，在卡片里滚动。</li>
         <li>控件在它打开的内容上方，内容在按钮上方。卡片贴着输入框向上长，展开或收起后指针下面都不是按钮；另外照 <code>lib/pressGuard</code> 的做法，按过信封后 700 毫秒内、8 像素内落在别处的重复按压会被丢掉。</li>
         <li><code>Cancel</code> / <code>Keep it here</code> 在等待状态下永远可按。内容太长时主按钮关着但留在原位（<code>aria-disabled</code>），说明句以正文的强度站在信封的位置。</li>
-        <li>动效：展开 200ms，确认后头像和名字 200ms 飞到标题，都是 ease-out、不回弹；"正在打开"时只有头像外圈在呼吸。系统开了"减少动态效果"时全部直接到位。</li>
+        <li>动效：展开 200ms，确认后头像和名字 200ms 飞到标题，都是 ease-out、不回弹；"正在打开"时只有头像外圈在呼吸，外圈是卡片文字的灰色，不是 <code>--accent</code>（这时还没有回合在跑，而强调色在 Claude 下是金色），也不是 <code>--decide</code>（这时已经不等你决定）。系统开了"减少动态效果"时全部直接到位。</li>
       </ul>
     </div>
   </section>
@@ -559,7 +568,7 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
     var named = S.title === "name";
     var open = S.state === "2";
     var html = '<section class="nc ' + (m.waiting ? "is-waiting" : "") + '" id="card" data-status="' + m.status + '" aria-label="' + esc(m.question) + '">';
-    html += '<header class="nc-head">' + avatar(m.to, 44, m.hue, "nc-avatar" + (m.status === "starting" && !m.failed ? " is-working" : ""))
+    html += '<header class="nc-head">' + avatar(m.to, 44, m.hue, "nc-avatar" + (m.status === "starting" && !m.failed ? " is-opening" : ""))
       + '<div class="nc-who"><h3 class="nc-name" id="card-name">' + esc(named ? m.to : m.question) + "</h3>" + facts
       + '<p class="nc-settings"><span class="sr">Chat settings: </span>' + esc(m.settings) + "</p></div></header>";
     if (m.files) html += '<p class="nc-files">With ' + m.files.length + " files: " + m.files.map(function (f) { return "<code>" + esc(f) + "</code>"; }).join(", ") + "</p>";
@@ -667,7 +676,7 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
   function identity() {
     var av = document.querySelector("#card .nc-avatar"), name = $("card-name");
     if (!av || !name) return null;
-    av.classList.remove("is-working");
+    av.classList.remove("is-opening");
     // The name's own box is as wide as the card; its words are not.
     var range = document.createRange(); range.selectNodeContents(name);
     var words = range.getBoundingClientRect();

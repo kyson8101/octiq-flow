@@ -9,11 +9,21 @@
 // the card was last seen to where the name now is, and the landing place is
 // unseen until it arrives.
 //
-// One movement, about 200ms, ease out, no overshoot. And it happens whole or
-// not at all: with motion reduced, with nowhere on screen to land, or with a
-// chat that never opened, nothing is drawn and nothing is hidden. A copy is
-// put on the page only in the frame it starts to move, so none can be left
-// behind.
+// One movement, about 200ms, ease out, no overshoot. The face travels or
+// nothing does: with motion reduced, with nowhere on screen for it to land,
+// or with a chat that never opened, nothing is drawn and nothing is hidden.
+// The name goes with the face when it has somewhere to land that can be
+// seen whole; when it has not (a long name cut short where it lands), the
+// face goes alone and the name is simply where it now is. A copy is put on
+// the page only in the frame it starts to move, so none can be left behind,
+// and what it lands on is shown again as it was however the movement ends.
+//
+// A travel belongs to the one confirmation that started it. A route's lands
+// only on the composer of the chat that confirmation opened
+// (`composerLanding`, by the chat and never by the agent's name: the same
+// agent has other chats, and another project may have an agent of the same
+// name), and it is called off the moment the page shows any other chat
+// (`routeStands`).
 //
 // A card says it was confirmed (`rememberIdentity`) and keeps where it is up
 // to date while it lives (`refreshIdentity`); whoever draws the landing asks
@@ -62,7 +72,8 @@ export type TravelPlan = { face: Flight; name: Flight | null };
 
 /** What moves, or `null` for no travel at all: motion is reduced, the face
  *  was not on screen where it was last seen, or its landing is not on
- *  screen. The name travels with the face or not at all. */
+ *  screen. The name never travels without the face; the face travels alone
+ *  when the name has nowhere on screen to land. */
 export function travelPlan(input: {
   calm: boolean;
   view: { w: number; h: number };
@@ -76,6 +87,21 @@ export function travelPlan(input: {
     ? flight(name.from, name.to, name.toFont / name.fromFont)
     : null;
   return { face: flight(face.from, face.to), name: named };
+}
+
+/** A route's travel, as the page keeps it: the confirmation it belongs to,
+ *  the chat it was confirmed in, and the chat it opened (`null` until the
+ *  host has said which). */
+export type RouteTravel = { id: string; from: string | null; to: string | null };
+
+/** Whether a route's travel still stands with the page showing chat `now`.
+ *  Only in the chat it was confirmed in (waiting to go) or the chat it
+ *  opened (arriving). Any other chat, no chat, or a chat called unavailable
+ *  calls it off: by hand, by a notification, by the address bar, by the
+ *  same agent's older chat. */
+export function routeStands(route: RouteTravel, now: string | null, unavailable: boolean): boolean {
+  if (unavailable || now === null) return false;
+  return now === route.from || now === route.to;
 }
 
 /* ---- The page -------------------------------------------------------- */
@@ -93,6 +119,14 @@ type Seen = {
 
 /** The cards confirmed in this page, by the handover they ask about. */
 const remembered = new Map<string, Seen>();
+/** The movements in flight, by the handover they started for: what ends
+ *  each. Calling a travel off ends them where they are. */
+const flights = new Map<string, Set<() => void>>();
+/** The movement in flight to each landing, by the element it lands on: what
+ *  ends it. A second travel to the same element ends the first before it
+ *  reads how the landing is drawn, so what is put back at the end is what
+ *  was there before any of them, in whatever order they start and end. */
+const landingOn = new WeakMap<Element, () => void>();
 
 export function calm(): boolean {
   return typeof window === "undefined" || !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -170,8 +204,12 @@ export function refreshIdentity(id: string, card: Element | null): void {
   if (seen) remembered.set(id, seen);
 }
 
+/** Call a confirmation's travel off: one still waiting for its landing will
+ *  not start, and one in flight ends where it is, its copies taken away and
+ *  what it was landing on shown again. */
 export function forgetIdentity(id: string): void {
   remembered.delete(id);
+  for (const end of [...(flights.get(id) ?? [])]) end();
 }
 
 /** A remembered card is leaving the page: where it is now is where it was
@@ -203,7 +241,7 @@ function place(copy: HTMLElement, box: Box): void {
   document.body.appendChild(copy);
 }
 
-function fly(seen: Seen, to: Landing): void {
+function fly(id: string, seen: Seen, to: Landing): void {
   const toFace = seenBox(to.face);
   const toName = seen.name ? seenBox(to.name) : null;
   const plan = travelPlan({
@@ -217,18 +255,31 @@ function fly(seen: Seen, to: Landing): void {
   if (!plan) return;
   const moves: [HTMLElement, Flight, Element][] = [[seen.face.copy, plan.face, to.face!]];
   if (plan.name && seen.name) moves.push([seen.name.copy, plan.name, to.name!]);
+  const mine = flights.get(id) ?? new Set<() => void>();
+  flights.set(id, mine);
   for (const [copy, path, landing] of moves) {
     const target = landing as HTMLElement;
+    // Another movement is already landing here: it ends first, and puts the
+    // landing back as it found it. Read after that, `was` is how the landing
+    // was drawn before anything travelled to it, never another movement's
+    // "hidden".
+    landingOn.get(target)?.();
     const was = target.style.visibility;
     let over = false;
     // The landing is shown again and the copy taken away together, once,
-    // however the movement ends: finished, cancelled, or never run.
+    // however the movement ends: finished, cancelled, called off, taken
+    // over by another, or never run.
     const done = () => {
       if (over) return;
       over = true;
+      if (landingOn.get(target) === done) landingOn.delete(target);
+      mine.delete(done);
+      if (!mine.size && flights.get(id) === mine) flights.delete(id);
       copy.remove();
       target.style.visibility = was;
     };
+    landingOn.set(target, done);
+    mine.add(done);
     place(copy, copy === seen.face.copy ? seen.face.box : seen.name!.box);
     target.style.visibility = "hidden";
     try {
@@ -271,7 +322,7 @@ export function landIdentity(id: string, find: () => Landing | null): void {
       if (card.isConnected) refreshIdentity(id, card);
       const seen = remembered.get(id)!;
       remembered.delete(id);
-      if (fresh(seen.at, performance.now())) fly(seen, to);
+      if (fresh(seen.at, performance.now())) fly(id, seen, to);
       return;
     }
     if (!card.isConnected) gone += 1;
@@ -284,13 +335,16 @@ export function landIdentity(id: string, find: () => Landing | null): void {
   step();
 }
 
-/** The composer's own naming of the agent a chat is with, when it names
- *  `name`: where a route's face and name land. */
-export function composerLanding(name: string): Landing | null {
+/** The composer of chat `chat`, where it names the agent that chat is with:
+ *  where a route's face and name land. By the chat (`data-chat`, which the
+ *  composer writes from the chat it is the composer of) and never by the
+ *  agent's name: the composer of any other chat is not a landing, whoever
+ *  it names. The id is compared as text, never put into a selector. */
+export function composerLanding(chat: string | null): Landing | null {
+  if (!chat) return null;
   for (const chip of document.querySelectorAll(".composer-identity")) {
-    const label = chip.querySelector(".composer-identity-name");
-    if (label?.textContent?.trim() !== name.trim()) continue;
-    return { face: chip.querySelector(".agent-avatar"), name: label };
+    if (chip.getAttribute("data-chat") !== chat) continue;
+    return { face: chip.querySelector(".agent-avatar"), name: chip.querySelector(".composer-identity-name") };
   }
   return null;
 }

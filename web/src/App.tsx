@@ -183,7 +183,7 @@ import {
   type Handover, type HandoverAction,
 } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
-import { composerLanding, forgetIdentity, landIdentity } from "./lib/identityTravel";
+import { composerLanding, forgetIdentity, landIdentity, routeStands, type RouteTravel } from "./lib/identityTravel";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type PendingAction } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
@@ -4465,13 +4465,33 @@ export default function App() {
   // (`handoverTail`). Not for ever: a chat that cannot be opened says so on
   // its own page, and one that takes this long is not being waited for.
   const [goingRoute, setGoingRoute] = useState<string | null>(null);
+  // The face and the name of that card travel to the chat it opened, and to
+  // no other: the travel belongs to this one confirmation, made in the chat
+  // on screen then (`lib/identityTravel.routeStands`). Whatever else comes on
+  // screen calls it off: a chat picked by hand, one a notification or the
+  // address bar brought, the same agent's older chat, a chat called
+  // unavailable, or the card's hold running out.
+  const routeTravel = useRef<RouteTravel | null>(null);
+  const dropTravel = useCallback((id: string | null) => {
+    const route = routeTravel.current;
+    if (!route || route.id !== id) return;
+    routeTravel.current = null;
+    forgetIdentity(route.id);
+  }, []);
   const notGoing = useCallback((id: string) => setGoingRoute((now) => (now === id ? null : now)), []);
   useEffect(() => {
     if (!goingRoute) return;
-    const timer = window.setTimeout(() => setGoingRoute(null), GOING_MS);
+    const timer = window.setTimeout(() => {
+      setGoingRoute(null);
+      dropTravel(goingRoute);
+    }, GOING_MS);
     return () => window.clearTimeout(timer);
-  }, [goingRoute]);
-  useEffect(() => setGoingRoute(null), [conversationId, unavailableChat]);
+  }, [goingRoute, dropTravel]);
+  useEffect(() => {
+    setGoingRoute(null);
+    const route = routeTravel.current;
+    if (route && !routeStands(route, conversationId, !!unavailableChat)) dropTravel(route.id);
+  }, [conversationId, unavailableChat, dropTravel]);
   const handoverTailHere = useMemo(
     () => handoverTail(handoversHere.outgoing, goingRoute),
     [handoversHere, goingRoute],
@@ -4482,12 +4502,20 @@ export default function App() {
     // Said before the host answers: the record can say confirmed, over the
     // socket, ahead of this call's own answer. Only a route is ever kept.
     const going = action === "confirm" || action === "discuss";
-    if (going) setGoingRoute(id);
+    if (going) {
+      setGoingRoute(id);
+      // One travel at a time, from the chat this was pressed in. Which chat
+      // it opened is the host's to say.
+      const before = routeTravel.current;
+      if (before && before.id !== id) dropTravel(before.id);
+      routeTravel.current = { id, from: visibleRef.current, to: null };
+    }
     let record: Handover;
     try {
       record = await decideHandover(id, action);
     } catch (reason) {
       notGoing(id);
+      dropTravel(id);
       throw reason;
     }
     const target = record.targetChatKey;
@@ -4504,17 +4532,31 @@ export default function App() {
       }
       openHandoverChat(target, record.destination.projectId);
       // The card goes with the chat it was asked in: its face and name go
-      // on to where the new chat names the agent, on its composer. Only
-      // once that is drawn; a chat that never opens is not travelled to.
-      landIdentity(id, () => composerLanding(record.to.name));
+      // on to where the chat it opened names the agent, on that chat's
+      // composer and no other's. Only once that is drawn; a chat that never
+      // opens is not travelled to. And only while the page is still in the
+      // chat this was confirmed in: the person may have left it while the
+      // host was answering.
+      const route = routeTravel.current;
+      if (route?.id === id && routeStands(route, visibleRef.current, false)) {
+        const opened = chatIdOf(target);
+        route.to = opened;
+        landIdentity(id, () => composerLanding(opened));
+      } else {
+        if (route?.id === id) routeTravel.current = null;
+        forgetIdentity(id);
+      }
       loadLeads().then(setLeads, () => undefined);
     } else {
       notGoing(id);
-      // Not opened: nothing of a route's card travels anywhere.
+      if (routeTravel.current?.id === id) routeTravel.current = null;
+      // Not opened: nothing of a route's card travels anywhere. A handover's
+      // card stays in this chat and lands on its own line (`HandoverLine`),
+      // so its travel is not called off here.
       if (isRoute(record)) forgetIdentity(id);
     }
     return record;
-  }, [decideHandover, openHandoverChat, notGoing]);
+  }, [decideHandover, openHandoverChat, notGoing, dropTravel]);
   // The way back to a front-desk conversation left before it routed: no list
   // shows one, so the new-chat screen offers it. Asked for each time that
   // screen shows the front desk; a route confirmed since drops out at once.

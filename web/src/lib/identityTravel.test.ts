@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   composerLanding, flight, forgetIdentity, fresh, FRESH_MS, identityRemembered, inside, landIdentity, leaveIdentity,
-  lineLanding, onScreen, refreshIdentity, rememberIdentity, TRAVEL_EASE, TRAVEL_MS, travelPlan,
+  lineLanding, onScreen, refreshIdentity, rememberIdentity, routeStands, TRAVEL_EASE, TRAVEL_MS, travelPlan,
   type Box, type Landing,
 } from "./identityTravel";
 
@@ -99,6 +99,7 @@ type Fake = {
   removed: boolean;
   getBoundingClientRect(): { left: number; top: number; width: number; height: number };
   querySelector(selector: string): Fake | null;
+  getAttribute(name: string): string | null;
   cloneNode(): Fake;
   setAttribute(name: string, value: string): void;
   remove(): void;
@@ -109,6 +110,7 @@ function fake(rect: Box, text = "", children: Record<string, Fake | null> = {}):
   const element: Fake = {
     isConnected: true, rect, style: {}, textContent: text, parentElement: null, attributes: {}, children, animations: [], removed: false,
     getBoundingClientRect: () => ({ left: element.rect.x, top: element.rect.y, width: element.rect.w, height: element.rect.h }),
+    getAttribute: (name) => element.attributes[name] ?? null,
     querySelector: (selector) => element.children[selector] ?? null,
     cloneNode: () => fake({ ...element.rect }, element.textContent),
     setAttribute: (name, value) => { element.attributes[name] = value; },
@@ -128,11 +130,14 @@ const card = () => fake(box(300, 400, 520, 200), "", {
   '[data-travel="name"]': fake(box(372, 417, 80, 22), "Vesper"),
 });
 
-/** The composer's naming of an agent. */
-const chip = (name: string) => {
+/** The composer's naming of an agent, in the composer of chat `chat` (none:
+ *  a conversation not saved yet). */
+const chip = (name: string, chat?: string) => {
   const label = fake(box(88, 842, 44, 16), name);
   const face = fake(box(60, 839, 22, 22));
-  return { chip: fake(box(60, 836, 80, 28), "", { ".composer-identity-name": label, ".agent-avatar": face }), label, face };
+  const element = fake(box(60, 836, 80, 28), "", { ".composer-identity-name": label, ".agent-avatar": face });
+  if (chat !== undefined) element.attributes["data-chat"] = chat;
+  return { chip: element, label, face };
 };
 
 describe("the travel, on the page", () => {
@@ -177,7 +182,7 @@ describe("the travel, on the page", () => {
   });
 
   afterEach(() => {
-    for (const id of ["r1", "h1"]) forgetIdentity(id);
+    for (const id of ["r1", "r2", "r3", "h1"]) forgetIdentity(id);
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -375,18 +380,227 @@ describe("the travel, on the page", () => {
     expect(identityRemembered("h1")).toBe(false);
   });
 
-  it("lands only where the composer names that agent, and on the line a handover leaves", () => {
-    const desk = chip("Front desk");
+  it("lands only on the composer of the chat that was opened, whoever it names, and on the line a handover leaves", () => {
+    const desk = chip("Front desk", "desk");
     chips = [desk.chip];
     // Still the chat the card was asked in: not a landing.
-    expect(composerLanding("Vesper")).toBeNull();
-    const vesper = chip("Vesper");
-    chips = [desk.chip, vesper.chip];
-    expect(composerLanding("Vesper")).toEqual({ face: vesper.face, name: vesper.label });
+    expect(composerLanding("new")).toBeNull();
+    // The same agent's older chat, and another project's agent of the same
+    // name: the composer names Vesper, and is not the chat that was opened.
+    const older = chip("Vesper", "older");
+    chips = [older.chip];
+    expect(composerLanding("new")).toBeNull();
+    // A composer that says no chat (a new conversation not yet saved).
+    chips = [chip("Vesper").chip];
+    expect(composerLanding("new")).toBeNull();
+    // No chat was named: nothing is a landing, a chat-less composer least of all.
+    expect(composerLanding(null)).toBeNull();
+    expect(composerLanding("")).toBeNull();
+    // The chat it opened.
+    const opened = chip("Vesper", "new");
+    chips = [desk.chip, older.chip, opened.chip];
+    expect(composerLanding("new")).toEqual({ face: opened.face, name: opened.label });
+    // By the chat alone: a chat id is text, and is never put into a selector.
+    const odd = chip("Vesper", 'a"] , .composer-identity[data-chat="older');
+    chips = [older.chip, odd.chip];
+    expect(composerLanding('a"] , .composer-identity[data-chat="older')).toEqual({ face: odd.face, name: odd.label });
     expect(lineLanding(null)).toBeNull();
     const face = fake(box(0, 0, 16, 16));
     const name = fake(box(20, 0, 40, 16), "Mango");
     expect(lineLanding(as(fake(box(0, 0, 300, 26), "", { ".handover-line-face": face, '[data-travel="name"]': name }))))
       .toEqual({ face, name });
+  });
+
+  /* ---- A travel belongs to the confirmation that started it ------------ */
+
+  it("does not start in the chat it was confirmed in, with the same name already on its composer", () => {
+    // A route to the agent this very chat is with: the composer here names
+    // Vesper, and the card is still drawn. Not a landing: it is not the chat
+    // the route opened.
+    const here = chip("Vesper", "source");
+    chips = [here.chip];
+    const from = card();
+    rememberIdentity("r1", as(from));
+    landIdentity("r1", () => composerLanding("new"));
+    runFrames(6);
+    expect(appended).toEqual([]);
+    expect(here.face.style).toEqual({});
+    expect(here.label.style).toEqual({});
+    // Still waiting for its own chat, which then opens: that one is landed on.
+    expect(identityRemembered("r1")).toBe(true);
+    leaveIdentity("r1", as(from));
+    from.isConnected = false;
+    const opened = chip("Vesper", "new");
+    chips = [opened.chip];
+    runFrames(1);
+    expect(appended).toHaveLength(2);
+    expect(opened.face.style.visibility).toBe("hidden");
+    expect(here.face.style).toEqual({});
+  });
+
+  it("does not fly to the same agent's other chat when the person goes there instead", () => {
+    const from = card();
+    rememberIdentity("r1", as(from));
+    landIdentity("r1", () => composerLanding("new"));
+    runFrames(2);
+    // The host has not answered yet, and the person picks Vesper's older
+    // chat from the list: the card leaves, and a composer naming Vesper is
+    // drawn in the same frame.
+    leaveIdentity("r1", as(from));
+    from.isConnected = false;
+    const older = chip("Vesper", "older");
+    chips = [older.chip];
+    runFrames(10);
+    vi.advanceTimersByTime(5000);
+    expect(appended).toEqual([]);
+    expect(older.face.style).toEqual({});
+    expect(older.label.style).toEqual({});
+    expect(older.face.animations).toEqual([]);
+    expect(identityRemembered("r1")).toBe(false);
+    expect(frames).toEqual([]);
+    // The chat it opened turning up afterwards is not travelled to either:
+    // the card was not seen where its boxes say for a long time.
+    chips = [chip("Vesper", "new").chip];
+    runFrames(3);
+    expect(appended).toEqual([]);
+  });
+
+  it("stands only in the chat it was confirmed in and the chat it opened", () => {
+    const waiting = { id: "r1", from: "desk", to: null };
+    const going = { id: "r1", from: "desk", to: "new" };
+    // Still where it was confirmed: before the host said which chat, and after.
+    expect(routeStands(waiting, "desk", false)).toBe(true);
+    expect(routeStands(going, "desk", false)).toBe(true);
+    // Arrived.
+    expect(routeStands(going, "new", false)).toBe(true);
+    // Any other chat: picked by hand, brought by a notification or by the
+    // address bar, the same agent's older chat.
+    expect(routeStands(waiting, "older", false)).toBe(false);
+    expect(routeStands(going, "older", false)).toBe(false);
+    // The chat it opens is not known yet, so no chat is it.
+    expect(routeStands(waiting, "new", false)).toBe(false);
+    // No chat on screen (a new conversation), or a chat called unavailable.
+    expect(routeStands(going, null, false)).toBe(false);
+    expect(routeStands({ id: "r1", from: null, to: null }, null, false)).toBe(false);
+    expect(routeStands(going, "desk", true)).toBe(false);
+    expect(routeStands(going, "new", true)).toBe(false);
+  });
+
+  it("is called off in flight: the copies go and the landing is shown again", () => {
+    const from = card();
+    rememberIdentity("r1", as(from));
+    const to = chip("Vesper", "new");
+    landIdentity("r1", () => landing(to));
+    expect(appended).toHaveLength(2);
+    expect(to.face.style.visibility).toBe("hidden");
+    // The person leaves the new chat while the face is still on its way.
+    forgetIdentity("r1");
+    for (const copy of appended) expect(copy.removed).toBe(true);
+    expect(to.face.style.visibility).toBeUndefined();
+    expect(to.label.style.visibility).toBeUndefined();
+    // Nothing that ends later undoes that.
+    appended[0].animations[0].run.oncancel!();
+    vi.advanceTimersByTime(TRAVEL_MS * 3);
+    expect(to.face.style.visibility).toBeUndefined();
+  });
+
+  /* ---- The landing is shown again, as it was, whatever lands on it ----- */
+
+  /** Two travels to the same composer, 50ms apart: the review's probe. */
+  const twice = (to: ReturnType<typeof chip>) => {
+    rememberIdentity("r1", as(card()));
+    landIdentity("r1", () => landing(to));
+    const first = appended.slice();
+    clock += 50;
+    vi.advanceTimersByTime(50);
+    rememberIdentity("r2", as(card()));
+    landIdentity("r2", () => landing(to));
+    return { first, second: appended.slice(first.length) };
+  };
+  const ends = (copy: Fake, how: "onfinish" | "oncancel") => copy.animations[0].run[how]!();
+
+  it("takes over a landing another travel is still flying to, and ends the first at once", () => {
+    const to = chip("Vesper", "new");
+    const { first, second } = twice(to);
+    expect(first).toHaveLength(2);
+    expect(second).toHaveLength(2);
+    // The first is over: its copies are gone. The second holds the landing.
+    for (const copy of first) expect(copy.removed).toBe(true);
+    for (const copy of second) expect(copy.removed).toBe(false);
+    expect(to.face.style.visibility).toBe("hidden");
+    expect(to.label.style.visibility).toBe("hidden");
+  });
+
+  it.each([
+    ["the first ends, then the second", ["first", "second"]],
+    ["the second ends, then the first", ["second", "first"]],
+    ["only the second ever ends", ["second"]],
+    ["only the first ever ends", ["first"]],
+    ["neither ends, and the clock clears up", []],
+  ] as const)("shows a landing two travels flew to again, as it was: %s", (_, order) => {
+    const to = chip("Vesper", "new");
+    const flown = twice(to);
+    for (const which of order) for (const copy of flown[which]) ends(copy, "onfinish");
+    vi.advanceTimersByTime(850);
+    // The review's reading, 850ms on: no copy left, and nothing hidden.
+    for (const copy of appended) expect(copy.removed).toBe(true);
+    expect(to.face.style.visibility).toBeUndefined();
+    expect(to.label.style.visibility).toBeUndefined();
+    expect(identityRemembered("r1")).toBe(false);
+    expect(identityRemembered("r2")).toBe(false);
+  });
+
+  it("shows it again when either is cancelled or called off, and when it left the page meanwhile", () => {
+    for (const end of ["cancel-first", "cancel-second", "forget-second", "forget-first", "unmounted"] as const) {
+      appended = [];
+      const to = chip("Vesper", "new");
+      const { first, second } = twice(to);
+      if (end === "cancel-first") for (const copy of first) ends(copy, "oncancel");
+      if (end === "cancel-second") for (const copy of second) ends(copy, "oncancel");
+      if (end === "forget-second") forgetIdentity("r2");
+      if (end === "forget-first") forgetIdentity("r1");
+      if (end === "unmounted") to.face.isConnected = to.label.isConnected = false;
+      vi.advanceTimersByTime(850);
+      for (const copy of appended) expect(copy.removed, end).toBe(true);
+      expect(to.face.style.visibility, end).toBeUndefined();
+      expect(to.label.style.visibility, end).toBeUndefined();
+    }
+  });
+
+  it("puts back the visibility the landing had before any of them, not an empty one", () => {
+    const to = chip("Vesper", "new");
+    to.face.style.visibility = "inherit";
+    to.label.style.visibility = "visible";
+    const { second } = twice(to);
+    // A third, later still, over the second.
+    clock += 50;
+    vi.advanceTimersByTime(50);
+    rememberIdentity("r3", as(card()));
+    landIdentity("r3", () => landing(to));
+    for (const copy of second) expect(copy.removed).toBe(true);
+    expect(to.face.style.visibility).toBe("hidden");
+    vi.advanceTimersByTime(850);
+    expect(to.face.style.visibility).toBe("inherit");
+    expect(to.label.style.visibility).toBe("visible");
+    for (const copy of appended) expect(copy.removed).toBe(true);
+  });
+
+  it("keeps two travels to different landings apart", () => {
+    const a = chip("Vesper", "new");
+    const b = chip("Mango", "other");
+    rememberIdentity("r1", as(card()));
+    landIdentity("r1", () => landing(a));
+    rememberIdentity("r2", as(card()));
+    landIdentity("r2", () => landing(b));
+    expect(appended).toHaveLength(4);
+    for (const copy of appended) expect(copy.removed).toBe(false);
+    // Calling one off leaves the other flying.
+    forgetIdentity("r1");
+    expect(appended.slice(0, 2).every((copy) => copy.removed)).toBe(true);
+    expect(appended.slice(2).some((copy) => copy.removed)).toBe(false);
+    expect(a.face.style.visibility).toBeUndefined();
+    expect(b.face.style.visibility).toBe("hidden");
+    vi.advanceTimersByTime(850);
+    expect(b.face.style.visibility).toBeUndefined();
   });
 });

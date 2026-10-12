@@ -1373,7 +1373,7 @@ export function Composer({
               <SlidersIcon />
             </button>
           )}
-          {identity ? <AgentIdentityChip identity={identity} /> : <>
+          {identity ? <AgentIdentityChip identity={identity} chat={session} /> : <>
           <div className="composer-settings">
           <div className="picker">
             <button
@@ -1650,8 +1650,11 @@ export function Composer({
 
 /** Agents mode: the agent this conversation is with, in the place the model,
  *  access and effort pickers take in an ordinary chat. Read-only on purpose:
- *  the agent's registration (Settings, Agents) owns those settings. */
-export function AgentIdentityChip({ identity }: { identity: AgentIdentity }) {
+ *  the agent's registration (Settings, Agents) owns those settings.
+ *  `chat` is the saved chat this composer is the composer of: a confirmed
+ *  route's face and name land on the chip of the chat it opened and on no
+ *  other (`lib/identityTravel.composerLanding`), whoever the chip names. */
+export function AgentIdentityChip({ identity, chat }: { identity: AgentIdentity; chat?: string }) {
   // The face and the name are the whole chip. Role, provider and model are
   // the agent's settings, not its voice: they stay in the tooltip and in
   // Settings, Agents, where they are changed.
@@ -1663,7 +1666,7 @@ export function AgentIdentityChip({ identity }: { identity: AgentIdentity }) {
     identity.removed ? "No longer registered: this conversation keeps its last settings" : "",
   ].filter(Boolean).join("\n");
   return (
-    <div className="composer-identity" title={tip} data-removed={identity.removed || undefined}>
+    <div className="composer-identity" title={tip} data-removed={identity.removed || undefined} data-chat={chat || undefined}>
       <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={22} removed={identity.removed} decorative />
       <span className="composer-identity-name">{identity.name}</span>
     </div>

@@ -714,8 +714,10 @@ folded line and are not part of this.
 
 `RouteCard` and `SourceCard` (`components/HandoverCards`) say who the work
 goes to before anything else: the agent's face at 44px and its name as the
-title. The question the card used to be headed with is still what the card is
-called (`aria-label`) and what its primary answer says. `docs/mocks/
+title. What the card used to be headed with (`routeHeadline`,
+`handoverHeadline`: the question while it is undecided, then what is
+happening) is still what the card is called (`aria-label`), and while it is
+undecided its primary answer names the action and the agent. `docs/mocks/
 handover-cards-namecard.html` is the mock they were built from.
 
 - **Facts are sentences, not rows.** What kind of chat and where is one line
@@ -725,9 +727,21 @@ handover-cards-namecard.html` is the mock they were built from.
   `With 3 files: a, b, c`, and the chat's settings are one line of small
   print (`settingsLine`), never chips.
 - **The folder is not on the card.** It is on the project's name (`Place`: a
-  tip on hover, focus or tap, set against its sentence so it is never wider
-  than the card), and whole inside the opened brief (`Opens in`, or a
-  handover's `Checkout`) for a screen with no pointer.
+  tip, set against its sentence so it is never wider than the card), and
+  inside the opened brief (`Opens in`, or a handover's `Checkout`) for a
+  screen with no pointer. A route that plans across every project has no
+  one folder and shows neither.
+- **That tip is shown by a state, never by `:hover` or `:focus`**
+  (`lib/placeTip`, drawn from `data-open`). A pointer over the name asks for
+  it, and so does the focus on it (a tap gives the name the focus; a finger
+  does not hover). Escape, or a press anywhere else, sends away whatever is
+  asking, and each stays away until it asks again: the pointer by leaving
+  and coming back, the focus by leaving and returning. A press on the name
+  asks again too. A pseudo-class is true for as long as the pointer or the focus
+  stays, so Escape could not shut the tip under a pointer that had not
+  moved. While the tip is shown Escape is heard on the document and goes no
+  further: it shuts the tip and does nothing else (it is also how focus
+  mode is left).
 - **The envelope is the card's one disclosure**, and it is `CardFold`'s own
   line and control dressed in `HandoverCards.css` (the whole row is the
   target, the icon is a mask on the line). It keeps both labels of a route
@@ -735,13 +749,18 @@ handover-cards-namecard.html` is the mock they were built from.
   texts. Do not draw a second control for it; `notePress` is in the shared
   one.
 - **`is-waiting` is the card that waits on the person** (`waitsOnPerson`:
-  undecided, or a start that failed), and that class, not `is-pending`, takes
-  the decision colour and the raised quiet text. Two rules of the card are
-  another colour on purpose, and `lib/decideColour.test.ts` names them: the
-  ring round the face while a confirmed chat starts (the accent, in flight,
-  never on a card that waits) and `Not passed on` (amber, a problem). That
-  test scans the card by the class of each part (`NAME_CARD_PARTS`): a part
-  added to the card is added there, or the scan does not see it.
+  undecided, or a start that failed), and that class, not the status class
+  `is-pending`, takes the decision colour and the raised quiet text.
+  **Nothing on the card is the accent.** One rule is a colour the scan in
+  `lib/decideColour.test.ts` forbids, on purpose, and that test names it:
+  `Not passed on` (amber, a problem). The ring that breathes round the face
+  while a confirmed chat is being started or gone to (`is-opening`, never on
+  a card that waits) is the grey of the card's own text, `--fg-1`: opening a
+  chat is not a turn in flight (the page may only be finding it), the accent
+  is the model's colour (gold under Claude and in 中国风), and nothing waits
+  on the person by then, so it is not `--decide` either. That test scans the
+  card by the class of each part (`NAME_CARD_PARTS`): a part added to the
+  card is added there, or the scan does not see it.
 - **A brief too long to show cannot be handed over** (`briefOver`): the parts
   of a handover's brief are counted together against `cardFold.WHOLE_MAX`,
   the envelope gives way to the sentence, and `Hand over` and `Try again` are
@@ -750,18 +769,47 @@ handover-cards-namecard.html` is the mock they were built from.
   is the page's own bound, as the route card's is.
 - **Confirmed, the face and the name go on to where the agent is named next**
   (`lib/identityTravel`): a route's to the composer of the chat it opened
-  (`composerLanding`, by the agent's name, so never the chat it was asked
-  in), a handover's into the line it leaves (`lineLanding`; that line shows
-  the face at 16px in place of its mark). The top bar is not part of it.
-  Copies on `document.body`, one movement of 200ms on `--enter-ease`, the
-  landing unseen until they arrive. It happens whole or not at all: nothing
-  is put on the page until the frame the landing is drawn, so motion that is
-  reduced, a landing that is off screen or clipped by its scroller, a chat
-  that never opens, and a card that left the page more than `FRESH_MS` ago
-  all draw nothing and hide nothing. A card says it was confirmed
-  (`rememberIdentity`) and where it is as it is drawn and as it leaves
-  (`refreshIdentity`, `leaveIdentity`); whoever draws the landing asks
-  (`landIdentity`).
+  (`composerLanding`), a handover's into the line it leaves (`lineLanding`;
+  that line shows the face at 16px in place of its mark). The top bar is not
+  part of it. Copies on `document.body`, one movement of 200ms on
+  `--enter-ease`, each landing unseen until its copy arrives. A card says it
+  was confirmed (`rememberIdentity`) and where it is as it is drawn and as
+  it leaves (`refreshIdentity`, `leaveIdentity`); whoever draws the landing
+  asks (`landIdentity`).
+  - **A route's travel belongs to the one confirmation that started it.**
+    Its landing is found by the chat, never by the agent's name: the
+    composer writes the chat it is the composer of on its identity chip
+    (`data-chat`, from `session`), and `composerLanding` takes the id the
+    host said the route opened (`chatIdOf(targetChatKey)`, the same id the
+    page goes to). The same agent has other chats, and another project may
+    have an agent of the same name; finding the landing by name sent the
+    face into whichever of them the person opened. `App` keeps the travel
+    (`routeTravel`: the confirmation, the chat it was pressed in, the chat
+    it opened) and calls it off (`forgetIdentity`) the moment
+    `routeStands` says no: the page shows any chat but those two, no chat,
+    or a chat called unavailable, and when the card's hold runs out
+    (`GOING_MS`). So a chat picked by hand, one a notification or the
+    address bar brought, and a reload (the travel is in memory) all end it
+    with nothing drawn. The travel is asked for only if the page is still
+    in the chat it was confirmed in when the host answers.
+    `identityTravel.wiring.test.ts` reads `App.tsx` and `Composer.tsx` for
+    each step of that hand-off.
+  - **Nothing is put on the page until the frame the landing is drawn.** So
+    motion that is reduced, a face with nowhere to land that can be seen
+    whole (off screen, or clipped by its scroller), a chat that never
+    opens, and a card that left the page more than `FRESH_MS` ago all draw
+    nothing and hide nothing. The face travels or nothing does. The name
+    goes with it when it too has somewhere to land that can be seen whole;
+    when it has not (a long name cut short on the line it lands in), the
+    face goes alone and the name is where it now is, not hidden. A copy
+    and the hiding of what it lands on begin together and end together.
+  - **What a copy lands on is shown again as it was, however that ends**:
+    finished, cancelled, called off (`forgetIdentity` ends a travel in
+    flight where it is), or never run (a clock clears up after three times
+    the movement). A second travel to an element another is still flying
+    to ends the first before it reads how the landing is drawn
+    (`landingOn`), so two travels to one landing, in any order, leave it as
+    it was before either.
 - **The page that confirmed a route keeps its card until it has left the
   chat** (`handover.handoverTail`, `App`'s `goingRoute`). The record says
   confirmed at once, and `handoverPlaces` then drops the card, but the page

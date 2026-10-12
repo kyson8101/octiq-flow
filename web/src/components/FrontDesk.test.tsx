@@ -211,7 +211,7 @@ describe("the front desk's confirm card", () => {
     // no tint, and the face is the one thing that moves.
     const html = renderToStaticMarkup(<HandoverCards outgoing={handoverTail(outgoing, "handover_r1").slice(0, 1)} onDecide={noop} />);
     expect(html).toContain('<section class="handover-card route-card is-confirmed" data-handover="handover_r1" data-status="confirmed" data-kind="route" aria-label="Opening a chat with Vesper…">');
-    expect(html).toContain('<span class="handover-face is-working">');
+    expect(html).toContain('<span class="handover-face is-opening">');
     expect(html).toContain('<footer class="handover-actions"><span class="handover-hint">Opening the chat.</span></footer>');
     expect(html).not.toContain("<button type=\"button\" class=\"handover-");
     expect(html).not.toContain("is-waiting");
