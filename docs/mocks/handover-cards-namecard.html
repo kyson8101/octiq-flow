@@ -1,0 +1,791 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Name-card route and handover cards (mock)</title>
+<link rel="icon" href="data:,">
+<!--
+  A static, clickable mock of the route card and the handover card as name
+  cards. Nothing here is wired to the app: it is one file, no build, no
+  external resource. Open it over http.
+
+  Token values are copied by hand, on 2026-10-12, from:
+    dark  : web/src/design-system.css  (:root)
+    light : web/src/lib/themes/light.css, put through web/src/lib/theme.ts
+            `mapTokens` (bg-1 = card, fg-1 = mix(fg 86%, bg), --ok / --warn =
+            chart-1 / chart-2, radius 10px -> 8 / 12 / 16), plus the
+            `:root[data-color-scheme="light"]` block of design-system.css.
+  The avatar is web/src/components/AgentAvatar.css; the buttons, the error
+  block and the off state are web/src/components/HandoverCards.css.
+  The app's fonts (Inter Variable) are not shipped here, so the system font
+  stands in.
+-->
+<style>
+:root {
+  --bg-0: #101010; --bg-1: #1b1b1b; --bg-2: #282828; --bg-sunken: #141414;
+  --fg-0: #fafafa; --fg-1: #e0e0e0; --fg-2: #ababab; --fg-3: #919191;
+  --border: #303030; --border-strong: #505050;
+  --accent: #f5f5f5; --accent-fg: #171717; --accent-tint: rgb(255 255 255 / 8%);
+  --ok: #75cc96; --warn: #edbd69; --danger: #f28787; --danger-fg: #261111;
+  --decide: #6bb4c6; --decide-fg: #0d1b1f; --decide-tint: rgb(107 180 198 / 10%);
+  --link: #92b8ff; --focus: #82aaff;
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 12%);
+  --enter-duration: 180ms; --enter-reveal-duration: 200ms;
+  --enter-ease: cubic-bezier(0.33, 1, 0.68, 1);
+  --font: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "Sarasa Mono SC", "JetBrains Mono", Menlo, ui-monospace, SFMono-Regular, monospace;
+  --chat-column: 780px;
+  /* Claude's colour inside the composer (styles.css, `--composer-accent`):
+     the reason a card that asks never uses `--accent`. */
+  --composer-accent: #d97757;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg-0: #f7f7f7; --bg-1: #ffffff; --bg-2: #eeeeee; --bg-sunken: #f2f2f2;
+  --fg-0: #171717; --fg-1: color-mix(in oklab, #171717 86%, #f7f7f7);
+  --fg-2: #626262; --fg-3: color-mix(in oklab, #626262 88%, #f7f7f7);
+  --border: #e0e0e0; --border-strong: color-mix(in oklab, #e0e0e0 72%, #171717);
+  --accent: #202020; --accent-fg: #ffffff; --accent-tint: rgb(0 0 0 / 6%);
+  --ok: oklch(0.48 0.12 145); --warn: oklch(0.48 0.12 85);
+  --danger: #bb3543; --danger-fg: #ffffff;
+  --decide: #1d7486; --decide-fg: #ffffff; --decide-tint: rgb(29 116 134 / 8%);
+  --link: #285dcc; --focus: #3866da;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 5%);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg-sunken); color: var(--fg-1);
+  font-family: var(--font); font-size: 14px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+button, textarea { font-family: inherit; }
+:where(button, a, textarea, [tabindex]):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* ---- The mock's own controls: not part of the product ------------------- */
+.mock-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1);
+}
+.mock-bar h1 { margin: 0; font-size: 14px; font-weight: 600; color: var(--fg-0); flex: 1 1 220px; min-width: 0; }
+.mock-bar h1 small { display: block; font-size: 12px; font-weight: 400; color: var(--fg-2); }
+.seg { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.seg-label { font-size: 12px; color: var(--fg-2); margin-right: 2px; }
+.seg button, .mock-btn {
+  min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-1); font-size: 12.5px; cursor: pointer;
+  transition: background 130ms ease-out, border-color 130ms ease-out;
+}
+.seg button[aria-pressed="true"] { border-color: var(--border-strong); background: var(--bg-2); color: var(--fg-0); font-weight: 600; }
+.seg button[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+@media (pointer: coarse) { .seg button, .mock-btn { min-height: 40px; } }
+.mock-note { margin: 0; padding: 8px 16px; min-height: 36px; font-size: 12.5px; color: var(--fg-2); border-bottom: 1px solid var(--border); background: var(--bg-1); }
+
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; display: grid; gap: 28px; }
+@media (max-width: 640px) { main { padding: 12px 0 40px; } .notes { padding: 0 16px; } }
+
+/* ---- A stand-in for the app: top bar, transcript, composer -------------- */
+.frame {
+  display: flex; flex-direction: column; min-width: 0;
+  height: clamp(560px, 82vh, 780px);
+  border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden;
+  background: var(--bg-0);
+}
+@media (max-width: 640px) { .frame { border-radius: 0; border-left: 0; border-right: 0; } }
+.topbar {
+  display: flex; align-items: center; gap: 8px; flex: 0 0 auto; height: 48px; padding: 0 12px;
+  background: var(--bg-sunken); border-bottom: 1px solid var(--border);
+}
+.topbar-nav { width: 18px; height: 18px; color: var(--fg-2); flex: 0 0 auto; }
+.topbar-chat { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 0 6px; color: var(--fg-0); font-size: 14px; font-weight: 600; }
+.topbar-chat .dim { color: var(--fg-2); font-weight: 400; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-tile {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; flex: 0 0 auto;
+  background: var(--bg-2); color: var(--fg-1); font-size: 11px; font-weight: 600;
+}
+/* Bottom-anchored, as the end of a transcript is: what is added grows up. */
+.scroller { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column-reverse; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px; }
+.column { width: 100%; max-width: var(--chat-column); margin: 0 auto; padding: 20px 0 10px; display: grid; gap: 18px; min-width: 0; }
+.msg-user { padding: 11px 17px; border-radius: 21px; background: color-mix(in srgb, var(--accent) 18%, var(--bg-1)); color: var(--fg-0); overflow-wrap: anywhere; }
+.msg-agent { display: grid; gap: 4px; min-width: 0; }
+.msg-role { display: flex; align-items: center; gap: 6px; color: var(--fg-2); font-size: 12px; }
+.msg-agent p { margin: 0; color: var(--fg-1); overflow-wrap: anywhere; }
+.composer { flex: 0 0 auto; padding: 0 16px 14px; }
+.composer-box {
+  display: flex; align-items: flex-end; gap: 10px;
+  max-width: var(--chat-column); margin: 0 auto; padding: 12px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-lg); background: var(--bg-1); box-shadow: var(--shadow-sm);
+}
+.composer-box textarea {
+  flex: 1 1 auto; min-width: 0; min-height: 24px; max-height: 24px; resize: none; padding: 0; border: 0; outline: 0;
+  background: transparent; color: var(--fg-0); font-size: 14px; line-height: 24px;
+}
+.composer-box textarea::placeholder { color: var(--fg-3); opacity: 1; }
+.composer-box:focus-within { border-color: var(--focus); }
+.send { width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto; display: grid; place-items: center; background: var(--composer-accent); color: #fff; }
+
+/* ---- The avatar: AgentAvatar.css, at any size --------------------------- */
+.av {
+  --tone: hsl(var(--hue, 210) 62% 52%);
+  display: inline-grid; place-items: center; flex: 0 0 auto;
+  width: var(--size, 20px); height: var(--size, 20px); border-radius: 50%;
+  background: color-mix(in oklab, var(--tone) 20%, var(--bg-1));
+  color: color-mix(in oklab, var(--tone) 72%, var(--fg-1));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone) 28%, transparent);
+  font-size: calc(var(--size, 20px) * 0.42); font-weight: 600; line-height: 1; letter-spacing: 0.01em;
+  user-select: none; position: relative;
+}
+.msg-role .av.is-working { margin: 0 5px; }
+/* A turn in flight, and the one thing on the card that moves while it is. */
+.av.is-working::after {
+  content: ""; position: absolute; inset: -4px; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: av-breathe 1.8s ease-in-out infinite;
+}
+@keyframes av-breathe { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+
+/* ---- The name card ------------------------------------------------------ */
+.dock { display: grid; justify-items: start; min-width: 0; }
+.nc {
+  width: 100%; max-width: 520px; min-width: 0;
+  padding: 16px; border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--bg-1);
+  transition: border-color 160ms ease-out, background 160ms ease-out;
+}
+/* Waiting on the person: the decision colour, as a tint. Never the accent,
+   never amber. The quietest text takes one step up on the tint, as it does
+   on every card that asks (styles.css). */
+.nc.is-waiting { border-color: var(--decide); background: var(--decide-tint); --fg-3: var(--fg-2); }
+
+.nc-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start; }
+.nc-who { display: grid; gap: 1px; min-width: 0; padding-top: 1px; }
+.nc-name { margin: 0; color: var(--fg-0); font-size: 16px; font-weight: 600; line-height: 22px; overflow-wrap: anywhere; }
+.nc-fact { margin: 0; color: var(--fg-1); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+.nc-fact code, .nc-files code { font-family: var(--mono); font-size: 12px; color: var(--fg-1); }
+/* The chat's settings: one line of small print, not three pills. */
+.nc-settings { margin: 2px 0 0; color: var(--fg-3); font-size: 12px; line-height: 17px; overflow-wrap: anywhere; }
+
+/* The folder is not on the card. It is on the project's name, for a pointer
+   and for the keyboard, and whole inside the opened brief for a phone. */
+.place { position: relative; display: inline-block; border-radius: 3px; text-decoration: underline dotted color-mix(in srgb, var(--fg-1) 45%, transparent); text-underline-offset: 3px; cursor: default; }
+.tip {
+  position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 2;
+  padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  background: var(--bg-2); color: var(--fg-0); font-family: var(--mono); font-size: 11.5px; line-height: 1.4; white-space: nowrap;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity 130ms ease-out, visibility 130ms;
+}
+/* `:focus`, not `:focus-visible`: a tap on a phone focuses the word too. */
+.place:hover .tip, .place:focus .tip { opacity: 1; visibility: visible; }
+
+.nc-files { margin: 12px 0 0; color: var(--fg-1); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+/* The one place amber is allowed on this card: a file that was not passed on
+   is a problem, not a question. */
+.nc-warn { display: grid; gap: 2px; margin: 8px 0 0; padding: 0; list-style: none; }
+.nc-warn li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; align-items: start; color: var(--warn); font-size: 12.5px; line-height: 18px; overflow-wrap: anywhere; }
+.nc-warn svg { width: 14px; height: 14px; margin-top: 2px; }
+
+/* The envelope: the card's one disclosure. It names what is folded and how
+   much, never a piece of it. The whole row is the control. */
+.nc-env {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; min-height: 36px;
+  margin: 14px 0 0; padding: 6px 10px; text-align: left;
+  border: 1px solid color-mix(in srgb, var(--fg-1) 12%, transparent); border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--fg-1) 3%, transparent); color: var(--fg-2);
+  font-size: 12.5px; line-height: 1.4; cursor: pointer;
+  transition: background 130ms ease-out, color 130ms ease-out, border-color 130ms ease-out;
+}
+.nc-env-icon { width: 16px; height: 16px; flex: 0 0 auto; }
+.nc-env .env-open { display: none; }
+.nc-env[aria-expanded="true"] .env-open { display: block; }
+.nc-env[aria-expanded="true"] .env-shut { display: none; }
+.nc-env-labels { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nc-env-labels > span { white-space: nowrap; }
+.nc-env-labels > span + span::before { content: " · "; color: var(--fg-3); white-space: normal; }
+.chevron { flex: 0 0 auto; width: 6px; height: 6px; margin: 0 3px 3px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform var(--enter-duration) var(--enter-ease); }
+[aria-expanded="true"] > .chevron { transform: translateY(2px) rotate(-135deg); }
+@media (hover: hover) { .nc-env:hover { color: var(--fg-0); background: color-mix(in srgb, var(--fg-1) 7%, transparent); } }
+
+/* What it opens: above the buttons, under its own control. A one-row grid
+   whose row opens from nothing (design-system.css, `enter-reveal`). */
+.nc-fold { display: grid; grid-template-rows: 0fr; grid-template-columns: minmax(0, 1fr); min-width: 0; transition: grid-template-rows var(--enter-reveal-duration) var(--enter-ease); }
+.nc-fold.is-open { grid-template-rows: 1fr; }
+.nc-fold[hidden] { display: none; }
+.nc-fold-in { min-width: 0; min-height: 0; overflow: hidden; }
+/* Opened is whole: every character is here, and a long one scrolls inside
+   the card rather than pushing the answers off the screen. */
+.nc-scroll { max-height: min(40vh, 300px); overflow-y: auto; overscroll-behavior: contain; margin-top: 10px; padding: 2px 8px 2px 2px; display: grid; gap: 12px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--fg-1) 28%, transparent) transparent; }
+.nc-scroll:focus-visible { outline-offset: -2px; }
+.nc-sec { min-width: 0; }
+.nc-sec h4 { margin: 0 0 3px; color: var(--fg-2); font-size: 11.5px; font-weight: 600; }
+.nc-sec h4 span { color: var(--fg-3); font-weight: 400; }
+.nc-sec p, .nc-sec li { margin: 0; color: var(--fg-0); font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.nc-sec ul { margin: 0; padding-left: 18px; }
+.nc-sec .mono { font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); }
+.nc-sec .caveat { color: var(--fg-3); font-size: 11.5px; margin-top: 3px; }
+.nc-message { margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-sunken); color: var(--fg-2); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Why it cannot be sent, at full strength, where the envelope would be. */
+.nc-over { margin: 14px 0 0; color: var(--fg-0); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.nc-error { margin: 12px 0 0; padding: 7px 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+
+.nc-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 6px; margin-top: 14px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--fg-1) 10%, transparent); }
+.nc-hint { flex: 1 1 auto; min-width: 0; color: var(--fg-2); font-size: 12px; }
+.nc-actions.has-three .nc-hint { flex-basis: 100%; }
+.nc-quiet, .nc-go {
+  min-height: 34px; padding: 0 12px; border-radius: var(--r-sm); font-size: 13px; cursor: pointer;
+  transition: border-color 130ms ease-out, color 130ms ease-out, background 130ms ease-out;
+}
+/* The other answer: words only. It is always there and never loud. */
+.nc-quiet { border: 1px solid transparent; background: transparent; color: var(--fg-1); }
+/* The one primary answer: the decision colour as a tint under its own
+   outline (HandoverCards.css `.handover-go`), never a solid fill. */
+.nc-go { border: 1px solid var(--decide); background: color-mix(in srgb, var(--decide) 18%, var(--bg-1)); color: var(--fg-0); font-weight: 600; }
+@media (hover: hover) {
+  .nc-quiet:hover { background: color-mix(in srgb, var(--fg-1) 8%, transparent); color: var(--fg-0); }
+  .nc-go:not([aria-disabled="true"]):hover { background: color-mix(in srgb, var(--decide) 28%, var(--bg-1)); }
+}
+/* Off because what it would send cannot be shown whole. It keeps its place
+   and its words; the sentence above says why. */
+.nc-go[aria-disabled="true"], .nc-quiet[aria-disabled="true"] { border-color: var(--border); background: var(--bg-2); color: var(--fg-1); font-weight: 400; opacity: 0.5; cursor: not-allowed; }
+
+@media (max-width: 640px), (pointer: coarse) {
+  .nc { padding: 14px; }
+  .nc-env { min-height: 44px; }
+  .nc-quiet, .nc-go { min-height: 44px; }
+  .nc-hint { flex-basis: 100%; }
+  .nc-actions > button { flex: 1 1 auto; }
+}
+
+/* ---- What a settled card leaves, and the new chat ----------------------- */
+.line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; color: var(--fg-1); font-size: 12.5px; }
+.line-what { display: inline-flex; align-items: center; gap: 8px; min-width: 0; min-height: 26px; }
+.line.is-quiet { color: var(--fg-2); }
+.line-mark { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-3); flex: 0 0 auto; }
+.line-btn { display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 4px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-2); font-size: 12px; cursor: pointer; }
+@media (hover: hover) { .line-btn:hover { color: var(--fg-0); } }
+.view-in { animation: enter-fade var(--enter-duration) var(--enter-ease); }
+@keyframes enter-fade { from { opacity: 0; } }
+.ghost { position: fixed; z-index: 10; margin: 0; pointer-events: none; transform-origin: 0 0; will-change: transform; }
+.is-landing { visibility: hidden; }
+
+/* ---- Notes -------------------------------------------------------------- */
+.notes { display: grid; gap: 22px; min-width: 0; }
+.notes h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; color: var(--fg-0); }
+.notes p, .notes li { margin: 0; font-size: 13px; line-height: 1.6; color: var(--fg-1); overflow-wrap: anywhere; }
+.notes ul, .notes ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.notes code { font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: 5px; background: color-mix(in srgb, var(--fg-1) 9%, transparent); overflow-wrap: anywhere; }
+.panel { padding: 16px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1); min-width: 0; display: grid; gap: 12px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+.tag { display: inline-block; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: var(--r-pill); font-size: 11px; color: var(--fg-2); vertical-align: 1px; }
+
+.hue-bar { position: relative; height: 22px; border-radius: 6px; }
+.hue-band { position: absolute; top: -3px; bottom: -3px; border: 1.5px solid var(--fg-0); border-radius: 4px;
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--bg-0) 78%, transparent) 0 4px, transparent 4px 8px); }
+.hue-bar, .hue-axis { margin-right: 32px; }
+.hue-axis { position: relative; height: 44px; font-size: 11px; color: var(--fg-2); }
+/* A tick's words start at its mark, so the first one cannot leave the page. */
+.hue-tick { position: absolute; top: 4px; white-space: nowrap; line-height: 1.3; padding-left: 4px; border-left: 1px solid var(--fg-2); }
+.hue-tick.is-low { top: 22px; }
+.pairs { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+.pair { display: grid; justify-items: start; gap: 4px; min-width: 0; }
+.pair-faces { display: inline-flex; align-items: center; gap: 8px; }
+.pair-arrow { color: var(--fg-3); }
+.pair small, .rost small { font-size: 11px; color: var(--fg-2); }
+.rost { display: flex; flex-wrap: wrap; gap: 10px 12px; }
+.rost > span { display: inline-flex; align-items: center; gap: 6px; }
+pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-sunken); color: var(--fg-1); font-family: var(--mono); font-size: 11.5px; line-height: 1.55; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  .av.is-working::after { animation: none; opacity: 0.6; }
+}
+</style>
+</head>
+<body>
+
+<header class="mock-bar">
+  <h1>名片式路由卡 / 交接卡 · 样稿<small>静态样稿，不接后端。卡片里的英文是产品文案，其余中文是样稿自己的说明。</small></h1>
+  <div class="seg" role="group" aria-label="卡片">
+    <span class="seg-label">卡片</span>
+    <button type="button" data-set="card" data-value="route">路由卡</button>
+    <button type="button" data-set="card" data-value="handover">交接卡</button>
+  </div>
+  <div class="seg" role="group" aria-label="状态">
+    <span class="seg-label">状态</span>
+    <button type="button" data-set="state" data-value="1">1 等待·折叠</button>
+    <button type="button" data-set="state" data-value="2">2 等待·展开</button>
+    <button type="button" data-set="state" data-value="3">3 正在打开</button>
+    <button type="button" data-set="state" data-value="4">4 打开失败</button>
+    <button type="button" data-set="state" data-value="5">5 内容太长</button>
+    <button type="button" data-set="state" data-value="6">6 文件+未传递</button>
+  </div>
+  <div class="seg" role="group" aria-label="标题">
+    <span class="seg-label">标题</span>
+    <button type="button" data-set="title" data-value="name">名字</button>
+    <button type="button" data-set="title" data-value="question">问句</button>
+  </div>
+  <div class="seg" role="group" aria-label="主题">
+    <span class="seg-label">主题</span>
+    <button type="button" data-set="theme" data-value="dark">深色</button>
+    <button type="button" data-set="theme" data-value="light">浅色</button>
+  </div>
+  <button type="button" class="mock-btn" id="reset">重置</button>
+</header>
+<p class="mock-note" id="mock-note" role="status"></p>
+
+<main>
+  <section class="frame" aria-label="应用的示意画面">
+    <div class="topbar">
+      <svg class="topbar-nav" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      <span class="topbar-chat" id="topbar-chat"></span>
+    </div>
+    <div class="scroller" id="scroller">
+      <div class="column" id="column"></div>
+    </div>
+    <div class="composer">
+      <div class="composer-box">
+        <textarea id="composer-input" rows="1" aria-label="Message"></textarea>
+        <span class="send" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="notes">
+    <div class="panel">
+      <h2>头像身份色：避开警告色段（只是建议，没有改代码）</h2>
+      <p>现在的 <code>personaHue</code>（<code>web/src/lib/agentPersona.ts:90</code>）是 <code>hash % 360</code>，整圈色相都会用到。头像的饱和度和亮度是固定的（<code>hsl(h 62% 52%)</code>），所以只要色相落在橙到黄这一段，头像就是琥珀色，和 <code>--warn</code>（深色约 38°，浅色约 45°）读起来一样。下面的名字和色相取自 2026-10-12 的真实名册（按 agent id 算，和页面一致）。</p>
+      <div class="seg" role="group" aria-label="避开的色段">
+        <span class="seg-label">避开</span>
+        <button type="button" data-set="band" data-value="amber">只避开琥珀 10°–80°（你定的范围）</button>
+        <button type="button" data-set="band" data-value="warm">连红色一起 345°–80°（我的建议）</button>
+      </div>
+      <div>
+        <div class="hue-bar" id="hue-bar"></div>
+        <div class="hue-axis" id="hue-axis"></div>
+      </div>
+      <div>
+        <p><strong>会变的头像</strong>（左边现在，右边建议）：</p>
+        <div class="pairs" id="pairs" style="margin-top:8px"></div>
+      </div>
+      <div>
+        <p><strong>其余不变</strong>（<span id="kept-count"></span>）：</p>
+        <div class="rost" id="rost" style="margin-top:8px"></div>
+      </div>
+      <pre class="formula" id="formula"></pre>
+      <p>映射方式：色相没落在这一段的 agent <strong>颜色不动</strong>；落在里面的，按它在这一段里的位置，等比例铺到段外的整圈上，所以仍然是"同一个 agent 永远同一个颜色"，原来挨着的几个也会被拉开。另一种做法是全员重排（<code>80 + hash % 290</code>），分布更均匀，但每个 agent 的颜色都会变一次，我不建议。上面卡片里的头像用的是这里选中的方案。</p>
+      <p>为什么我建议连红色一起避开：只避开琥珀时，WS LEAD 会从 76° 落到 353°，正好是 <code>--danger</code> 的红；名册里本来也有头像贴着这段红。红色头像读起来像"出错"，和琥珀读起来像"警告"是同一个问题。连红色一起避开后，没有头像会落在红或琥珀上。绿（<code>--ok</code>）和青（<code>--decide</code>）没法再避，否则剩下的颜色太少，分不开人。</p>
+    </div>
+
+    <div class="cols">
+      <div class="panel">
+        <h2>需要你定的</h2>
+        <ol>
+          <li><strong>标题用名字还是问句。</strong>我建议<strong>名字</strong>：问句版里名字出现两次（标题和主按钮），而且确认后只有头像能飞过去，名字要在标题栏另外淡入。名字版里"问什么"由主按钮说（<code>Discuss with STAR LEAD</code>），读屏仍然会读出原来的问句。用上面的"标题"切换对比。</li>
+          <li><strong>交接卡确认后去哪。</strong>路由卡确认后页面本来就会跳到新聊天，所以头像和名字飞到新聊天的标题栏。交接卡今天<strong>不跳转</strong>，你留在原聊天，卡片变成一行 <code>Handed over to OCTIQ BE</code>。样稿按今天的行为画：头像和名字缩进那一行。如果你想让交接卡也直接带你去新聊天，那是行为改动，请说一声。</li>
+          <li><strong>要不要连红色也避开。</strong>你只说了避开琥珀。我建议把 <code>--danger</code> 的红也一起避开（345°–80°），理由和对比在上面的头像色一栏，点"连红色一起"看效果。</li>
+        </ol>
+      </div>
+      <div class="panel">
+        <h2>文案：改了什么（都标在这里，没有悄悄改）</h2>
+        <ul>
+          <li><span class="tag">保留</span> 所有按钮和提示句：<code>Cancel</code>、<code>Discuss with …</code>、<code>Open chat with …</code>、<code>Keep it here</code>、<code>Hand over to …</code>、<code>Try again</code>、<code>Give up</code>、<code>Discuss only (read-only)</code>、<code>Nothing opens until you choose</code>、<code>Nothing starts until you choose</code>、<code>Opening the chat.</code>、<code>Starting the new chat.</code>、失败后的三句提示、太长的那句说明、<code>Not passed on: …</code>。</li>
+          <li><span class="tag">建议</span> 信封行我写的是 <code>Brief · 511 characters · Exact first message · 5 lines</code>，没有用任务里的 <code>Brief · 511 characters · 5 lines</code>。511 个字符是简报，5 行是"发出去的第一条消息"，是两段不同的文字；合成一个标签就等于把第二段的名字藏了，违反"折叠的部分保留标签和大小"。</li>
+          <li><span class="tag">新</span> 事实句：<code>Read-only discussion · starfall</code>、<code>New chat · starfall · new worktree</code>；交接卡 <code>Takes over this task · octiq-flow</code> 和 <code>Continues on &lt;branch&gt; · uncommitted changes travel with it</code>（原来是 To / Where / Changes 三行）。</li>
+          <li><span class="tag">新</span> 文件写成一句：<code>With 3 files: a, b, c</code>（原来是 <code>Files</code> 标签加三个 chip）。</li>
+          <li><span class="tag">新</span> 交接卡的"内容太长"状态：今天的交接卡没有这个状态，只有路由卡有。样稿按同一句式写了 <code>This brief is too long to show in full (…), so it cannot be handed over from here. Keep it here and ask for a shorter one.</code></li>
+          <li><span class="tag">改</span> <code>Not passed on</code> 从 <code>--danger</code> 红改成 <code>--warn</code> 琥珀，加一个警告图标。它是整张卡上唯一的琥珀色。</li>
+          <li><span class="tag">新</span> 展开后多一行 <code>Opens in ~/03-projects/Starfall</code>：路径平时只在项目名的 tooltip 里，手机没有悬停，所以展开的内容里必须有完整的一份。</li>
+          <li>状态 4 里的红色错误句是我编的示例，真实的句子由后端给。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>样稿守住的规则</h2>
+      <ul>
+        <li>等你决定用 <code>--decide</code>（边框、淡底、主按钮），不用 <code>--accent</code>，不用琥珀。输入框的发送键是 Claude 的模型色，放在旁边正好看出区别。</li>
+        <li>信封行是卡上唯一的展开控件，折叠时只写标签和大小，不露正文的任何一截。展开后是全文，在卡片里滚动。</li>
+        <li>控件在它打开的内容上方，内容在按钮上方。卡片贴着输入框向上长，展开或收起后指针下面都不是按钮；另外照 <code>lib/pressGuard</code> 的做法，按过信封后 700 毫秒内、8 像素内落在别处的重复按压会被丢掉。</li>
+        <li><code>Cancel</code> / <code>Keep it here</code> 在等待状态下永远可按。内容太长时主按钮关着但留在原位（<code>aria-disabled</code>），说明句以正文的强度站在信封的位置。</li>
+        <li>动效：展开 200ms，确认后头像和名字 200ms 飞到标题，都是 ease-out、不回弹；"正在打开"时只有头像外圈在呼吸。系统开了"减少动态效果"时全部直接到位。</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- Avatar colour ----------------------------------------------------
+  // [name, hash]: the app's own hash of each agent's id (agentPersona.ts
+  // `personaHue`, before its `% 360`), from the roster on 2026-10-12.
+  var ROSTER = [["Potato Juice",4096662720],["OCTIQ BE",3517572383],["PERF LEAD",257198667],["PERF FE",3029488189],["PERF FE QC",3683307109],["PERF BE",40123985],["PERF BE QC",2474397496],["OCTIQ DEV BACKUP",1506905960],["STAR STORY",4189067744],["STAR MUSIC",3971203626],["STAR VIDEO",4219658498],["STAR YT",1312869866],["WS LEAD",1365578356],["WS FE",1084825579],["WS BE",3990971980],["APP LEAD",1196050932],["APP DEV",1672280581],["LEAVE LEAD",3113615648],["LEAVE FE",3791242014],["LEAVE BE",802577421],["WS QC",302326397],["LEAVE QC",4208607781],["APP QC",3342701760],["HRMS HEAD",1935423665],["OCTIQ HEAD",3289798706],["STAR SOCIAL",4206188686],["WEB DEV",640797743],["STAR CANON",2928899491],["Front desk",3109799075],["STAR LEAD",3145708459],["STAR DEV",2342730338],["NAS OPS",1401362549],["OCTIQ FE",300384701],["STAR QA",336622497]];
+  var BANDS = { amber: [10, 80], warm: [345, 80] };
+  function inBand(h, band) { return band[0] < band[1] ? (h >= band[0] && h < band[1]) : (h >= band[0] || h < band[1]); }
+  function bandWidth(band) { return (band[1] - band[0] + 360) % 360; }
+  function hueNow(hash) { return hash % 360; }
+  /** Unchanged outside the band. Inside it, the hue's place along the band
+   *  is its place along the rest of the wheel: the band is stretched over
+   *  everything that is not the band. */
+  function hueNext(hash, band) {
+    var h = hash % 360;
+    if (!inBand(h, band)) return h;
+    var width = bandWidth(band);
+    var along = (h - band[0] + 360) % 360;
+    return Math.round(band[1] + along * (360 - width) / width) % 360;
+  }
+  function hashOf(name) { for (var i = 0; i < ROSTER.length; i++) if (ROSTER[i][0] === name) return ROSTER[i][1]; return 0; }
+  function initials(name) {
+    var words = name.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return "?";
+    var letters = words.length === 1 ? Array.from(words[0]).slice(0, 2) : [Array.from(words[0])[0], Array.from(words[words.length - 1])[0]];
+    return letters.join("").toUpperCase();
+  }
+  function esc(text) { return String(text).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function avatar(name, size, hue, extra) {
+    return '<span class="av ' + (extra || "") + '" style="--size:' + size + "px;--hue:" + hue + '" aria-hidden="true">' + esc(initials(name)) + "</span>";
+  }
+
+  // ---- Sample content ---------------------------------------------------
+  var BRIEF = "The person wants to talk through the Starfall season 2 release plan before any work is assigned. They are weighing two options: ship all eight episodes weekly starting November, or hold episodes 5 to 8 until the music for the finale is re-recorded. They want your read on which option protects the canon timeline, what each one costs STAR MUSIC and STAR VIDEO in rework, and whether the trailer should move. This is a discussion only: nothing is to be changed, scheduled or handed to a report until they say so.";
+  var MESSAGE = [
+    "[Routed by Front desk · discussion, read-only]",
+    "Project: starfall (~/03-projects/Starfall)",
+    "Brief: " + BRIEF,
+    "Attached: none",
+    "Do not change files, schedule work or message your reports until the person says so.",
+  ].join("\n");
+  var HANDOVER = {
+    objective: "Wire the server half of the name-card cards: the route record needs the agent's avatar and the settings line as the page now draws them.",
+    done: "The page side is finished and reviewed.\nRouteCard and SourceCard read `settingsLine` and no longer draw chips.",
+    remaining: "Add `avatar` to the route record in handover.rs.\nKeep the hook's refusal for workers by durable identity.\nRecord the host fixtures again.",
+    decisions: "The folder is no longer on the card: it is in the tooltip and in the opened brief.\nThe unreadable-file line is a warning now, not an error.",
+    questions: "Should a settled route keep the avatar in its line?",
+    authorized: ["Go ahead and change the route record", "Re-record the fixtures when you are done"],
+    notAuthorized: ["Pushing or restarting the server"],
+    path: "~/03-projects/octiq-flow", head: "b50999d", branch: "feature/handover-namecard",
+  };
+  function chars(text) { return Array.from(text.trim()).length; }
+  function lines(text) { return text.split("\n").filter(function (l) { return l.trim(); }).length; }
+  function count(n, noun) { return n.toLocaleString("en-US") + " " + noun + (n === 1 ? "" : "s"); }
+  /** `cardFold.sizeLabel`: lines when there are several, else characters. */
+  function sizeLabel(text) { return lines(text) > 1 ? count(lines(text), "line") : count(chars(text), "character"); }
+
+  // ---- The page's state -------------------------------------------------
+  var S = { card: "route", state: "1", title: "name", theme: "dark", band: "amber" };
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+  var timers = [];
+  function later(fn, ms) { timers.push(setTimeout(fn, reduce.matches ? 0 : ms)); }
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+  var $ = function (id) { return document.getElementById(id); };
+  function note(text) { $("mock-note").textContent = text; }
+
+  /** What one card says in one state. Every string a card shows is here. */
+  function model() {
+    var st = S.state, route = S.card === "route";
+    var to = route ? "STAR LEAD" : "OCTIQ BE";
+    var m = { route: route, to: to, hue: hueNext(hashOf(to), BANDS[S.band]), status: st === "3" || st === "4" ? "starting" : "pending" };
+    m.failed = st === "4";
+    m.waiting = m.status === "pending" || m.failed;
+    if (route) {
+      var discuss = st !== "4" && st !== "6";
+      m.discuss = discuss;
+      m.place = { name: "starfall", path: "~/03-projects/Starfall" };
+      m.facts = [(discuss ? "Read-only discussion · " : "New chat · ") + "{place}" + (st === "6" ? " · new worktree" : "")];
+      m.settings = "Opus latest · high · " + (discuss ? "Plan" : "Edits");
+      m.question = m.status === "starting"
+        ? (m.failed ? "STAR LEAD's chat did not start" : "Opening a chat with STAR LEAD…")
+        : (discuss ? "Discuss with STAR LEAD?" : "Open a chat with STAR LEAD?");
+      m.envelope = ["Brief · " + sizeLabel(BRIEF), "Exact first message · " + sizeLabel(MESSAGE)];
+      m.body = '<div class="nc-sec"><h4>Brief <span>· from Front desk</span></h4><p>' + esc(BRIEF) + "</p></div>"
+        + '<div class="nc-sec"><h4>Exact first message</h4><pre class="nc-message">' + esc(MESSAGE) + "</pre></div>"
+        + '<div class="nc-sec"><h4>Opens in</h4><p class="mono">' + esc(m.place.path) + "</p></div>";
+      if (st === "5") m.over = "This first message is too long to show in full (5,204,118 characters), so it cannot be sent from here. Cancel it and ask for a shorter one.";
+      if (st === "6") {
+        m.files = ["season-2-outline.md", "release-calendar.csv", "trailer-notes.md"];
+        m.unreadable = ["Not passed on: budget-2026.xlsx (not a file the person attached in OctiqFlow)"];
+      }
+      if (m.status === "pending") {
+        m.hint = "Nothing opens until you choose";
+        m.buttons = [{ label: "Cancel", act: "decline" }, { label: discuss ? "Discuss with STAR LEAD" : "Open chat with STAR LEAD", act: "confirm", go: true, off: !!m.over }];
+      } else if (m.failed) {
+        m.error = "Another chat is already working in ~/03-projects/Starfall, so one that can edit was not started.";
+        m.hint = "No chat was opened. Try again, open it read-only to discuss, or give up.";
+        m.buttons = [{ label: "Give up", act: "abandon" }, { label: "Discuss only (read-only)", act: "confirm" }, { label: "Try again", act: "confirm", go: true }];
+      } else { m.hint = "Opening the chat."; m.buttons = []; }
+    } else {
+      m.place = { name: "octiq-flow", path: HANDOVER.path };
+      m.facts = ["Takes over this task · {place}", "Continues on <code>" + esc(HANDOVER.branch) + "</code> · uncommitted changes travel with it"];
+      m.settings = "Sonnet 5.5 · high · Edits";
+      m.question = m.status === "starting"
+        ? (m.failed ? "OCTIQ BE's chat did not start" : "Starting OCTIQ BE's chat…")
+        : "Hand this task to OCTIQ BE?";
+      var n = lines(HANDOVER.objective) + lines(HANDOVER.done) + lines(HANDOVER.remaining) + lines(HANDOVER.decisions) + lines(HANDOVER.questions);
+      m.envelope = ["Brief · " + count(n, "line"), HANDOVER.authorized.length + " said to carry over", HANDOVER.notAuthorized.length + " not authorized", "Checkout"];
+      var sec = function (title, text) { return '<div class="nc-sec"><h4>' + esc(title) + "</h4><p>" + esc(text) + "</p></div>"; };
+      var list = function (title, items, quoted) { return '<div class="nc-sec"><h4>' + esc(title) + "</h4><ul>" + items.map(function (i) { return "<li>" + esc(quoted ? "“" + i + "”" : i) + "</li>"; }).join("") + "</ul>"; };
+      m.body = sec("Objective", HANDOVER.objective) + sec("Done so far", HANDOVER.done) + sec("Remaining", HANDOVER.remaining)
+        + sec("Decisions and gotchas", HANDOVER.decisions) + sec("Open questions", HANDOVER.questions)
+        + list("OCTIQ FE says these carry over", HANDOVER.authorized, true) + '<p class="caveat">The agent\'s words, not a permission: approvals stay with each chat.</p></div>'
+        + list("Not authorized", HANDOVER.notAuthorized) + "</div>"
+        + '<div class="nc-sec"><h4>Checkout</h4><p class="mono">' + esc(HANDOVER.path) + '</p><p class="mono">HEAD ' + esc(HANDOVER.head) + "</p></div>";
+      if (st === "5") m.over = "This brief is too long to show in full (5,204,118 characters), so it cannot be handed over from here. Keep it here and ask for a shorter one.";
+      if (m.status === "pending") {
+        m.hint = "Nothing starts until you choose";
+        m.buttons = [{ label: "Keep it here", act: "decline" }, { label: "Hand over to OCTIQ BE", act: "confirm", go: true, off: !!m.over }];
+      } else if (m.failed) {
+        m.error = "The worktree for feature/handover-namecard could not be prepared: the branch is checked out in another folder.";
+        m.hint = "No chat was started. Try again, or give up and keep the task here.";
+        m.buttons = [{ label: "Give up", act: "abandon" }, { label: "Try again", act: "confirm", go: true }];
+      } else { m.hint = "Starting the new chat."; m.buttons = []; }
+    }
+    return m;
+  }
+
+  var ICON_SHUT = '<svg class="nc-env-icon env-shut" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="m3.5 7 8.5 6.5L20.5 7"/></svg>';
+  var ICON_OPEN = '<svg class="nc-env-icon env-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 4l9 6.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="m3.5 11 8.5 5 8.5-5"/></svg>';
+  var ICON_WARN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 2.5 20h19z"/><path d="M12 10v4.5M12 17.4v.1"/></svg>';
+
+  function cardHtml(m) {
+    var place = '<span class="place" tabindex="0" aria-describedby="place-tip">' + esc(m.place.name) + '<span class="tip" role="tooltip" id="place-tip">' + esc(m.place.path) + "</span></span>";
+    var facts = m.facts.map(function (f) { return '<p class="nc-fact">' + f.replace("{place}", place) + "</p>"; }).join("");
+    var named = S.title === "name";
+    var open = S.state === "2";
+    var html = '<section class="nc ' + (m.waiting ? "is-waiting" : "") + '" id="card" data-status="' + m.status + '" aria-label="' + esc(m.question) + '">';
+    html += '<header class="nc-head">' + avatar(m.to, 44, m.hue, "nc-avatar" + (m.status === "starting" && !m.failed ? " is-working" : ""))
+      + '<div class="nc-who"><h3 class="nc-name" id="card-name">' + esc(named ? m.to : m.question) + "</h3>" + facts
+      + '<p class="nc-settings"><span class="sr">Chat settings: </span>' + esc(m.settings) + "</p></div></header>";
+    if (m.files) html += '<p class="nc-files">With ' + m.files.length + " files: " + m.files.map(function (f) { return "<code>" + esc(f) + "</code>"; }).join(", ") + "</p>";
+    if (m.unreadable) html += '<ul class="nc-warn" role="alert" aria-label="Not passed on">' + m.unreadable.map(function (u) { return "<li>" + ICON_WARN + "<span>" + esc(u) + "</span></li>"; }).join("") + "</ul>";
+    if (m.over) {
+      html += '<p class="nc-over" id="card-over">' + esc(m.over) + "</p>";
+    } else {
+      html += '<button type="button" class="nc-env" id="env" aria-expanded="' + open + '" aria-controls="env-body">' + ICON_SHUT + ICON_OPEN
+        + '<span class="nc-env-labels">' + m.envelope.map(function (l) { return "<span>" + esc(l) + "</span>"; }).join("") + '</span><span class="chevron" aria-hidden="true"></span></button>';
+      html += '<div class="nc-fold' + (open ? " is-open" : "") + '" id="env-body"' + (open ? "" : " hidden") + '><div class="nc-fold-in"><div class="nc-scroll" tabindex="0" role="region" aria-label="The brief">' + m.body + "</div></div></div>";
+    }
+    if (m.error) html += '<p class="nc-error" role="alert">' + esc(m.error) + "</p>";
+    html += '<footer class="nc-actions' + (m.buttons.length > 2 ? " has-three" : "") + '"><span class="nc-hint">' + esc(m.hint) + "</span>";
+    m.buttons.forEach(function (b) {
+      html += '<button type="button" class="' + (b.go ? "nc-go" : "nc-quiet") + '" data-act="' + b.act + '"' + (b.off ? ' aria-disabled="true" aria-describedby="card-over"' : "") + ">" + esc(b.label) + "</button>";
+    });
+    return html + "</footer></section>";
+  }
+
+  /** The chat the card is asked in. */
+  function sourceView() {
+    var m = model();
+    var band = BANDS[S.band];
+    var agent = m.route ? "Front desk" : "OCTIQ FE";
+    $("topbar-chat").innerHTML = '<span class="project-tile" aria-hidden="true">' + (m.route ? "FD" : "O") + "</span><span>" + (m.route ? "Front desk" : "octiq-flow") + "</span>";
+    $("composer-input").placeholder = "Message " + agent + "…";
+    $("column").className = "column";
+    $("column").innerHTML =
+      '<div class="msg-user">' + (m.route
+        ? "I want to talk the season 2 release plan through with STAR LEAD before anyone starts on it."
+        : "The page side is done. Hand the server half to OCTIQ BE.") + "</div>"
+      + '<div class="msg-agent"><div class="msg-role">' + avatar(agent, 18, hueNext(hashOf(agent), band)) + "<span>" + agent + "</span></div><p>"
+      + (m.route ? "STAR LEAD runs Starfall. I have written a brief for a read-only discussion; nothing opens until you confirm it." : "I have written a brief for OCTIQ BE with what is done and what is left. Nothing starts until you confirm it.")
+      + '</p></div><div class="dock" id="dock">' + cardHtml(m) + "</div>";
+  }
+
+  function render() {
+    clearTimers();
+    document.querySelectorAll(".ghost").forEach(function (g) { g.remove(); });
+    if (S.card === "handover" && S.state === "6") S.state = "1";
+    document.documentElement.dataset.theme = S.theme;
+    document.querySelectorAll("[data-set]").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(S[b.dataset.set] === b.dataset.value));
+      if (b.dataset.set === "state" && b.dataset.value === "6") {
+        if (S.card === "handover") { b.setAttribute("aria-disabled", "true"); b.title = "只有路由卡有文件行"; }
+        else { b.removeAttribute("aria-disabled"); b.removeAttribute("title"); }
+      }
+    });
+    sourceView();
+    hues();
+    note("点信封行展开简报；点主按钮看确认后的过渡；点另一个按钮看取消。切换上面的控件会重置。");
+  }
+
+  // ---- The envelope -----------------------------------------------------
+  var lastEnvPress = null;
+  function toggleEnvelope(button) {
+    var fold = $("env-body");
+    var open = button.getAttribute("aria-expanded") !== "true";
+    button.setAttribute("aria-expanded", String(open));
+    if (open) {
+      fold.hidden = false;
+      void fold.offsetHeight;
+      fold.classList.add("is-open");
+    } else {
+      fold.classList.remove("is-open");
+      // Out of the tab order once it has shut: when the row has closed, or
+      // a moment later where no transition ran.
+      var hide = function () { if (!fold.classList.contains("is-open")) fold.hidden = true; };
+      fold.addEventListener("transitionend", hide, { once: true });
+      later(hide, 400);
+    }
+  }
+  /** `lib/pressGuard`: a press that repeats the one on a disclosure, in the
+   *  same spot and landing on anything else, does nothing. */
+  function stray(event) {
+    if (!lastEnvPress || event.detail === 0) return false;
+    return event.timeStamp - lastEnvPress.at < 700 && Math.hypot(event.clientX - lastEnvPress.x, event.clientY - lastEnvPress.y) < 8;
+  }
+
+  // ---- After the answer -------------------------------------------------
+  function rectOf(el) { var r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; }
+  /** One element travels from where it was to where it now is: 200ms, ease
+   *  out, no overshoot. The landing place stays unseen until it arrives. */
+  function travel(from, clone, to) {
+    if (!from || !to) return;
+    if (reduce.matches) return;
+    var end = rectOf(to);
+    var ghost = clone;
+    ghost.classList.add("ghost");
+    ghost.removeAttribute("id");
+    ghost.style.left = from.x + "px"; ghost.style.top = from.y + "px";
+    ghost.style.width = from.w + "px";
+    document.body.appendChild(ghost);
+    to.classList.add("is-landing");
+    // Words shrink by their type size, a face by its box; either way it
+    // arrives centred on the line it lands in.
+    var scale = from.font ? parseFloat(getComputedStyle(to).fontSize) / from.font : end.h / from.h;
+    var dy = end.y + end.h / 2 - (from.h * scale) / 2 - from.y;
+    var done = function () { ghost.remove(); to.classList.remove("is-landing"); };
+    var run = ghost.animate(
+      [{ transform: "translate(0, 0) scale(1)" }, { transform: "translate(" + (end.x - from.x) + "px, " + dy + "px) scale(" + scale + ")" }],
+      { duration: 200, easing: "cubic-bezier(0.33, 1, 0.68, 1)", fill: "forwards" });
+    run.onfinish = done; run.oncancel = done;
+  }
+  function identity() {
+    var av = document.querySelector("#card .nc-avatar"), name = $("card-name");
+    if (!av || !name) return null;
+    av.classList.remove("is-working");
+    // The name's own box is as wide as the card; its words are not.
+    var range = document.createRange(); range.selectNodeContents(name);
+    var words = range.getBoundingClientRect();
+    return {
+      av: rectOf(av), avClone: av.cloneNode(true),
+      name: { x: words.left, y: words.top, w: words.width + 2, h: words.height, font: parseFloat(getComputedStyle(name).fontSize) },
+      nameClone: name.cloneNode(true),
+    };
+  }
+
+  function land(m) {
+    var from = identity();
+    var named = S.title === "name";
+    if (m.route) {
+      // The page goes to the chat it opened: the face and the name become
+      // its title.
+      $("topbar-chat").innerHTML = avatar(m.to, 24, m.hue, "land-av") + '<span id="land-name">' + esc(m.to) + '</span><span class="dim">· ' + esc(m.place.name) + (m.discuss ? " · read-only" : "") + "</span>";
+      $("composer-input").placeholder = "Message " + m.to + "…";
+      $("column").className = "column view-in";
+      $("column").innerHTML = '<div class="msg-user">' + esc(BRIEF) + "</div>"
+        + '<div class="msg-agent"><div class="msg-role">' + avatar(m.to, 18, m.hue, "is-working") + "<span>" + esc(m.to) + " is working</span></div></div>";
+      note("（样稿）页面去了新聊天：头像和名字成了标题。点「重置」再看一次。");
+      if (from) {
+        travel(from.av, from.avClone, document.querySelector(".land-av"));
+        if (named) travel(from.name, from.nameClone, $("land-name"));
+      }
+      $("composer-input").focus({ preventScroll: true });
+    } else {
+      // The page stays: the card becomes the line it leaves where it was asked.
+      $("dock").outerHTML = '<div class="line" id="settled"><span class="line-what">' + avatar(m.to, 16, m.hue, "land-av")
+        + '<span>Handed over to <bdi id="land-name">' + esc(m.to) + '</bdi></span></span>'
+        + '<button type="button" class="line-btn" data-inert>Brief <span class="chevron" aria-hidden="true"></span></button>'
+        + '<button type="button" class="line-btn" data-inert id="open-chat">Open ' + esc(m.to) + "'s chat</button></div>";
+      note("（样稿）你留在原聊天：卡片变成一行，头像和名字缩进这一行。点「重置」再看一次。");
+      if (from) {
+        travel(from.av, from.avClone, document.querySelector(".land-av"));
+        if (named) travel(from.name, from.nameClone, $("land-name"));
+      }
+      $("open-chat").focus({ preventScroll: true });
+    }
+  }
+
+  function act(kind) {
+    var m = model();
+    if (kind === "confirm") {
+      // Chosen: the card says it is on its way, then the chat is there.
+      if (m.status === "pending" || m.failed) {
+        S.state = "3";
+        document.querySelectorAll('[data-set="state"]').forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.value === "3")); });
+        $("dock").innerHTML = cardHtml(model());
+        $("card").tabIndex = -1; $("card").focus({ preventScroll: true });
+        note("（样稿）已确认，正在打开…");
+        later(function () { land(model()); }, 900);
+      }
+      return;
+    }
+    var words = m.route ? "" : (kind === "abandon" ? "Kept here: OCTIQ BE's chat could not start" : "Kept here: handover to OCTIQ BE declined");
+    $("dock").outerHTML = words ? '<div class="line is-quiet"><span class="line-what"><span class="line-mark" aria-hidden="true"></span><span>' + esc(words) + "</span></span></div>" : "";
+    note(m.route ? "（样稿）已取消：卡片撤走，什么都没打开。点「重置」再看。" : "（样稿）任务留在这里：卡片变成一行安静的记录。点「重置」再看。");
+    $("composer-input").focus({ preventScroll: true });
+  }
+
+  // ---- The colour comparison --------------------------------------------
+  function hues() {
+    var band = BANDS[S.band];
+    var stops = [];
+    for (var h = 0; h <= 360; h += 15) stops.push("hsl(" + h + " 62% 52%) " + (h / 3.6).toFixed(2) + "%");
+    var bar = $("hue-bar");
+    bar.style.background = "linear-gradient(to right, " + stops.join(", ") + ")";
+    var parts = band[0] < band[1] ? [[band[0], band[1]]] : [[band[0], 360], [0, band[1]]];
+    bar.innerHTML = parts.map(function (p) { return '<span class="hue-band" style="left:' + (p[0] / 3.6) + "%;width:" + ((p[1] - p[0]) / 3.6) + '%"></span>'; }).join("");
+    var ticks = [[0, "--danger 0°", 1], [38, "--warn 38°", 0], [143, "--ok 143°", 0], [191, "--decide 191°", 1], [354, "354°", 0]];
+    $("hue-axis").innerHTML = ticks.map(function (t) { return '<span class="hue-tick' + (t[2] ? " is-low" : "") + '" style="left:' + (t[0] / 3.6) + '%">' + t[1] + "</span>"; }).join("");
+    var moved = [], kept = [];
+    ROSTER.forEach(function (r) { (inBand(hueNow(r[1]), band) ? moved : kept).push(r); });
+    $("pairs").innerHTML = moved.map(function (r) {
+      var a = hueNow(r[1]), b = hueNext(r[1], band);
+      return '<span class="pair"><span class="pair-faces">' + avatar(r[0], 36, a) + '<span class="pair-arrow" aria-hidden="true">→</span>' + avatar(r[0], 36, b) + "</span><small>" + esc(r[0]) + " · " + a + "° → " + b + "°</small></span>";
+    }).join("");
+    $("kept-count").textContent = kept.length + " 个，共 " + ROSTER.length + " 个";
+    $("rost").innerHTML = kept.map(function (r) { return "<span>" + avatar(r[0], 24, hueNow(r[1])) + "<small>" + esc(r[0]) + "</small></span>"; }).join("");
+    var w = 360 - bandWidth(band);
+    $("formula").textContent =
+      "// 现在\nhue = hash % 360\n\n// 建议：避开 " + band[0] + "°–" + band[1] + "°（" + bandWidth(band) + "° 宽，剩 " + w + "°）\n"
+      + "h = hash % 360\nalong = (h - " + band[0] + " + 360) % 360   // how far into the band\n"
+      + "hue = inBand(h) ? round(" + band[1] + " + along * " + w + " / " + bandWidth(band) + ") % 360 : h";
+  }
+
+  // ---- Wiring -------------------------------------------------------------
+  document.addEventListener("pointerdown", function (event) {
+    var env = event.target.closest && event.target.closest("#env");
+    lastEnvPress = env ? { at: event.timeStamp, x: event.clientX, y: event.clientY } : lastEnvPress;
+  });
+  document.addEventListener("click", function (event) {
+    var t = event.target.closest("button");
+    if (!t) return;
+    if (t.id === "env") { toggleEnvelope(t); return; }
+    if (t.dataset.set) {
+      if (t.getAttribute("aria-disabled") === "true") return;
+      S[t.dataset.set] = t.dataset.value;
+      render();
+      return;
+    }
+    if (t.id === "reset") { if (S.state === "3") S.state = "1"; render(); return; }
+    if (t.dataset.act) {
+      if (stray(event)) return;
+      if (t.getAttribute("aria-disabled") === "true") return;
+      act(t.dataset.act);
+      return;
+    }
+    if (t.hasAttribute("data-inert")) note("（样稿）这个按钮没有接线：它是今天已有的那一行。");
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && document.activeElement && document.activeElement.classList.contains("place")) document.activeElement.blur();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
