@@ -47,12 +47,29 @@ fn octiqflow_dir() -> Option<PathBuf> {
 pub struct Pinned {
     /// `<base>/<active>/`, made if it was not there.
     pub dir: PathBuf,
+    /// The same folder with every link in its path resolved, as it was at
+    /// startup: the other spelling a path in the profile can come under (a
+    /// vault's folder is kept resolved). `dir` when it could not be asked.
+    pub real: PathBuf,
     /// The configured base, when it could not be reached at startup and the
     /// default base is in use in its place.
     pub fallback_from: Option<PathBuf>,
 }
 
 impl Pinned {
+    /// The profile folder as `path` names it and what is below it, when
+    /// `path` is the profile folder or lies in it, under either spelling.
+    fn holds<'a>(&self, path: &'a Path) -> Option<(&Path, &'a Path)> {
+        [&self.dir, &self.real]
+            .into_iter()
+            .find_map(|root| Some((root.as_path(), path.strip_prefix(root).ok()?)))
+    }
+
+    /// Why the profile folder cannot be used right now, if it cannot.
+    fn missing(&self) -> Option<String> {
+        (!self.dir.is_dir()).then(|| gone(&self.dir))
+    }
+
     /// What the person is told when the folder in use is not the one their
     /// config names. `None` on the configured base.
     pub fn notice(&self) -> Option<String> {
@@ -72,8 +89,11 @@ impl Pinned {
 fn resolve() -> Pinned {
     let cfg = load_config();
     let dir = PathBuf::from(&cfg.base).join(&cfg.active);
+    let real = |dir: &Path| crate::paths::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    // The only two places the profile folder is ever made.
     if fs::create_dir_all(&dir).is_ok() {
         return Pinned {
+            real: real(&dir),
             dir,
             fallback_from: None,
         };
@@ -84,6 +104,7 @@ fn resolve() -> Pinned {
     let _ = fs::create_dir_all(&fallback);
     Pinned {
         fallback_from: (fallback != dir).then(|| PathBuf::from(&cfg.base)),
+        real: real(&fallback),
         dir: fallback,
     }
 }
@@ -180,9 +201,13 @@ fn tests_pin() -> Pinned {
             pinned
         }
         None => SHARED
-            .get_or_init(|| Pinned {
-                dir: crate::test_dir::TestDir::new("test-profile").remove_at_exit(),
-                fallback_from: None,
+            .get_or_init(|| {
+                let dir = crate::test_dir::TestDir::new("test-profile").remove_at_exit();
+                Pinned {
+                    real: crate::paths::canonicalize(&dir).unwrap_or_else(|_| dir.clone()),
+                    dir,
+                    fallback_from: None,
+                }
             })
             .clone(),
     }
@@ -239,6 +264,8 @@ pub fn load_config() -> ProfileConfig {
 pub fn save_config(cfg: &ProfileConfig) -> Result<(), String> {
     let path = config_path().ok_or("could not resolve your home folder")?;
     if let Some(dir) = path.parent() {
+        // Not through `create_dir_all` above: this runs while the profile
+        // folder is being resolved, and `~/.octiqflow` is never inside it.
         let _ = fs::create_dir_all(dir);
     }
     let raw = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
@@ -286,30 +313,73 @@ fn gone(dir: &Path) -> String {
     )
 }
 
-/// `create_dir_all` for a folder a store is about to write into, with one
-/// difference: the profile folder itself is never made again after startup.
-/// A store that made its parent folder on every save would otherwise put an
-/// empty profile where the real one was unplugged from, and go on writing
-/// into it. Anything outside the profile folder is made as before.
+/// **The one door a folder is made through, anywhere in the host.** It is
+/// `fs::create_dir_all` with one difference: nothing it does makes the
+/// profile folder. After startup that folder is only ever found, never
+/// made: an empty profile put where the real one was unplugged from would
+/// be written into, and the chats, roster and ledger of the real one forked.
+///
+/// The rule is in the filesystem, not in a look followed by a create. For
+/// a path in the profile, only the folders BELOW the profile folder are
+/// made, one `create_dir` each, starting from the profile folder: with that
+/// folder gone the first of them fails, whenever it went. The older form
+/// asked `is_dir` and then made the folder and its parents, and a profile
+/// that went between the two was made again.
+///
+/// No module calls the standard library's own (`tests::
+/// no_module_makes_a_folder_but_through_the_profile`): whether a path can
+/// lie in the profile is not for each caller to judge. A vault, a project,
+/// the attachments folder or `~/.octiqflow/mcp` is inside it on a machine
+/// whose profile base is set that way.
+pub fn create_dir_all(dir: &Path) -> std::io::Result<()> {
+    with_pinned(|pinned| {
+        let Some((root, below)) = pinned.holds(dir) else {
+            return fs::create_dir_all(dir);
+        };
+        let gone = |error: std::io::Error| match pinned.missing() {
+            Some(why) => std::io::Error::other(why),
+            None => error,
+        };
+        let mut at = root.to_path_buf();
+        for part in below.components() {
+            let std::path::Component::Normal(name) = part else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "{} is not a plain path in the profile folder",
+                        dir.display()
+                    ),
+                ));
+            };
+            at.push(name);
+            match fs::create_dir(&at) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && at.is_dir() => {}
+                Err(error) => return Err(gone(error)),
+            }
+        }
+        // Nothing was made, so nothing has said the profile folder is there.
+        match pinned.missing() {
+            Some(why) => Err(std::io::Error::other(why)),
+            None => Ok(()),
+        }
+    })
+}
+
+/// `create_dir_all` for a store about to write into `dir`, in words: the
+/// profile's one sentence when the folder is gone, else the system's own.
 pub fn make_dir(dir: &Path) -> Result<(), String> {
-    let missing = with_pinned(|pinned| {
-        (dir.starts_with(&pinned.dir) && !pinned.dir.is_dir()).then(|| gone(&pinned.dir))
-    });
-    match missing {
-        Some(why) => Err(why),
-        None => fs::create_dir_all(dir).map_err(|e| e.to_string()),
-    }
+    create_dir_all(dir).map_err(|e| e.to_string())
 }
 
 /// Why a write to `path` failed, for the person: the words of `available`
 /// when the cause is that the profile folder is gone, else the system's own.
 pub fn write_error(path: &Path, error: std::io::Error) -> String {
     with_pinned(|pinned| {
-        if path.starts_with(&pinned.dir) && !pinned.dir.is_dir() {
-            gone(&pinned.dir)
-        } else {
-            error.to_string()
-        }
+        pinned
+            .holds(path)
+            .and_then(|_| pinned.missing())
+            .unwrap_or_else(|| error.to_string())
     })
 }
 
@@ -636,8 +706,8 @@ pub(crate) mod tests {
         const ALLOWED: &[(&str, usize, &str)] = &[
             (
                 "profile.rs",
-                4,
-                "the profile folder at startup (configured, then the default base), and the two halves of the one door: outside the profile, and one folder at a time below it",
+                5,
+                "the profile folder at startup (configured, then the default base), ~/.octiqflow for the bootstrap pointer, which is read while the folder is being resolved, and the two halves of the one door: outside the profile, and one folder at a time below it",
             ),
             (
                 "bin/octiq.rs",

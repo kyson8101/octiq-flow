@@ -323,7 +323,7 @@ fn load() -> Store {
 fn save(store: &Store) {
     let Some(path) = store_path() else { return };
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        let _ = crate::profile::create_dir_all(parent);
     }
     if let Ok(raw) = serde_json::to_string_pretty(store) {
         let _ = fs::write(&path, raw);

@@ -78,7 +78,15 @@ function readSource(source, maxBytes) {
 
 function publish(args, root, chatKey, bytes, extension, kind) {
   const dir = path.join(root, "previews", chatKey.slice(5));
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Only the two folders below the profile folder are made, one at a time.
+  // The profile folder itself is never made here: made with its parents, a
+  // profile that had gone (its drive, or the folder moved) came back empty.
+  for (const folder of [path.dirname(dir), dir]) {
+    try { fs.mkdirSync(folder, { mode: 0o700 }); } catch (error) {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") throw new Error(`The profile folder ${root} is not available right now, so the preview was not saved. Bring the folder back and try again.`);
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
   // Do not follow a conversation directory redirected outside the profile.
   if (fs.realpathSync(dir) !== path.join(fs.realpathSync(root), "previews", chatKey.slice(5))) throw new Error("Preview directory must not be a symlink.");
   const id = randomUUID();

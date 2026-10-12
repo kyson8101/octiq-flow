@@ -255,7 +255,7 @@ impl Vault {
 
     fn save_receipt(&self, receipt: &Receipt) -> Result<(), String> {
         let path = self.receipt_path(&receipt.id)?;
-        fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        crate::profile::make_dir(path.parent().unwrap())?;
         atomic_write(
             &path,
             &serde_json::to_vec_pretty(receipt).map_err(|e| e.to_string())?,
@@ -453,14 +453,14 @@ impl Vault {
             }
             if let Some(dest) = &receipt.destination {
                 let target = confined(root, dest, true, action == "archive")?;
-                fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+                crate::profile::make_dir(target.parent().unwrap())?;
                 confined(root, dest, true, action == "archive")?;
                 // Hard-link first to make destination creation no-clobber, then remove
                 // the source. An interrupted move remains visible in the receipt.
                 fs::hard_link(&source, &target).map_err(|e| e.to_string())?;
                 fs::remove_file(&source).map_err(|e| e.to_string())?;
             } else {
-                fs::create_dir_all(source.parent().unwrap()).map_err(|e| e.to_string())?;
+                crate::profile::make_dir(source.parent().unwrap())?;
                 confined(root, relative, true, false)?;
                 atomic_write(&source, after.as_bytes(), creating)?;
             }

@@ -6718,7 +6718,7 @@ pub(crate) fn attachments_dir() -> Result<std::path::PathBuf, String> {
         .ok_or("could not find your home folder")?
         .join(".octiqflow")
         .join("attachments");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("could not make {dir:?}: {e}"))?;
+    crate::profile::create_dir_all(&dir).map_err(|e| format!("could not make {dir:?}: {e}"))?;
     Ok(dir)
 }
 

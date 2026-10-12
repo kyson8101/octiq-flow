@@ -240,7 +240,7 @@ fn ensure_folder(path: &str) -> Result<(), String> {
     if target.exists() {
         return Err(format!("{path} is not a folder"));
     }
-    fs::create_dir_all(target).map_err(|e| format!("could not create {path}: {e}"))
+    crate::profile::create_dir_all(target).map_err(|e| format!("could not create {path}: {e}"))
 }
 
 /// A workspace label said as an address — the browser puts this in the chat

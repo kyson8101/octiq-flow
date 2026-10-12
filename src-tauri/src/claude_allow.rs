@@ -846,7 +846,8 @@ fn merge_into(
     rules: &[String],
     backup: Option<&Path>,
 ) -> Result<Added, String> {
-    fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+    crate::profile::create_dir_all(parent)
+        .map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
     let real_parent = parent
         .canonical()
         .map_err(|e| format!("Cannot resolve {}: {e}", parent.display()))?;
@@ -881,7 +882,7 @@ fn merge_into(
         if !backup.exists() {
             backup
                 .parent()
-                .map_or(Ok(()), fs::create_dir_all)
+                .map_or(Ok(()), crate::profile::create_dir_all)
                 .and_then(|()| fs::write(backup, original))
                 .map_err(|e| {
                     format!(

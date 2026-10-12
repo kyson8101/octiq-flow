@@ -814,7 +814,7 @@ pub(crate) fn carry_claude_session(
         return Ok(target);
     };
     let parent = target.parent().ok_or("the session folder has no parent")?;
-    std::fs::create_dir_all(parent)
+    crate::profile::create_dir_all(parent)
         .map_err(|error| format!("{} cannot be created: {error}", parent.display()))?;
     carry_file(&source, &target, &turn)?;
     Ok(target)
