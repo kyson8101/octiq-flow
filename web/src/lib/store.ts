@@ -90,9 +90,9 @@ export type Conversation = {
   /** Server-owned lifecycle generation. Incremented when a deleted chat is
    *  restored, so an older delete retry cannot hide it again. */
   generation?: number;
-  /** The host's word, on the chat list, that this chat coordinates a live
-   *  run (`IndexEntry.coordinatesRun`). It only ever holds the run column's
-   *  place before the ledger is read. */
+  /** The host's word, on the chat list, that this chat coordinates a run
+   *  the person has not archived (`IndexEntry.coordinatesRun`). It only ever
+   *  holds the run column's place before the ledger is read. */
   coordinatesRun?: boolean;
 };
 

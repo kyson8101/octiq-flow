@@ -34,6 +34,7 @@ vi.mock("./bridge", () => ({
 import { agentRoster } from "./agentsDashboard";
 import type { TeamAgent } from "./agentsMode";
 import { chatRunStatus, chatSnapshot, rowRun } from "./chatWorkflow";
+import { hostFacts } from "./__fixtures__/hostFacts";
 import {
   EMPTY_ORCHESTRATION, workerChatParents,
   type NativeDecision, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun,
@@ -93,6 +94,21 @@ type Cards = Pick<PendingActionInput, "asks" | "safetyBlocks" | "questions" | "a
 const codexCard = (id: string, taskId = "a"): Cards => ({ safetyBlocks: { [`orch-${taskId}`]: [{ id, provider: "codex", kind: "judged" }] } });
 /** A worker's Claude refusal nobody can approve: the page folds it away. */
 const quietCard = (id: string, taskId = "a"): Cards => ({ safetyBlocks: { [`orch-${taskId}`]: [{ id, provider: "claude", kind: "judged" }] } });
+
+/** One of the host's own ledgers, set in this table's chat and project. Two
+ *  ids are renamed (the run's coordinator becomes `MAIN`, its project `p1`)
+ *  and every task is handed to the table's worker, because the Agents page
+ *  lists a task under the agent it was handed to and the host's tests hand
+ *  most of theirs to nobody. Nothing a wait is read from is touched. */
+function real(snapshot: OrchestrationSnapshot): OrchestrationSnapshot {
+  const coordinator = JSON.stringify(snapshot.runs[0].coordinatorChatKey);
+  const renamed = JSON.parse(JSON.stringify(snapshot).replaceAll(coordinator, JSON.stringify(MAIN))) as OrchestrationSnapshot;
+  return {
+    ...renamed,
+    runs: renamed.runs.map((item) => ({ ...item, workspaceId: "p1" })),
+    tasks: renamed.tasks.map((item) => ({ ...item, assignee: { id: "fe", name: "OCTIQ FE" } })),
+  };
+}
 
 /* ---- The table --------------------------------------------------------- */
 
@@ -185,6 +201,18 @@ const SHAPES: Shape[] = [
   { name: "the person's gate on a task that has finished", host: "new", person: 1, ledger: ledger({ tasks: [task("a", { status: "completed" })], attempts: [attempt("a", { status: "completed", execution: { state: "completed", retryCount: 0 } })], gates: [gate("g", { taskId: "a", awaits: "person" })] }) },
   { name: "a refusal recorded on an attempt that was replaced", host: "new", person: 0, ledger: ledger({ tasks: [task("a", { activeAttemptId: "at_a2" })], attempts: [attempt("a", { status: "failed" }), attempt("a", { id: "at_a2", number: 2 })], nativeDecisions: [native("nd", "a", { awaits: "person" })] }) },
   { name: "an archived run with a gate left open", host: "new", person: 0, ledger: ledger({ runs: [run({ status: "completed", archivedAt: 9 })], tasks: [task("a", { status: "completed" })], gates: [gate("g", { taskId: "a", awaits: "person" })] }) },
+
+  // The ledger as the host really serialises it (`__fixtures__/host`): the
+  // shapes above are written by hand, and these are not.
+  { name: "the host's own ledger: a worker's gate and one the coordinator opened itself", host: "new", person: 1, ledger: real(hostFacts.gatesOpen()) },
+  { name: "the host's own ledger: a gate on a peer request", host: "new", person: 1, ledger: real(hostFacts.peerGate()) },
+  { name: "the host's own ledger: a Codex safety card, no card on the page yet", host: "new", person: 1, ledger: real(hostFacts.cardPending()) },
+  { name: "the host's own ledger: that card with its attempt blocked on a gate", host: "new", person: 1, ledger: real(hostFacts.cardOnGateBlocked()) },
+  { name: "the host's own ledger: a Claude auto-mode refusal", host: "new", person: 0, ledger: real(hostFacts.claudeRefusal()) },
+  { name: "the host's own ledger: a pending plan beside an approved task", host: "new", person: 1, ledger: real(hostFacts.heldByPlan()) },
+  { name: "the host's own ledger: a reopened task held for its notice", host: "new", person: 0, ledger: real(hostFacts.heldByReopen()) },
+  { name: "the host's own ledger: a task the person stopped", host: "new", person: 0, ledger: real(hostFacts.taskStopped().snapshot) },
+  { name: "the host's own ledger: two workers, one with usage and context", host: "new", person: 0, ledger: real(hostFacts.usageContext()) },
 ];
 
 /* ---- The surfaces ------------------------------------------------------ */

@@ -214,6 +214,36 @@ export function taskDecisions(snapshot: Pick<OrchestrationSnapshot, "nativeDecis
   return (snapshot.nativeDecisions ?? []).filter((decision) => decision.taskId === taskId);
 }
 
+/** What a row says of the native decision its attempt is parked on: a short
+ *  label, and the lines of its tooltip.
+ *
+ *  Who must decide and whether the attempt can go on are two facts, and the
+ *  host says both: `awaits`, and `continuation` with `recovery` for why. The
+ *  page used to work the second out for itself ("cannot continue; a new
+ *  attempt is needed"), which was false for the two cases the host really
+ *  sends as `unavailable`: a card the person still has to answer on an
+ *  attempt that is also blocked on a gate, and a refusal the worker carries
+ *  on past. So the reason is the host's own sentence, and "cannot resume" is
+ *  never said of a decision that is the person's. */
+export function decisionSummary(decision: NativeDecision): { label: string; lines: string[] } {
+  const on = decisionWaitsOn(decision);
+  const stuck = decision.continuation === "unavailable";
+  const label = on === "person" ? "Native decision"
+    : on === "nobody" ? "Refusal recorded"
+      : stuck ? "Decision recorded · cannot resume" : "Native decision";
+  const recovery = decision.recovery?.trim();
+  return {
+    label,
+    lines: [
+      `Native decision ${decision.id}`,
+      decision.reason,
+      decision.blockedAction ? `Action: ${decision.blockedAction}` : "The provider gave no exact action.",
+      recovery || (decision.continuation === "new_turn_same_attempt" ? "Answering resumes this same attempt."
+        : stuck ? "The host says this attempt cannot continue from here." : "Whether it can resume is not known."),
+    ],
+  };
+}
+
 /** The native decisions an attempt is parked on. */
 export function pendingDecisions(snapshot: Pick<OrchestrationSnapshot, "nativeDecisions">, attemptId: string): NativeDecision[] {
   return (snapshot.nativeDecisions ?? []).filter((decision) => decision.attemptId === attemptId && decision.status === "pending");

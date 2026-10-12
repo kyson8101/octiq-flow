@@ -205,8 +205,10 @@ export type OrchestrationTask = {
   /** The task the coordinator created to replace this blocked or failed one. */
   supersededBy?: string;
   /** A start of it would be refused because the person has not approved
-   *  it. Absent on a host that does not say: the run's own approval is then
-   *  all the page has (`lib/agentsDashboard`, `lib/mission`). */
+   *  it. The host says `true` or `false` of every task of a run that has a
+   *  plan approval, finished ones included, and leaves the key out only for
+   *  a run with none. Absent on a host that does not say at all: the run's
+   *  own approval is then all the page has (`taskHeldByPlan`). */
   heldByPlan?: boolean;
   /** A start of it would be refused because it was reopened and the notice
    *  of that is not confirmed on disk in the coordinator's chat. The host
@@ -276,6 +278,25 @@ export function taskHeldByPlan(
   return run?.planApproval?.status === "pending";
 }
 
+/** Whether a plan waiting for the person holds everything the run still has
+ *  to do. A plan back in front of them holds only what they have not
+ *  approved: a task they approved before keeps starting and running beside
+ *  it. While the plan holds every task still open, the plan is the run and
+ *  nothing starts; once one is not held, saying "nothing starts until you
+ *  approve" would be false, and its row has to be on the page. A host that
+ *  does not say reads as before: a pending plan holds the run. */
+export function planHoldsRun(
+  run: Pick<OrchestrationRun, "id" | "planApproval">,
+  tasks: readonly Pick<OrchestrationTask, "runId" | "status" | "heldByPlan">[],
+): boolean {
+  if (run.planApproval?.status !== "pending") return false;
+  const mine = tasks.filter((task) => task.runId === run.id);
+  if (!mine.some((task) => typeof task.heldByPlan === "boolean")) return true;
+  // What is in flight is not held, whatever a later change did to its plan.
+  return mine.every((task) => task.status === "pending" || task.status === "ready" ? task.heldByPlan === true
+    : task.status !== "running" && task.status !== "blocked");
+}
+
 export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy" | "stopped">): boolean {
   // A task the person stopped is left failed by the host and did not fail:
   // they held it themselves, and its row says so (`lib/taskHold`).
@@ -310,13 +331,16 @@ export type OrchestrationAttempt = {
    *  running, which is not counted; `usedMs` is the most it was ever found
    *  to have used, and never goes down. */
   peerClock?: { carriedMs: number; usedMs: number; waits?: { from: number; to: number }[] };
-  /** Tokens this attempt's chat has used, as its provider reported them
-   *  (`agent_usage.rs` keeps exactly this per chat). The host does not send
-   *  it yet: a row and the run's Tokens tile leave the figure out until it
-   *  does (`lib/runProgress`), and nothing is worked out in its place. */
+  /** Tokens this attempt's worker chat has used, as the host counted them
+   *  (`agent_usage.rs`). The key is absent until the provider has reported
+   *  any, and for a chat that runs as no registered agent: never a row of
+   *  zeros. A row and the run's Tokens tile leave the figure out then
+   *  (`lib/runProgress`), and nothing is worked out in its place. */
   usage?: AttemptUsage | null;
   /** What the worker's session holds of its model's context window, both as
-   *  the provider said. Not sent by the host yet; the same rule applies. */
+   *  the provider last said. There only once both are known: a count
+   *  without a window is not sent, so an Antigravity attempt never has it.
+   *  It describes a live session and is gone after a server restart. */
   context?: { tokens: number; window: number } | null;
   createdAt: number;
   updatedAt: number;

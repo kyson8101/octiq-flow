@@ -43,11 +43,11 @@ import {
   COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
-import { gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
+import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
 import "./RunProgress.css";
 
 import {
-  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isPeerRequestGate, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isPeerRequestGate, isStuck, planHoldsRun, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -540,7 +540,7 @@ export function OrchestrationPanel({
                           <strong>{run.objective}</strong>
                           {/* Open, its tiles are right under this line. */}
                           <RunLine snapshot={snapshot} run={run} tasks={runTasks} attempts={runAttempts}
-                            tiled={expanded && runTasks.length > 0 && !planPending} />
+                            tiled={expanded && runTasks.length > 0 && !(planPending && planHoldsRun(run, runTasks))} />
                           <RunPeople run={run} tasks={runTasks} attempts={runAttempts} gated={waits.gated} />
                         </span>
                       </button>
@@ -672,6 +672,11 @@ function NewRun({
  *  The rows are grouped by what they ask of the person (`lib/runProgress`):
  *  Needs you, Running, Finished (folded), Planned. */
 const TAB_LABELS: Record<RunTab, string> = { tasks: "Tasks", notifications: "Notifications", log: "Coordination log" };
+
+/** Under a plan that waits for the person: what it holds. All of the run,
+ *  or only the tasks they have not approved (`planHoldsRun`). */
+export const PLAN_HOLDS_ALL = "The tasks start once the plan above is approved.";
+export const PLAN_HOLDS_SOME = "The tasks you have not approved start once the plan above is approved. The ones you approved before go on.";
 
 /** Whose an open gate is, when it is not the person's. */
 const GATE_WAITS: Record<WaitsOn, string> = {
@@ -808,12 +813,19 @@ function RunDetail({
   // A mission's plan goes back to approval when a task changes hands, and the
   // rows are where the next change of hands, or the correction of a wrong one,
   // is made. So they stay, unfiltered, with every start held by the host.
-  const pendingRows = planPending && mission;
+  //
+  // In any run, a plan back with the person holds only what they have not
+  // approved (the host's `heldByPlan`): a task they approved before keeps
+  // starting and running beside it. So the plan is the run only while it
+  // holds everything still open (`planHoldsRun`); once a task is not held,
+  // its row and the run's figures are on the page with the plan.
+  const planIsRun = planPending && planHoldsRun(run, tasks);
+  const pendingRows = planPending && (mission || !planIsRun);
   // A row that waits on one of the page's cards says so, in the group that
   // asks.
   const progress = runProgress(snapshot, run, now, pendingView.held);
-  // A plan still waiting has nothing to total yet.
-  const tiled = tasks.length > 0 && !planPending;
+  // A plan that holds the whole run has nothing to total yet.
+  const tiled = tasks.length > 0 && !planIsRun;
   const awaitingReceipt = notifications.filter((item) => item.state === "pending" || item.state === "delivering").length;
 
   // Asked to show what is owed: focus on the first owed thing — a decision,
@@ -1045,8 +1057,8 @@ function RunDetail({
       {runError && !settingsOpen && <p className="orch-run-error" role="alert">{runError}</p>}
 
       <div className="orch-tab-panel" role="tabpanel" id={`${tabsId}-tasks-panel`} aria-labelledby={`${tabsId}-tasks`} hidden={tab !== "tasks"}>
-        {!planPending && tasks.length > 0 && <RunStages tasks={tasks} attempts={attempts} sandboxes={sandboxes} />}
-        {planPending && <p className="orch-task-none">The tasks start once the plan above is approved.</p>}
+        {!planIsRun && tasks.length > 0 && <RunStages tasks={tasks} attempts={attempts} sandboxes={sandboxes} />}
+        {planPending && <p className="orch-task-none">{planIsRun ? PLAN_HOLDS_ALL : PLAN_HOLDS_SOME}</p>}
         {planPending && (!pendingRows || tasks.length === 0) ? null : tasks.length === 0 ? (
           <div className="orch-planning"><span className="orch-pulse" />The main agent is planning the tasks.</div>
         ) : progress.groups.map((group) => {
@@ -1450,12 +1462,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
           {mission && !requiresVerdict(task) && <span className="orch-task-kind">{KIND_LABEL.work}</span>}
           {mission && task.size && <span className="orch-task-size" title="What the task is worth when its result is accepted">{SIZE_LABEL[task.size]}</span>}
           {environment && <span className="orch-task-env" data-tone={environment.tone} title={environment.detail.join("\n")}>{environment.label}</span>}
-          {decision && <span className="orch-task-decision" title={[
-            `Native decision ${decision.id}`,
-            decision.reason,
-            decision.blockedAction ? `Action: ${decision.blockedAction}` : "The provider gave no exact action.",
-            decision.continuation === "unavailable" ? "This attempt cannot continue from here; a new attempt is needed." : decision.continuation === "new_turn_same_attempt" ? "Answering resumes this same attempt." : "Whether it can resume is not known.",
-          ].join("\n")}>{decision.continuation === "unavailable" ? "Decision recorded · cannot resume" : "Native decision"} {decision.id.slice(0, 10)}</span>}
+          {decision && <span className="orch-task-decision" title={decisionSummary(decision).lines.join("\n")}>{decisionSummary(decision).label} {decision.id.slice(0, 10)}</span>}
           {step && <span className="orch-task-step" title={step}>{step}</span>}
           {reportedStage && !step && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
           {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}

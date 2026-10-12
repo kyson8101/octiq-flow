@@ -904,8 +904,10 @@ describe("who a run waits on", () => {
     expect(html).not.toContain("Awaiting approval");
     expect(html).not.toContain("Awaiting review");
     expect(html).toMatch(/data-state="running" data-flight="true">/);
-    // What the ledger holds is still behind the row's disclosure.
-    expect(html).toContain("Decision recorded · cannot resume");
+    // What the ledger holds is still behind the row's disclosure: a refusal
+    // the host says nobody can approve is called that, and one it puts no
+    // name to keeps what the ledger alone says of it.
+    expect(html).toContain(over.awaits === "nobody" ? "Refusal recorded nd_1" : "Decision recorded · cannot resume nd_1");
   });
 
   it("says Needs you for that refusal once the page holds its card, or the host says it is the person's", () => {

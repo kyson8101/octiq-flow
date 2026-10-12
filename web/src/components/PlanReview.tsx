@@ -17,7 +17,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { approvePlan, rejectPlan } from "../lib/agentsMode";
 import { modelFromReported } from "../lib/agentProviders";
-import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
+import { planHoldsRun, type OrchestrationRun, type OrchestrationTask } from "../lib/orchestration";
 import {
   awaitingApproval, planDestination, planNumbers, planOwner, planStages, planTasks, stageSummary, type PlanStage,
 } from "../lib/planReview";
@@ -32,6 +32,10 @@ import { TaskPlanCard } from "./TaskPlanCard";
 import { CommandApprovalChoice } from "./CommandApprovalChoice";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
+
+/** Beside Approve, when the plan holds only part of the run: the tasks the
+ *  person approved before keep starting while this waits. */
+export const PLAN_GOES_ON = "What you approved before goes on. The rest waits for this.";
 
 export function PlanReview({ run, tasks: allTasks, drafting, projectName, onApproved, onRequestChanges, chatHint, approved = false, surface = "panel", folds = false, startOpen = false }: {
   run: OrchestrationRun;
@@ -71,6 +75,10 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   // Some of the plan was approved before: mark what is new since.
   const amended = !approved && waiting.length > 0 && waiting.length < tasks.filter((task) => !task.splitBy).length;
   const blocked = stages.some((stage) => stage.blocked);
+  // The plan holds only what the person has not approved (the host's
+  // `heldByPlan`): with a task of the run not held, a worker may well start
+  // before they answer, and the card must not say otherwise.
+  const goesOn = !approved && run.planApproval?.status === "pending" && !planHoldsRun(run, allTasks);
   const empty = tasks.length === 0;
   const revision = run.planApproval?.revision;
   const handle = planHandle(run.id);
@@ -242,7 +250,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                 rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
                 onCancel={() => { setRejecting(false); setReason(""); }} />}
               <div className="plan-review-approve">
-                <span className="plan-review-hint" title={folded ? chatHint : undefined}>{waitReason || (blocked ? "Some tasks wait on each other and will never start." : "No worker starts until you approve.")}</span>
+                <span className="plan-review-hint" title={folded ? chatHint : undefined}>{waitReason || (blocked ? "Some tasks wait on each other and will never start." : goesOn ? PLAN_GOES_ON : "No worker starts until you approve.")}</span>
                 {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || holding} onClick={() => setRejecting(true)}>
                   Reject
                 </button>}
