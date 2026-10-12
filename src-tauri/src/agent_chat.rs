@@ -475,6 +475,19 @@ impl Leaving {
     }
 }
 
+/// What a removal sees of a conversation it asks about without waiting for
+/// any lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Turn {
+    /// Nothing is being answered, nothing is queued, no full stop is owed.
+    Idle,
+    /// One of those is.
+    InFlight,
+    /// A lock on the way was held by something else, so it is not known:
+    /// in doubt the agent stays, and the refusal says it is a doubt.
+    Unconfirmed,
+}
+
 /// A removal's hold on the agent's own conversations
 /// (`ChatManager::mark_leaving`). Dropped without `gone`, it calls the mark
 /// off: whatever stopped the removal, its chats take messages again.
@@ -497,31 +510,38 @@ impl LeavingMark<'_> {
     /// process being replaced. In doubt the agent is working, and the
     /// removal is refused and asked again.
     pub(crate) fn working(&self, key: &str) -> bool {
+        self.look(key) != Turn::Idle
+    }
+
+    /// `working`, saying which it was: a turn seen in flight, or a lock
+    /// that was taken so that nothing could be seen. Both stop the
+    /// removal; only the first is a fact about the agent, and the refusal
+    /// says which (`agent_work::mid_turn`).
+    pub(crate) fn look(&self, key: &str) -> Turn {
         let Ok(sessions) = self.manager.sessions.try_lock() else {
-            return true;
+            return Turn::Unconfirmed;
         };
-        if self
-            .manager
-            .handoffs
-            .try_lock()
-            .map_or(true, |handoffs| handoffs.contains(key))
-            || self.manager.queued_turns.try_lock().map_or(true, |queued| {
-                queued.get(key).is_some_and(|q| !q.is_empty())
-            })
-        {
-            return true;
+        let Ok(handoffs) = self.manager.handoffs.try_lock() else {
+            return Turn::Unconfirmed;
+        };
+        let Ok(queued) = self.manager.queued_turns.try_lock() else {
+            return Turn::Unconfirmed;
+        };
+        if handoffs.contains(key) || queued.get(key).is_some_and(|q| !q.is_empty()) {
+            return Turn::InFlight;
         }
+        drop((handoffs, queued));
         let Some(session) = sessions.get(key) else {
-            return false;
+            return Turn::Idle;
         };
         let Ok(mut session) = session.try_lock() else {
-            return true;
+            return Turn::Unconfirmed;
         };
         if session.busy || session.cut_off != CutOff::No {
-            return true;
+            return Turn::InFlight;
         }
         session.leaving = Some(self.mark.clone());
-        false
+        Turn::Idle
     }
 
     /// The removal was made. The mark stays, and says so.
@@ -1471,13 +1491,19 @@ impl ChatManager {
     /// (`orchestration::agent_work::Departure`). The session table is tried,
     /// not waited for, and a table that is busy answers `true`: in doubt a
     /// turn is in flight, and the removal is refused and asked again.
-    pub(crate) fn turn_may_be_in_flight(&self, key: &str) -> bool {
+    pub(crate) fn turn_may_be_in_flight(&self, key: &str) -> Turn {
         let Ok(sessions) = self.sessions.try_lock() else {
-            return true;
+            return Turn::Unconfirmed;
         };
-        sessions
-            .get(key)
-            .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
+        let Some(session) = sessions.get(key) else {
+            return Turn::Idle;
+        };
+        let seen = match session.try_lock() {
+            Ok(session) if session.busy => Turn::InFlight,
+            Ok(_) => Turn::Idle,
+            Err(_) => Turn::Unconfirmed,
+        };
+        seen
     }
 
     /// Mark the conversations the registered agent `name` speaks in as
@@ -6292,6 +6318,12 @@ impl ChatManager {
                 session_id: Some(format!("session-{key}")),
             },
         );
+    }
+
+    /// The session table, held until the guard drops: what a look that
+    /// waits for no lock meets while another thread is in the table.
+    pub(crate) fn test_hold_table(&self) -> impl Drop + '_ {
+        self.sessions.lock().unwrap()
     }
 
     /// Put a stand-in from `test_launch` in a turn, or end its turn.

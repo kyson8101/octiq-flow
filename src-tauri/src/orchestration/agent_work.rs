@@ -157,21 +157,35 @@ fn coordinating(data: &Stored, name: &str, chats: &[crate::team::OwnChat]) -> Op
 /// A turn in flight in one of the agent's own conversations, as a refusal.
 /// A seat that is merely held (the head, the front desk, with nothing being
 /// answered) is not one: the removal's card already says the seat empties.
+///
+/// The look never waits for a lock, so it can come back without an answer
+/// (`Turn::Unconfirmed`). The agent stays then too, and the words say what
+/// is known: not that a turn is in flight, which nobody saw, but that the
+/// host could not confirm the conversation is idle.
 fn mid_turn(
     name: &str,
     chats: &[crate::team::OwnChat],
-    in_flight: &dyn Fn(&str) -> bool,
+    in_flight: &dyn Fn(&str) -> crate::agent_chat::Turn,
 ) -> Option<String> {
-    let busy = chats.iter().find(|chat| in_flight(&chat.chat_key))?;
-    Some(format!(
-        "{name} is in the middle of a turn in {} ({}). Nothing was removed. Stop that turn or wait for it to end, then remove {name}.",
-        if busy.front_desk {
-            "its front-desk conversation"
-        } else {
-            "a conversation it leads"
-        },
-        busy.chat_key,
-    ))
+    use crate::agent_chat::Turn;
+    let (busy, seen) = chats
+        .iter()
+        .map(|chat| (chat, in_flight(&chat.chat_key)))
+        .find(|(_, seen)| *seen != Turn::Idle)?;
+    let place = if busy.front_desk {
+        "its front-desk conversation"
+    } else {
+        "a conversation it leads"
+    };
+    let key = &busy.chat_key;
+    Some(match seen {
+        Turn::Unconfirmed => format!(
+            "OctiqFlow could not confirm that {name} is idle in {place} ({key}): something else was using that conversation at that moment, so it was not looked at. Nothing was removed. Try again; if {name} is in the middle of a turn there, the answer will say so."
+        ),
+        _ => format!(
+            "{name} is in the middle of a turn in {place} ({key}). Nothing was removed. Stop that turn or wait for it to end, then remove {name}."
+        ),
+    })
 }
 
 /// Everything that stops a removal, in the order it is said: tasks in
@@ -181,7 +195,7 @@ fn in_progress(
     data: &Stored,
     agent: &crate::team::TeamAgent,
     chats: &[crate::team::OwnChat],
-    in_flight: &dyn Fn(&str) -> bool,
+    in_flight: &dyn Fn(&str) -> crate::agent_chat::Turn,
 ) -> Result<AgentWork, String> {
     let work = work_in(data, &agent.id);
     match work
@@ -262,7 +276,7 @@ impl crate::team::Leave for Departure<'_> {
         let keys: Vec<String> = chats.iter().map(|chat| chat.chat_key.clone()).collect();
         let mark = self.chats.mark_leaving(&agent.name, &keys);
         self.store
-            .leave(agent, chats, &|key: &str| mark.working(key), write)?;
+            .leave(agent, chats, &|key: &str| mark.look(key), write)?;
         mark.gone();
         Ok(())
     }
@@ -416,7 +430,7 @@ impl OrchestrationStore {
         &self,
         agent: &crate::team::TeamAgent,
         chats: &[crate::team::OwnChat],
-        in_flight: &dyn Fn(&str) -> bool,
+        in_flight: &dyn Fn(&str) -> crate::agent_chat::Turn,
         write: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
@@ -1201,6 +1215,30 @@ mod tests {
             mid_turn
         );
         assert_eq!(names(&path), ["Lead"]);
+
+        // Review of bf9d8cd, a carried Low. The look waits for no lock, so
+        // while something else holds the session table it sees nothing. The
+        // agent stays, and the words are what is known: not that a turn is
+        // in flight, which nobody saw.
+        chats.test_busy(CHAT, false);
+        let held = chats.test_hold_table();
+        let unconfirmed = departure.check(&lead, &own).unwrap_err();
+        assert_eq!(
+            unconfirmed,
+            "OctiqFlow could not confirm that Lead is idle in a conversation it leads (chat:m2-head): something else was using that conversation at that moment, so it was not looked at. Nothing was removed. Try again; if Lead is in the middle of a turn there, the answer will say so."
+        );
+        assert_eq!(
+            crate::team::delete_idle(&path, &lead.id, &departure).unwrap_err(),
+            unconfirmed
+        );
+        drop(held);
+        assert_eq!(names(&path), ["Lead"]);
+        assert_eq!(
+            departure.check(&lead, &own),
+            Ok(None),
+            "looked at, and idle"
+        );
+        chats.test_busy(CHAT, true);
         assert!(crate::team::head(&path).unwrap().is_some());
 
         // The turn over, the head is idle: removed, and the seat empties.
