@@ -188,6 +188,7 @@ const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
 import { orchestrationFeed } from "./lib/orchestrationFeed";
+import { ARRIVAL_GRACE_MS, composesNewChat, stillArriving } from "./lib/arrivingChat";
 import { TaskStopContext, type TaskStopping } from "./components/ReopenedNote";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
@@ -518,6 +519,18 @@ export default function App() {
   const useSandbox = sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? false;
   const [indexReady, setIndexReady] = useState(false);
   const [unavailableChat, setUnavailableChat] = useState<string | null>(null);
+  // The chat the address asked for, until it is on screen: a composer drawn
+  // meanwhile is that chat's, not a new conversation's (`lib/arrivingChat`).
+  const [arrivingChat, setArrivingChat] = useState<string | null>(() => opened.current.chat ?? null);
+  const [arrivalOver, setArrivalOver] = useState(false);
+  useEffect(() => {
+    if (!arrivingChat || !indexReady) return;
+    const timer = window.setTimeout(() => setArrivalOver(true), ARRIVAL_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [arrivingChat, indexReady]);
+  useEffect(() => {
+    setArrivingChat((arriving) => stillArriving(arriving, { conversationId, unavailable: unavailableChat, gaveUp: arrivalOver }));
+  }, [conversationId, unavailableChat, arrivalOver]);
   const [newChatError, setNewChatError] = useState<string | null>(null);
   /** Which agent the rail has opened, by `task_id`, or null for the whole
    *  conversation. View state, not chat state: it is about what this person is
@@ -5787,7 +5800,7 @@ export default function App() {
             onUseSandbox={executionPlan ? (value) => setOverrides((o) => ({ ...o, useSandbox: value })) : setSandboxChoice}
             newWorktree={executionPlan ? executionPlan.newWorktree : newWorktree}
             onNewWorktree={executionPlan ? (value) => setOverrides((o) => ({ ...o, newWorktree: value })) : setNewWorktree}
-            showWorkLocation={!conversationId && !executionPlan?.crossProject}
+            showWorkLocation={composesNewChat(conversationId, arrivingChat) && !executionPlan?.crossProject}
             advanced={executionPlan && composerIdentity && !executionPlan.crossProject ? {
               open: advancedOpen,
               onToggle: () => setAdvancedOpen((open) => !open),
