@@ -819,8 +819,11 @@
 .orch-task-start { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 12px; }
 /* A start the host would refuse (lib/taskHold.startControl) stays on the
    page, switched off, with the reason beside it: no colour of its own. */
-.orch-start[aria-disabled="true"] { border-color: var(--border); background: none; color: var(--fg-3); cursor: default; }
-.orch-start-why { flex: 1 1 100%; min-width: 0; color: var(--fg-2); font-size: 10.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.task-start[aria-disabled="true"] { border-color: var(--border); background: none; color: var(--fg-3); cursor: default; }
+.task-start-why { flex: 1 1 100%; min-width: 0; color: var(--fg-2); font-size: 10.5px; line-height: 1.4; overflow-wrap: anywhere; }
+/* A hold is not a warning: the box of a retry the host would refuse takes
+   the detail's plain border, not the warning tint of one that can start. */
+.orch-attempt-retry[data-blocked] { border-color: var(--border); background: none; }
 .orch-task-start button {
   min-height: var(--task-control);
   padding: 4px 12px;

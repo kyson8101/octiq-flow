@@ -1548,7 +1548,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
                   plan holds the task, its reopen is not told yet, it was
                   replaced) is drawn switched off with the reason beside it. */}
               {start && start.kind !== "again" && start.attempt.id === attempt.id && !readOnly && (
-                <div className="orch-attempt-retry">
+                <div className="orch-attempt-retry" data-blocked={start.blocked ? true : undefined}>
                   <small>{start.note}</small>
                   <StartButton start={start} busy={busy} onStart={begin} />
                 </div>
@@ -1598,10 +1598,10 @@ function StartButton({ start, busy, onStart }: {
 }) {
   const whyId = useId();
   return <>
-    <button type="button" className="orch-start" disabled={busy} aria-disabled={start.blocked ? true : undefined}
+    <button type="button" className="task-start" disabled={busy} aria-disabled={start.blocked ? true : undefined}
       aria-describedby={start.blocked ? whyId : undefined} onKeyDown={dropHeld}
       onClick={start.blocked ? undefined : onStart}>{start.label}</button>
-    {start.blocked && <span id={whyId} className="orch-start-why">{start.blocked}</span>}
+    {start.blocked && <span id={whyId} className="task-start-why">{start.blocked}</span>}
   </>;
 }
 

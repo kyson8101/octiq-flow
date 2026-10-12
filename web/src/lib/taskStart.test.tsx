@@ -30,7 +30,7 @@ const panel = (snapshot: OrchestrationSnapshot) => {
 };
 const rows = (html: string) => html.split('<article class="orch-task').slice(1).map((part) => part.slice(0, part.indexOf("</article>")));
 /** Every control of a row that starts an attempt, as it is drawn. */
-const starts = (row: string) => [...row.matchAll(/<button type="button" class="orch-start"[^>]*>([^<]*)<\/button>/g)].map((match) => match[0]);
+const starts = (row: string) => [...row.matchAll(/<button type="button" class="task-start"[^>]*>([^<]*)<\/button>/g)].map((match) => match[0]);
 const control = (snapshot: OrchestrationSnapshot, index = 0) => {
   const task = snapshot.tasks[index];
   const run = snapshot.runs.find((item) => item.id === task.runId)!;
@@ -63,7 +63,7 @@ describe("a reopened task whose notice is not confirmed", () => {
     expect(button).toContain(">Start next attempt</button>");
     expect(button).toContain('aria-disabled="true"');
     const why = /aria-describedby="([^"]+)"/.exec(button)![1];
-    expect(row).toContain(`<span id="${why}" class="orch-start-why">${REOPEN_DETAIL.replace(/'/g, "&#x27;")}</span>`);
+    expect(row).toContain(`<span id="${why}" class="task-start-why">${REOPEN_DETAIL.replace(/'/g, "&#x27;")}</span>`);
   });
 
   it("offers it enabled once the notice is confirmed", () => {

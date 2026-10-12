@@ -127,11 +127,13 @@ describe("a mission whose plan waits for approval", () => {
     const html = render(pending("pending"));
     // The failed task's retry stays on the page, switched off, with the
     // reason beside it (`lib/taskHold.startControl`).
-    const retry = /<button type="button" class="orch-start"[^>]*>Start retry<\/button>/.exec(html)![0];
+    const retry = /<button type="button" class="task-start"[^>]*>Start retry<\/button>/.exec(html)![0];
     expect(retry).toContain('aria-disabled="true"');
     const why = /aria-describedby="([^"]+)"/.exec(retry)![1];
-    expect(html).toContain(`<span id="${why}" class="orch-start-why">${PLAN_DETAIL}</span>`);
-    expect(html.match(/class="orch-start"/g)).toHaveLength(1);
+    expect(html).toContain(`<span id="${why}" class="task-start-why">${PLAN_DETAIL}</span>`);
+    expect(html.match(/class="task-start"/g)).toHaveLength(1);
+    // A refused start is not a warning: its box takes no warning colour.
+    expect(html).toContain('<div class="orch-attempt-retry" data-blocked="true">');
     expect(html).not.toContain("Start next attempt");
     // Progress stages and filters belong to a running plan.
     expect(html).not.toContain("orch-task-filters");
