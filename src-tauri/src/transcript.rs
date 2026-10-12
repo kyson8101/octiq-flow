@@ -42,15 +42,20 @@ pub struct Recorded {
 /// folder itself never is (`profile::make_dir`), so a drive that went away
 /// gets no empty profile written where it was.
 ///
+/// **And `None` while the folder at that path is not the one the server
+/// started with** (`profile::Pinned`): asked on every call, never
+/// remembered. Every path a record is read, written, counted or confirmed
+/// by comes from here, so nothing kept for a record (its count, its
+/// generation, its folder's resolved name) is ever used against a folder
+/// that only shares the profile's path.
+///
 /// Tests never see the real profile here — and `reconcile` DELETES files in
 /// this folder, which is not a thing a test should be able to do to
 /// someone's chats. They share one temporary profile per test binary, or
 /// stand in a profile of their own (`profile::started_in`).
 pub(crate) fn chats_dir() -> Option<PathBuf> {
     let dir = crate::profile::profile_dir().join("chats");
-    if !dir.is_dir() {
-        crate::profile::make_dir(&dir).ok()?;
-    }
+    crate::profile::make_dir(&dir).ok()?;
     Some(dir)
 }
 
@@ -128,8 +133,11 @@ fn identity(path: &Path) -> PathBuf {
 /// Asked of the filesystem once per folder and kept: resolving a path costs
 /// a call per component (0.4 ms for a profile's chats folder on macOS),
 /// which is nothing once and far too much on every line of a streamed
-/// reply. The profile folder is fixed at startup, so what was resolved
-/// stays true for the life of the process.
+/// reply. What is kept is a name for the folder the server started in, to
+/// key counts and generations by; it is not evidence that the folder at
+/// the path is still that one. That is asked each time, before any path
+/// reaches here (`chats_dir`), and again before a receipt is given
+/// (`confirm_synced`).
 fn folder_identity(folder: &Path) -> Option<(PathBuf, bool)> {
     static FOLDERS: Mutex<Option<HashMap<PathBuf, (PathBuf, bool)>>> = Mutex::new(None);
     let mut known = FOLDERS.lock().unwrap_or_else(|e| e.into_inner());
@@ -387,7 +395,12 @@ pub fn confirm_synced(key: &str, seen: &Generation) -> Option<()> {
     file.sync_data().ok()?;
     // Whether the folder entry was ever made durable is not known here: the
     // sync that should have done it is the one that failed or was lost.
-    sync_dir(path.parent()?).ok()
+    sync_dir(path.parent()?).ok()?;
+    // A token is confirmed only in the directory it was made for. The path
+    // was the server's own folder when this began (`chats_dir`); it is
+    // asked again now that the file is synced, so a folder put at that
+    // path in between gives no receipt for whatever it holds.
+    crate::profile::available().ok().map(|_| ())
 }
 
 /// The events of one `type` in a chat's record, oldest first.

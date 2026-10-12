@@ -177,6 +177,11 @@ impl WorkspaceState {
     /// Write the current state back to disk as pretty JSON.
     fn save(&self, data: &WorkspaceData) -> Result<(), String> {
         let raw = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
+        // The folder is never made here, and one that is not the server's
+        // own is not written into (`profile::Pinned`).
+        if let Some(dir) = self.file.parent() {
+            crate::profile::make_dir(dir)?;
+        }
         fs::write(&self.file, raw).map_err(|e| crate::profile::write_error(&self.file, e))
     }
 }

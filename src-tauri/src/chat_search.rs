@@ -283,6 +283,11 @@ fn save_cache(root: &Path, cache: &SearchCache) {
     let Ok(raw) = serde_json::to_vec(cache) else {
         return;
     };
+    // `root` was found when the search state was made: it is asked again
+    // here whether it is still in the folder the server started with.
+    if crate::profile::make_dir(root).is_err() {
+        return;
+    }
     let target = cache_path(root);
     let temp = root.join(format!("search-index.{}.tmp", std::process::id()));
     if fs::write(&temp, raw).is_ok() {

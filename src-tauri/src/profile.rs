@@ -43,7 +43,27 @@ fn octiqflow_dir() -> Option<PathBuf> {
 }
 
 /// The profile folder a process uses, as it was resolved when it started.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// **It is that directory, not whatever is at its path.** A path says where
+/// a folder was; remove the folder and make another there, or point the
+/// path at a different one, and the path still answers. So the process
+/// leaves its own mark in the folder when it takes it (`claim`, from
+/// `profile_lock::acquire`): a word made up for this run, on the owner
+/// lock's line. "Is the profile there" is then "does the folder at that
+/// path hold my mark" (`missing`). A folder made in its place has no lock;
+/// a link to another profile has another's; a second server that starts in
+/// a folder made there writes its own, and the first one reads that it is
+/// no longer in its folder and writes nothing more.
+///
+/// Why a file and not the platform's file identity: device and inode
+/// numbers change when a drive is plugged back in and are reused by some
+/// filesystems, a handle held on the folder keeps its drive from being
+/// ejected and goes dead when it is pulled, and stable Rust has no way to
+/// ask Windows for a directory's identity. The mark is the same question
+/// with the same answer on all three platforms, and survives a remount.
+/// What it cannot tell: a copy of the folder made, lock and all, while this
+/// process runs, put at the same path, is the folder.
+#[derive(Debug, Clone)]
 pub struct Pinned {
     /// `<base>/<active>/`, made if it was not there.
     pub dir: PathBuf,
@@ -54,9 +74,34 @@ pub struct Pinned {
     /// The configured base, when it could not be reached at startup and the
     /// default base is in use in its place.
     pub fallback_from: Option<PathBuf>,
+    /// This run's mark, and whether it has been left in the folder.
+    mark: String,
+    claimed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Pinned {
+    fn new(dir: PathBuf, fallback_from: Option<PathBuf>) -> Self {
+        Self {
+            real: crate::paths::canonicalize(&dir).unwrap_or_else(|_| dir.clone()),
+            dir,
+            fallback_from,
+            mark: uuid::Uuid::new_v4().simple().to_string(),
+            claimed: Default::default(),
+        }
+    }
+
+    /// Leave this run's mark in the folder, on the owner lock's line. Only
+    /// for a process that has found no other live owner there.
+    fn claim(&self, kind: &str) -> std::io::Result<()> {
+        fs::write(
+            self.dir.join(crate::profile_lock::FILE),
+            crate::profile_lock::line(kind, &self.mark),
+        )?;
+        self.claimed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
     /// The profile folder as `path` names it and what is below it, when
     /// `path` is the profile folder or lies in it, under either spelling.
     fn holds<'a>(&self, path: &'a Path) -> Option<(&Path, &'a Path)> {
@@ -65,9 +110,26 @@ impl Pinned {
             .find_map(|root| Some((root.as_path(), path.strip_prefix(root).ok()?)))
     }
 
-    /// Why the profile folder cannot be used right now, if it cannot.
+    /// Why the profile folder cannot be used right now, if it cannot: it
+    /// is not there, or what is at its path is not the folder this process
+    /// took. The one question behind every "is the profile there".
+    ///
+    /// Before the mark is left (the moments between `pin` and the owner
+    /// lock, or a folder that could not be written at startup) there is
+    /// only the path to ask.
     fn missing(&self) -> Option<String> {
-        (!self.dir.is_dir()).then(|| gone(&self.dir))
+        if !self.claimed.load(std::sync::atomic::Ordering::Relaxed) {
+            return (!self.dir.is_dir()).then(|| gone(&self.dir));
+        }
+        match fs::read_to_string(self.dir.join(crate::profile_lock::FILE)) {
+            Ok(line) if crate::profile_lock::mark_in(&line) == Some(self.mark.as_str()) => None,
+            // A folder with another's mark, or with none.
+            Ok(_) => Some(replaced(&self.dir)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && self.dir.is_dir() => {
+                Some(replaced(&self.dir))
+            }
+            Err(_) => Some(gone(&self.dir)),
+        }
     }
 
     /// What the person is told when the folder in use is not the one their
@@ -89,24 +151,16 @@ impl Pinned {
 fn resolve() -> Pinned {
     let cfg = load_config();
     let dir = PathBuf::from(&cfg.base).join(&cfg.active);
-    let real = |dir: &Path| crate::paths::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     // The only two places the profile folder is ever made.
     if fs::create_dir_all(&dir).is_ok() {
-        return Pinned {
-            real: real(&dir),
-            dir,
-            fallback_from: None,
-        };
+        return Pinned::new(dir, None);
     }
     let fallback = default_base()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(&cfg.active);
     let _ = fs::create_dir_all(&fallback);
-    Pinned {
-        fallback_from: (fallback != dir).then(|| PathBuf::from(&cfg.base)),
-        real: real(&fallback),
-        dir: fallback,
-    }
+    let fallback_from = (fallback != dir).then(|| PathBuf::from(&cfg.base));
+    Pinned::new(fallback, fallback_from)
 }
 
 #[cfg(not(test))]
@@ -192,7 +246,9 @@ fn tests_pin() -> Pinned {
         Some(Some(pinned)) => pinned,
         // Its first question: resolve, with no borrow held, and keep it.
         Some(None) => {
+            // As `run_headless` does: resolve, then take the folder.
             let pinned = resolve();
+            let _ = pinned.claim("test");
             STARTED.with(|started| {
                 if let Some(process) = started.borrow_mut().as_mut() {
                     process.pinned = Some(pinned.clone());
@@ -203,11 +259,9 @@ fn tests_pin() -> Pinned {
         None => SHARED
             .get_or_init(|| {
                 let dir = crate::test_dir::TestDir::new("test-profile").remove_at_exit();
-                Pinned {
-                    real: crate::paths::canonicalize(&dir).unwrap_or_else(|_| dir.clone()),
-                    dir,
-                    fallback_from: None,
-                }
+                let pinned = Pinned::new(dir, None);
+                pinned.claim("test").expect("mark the tests' profile");
+                pinned
             })
             .clone(),
     }
@@ -297,13 +351,33 @@ pub fn pin() -> Pinned {
 /// server (a drive unplugged, a folder moved or removed), and nothing is
 /// written anywhere else in its place.
 pub fn available() -> Result<PathBuf, String> {
+    with_pinned(|pinned| match pinned.missing() {
+        Some(why) => Err(why),
+        None => Ok(pinned.dir.clone()),
+    })
+}
+
+/// Take the profile folder for this process: leave its mark on the owner
+/// lock's line, so the folder can be told from any other that comes to be
+/// at its path (`Pinned`). For `profile_lock::acquire`, once it has found
+/// no other live owner. A folder that cannot be written is still used, as
+/// it always was, and is then known only by its path: said once, here.
+pub(crate) fn claim(kind: &str) {
     with_pinned(|pinned| {
-        if pinned.dir.is_dir() {
-            Ok(pinned.dir.clone())
-        } else {
-            Err(gone(&pinned.dir))
+        if let Err(error) = pinned.claim(kind) {
+            eprintln!(
+                "[profile] could not write the owner lock in {}: {error}. Another folder put at this path while OctiqFlow runs will not be told apart from it.",
+                pinned.dir.display()
+            );
         }
     })
+}
+
+fn replaced(dir: &Path) -> String {
+    format!(
+        "The profile folder {} is not the folder OctiqFlow started with: another folder was put at its path, or the path now leads somewhere else. OctiqFlow has not written into it, so nothing was saved. Put the original folder back and try again, or restart OctiqFlow to use the folder that is there now.",
+        dir.display()
+    )
 }
 
 fn gone(dir: &Path) -> String {
@@ -340,6 +414,12 @@ pub fn create_dir_all(dir: &Path) -> std::io::Result<()> {
             Some(why) => std::io::Error::other(why),
             None => error,
         };
+        // A folder that is there and is not this process's own (`Pinned`)
+        // gets nothing made in it. This half is a look; that the profile
+        // folder itself is never made is in the loop below.
+        if let Some(why) = pinned.missing() {
+            return Err(std::io::Error::other(why));
+        }
         let mut at = root.to_path_buf();
         for part in below.components() {
             let std::path::Component::Normal(name) = part else {
@@ -358,11 +438,7 @@ pub fn create_dir_all(dir: &Path) -> std::io::Result<()> {
                 Err(error) => return Err(gone(error)),
             }
         }
-        // Nothing was made, so nothing has said the profile folder is there.
-        match pinned.missing() {
-            Some(why) => Err(std::io::Error::other(why)),
-            None => Ok(()),
-        }
+        Ok(())
     })
 }
 
@@ -386,12 +462,12 @@ pub fn write_error(path: &Path, error: std::io::Error) -> String {
 /// What the page is told about the folder in use (`profile_status`).
 pub fn status() -> serde_json::Value {
     with_pinned(|pinned| {
-        let available = pinned.dir.is_dir();
+        let missing = pinned.missing();
         serde_json::json!({
             "dir": pinned.dir,
             "fallbackFrom": pinned.fallback_from,
-            "available": available,
-            "notice": if available { pinned.notice() } else { Some(gone(&pinned.dir)) },
+            "available": missing.is_none(),
+            "notice": missing.or_else(|| pinned.notice()),
         })
     })
 }

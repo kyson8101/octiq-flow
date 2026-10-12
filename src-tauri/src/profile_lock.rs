@@ -30,8 +30,25 @@ pub struct Owner {
     pub kind: String,
 }
 
+/// The lock's name in the profile folder.
+pub(crate) const FILE: &str = "owner.lock";
+
 fn lock_path() -> PathBuf {
-    crate::profile::profile_dir().join("owner.lock")
+    crate::profile::profile_dir().join(FILE)
+}
+
+/// What the lock holds: the owner's pid, its kind, and the mark its run
+/// left (`profile::Pinned`), which is how that process knows the folder at
+/// its profile's path is still the one it took. A lock written before the
+/// mark existed has the first two; an older build reading this one shows
+/// the mark after the kind.
+pub(crate) fn line(kind: &str, mark: &str) -> String {
+    format!("{} {kind} {mark}", std::process::id())
+}
+
+/// The mark on a lock's line, if it has one.
+pub(crate) fn mark_in(line: &str) -> Option<&str> {
+    line.split_whitespace().nth(2)
 }
 
 /// Whether a process is still alive. `kill -0` asks exactly that and changes
@@ -75,7 +92,8 @@ fn alive(pid: u32) -> bool {
 /// Read the lock, if a live process holds one.
 fn current_owner_at(path: &Path) -> Option<Owner> {
     let text = fs::read_to_string(path).ok()?;
-    let (pid, kind) = text.trim().split_once(' ')?;
+    let mut words = text.split_whitespace();
+    let (pid, kind) = (words.next()?, words.next()?);
     let pid: u32 = pid.parse().ok()?;
     // Our own lock from a previous run, left behind by a kill -9.
     if !alive(pid) {
@@ -87,18 +105,26 @@ fn current_owner_at(path: &Path) -> Option<Owner> {
     })
 }
 
-/// Claim the profile. `Err(owner)` when someone else already has it.
+/// Claim the profile. `Err(owner)` when someone else already has it, and
+/// then nothing is written: the owner's lock, and the mark on it, stay.
 pub fn acquire(kind: &str) -> Result<(), Owner> {
-    acquire_at(&lock_path(), kind)
+    refused_at(&lock_path())?;
+    crate::profile::claim(kind);
+    Ok(())
 }
 
-fn acquire_at(path: &Path, kind: &str) -> Result<(), Owner> {
-    if let Some(owner) = current_owner_at(path) {
-        if owner.pid != std::process::id() {
-            return Err(owner);
-        }
+/// `Err` with the other live process that holds the lock at `path`.
+fn refused_at(path: &Path) -> Result<(), Owner> {
+    match current_owner_at(path) {
+        Some(owner) if owner.pid != std::process::id() => Err(owner),
+        _ => Ok(()),
     }
-    let _ = fs::write(path, format!("{} {kind}", std::process::id()));
+}
+
+#[cfg(test)]
+fn acquire_at(path: &Path, kind: &str) -> Result<(), Owner> {
+    refused_at(path)?;
+    let _ = fs::write(path, line(kind, "mark"));
     Ok(())
 }
 
@@ -168,6 +194,24 @@ mod tests {
         assert_eq!(live_claim, Err(owner));
         assert_eq!(exited_owner, None);
         assert_eq!(new_claim, Ok(()));
+    }
+
+    /// The lock's line carries the run's mark after the pid and the kind.
+    /// A lock an older build wrote has no mark and still names its owner.
+    #[test]
+    fn the_lock_names_its_owner_with_or_without_a_mark() {
+        let dir = crate::test_dir::TestDir::new("owner-mark");
+        let path = dir.join(FILE);
+        fs::write(&path, line("server", "a1b2")).unwrap();
+        let ours = Owner {
+            pid: std::process::id(),
+            kind: "server".into(),
+        };
+        assert_eq!(current_owner_at(&path), Some(ours.clone()));
+        assert_eq!(mark_in(&fs::read_to_string(&path).unwrap()), Some("a1b2"));
+        fs::write(&path, format!("{} server", std::process::id())).unwrap();
+        assert_eq!(current_owner_at(&path), Some(ours));
+        assert_eq!(mark_in(&fs::read_to_string(&path).unwrap()), None);
     }
 
     #[test]

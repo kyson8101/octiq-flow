@@ -2742,8 +2742,11 @@ mod tests {
             "chats/chat_never-made.jsonl",
         ] {
             let target = profile.join(owned);
+            // The owner lock is there already: the server left its mark.
+            let before = std::fs::read(&target).ok();
+            assert_eq!(before.is_some(), owned == "owner.lock", "{owned}");
             let refused = editor_saves(&services, &target, "{}");
-            assert!(!target.exists(), "{owned} was written");
+            assert_eq!(std::fs::read(&target).ok(), before, "{owned} was written");
             assert!(refused.unwrap_err().contains("OctiqFlow keeps"), "{owned}");
         }
 

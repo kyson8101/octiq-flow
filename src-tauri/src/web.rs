@@ -191,7 +191,11 @@ pub fn load_config() -> WebConfig {
 pub fn save_config(cfg: &WebConfig) {
     let path = config_path();
     if let Some(dir) = path.parent() {
-        let _ = crate::profile::make_dir(dir);
+        // A profile folder that is gone, or is no longer the one the
+        // server started with, gets no token written into it.
+        if crate::profile::make_dir(dir).is_err() {
+            return;
+        }
         private_dir(dir);
     }
     if let Ok(raw) = serde_json::to_string_pretty(cfg) {
