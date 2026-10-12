@@ -8,13 +8,19 @@
 // guard is on the run panel's start controls. What can only be seen in a
 // browser (where focus lands, what a second Enter sends) is in the evidence
 // of the change; here are the rules it is built from.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+
+vi.mock("../lib/bridge", () => ({
+  bridge: { invoke: async () => null, on: () => () => {}, onState: () => () => {} },
+}));
+
 import { STRAY_MS, STRAY_RADIUS } from "../lib/cardFold";
+import { confirmContent } from "../lib/chatComplete";
 import { heldKey, strayAnswer } from "../lib/pressGuard";
 import { stopConfirm } from "../lib/taskReopened";
 import { ConfirmDialog } from "./Confirm";
-import { CompleteChatConfirm, confirmContent } from "./CompleteChat";
+import { CompleteChatConfirm } from "./CompleteChat";
 import panelSource from "./OrchestrationPanel.tsx?raw";
 import noteSource from "./ReopenedNote.tsx?raw";
 
@@ -24,7 +30,7 @@ const buttons = (html: string) => [...html.matchAll(/<button[^>]*>[^<]*<\/button
 
 describe("where the keyboard is put when a question opens", () => {
   it("is the safe answer, for a question that stops something", () => {
-    const html = renderToStaticMarkup(<ConfirmDialog options={stopConfirm({ title: "Implement" })} opener={null} onAnswer={() => {}} />);
+    const html = renderToStaticMarkup(<ConfirmDialog options={stopConfirm({ title: "Implement" })} onAnswer={() => {}} />);
     const [cancel, confirm] = buttons(html);
     expect(cancel).toContain(">Keep it running</button>");
     expect(cancel).toContain('autofocus=""');
@@ -34,7 +40,7 @@ describe("where the keyboard is put when a question opens", () => {
   });
 
   it("is the safe answer for every other question too", () => {
-    const html = renderToStaticMarkup(<ConfirmDialog options={{ title: "Close this mission?", confirmLabel: "Close mission" }} opener={null} onAnswer={() => {}} />);
+    const html = renderToStaticMarkup(<ConfirmDialog options={{ title: "Close this mission?", confirmLabel: "Close mission" }} onAnswer={() => {}} />);
     const [cancel, confirm] = buttons(html);
     expect(cancel).toContain(">Cancel</button>");
     expect(cancel).toContain('autofocus=""');
@@ -91,7 +97,8 @@ describe("who asks through the shared question", () => {
   it("is this list, and a new caller is added to it", () => {
     const callers = Object.entries(sources)
       .filter(([path, source]) => !/\.test\.tsx?$/.test(path) && !path.endsWith("/Confirm.tsx") && /\buseConfirm\(\)/.test(source))
-      .map(([path]) => path.replace(/^\.\.\//, "")).sort();
+      // As paths under `src`: the glob's keys are relative to this folder.
+      .map(([path]) => path.replace(/^\.\.\//, "").replace(/^\.\//, "components/")).sort();
     expect(callers).toEqual([
       "App.tsx",                       // Close a mission after its chat was completed
       "components/EditorMode.tsx",     // Discard changes, Reload from disk, Overwrite

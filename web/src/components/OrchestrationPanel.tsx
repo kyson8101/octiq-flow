@@ -45,6 +45,7 @@ import {
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
 import { planHoldsEveryStart, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
+import { dropHeld, notePress } from "../lib/pressGuard";
 import "./RunProgress.css";
 
 import {
@@ -1026,7 +1027,7 @@ function RunDetail({
                   <button className="is-danger" type="button" disabled={busy} onClick={() => onStop(true)}>Stop and archive</button>
                 </div>
               ) : (
-                <button className="orch-quiet" type="button" disabled={busy} onClick={onAskStop}>Stop</button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); onAskStop(); }}>Stop</button>
               )
             )}
             {!readOnly && mission && !closed && !confirmStop && !confirmEnd && <button className="orch-quiet" type="button" disabled={busy}
@@ -1046,8 +1047,11 @@ function RunDetail({
                   </button>
                 </div>
               ) : !confirmArchive && <>
-                <button className="orch-quiet" type="button" disabled={busy} onClick={() => setConfirmEnd("close")}>Close mission</button>
-                <button className="orch-quiet" type="button" disabled={busy} onClick={() => setConfirmEnd("abandon")}>Abandon</button>
+                {/* Each of these is replaced, where it stands, by the question
+                    it opens: the press is remembered, so one that repeats it
+                    cannot land on the question's confirming answer. */}
+                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmEnd("close"); }}>Close mission</button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmEnd("abandon"); }}>Abandon</button>
               </>
             )}
             {!readOnly && !archived && !ACTIVE_RUNS.has(run.status) && !confirmEnd && (
@@ -1059,7 +1063,7 @@ function RunDetail({
                   <button type="button" disabled={busy} onClick={() => { setConfirmArchive(false); onArchive(true); }}>Archive</button>
                 </div>
               ) : (
-                <button className="orch-quiet" type="button" disabled={busy} onClick={() => setConfirmArchive(true)}>Archive mission</button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmArchive(true); }}>Archive mission</button>
               )
             )}
             {!readOnly && archived && <button className="orch-quiet" type="button" disabled={busy} onClick={() => onArchive(false)}>Restore mission</button>}
@@ -1285,7 +1289,11 @@ function RunGroup({ group, holds, children }: {
   const { label, spoken } = groupHeading(group);
   return <section className="run-group" data-group={group.key} aria-label={spoken}>
     {folds
-      ? <button type="button" className="run-group-head" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
+      // Opening or shutting a group moves every row under it: the press is
+      // remembered, so one that repeats it cannot land on a row's Start
+      // (`lib/pressGuard`). The same on "N more" and on a row's own two
+      // disclosures below.
+      ? <button type="button" className="run-group-head" aria-expanded={open} aria-controls={bodyId} onClick={(event) => { notePress(event); setOpen(!open); }}>
         <svg className="run-group-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
         {label}
       </button>
@@ -1299,7 +1307,7 @@ function RunGroup({ group, holds, children }: {
             are folded, and which they are. */}
         <button type="button" className="run-group-more" aria-expanded={false} aria-controls={restId}
           aria-label={`${more} more ${group.label.toLowerCase()} ${more === 1 ? "task" : "tasks"}`}
-          onClick={() => { revealedFrom.current = rows.length; setAll(true); }}>
+          onClick={(event) => { notePress(event); revealedFrom.current = rows.length; setAll(true); }}>
           <span className="run-row-face is-none" aria-hidden="true">…</span>{more} more
         </button>
         <div className="run-group-rest" id={restId} hidden>{group.rows.slice(rows.length).map(children)}</div>
@@ -1457,7 +1465,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
           <button type="button" className="orch-task-expand" aria-expanded={expanded} aria-controls={detailId}
             aria-label={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`}
             title={expanded ? "Collapse task progress" : "Expand task progress"}
-            onClick={() => setExpanded(!expanded)}>
+            onClick={(event) => { notePress(event); setExpanded(!expanded); }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={expanded ? "m6 15 6-6 6 6" : "m9 6 6 6-6 6"} /></svg>
           </button>
         </span>
@@ -1502,7 +1510,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
         {!report && <p className="orch-task-reported">No checklist reported</p>}
         <PeerHelpLog asks={taskPeerAsks(snapshot, task.id)} ago={(at) => agoLabel(at, now)} />
         <details className="orch-task-more">
-          <summary>Task details</summary>
+          <summary className="orch-task-more-summary" onClick={(event) => { notePress(event); }}>Task details</summary>
           <TaskLifecycleEvidence snapshot={snapshot} taskId={task.id} now={now} />
           {environment && <div className="orch-task-env-detail">
             <p>Test environment: {environment.label}</p>
@@ -1571,7 +1579,14 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
 /** Every control of the panel that starts an attempt. What it starts and
  *  whether the host would take it are `lib/taskHold.startControl`'s to say:
  *  a start the host would refuse stays on the page, switched off, with the
- *  reason beside it and read out with it. */
+ *  reason beside it and read out with it.
+ *
+ *  A start has no question in front of it, like the page's other Starts,
+ *  so it is guarded where it stands (`lib/pressGuard`): the repeats of a
+ *  held key are dropped, and the disclosures that bring it on screen (the
+ *  row's, its Task details, the group's fold and "N more") are remembered
+ *  by the cards' stray-press guard, so a row that opens under the pointer
+ *  cannot start a worker. */
 function StartButton({ start, busy, onStart }: {
   start: StartControl<OrchestrationAttempt>;
   busy: boolean;
@@ -1580,7 +1595,7 @@ function StartButton({ start, busy, onStart }: {
   const whyId = useId();
   return <>
     <button type="button" className="orch-start" disabled={busy} aria-disabled={start.blocked ? true : undefined}
-      aria-describedby={start.blocked ? whyId : undefined}
+      aria-describedby={start.blocked ? whyId : undefined} onKeyDown={dropHeld}
       onClick={start.blocked ? undefined : onStart}>{start.label}</button>
     {start.blocked && <span id={whyId} className="orch-start-why">{start.blocked}</span>}
   </>;

@@ -21,6 +21,7 @@ import { FoldBody, FoldLine, useFold, WholeText } from "./CardFold";
 import { useLiveEntry } from "./Arrive";
 import { useConfirm } from "./Confirm";
 import type { OrchestrationSnapshot } from "../lib/orchestration";
+import { dropHeld } from "../lib/pressGuard";
 import {
   reopenedFoldLabel, reopenedHeadline, reopenedStop, stopConfirm, type ReopenedStop, type TaskReopened,
 } from "../lib/taskReopened";
@@ -100,7 +101,7 @@ export function ReopenedLine({ reopened, stop, startOpen = false, busy = false, 
           {stop.state === "stopped"
             ? <p className="reopened-note-held" role="status">{stop.note}</p>
             : <>
-              <button type="button" className="reopened-note-stop" disabled={busy}
+              <button type="button" className="reopened-note-stop" onKeyDown={dropHeld} disabled={busy}
                 aria-disabled={stop.state === "cannot" || undefined}
                 aria-describedby={stop.state === "cannot" ? whyId : undefined}
                 onClick={stop.state === "can" ? onStop : undefined}>{busy ? "Stopping…" : "Stop this task…"}</button>

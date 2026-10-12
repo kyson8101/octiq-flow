@@ -17,15 +17,17 @@
 // this one shuts, and its Allow can arrive under a pointer that has not
 // moved. So a press on a disclosure is remembered for a moment, and a second
 // press in the same spot that would land on anything but that disclosure is
-// dropped (`lib/cardFold.strayPress`).
+// dropped (`lib/cardFold.strayPress`, kept by `lib/pressGuard.notePress`,
+// which the run panel's disclosures share).
 //
 // Folded is the state a card starts in. A card the person opened stays open
 // while it is on screen, by the id of what it asks; nothing is kept past that.
 import { useEffect, useId, useState, type AnimationEvent, type ReactNode } from "react";
 import {
-  foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart, strayPress,
-  type FoldPhase, type FoldState, type Press,
+  foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
+  type FoldPhase, type FoldState,
 } from "../lib/cardFold";
+import { notePress } from "../lib/pressGuard";
 import "./CardFold.css";
 
 export type Fold = {
@@ -72,32 +74,6 @@ export function useFold(id: string, { parts = 1, startOpen = false }: { parts?: 
   };
 }
 
-/** The last pointer press on a disclosure, and the control it was on. */
-let lastPress: (Press & { on: Element }) | null = null;
-let guarding = false;
-
-/** Drops a press that repeats the one on a disclosure and would land
- *  somewhere else. On the document, in the capture phase, so it is ahead of
- *  every handler on the page, whichever card the press slid onto. */
-function dropStray(event: MouseEvent) {
-  if (!lastPress || event.detail === 0) return;
-  const next = { x: event.clientX, y: event.clientY, at: performance.now() };
-  if (!strayPress(lastPress, next)) return;
-  // The same control again is a second press on it: let it close what it opened.
-  if (event.target instanceof Node && lastPress.on.contains(event.target)) return;
-  event.preventDefault();
-  event.stopPropagation();
-}
-
-/** A press on a disclosure, as the guard remembers it. A key press has no
- *  spot: focus stays on the control, and nothing slides under a key. */
-function notePress(event: { detail: number; clientX: number; clientY: number; currentTarget: Element }) {
-  if (event.detail === 0) return;
-  lastPress = { x: event.clientX, y: event.clientY, at: performance.now(), on: event.currentTarget };
-  if (guarding || typeof document === "undefined") return;
-  guarding = true;
-  document.addEventListener("click", dropStray, true);
-}
 
 /** The control: a chevron, with what it does in its tooltip. `describedBy`
  *  is the id of the words beside it that say what is folded. */

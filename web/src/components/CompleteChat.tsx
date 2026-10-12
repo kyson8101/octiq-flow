@@ -22,6 +22,7 @@ import {
 import { count } from "../lib/cardFold";
 import type { MissionOffer } from "../lib/useChatCompletions";
 import { FoldBody, FoldLine, useFold } from "./CardFold";
+import { useCarefulAnswer } from "./Confirm";
 import "./CompleteChat.css";
 
 /** The action in the chat's menu. Icon and tooltip; the label shows in the
@@ -110,11 +111,15 @@ export function CompleteChatConfirm({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const confirmRef = useRef<HTMLButtonElement>(null);
   // One question on screen at a time, and it starts folded each time it is asked.
   const fold = useFold("complete-chat", { startOpen });
-  // Through a ref, and focus once: the page behind re-renders on every delta
-  // of a streaming reply, and each one must not pull the focus back here.
+  // Completing stops the chat's process, so this is asked as carefully as
+  // any question that stops something (`Confirm.useCarefulAnswer`): the
+  // focus is on Cancel from the first draw, a held key answers nothing, and
+  // a press that repeats the one that opened this does not confirm it.
+  const careful = useCarefulAnswer(onConfirm);
+  // Through a ref: the page behind re-renders on every delta of a streaming
+  // reply, and each one must not rebind the key.
   const cancel = useRef(onCancel);
   cancel.current = onCancel;
   useEffect(() => {
@@ -126,15 +131,11 @@ export function CompleteChatConfirm({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  // Nothing can be confirmed until the host has said what it knows, or that
-  // it will not: the answer is what the question is about.
-  useEffect(() => {
-    if (!loading) confirmRef.current?.focus();
-  }, [loading]);
 
   return (
     <div className="ask-scrim" onClick={onCancel}>
       <div className="ask complete-ask" role="alertdialog" aria-modal="true" aria-label={content.title}
+        onKeyDownCapture={careful.keys}
         onClick={(event) => event.stopPropagation()}>
         <h2 className="ask-title complete-ask-title">
           <span className="complete-ask-mark" aria-hidden="true"><CompleteIcon size={15} /></span>
@@ -172,11 +173,16 @@ export function CompleteChatConfirm({
         {content.refusal && <p className="complete-ask-refusal" role="status">{content.refusal}</p>}
 
         <div className="ask-buttons">
-          <button className="ask-btn" type="button" onClick={onCancel}>
+          {/* The safe answer has the focus, once, from the first draw: the
+              page behind re-renders on every delta and must not pull it
+              back, and a key pressed again cancels. */}
+          <button className="ask-btn" type="button" autoFocus onClick={onCancel}>
             {content.refusal ? "Close" : "Cancel"}
           </button>
+          {/* Nothing can be confirmed until the host has said what it knows,
+              or that it will not: the answer is what the question is about. */}
           {!content.refusal && (
-            <button ref={confirmRef} className="ask-btn is-primary" type="button" disabled={loading} onClick={onConfirm}>
+            <button className="ask-btn is-primary" type="button" disabled={loading} onClick={careful.confirm}>
               Complete
             </button>
           )}
