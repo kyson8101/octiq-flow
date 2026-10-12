@@ -20,6 +20,28 @@ all state from disk; no live teardown).
   the cosmetic "last mode" flag (`localStorage["octiq.mode"]`).
 - **Safety:** if `base` is unreachable at launch (iCloud/USB offline), fall back to
   `~/.octiqflow/profiles`, warn, do not crash.
+- **Fixed for the life of the process (2026-10-12).** The folder is resolved
+  once, at launch, and that is the only moment the fallback applies. The
+  server says which folder it is using when it is the fallback: on its log
+  line, and to the page through `profile_status` (`fallbackFrom`, `notice`).
+  A base that comes back later is not switched to; restart to use it.
+  A folder that goes away while the server runs is an error to whoever
+  asked, in words the page shows, and never a move to the default base:
+  nothing is saved anywhere else, no empty profile is made where the drive
+  was, and when the folder is back the same action works with no restart.
+  Before this, `profile_dir()` read the config and tried to make the folder
+  on every call and fell back whenever that failed, which split a running
+  server across two folders (transcripts, chat index, roster and vault
+  settings in one; ledger, project list and questions in the other).
+- **What the page can ask: `profile_status`** (read-only, no arguments) →
+  `{ dir, fallbackFrom, available, notice }`. `dir` is the folder in use.
+  `fallbackFrom` is the configured base when the server started on the
+  default one, else `null`. `available` is whether the folder is there
+  right now. `notice` is the sentence to show, or `null` when there is
+  nothing to say: the fallback sentence while the folder is there, and the
+  not-available sentence (the same one a refused send answers) while it is
+  not. The page does not draw it yet; today the words reach the person as
+  the error of the action they tried, and on the server's log.
 
 ## Target layout
 
@@ -49,6 +71,8 @@ routes it**, so the app never reads a moved-away file (see Migration above).
 - New `src-tauri/src/profile.rs`:
   - Load/create `~/.octiqflow/config.json` → `{ base, active }` (defaults: base `~/.octiqflow/profiles`, active `default`).
   - `profile_dir() -> PathBuf` = `<base>/<active>/`, `create_dir_all`. Reads config; no `AppHandle` needed.
+    (As built then. Since 2026-10-12 it answers the path `profile::pin` fixed
+    at launch and makes nothing; see **Safety** above.)
   - Base-unreachable fallback to `~/.octiqflow/profiles` + warn.
   - Reusable `migrate_once(dir, marker, items)` + `move_path` helpers (best-effort `fs::rename`).
   - `migrate_app_data_stores(old_app_data)` → moves `workspaces.json`,

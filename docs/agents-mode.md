@@ -1255,14 +1255,30 @@ here, so the task waits for it:
   holds no notice. So the host notes which transcript the chat has before it
   reads it (`transcript::generation`, moved whenever the host removes one),
   and a confirmation asked for after that transcript was removed is refused:
-  the task stays held for that pass, and the next try (four seconds later,
-  as after any pass that got no confirmation) writes the notice, once, into
+  the task stays held for that pass, and the next try (after the same wait
+  as any pass that got no confirmation: 4 seconds after the first, then 8,
+  16, 32, and a minute from there on) writes the notice, once, into
   the transcript you now see. A compaction keeps every notice
   and costs nothing. What this does not promise: once a notice has been
   delivered, clearing the chat removes it with the rest of that chat's
   history, which is your own act and is not undone; the task stays as it
   is and the notice is not written again. The host also does not see a
-  transcript file removed by another program.
+  transcript file removed by another program, or by an agent's own file
+  tools or a terminal.
+- That confirmation is also for the file the notice went into. What the
+  host notes names the transcript's file as the filesystem tells files
+  apart, so a confirmation is refused on any other file, including one that
+  has the same name in another folder and one reached under another
+  spelling of its name. The folder your chats are kept in is fixed when the
+  server starts and does not change while it runs, so a chat's name does
+  not come to mean another file; if a drive holding that folder goes away,
+  nothing is confirmed and nothing starts until it is back.
+- The file editor in the page does not save over a transcript, or over any
+  other file OctiqFlow keeps in the profile folder (the roster, the run
+  ledger, the server's settings): `OctiqFlow keeps its own state in the
+  profile folder, and … is a chat's record. The file editor does not write
+  there: …`. Opening and reading them is unchanged. Your own `notify-hook`
+  and anything under `canvas/` are still yours to edit there.
 - A notice is written only into a chat you can open: one the chat list has
   and that is not in the trash. When the coordinator's chat is not such a
   chat, the reopen is refused outright and nothing is recorded: `The

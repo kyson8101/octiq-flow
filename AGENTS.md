@@ -120,7 +120,9 @@ and never again from inside an agent chat:
   cargo test`. A test that needs disk takes `crate::test_dir::TestDir` (or
   `TestPath` for a file), never a name joined onto `std::env::temp_dir()`:
   the guard removes the folder on drop, panics included. Hand-made temp
-  folders left tens of thousands of `octiq-*` entries in `$TMPDIR`. To run
+  folders left tens of thousands of `octiq-*` entries in `$TMPDIR`. The
+  profile folder is a scratch one under test too (`profile::started_in` for
+  a test that needs its own; see **Persistence locations**). To run
   several modules, put the filters after `--`:
   `cargo test --manifest-path src-tauri/Cargo.toml --lib -- feedback:: agent_provider:: permission::`.
   Before `--` cargo takes one positional filter and errors instead of testing.
@@ -256,6 +258,38 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 `profile.rs` decides the profile dir; `profile_lock.rs` makes sure only one
 process owns a profile at a time (a second one refuses to start rather than
 overwrite the first's project list).
+
+**The profile dir is fixed when the server starts.** `profile::pin` is the
+first thing `run_headless` does: `<base>/<active>/` is resolved once from
+`~/.octiqflow/config.json`, and `profile::profile_dir` answers that one path
+until the process exits. It makes nothing and looks nothing up again.
+
+- **The fallback is at startup only.** A configured base that cannot be made
+  then gives way to `~/.octiqflow/profiles`, as before, and the server says
+  so: on its log line, and in `profile_status`'s `fallbackFrom` and `notice`.
+  It stays on that folder when the configured one comes back; only a restart
+  looks again.
+- **A folder that goes away under a running server is an error, never
+  another folder.** `profile::available` answers why in words (`The profile
+  folder … is not available right now: … OctiqFlow keeps to the folder it
+  started with and has not switched to another, so nothing was saved. …`).
+  `chat_send`, `chat_start`, `chat_complete` and `chat_index_list` answer
+  with it first, and no agent is started on a turn whose record cannot be
+  kept. Every store that makes its folder before a write asks
+  `profile::make_dir`, which is `create_dir_all` except that it never makes
+  the profile folder itself again, so a drive that was unplugged gets no
+  empty profile written where it was. When the folder is back the same
+  calls go through; nothing is restarted. What ran meanwhile: a turn already
+  in flight goes on streaming to the page and its lines are not recorded.
+- **A new store reads `profile::profile_dir()` and makes folders with
+  `profile::make_dir`.** Never `create_dir_all` on a path under the profile,
+  never the config read again, never a base worked out by the module.
+- **In tests `profile_dir()` is a scratch profile**, one `TestDir` shared by
+  the test binary and never this machine's own. A test that needs a profile
+  to itself (it takes the folder away, or runs something that sweeps the
+  chats folder, as `chat_index::reconcile` does) stands its thread in one
+  with `profile::started_in(home)`, which resolves from the config under
+  that home exactly as the server does.
 
 ### A chat's status is half reported, half verified
 
@@ -1105,11 +1139,17 @@ page's. Nothing but an approval writes it. So:
   line said there makes a file that syncs and holds no notice. So
   `notice_receipts` takes the record's `transcript::Generation` before it
   reads, `confirm_synced` refuses one that has moved, and the next pass
-  writes the notice once into the record that is there. Whatever removes a
-  record, or replaces a host event's line in one, goes through
+  writes the notice once into the record that is there. **The token names
+  its file** (`transcript::identity`: the folder as the filesystem resolves
+  it and the name, folded where two spellings are one file), so one taken
+  for a file is refused on any other whatever their numbers: every file
+  that never moved on used to read the same. Whatever removes a
+  record, or replaces a host event's line in one (known by parsing the
+  line's top-level `type`), goes through
   `transcript::forget`, `forget_file` or `rewrite_numbered`, which move the
   generation under the append lock; a new path that deletes or truncates a
-  record file does the same, never a bare `remove_file`. A `/clear` after
+  record file does the same, never a bare `remove_file`, and the page's file
+  editor refuses one (`paths::host_owned`). A `/clear` after
   delivery removes the notice with the chat's history and is not undone. A
   reopen whose coordinator
   chat the person cannot open (not in the chat list, or in the trash) is
@@ -1259,6 +1299,33 @@ time limit).
   card, as `seat_refusal`, `roster_seat_refusal` and `memory_seat_refusal`
   do. Such a hook keeps the `HookCaller`: `task_hook_caller` hands back the
   chat key alone, which is how a seat was once taken for the chat's agent.
+- **A durability receipt that gates a start or an approval covers the
+  current file, its folder, and that file's identity and life.** All four,
+  taken in one pass under the lock appends take: the file as it is now
+  synced, then the folder it is in, for the file the line was seen in or
+  written to (not another the same name has come to mean), in the record
+  that file holds now (not one made after the first was removed).
+  `transcript::generation` is taken before the look and
+  `transcript::confirm_synced` is the only thing that answers yes. What is
+  not a receipt, each of which was once taken for one: a line that can be
+  read back (the OS holds it), an append's own answer (it syncs the folder
+  only for a file it made), "the file existed", and a number two files
+  share. A new step that waits on "the person was told" or "this is on
+  disk" asks the same call; it does not adopt what it finds.
+- **Profile state is read from the folder fixed at startup.** Every path
+  under the profile comes from `profile::profile_dir()`, and nothing reads
+  `config.json`, falls back to another base, or makes the profile folder
+  after `profile::pin` (see **Persistence locations**). A store pinned at
+  load and a store resolved per call were once in two different folders at
+  the same time. And nothing the host offers writes a file there behind the
+  module that owns it: the file editor's `write_file` refuses everything in
+  the profile folder but the person's own `notify-hook` and `canvas/`
+  (`paths::host_owned`).
+- **Every reader of a chat record walks it with `transcript::for_each_line`
+  or a reader built on it** (`since`, `of_type`, `page`). A line's position
+  is its `seq`, so a line that cannot be decoded is skipped by the reader
+  and still counted: `lines().map_while(Result::ok)` ends a read at the
+  first line that is not UTF-8 and shifts every number after it.
 - **Carry a session or history file to a second name without ever writing
   over what is there, and promise no more wholeness than the path gives.**
   `hard_link` answering `AlreadyExists` is success, not a reason to copy: the
