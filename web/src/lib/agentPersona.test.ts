@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  composerPlaceholder, keepAssignees, personaFor, personaHue, personaInitials, personaTitle, senderName,
+  awayFromWarm, composerPlaceholder, keepAssignees, personaFor, personaHue, personaInitials, personaTitle, senderName, WARM_HUES,
 } from "./agentPersona";
 import type { LeadRecord } from "./agentsDashboard";
 
@@ -87,5 +87,77 @@ describe("persona labels", () => {
     expect(personaInitials(" ")).toBe("?");
     expect(personaHue("agent_1")).toBe(personaHue("agent_1"));
     expect(personaHue("agent_1")).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("a face's colour is never the colour of a warning or of an error", () => {
+  /** The hue a key had before any was moved: the hash alone. */
+  const plain = (key: string) => {
+    let hash = 0;
+    for (const char of key) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
+    return hash % 360;
+  };
+  const warm = (hue: number) => hue >= WARM_HUES.from || hue < WARM_HUES.to;
+  /** The roster of 2026-10-12, each agent by the hash of its id (the list in
+   *  `docs/mocks/handover-cards-namecard.html`). */
+  const ROSTER: [string, number][] = [
+    ["Potato Juice", 4096662720], ["OCTIQ BE", 3517572383], ["PERF LEAD", 257198667], ["PERF FE", 3029488189],
+    ["PERF FE QC", 3683307109], ["PERF BE", 40123985], ["PERF BE QC", 2474397496], ["OCTIQ DEV BACKUP", 1506905960],
+    ["STAR STORY", 4189067744], ["STAR MUSIC", 3971203626], ["STAR VIDEO", 4219658498], ["STAR YT", 1312869866],
+    ["WS LEAD", 1365578356], ["WS FE", 1084825579], ["WS BE", 3990971980], ["APP LEAD", 1196050932],
+    ["APP DEV", 1672280581], ["LEAVE LEAD", 3113615648], ["LEAVE FE", 3791242014], ["LEAVE BE", 802577421],
+    ["WS QC", 302326397], ["LEAVE QC", 4208607781], ["APP QC", 3342701760], ["HRMS HEAD", 1935423665],
+    ["OCTIQ HEAD", 3289798706], ["STAR SOCIAL", 4206188686], ["WEB DEV", 640797743], ["STAR CANON", 2928899491],
+    ["Front desk", 3109799075], ["STAR LEAD", 3145708459], ["STAR DEV", 2342730338], ["NAS OPS", 1401362549],
+    ["OCTIQ FE", 300384701], ["STAR QA", 336622497],
+  ];
+
+  it("gives no key a hue from danger red round to the end of amber", () => {
+    const keys = [
+      "agent_ee96a6613d0c", "agent_69053716286b", "Potato Juice", "STAR LEAD", "Front desk", "Mango", "Vesper", "",
+      ...Array.from({ length: 5000 }, (_, i) => `agent_${i.toString(16)}`),
+    ];
+    // Enough keys that the band was well used before: none is left in it.
+    expect(keys.filter((key) => warm(plain(key))).length).toBeGreaterThan(1000);
+    for (const key of keys) {
+      const hue = personaHue(key);
+      expect(Number.isInteger(hue), key).toBe(true);
+      expect(hue, key).toBeGreaterThanOrEqual(WARM_HUES.to);
+      expect(hue, key).toBeLessThan(WARM_HUES.from);
+    }
+  });
+
+  it("leaves every hue that was not a warm one exactly where it was", () => {
+    for (let hue = 0; hue < 360; hue += 1) {
+      if (!warm(hue)) expect(awayFromWarm(hue), `hue ${hue}`).toBe(hue);
+      else expect(warm(awayFromWarm(hue)), `hue ${hue}`).toBe(false);
+    }
+    const kept = Array.from({ length: 2000 }, (_, i) => `agent_${i}`).filter((key) => !warm(plain(key)));
+    expect(kept.length).toBeGreaterThan(1000);
+    for (const key of kept) expect(personaHue(key), key).toBe(plain(key));
+  });
+
+  it("moves the five faces of the roster that were amber or red, and no other", () => {
+    const moved = ROSTER.filter(([, hash]) => awayFromWarm(hash % 360) !== hash % 360)
+      .map(([name, hash]) => [name, hash % 360, awayFromWarm(hash % 360)]);
+    expect(moved).toEqual([
+      ["PERF FE", 349, 91], ["STAR MUSIC", 66, 306], ["WS LEAD", 76, 334], ["LEAVE QC", 61, 292], ["STAR LEAD", 19, 175],
+    ]);
+    for (const [name, hash] of ROSTER) expect(warm(awayFromWarm(hash % 360)), name).toBe(false);
+    // By the ids themselves, for the two this file can name: STAR LEAD was
+    // amber, and OCTIQ FE sat four degrees short of the band and stays.
+    expect(plain("agent_ee96a6613d0c")).toBe(19);
+    expect(personaHue("agent_ee96a6613d0c")).toBe(175);
+    expect(personaHue("agent_69053716286b")).toBe(341);
+  });
+
+  it("keeps the order of the faces it moves, and sets apart the ones that sat side by side", () => {
+    // Along the band is along the rest of the wheel: 345 is its start.
+    const band = Array.from({ length: 95 }, (_, i) => (WARM_HUES.from + i) % 360).map(awayFromWarm);
+    for (let i = 1; i < band.length; i += 1) expect(band[i]).toBeGreaterThan(band[i - 1]);
+    expect(band[0]).toBe(WARM_HUES.to);
+    expect(band[band.length - 1]).toBeLessThan(WARM_HUES.from);
+    // 61, 66 and 76 were within 15 degrees; they are 14 and 28 apart now.
+    expect([61, 66, 76].map(awayFromWarm)).toEqual([292, 306, 334]);
   });
 });

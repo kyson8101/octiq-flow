@@ -85,12 +85,30 @@ export function personaInitials(name: string): string {
   return letters.join("").toLocaleUpperCase();
 }
 
+/** The hues no face is given: from danger red round to the end of amber. A
+ *  face's saturation and lightness are fixed (`AgentAvatar.css`), so a hue in
+ *  here is the colour of an error or of a warning, and an agent's face says
+ *  neither. Starts at 345, ends before 80. */
+export const WARM_HUES = { from: 345, to: 80 } as const;
+const WARM_WIDTH = (WARM_HUES.to - WARM_HUES.from + 360) % 360;
+
+/** A hue out of the warm ones. One that is not among them is left as it is,
+ *  so most faces keep the colour they always had. One that is takes its
+ *  place along the band as its place along the rest of the wheel: the band
+ *  is stretched over everything that is not the band, which also sets apart
+ *  the faces that sat side by side inside it. */
+export function awayFromWarm(hue: number): number {
+  const along = (hue - WARM_HUES.from + 360) % 360;
+  if (along >= WARM_WIDTH) return hue;
+  return Math.round(WARM_HUES.to + (along * (360 - WARM_WIDTH)) / WARM_WIDTH) % 360;
+}
+
 /** A stable hue per agent, so the same initials tile is the same colour on
- *  every screen and after every reload. */
+ *  every screen and after every reload. Never a warm one (`WARM_HUES`). */
 export function personaHue(key: string): number {
   let hash = 0;
   for (const char of key) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
-  return hash % 360;
+  return awayFromWarm(hash % 360);
 }
 
 /** The name over a reply: the persona's, else the provider's (the label an
