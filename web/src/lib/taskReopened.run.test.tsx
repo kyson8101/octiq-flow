@@ -83,8 +83,7 @@ describe("the opened line", () => {
       [draw(line(), null), NOT_COORDINATED_NOTE],
     ]) {
       expect(html).toContain('data-stop="cannot"');
-      expect(html).toContain('aria-disabled="true"');
-      const why = /aria-describedby="([^"]+)"/.exec(html)![1];
+      const why = /<button type="button" class="reopened-note-stop" aria-disabled="true" aria-describedby="([^"]+)">/.exec(html)![1];
       expect(html).toContain(`<span id="${why}" class="reopened-note-why">${reason.replace(/'/g, "&#x27;")}</span>`);
     }
   });

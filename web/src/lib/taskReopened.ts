@@ -118,15 +118,34 @@ export function stopConfirm(reopened: Pick<TaskReopened, "title">) {
   };
 }
 
+/** The line's event names one run, and the task it names is in another, or
+ *  the ledger no longer lists that run. */
+export const OTHER_RUN_NOTE = "This line's run is not the run this task is in now, so Stop is not offered here.";
+
+/** The chat the line is drawn in does not coordinate the task's run, or the
+ *  page does not know which chat that is. */
+export const NOT_COORDINATED_NOTE = "This chat does not coordinate this task's run, so Stop is not offered here.";
+
 /** Read off the ledger, and nothing else: the line never guesses that a
- *  worker is running. A `null` snapshot is a ledger not read yet. */
+ *  worker is running. A `null` snapshot is a ledger not read yet.
+ *
+ *  Stop belongs to the line's run. The line is an event in one chat's
+ *  transcript, and a task is found in the whole ledger by its id, so both
+ *  ends are asked before anything is said of the task: the event's run is
+ *  the run the task is in, and `chatKey`, the chat the line is drawn in,
+ *  coordinates that run. Otherwise the control is off and says why, like
+ *  every other case with nothing to stop. */
 export function reopenedStop(
-  reopened: Pick<TaskReopened, "taskId" | "at" | "attempt">,
+  reopened: Pick<TaskReopened, "runId" | "taskId" | "at" | "attempt">,
   snapshot: OrchestrationSnapshot | null,
+  chatKey: string | null,
 ): ReopenedStop {
   if (!snapshot) return { state: "cannot", reason: "The run's ledger has not been read yet." };
   const task = snapshot.tasks.find((item) => item.id === reopened.taskId);
   if (!task) return { state: "cannot", reason: "This task is no longer on the run." };
+  const run = snapshot.runs.find((item) => item.id === task.runId);
+  if (!run || run.id !== reopened.runId) return { state: "cannot", reason: OTHER_RUN_NOTE };
+  if (!chatKey || run.coordinatorChatKey !== chatKey) return { state: "cannot", reason: NOT_COORDINATED_NOTE };
   if (task.stopped) return { state: "stopped", note: STOPPED_NOTE };
   // A later reopening of the same task has a line of its own, and that is
   // the one its worker is on.

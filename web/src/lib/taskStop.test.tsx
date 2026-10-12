@@ -20,7 +20,7 @@ import { runWaits } from "./runWaits";
 import { STOPPED_DETAIL, STOPPED_LABEL } from "./taskHold";
 import { reopenedStop, STOPPED_NOTE, type TaskReopened } from "./taskReopened";
 import { OrchestrationPanel, retryLaunchArgs } from "../components/OrchestrationPanel";
-import { ReopenedNote, TaskStopContext } from "../components/ReopenedNote";
+import { ReopenedChatContext, ReopenedNote, TaskStopContext } from "../components/ReopenedNote";
 
 afterEach(() => vi.useRealTimers());
 
@@ -48,23 +48,32 @@ describe("what the host answers and leaves", () => {
   });
 });
 
+/** What the line of `taskId` says where it belongs: its event names the
+ *  task's own run, and it is drawn in the chat that coordinates that run
+ *  (`taskReopened.run.test` asks the other cases). */
+const stopIn = (snapshot: OrchestrationSnapshot, taskId: string, over: Partial<TaskReopened> = {}) => {
+  const runId = snapshot.tasks.find((task) => task.id === taskId)?.runId ?? "run";
+  const chatKey = snapshot.runs.find((run) => run.id === runId)?.coordinatorChatKey ?? null;
+  return reopenedStop(line(taskId, { runId, ...over }), snapshot, chatKey);
+};
+
 describe("whether a reopened line can stop its task", () => {
   it("can while a worker is on the task", () => {
     const running = hostFacts.usageContext();
     expect(running.tasks[0].status).toBe("running");
-    expect(reopenedStop(line(running.tasks[0].id), running)).toEqual({ state: "can" });
+    expect(stopIn(running, running.tasks[0].id)).toEqual({ state: "can" });
   });
 
   it("can while its worker is parked on an open decision, which a stop cancels with it", () => {
     const gated = hostFacts.gatesOpen();
     expect(gated.attempts[0].status).toBe("blocked");
-    expect(reopenedStop(line(gated.tasks[0].id), gated)).toEqual({ state: "can" });
+    expect(stopIn(gated, gated.tasks[0].id)).toEqual({ state: "can" });
   });
 
   it("cannot before a worker has started, and says so", () => {
     // The host's reopened task: ready, its last attempt completed.
     const held = hostFacts.heldByReopen();
-    expect(reopenedStop(line(held.tasks[0].id, { at: held.tasks[0].reopens![0].at }), held))
+    expect(stopIn(held, held.tasks[0].id, { at: held.tasks[0].reopens![0].at }))
       .toEqual({ state: "cannot", reason: "No worker is running on this task yet, so there is nothing to stop." });
   });
 
@@ -75,27 +84,33 @@ describe("whether a reopened line can stop its task", () => {
       { byChatKey: "chat:master", at: 100, attempt: 2, previousSpec: "a", spec: "b", noticeDelivered: true },
       { byChatKey: "chat:master", at: 200, attempt: 3, previousSpec: "b", spec: "c", noticeDelivered: true },
     ];
-    expect(reopenedStop(line(again.tasks[0].id, { at: 100, attempt: 2 }), again))
+    expect(stopIn(again, again.tasks[0].id, { at: 100, attempt: 2 }))
       .toEqual({ state: "cannot", reason: "This task was reopened again since. Stop is on its latest reopening." });
-    expect(reopenedStop(line(again.tasks[0].id, { at: 200, attempt: 3 }), again)).toEqual({ state: "can" });
+    expect(stopIn(again, again.tasks[0].id, { at: 200, attempt: 3 })).toEqual({ state: "can" });
     // Reopened twice before a dispatch: both lines say the same attempt, and
     // the later stamp is the latest.
     again.tasks[0].reopens![1].attempt = 2;
-    expect(reopenedStop(line(again.tasks[0].id, { at: 100, attempt: 2 }), again).state).toBe("cannot");
-    expect(reopenedStop(line(again.tasks[0].id, { at: 200, attempt: 2 }), again).state).toBe("can");
+    expect(stopIn(again, again.tasks[0].id, { at: 100, attempt: 2 }).state).toBe("cannot");
+    expect(stopIn(again, again.tasks[0].id, { at: 200, attempt: 2 }).state).toBe("can");
   });
 
   it("says what a stop left, and guesses nothing without a ledger or a task", () => {
-    expect(reopenedStop(line(stopped.answer.id), stopped.snapshot)).toEqual({ state: "stopped", note: STOPPED_NOTE });
-    expect(reopenedStop(line("task_gone"), stopped.snapshot)).toEqual({ state: "cannot", reason: "This task is no longer on the run." });
-    expect(reopenedStop(line(stopped.answer.id), null)).toEqual({ state: "cannot", reason: "The run's ledger has not been read yet." });
+    expect(stopIn(stopped.snapshot, stopped.answer.id)).toEqual({ state: "stopped", note: STOPPED_NOTE });
+    expect(stopIn(stopped.snapshot, "task_gone")).toEqual({ state: "cannot", reason: "This task is no longer on the run." });
+    expect(reopenedStop(line(stopped.answer.id), null, "chat:master")).toEqual({ state: "cannot", reason: "The run's ledger has not been read yet." });
   });
 
   it("draws each of them on the opened line from the ledger the app hands it", () => {
-    const draw = (snapshot: OrchestrationSnapshot | null, taskId: string) => renderToStaticMarkup(
-      <TaskStopContext.Provider value={{ snapshot, stop: async () => {} }}>
-        <ReopenedNote reopened={line(taskId)} startOpen />
-      </TaskStopContext.Provider>);
+    // In the chat that coordinates the task's run, as the transcript says it.
+    const draw = (snapshot: OrchestrationSnapshot, taskId: string) => {
+      const run = snapshot.runs.find((item) => item.id === snapshot.tasks.find((task) => task.id === taskId)!.runId)!;
+      return renderToStaticMarkup(
+        <TaskStopContext.Provider value={{ snapshot, stop: async () => {} }}>
+          <ReopenedChatContext.Provider value={run.coordinatorChatKey}>
+            <ReopenedNote reopened={line(taskId, { runId: run.id })} startOpen />
+          </ReopenedChatContext.Provider>
+        </TaskStopContext.Provider>);
+    };
     const running = hostFacts.usageContext();
     expect(draw(running, running.tasks[0].id)).toContain('<button type="button" class="reopened-note-stop">Stop this task…</button>');
     const after = draw(stopped.snapshot, stopped.answer.id);

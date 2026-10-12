@@ -23,7 +23,7 @@ import type { Persona } from "../lib/agentPersona";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
-import { ReopenedNote } from "./ReopenedNote";
+import { ReopenedChatContext, ReopenedNote } from "./ReopenedNote";
 import { LiveArrivals, useLiveEntry } from "./Arrive";
 import { useLiveAppend } from "../lib/useArrival";
 import { useRunningCalls } from "./Background";
@@ -1823,6 +1823,9 @@ const MessageListBody = function MessageList({
       <ConversationMap turns={mapTurns} scrollerRef={scrollerRef} innerRef={innerRef} onJump={mapJumped} />
       <ConfigWorldProvider say={world.say} said={world.said} readOnly={!onSetting}>
       <LiveArrivals.Provider value={live}>
+      {/* Which chat this transcript is: a reopened task's line offers its
+          Stop only in the chat that coordinates its run. */}
+      <ReopenedChatContext.Provider value={conversationId ? `chat:${conversationId}` : null}>
       <div className="msgs-inner" ref={innerRef}>
         {hasMore && (
           <div className="history-more">
@@ -1878,6 +1881,7 @@ const MessageListBody = function MessageList({
             was streaming. */}
         <div ref={endRef} />
       </div>
+      </ReopenedChatContext.Provider>
       </LiveArrivals.Provider>
       {/* Outside `.msgs-inner` and after it: it takes no height and must not
           take the column's 18px gap either, and it sticks to the bottom of the

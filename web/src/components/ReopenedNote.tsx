@@ -16,7 +16,7 @@
 //
 // It enters once, as it is said (`useLiveEntry`), and a chat read back draws
 // it where it happened without playing it again.
-import { createContext, useContext, useId, useState } from "react";
+import { createContext, useContext, useId, useRef, useState } from "react";
 import { FoldBody, FoldLine, useFold, WholeText } from "./CardFold";
 import { useLiveEntry } from "./Arrive";
 import { useConfirm } from "./Confirm";
@@ -41,6 +41,12 @@ export type TaskStopping = {
 
 export const TaskStopContext = createContext<TaskStopping>({ snapshot: null, stop: async () => {} });
 
+/** The key of the chat whose transcript the line is drawn in
+ *  (`MessageList` provides it). Stop belongs to the line's run, and only the
+ *  chat that coordinates that run offers it (`reopenedStop`); `null`, a
+ *  transcript drawn with no chat known, offers none. */
+export const ReopenedChatContext = createContext<string | null>(null);
+
 /** The line in a chat: the ledger says whether there is a worker to stop,
  *  and the page's own command stops it. */
 export function ReopenedNote({ reopened, startOpen = false }: {
@@ -49,11 +55,17 @@ export function ReopenedNote({ reopened, startOpen = false }: {
   startOpen?: boolean;
 }) {
   const { snapshot, stop: stopTask } = useContext(TaskStopContext);
+  const chatKey = useContext(ReopenedChatContext);
   const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // What the ledger says now, for the moment the question is answered: it
+  // may have moved while the question was up.
+  const latest = useRef({ snapshot, chatKey });
+  latest.current = { snapshot, chatKey };
   const stop = async () => {
     if (!(await confirm(stopConfirm(reopened)))) return;
+    if (reopenedStop(reopened, latest.current.snapshot, latest.current.chatKey).state !== "can") return;
     setBusy(true);
     setError("");
     try {
@@ -64,7 +76,7 @@ export function ReopenedNote({ reopened, startOpen = false }: {
       setBusy(false);
     }
   };
-  return <ReopenedLine reopened={reopened} startOpen={startOpen} stop={reopenedStop(reopened, snapshot)}
+  return <ReopenedLine reopened={reopened} startOpen={startOpen} stop={reopenedStop(reopened, snapshot, chatKey)}
     busy={busy} error={error} onStop={() => void stop()} />;
 }
 
