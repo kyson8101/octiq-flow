@@ -924,6 +924,17 @@ impl Store {
         .unwrap();
     }
 
+    /// Forget what this server knows of the store without its file: what a
+    /// server that has just started knows.
+    #[cfg(test)]
+    pub(crate) fn forget_for_test(&self) {
+        let _lock = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        MEMORY
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.root);
+    }
+
     /// Record `key` as started and checked the way a real start leaves it
     /// (a frozen configuration and recipe, a local Docker endpoint, state
     /// ready), without Docker: what a stop then has something to take down.
@@ -3119,6 +3130,36 @@ http.createServer(async (req, res) => {
             away.store.snapshot().unwrap().environments[Away::KEY].state,
             "stopped"
         );
+    }
+
+    /// A sandbox the server BEFORE this one left running. A server reads the
+    /// state once as it starts (`Services::load`), so it can stop that
+    /// sandbox with the folder away. One that has read nothing has nothing
+    /// to go by, and says why.
+    #[test]
+    fn a_sandbox_an_earlier_server_started_is_stopped_from_what_this_one_read_at_startup() {
+        let away = Away::new();
+        let (_docker, asked) = stand_in::recording();
+        away.store.forget_for_test();
+        away.store.known().expect("the state, read at startup");
+
+        let why = away.folder_goes();
+        assert_eq!(
+            away.store.host_stop(Away::KEY, "Nothing needs it."),
+            Ok(true)
+        );
+        assert_eq!(stand_in::taken_down(&asked), [away.env.id.clone()]);
+
+        away.store.forget_for_test();
+        assert_eq!(
+            away.store
+                .person_action(Away::KEY, "stop", None, || Ok(()))
+                .err(),
+            Some(why),
+            "a server that never read the state cannot know what to stop"
+        );
+        assert_eq!(stand_in::taken_down(&asked).len(), 1);
+        away.home.move_back();
     }
 
     /// A stop Docker refuses is said as the failure it is, and that too is

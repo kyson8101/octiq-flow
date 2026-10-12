@@ -81,6 +81,13 @@ impl Services {
             workspaces.clone(),
         );
         crate::orchestration::environments::start_reconciler(orchestrations.clone());
+        // Read the sandbox state once now, so that a sandbox this server
+        // did not start itself (one left running by the server before it)
+        // can still be stopped if the profile folder goes away before
+        // anything else has read it (`sandbox::Store::known`).
+        if let Err(why) = crate::sandbox::Store::profile().known() {
+            eprintln!("[sandbox] could not read the sandbox state at startup: {why}");
+        }
         let services = Self {
             workspaces,
             chats,

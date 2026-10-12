@@ -178,7 +178,9 @@ all state from disk; no live teardown).
     said as `unsaved` (`the stopped sandbox`), and owed: `sandboxes` in
     `profile_status.owed`, written by `settle_owed`. A state file that
     cannot be read is never written over.
-  - Limit: a server STARTED with the folder away has read nothing, so it
+  - A server reads the state once as it starts (`Services::load`), so a
+    sandbox the server before it left running can be stopped too. Limit: a
+    server that could not read it then (it started with the folder away)
     knows no sandbox to stop until the folder is back.
 
   **B. An action that fails for a missing profile never discards the
