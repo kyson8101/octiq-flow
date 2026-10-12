@@ -121,13 +121,21 @@ fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
 /// line and writes it, once. A compaction keeps every host event and is
 /// not a new record.
 ///
+/// **And for the file it was taken for.** The token names its record's
+/// file as the filesystem tells files apart (`transcript::identity`), so
+/// one taken for a file is refused on any other, whatever their numbers:
+/// two files that were never removed used to read the same. The profile
+/// folder is fixed at startup, so the chat's name cannot come to mean
+/// another file while the server runs; if it ever did, the answer is no
+/// receipt, the task held, and the next pass reading what is there.
+///
 /// The transcript is read once, for the reopen events alone.
 fn notice_receipts(chat: &str, events: &[serde_json::Value]) -> Vec<bool> {
     let none = || vec![false; events.len()];
     let Some(record) = crate::transcript::generation(chat) else {
         return none();
     };
-    let confirmed = || crate::transcript::confirm_synced(chat, record).is_some();
+    let confirmed = || crate::transcript::confirm_synced(chat, &record).is_some();
     let there = crate::transcript::of_type(chat, "octiq_task_reopened");
     let found: Vec<bool> = events
         .iter()
@@ -3205,7 +3213,7 @@ pub(super) mod tests {
         assert!(crate::transcript::append_synced(&work.key, &picture).is_some());
         let record = crate::transcript::generation(&work.key).unwrap();
         assert_eq!(
-            crate::transcript::confirm_synced(&work.key, record),
+            crate::transcript::confirm_synced(&work.key, &record),
             Some(())
         );
         let before = fs::metadata(work.transcript()).unwrap().len();

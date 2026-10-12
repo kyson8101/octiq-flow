@@ -396,7 +396,7 @@ fn shown_in(chat: &str) -> HashMap<String, Status> {
 /// now: the file and then its folder synced, for the record `seen` named
 /// (`transcript::confirm_synced`). The one thing that lets a line be called
 /// delivered here, whether it was found in the record or written just now.
-fn receipt(chat: &str, seen: Option<crate::transcript::Generation>) -> bool {
+fn receipt(chat: &str, seen: Option<&crate::transcript::Generation>) -> bool {
     seen.is_some_and(|seen| crate::transcript::confirm_synced(chat, seen).is_some())
 }
 
@@ -573,7 +573,7 @@ fn show(
             // disk does. The ledger calls it delivered only on a receipt,
             // as for a line written now; until then it stays an intent,
             // which `recover` or the next report confirms.
-            if !receipt(&chat, record) {
+            if !receipt(&chat, record.as_ref()) {
                 let changed =
                     entry.pending.insert(chat.clone(), current.status) != Some(current.status);
                 let undone = entry.delivered.remove(&chat).is_some();
@@ -609,7 +609,7 @@ fn show(
     for (chat, event, record) in owed {
         // The write's own answer is not the receipt either: it syncs the
         // folder only for a file it made.
-        if emit(&chat, event).is_none() || !receipt(&chat, record) {
+        if emit(&chat, event).is_none() || !receipt(&chat, record.as_ref()) {
             // Not proven on disk: the intent stays, and a restart or the
             // next report of this write looks for the line and finishes it.
             out.errors

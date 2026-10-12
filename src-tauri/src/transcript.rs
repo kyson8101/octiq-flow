@@ -76,19 +76,97 @@ fn file_name(key: &str) -> String {
     format!("{}.jsonl", key.replace(':', "_"))
 }
 
-/// The next sequence number for each chat, so appending does not have to count.
+/// The next sequence number for each record, so appending does not have to
+/// count. By the record's identity (`identity`), never by the chat's key:
+/// two keys can name one file, and one file has one count.
 ///
 /// Counting the file on every append looks harmless and is quadratic: a
 /// streaming reply emits an event per delta, so a long answer would re-read
 /// thousands of lines thousands of times. The file is read once, on the first
 /// append after startup, and counted in memory after that.
-static NEXT_SEQ: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+static NEXT_SEQ: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
 
 /// The append lock, held. Asked for by what reads or moves a record's
 /// generation, so neither can be done without it.
-type Appending<'a> = std::sync::MutexGuard<'a, Option<HashMap<String, u64>>>;
+type Appending<'a> = std::sync::MutexGuard<'a, Option<HashMap<PathBuf, u64>>>;
 
-/// Which record a chat's file holds now.
+/// **One record, one identity: the file as the filesystem tells files
+/// apart, not the text of a path.** It is the folder with every link in it
+/// resolved, and the file's name, folded to lower case where that folder's
+/// filesystem takes two spellings of a name for one file (the default on
+/// macOS and Windows). So `chat:ABC` and `chat:abc` are one record there
+/// and two on a filesystem that tells them apart, as are `chat:x` and
+/// `chat_x` everywhere, which were always one file name.
+///
+/// It does not ask whether the file exists, so a record that is not made
+/// yet has the identity it will have: a count or a generation kept for it
+/// is still its own after the first write, under any spelling. While the
+/// folder itself is not there (the profile folder is away) the path stands
+/// as it was spelled; nothing is written then, and a token taken then is
+/// refused once the folder is back, which costs one more look.
+///
+/// Names are folded as ASCII: a chat's key holds nothing else (`path_for`).
+/// Two hard links to one file are two names and are not told to be one;
+/// the host makes none.
+fn identity(path: &Path) -> PathBuf {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return path.to_path_buf();
+    };
+    let Some((folder, folds_case)) = folder_identity(parent) else {
+        return path.to_path_buf();
+    };
+    if folds_case {
+        folder.join(name.to_string_lossy().to_ascii_lowercase())
+    } else {
+        folder.join(name)
+    }
+}
+
+/// A folder as the filesystem resolves it, and whether it takes two
+/// spellings of a name for one entry. `None` while the folder is not there.
+///
+/// Asked of the filesystem once per folder and kept: resolving a path costs
+/// a call per component (0.4 ms for a profile's chats folder on macOS),
+/// which is nothing once and far too much on every line of a streamed
+/// reply. The profile folder is fixed at startup, so what was resolved
+/// stays true for the life of the process.
+fn folder_identity(folder: &Path) -> Option<(PathBuf, bool)> {
+    static FOLDERS: Mutex<Option<HashMap<PathBuf, (PathBuf, bool)>>> = Mutex::new(None);
+    let mut known = FOLDERS.lock().unwrap_or_else(|e| e.into_inner());
+    let known = known.get_or_insert_with(HashMap::new);
+    if let Some(found) = known.get(folder) {
+        return Some(found.clone());
+    }
+    let resolved = fs::canonicalize(folder).ok()?;
+    let found = (resolved.clone(), folds_case(&resolved));
+    known.insert(folder.to_path_buf(), found.clone());
+    Some(found)
+}
+
+/// Whether `folder` (resolved) is reached under another spelling of its own
+/// name: asked of the filesystem, since that is a fact of the volume and
+/// not of the platform. A name with no letter to respell cannot be asked
+/// and answers no, which only ever keeps two records apart.
+fn folds_case(folder: &Path) -> bool {
+    let Some(name) = folder.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let respelled: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect();
+    respelled != name
+        && fs::canonicalize(folder.with_file_name(respelled)).is_ok_and(|other| other == folder)
+}
+
+/// Which record a chat's file holds now: the file it is (`identity`), and
+/// how far that file's record has moved on.
 ///
 /// A chat can lose its record and get another under the same name while
 /// the server runs: the person clears it (`forget`) and the next thing said
@@ -97,50 +175,109 @@ type Appending<'a> = std::sync::MutexGuard<'a, Option<HashMap<String, u64>>>;
 /// a record, or wrote one into it, says which record that was
 /// (`generation`) when asking for the receipt (`confirm_synced`).
 ///
-/// It moves, under the append lock, whenever the host does something to a
-/// record that can take a line out of it:
+/// **The token names its file.** A bare number said only "never moved on",
+/// which two different files both are; a token taken for one file is
+/// refused for any other, whatever their numbers. The profile folder is
+/// fixed at startup, so a chat's key cannot come to name another file while
+/// the server runs; this is what holds if anything ever makes it.
+///
+/// The number moves, under the append lock, whenever the host does
+/// something to a record that can take a line out of it:
 ///
 /// - `forget` and `forget_file` remove it;
-/// - `rewrite_numbered` replaces a host event's line (`HOST_EVENT`). A
+/// - `rewrite_numbered` replaces a host event's line (`is_host_event`). A
 ///   rewrite keeps every line in its place, and what it changes today is
 ///   stream pieces and tool results (`record_trim`), which leaves the
 ///   generation alone: a compaction is not a new record.
 ///
-/// Nothing else the host does removes, empties or replaces a record file.
-/// By the file's path, since that is what a record is, and kept in memory:
-/// a restart begins every record anew, and nobody holds a receipt across
-/// one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Generation(u64);
-
-/// How many times each record has moved on, by its file. One that never did
-/// is not here. Read and written only with the append lock held.
-static GENERATIONS: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
-
-/// The spelling a host event's line holds: a `type` this app made up.
-/// Records are written compactly by `serde_json`, and a quote inside a
-/// string is escaped, so these bytes are a key and its value, not text.
-const HOST_EVENT: &[u8] = br#""type":"octiq_"#;
-
-fn generation_of(_appending: &Appending, path: &Path) -> Generation {
-    let generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
-    Generation(
-        generations
-            .as_ref()
-            .and_then(|moved| moved.get(path))
-            .copied()
-            .unwrap_or(0),
-    )
+/// Nothing else the host does removes, empties or replaces a record file:
+/// the page's file editor refuses one (`fsbrowse::write_file_impl`). Kept
+/// in memory: a restart begins every record anew, and nobody holds a
+/// receipt across one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Generation {
+    record: PathBuf,
+    number: u64,
 }
 
-/// The record at `path` is not the one it was: every receipt asked for
-/// with the generation it had is refused.
-fn next_generation(_appending: &Appending, path: &Path) {
+/// How far each record has moved on, by its identity.
+///
+/// A record's number is a stamp from one counter shared by all of them, so
+/// it only ever rises and no two moves share one. That is what lets the
+/// table be bounded: past `GENERATIONS_KEPT` the older half is dropped and
+/// `floor` becomes the highest stamp dropped, which every record not in
+/// the table then reads as. A record never reads a number it had before a
+/// move, so a token held from before one is never honoured again; the cost
+/// of a drop is that a token for a record that did not move may be refused
+/// once, and its holder looks again.
+#[derive(Default)]
+struct Generations {
+    moved: HashMap<PathBuf, u64>,
+    /// The last stamp given.
+    last: u64,
+    /// What a record not in `moved` reads as.
+    floor: u64,
+}
+
+/// How many moved records are remembered before the older half is dropped.
+/// A record costs its path, about 150 bytes; a server that clears or
+/// deletes a chat a minute for a week stays under this.
+const GENERATIONS_KEPT: usize = 16_384;
+
+impl Generations {
+    fn number(&self, record: &Path) -> u64 {
+        self.moved.get(record).copied().unwrap_or(self.floor)
+    }
+
+    fn move_on(&mut self, record: &Path, kept: usize) {
+        self.last += 1;
+        self.moved.insert(record.to_path_buf(), self.last);
+        if self.moved.len() > kept {
+            let mut stamps: Vec<u64> = self.moved.values().copied().collect();
+            stamps.sort_unstable();
+            let cut = stamps[stamps.len() / 2];
+            self.moved.retain(|_, stamp| *stamp > cut);
+            self.floor = cut;
+        }
+    }
+}
+
+/// Read and written only with the append lock held.
+static GENERATIONS: Mutex<Option<Generations>> = Mutex::new(None);
+
+/// Whether a record's line is a host event's: an object whose own `type`
+/// is one this app made up (`octiq_…`). Asked of the line's top level by
+/// parsing it, not of its bytes: a host event written with other spacing
+/// is still one, and a `type` inside something else is not. A line that
+/// will not parse is taken for one, which only ever holds a receipt back.
+fn is_host_event(line: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Typed<'a> {
+        #[serde(rename = "type", borrow, default)]
+        kind: Option<std::borrow::Cow<'a, str>>,
+    }
+    serde_json::from_slice::<Typed>(line).map_or(true, |line| {
+        line.kind.is_some_and(|kind| kind.starts_with("octiq_"))
+    })
+}
+
+fn generation_of(_appending: &Appending, record: &Path) -> Generation {
+    let generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    Generation {
+        record: record.to_path_buf(),
+        number: generations
+            .as_ref()
+            .map_or(0, |generations| generations.number(record)),
+    }
+}
+
+/// The record `record` (an identity) is not the one it was: every receipt
+/// asked for with the generation it had is refused.
+fn next_generation(_appending: &Appending, record: &Path) {
     let mut generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
-    *generations
-        .get_or_insert_with(HashMap::new)
-        .entry(path.to_path_buf())
-        .or_insert(0) += 1;
+    generations
+        .get_or_insert_with(Generations::default)
+        .move_on(record, GENERATIONS_KEPT);
 }
 
 /// Which record `key` has now, to be handed to `confirm_synced` with what
@@ -149,7 +286,7 @@ fn next_generation(_appending: &Appending, path: &Path) {
 pub fn generation(key: &str) -> Option<Generation> {
     let path = path_for(key)?;
     let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-    Some(generation_of(&appending, &path))
+    Some(generation_of(&appending, &identity(&path)))
 }
 
 /// Record an event and return its sequence number.
@@ -171,10 +308,11 @@ pub fn append_synced(key: &str, event: &Value) -> Option<u64> {
 fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     let path = path_for(key)?;
     let line = serde_json::to_string(event).ok()?;
+    let record = identity(&path);
 
     let mut guard = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     let counts = guard.get_or_insert_with(HashMap::new);
-    let seq = match counts.get(key) {
+    let seq = match counts.get(&record) {
         Some(next) => *next,
         // First write this run: find out where the file already ends.
         None => count(&path) + 1,
@@ -195,7 +333,7 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     // Only claim the number once the line is actually on disk, so a failed
     // write cannot leave a gap that `since` would read straight past.
     writeln!(file, "{line}").ok()?;
-    counts.insert(key.to_string(), seq + 1);
+    counts.insert(record, seq + 1);
     if synced {
         file.sync_data().ok()?;
         if !existed {
@@ -216,6 +354,9 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
 /// lines, or wrote them, in a record that has since been removed, and the
 /// file under that name now is another that need not hold them. Syncing it
 /// would confirm lines nobody looked for in it. The caller reads again.
+/// "Not the one" is asked of the file first and its number second: a token
+/// taken for another file is refused whatever the two numbers are, since
+/// every file that never moved on has the same one.
 ///
 /// For a line whose own append answered `None` after it was written, or was
 /// never heard from at all (the server stopped): that the line can be read
@@ -228,10 +369,10 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
 /// Nothing is written again; the one byte this may add is the newline a
 /// last line is missing, under the append lock, because an ordinary append
 /// would be glued onto such a line and take it with it.
-pub fn confirm_synced(key: &str, seen: Generation) -> Option<()> {
+pub fn confirm_synced(key: &str, seen: &Generation) -> Option<()> {
     let path = path_for(key)?;
     let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-    if generation_of(&appending, &path) != seen {
+    if generation_of(&appending, &identity(&path)) != *seen {
         return None;
     }
     let mut file = OpenOptions::new()
@@ -327,9 +468,10 @@ pub fn seed(key: &str, events: &[Value]) -> Result<bool, String> {
         text.push('\n');
     }
 
+    let record = identity(&path);
     let mut guard = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     let counts = guard.get_or_insert_with(HashMap::new);
-    let next = match counts.get(key) {
+    let next = match counts.get(&record) {
         Some(next) => *next,
         None => count(&path) + 1,
     };
@@ -348,7 +490,7 @@ pub fn seed(key: &str, events: &[Value]) -> Result<bool, String> {
     file.write_all(text.as_bytes())
         .and_then(|_| file.sync_data())
         .map_err(|e| format!("cannot write the chat record: {e}"))?;
-    counts.insert(key.to_string(), events.len() as u64 + 1);
+    counts.insert(record, events.len() as u64 + 1);
     if !existed {
         if let Some(dir) = path.parent() {
             let _ = sync_dir(dir);
@@ -382,9 +524,12 @@ fn sync_dir_on(dir: &Path, is_windows: bool) -> std::io::Result<()> {
 /// Forget the count kept for `key`, as a restarted process has none.
 #[cfg(test)]
 pub(crate) fn forget_count(key: &str) {
+    let Some(record) = path_for(key).map(|path| identity(&path)) else {
+        return;
+    };
     let mut guard = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(counts) = guard.as_mut() {
-        counts.remove(key);
+        counts.remove(&record);
     }
 }
 
@@ -807,34 +952,29 @@ fn page_forward(
 /// go: an append cannot land between the two, and a receipt asked for with
 /// the old record's generation is refused whenever it is asked.
 pub fn forget(key: &str) {
-    let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(path) = path_for(key) {
-        remove_record(&appending, &path);
-    }
-    // Drop the counter too, or a chat started again under the same key would
-    // number its first event as though the deleted one were still there.
-    if let Some(counts) = appending.as_mut() {
-        counts.remove(key);
+        forget_file(&path);
     }
 }
 
 /// `forget` for a record known by its file alone: one no chat points at
 /// (`chat_index::reconcile`). True when a file was removed.
+///
+/// The record is its identity, under whatever spelling it was asked for:
+/// the generation that moves and the count that is dropped are the file's,
+/// so nothing kept for the same file under another spelling outlives it.
+/// The count goes too, or a chat started again under the same name would
+/// number its first event as though the deleted one were still there.
 pub(crate) fn forget_file(path: &Path) -> bool {
+    let record = identity(path);
     let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-    let removed = remove_record(&appending, path);
-    let name = path.file_name().and_then(|name| name.to_str());
-    if let Some(counts) = appending.as_mut() {
-        counts.retain(|key, _| Some(file_name(key).as_str()) != name);
-    }
-    removed
-}
-
-/// Take a record's file away and move its generation on, whether or not
-/// there was a file: what is there afterwards is not what was.
-fn remove_record(appending: &Appending, path: &Path) -> bool {
+    // Whether or not there was a file: what is there afterwards is not
+    // what was.
     let removed = fs::remove_file(path).is_ok();
-    next_generation(appending, path);
+    next_generation(&appending, &record);
+    if let Some(counts) = appending.as_mut() {
+        counts.remove(&record);
+    }
     removed
 }
 
@@ -883,7 +1023,7 @@ pub(crate) fn rewrite_numbered(
                         out.write_all(b"\n")?;
                     }
                     changed = true;
-                    host_event_replaced |= memchr::memmem::find(body, HOST_EVENT).is_some();
+                    host_event_replaced = host_event_replaced || is_host_event(body);
                 }
                 _ => out.write_all(&line)?,
             }
@@ -896,7 +1036,7 @@ pub(crate) fn rewrite_numbered(
         Ok(true) => {
             fs::rename(&temp, path)?;
             if host_event_replaced {
-                next_generation(&appending, path);
+                next_generation(&appending, &identity(path));
             }
             Ok(true)
         }
@@ -1193,7 +1333,7 @@ mod tests {
         write!(file, "{{\"n\": 2, \"hal").unwrap();
         drop(file);
         // The process died there; the next one counts the file afresh.
-        NEXT_SEQ.lock().unwrap().as_mut().unwrap().remove(&key);
+        forget_count(&key);
 
         let seq = append_synced(&key, &json!({ "n": 3 })).unwrap();
         let all = since(&key, 0);
@@ -1226,7 +1366,7 @@ mod tests {
     #[test]
     fn lines_already_in_a_record_are_confirmed_only_by_a_sync_that_succeeds() {
         let key = unique_key("confirm");
-        let confirm_synced = |key: &str| confirm_synced(key, generation(key).unwrap());
+        let confirm_synced = |key: &str| confirm_synced(key, &generation(key).unwrap());
         assert_eq!(confirm_synced(&key), None, "no record, nothing to confirm");
         FAIL_DIR_SYNC.with(|f| f.set(true));
         let unproven = append_synced(&key, &json!({ "n": 1 }));
@@ -1383,20 +1523,24 @@ mod tests {
         assert_eq!(generation("not/a key"), None);
         append(&key, &json!({ "n": 1 }));
         let seen = generation(&key).unwrap();
-        assert_eq!(confirm_synced(&key, seen), Some(()));
-        assert_eq!(generation(&key), Some(seen), "a receipt moves nothing");
+        assert_eq!(confirm_synced(&key, &seen), Some(()));
+        assert_eq!(
+            generation(&key),
+            Some(seen.clone()),
+            "a receipt moves nothing"
+        );
 
         forget(&key);
-        assert_ne!(generation(&key), Some(seen));
-        assert_eq!(confirm_synced(&key, seen), None, "no record at all");
+        assert_ne!(generation(&key), Some(seen.clone()));
+        assert_eq!(confirm_synced(&key, &seen), None, "no record at all");
         append(&key, &json!({ "n": 2 }));
         assert_eq!(
-            confirm_synced(&key, seen),
+            confirm_synced(&key, &seen),
             None,
             "the record there now is not the one that was seen"
         );
         let now = generation(&key).unwrap();
-        assert_eq!(confirm_synced(&key, now), Some(()));
+        assert_eq!(confirm_synced(&key, &now), Some(()));
 
         // Forgetting a chat that has no record moves it on as well: what
         // is written afterwards is not what a look before it saw.
@@ -1404,7 +1548,7 @@ mod tests {
         let none_there = generation(&key).unwrap();
         forget(&key);
         append(&key, &json!({ "n": 3 }));
-        assert_eq!(confirm_synced(&key, none_there), None);
+        assert_eq!(confirm_synced(&key, &none_there), None);
         forget(&key);
     }
 
@@ -1422,7 +1566,7 @@ mod tests {
         assert!(!path.exists());
         assert!(!forget_file(&path), "nothing left to remove");
         assert_eq!(append(&key, &json!({ "n": 3 })), Some(1));
-        assert_eq!(confirm_synced(&key, seen), None);
+        assert_eq!(confirm_synced(&key, &seen), None);
         forget(&key);
     }
 
@@ -1453,8 +1597,8 @@ mod tests {
             !rewrite_lines(&path, |_| None).unwrap(),
             "nothing to change"
         );
-        assert_eq!(generation(&key), Some(seen));
-        assert_eq!(confirm_synced(&key, seen), Some(()));
+        assert_eq!(generation(&key), Some(seen.clone()));
+        assert_eq!(confirm_synced(&key, &seen), Some(()));
         assert_eq!(of_type(&key, "octiq_task_reopened").len(), 1);
 
         let emptied = r#"{"type":"octiq_compacted","into":1}"#;
@@ -1463,8 +1607,8 @@ mod tests {
         });
         assert!(changed.unwrap());
         assert!(of_type(&key, "octiq_task_reopened").is_empty());
-        assert_ne!(generation(&key), Some(seen));
-        assert_eq!(confirm_synced(&key, seen), None);
+        assert_ne!(generation(&key), Some(seen.clone()));
+        assert_eq!(confirm_synced(&key, &seen), None);
         forget(&key);
     }
 
@@ -1569,18 +1713,18 @@ mod tests {
             let _there = crate::profile::started_in(&first);
             assert!(append_synced(&key, &said).is_some());
             let token = generation(&key).unwrap();
-            assert!(confirm_synced(&key, token).is_some());
+            assert!(confirm_synced(&key, &token).is_some());
             token
         };
 
         let _elsewhere = crate::profile::started_in(&second);
         assert!(append(&key, &said).is_some());
         assert!(
-            confirm_synced(&key, token).is_none(),
+            confirm_synced(&key, &token).is_none(),
             "a receipt for one record was given on another of the same name"
         );
         let own = generation(&key).unwrap();
-        assert!(confirm_synced(&key, own).is_some());
+        assert!(confirm_synced(&key, &own).is_some());
     }
 
     /// Review of bf9d8cd, finding 3: records were told apart by the text of
@@ -1619,10 +1763,90 @@ mod tests {
             "the cleared record's count was kept under its other spelling"
         );
         assert!(
-            confirm_synced(&lower, token).is_none(),
+            confirm_synced(&lower, &token).is_none(),
             "a record cleared under its other spelling still gave a receipt"
         );
         forget(&lower);
+    }
+
+    /// Review of bf9d8cd, finding 5: a host event was known by the bytes
+    /// `"type":"octiq_`, so one written with other spacing could be
+    /// replaced without the record moving on. It is asked of the line's own
+    /// top-level `type` now.
+    #[test]
+    fn a_host_event_is_known_by_its_type_however_the_line_is_spaced() {
+        assert!(is_host_event(
+            br#"{"type":"octiq_task_reopened","taskId":"t"}"#
+        ));
+        assert!(is_host_event(
+            br#"{ "taskId": "t", "type" : "octiq_task_reopened" }"#
+        ));
+        assert!(is_host_event(br#"{"type":"octiq_task_reopened"}"#));
+        // What an agent says about one, or carries inside something else,
+        // is not one.
+        assert!(!is_host_event(
+            br#"{"type":"assistant","text":"\"type\":\"octiq_task_reopened\""}"#
+        ));
+        assert!(!is_host_event(
+            br#"{"type":"user","message":{"type":"octiq_task_reopened"}}"#
+        ));
+        assert!(!is_host_event(br#"{"n":1}"#));
+        // A line that cannot be read is not known not to be one.
+        assert!(is_host_event(b"{\"type\":\"octiq_task_reo"));
+        assert!(is_host_event(b"\xff\xfe"));
+
+        let key = unique_key("spaced-host-event");
+        let path = path_for(&key).unwrap();
+        fs::write(
+            &path,
+            "{ \"type\" : \"octiq_task_reopened\", \"taskId\" : \"t\" }\n",
+        )
+        .unwrap();
+        let seen = generation(&key).unwrap();
+        let replaced = rewrite_lines(&path, |_| Some(r#"{"type":"user"}"#.to_string()));
+        assert!(replaced.unwrap());
+        assert_eq!(confirm_synced(&key, &seen), None);
+        forget(&key);
+    }
+
+    /// Review of bf9d8cd, finding 6: every record ever forgotten kept an
+    /// entry for good. The table is bounded, and dropping an entry never
+    /// gives its record back a number it had before: a token from before a
+    /// move stays refused, however many other records move after it.
+    #[test]
+    fn the_table_of_moved_records_is_bounded_and_never_hands_back_an_old_number() {
+        let record = |n: usize| PathBuf::from(format!("/chats/chat_{n}.jsonl"));
+        let mut table = Generations::default();
+        let untouched = table.number(&record(9_999));
+        let before: Vec<u64> = (0..40).map(|n| table.number(&record(n))).collect();
+        for n in 0..40 {
+            table.move_on(&record(n), 8);
+            assert!(table.moved.len() <= 8, "{} kept", table.moved.len());
+        }
+        for (n, old) in before.iter().enumerate() {
+            assert_ne!(
+                table.number(&record(n)),
+                *old,
+                "record {n} reads as never moved"
+            );
+        }
+        // Each record, moved again, reads a number it never had.
+        let mut had: Vec<Vec<u64>> = (0..40).map(|n| vec![table.number(&record(n))]).collect();
+        for round in 0..3 {
+            for n in 0..40 {
+                table.move_on(&record(n), 8);
+                let now = table.number(&record(n));
+                assert!(
+                    !had[n].contains(&now),
+                    "round {round}, record {n}: {now} again"
+                );
+                had[n].push(now);
+            }
+        }
+        // The cost of a drop, and the whole of it: a record that never
+        // moved no longer reads as it did, so its token is asked for again.
+        assert_ne!(table.number(&record(9_999)), untouched);
+        assert!(table.floor <= table.last);
     }
 
     /// The same for a record that is not there yet when it is asked about:
@@ -1638,12 +1862,12 @@ mod tests {
             return;
         }
         assert_eq!(generation(&upper).unwrap(), before);
-        assert!(confirm_synced(&lower, before).is_some());
+        assert!(confirm_synced(&lower, &before).is_some());
 
         forget(&upper);
         assert!(append(&lower, &json!({"n":1})).is_some());
         assert!(
-            confirm_synced(&lower, before).is_none(),
+            confirm_synced(&lower, &before).is_none(),
             "a record cleared under its other spelling still gave a receipt"
         );
         forget(&lower);
