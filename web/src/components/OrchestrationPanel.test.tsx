@@ -497,8 +497,10 @@ describe("OrchestrationPanel", () => {
       <OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
         initialSnapshot={{ ...snapshot, gates: [] }} onOpenChat={() => {}} onClose={() => {}} />,
     );
-    expect(stuck).toContain("1 task needs attention");
-    expect(stuck).toContain(">1 blocked</button>");
+    // And it is a failure, as its row and the strip have it: said as one,
+    // in the danger colour, not as a wait.
+    expect(stuck).toContain('data-tone="failed" aria-label="1 task failed. Show"');
+    expect(stuck).toContain(">1 failed</button>");
   });
 
   it("offers a new authoritative attempt for a settled block", () => {

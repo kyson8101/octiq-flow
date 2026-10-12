@@ -1034,8 +1034,10 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
     failed"), in the danger colour, counted failed and not done. The row
     (`runProgress.taskReading`), the strip, the tile, the run picker and the
     chat list's line (all `runProgress.runTally` / `runCounts`), the run's
-    `N blocked`, who a run is with and a mission's crew (`failed`, apart
-    from `blocked`, which is a wait), the Agents page, a mission's stage
+    attention button (`N failed` in the danger colour; `N blocked`, in the
+    warning colour, is only a worker in trouble), who a run is with and a
+    mission's crew (`failed`, apart from `blocked`, which is a wait), the
+    Agents page, a mission's stage
     (never Ready to merge, or a draft, while an approved check has failed:
     `In review`, waiting) and the acceptance line.
   - **The Agents page asks the panel's reading** (`taskReading`) and does

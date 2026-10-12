@@ -33,6 +33,10 @@ export type RunAttention = {
    *  failed or is blocked, one that completed with a failed check, and one
    *  whose worker is in trouble. */
   blocked: number;
+  /** How many of those are failures and not a worker in trouble: a task
+   *  that failed, one blocked with no decision open, one that completed with
+   *  a failed check. Said as "N failed", in the danger colour. */
+  failed: number;
   total: number;
 };
 
@@ -47,12 +51,14 @@ export function runAttention(
   waits: RunWaits,
 ): RunAttention {
   // A stopped run cannot retry anything, so its failures are history, not owed.
-  const blocked = run.status === "stopped" ? 0 : tasks.filter((task) => task.runId === run.id && !waits.gated.has(task.id)
-    && !waits.tasks.get(task.id)?.person.length
-    && (isStuck(task) || checkFailed(task)
-      || executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId)))).length;
+  const owed = run.status === "stopped" ? [] : tasks.filter((task) => task.runId === run.id && !waits.gated.has(task.id)
+    && !waits.tasks.get(task.id)?.person.length);
+  const failed = owed.filter((task) => isStuck(task) || checkFailed(task)).length;
+  const troubled = owed.filter((task) => !isStuck(task) && !checkFailed(task)
+    && executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId))).length;
+  const blocked = failed + troubled;
   const decisions = waits.person.length;
-  return { decisions, planOnly: decisions === 1 && waits.person[0].kind === "plan", blocked, total: decisions + blocked };
+  return { decisions, planOnly: decisions === 1 && waits.person[0].kind === "plan", blocked, failed, total: decisions + blocked };
 }
 
 /** What the top bar's Tasks button carries for one chat's runs: how many
@@ -67,14 +73,34 @@ export function taskColumnCounts(snapshot: OrchestrationSnapshot, held?: Waiting
   };
 }
 
-/** Short enough for a collapsed row. Decisions lead: they wait on the person. */
+/** Short enough for a collapsed row. Decisions lead: they wait on the
+ *  person. Then what failed, said as that; "blocked" is only ever a worker
+ *  in trouble (stalled, disconnected, out of capacity). */
 export function attentionLabel(attention: RunAttention): string | null {
   if (!attention.total) return null;
   if (attention.decisions) {
     if (attention.planOnly) return "Approval needed";
     return `${attention.decisions} to decide`;
   }
+  if (attention.failed) return `${attention.failed} failed`;
   return `${attention.blocked} blocked`;
+}
+
+/** The button's colour: the decision colour for what waits on the person,
+ *  the danger colour for a failure, the warning colour for a worker in
+ *  trouble. */
+export function attentionTone(attention: RunAttention): "decision" | "failed" | "blocked" {
+  return attention.decisions ? "decision" : attention.failed ? "failed" : "blocked";
+}
+
+/** The button's sentence: every count it stands for, whole. */
+export function attentionSpoken(attention: RunAttention): string {
+  const troubled = attention.blocked - attention.failed;
+  return [
+    attention.decisions ? `${attention.decisions} ${attention.decisions === 1 ? "decision" : "decisions"} waiting` : null,
+    attention.failed ? `${attention.failed} ${attention.failed === 1 ? "task" : "tasks"} failed` : null,
+    troubled ? `${troubled} ${troubled === 1 ? "task needs" : "tasks need"} attention` : null,
+  ].filter(Boolean).join(", ");
 }
 
 /** Where one person is on a run, most urgent first. "working" is only ever a

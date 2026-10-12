@@ -10,7 +10,7 @@ import {
 import { acceptanceLine, checkCoverage, KIND_LABEL, requiresVerdict, runStages, taskEnvironment } from "../lib/runAcceptance";
 import { useSandboxes, type SandboxSnapshot } from "../lib/sandbox";
 import {
-  attentionLabel, mainChatTarget, nextRunTab, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
+  attentionLabel, attentionSpoken, attentionTone, mainChatTarget, nextRunTab, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
   type PersonState, type RunAttention, type RunTab,
 } from "../lib/runPanel";
 import { agoLabel } from "../lib/chatTask";
@@ -1209,11 +1209,8 @@ function RunPeople({ run, tasks, attempts, gated }: {
 function AttentionButton({ attention, onShow }: { attention: RunAttention; onShow: () => void }) {
   const label = attentionLabel(attention);
   if (!label) return null;
-  const parts = [
-    attention.decisions ? `${attention.decisions} ${attention.decisions === 1 ? "decision" : "decisions"} waiting` : null,
-    attention.blocked ? `${attention.blocked} ${attention.blocked === 1 ? "task needs" : "tasks need"} attention` : null,
-  ].filter(Boolean).join(", ");
-  return <button type="button" className="orch-attention" data-tone={attention.decisions ? "decision" : "blocked"}
+  const parts = attentionSpoken(attention);
+  return <button type="button" className="orch-attention" data-tone={attentionTone(attention)}
     aria-label={`${parts}. Show`} title={`${parts}. Show`} onClick={onShow}>
     <AlertIcon />{label}
   </button>;

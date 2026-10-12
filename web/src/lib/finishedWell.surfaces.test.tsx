@@ -47,7 +47,7 @@ import { missionState } from "./mission";
 import { missionCrew } from "./missionPage";
 import { checkFailed, finishedWell, isSettled, type OrchestrationSnapshot, type OrchestrationTask } from "./orchestration";
 import { runStages } from "./runAcceptance";
-import { runAttention, runPeople } from "./runPanel";
+import { attentionLabel, attentionSpoken, attentionTone, runAttention, runPeople } from "./runPanel";
 import { chatStrip, planStandsIn, runCounts, runProgress, runTally } from "./runProgress";
 import { runWaits } from "./runWaits";
 import { STOPPED_LABEL } from "./taskHold";
@@ -271,7 +271,12 @@ describe("a failure is there, under the panel's word, in the danger colour", () 
 
   it.each(FAILURES)("$name: the run's attention count, its people and a mission's crew say it", ({ ledger, plan }) => {
     const { attention, people, crew } = surfaces(ledger);
-    expect(attention).toMatchObject({ blocked: 1, decisions: plan ? 1 : 0 });
+    expect(attention).toMatchObject({ blocked: 1, failed: 1, decisions: plan ? 1 : 0 });
+    // Beside a plan the decision leads the button; alone, the failure is
+    // its word and its colour.
+    expect(attentionLabel(attention)).toBe(plan ? "Approval needed" : "1 failed");
+    expect(attentionTone(attention)).toBe(plan ? "decision" : "failed");
+    expect(attentionSpoken(attention)).toBe(plan ? "1 decision waiting, 1 task failed" : "1 task failed");
     expect(people.map((person) => person.state as string)).toEqual(["failed"]);
     expect(crew.map((member) => member.state as string)).toEqual(["failed"]);
   });
@@ -449,6 +454,7 @@ describe("a failure's colour is the danger colour on every sheet that draws one"
     // After the status rules, so it wins over `data-status="completed"`.
     expect(sheet.indexOf('.orch-task[data-state="failed"]')).toBeGreaterThan(sheet.indexOf('.orch-task[data-status="completed"]'));
     expect(sheet).toMatch(/\.orch-person\[data-state="failed"\] \.orch-person-state\s*\{\s*color:\s*var\(--danger\);/);
+    expect(sheet).toMatch(/\.orch-attention\[data-tone="failed"\]\s*\{[^}]*color:\s*var\(--danger\);/);
     expect(sheet).toMatch(/\.orch-stage-value\[data-tone="danger"\][^{]*\{\s*color:\s*var\(--danger\);/);
     expect(rules(missionCss)).toMatch(/\.mission-crew > li\[data-state="failed"\] \.mission-crew-state\s*\{\s*color:\s*var\(--danger\);/);
   });
