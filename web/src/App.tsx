@@ -183,7 +183,7 @@ import {
   type Handover, type HandoverAction,
 } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
-import { composerLanding, forgetIdentity, landIdentity, routeStands, type RouteTravel } from "./lib/identityTravel";
+import { composerLanding, forgetIdentity, landIdentity, routeAfter, routeStands, type PageNow, type RouteTravel } from "./lib/identityTravel";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type PendingAction } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
@@ -2038,6 +2038,17 @@ export default function App() {
   const mainShown = !besideId || besideFits || besideShows === "main";
   const besideShown = !!besideId && (besideFits || besideShows === "task");
   besideRef.current = besideShown ? besideId : null;
+  /** The run panel drawn in the chat's place: there is no room for both. */
+  const runInPlace = !workflowSplit && workflowView === "run";
+  /** Whether the chat is what the page shows. `conversationId` says which
+   *  chat is open; it does not say the chat is on screen. Four things are
+   *  drawn in its place, each a `hidden` on the way down to the composer:
+   *  the phone's project list (over `main`), a main-area page (Settings,
+   *  Agents, Search, Projects, Pull requests: over `chat-app-surface`), the
+   *  run panel where there is no room beside it (`workflow-chat-surface`),
+   *  and the task chat where there is no room beside that (`beside-pane
+   *  is-main`). What holds only while the chat is on screen asks this. */
+  const chatShown = !showingProjects && !mainPage && !runInPlace && mainShown;
   const besideChat = (besideId && chats[besideId]) || EMPTY;
 
   useEffect(() => {
@@ -4467,11 +4478,18 @@ export default function App() {
   const [goingRoute, setGoingRoute] = useState<string | null>(null);
   // The face and the name of that card travel to the chat it opened, and to
   // no other: the travel belongs to this one confirmation, made in the chat
-  // on screen then (`lib/identityTravel.routeStands`). Whatever else comes on
-  // screen calls it off: a chat picked by hand, one a notification or the
-  // address bar brought, the same agent's older chat, a chat called
-  // unavailable, or the card's hold running out.
+  // on screen then, and stands in one chat at a time and only while that
+  // chat is what the page shows (`lib/identityTravel.routeAfter`). Whatever
+  // else comes on screen calls it off: a chat picked by hand, one a
+  // notification or the address bar brought, the same agent's older chat, the
+  // chat it was confirmed in once the page has got to the one it opened, a
+  // page or a panel drawn in the chat's place, a chat called unavailable, or
+  // the card's hold running out. What the page shows is one fact, `page`,
+  // and the rule hangs on it: nothing that changes it is asked one by one.
   const routeTravel = useRef<RouteTravel | null>(null);
+  const page: PageNow = { chat: conversationId, shown: chatShown, unavailable: !!unavailableChat };
+  const pageRef = useRef(page);
+  pageRef.current = page;
   const dropTravel = useCallback((id: string | null) => {
     const route = routeTravel.current;
     if (!route || route.id !== id) return;
@@ -4489,9 +4507,16 @@ export default function App() {
   }, [goingRoute, dropTravel]);
   useEffect(() => {
     setGoingRoute(null);
+  }, [conversationId, unavailableChat]);
+  // Asked again whenever any part of what the page shows changes: the travel
+  // goes on, arrives, or is called off, and that is the rule's to say.
+  useEffect(() => {
     const route = routeTravel.current;
-    if (route && !routeStands(route, conversationId, !!unavailableChat)) dropTravel(route.id);
-  }, [conversationId, unavailableChat, dropTravel]);
+    if (!route) return;
+    const next = routeAfter(route, pageRef.current);
+    if (next) routeTravel.current = next;
+    else dropTravel(route.id);
+  }, [page.chat, page.shown, page.unavailable, dropTravel]);
   const handoverTailHere = useMemo(
     () => handoverTail(handoversHere.outgoing, goingRoute),
     [handoversHere, goingRoute],
@@ -4508,7 +4533,7 @@ export default function App() {
       // it opened is the host's to say.
       const before = routeTravel.current;
       if (before && before.id !== id) dropTravel(before.id);
-      routeTravel.current = { id, from: visibleRef.current, to: null };
+      routeTravel.current = { id, from: visibleRef.current, to: null, arrived: false };
     }
     let record: Handover;
     try {
@@ -4534,11 +4559,11 @@ export default function App() {
       // The card goes with the chat it was asked in: its face and name go
       // on to where the chat it opened names the agent, on that chat's
       // composer and no other's. Only once that is drawn; a chat that never
-      // opens is not travelled to. And only while the page is still in the
-      // chat this was confirmed in: the person may have left it while the
-      // host was answering.
+      // opens is not travelled to. And only while the page still shows the
+      // chat this was confirmed in: the person may have left it, or put a
+      // page over it, while the host was answering.
       const route = routeTravel.current;
-      if (route?.id === id && routeStands(route, visibleRef.current, false)) {
+      if (route?.id === id && routeStands(route, pageRef.current)) {
         const opened = chatIdOf(target);
         route.to = opened;
         landIdentity(id, () => composerLanding(opened));
@@ -5459,7 +5484,7 @@ export default function App() {
                 <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
               </div>} />}
           </div>}
-          <div className="workflow-chat-surface" hidden={!workflowSplit && workflowView === "run"} ref={setChatArea}>
+          <div className="workflow-chat-surface" hidden={runInPlace} ref={setChatArea}>
           {besideId && besideConversation && !besideFits && <BesideBar showing={besideShows}
             taskTitle={besideConversation.title} onShow={setBesideShows} onClose={closeBeside} />}
           <div className={`beside-panes${besideSplit ? " is-split" : ""}`}>

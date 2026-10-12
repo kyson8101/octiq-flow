@@ -12,9 +12,10 @@
 // One movement, about 200ms, ease out, no overshoot. The face travels or
 // nothing does: with motion reduced, with nowhere on screen for it to land,
 // or with a chat that never opened, nothing is drawn and nothing is hidden.
-// The name goes with the face when it has somewhere to land that can be
-// seen whole; when it has not (a long name cut short where it lands), the
-// face goes alone and the name is simply where it now is. A copy is put on
+// The name goes with the face when all of it can be read where it lands:
+// its box seen whole, and its words not cut short inside it (`cutShort`).
+// When it cannot (a long name the composer ends in an ellipsis, a line the
+// page clips), the face goes alone and the name is simply where it now is. A copy is put on
 // the page only in the frame it starts to move, so none can be left behind,
 // and what it lands on is shown again as it was however the movement ends.
 //
@@ -22,8 +23,10 @@
 // only on the composer of the chat that confirmation opened
 // (`composerLanding`, by the chat and never by the agent's name: the same
 // agent has other chats, and another project may have an agent of the same
-// name), and it is called off the moment the page shows any other chat
-// (`routeStands`).
+// name), and it stands in one chat at a time, only while that chat is what
+// the page shows: the chat it was confirmed in until the page gets to the
+// one it opened, and that one from then on (`routeAfter`). Anything else on
+// screen calls it off.
 //
 // A card says it was confirmed (`rememberIdentity`) and keeps where it is up
 // to date while it lives (`refreshIdentity`); whoever draws the landing asks
@@ -90,18 +93,36 @@ export function travelPlan(input: {
 }
 
 /** A route's travel, as the page keeps it: the confirmation it belongs to,
- *  the chat it was confirmed in, and the chat it opened (`null` until the
- *  host has said which). */
-export type RouteTravel = { id: string; from: string | null; to: string | null };
+ *  the chat it was confirmed in, the chat it opened (`null` until the host
+ *  has said which), and whether the page has got to that chat. */
+export type RouteTravel = { id: string; from: string | null; to: string | null; arrived: boolean };
 
-/** Whether a route's travel still stands with the page showing chat `now`.
- *  Only in the chat it was confirmed in (waiting to go) or the chat it
- *  opened (arriving). Any other chat, no chat, or a chat called unavailable
- *  calls it off: by hand, by a notification, by the address bar, by the
- *  same agent's older chat. */
-export function routeStands(route: RouteTravel, now: string | null, unavailable: boolean): boolean {
-  if (unavailable || now === null) return false;
-  return now === route.from || now === route.to;
+/** What the page shows: which chat, whether that chat is what is on screen
+ *  (a page, a list or a panel drawn in its place leaves the chat where it
+ *  was and shows something else), and whether it was called unavailable. */
+export type PageNow = { chat: string | null; shown: boolean; unavailable: boolean };
+
+/** A route's travel once the page shows `page`: the travel as it now
+ *  stands, or `null` when that calls it off.
+ *
+ *  It stands in one chat at a time, and only while that chat is what the
+ *  page shows. Waiting to go, that is the chat it was confirmed in. The
+ *  first time the page shows the chat it opened, it has arrived, and from
+ *  then on that chat is the only one: going back to the chat it was
+ *  confirmed in calls it off like going anywhere else. Any other chat (by
+ *  hand, by a notification, by the address bar, the same agent's older
+ *  chat), no chat, a chat called unavailable, or anything shown in the
+ *  chat's place calls it off, and nothing brings it back. */
+export function routeAfter(route: RouteTravel, page: PageNow): RouteTravel | null {
+  if (!page.shown || page.unavailable || page.chat === null) return null;
+  if (route.arrived) return page.chat === route.to ? route : null;
+  if (route.to !== null && page.chat === route.to) return { ...route, arrived: true };
+  return page.chat === route.from ? route : null;
+}
+
+/** Whether a route's travel still stands with the page showing `page`. */
+export function routeStands(route: RouteTravel, page: PageNow): boolean {
+  return routeAfter(route, page) !== null;
 }
 
 /* ---- The page -------------------------------------------------------- */
@@ -158,6 +179,21 @@ function seenBox(element: Element | null): Box | null {
   const box = boxOf(element);
   if (box.w <= 0 || box.h <= 0) return null;
   return inside(box, clipOf(element)) ? box : null;
+}
+
+/** Whether a line shows less than its words: wider inside than it is drawn,
+ *  so the end of it is cut off (an ellipsis, on the composer's naming of a
+ *  long name). Its box is whole and on screen all the same, which is why
+ *  the box alone cannot say it. */
+export function cutShort(line: { scrollWidth: number; clientWidth: number }): boolean {
+  return line.scrollWidth > line.clientWidth;
+}
+
+/** Where a name lands when all of it can be read there, else `null`: its
+ *  box seen whole, and its words not cut short inside that box. A whole
+ *  name flown into a place that shows half of it would jump as it landed. */
+function seenName(element: Element | null): Box | null {
+  return element && !cutShort(element) ? seenBox(element) : null;
 }
 
 /** The words of a name as a thing of their own: the type they are set in,
@@ -243,7 +279,7 @@ function place(copy: HTMLElement, box: Box): void {
 
 function fly(id: string, seen: Seen, to: Landing): void {
   const toFace = seenBox(to.face);
-  const toName = seen.name ? seenBox(to.name) : null;
+  const toName = seen.name ? seenName(to.name) : null;
   const plan = travelPlan({
     calm: calm(),
     view: { w: window.innerWidth, h: window.innerHeight },

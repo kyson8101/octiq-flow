@@ -4,9 +4,9 @@
 // what it hides, and under reduced motion that is nothing at all.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  composerLanding, flight, forgetIdentity, fresh, FRESH_MS, identityRemembered, inside, landIdentity, leaveIdentity,
-  lineLanding, onScreen, refreshIdentity, rememberIdentity, routeStands, TRAVEL_EASE, TRAVEL_MS, travelPlan,
-  type Box, type Landing,
+  composerLanding, cutShort, flight, forgetIdentity, fresh, FRESH_MS, identityRemembered, inside, landIdentity, leaveIdentity,
+  lineLanding, onScreen, refreshIdentity, rememberIdentity, routeAfter, routeStands, TRAVEL_EASE, TRAVEL_MS, travelPlan,
+  type Box, type Landing, type PageNow, type RouteTravel,
 } from "./identityTravel";
 
 const VIEW = { w: 1440, h: 900 };
@@ -97,6 +97,10 @@ type Fake = {
   children: Record<string, Fake | null>;
   animations: { keyframes: Keyframe[]; options: KeyframeAnimationOptions; run: { onfinish: (() => void) | null; oncancel: (() => void) | null } }[];
   removed: boolean;
+  /** How wide its words are, and how wide it is drawn: set on a name that
+   *  is cut short. Not set, it shows all of its words. */
+  scrollWidth?: number;
+  clientWidth?: number;
   getBoundingClientRect(): { left: number; top: number; width: number; height: number };
   querySelector(selector: string): Fake | null;
   getAttribute(name: string): string | null;
@@ -465,25 +469,212 @@ describe("the travel, on the page", () => {
     expect(appended).toEqual([]);
   });
 
-  it("stands only in the chat it was confirmed in and the chat it opened", () => {
-    const waiting = { id: "r1", from: "desk", to: null };
-    const going = { id: "r1", from: "desk", to: "new" };
-    // Still where it was confirmed: before the host said which chat, and after.
-    expect(routeStands(waiting, "desk", false)).toBe(true);
-    expect(routeStands(going, "desk", false)).toBe(true);
-    // Arrived.
-    expect(routeStands(going, "new", false)).toBe(true);
-    // Any other chat: picked by hand, brought by a notification or by the
-    // address bar, the same agent's older chat.
-    expect(routeStands(waiting, "older", false)).toBe(false);
-    expect(routeStands(going, "older", false)).toBe(false);
+  /* ---- It stands in one chat at a time, and only while that is shown ---- */
+
+  /** The three stages of a route's travel: the host has not said which chat
+   *  it opened; it has, and the page is not there yet; the page got there. */
+  const STAGES = {
+    asked: { id: "r1", from: "desk", to: null, arrived: false },
+    going: { id: "r1", from: "desk", to: "new", arrived: false },
+    arrived: { id: "r1", from: "desk", to: "new", arrived: true },
+  } satisfies Record<string, RouteTravel>;
+  const showing = (chat: string | null, shown = true, unavailable = false): PageNow => ({ chat, shown, unavailable });
+
+  // Stage × the chat that is open × whether the chat is what the page shows.
+  // `then`: the stage it is in afterwards, or `null` for called off.
+  it.each([
+    // Waiting to go: only the chat it was confirmed in, and only on screen.
+    { stage: "asked", chat: "desk", shown: true, then: "asked" },
+    { stage: "asked", chat: "desk", shown: false, then: null },
     // The chat it opens is not known yet, so no chat is it.
-    expect(routeStands(waiting, "new", false)).toBe(false);
-    // No chat on screen (a new conversation), or a chat called unavailable.
-    expect(routeStands(going, null, false)).toBe(false);
-    expect(routeStands({ id: "r1", from: null, to: null }, null, false)).toBe(false);
-    expect(routeStands(going, "desk", true)).toBe(false);
-    expect(routeStands(going, "new", true)).toBe(false);
+    { stage: "asked", chat: "new", shown: true, then: null },
+    { stage: "asked", chat: "new", shown: false, then: null },
+    { stage: "asked", chat: "older", shown: true, then: null },
+    { stage: "asked", chat: "older", shown: false, then: null },
+    { stage: "asked", chat: null, shown: true, then: null },
+    { stage: "asked", chat: null, shown: false, then: null },
+    // The host said which chat: still waiting in the one it was confirmed
+    // in, and arrived the first time the page shows the one it opened.
+    { stage: "going", chat: "desk", shown: true, then: "going" },
+    { stage: "going", chat: "desk", shown: false, then: null },
+    { stage: "going", chat: "new", shown: true, then: "arrived" },
+    // Open, with something drawn in its place: not arrived, and called off.
+    { stage: "going", chat: "new", shown: false, then: null },
+    { stage: "going", chat: "older", shown: true, then: null },
+    { stage: "going", chat: "older", shown: false, then: null },
+    { stage: "going", chat: null, shown: true, then: null },
+    { stage: "going", chat: null, shown: false, then: null },
+    // Arrived: only the chat it opened. Back in the chat it was confirmed
+    // in is called off like any other.
+    { stage: "arrived", chat: "new", shown: true, then: "arrived" },
+    { stage: "arrived", chat: "new", shown: false, then: null },
+    { stage: "arrived", chat: "desk", shown: true, then: null },
+    { stage: "arrived", chat: "desk", shown: false, then: null },
+    { stage: "arrived", chat: "older", shown: true, then: null },
+    { stage: "arrived", chat: "older", shown: false, then: null },
+    { stage: "arrived", chat: null, shown: true, then: null },
+    { stage: "arrived", chat: null, shown: false, then: null },
+  ] as const)("$stage, with chat $chat open and shown $shown: $then", ({ stage, chat, shown, then }) => {
+    const route = STAGES[stage];
+    expect(routeAfter(route, showing(chat, shown))).toEqual(then ? STAGES[then] : null);
+    expect(routeStands(route, showing(chat, shown))).toBe(then !== null);
+    // A chat called unavailable calls it off at every stage, whatever is open.
+    expect(routeAfter(route, showing(chat, shown, true))).toBeNull();
+    expect(routeStands(route, showing(chat, shown, true))).toBe(false);
+  });
+
+  it("covers every stage, every chat and both answers in that table, and never changes what it was given", () => {
+    for (const route of Object.values(STAGES)) {
+      const before = JSON.stringify(route);
+      for (const chat of ["desk", "new", "older", null]) for (const shown of [true, false]) routeAfter(route, showing(chat, shown));
+      expect(JSON.stringify(route)).toBe(before);
+    }
+    // A travel confirmed with no chat on screen stands nowhere.
+    expect(routeAfter({ id: "r1", from: null, to: null, arrived: false }, showing(null))).toBeNull();
+    // Nothing brings one back: called off is `null`, and `null` is not a stage.
+    expect(routeAfter(STAGES.arrived, showing("desk"))).toBeNull();
+  });
+
+  /** The page, as `App` keeps a route's travel: one travel, asked of
+   *  `routeAfter` each time what the page shows changes, and called off
+   *  (`forgetIdentity`) when that says so. */
+  const pageWith = (route: RouteTravel) => {
+    let travel: RouteTravel | null = route;
+    return {
+      shows(page: PageNow) {
+        if (!travel) return;
+        const next = routeAfter(travel, page);
+        if (!next) forgetIdentity(travel.id);
+        travel = next;
+      },
+      get travel() { return travel; },
+    };
+  };
+
+  it("is called off when the page goes back to the chat it was confirmed in after arriving", () => {
+    // The front desk's composer and the new chat's are one element the page
+    // reuses: after the return it names the front desk again.
+    const composer = chip("Vesper", "new");
+    chips = [composer.chip];
+    const from = card();
+    rememberIdentity("r1", as(from));
+    const page = pageWith({ id: "r1", from: "desk", to: "new", arrived: false });
+    landIdentity("r1", () => composerLanding("new"));
+    page.shows(showing("new"));
+    expect(page.travel?.arrived).toBe(true);
+    expect(appended).toHaveLength(2);
+    expect(composer.face.style.visibility).toBe("hidden");
+    expect(composer.label.style.visibility).toBe("hidden");
+    // 30ms on, the person is back in the front desk's chat.
+    clock += 30;
+    vi.advanceTimersByTime(30);
+    composer.chip.attributes["data-chat"] = "desk";
+    page.shows(showing("desk"));
+    expect(page.travel).toBeNull();
+    // At once: no copy left on the page, and the composer's face and name
+    // are drawn again.
+    for (const copy of appended) expect(copy.removed).toBe(true);
+    expect(composer.face.style.visibility).toBeUndefined();
+    expect(composer.label.style.visibility).toBeUndefined();
+    // Nothing that ends later hides them again, and going to the new chat
+    // once more starts nothing.
+    for (const copy of appended) copy.animations[0].run.oncancel!();
+    vi.advanceTimersByTime(TRAVEL_MS * 3);
+    composer.chip.attributes["data-chat"] = "new";
+    page.shows(showing("new"));
+    runFrames(5);
+    expect(appended).toHaveLength(2);
+    expect(composer.face.style.visibility).toBeUndefined();
+    expect(identityRemembered("r1")).toBe(false);
+  });
+
+  it("is called off in flight when Settings is opened over the chat it arrived in", () => {
+    const composer = chip("Vesper", "new");
+    chips = [composer.chip];
+    rememberIdentity("r1", as(card()));
+    const page = pageWith({ id: "r1", from: "desk", to: "new", arrived: false });
+    landIdentity("r1", () => composerLanding("new"));
+    page.shows(showing("new"));
+    expect(appended).toHaveLength(2);
+    // The same chat is open: only what the page shows has changed.
+    clock += 50;
+    vi.advanceTimersByTime(50);
+    page.shows(showing("new", false));
+    expect(page.travel).toBeNull();
+    for (const copy of appended) expect(copy.removed).toBe(true);
+    expect(composer.face.style.visibility).toBeUndefined();
+    expect(composer.label.style.visibility).toBeUndefined();
+    // Settings is closed again: the chat is back, and nothing flies.
+    page.shows(showing("new"));
+    runFrames(5);
+    vi.advanceTimersByTime(TRAVEL_MS * 3);
+    expect(appended).toHaveLength(2);
+    expect(composer.face.style.visibility).toBeUndefined();
+  });
+
+  it("does not fly when a page was opened while it waited, and the chat it opened then comes on screen", () => {
+    const from = card();
+    rememberIdentity("r1", as(from));
+    const page = pageWith({ id: "r1", from: "desk", to: null, arrived: false });
+    landIdentity("r1", () => composerLanding("new"));
+    runFrames(2);
+    // Settings, over the chat the card is in, before the host has answered.
+    page.shows(showing("desk", false));
+    expect(page.travel).toBeNull();
+    expect(identityRemembered("r1")).toBe(false);
+    // The host answers and the page goes to the chat it opened.
+    leaveIdentity("r1", as(from));
+    from.isConnected = false;
+    const opened = chip("Vesper", "new");
+    chips = [opened.chip];
+    page.shows(showing("new"));
+    runFrames(5);
+    vi.advanceTimersByTime(5000);
+    expect(appended).toEqual([]);
+    expect(opened.face.style).toEqual({});
+    expect(opened.label.style).toEqual({});
+    expect(frames).toEqual([]);
+  });
+
+  /* ---- A name the landing cuts short does not travel -------------------- */
+
+  it("knows a line that shows less than its words", () => {
+    // The review's reading at 390px: a 36-character name, 228px of words in 167.
+    expect(cutShort({ scrollWidth: 228, clientWidth: 167 })).toBe(true);
+    expect(cutShort({ scrollWidth: 167, clientWidth: 167 })).toBe(false);
+    expect(cutShort({ scrollWidth: 44, clientWidth: 167 })).toBe(false);
+    // An inline name has no box of its own to scroll in: both are zero.
+    expect(cutShort({ scrollWidth: 0, clientWidth: 0 })).toBe(false);
+  });
+
+  it("sends the face alone to a composer that ends the name in an ellipsis", () => {
+    rememberIdentity("r1", as(card()));
+    const to = chip("Independent review long name example", "new");
+    // Whole as a box, and on screen: only its words are cut.
+    to.label.rect = box(88, 842, 167, 16);
+    to.label.scrollWidth = 228;
+    to.label.clientWidth = 167;
+    landIdentity("r1", () => landing(to));
+    expect(appended).toHaveLength(1);
+    expect(appended[0].style).toMatchObject({ left: "316px", top: "416px" });
+    expect(appended[0].animations).toHaveLength(1);
+    expect(to.face.style.visibility).toBe("hidden");
+    // The name is where it now is: never hidden, never copied.
+    expect(to.label.style).toEqual({});
+    appended[0].animations[0].run.onfinish!();
+    expect(to.face.style.visibility).toBeUndefined();
+    expect(to.label.style).toEqual({});
+  });
+
+  it("sends the name too when the composer shows all of it", () => {
+    rememberIdentity("r1", as(card()));
+    const to = chip("Vesper", "new");
+    to.label.scrollWidth = 44;
+    to.label.clientWidth = 44;
+    landIdentity("r1", () => landing(to));
+    expect(appended).toHaveLength(2);
+    expect(appended[1].textContent).toBe("Vesper");
+    expect(to.label.style.visibility).toBe("hidden");
   });
 
   it("is called off in flight: the copies go and the landing is shown again", () => {

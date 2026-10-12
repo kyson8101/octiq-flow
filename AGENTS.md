@@ -739,9 +739,14 @@ handover-cards-namecard.html` is the mock they were built from.
   and coming back, the focus by leaving and returning. A press on the name
   asks again too. A pseudo-class is true for as long as the pointer or the focus
   stays, so Escape could not shut the tip under a pointer that had not
-  moved. While the tip is shown Escape is heard on the document and goes no
-  further: it shuts the tip and does nothing else (it is also how focus
-  mode is left).
+  moved. While the tip is shown Escape is heard on the document and always
+  shuts it. It goes no further only when it is nobody else's
+  (`placeTip.keepsEscape`): the focus is on the tip's own name or on
+  nothing, where the same press would also leave focus mode. With the focus
+  anywhere else (a form, a dialog, a field, another card) the tip shuts and
+  the Escape goes on to that surface, which answers it by its own rules:
+  a tip opened by a pointer must not cost a form its cancel. Two tips shown
+  at once (one name focused, another hovered) both shut on the one press.
 - **The envelope is the card's one disclosure**, and it is `CardFold`'s own
   line and control dressed in `HandoverCards.css` (the whole row is the
   target, the icon is a mask on the line). It keeps both labels of a route
@@ -785,24 +790,46 @@ handover-cards-namecard.html` is the mock they were built from.
     have an agent of the same name; finding the landing by name sent the
     face into whichever of them the person opened. `App` keeps the travel
     (`routeTravel`: the confirmation, the chat it was pressed in, the chat
-    it opened) and calls it off (`forgetIdentity`) the moment
-    `routeStands` says no: the page shows any chat but those two, no chat,
-    or a chat called unavailable, and when the card's hold runs out
-    (`GOING_MS`). So a chat picked by hand, one a notification or the
-    address bar brought, and a reload (the travel is in memory) all end it
-    with nothing drawn. The travel is asked for only if the page is still
-    in the chat it was confirmed in when the host answers.
-    `identityTravel.wiring.test.ts` reads `App.tsx` and `Composer.tsx` for
-    each step of that hand-off.
+    it opened, whether the page has got there) and calls it off
+    (`forgetIdentity`) the moment `routeAfter` says so, and when the card's
+    hold runs out (`GOING_MS`). So a chat picked by hand, one a
+    notification or the address bar brought, and a reload (the travel is
+    in memory) all end it with nothing drawn. The travel is asked for only
+    if the page still shows the chat it was confirmed in when the host
+    answers.
+  - **It stands in one chat at a time, and only while that chat is what
+    the page shows** (`identityTravel.routeAfter`, one pure rule; its table
+    is in `identityTravel.test.ts`). Waiting to go, that is the chat it was
+    confirmed in. The first time the page shows the chat it opened it has
+    arrived, and from then on that chat is the only one: back in the chat
+    it was confirmed in, the copies are taken away and the landing shown
+    again, as for any other chat (the composer is one element the page
+    reuses, so a travel left standing hid the returning chat's own face and
+    name). The open chat's id does not say the chat is on screen: `App`'s
+    `chatShown` does, the one value for the four things drawn in a chat's
+    place (the phone's project list, a main-area page such as Settings or
+    Agents, the run panel and the task chat where there is no room beside
+    them). Off screen calls the travel off, waiting or in flight, and
+    nothing brings it back. The rule hangs on that value and the open chat
+    in one effect, never on the callers that change them; a new thing drawn
+    in the chat's place joins `chatShown`. A panel laid over the chat is
+    not such a thing and does not call a travel off.
+    `identityTravel.wiring.test.ts` reads `App.tsx` and `Composer.tsx` as
+    text for the steps of the hand-off; its head says what that can and
+    cannot show. It is not where this rule is tested.
   - **Nothing is put on the page until the frame the landing is drawn.** So
     motion that is reduced, a face with nowhere to land that can be seen
     whole (off screen, or clipped by its scroller), a chat that never
     opens, and a card that left the page more than `FRESH_MS` ago all draw
     nothing and hide nothing. The face travels or nothing does. The name
-    goes with it when it too has somewhere to land that can be seen whole;
-    when it has not (a long name cut short on the line it lands in), the
-    face goes alone and the name is where it now is, not hidden. A copy
-    and the hiding of what it lands on begin together and end together.
+    goes with it when all of it can be read where it lands: its box can be
+    seen whole, and its words are not cut short inside that box
+    (`cutShort`: wider than it is drawn, which is how the composer ends a
+    long name in an ellipsis; the box is whole then, so the box alone
+    cannot say it). Otherwise the face goes alone and the name is where it
+    now is, not hidden: a whole name flown into a place that shows half of
+    it would jump as it landed. A copy and the hiding of what it lands on
+    begin together and end together.
   - **What a copy lands on is shown again as it was, however that ends**:
     finished, cancelled, called off (`forgetIdentity` ends a travel in
     flight where it is), or never run (a clock clears up after three times

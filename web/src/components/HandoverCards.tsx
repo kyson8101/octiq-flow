@@ -25,7 +25,7 @@ import { useRosterAgent } from "../lib/agentRoster";
 import { briefRuns } from "../lib/briefRuns";
 import { chars, count, isShort, lineCount, sizeLabel, tooLong, tooLongNote, WHOLE_MAX } from "../lib/cardFold";
 import { forgetIdentity, landIdentity, leaveIdentity, lineLanding, refreshIdentity, rememberIdentity } from "../lib/identityTravel";
-import { NO_TIP, tipAfter, tipShown } from "../lib/placeTip";
+import { focusAt, hearEscape, NO_TIP, tipAfter, tipShown, type TipEvent } from "../lib/placeTip";
 import { AgentAvatar } from "./AgentAvatar";
 import { Arrive } from "./Arrive";
 import { FoldBody, FoldLine, useFold, WholeText } from "./CardFold";
@@ -144,6 +144,15 @@ function Place({ name, path }: { name: string; path?: string }) {
   return <PlaceTip name={name} path={path} />;
 }
 
+/** What the page's `keydown` does while the tip on `word` is shown: Escape
+ *  shuts it, and is kept from going further only when the focus is on that
+ *  name or on nothing (`lib/placeTip.keepsEscape`). Where the focus is is
+ *  asked as the key arrives, never remembered. */
+export function tipKey(word: () => Node | null, say: (event: TipEvent) => void) {
+  return (event: Pick<globalThis.KeyboardEvent, "key" | "preventDefault" | "stopPropagation">) =>
+    hearEscape(event, true, focusAt<Node>(document.activeElement, word(), document.body), say);
+}
+
 /** The name with its tip. Whether the tip is shown is a state
  *  (`lib/placeTip`), not `:hover` or `:focus`: Escape takes it away with the
  *  pointer still over the name and the focus still on it, and it stays away
@@ -155,15 +164,14 @@ function PlaceTip({ name, path }: { name: string; path: string }) {
   const shown = tipShown(tip);
   // While it is shown, Escape and a press elsewhere are the page's to hear:
   // the focus may be on something else, with only the pointer here. Escape
-  // then does this and nothing more (it is also how focus mode is left).
+  // always shuts the tip. It goes no further only when it is nobody else's
+  // (`keepsEscape`): the focus is on this name or on nothing, where the
+  // same press would also leave focus mode. With the focus in a form, a
+  // dialog or another card, that surface hears it too and answers by its
+  // own rules.
   useEffect(() => {
     if (!shown) return;
-    const key = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      say("escape");
-    };
+    const key = tipKey(() => word.current, say);
     const press = (event: PointerEvent) => {
       if (!word.current?.contains(event.target as Node | null)) say("outside");
     };
