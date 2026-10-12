@@ -710,6 +710,73 @@ folded line and are not part of this.
   opened stays open while it is on screen, by the id of what it asks. Nothing
   is remembered past that, and there is no setting.
 
+### The route and handover cards are name cards
+
+`RouteCard` and `SourceCard` (`components/HandoverCards`) say who the work
+goes to before anything else: the agent's face at 44px and its name as the
+title. The question the card used to be headed with is still what the card is
+called (`aria-label`) and what its primary answer says. `docs/mocks/
+handover-cards-namecard.html` is the mock they were built from.
+
+- **Facts are sentences, not rows.** What kind of chat and where is one line
+  (`handover.routeFact`: `Read-only discussion · starfall`, `New chat ·
+  starfall · new worktree`), a handover's is two (`Takes over this task ·
+  <project>`, then `handover.handoverWhere`), the files a route carries are
+  `With 3 files: a, b, c`, and the chat's settings are one line of small
+  print (`settingsLine`), never chips.
+- **The folder is not on the card.** It is on the project's name (`Place`: a
+  tip on hover, focus or tap, set against its sentence so it is never wider
+  than the card), and whole inside the opened brief (`Opens in`, or a
+  handover's `Checkout`) for a screen with no pointer.
+- **The envelope is the card's one disclosure**, and it is `CardFold`'s own
+  line and control dressed in `HandoverCards.css` (the whole row is the
+  target, the icon is a mask on the line). It keeps both labels of a route
+  (`Brief · N characters`, `Exact first message · N lines`): they are two
+  texts. Do not draw a second control for it; `notePress` is in the shared
+  one.
+- **`is-waiting` is the card that waits on the person** (`waitsOnPerson`:
+  undecided, or a start that failed), and that class, not `is-pending`, takes
+  the decision colour and the raised quiet text. Two rules of the card are
+  another colour on purpose, and `lib/decideColour.test.ts` names them: the
+  ring round the face while a confirmed chat starts (the accent, in flight,
+  never on a card that waits) and `Not passed on` (amber, a problem). That
+  test scans the card by the class of each part (`NAME_CARD_PARTS`): a part
+  added to the card is added there, or the scan does not see it.
+- **A brief too long to show cannot be handed over** (`briefOver`): the parts
+  of a handover's brief are counted together against `cardFold.WHOLE_MAX`,
+  the envelope gives way to the sentence, and `Hand over` and `Try again` are
+  off (`aria-disabled`) while `Keep it here` and `Give up` answer. The host
+  stops each part at 8,000 characters (`handover.rs`, `FIELD_MAX`), so this
+  is the page's own bound, as the route card's is.
+- **Confirmed, the face and the name go on to where the agent is named next**
+  (`lib/identityTravel`): a route's to the composer of the chat it opened
+  (`composerLanding`, by the agent's name, so never the chat it was asked
+  in), a handover's into the line it leaves (`lineLanding`; that line shows
+  the face at 16px in place of its mark). The top bar is not part of it.
+  Copies on `document.body`, one movement of 200ms on `--enter-ease`, the
+  landing unseen until they arrive. It happens whole or not at all: nothing
+  is put on the page until the frame the landing is drawn, so motion that is
+  reduced, a landing that is off screen or clipped by its scroller, a chat
+  that never opens, and a card that left the page more than `FRESH_MS` ago
+  all draw nothing and hide nothing. A card says it was confirmed
+  (`rememberIdentity`) and where it is as it is drawn and as it leaves
+  (`refreshIdentity`, `leaveIdentity`); whoever draws the landing asks
+  (`landIdentity`).
+- **The page that confirmed a route keeps its card until it has left the
+  chat** (`handover.handoverTail`, `App`'s `goingRoute`). The record says
+  confirmed at once, and `handoverPlaces` then drops the card, but the page
+  gets to the new chat only when `onOpenChat` has found it, which may be a
+  request to the host: without the hold the card was gone and the chat not
+  yet there. Held, the card says `Opening the chat.`, asks nothing, and goes
+  with the chat, after `GOING_MS`, or when the chat is called unavailable.
+  No other page keeps it, and a handover's card is never kept.
+- **A face is never the colour of a warning or an error**
+  (`agentPersona.personaHue`, `WARM_HUES`): no hue from 345° round to 80°. A
+  hue outside that band is the hash's own, as before; one inside takes its
+  place along the band as its place along the rest of the wheel
+  (`awayFromWarm`). Green and teal are not avoided: too few colours would be
+  left to tell agents apart.
+
 ### Both agents' full stops carry their closing words
 
 `turn_is_over` reads `result` (Claude) and `turn.completed` / `turn.failed`

@@ -179,9 +179,11 @@ import {
 import { ChatPlanCards } from "./components/ChatPlanCards";
 import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
 import {
-  chatIdOf, handoverAnchorKey, handoverLayout, handoverPlaces, handoversFor, isRoute, type HandoverAction,
+  chatIdOf, handoverAnchorKey, handoverLayout, handoverPlaces, handoversFor, handoverTail, isRoute,
+  type Handover, type HandoverAction,
 } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
+import { composerLanding, forgetIdentity, landIdentity } from "./lib/identityTravel";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type PendingAction } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
@@ -302,6 +304,11 @@ function userTurnId(): string {
  *  its row start to empty and press it again; short enough that the agent a
  *  delete is meant to stop is not still running a minute later. */
 const UNDO_MS = 2000;
+
+/** How long the page keeps the card of a route it confirmed while it finds
+ *  the chat that route opened (`goingRoute`). Finding it is one request to
+ *  the host at most; past this the card goes and the page says where it is. */
+const GOING_MS = 8000;
 
 /** The final visual beat after an undoable delete commits. Keep this aligned
  *  with `.chat-row`'s transition in styles.css: the row must stay mounted for
@@ -4451,10 +4458,38 @@ export default function App() {
   const openHandoverChat = useCallback((chatKey: string, projectId: string | null) => {
     onOpenChat.current({ conversationId: chatIdOf(chatKey), projectId });
   }, []);
+  // The route this page confirmed and is on its way to. Its card would leave
+  // the moment the record says confirmed, while the page gets to the new chat
+  // only once that chat is found (`onOpenChat`, which may ask the host): the
+  // card stays, saying the chat is opening, until this chat is left
+  // (`handoverTail`). Not for ever: a chat that cannot be opened says so on
+  // its own page, and one that takes this long is not being waited for.
+  const [goingRoute, setGoingRoute] = useState<string | null>(null);
+  const notGoing = useCallback((id: string) => setGoingRoute((now) => (now === id ? null : now)), []);
+  useEffect(() => {
+    if (!goingRoute) return;
+    const timer = window.setTimeout(() => setGoingRoute(null), GOING_MS);
+    return () => window.clearTimeout(timer);
+  }, [goingRoute]);
+  useEffect(() => setGoingRoute(null), [conversationId, unavailableChat]);
+  const handoverTailHere = useMemo(
+    () => handoverTail(handoversHere.outgoing, goingRoute),
+    [handoversHere, goingRoute],
+  );
   // The person confirmed the front desk's card: the chat it opened is where
   // they go. The front-desk chat behind them is never listed.
   const decideAndGo = useCallback(async (id: string, action: HandoverAction) => {
-    const record = await decideHandover(id, action);
+    // Said before the host answers: the record can say confirmed, over the
+    // socket, ahead of this call's own answer. Only a route is ever kept.
+    const going = action === "confirm" || action === "discuss";
+    if (going) setGoingRoute(id);
+    let record: Handover;
+    try {
+      record = await decideHandover(id, action);
+    } catch (reason) {
+      notGoing(id);
+      throw reason;
+    }
     const target = record.targetChatKey;
     if (isRoute(record) && record.status === "confirmed" && target) {
       // The host recorded the new chat as this agent's; known here at once,
@@ -4468,10 +4503,18 @@ export default function App() {
         setLeads((current) => [...current.filter((item) => item.chatKey !== target), routedLead]);
       }
       openHandoverChat(target, record.destination.projectId);
+      // The card goes with the chat it was asked in: its face and name go
+      // on to where the new chat names the agent, on its composer. Only
+      // once that is drawn; a chat that never opens is not travelled to.
+      landIdentity(id, () => composerLanding(record.to.name));
       loadLeads().then(setLeads, () => undefined);
+    } else {
+      notGoing(id);
+      // Not opened: nothing of a route's card travels anywhere.
+      if (isRoute(record)) forgetIdentity(id);
     }
     return record;
-  }, [decideHandover, openHandoverChat]);
+  }, [decideHandover, openHandoverChat, notGoing]);
   // The way back to a front-desk conversation left before it routed: no list
   // shows one, so the new-chat screen offers it. Asked for each time that
   // screen shows the front desk; a route confirmed since drops out at once.
@@ -4571,15 +4614,15 @@ export default function App() {
   // was drawn. Those come in; one already waiting when the chat opens does not.
   const lateTail = useLateKeys(conversationId ?? "", [
     ...plansHere.filter((plan) => plan.pending).map((plan) => `plan:${plan.run.id}`),
-    ...handoverPlace.tail.map((handover) => `handover:${handover.id}`),
+    ...handoverTailHere.map((handover) => `handover:${handover.id}`),
     ...(workerChat ? [] : safetySplit.folded.map((block) => `safety:${block.id}`)),
   ]);
   const planTail = useMemo(
     () => {
       const plans = plansHere.some((plan) => plan.pending)
         ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} late={lateTail} /> : null;
-      const handed = handoverPlace.tail.length
-        ? <HandoverCards outgoing={handoverPlace.tail} onDecide={decideAndGo} late={lateTail} />
+      const handed = handoverTailHere.length
+        ? <HandoverCards outgoing={handoverTailHere} onDecide={decideAndGo} late={lateTail} />
         : null;
       const refused = !workerChat && safetySplit.folded.length
         ? <SafetyLines blocks={safetySplit.folded} reveal={safetyReveal} late={lateTail}
@@ -4587,7 +4630,7 @@ export default function App() {
         : null;
       return plans || handed || refused ? <>{refused}{handed}{plans}</> : undefined;
     },
-    [plansHere, planDrafting, planProjectName, handoverPlace, decideAndGo,
+    [plansHere, planDrafting, planProjectName, handoverTailHere, decideAndGo,
       workerChat, safetySplit, safetyReveal, answeredSafety, continueSafety, lateTail],
   );
 

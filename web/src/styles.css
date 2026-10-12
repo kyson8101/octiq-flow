@@ -10501,7 +10501,7 @@ body.is-ultra .eff {
 /* The cards that wait on the person's decision share a tinted surface, and
    the quietest text does not hold 4.5:1 on a tint in every mode. On these
    cards it takes one step up. */
-:is(.ask-card:not(.safety-card), .qa-card, .handover-card.is-pending, .chat-plan[data-pending]) {
+:is(.ask-card:not(.safety-card), .qa-card, .handover-card.is-waiting, .chat-plan[data-pending]) {
   --fg-3: var(--fg-2);
 }
 
@@ -10612,10 +10612,9 @@ body.is-ultra .eff {
 
 /* A word about a thing, as a label: an outlined pill, 20px high, after
    `.read-only-badge`. Never a control (`.chip` is an attached file,
-   `.level-chip` a button). The route card's settings (`.handover-chip`) and
-   the permission card's server and tool id are this one rule. */
-.label-pill,
-.handover-chip {
+   `.level-chip` a button). The permission card's server and tool id are
+   this rule. */
+.label-pill {
   display: inline-flex; align-items: center; min-width: 0; max-width: 100%;
   height: 20px; padding: 0 8px;
   border: 1px solid var(--border); border-radius: var(--r-pill);

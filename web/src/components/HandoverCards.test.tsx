@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { briefLabels, HandoverCards, HandoverLines } from "./HandoverCards";
+import { briefLabels, briefOver, HandoverCards, HandoverLines } from "./HandoverCards";
+import { WHOLE_MAX } from "../lib/cardFold";
 import { handover } from "../lib/handover.fixture";
 import { handoverPlaces, handoversFor, type Handover } from "../lib/handover";
 
@@ -23,10 +24,18 @@ describe("HandoverCards", () => {
     expect(lines).toBe("");
     expect(html).toContain('data-status="pending"');
     expect(html).toContain('data-pending-keys="handover:handover_1"');
-    expect(html).toContain("Hand this task to Mango?");
-    expect(html).toContain("Sonnet latest · high · Accept edits");
-    expect(html).toContain("App · continues in fix-login on fix/login");
-    expect(html).toContain("Uncommitted changes travel with it");
+    // A name card: the face and the name are the title. The question it
+    // used to be headed with is still what the card is called, and the
+    // primary answer says it.
+    expect(html).toContain('aria-label="Hand this task to Mango?"');
+    expect(html).toMatch(/<header class="handover-id"><span class="handover-face"><span class="agent-avatar" style="--agent-avatar-size:44px;[^"]*" aria-hidden="true">/);
+    expect(html).toContain('<h3 class="handover-name"><span data-travel="name">Mango</span></h3>');
+    // What will happen, as two sentences: the project, with its folder a
+    // hover, focus or tap away and not on the card; then where it goes on.
+    expect(html).toMatch(/<p class="handover-fact">Takes over this task · <span class="handover-place has-tip" tabindex="0" aria-describedby="([^"]+)">App<span class="handover-tip" role="tooltip" id="\1">\/src\/\.worktrees\/app\/fix-login<\/span><\/span><\/p>/);
+    expect(html).toContain('<p class="handover-fact">Continues on <code>fix/login</code> · uncommitted changes travel with it</p>');
+    // The chat's settings, as one line of small print.
+    expect(html).toContain('<p class="handover-settings"><span class="handover-sr">Chat settings: </span>Sonnet latest · high · Accept edits</p>');
     expect(html).toContain("Hand over to Mango");
     expect(html).toContain("Keep it here");
     expect(html).toContain("Nothing starts until you choose");
@@ -51,7 +60,7 @@ describe("HandoverCards", () => {
     expect(html).toContain("HEAD abc1234");
     // The facts and the answers are the same in both states.
     for (const drawn of [html, render([handover()], "chat:source").tail]) {
-      expect(drawn).toContain("Uncommitted changes travel with it");
+      expect(drawn).toContain("uncommitted changes travel with it");
       expect(drawn).toContain("Hand over to Mango");
       expect(drawn).toContain("Keep it here");
     }
@@ -106,7 +115,71 @@ describe("HandoverCards", () => {
     const running = render([handover({ status: "starting", targetChatKey: "chat:new" })], "chat:source");
     expect(running.tail).toContain('data-status="starting"');
     expect(running.tail).not.toContain("data-pending");
-    expect(running.tail).not.toContain("tabindex");
+    // The card itself takes no focus; the project's name on it still does.
+    expect(running.tail).not.toContain('tabindex="-1"');
+    expect(running.tail).not.toMatch(/<section[^>]*tabindex/);
+  });
+
+  it("tints a card that waits on the person, a failed start included, and never one under way", () => {
+    const waiting = (html: string) => /<section class="handover-card is-\w+ is-waiting"/.test(html);
+    expect(waiting(render([handover()], "chat:source").tail)).toBe(true);
+    expect(waiting(render([handover({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable" })], "chat:source").tail)).toBe(true);
+    const running = render([handover({ status: "starting", targetChatKey: "chat:new" })], "chat:source").tail;
+    expect(waiting(running)).toBe(false);
+    // Under way, the face is the one thing that moves; waiting, nothing does.
+    expect(running).toContain('<span class="handover-face is-working">');
+    expect(render([handover()], "chat:source").tail).not.toContain("is-working");
+    expect(render([handover({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable" })], "chat:source").tail).not.toContain("is-working");
+  });
+
+  it("says where the task goes on for every kind of checkout", () => {
+    const fact = (extra: Partial<Handover["workspace"]>) => {
+      const html = render([handover({ workspace: { mode: "continue", path: "/src/.worktrees/app/fix-login", ...extra } })], "chat:source").tail;
+      return [...html.matchAll(/<p class="handover-fact">(.*?)<\/p>/g)][1]?.[1];
+    };
+    expect(fact({ branch: "fix/login", uncommitted: false })).toBe("Continues on <code>fix/login</code> · nothing uncommitted");
+    expect(fact({ branch: "fix/login" })).toBe("Continues on <code>fix/login</code>");
+    expect(fact({})).toBe("Continues in <code>fix-login</code>");
+    expect(fact({ mode: "worktree", branch: "main" })).toBe("New worktree from <code>main</code>");
+    expect(fact({ mode: "worktree", branch: "main", preparedBranch: "task/login" })).toBe("New worktree on <code>task/login</code>");
+    expect(fact({ mode: "worktree" })).toBe("New worktree");
+    expect(fact({ mode: "folder", path: "/src/notes" })).toBe("Works in <code>notes</code>");
+  });
+
+  it("will not hand over a brief too long to show, and says why", () => {
+    // The host stops each part of a brief at 8,000 characters, so this is
+    // the page's own bound: a brief it would not open whole is not opened
+    // in part, and cannot be agreed to from the card.
+    const remaining = "r".repeat(WHOLE_MAX - 10);
+    const long = { objective: "Finish the login fix", remaining, authorized: ["commit on the task branch"] };
+    for (const html of [
+      render([handover({ brief: long })], "chat:source").tail,
+      opened([handover({ brief: long })], "chat:source"),
+    ]) {
+      const why = /<p class="handover-over" id="([^"]+)">This brief is too long to show in full \(5,000,035 characters\), so it cannot be handed over from here\. Keep it here and ask for a shorter one\.<\/p>/.exec(html);
+      expect(why, "no reason on the card").not.toBeNull();
+      // Off, not disabled and not gone: it points at the sentence above it.
+      expect(html).toMatch(new RegExp(`<button type="button" class="handover-go" aria-disabled="true" aria-describedby="${why![1]}"[^>]*>Hand over to Mango</button>`));
+      expect(html).not.toMatch(/<button[^>]*class="handover-go"[^>]* disabled=""/);
+      expect(html.indexOf("handover-over")).toBeLessThan(html.indexOf("handover-actions"));
+      // Keeping it here is an ordinary button, and none of the brief is drawn.
+      expect(html).toContain('<button type="button" class="handover-quiet">Keep it here</button>');
+      expect(html).not.toContain("rrrr");
+      expect(html).not.toContain("card-fold-toggle");
+      // The card still waits on the person, and is still found by its badge.
+      expect(html).toContain('data-pending-keys="handover:handover_1"');
+    }
+    // A failed start offers no way round it, and giving up stays.
+    const retry = render([handover({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable", abandonable: true, brief: long })], "chat:source").tail;
+    expect(retry).toMatch(/<button type="button" class="handover-go" aria-disabled="true"[^>]*>Try again<\/button>/);
+    expect(retry).toContain('<button type="button" class="handover-quiet">Give up</button>');
+    // The bound is on the whole brief, counted in characters, and one
+    // character short of it is an ordinary card.
+    expect(briefOver(handover({ brief: { objective: "o".repeat(WHOLE_MAX) } }))).toBe("");
+    expect(briefOver(handover({ brief: { objective: "o".repeat(WHOLE_MAX), openQuestions: "?" } })))
+      .toContain("(5,000,001 characters)");
+    expect(briefOver(handover({ brief: { objective: "😀".repeat(WHOLE_MAX / 2 + 1) } }))).toBe("");
+    expect(briefOver(handover())).toBe("");
   });
 
   it("lets the person give up on a failed start only once the host ruled a chat out", () => {
@@ -129,7 +202,11 @@ describe("a settled handover", () => {
     const { tail, lines } = render(list, "chat:source");
     expect(tail).toBe("");
     expect(lines).toContain('class="handover-line is-confirmed"');
-    expect(lines).toContain("Handed over to Mango");
+    // Who has it now, by face and by name: where the confirmed card's own
+    // face and name land.
+    expect(lines).toMatch(/<span class="handover-line-what"><span class="agent-avatar handover-line-face" style="--agent-avatar-size:16px;[^"]*" aria-hidden="true">/);
+    expect(lines).toContain('<span class="handover-line-text">Handed over to <bdi data-travel="name">Mango</bdi></span>');
+    expect(lines).not.toContain("handover-mark");
     expect(lines).toContain('data-open-chat="new"');
     expect(lines).toContain("Open Mango&#x27;s chat");
     expect(lines).not.toContain("Keep it here");

@@ -111,6 +111,9 @@ describe("a chat that was handed a task and handed it on", () => {
     return renderToStaticMarkup(<MessageList messages={loaded} busy={false} head={head} marks={marks} tail={tail} />);
   };
   const count = (html: string, text: string) => html.split(text).length - 1;
+  /** The line a confirmed handover leaves in the chat that asked: the name
+   *  is set apart in it, as where the confirmed card's name lands. */
+  const HANDED_TO_TOFU = 'Handed over to <bdi data-travel="name">Tofu</bdi>';
 
   it("draws the incoming line at the head and the outgoing one under its turn, each once", () => {
     const html = draw([incoming, onward()], chat);
@@ -118,8 +121,8 @@ describe("a chat that was handed a task and handed it on", () => {
     expect(count(html, 'data-handover="handover_in"')).toBe(1);
     expect(count(html, 'data-handover="handover_out"')).toBe(1);
     expect(at("Handed over from Potato")).toBeLessThan(at("the brief from Potato"));
-    expect(at("Handed over to Tofu")).toBeGreaterThan(at("handing it on"));
-    expect(at("Handed over to Tofu")).toBeLessThan(at("a later question"));
+    expect(at(HANDED_TO_TOFU)).toBeGreaterThan(at("handing it on"));
+    expect(at(HANDED_TO_TOFU)).toBeLessThan(at("a later question"));
     expect(html).not.toContain("handover-card");
     expect(html).not.toContain("data-pending");
   });
@@ -130,8 +133,9 @@ describe("a chat that was handed a task and handed it on", () => {
     const at = (text: string) => html.indexOf(text);
     expect(count(html, 'data-handover="handover_in"')).toBe(1);
     expect(count(html, 'data-handover="handover_out"')).toBe(1);
-    expect(at("Handed over from Potato")).toBeLessThan(at("Handed over to Tofu"));
-    expect(at("Handed over to Tofu")).toBeLessThan(at("a later question"));
+    expect(at("Handed over from Potato")).toBeGreaterThan(-1);
+    expect(at("Handed over from Potato")).toBeLessThan(at(HANDED_TO_TOFU));
+    expect(at(HANDED_TO_TOFU)).toBeLessThan(at("a later question"));
     expect(html).not.toContain("handover-card");
   });
 
@@ -142,8 +146,10 @@ describe("a chat that was handed a task and handed it on", () => {
     expect(count(html, 'data-handover="handover_out"')).toBe(1);
     expect(count(html, "handover-card ")).toBe(1);
     expect(at("Handed over from Potato")).toBeLessThan(at("the brief from Potato"));
-    expect(at("Hand this task to Tofu?")).toBeGreaterThan(at("a later answer"));
+    expect(at('aria-label="Hand this task to Tofu?"')).toBeGreaterThan(at("a later answer"));
+    expect(at("Hand over to Tofu<")).toBeGreaterThan(at('aria-label="Hand this task to Tofu?"'));
     expect(html).toContain('data-pending-keys="handover:handover_out"');
-    expect(html).not.toContain("Handed over to Tofu");
+    expect(html).not.toContain("Handed over to");
+    expect(html).not.toContain("handover-line is-confirmed");
   });
 });

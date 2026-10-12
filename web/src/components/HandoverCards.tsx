@@ -5,25 +5,33 @@
 // the person's alone: these buttons are the only thing that sends
 // `handover_confirm`.
 //
-// Labels and counts up front; the brief, paths and the HEAD commit sit behind
-// a disclosure, like every other piece of agent prose. A card that waits on
-// the person has one such disclosure (`components/CardFold`), named for what
-// it holds and how much, and it opens above the buttons.
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+// A card that waits is a name card: who the work goes to, as a face and a
+// name, then what will happen as a sentence or two, then the chat's settings
+// in small print. The brief, the exact first message, paths and the HEAD
+// commit sit behind the card's one disclosure (`components/CardFold`), drawn
+// here as an envelope: a row named for what it holds and how much, never a
+// piece of it, opening above the buttons.
+//
+// Confirmed, the face and the name go on to where the agent is named next
+// (`lib/identityTravel`): the composer of the chat a route opened, or the
+// line a handover leaves in this one.
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  askBackSummary, canDiscussInstead, chatIdOf, handoverHeadline, homeShort, isRoute, latestOutcome, noticeLine, outcomeText, placeLine,
-  routeHeadline, routePlace, settingsLine, settingsParts, waitsOnPerson,
+  askBackSummary, canDiscussInstead, chatIdOf, handoverHeadline, handoverWhere, homeShort, isRoute, latestOutcome, noticeLine,
+  outcomeText, placeLine, routeFact, routeHeadline, settingsLine, waitsOnPerson,
   type Handover, type HandoverAction, type HandoverAsk, type handoverLayout,
 } from "../lib/handover";
 import { useRosterAgent } from "../lib/agentRoster";
 import { briefRuns } from "../lib/briefRuns";
-import { chars, count, isShort, lineCount, sizeLabel, tooLong, tooLongNote } from "../lib/cardFold";
+import { chars, count, isShort, lineCount, sizeLabel, tooLong, tooLongNote, WHOLE_MAX } from "../lib/cardFold";
+import { forgetIdentity, landIdentity, leaveIdentity, lineLanding, refreshIdentity, rememberIdentity } from "../lib/identityTravel";
 import { AgentAvatar } from "./AgentAvatar";
 import { Arrive } from "./Arrive";
 import { FoldBody, FoldLine, useFold, WholeText } from "./CardFold";
 import "./HandoverCards.css";
 
 type Open = (chatKey: string, projectId: string | null) => void;
+type Decide = (id: string, action: HandoverAction) => Promise<unknown>;
 
 function Section({ title, text }: { title: string; text?: string }) {
   if (!text?.trim()) return null;
@@ -60,6 +68,26 @@ export function briefLabels(handover: Handover): string[] {
   ].filter(Boolean);
 }
 
+/** Why a handover's brief cannot be handed over from its card, or "". Opened,
+ *  a brief is every character of every part of it, so its parts are counted
+ *  together: past what the page draws whole (`cardFold.WHOLE_MAX`) it is not
+ *  opened in part, and what cannot be shown whole cannot be agreed to here.
+ *  The host stops each part at 8,000 characters; this is the page's own
+ *  bound, kept whatever a host sends. */
+export function briefOver(handover: Handover): string {
+  const { brief } = handover;
+  const parts = [
+    brief.objective, brief.doneSoFar, brief.remaining, brief.decisions, brief.openQuestions,
+    ...(brief.authorized ?? []), ...(brief.notAuthorized ?? []),
+  ].filter((part): part is string => !!part);
+  // Never more characters than units, so this is every real brief, at no cost.
+  if (parts.reduce((sum, part) => sum + part.length, 0) <= WHOLE_MAX) return "";
+  const size = parts.reduce((sum, part) => sum + chars(part), 0);
+  return size > WHOLE_MAX
+    ? tooLongNote("brief", size, "be handed over from here", "Keep it here and ask for a shorter one.")
+    : "";
+}
+
 /** What the agent wrote for the recipient, and where the work is. */
 function BriefBody({ handover }: { handover: Handover }) {
   const { brief, workspace } = handover;
@@ -92,7 +120,8 @@ function BriefBody({ handover }: { handover: Handover }) {
   );
 }
 
-/** Branch, HEAD-state and uncommitted changes, as git said when the card was made. */
+/** Branch, HEAD-state and uncommitted changes, as git said when the card was
+ *  made: the facts under a settled line. */
 function Facts({ handover }: { handover: Handover }) {
   const ws = handover.workspace;
   return (
@@ -106,51 +135,141 @@ function Facts({ handover }: { handover: Handover }) {
   );
 }
 
-/** The card that waits on the person: undecided, or confirmed and its new
- *  chat not running yet. Drawn at the end of the transcript until it settles,
- *  then replaced by a `HandoverLine` where the handover was asked for. */
-function SourceCard({ handover, onDecide, startOpen = false }: {
-  handover: Handover;
-  onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
-  /** Draw it opened: for the tests, which cannot press the control. */
-  startOpen?: boolean;
-}) {
-  const fold = useFold(handover.id, { startOpen });
+/** A project by its name, with the folder behind it one hover, focus or tap
+ *  away. The folder is not on the card: it is here, and whole inside the
+ *  opened brief for a screen with no pointer to hover with. */
+function Place({ name, path }: { name: string; path?: string }) {
+  const id = useId();
+  if (!path) return <span className="handover-place">{name}</span>;
+  const leave = (event: KeyboardEvent<HTMLSpanElement>) => {
+    if (event.key === "Escape") event.currentTarget.blur();
+  };
+  return (
+    <span className="handover-place has-tip" tabIndex={0} aria-describedby={id} onKeyDown={leave}>
+      {name}
+      <span className="handover-tip" role="tooltip" id={id}>{homeShort(path)}</span>
+    </span>
+  );
+}
+
+/** Who the work goes to: the face, the name, what will happen as a sentence
+ *  or two (`children`), and the chat's settings in small print. */
+function Identity({ handover, working, children }: { handover: Handover; working: boolean; children: ReactNode }) {
+  const face = useRosterAgent(handover.to.agentId);
+  return (
+    <header className="handover-id">
+      <span className={`handover-face${working ? " is-working" : ""}`}>
+        <AgentAvatar
+          name={face?.name ?? handover.to.name}
+          avatar={face?.avatar}
+          id={handover.to.agentId ?? handover.to.name}
+          size={44}
+          decorative
+        />
+      </span>
+      <div className="handover-who">
+        <h3 className="handover-name"><span data-travel="name">{handover.to.name}</span></h3>
+        {children}
+        <p className="handover-settings"><span className="handover-sr">Chat settings: </span>{settingsLine(handover.settings)}</p>
+      </div>
+    </header>
+  );
+}
+
+/** The answers of a card, and what a confirmed one hands on. `over` is why
+ *  the card cannot send what it asks about ("" when it can): the answers
+ *  that would send it are then off, not disabled and not gone, and keep
+ *  their place with the reason read out. */
+function useAnswers(handover: Handover, onDecide: Decide, over: string) {
+  const card = useRef<HTMLElement>(null);
   const [busy, setBusy] = useState<HandoverAction | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const pending = handover.status === "pending";
-  // Confirmed, and its chat not started yet: it can only go forward.
-  const starting = handover.status === "starting";
-  const decide = async (action: HandoverAction) => {
+  const overId = useId();
+  const { id } = handover;
+  // A confirmed card's face and name go on from where the card was last
+  // seen: as it is drawn, and as it leaves.
+  useLayoutEffect(() => refreshIdentity(id, card.current));
+  useLayoutEffect(() => {
+    const element = card.current;
+    return () => leaveIdentity(id, element);
+  }, [id]);
+  // A start that failed goes nowhere: the card stays, and asks again.
+  const stuck = !!(error ?? handover.error);
+  useEffect(() => {
+    if (stuck) forgetIdentity(id);
+  }, [stuck, id]);
+  const decide = useCallback(async (action: HandoverAction) => {
+    if (action === "confirm" || action === "discuss") rememberIdentity(id, card.current);
     setBusy(action);
     setError(null);
     try {
-      await onDecide(handover.id, action);
+      await onDecide(id, action);
     } catch (reason) {
       setError(String((reason as Error)?.message ?? reason));
     } finally {
       setBusy(null);
     }
-  };
+  }, [id, onDecide]);
+  const send = (action: HandoverAction) => ({
+    "aria-disabled": over ? true : undefined,
+    "aria-describedby": over ? overId : undefined,
+    title: over || undefined,
+    onClick: () => { if (!over) void decide(action); },
+  });
+  return { card, busy, error, decide, send, overId };
+}
+
+function WarnIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 4 2.5 20h19z" />
+      <path d="M12 10v4.5M12 17.4v.1" />
+    </svg>
+  );
+}
+
+/** The card that waits on the person: undecided, or confirmed and its new
+ *  chat not running yet. Drawn at the end of the transcript until it settles,
+ *  then replaced by a `HandoverLine` where the handover was asked for. */
+function SourceCard({ handover, onDecide, startOpen = false }: {
+  handover: Handover;
+  onDecide: Decide;
+  /** Draw it opened: for the tests, which cannot press the control. */
+  startOpen?: boolean;
+}) {
+  const fold = useFold(handover.id, { startOpen });
+  const pending = handover.status === "pending";
+  // Confirmed, and its chat not started yet: it can only go forward.
+  const starting = handover.status === "starting";
+  const over = useMemo(() => briefOver(handover), [handover]);
+  const { card, busy, error, decide, send, overId } = useAnswers(handover, onDecide, over);
   const failed = error ?? (pending || starting ? handover.error : undefined);
   // Undecided, or a start that failed: the badge in the chat list points here.
   const waiting = waitsOnPerson(handover);
+  const where = handover.workspace.preparedCwd ?? handover.workspace.path;
   return (
     <section
-      className={`handover-card is-${handover.status}`}
+      ref={card}
+      className={`handover-card is-${handover.status}${waiting ? " is-waiting" : ""}`}
       data-handover={handover.id}
       data-status={handover.status}
+      aria-label={handoverHeadline(handover, "source")}
       {...(waiting ? { "data-pending": "", "data-pending-keys": `handover:${handover.id}`, tabIndex: -1 } : {})}
     >
-      <header className="handover-head">
-        <span className="handover-mark" aria-hidden="true" />
-        <h3>{handoverHeadline(handover, "source")}</h3>
-      </header>
-      <Facts handover={handover} />
-      <FoldLine fold={fold} labels={briefLabels(handover)} what="the brief" />
-      <FoldBody fold={fold}>
-        <BriefBody handover={handover} />
-      </FoldBody>
+      <Identity handover={handover} working={starting && !failed}>
+        <p className="handover-fact">Takes over this task · <Place name={handover.destination.projectName} path={where} /></p>
+        <p className="handover-fact">
+          {handoverWhere(handover).map((run, index) => run.mono ? <code key={index}>{run.text}</code> : run.text)}
+        </p>
+      </Identity>
+      {over
+        ? <p className="handover-over" id={overId}>{over}</p>
+        : <>
+          <FoldLine fold={fold} labels={briefLabels(handover)} what="the brief" />
+          <FoldBody fold={fold}>
+            <BriefBody handover={handover} />
+          </FoldBody>
+        </>}
       {failed && <p className="handover-error" role="alert">{failed}</p>}
       {pending && (
         <footer className="handover-actions">
@@ -158,7 +277,7 @@ function SourceCard({ handover, onDecide, startOpen = false }: {
           <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")}>
             {busy === "decline" ? "Keeping…" : "Keep it here"}
           </button>
-          <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
+          <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")}>
             {busy === "confirm" ? "Handing over…" : `Hand over to ${handover.to.name}`}
           </button>
         </footer>
@@ -178,7 +297,7 @@ function SourceCard({ handover, onDecide, startOpen = false }: {
             </button>
           )}
           {handover.error && (
-            <button type="button" className="handover-go" disabled={!!busy} onClick={() => void decide("confirm")}>
+            <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")}>
               {busy === "confirm" ? "Starting…" : "Try again"}
             </button>
           )}
@@ -205,39 +324,27 @@ function BriefProse({ text }: { text: string }) {
 
 /** The front desk's proposal: which agent, in which project, with the brief
  *  it will receive. Confirming is the only thing that opens the chat; the
- *  page then goes there. Read top to bottom it answers who (the face, and the
- *  chat's settings as chips), where, and what: the brief is shown whole, since
- *  it is what the person is agreeing to send; the exact first message, file
- *  paths and all, is one click further. */
+ *  page then goes there. Read top to bottom it answers who (the face and the
+ *  name), what kind of chat and where (one sentence), with which files, and
+ *  what: the brief and the exact first message, file paths and all, are in
+ *  the envelope, named by their size and opened whole. */
 export function RouteCard({ handover, onDecide, startOpen = false }: {
   handover: Handover;
-  onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
+  onDecide: Decide;
   /** Draw it opened: for the tests, which cannot press the control. */
   startOpen?: boolean;
 }) {
   const fold = useFold(handover.id, { startOpen });
-  const [busy, setBusy] = useState<HandoverAction | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const pending = handover.status === "pending";
   const starting = handover.status === "starting";
-  const decide = async (action: HandoverAction) => {
-    setBusy(action);
-    setError(null);
-    try {
-      await onDecide(handover.id, action);
-    } catch (reason) {
-      setError(String((reason as Error)?.message ?? reason));
-    } finally {
-      setBusy(null);
-    }
-  };
+  // Confirmed, and still drawn: this page confirmed it and is on its way to
+  // the chat (`lib/handover.handoverTail`). Nothing is left to answer.
+  const going = handover.status === "confirmed";
   const route = handover.route;
   const files = route?.attachments ?? [];
   const unreadable = route?.unreadable ?? [];
-  const failed = error ?? handover.error;
   const discussInstead = canDiscussInstead(handover);
-  const face = useRosterAgent(handover.to.agentId);
-  const place = routePlace(handover);
+  const fact = routeFact(handover);
   // A head's conversation spans every project, so it has no one folder.
   const repository = route?.crossProject ? "" : handover.destination.repository;
   // A brief of one short line is a fact and stays on the card; a longer one
@@ -255,93 +362,75 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
     }
     return "";
   }, [message, brief]);
-  const overId = useId();
-  // Off, not disabled: it keeps its place with its reason read out.
-  const send = (action: HandoverAction) => ({
-    "aria-disabled": over ? true : undefined,
-    "aria-describedby": over ? overId : undefined,
-    title: over || undefined,
-    onClick: () => { if (!over) void decide(action); },
-  });
+  const { card, busy, error, decide, send, overId } = useAnswers(handover, onDecide, over);
+  // A confirmed route's start did not fail, whatever an earlier try said.
+  const failed = going ? undefined : error ?? handover.error;
+  const waiting = waitsOnPerson(handover);
   return (
     <section
-      className={`handover-card route-card is-${handover.status}`}
+      ref={card}
+      className={`handover-card route-card is-${handover.status}${waiting ? " is-waiting" : ""}`}
       data-handover={handover.id}
       data-status={handover.status}
       data-kind="route"
+      aria-label={routeHeadline(handover)}
     >
-      <header className="handover-head route-head">
-        <AgentAvatar
-          name={face?.name ?? handover.to.name}
-          avatar={face?.avatar}
-          id={handover.to.agentId ?? handover.to.name}
-          size={28}
-          decorative
-        />
-        <div className="route-title">
-          <h3>{routeHeadline(handover)}</h3>
-          <ul className="route-chips" aria-label="Chat settings">
-            {settingsParts(handover.settings).map((part) => (
-              <li key={part.kind} className="handover-chip" data-chip={part.kind}>{part.label}</li>
-            ))}
-          </ul>
-        </div>
-      </header>
-      <dl className="handover-facts route-facts">
-        <div>
-          <dt>Project</dt>
-          <dd>
-            <span className="route-project">{place.project}</span>
-            {place.notes.map((note) => <span key={note} className="route-scope"> · {note}</span>)}
-            {repository && <span className="route-repo" title={repository}>{homeShort(repository)}</span>}
-          </dd>
-        </div>
-        {files.length > 0 && (
-          <div>
-            <dt>Files</dt>
-            <dd className="route-files">
-              {files.map((file) => (
-                <span key={file.path} className="chip"><span className="chip-name">{file.name}</span></span>
-              ))}
-            </dd>
-          </div>
-        )}
-      </dl>
+      <Identity handover={handover} working={(starting || going) && !failed}>
+        <p className="handover-fact">
+          {fact.lead} · <Place name={fact.project} path={repository} />
+          {fact.notes.map((note) => <Fragment key={note}> · {note}</Fragment>)}
+        </p>
+      </Identity>
+      {files.length > 0 && (
+        <p className="handover-files">
+          With {count(files.length, "file")}: {files.map((file, index) => (
+            <Fragment key={file.path}>{index > 0 && ", "}<code>{file.name}</code></Fragment>
+          ))}
+        </p>
+      )}
+      {unreadable.length > 0 && (
+        <ul className="handover-unpassed" role="alert" aria-label="Not passed on">
+          {unreadable.map((file) => (
+            <li key={file.path}><WarnIcon /><span>Not passed on: {leafName(file.path)} ({file.problem})</span></li>
+          ))}
+        </ul>
+      )}
       {!longBrief && brief.trim() && (
         <div className="route-brief">
           {briefHead}
           <BriefProse text={brief} />
         </div>
       )}
-      {unreadable.length > 0 && (
-        <ul className="route-unreadable" role="alert" aria-label="Not passed on">
-          {unreadable.map((file) => (
-            <li key={file.path}>Not passed on: {leafName(file.path)} ({file.problem})</li>
-          ))}
-        </ul>
-      )}
-      <FoldLine
-        fold={fold}
-        labels={[
-          !over && longBrief && `Brief · ${sizeLabel(brief)}`,
-          !over && message && `Exact first message · ${sizeLabel(message)}`,
-        ]}
-        what="the brief"
-      />
-      {over ? <p className="handover-over" id={overId}>{over}</p> : <FoldBody fold={fold}>
-        {longBrief && (
-          <div className="route-brief">
-            {briefHead}
-            <BriefProse text={brief} />
-          </div>
-        )}
-        {message && (
-          <div className="route-message">
-            <h4>Exact first message</h4>
-            <WholeText text={message} className="route-message-text" />
-          </div>
-        )}
-      </FoldBody>}
+      {over ? <p className="handover-over" id={overId}>{over}</p> : <>
+        <FoldLine
+          fold={fold}
+          labels={[
+            longBrief && `Brief · ${sizeLabel(brief)}`,
+            message && `Exact first message · ${sizeLabel(message)}`,
+          ]}
+          what="the brief"
+        />
+        <FoldBody fold={fold}>
+          {longBrief && (
+            <div className="route-brief">
+              {briefHead}
+              <BriefProse text={brief} />
+            </div>
+          )}
+          {message && (
+            <div className="route-message">
+              <h4>Exact first message</h4>
+              <WholeText text={message} className="route-message-text" />
+            </div>
+          )}
+          {repository && (
+            <div className="handover-section route-opens">
+              <h4>Opens in</h4>
+              <p className="handover-mono">{homeShort(repository)}</p>
+            </div>
+          )}
+        </FoldBody>
+      </>}
       {failed && <p className="handover-error" role="alert">{failed}</p>}
       {pending && (
         <footer className="handover-actions">
@@ -382,12 +471,18 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
           )}
         </footer>
       )}
+      {going && (
+        <footer className="handover-actions">
+          <span className="handover-hint">Opening the chat.</span>
+        </footer>
+      )}
     </section>
   );
 }
 
-/** The handovers at the end of a chat: only the ones the person still has to
- *  act on (`handoverPlaces(…).tail`). */
+/** The handovers at the end of a chat: the ones the person still has to act
+ *  on (`handoverPlaces(…).tail`), and, on the page that confirmed it, a
+ *  route whose chat is being gone to (`handoverTail`). */
 export function HandoverCards({ outgoing, onDecide, late, startOpen }: {
   outgoing: readonly Handover[];
   onDecide: (id: string, action: HandoverAction) => Promise<unknown>;
@@ -528,12 +623,35 @@ export function HandoverLine({ handover, side, onOpen, projectOf }: {
   const other = incoming ? handover.sourceChatKey : handover.targetChatKey;
   const notice = incoming ? null : noticeLine(handover);
   const status = incoming ? "incoming" : handover.status;
+  // Handed over, in the chat that asked: the line says who has it now by
+  // face as well as by name, and the card that was confirmed here shrinks
+  // into it. Every other line keeps its mark.
+  const handed = !incoming && handover.status === "confirmed";
+  const face = useRosterAgent(handed ? handover.to.agentId : undefined);
+  const line = useRef<HTMLDivElement>(null);
+  const { id } = handover;
+  useLayoutEffect(() => {
+    if (handed) landIdentity(id, () => lineLanding(line.current));
+  }, [handed, id]);
   return (
-    <div className={`handover-line is-${status}`} data-handover={handover.id} data-status={status}>
+    <div ref={line} className={`handover-line is-${status}`} data-handover={handover.id} data-status={status}>
       <div className="handover-line-row">
         <span className="handover-line-what">
-          <span className="handover-mark" aria-hidden="true" />
-          <span className="handover-line-text">{handoverHeadline(handover, side)}</span>
+          {handed
+            ? <AgentAvatar
+              name={face?.name ?? handover.to.name}
+              avatar={face?.avatar}
+              id={handover.to.agentId ?? handover.to.name}
+              size={16}
+              decorative
+              className="handover-line-face"
+            />
+            : <span className="handover-mark" aria-hidden="true" />}
+          <span className="handover-line-text">
+            {handed
+              ? <>Handed over to <bdi data-travel="name">{handover.to.name}</bdi></>
+              : handoverHeadline(handover, side)}
+          </span>
         </span>
         {/* On a narrow screen these drop under the headline rather than
             cutting it short: the headline is what the line is for. */}

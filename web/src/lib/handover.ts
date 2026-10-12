@@ -192,6 +192,18 @@ export function handoverPlaces(here: ReturnType<typeof handoversFor>): {
   };
 }
 
+/** The cards at the end of a chat, as the page that confirmed a route draws
+ *  them. A route's card leaves the moment the route is confirmed, and the
+ *  page that confirmed it goes to the chat it opened, but only once that
+ *  chat is found: a moment in which the card would be gone and the chat not
+ *  yet there. So that page keeps the card, saying the chat is opening, until
+ *  it has left this chat. `going` is the handover it confirmed, or `null`;
+ *  nothing but a confirmed route is ever kept, and the order is the list's. */
+export function handoverTail(outgoing: readonly Handover[], going: string | null): Handover[] {
+  return outgoing.filter((item) => needsPerson(item)
+    || (item.id === going && isRoute(item) && item.status === "confirmed"));
+}
+
 /** Every handover of a chat at the one place it is drawn, each exactly once.
  *  `head`: the one this chat was started by, then the settled outgoing ones
  *  whose call is not in the loaded transcript. `marks`: the other settled
@@ -305,7 +317,8 @@ export function placeLine(handover: Handover): string {
 
 /** A route's card headline in the front-desk chat. */
 export function routeHeadline(handover: Handover): string {
-  if (handover.status === "starting") {
+  // Confirmed, with this page on its way to the chat: it is opening still.
+  if (handover.status === "starting" || handover.status === "confirmed") {
     return handover.error ? `${handover.to.name}'s chat did not start` : `Opening a chat with ${handover.to.name}…`;
   }
   return handover.route?.discuss ? `Discuss with ${handover.to.name}?` : `Open a chat with ${handover.to.name}?`;
@@ -317,8 +330,48 @@ export function routePlace(handover: Handover): { project: string; notes: string
   const notes: string[] = [];
   if (handover.route?.crossProject) notes.push("plans across every project");
   else if (handover.workspace.mode === "worktree") notes.push("new worktree");
-  if (handover.route?.discuss) notes.push("discussion, read-only");
+  if (handover.route?.discuss) notes.push(DISCUSSION_NOTE);
   return { project: handover.destination.projectName, notes };
+}
+
+const DISCUSSION_NOTE = "discussion, read-only";
+
+/** A routed chat as the sentence its name card says under the agent's name:
+ *  what kind of chat it is, the project, then what is worth knowing about
+ *  the place. "Read-only discussion · starfall", "New chat · starfall · new
+ *  worktree". The same facts as `routePlace`, with the discussion said first
+ *  and once. */
+export function routeFact(handover: Handover): { lead: string; project: string; notes: string[] } {
+  const { project, notes } = routePlace(handover);
+  return {
+    lead: handover.route?.discuss ? "Read-only discussion" : "New chat",
+    project,
+    notes: notes.filter((note) => note !== DISCUSSION_NOTE),
+  };
+}
+
+/** Part of a fact on a name card: words, or a branch or folder to the letter. */
+export type FactRun = { text: string; mono?: boolean };
+
+/** Where a handed-over task goes on, as the second sentence of its name
+ *  card: "Continues on fix/login · uncommitted changes travel with it". The
+ *  project is the sentence before it, and the whole path is in the opened
+ *  brief. */
+export function handoverWhere(handover: Handover): FactRun[] {
+  const ws = handover.workspace;
+  if (ws.mode === "continue") {
+    const changes = ws.uncommitted === undefined
+      ? []
+      : [{ text: ws.uncommitted ? " · uncommitted changes travel with it" : " · nothing uncommitted" }];
+    return ws.branch
+      ? [{ text: "Continues on " }, { text: ws.branch, mono: true }, ...changes]
+      : [{ text: "Continues in " }, { text: leaf(ws.path), mono: true }, ...changes];
+  }
+  if (ws.mode === "worktree") {
+    if (ws.preparedBranch) return [{ text: "New worktree on " }, { text: ws.preparedBranch, mono: true }];
+    return ws.branch ? [{ text: "New worktree from " }, { text: ws.branch, mono: true }] : [{ text: "New worktree" }];
+  }
+  return [{ text: "Works in " }, { text: leaf(ws.path), mono: true }];
 }
 
 /** Where a routed chat works, in a few words. */

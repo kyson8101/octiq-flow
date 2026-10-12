@@ -12,7 +12,7 @@ import { WHOLE_MAX } from "../lib/cardFold";
 import { FRONT_DESK_GREETING } from "../lib/frontDesk";
 import { handover } from "../lib/handover.fixture";
 import {
-  canDiscussInstead, handoverPlaces, handoversFor, homeShort, isRoute, mergeHandover, routeHeadline, routePlaceLine, settingsLine, type Handover,
+  canDiscussInstead, handoverPlaces, handoversFor, handoverTail, homeShort, isRoute, mergeHandover, routeFact, routeHeadline, routePlaceLine, settingsLine, type Handover,
 } from "../lib/handover";
 import { pendingActions } from "../lib/pendingActions";
 import type { TeamAgent } from "../lib/agentsMode";
@@ -52,25 +52,29 @@ describe("the front desk's confirm card", () => {
     const { tail: html, lines } = cards([route()], "chat:desk");
     expect(lines).toBe("");
     expect(html).toContain('data-kind="route"');
-    expect(html).toContain("Open a chat with Vesper?");
-    // Who: the agent's face beside the question, the chat's settings as chips.
-    expect(html).toMatch(/<header class="handover-head route-head"><span class="agent-avatar"[^>]*aria-hidden="true"/);
-    expect(html).toContain('<ul class="route-chips" aria-label="Chat settings">'
-      + '<li class="handover-chip" data-chip="model">Sonnet latest</li>'
-      + '<li class="handover-chip" data-chip="effort">high</li>'
-      + '<li class="handover-chip" data-chip="access">Accept edits</li></ul>');
-    // Where: the project first, what is worth knowing about the place after it.
-    expect(html).toContain('<span class="route-project">starfall-novel</span><span class="route-scope"> · new worktree</span>');
-    expect(html).toContain('<span class="route-repo" title="/src/starfall">/src/starfall</span>');
+    // The card is called by the question it asks; its title is the name.
+    expect(html).toContain('aria-label="Open a chat with Vesper?"');
+    // Who: the agent's face, large, and the name beside it.
+    expect(html).toMatch(/<header class="handover-id"><span class="handover-face"><span class="agent-avatar" style="--agent-avatar-size:44px;[^"]*" aria-hidden="true"/);
+    expect(html).toContain('<h3 class="handover-name"><span data-travel="name">Vesper</span></h3>');
+    // What kind of chat and where, as one sentence: the project, then what
+    // is worth knowing about the place. The folder is not on the card: it is
+    // on the project's name, a hover, a focus or a tap away.
+    expect(html).toMatch(/<p class="handover-fact">New chat · <span class="handover-place has-tip" tabindex="0" aria-describedby="([^"]+)">starfall-novel<span class="handover-tip" role="tooltip" id="\1">\/src\/starfall<\/span><\/span> · new worktree<\/p>/);
+    // The chat's settings as one line of small print, the same three.
+    expect(html).toContain('<p class="handover-settings"><span class="handover-sr">Chat settings: </span>Sonnet latest · high · Accept edits</p>');
+    expect(html).not.toContain("handover-chip");
     // What: a brief over several lines is folded, named with its size, and
     // so is the exact first message. Neither is on the card until asked for.
     expect(html).toContain('<span>Brief · 2 lines</span><span>Exact first message · 7 lines</span>');
     expect(html).toMatch(/<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="[^"]+"/);
+    expect(html.match(/aria-expanded=/g)).toHaveLength(1);
     expect(html).not.toContain("Draft chapter 3");
     expect(html).not.toContain("route-handover_r1/map.png (image)");
-    expect(html).toContain('<span class="chip"><span class="chip-name">map.png</span></span>');
+    // The files it carries, as a sentence of their names.
+    expect(html).toContain('<p class="handover-files">With 1 file: <code>map.png</code></p>');
     // A file that was not passed on is a warning, and is never folded.
-    expect(html).toContain("Not passed on: hosts (not a file the person attached in OctiqFlow)");
+    expect(html).toMatch(/<ul class="handover-unpassed" role="alert" aria-label="Not passed on"><li><svg[^>]*aria-hidden="true">.*?<\/svg><span>Not passed on: hosts \(not a file the person attached in OctiqFlow\)<\/span><\/li><\/ul>/);
     expect(html).toContain("Nothing opens until you choose");
     expect(html).toContain("Open chat with Vesper");
     expect(html).toContain(">Cancel<");
@@ -88,6 +92,10 @@ describe("the front desk's confirm card", () => {
     expect(html).toContain("<h4>Exact first message</h4>");
     expect(html).toContain("route-handover_r1/map.png (image)");
     expect(html).toContain("once the person confirmed it.)</pre>");
+    // The folder, whole, for a screen with no pointer to hover with.
+    expect(html).toContain('<div class="handover-section route-opens"><h4>Opens in</h4><p class="handover-mono">/src/starfall</p></div>');
+    expect(html.indexOf("route-message-text")).toBeLessThan(html.indexOf("route-opens"));
+    expect(html.indexOf("route-opens")).toBeLessThan(html.indexOf("handover-actions"));
     expect(html).not.toContain("card-fold-cut");
     expect(html.indexOf("card-fold-line")).toBeLessThan(html.indexOf("route-message-text"));
     expect(html.indexOf("route-message-text")).toBeLessThan(html.indexOf("handover-actions"));
@@ -165,10 +173,11 @@ describe("the front desk's confirm card", () => {
       route: { message: "Brainstorm the series.", discuss: true },
     });
     const { tail } = cards([talk], "chat:desk");
-    expect(tail).toContain("Discuss with Vesper?");
-    expect(tail).toContain('<span class="route-project">starfall-novel</span>'
-      + '<span class="route-scope"> · new worktree</span><span class="route-scope"> · discussion, read-only</span>');
-    expect(tail).toContain('data-chip="access">Plan<');
+    expect(tail).toContain('aria-label="Discuss with Vesper?"');
+    // A discussion is said first and once, then the project and its place.
+    expect(tail).toMatch(/<p class="handover-fact">Read-only discussion · <span class="handover-place has-tip"[^>]*>starfall-novel<span class="handover-tip"[^>]*>\/src\/starfall<\/span><\/span> · new worktree<\/p>/);
+    expect(tail).not.toContain("discussion, read-only");
+    expect(tail).toContain("</span>Opus latest · high · Plan</p>");
     expect(tail).toContain("Discuss with Vesper<");
     expect(tail).not.toContain("Discuss only (read-only)");
   });
@@ -181,6 +190,36 @@ describe("the front desk's confirm card", () => {
     const list = mergeHandover([route()], route({ status: "declined" }));
     expect(list).toEqual([]);
     expect(mergeHandover([], route({ status: "abandoned" }))).toEqual([]);
+  });
+
+  it("keeps the card of a route this page confirmed until the page has gone to its chat, and no other", () => {
+    const confirmed = route({ status: "confirmed", targetChatKey: "chat:new" });
+    const ordinary = handover({ id: "handover_h", sourceChatKey: "chat:desk", status: "confirmed", targetChatKey: "chat:h" });
+    const waiting = route({ id: "handover_r2" });
+    const outgoing = handoversFor([confirmed, ordinary, waiting], "chat:desk").outgoing;
+    // Any page: a confirmed route is not a card. The page that confirmed it:
+    // its card stays, in the list's own order.
+    expect(handoverTail(outgoing, null).map((item) => item.id)).toEqual(["handover_r2"]);
+    expect(handoverTail(outgoing, "handover_r1").map((item) => item.id)).toEqual(["handover_r1", "handover_r2"]);
+    // Never a handover (it becomes a line), never a route that is not
+    // confirmed, never one from another chat.
+    expect(handoverTail(outgoing, "handover_h").map((item) => item.id)).toEqual(["handover_r2"]);
+    expect(handoverTail(outgoing, "handover_r2").map((item) => item.id)).toEqual(["handover_r2"]);
+    expect(handoverTail(handoversFor([confirmed], "chat:new").outgoing, "handover_r1")).toEqual([]);
+    expect(handoverTail([route({ status: "declined" })], "handover_r1")).toEqual([]);
+    // Kept, the card says the chat is opening and asks nothing: no answer,
+    // no tint, and the face is the one thing that moves.
+    const html = renderToStaticMarkup(<HandoverCards outgoing={handoverTail(outgoing, "handover_r1").slice(0, 1)} onDecide={noop} />);
+    expect(html).toContain('<section class="handover-card route-card is-confirmed" data-handover="handover_r1" data-status="confirmed" data-kind="route" aria-label="Opening a chat with Vesper…">');
+    expect(html).toContain('<span class="handover-face is-working">');
+    expect(html).toContain('<footer class="handover-actions"><span class="handover-hint">Opening the chat.</span></footer>');
+    expect(html).not.toContain("<button type=\"button\" class=\"handover-");
+    expect(html).not.toContain("is-waiting");
+    expect(html).not.toContain("data-pending");
+    // An error an earlier try left on the record is not said of a chat that opened.
+    const retried = renderToStaticMarkup(<HandoverCards outgoing={[route({ status: "confirmed", targetChatKey: "chat:new", error: "CLI unavailable" })]} onDecide={noop} />);
+    expect(retried).not.toContain("CLI unavailable");
+    expect(retried).not.toContain("handover-error");
   });
 
   it("sets the ids, paths and branches of a brief in mono, and leaves its words alone", () => {
@@ -198,10 +237,12 @@ describe("the front desk's confirm card", () => {
       destination: { projectId: "g", projectName: "General", repository: "/Users/kyson/general" },
     });
     const across = cards([head], "chat:desk").tail;
-    expect(across).toContain('<span class="route-project">General</span><span class="route-scope"> · plans across every project</span></dd>');
-    expect(across).not.toContain("route-repo");
+    expect(across).toContain('<p class="handover-fact">New chat · <span class="handover-place">General</span> · plans across every project</p>');
+    expect(across).not.toContain("handover-tip");
+    expect(opened([head], "chat:desk")).not.toContain("Opens in");
     const one = cards([route({ ...head, route: { message: "x" } })], "chat:desk").tail;
-    expect(one).toContain('<span class="route-project">General</span><span class="route-repo" title="/Users/kyson/general">~/general</span>');
+    expect(one).toMatch(/<p class="handover-fact">New chat · <span class="handover-place has-tip"[^>]*>General<span class="handover-tip" role="tooltip" id="[^"]+">~\/general<\/span><\/span><\/p>/);
+    expect(opened([route({ ...head, route: { message: "x" } })], "chat:desk")).toContain('<h4>Opens in</h4><p class="handover-mono">~/general</p>');
     expect(homeShort("C:\\Users\\kyson\\work\\app")).toBe("~\\work\\app");
     expect(homeShort("/home/kyson")).toBe("~");
     expect(homeShort("/srv/app")).toBe("/srv/app");
@@ -213,7 +254,12 @@ describe("the front desk's confirm card", () => {
     expect(routePlaceLine(route({ route: { message: "x", crossProject: true }, workspace: { mode: "folder", path: "/g" }, destination: { projectId: "g", projectName: "General", repository: "/g" } })))
       .toBe("General · plans across every project");
     expect(routePlaceLine(route({ route: { message: "x", discuss: true } }))).toBe("starfall-novel · new worktree · discussion, read-only");
-    // The chips and the one-line form are the same settings.
+    // The card's own sentence says a discussion first, and once.
+    expect(routeFact(route())).toEqual({ lead: "New chat", project: "starfall-novel", notes: ["new worktree"] });
+    expect(routeFact(route({ route: { message: "x", discuss: true } })))
+      .toEqual({ lead: "Read-only discussion", project: "starfall-novel", notes: ["new worktree"] });
+    expect(routeFact(route({ route: { message: "x", crossProject: true, discuss: true } })).notes).toEqual(["plans across every project"]);
+    // The settings the card prints, on one line.
     expect(settingsLine(route().settings)).toBe("Sonnet latest · high · Accept edits");
     expect(isRoute(route())).toBe(true);
     expect(isRoute(handover())).toBe(false);

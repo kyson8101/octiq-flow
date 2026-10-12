@@ -187,6 +187,19 @@ const NOT_A_DECISION = /--(warn|accent|composer-accent|composer-ink)\b/;
 
 const named = (selector: string) => RULES.filter((rule) => rule.selector === selector);
 
+/** The parts of a handover or route name card (`HandoverCards.tsx`), by the
+ *  class each is drawn with. A part added to the card is added here, or the
+ *  scan below does not see it. */
+const NAME_CARD_PARTS = [
+  "card", "id", "face", "who", "name", "fact", "settings", "sr", "place", "tip", "files", "unpassed",
+  "over", "error", "actions", "hint", "quiet", "go",
+];
+const NAME_CARD = new RegExp(`\\.handover-(${NAME_CARD_PARTS.join("|")})(?![\\w-])`);
+/** The two rules of the card that are not the decision colour, on purpose:
+ *  the ring round the face while a confirmed chat starts (in flight, so the
+ *  accent), and a file that was not passed on (a problem, so amber). */
+const NAME_CARD_APART = new Set([".handover-face.is-working::after", ".handover-unpassed li"]);
+
 /** The border, the dot and the primary answer of each card that asks. */
 const DECISION_RULES = [
   // Permission and access request.
@@ -199,9 +212,10 @@ const DECISION_RULES = [
   ".qa-card",
   ".qa-dot",
   ".qa-option.is-on",
-  // Handover and route (a route card is a pending handover card).
-  ".handover-card.is-pending",
-  ".handover-card.is-pending .handover-mark",
+  // Handover and route, as name cards (a route card is a handover card).
+  // `is-waiting` is the card that waits on the person: undecided, or a
+  // start that failed. It has no dot any more: the face is not a signal.
+  ".handover-card.is-waiting",
   ".handover-go",
   ".handover-go:hover:not(:disabled)",
   // The plan waiting for approval.
@@ -227,12 +241,49 @@ describe("the cards that wait on a decision", () => {
 
   it("has no rule of the permission, handover, route or pending-plan card on amber or on the accent, focus rings apart", () => {
     const card = /\.ask-card(?![\w-]*safety)|\.permission-card|\.access-card|\.handover-card\.is-pending|\.handover-go|\.route-card|\.chat-plan\[data-pending\]|\.plan-review-(dot|approve|quiet|change)|\.plan-command-approval-options/;
-    const mine = RULES.filter((rule) => card.test(rule.selector) && !rule.selector.includes(".safety-card"));
-    expect(mine.length).toBeGreaterThan(20);
+    const mine = RULES.filter((rule) => (card.test(rule.selector) || NAME_CARD.test(rule.selector))
+      && !rule.selector.includes(".safety-card") && !NAME_CARD_APART.has(rule.selector));
+    expect(mine.length).toBeGreaterThan(60);
     for (const rule of mine) {
       // An outline is the keyboard's focus ring, the same on every control.
       const drawn = rule.body.split(";").filter((line) => !/^\s*outline/.test(line)).join(";");
       expect(drawn, `${rule.file}: ${rule.selector}`).not.toMatch(NOT_A_DECISION);
+    }
+  });
+
+  it("names every part of the name card in that scan, and sets two rules apart by name", () => {
+    // The scan above goes by class name, so a part of the card it does not
+    // name is a part it does not check. Each part has a rule, and is caught.
+    const sheet = RULES.filter((rule) => rule.file === "HandoverCards.css");
+    for (const part of NAME_CARD_PARTS) {
+      const drawn = sheet.filter((rule) => new RegExp(`\\.handover-${part}(?![\\w-])`).test(rule.selector));
+      expect(drawn.length, `no rule draws .handover-${part}`).toBeGreaterThan(0);
+      for (const rule of drawn) expect(NAME_CARD.test(rule.selector), rule.selector).toBe(true);
+    }
+    // The envelope is the shared disclosure, dressed for this card.
+    expect(sheet.filter((rule) => rule.selector.startsWith(".handover-card .card-fold-")).length).toBeGreaterThan(6);
+    // Every other rule of the sheet that reaches for amber or the accent is
+    // one of these, or belongs to a settled line and not to a card.
+    const coloured = sheet
+      .filter((rule) => NOT_A_DECISION.test(rule.body.split(";").filter((line) => !/^\s*outline/.test(line)).join(";")))
+      .map((rule) => rule.selector);
+    expect(coloured.filter((selector) => NAME_CARD.test(selector)).sort()).toEqual([...NAME_CARD_APART].sort());
+    for (const selector of coloured.filter((item) => !NAME_CARD.test(item))) expect(selector).toMatch(/^\.handover-(line|outcome|asks)/);
+    // In flight is the accent's one job, and that ring is never drawn on a
+    // card that waits (`HandoverCards.test.tsx` holds the markup to it).
+    // (Two rules: the ring, and the one that holds it still for reduced motion.)
+    const ring = named(".handover-face.is-working::after");
+    expect(ring).toHaveLength(2);
+    expect(ring.filter((rule) => /var\(--accent\)/.test(rule.body))).toHaveLength(1);
+    for (const rule of ring) expect(rule.body).not.toMatch(/--warn\b/);
+    expect(ring.some((rule) => /animation:\s*none/.test(rule.body))).toBe(true);
+    // A file that was not passed on is a problem, not a question: amber.
+    const unpassed = named(".handover-unpassed li");
+    expect(unpassed).toHaveLength(1);
+    expect(unpassed[0].body).toMatch(/(^|;)\s*color:\s*var\(--warn\)/m);
+    // No other mode draws either part in a colour of its own.
+    for (const rule of RULES.filter((item) => item.file !== "HandoverCards.css" && /\.handover-(face|unpassed)/.test(item.selector))) {
+      expect(rule.body, `${rule.file}: ${rule.selector}`).not.toMatch(NOT_A_DECISION);
     }
   });
 
@@ -290,7 +341,7 @@ describe("the cards that wait on a decision", () => {
   it("raises the quietest text one step on a tinted card", () => {
     const raised = RULES.filter((rule) => /--fg-3:\s*var\(--fg-2\)/.test(rule.body));
     expect(raised).toHaveLength(1);
-    for (const card of [".ask-card:not(.safety-card)", ".qa-card", ".handover-card.is-pending", ".chat-plan[data-pending]"]) {
+    for (const card of [".ask-card:not(.safety-card)", ".qa-card", ".handover-card.is-waiting", ".chat-plan[data-pending]"]) {
       expect(raised[0].selector).toContain(card);
     }
   });
