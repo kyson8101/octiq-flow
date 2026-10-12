@@ -3,7 +3,7 @@
 // token totals arrive computed, and this file only words them. The rules are
 // repeated here only to explain them, never to score anything.
 import { bridge } from "./bridge";
-import type { OrchestrationTask } from "./orchestration";
+import { isSettled, type OrchestrationTask } from "./orchestration";
 
 export type TaskSize = "small" | "medium" | "large";
 
@@ -185,7 +185,7 @@ export function acceptorLabel(by: Acceptor): string {
 /** A completed task of a registered agent whose current result nobody has
  *  accepted: the only state that offers Accept. */
 export function canAccept(task: Pick<OrchestrationTask, "status" | "assignee" | "activeAttemptId" | "acceptance">): boolean {
-  if (task.status !== "completed" || !task.assignee || !task.activeAttemptId) return false;
+  if (!isSettled(task) || !task.assignee || !task.activeAttemptId) return false;
   return task.acceptance?.attemptId !== task.activeAttemptId;
 }
 

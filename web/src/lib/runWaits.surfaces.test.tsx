@@ -17,7 +17,7 @@
 //   boxes          the panel's plan card and "Needs you" gate box   OrchestrationPanel
 //   toDecide       the panel's "N to decide"           OrchestrationPanel (runAttention)
 //   tasksButton    the top bar's Tasks button          taskColumnCounts + TasksButton
-//   sidebarLine    the chat list's "Needs decision" line   Sidebar (chatRunStatus)
+//   sidebarLine    the chat list's "Needs you" line    Sidebar (chatRunStatus)
 //   sidebarBadge   the chat list's badge               Sidebar (pendingActions)
 //   pendingActions the list every badge is drawn from  pendingReading
 //   agentsPage     the Agents page's roster            agentRoster
@@ -311,7 +311,7 @@ function surfaces(orchestration: OrchestrationSnapshot, cards: Cards = {}): Reco
     rowHeadings: { count: headings + boxes, asked: headings + boxes > 0 },
     toDecide: { count: toDecide, asked: toDecide > 0 },
     tasksButton: { count: tasksCount, asked: tasksHtml.includes("waiting for you") },
-    sidebarLine: { count: null, asked: line.startsWith("Needs decision") },
+    sidebarLine: { count: null, asked: line.startsWith("Needs you") },
     sidebarBadge: { count: badgeCount, asked: main.includes("has-pending") },
     pendingActions: { count: actions.length, asked: actions.length > 0 },
     ledgerWaits: { count: ledgerWaits(orchestration, held).person.length, asked: ledgerWaits(orchestration, held).person.length > 0 },

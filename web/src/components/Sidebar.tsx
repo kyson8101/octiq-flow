@@ -7,7 +7,7 @@ import { recall, remember } from "../lib/remember";
 import { latestResponse, plainSnippet } from "../lib/chatPreview";
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
-import { chatRunStatus, chatSnapshot, rowRun, workflowChatList } from "../lib/chatWorkflow";
+import { chatRunLine, chatSnapshot, rowRun, workerLine, workflowChatList } from "../lib/chatWorkflow";
 import { workingTaskCount } from "../lib/agentsDashboard";
 import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
@@ -304,7 +304,11 @@ export function Sidebar({
     // its ring goes round for them. Only this chat's own runs count, so a
     // neighbour in the same project keeps still.
     const tasksWorking = workingTaskCount(workflow, pendingView.held);
-    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? chatRunStatus(workflow, run, pendingView.held) : null;
+    // A worker's chat says its task and where its attempt is; a main chat,
+    // its run. What the line leads with has a colour of its own only where
+    // it is a decision of the person's or a failure (`lib/chatWorkflow`).
+    const workflowLine = task && attempt ? workerLine(task, attempt) : run ? chatRunLine(workflow, run, pendingView.held) : null;
+    const workflowLabel = workflowLine?.text ?? null;
     const branch = projectInfo.status === "home" ? (attempt?.branch || (parent ? "" : branches[chat.projectId])) : "";
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
@@ -383,7 +387,7 @@ export function Sidebar({
                 {/* The ledger answers after the list does, so this line turns
                     up under a row already drawn: it opens its own height. */}
                 <Arrive inline when={!!workflowLabel}>
-                  <span className="chat-workflow-status" title={workflowLabel ?? undefined}>{workflowLabel}</span>
+                  <span className="chat-workflow-status" data-tone={workflowLine?.tone ?? undefined} title={workflowLabel ?? undefined}>{workflowLabel}</span>
                 </Arrive>
                 <span className="chat-meta">
                   {projectInfo.status === "home" ? <span className="chat-project">

@@ -1,7 +1,8 @@
 import { executionNeedsAttention } from "./agentTaskBoard";
 import { ledgerWaits, type RunWaits, type Waiting } from "./runWaits";
 import {
-  isStuck, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
+  checkFailed, finishedWell, isSettled, isStuck,
+  type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
 
 /** The run panel's three views of one run. Decisions and plan approval are
@@ -28,7 +29,9 @@ export type RunAttention = {
   decisions: number;
   /** The one decision is the plan's approval. */
   planOnly: boolean;
-  /** Blocked or failing tasks not already named by a decision. */
+  /** Blocked or failing tasks not already named by a decision: a task that
+   *  failed or is blocked, one that completed with a failed check, and one
+   *  whose worker is in trouble. */
   blocked: number;
   total: number;
 };
@@ -46,7 +49,7 @@ export function runAttention(
   // A stopped run cannot retry anything, so its failures are history, not owed.
   const blocked = run.status === "stopped" ? 0 : tasks.filter((task) => task.runId === run.id && !waits.gated.has(task.id)
     && !waits.tasks.get(task.id)?.person.length
-    && (isStuck(task)
+    && (isStuck(task) || checkFailed(task)
       || executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId)))).length;
   const decisions = waits.person.length;
   return { decisions, planOnly: decisions === 1 && waits.person[0].kind === "plan", blocked, total: decisions + blocked };
@@ -75,9 +78,13 @@ export function attentionLabel(attention: RunAttention): string | null {
 }
 
 /** Where one person is on a run, most urgent first. "working" is only ever a
- *  worker actually executing — handed a task is "assigned", however recently. */
-export type PersonState = "working" | "blocked" | "assigned" | "done" | "stopped";
-const PERSON_ORDER: PersonState[] = ["working", "blocked", "assigned", "done", "stopped"];
+ *  worker actually executing — handed a task is "assigned", however recently.
+ *  "failed" is a task of theirs that went wrong with nothing open to wait
+ *  for: it failed, is blocked, or completed with a failed check. "blocked"
+ *  is a wait: a decision is open on it, or its worker is in trouble. "done"
+ *  is only ever work that finished well. */
+export type PersonState = "working" | "failed" | "blocked" | "assigned" | "done" | "stopped";
+const PERSON_ORDER: PersonState[] = ["working", "failed", "blocked", "assigned", "done", "stopped"];
 
 export type RunPerson = {
   id: string;
@@ -98,10 +105,13 @@ function personState(
   attempt: OrchestrationAttempt | undefined,
   gated: boolean,
 ): PersonState {
-  if (task.status === "completed") return "done";
+  if (finishedWell(task)) return "done";
   if (task.status === "cancelled") return "stopped";
   if (task.supersededBy) return "done";
-  if (gated || isStuck(task) || executionNeedsAttention(attempt)) return "blocked";
+  // A decision open on it is a wait, whatever the task's own status.
+  if (gated) return "blocked";
+  if (isStuck(task) || checkFailed(task)) return "failed";
+  if (executionNeedsAttention(attempt)) return "blocked";
   const executing = !!attempt && (attempt.execution
     ? ["executing", "waiting_tool"].includes(attempt.execution.state)
     : attempt.status === "running");
@@ -126,7 +136,7 @@ export function runPeople(
     const attempt = mine.find((candidate) => candidate.id === task.activeAttemptId)
       ?? [...mine].sort((a, b) => b.number - a.number)[0];
     // A stopped run's unfinished work is stopped, whatever its last attempt said.
-    const state = run.status === "stopped" && task.status !== "completed" ? "stopped" : personState(task, attempt, gated.has(task.id));
+    const state = run.status === "stopped" && !isSettled(task) ? "stopped" : personState(task, attempt, gated.has(task.id));
     const known = people.get(task.assignee.id);
     if (known) {
       known.tasks += 1;

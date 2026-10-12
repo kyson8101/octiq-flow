@@ -87,6 +87,10 @@
 .workflow-setup-context label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .workflow-setup-context p { flex-basis: 100%; margin: 0; color: var(--fg-3); }
 .chat-workflow-status { display: block; font-size: 11px; line-height: 1.5; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What the line leads with, where that is a decision of the person's or a
+   failure: neither is drawn in the accent, which is a turn in flight. */
+.chat-workflow-status[data-tone="decide"] { color: var(--decide); }
+.chat-workflow-status[data-tone="danger"] { color: var(--danger); }
 @media (max-width: 600px) { .chat-workflow-bar { gap: 6px; padding: 8px 12px; } .chat-run-summary { padding-inline: 2px; font-size: 11px; } }
 @media (max-width: 600px) {
   .workflow-header { padding: 8px 12px; }

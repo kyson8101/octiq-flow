@@ -4,7 +4,7 @@
 import { useState, type ReactNode } from "react";
 import { copyText } from "../lib/clipboard";
 import { useRosterAgent } from "../lib/agentRoster";
-import type { OrchestrationAttempt, OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
+import { isSettled, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationTask } from "../lib/orchestration";
 import { CARD_STATE_LABEL, taskCardRows, type CardRow } from "../lib/taskPlanCard";
 import { AgentAvatar } from "./AgentAvatar";
 import { TaskAcceptanceLine, TaskSizeFact } from "./TaskLevel";
@@ -49,7 +49,7 @@ export function TaskPlanCard({ task, run, attempt, projectName }: {
       ) : (
         <p className="plan-card-missing">No problem, goal or acceptance criteria were given for this task.</p>
       )}
-      {task.assignee && task.status === "completed" && <TaskAcceptanceLine task={task} />}
+      {task.assignee && isSettled(task) && <TaskAcceptanceLine task={task} />}
     </section>
   );
 }

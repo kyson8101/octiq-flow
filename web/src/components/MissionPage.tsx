@@ -19,7 +19,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import "./MissionPage.css";
 
 const STATE_LABEL: Record<PersonState, string> = {
-  working: "working", blocked: "blocked", assigned: "assigned", done: "done", stopped: "stopped",
+  working: "working", failed: "failed", blocked: "blocked", assigned: "assigned", done: "done", stopped: "stopped",
 };
 
 /** The crew, as the page and its task rows both need it. */

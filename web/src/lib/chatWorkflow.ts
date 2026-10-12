@@ -1,6 +1,10 @@
 import type { Conversation } from "./store";
 import { workerArchiveChatList } from "./workerArchive";
-import { EMPTY_ORCHESTRATION, isStuck, type OrchestrationSnapshot, type OrchestrationRun } from "./orchestration";
+import {
+  CHECK_FAILED_LABEL, checkFailed, EMPTY_ORCHESTRATION,
+  type OrchestrationAttempt, type OrchestrationSnapshot, type OrchestrationRun, type OrchestrationTask,
+} from "./orchestration";
+import { runCounts, STRIP_WORD } from "./runProgress";
 import { ledgerWaits, runWaits, type Waiting } from "./runWaits";
 
 export const isActiveRun = (run: OrchestrationRun) => ["planning", "running", "waiting"].includes(run.status);
@@ -31,17 +35,40 @@ export function rowRun(snapshot: OrchestrationSnapshot, held?: Waiting): Orchest
     ?? snapshot.runs.find((run) => run.archivedAt == null) ?? snapshot.runs[0];
 }
 
-export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): string {
-  const tasks = snapshot.tasks.filter((task) => task.runId === run.id);
+/** A line of the chat list about a run or a task, and the colour of what it
+ *  leads with: the decision colour for what waits on the person, the danger
+ *  colour for a failure. */
+export type RunLine = { text: string; tone: "decide" | "danger" | null };
+
+/** One run in a few words: what it waits on or what failed, then tasks done
+ *  of the tasks that count. The three counts are the strip's own
+ *  (`runProgress.runCounts`), so the line and the strip above the composer
+ *  cannot give different numbers: a task whose check failed is not done
+ *  here either, and is counted failed. */
+export function runSummaryLine(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): RunLine {
   const waits = runWaits(snapshot, run, held);
-  const progress = `${tasks.filter((task) => task.status === "completed").length}/${tasks.length} done`;
-  // A decision is said of exactly what `lib/runWaits` says is the person's:
-  // the strip above the composer counts the same list.
-  if (waits.person.length) return `Needs decision · ${progress}`;
-  // A task parked on an open decision of anybody's is waiting, not stuck.
-  if (tasks.some((task) => isStuck(task) && !waits.gated.has(task.id)) && isActiveRun(run)) return `Needs attention · ${progress}`;
-  const label = run.status.charAt(0).toUpperCase() + run.status.slice(1);
-  return `${label} · ${progress}`;
+  const { done, total, failed } = runCounts(snapshot, run, held, waits);
+  // Nothing to count is not "0/0": a run with no task yet, or a stopped one
+  // whose unfinished tasks are history, says its state and no progress.
+  const line = (...parts: (string | null)[]) => parts.filter(Boolean).join(" · ");
+  const progress = total ? `${done}/${total} done` : null;
+  const wrong = failed ? `${failed} failed` : null;
+  // A wait on the person is said of exactly what `lib/runWaits` says is
+  // theirs: the strip above the composer counts the same list, and this is
+  // its word ("Needs you"). It leads, and what failed is still said after
+  // it. The strip's word is also the one that leaves room: with "Needs
+  // decision" the row cut the done count off a line that said a failure too
+  // (162px of a 182px line, in every theme).
+  if (waits.person.length) return { text: line(STRIP_WORD.needs, wrong, progress), tone: "decide" };
+  // What failed, counted as the strip counts it: a task that failed, one
+  // that is blocked with no decision open, one that completed with a failed
+  // check. A task parked on an open decision of anybody's is waiting.
+  if (failed) return { text: line(wrong, progress), tone: "danger" };
+  return { text: line(run.status.charAt(0).toUpperCase() + run.status.slice(1), progress), tone: null };
+}
+
+export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): string {
+  return runSummaryLine(snapshot, run, held).text;
 }
 
 /**
@@ -51,12 +78,29 @@ export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRu
  * "2 tasks" counted across every run, and read as a contradiction.
  * `snapshot` is the chat's own (`chatSnapshot`).
  */
-export function chatRunStatus(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): string {
-  const summary = runSummary(snapshot, run, held);
+export function chatRunLine(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): RunLine {
+  const summary = runSummaryLine(snapshot, run, held);
   const total = snapshot.tasks.length;
   const inRun = snapshot.tasks.filter((task) => task.runId === run.id).length;
   if (snapshot.runs.length < 2 || total === inRun) return summary;
-  return `${summary} · ${total} ${total === 1 ? "task" : "tasks"} in ${snapshot.runs.length} runs`;
+  return { ...summary, text: `${summary.text} · ${total} ${total === 1 ? "task" : "tasks"} in ${snapshot.runs.length} runs` };
+}
+
+export function chatRunStatus(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): string {
+  return chatRunLine(snapshot, run, held).text;
+}
+
+/** A worker chat's own line in the chat list: its task, and where the
+ *  attempt behind this chat is. A chat whose attempt settled a task with a
+ *  failed check says that, in the danger colour, and never "completed": the
+ *  attempt's own word is how its worker's process ended. */
+export function workerLine(
+  task: Pick<OrchestrationTask, "title" | "status" | "verdict" | "supersededBy" | "activeAttemptId">,
+  attempt: Pick<OrchestrationAttempt, "id" | "status" | "archivedAt">,
+): RunLine {
+  if (attempt.archivedAt != null) return { text: `${task.title} · archived`, tone: null };
+  if (checkFailed(task) && task.activeAttemptId === attempt.id) return { text: `${task.title} · ${CHECK_FAILED_LABEL.toLowerCase()}`, tone: "danger" };
+  return { text: `${task.title} · ${attempt.status}`, tone: null };
 }
 
 /** Keep old attempts searchable and selectable, but group the ordinary list by task. */

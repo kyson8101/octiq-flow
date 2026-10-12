@@ -47,6 +47,7 @@
 .mission-crew-state { grid-column: 2; color: var(--fg-3); font-size: 10.5px; }
 .mission-crew > li[data-state="working"] .mission-crew-state { color: var(--link); }
 .mission-crew > li[data-state="blocked"] .mission-crew-state { color: var(--warn); }
+.mission-crew > li[data-state="failed"] .mission-crew-state { color: var(--danger); }
 .mission-crew > li[data-state="done"] .mission-crew-state { color: var(--ok); }
 
 .mission-where { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }

@@ -283,7 +283,7 @@ describe("the surfaces that never chose between the plan and the rows", () => {
     for (const name of NAMES) {
       const snapshot = CASES[name]();
       const scoped = chatSnapshot(snapshot, snapshot.runs[0].coordinatorChatKey);
-      expect(chatRunStatus(scoped, rowRun(scoped)!)).toBe(name === "stopped" ? "Needs decision · 0/2 done" : "Needs decision · 1 failed · 0/2 done");
+      expect(chatRunStatus(scoped, rowRun(scoped)!)).toBe(name === "stopped" ? "Needs you · 0/2 done" : "Needs you · 1 failed · 0/2 done");
     }
   });
 

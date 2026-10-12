@@ -14,8 +14,9 @@ import {
   attemptIsExecuting, currentAttempt, EXECUTION_LABELS, executionNeedsAttention, proposedReportState, runElapsed,
   taskElapsed, taskStepSummary,
 } from "./agentTaskBoard";
-import type {
-  AttemptUsage, OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask,
+import {
+  CHECK_FAILED_LABEL, checkFailed, finishedWell, isSettled,
+  type AttemptUsage, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
 import { ledgerWaits, NO_WAITS, runWaits, UNSAID_NOTE, type RunWaits, type WaitKind, type Waiting, type Waits } from "./runWaits";
 import { taskHold, type TaskHold } from "./taskHold";
@@ -228,10 +229,14 @@ const PERSON_WORD: Record<WaitKind, string> = {
  *  with. */
 export const COORDINATOR_WORD = "Waiting on the coordinator";
 
-type Reading = Pick<ProgressRow, "state" | "why" | "tone">;
+export type Reading = Pick<ProgressRow, "state" | "why" | "tone">;
 
-function read(
-  run: OrchestrationRun,
+/** Where one task is, the word for it and its colour: the row's reading,
+ *  and the one every other surface asks before it calls a task failed or
+ *  done (the Agents page, the chat list's line). `waits` is the task's entry
+ *  in `runWaits(...).tasks`, `hold` what `lib/taskHold` says of it. */
+export function taskReading(
+  run: Pick<OrchestrationRun, "status">,
   task: OrchestrationTask,
   attempt: OrchestrationAttempt | undefined,
   waits: Waits,
@@ -243,12 +248,10 @@ function read(
   // is settled or a run that is over that is only ever a card still on
   // their screen.
   if (waits.person.length) return { state: "needs", why: PERSON_WORD[waits.person[0].kind], tone: "decide" };
-  if (task.status === "completed") {
-    // Finished is not passed: a check that failed still holds what depends
-    // on it, until it is replaced or run again.
-    if (task.verdict === "fail" && !task.supersededBy) return { state: "failed", why: "Check failed", tone: "danger" };
-    return { state: "done", why: null, tone: null };
-  }
+  // Settled is not finished well: a check that failed still holds what
+  // depends on it, until it is replaced or run again.
+  if (checkFailed(task)) return { state: "failed", why: CHECK_FAILED_LABEL, tone: "danger" };
+  if (finishedWell(task)) return { state: "done", why: null, tone: null };
   if (task.status === "cancelled") return { state: "closed", why: "Cancelled", tone: null };
   if (task.supersededBy) return { state: "closed", why: "Replaced", tone: null };
   // A stopped run retries nothing: what it left is history, not owed.
@@ -321,7 +324,7 @@ export function progressRow(
   const attempt = currentAttempt(snapshot, task);
   const mineWaits = waits.tasks.get(task.id) ?? NO_WAITS;
   const hold = taskHold(task, run, snapshot.tasks, now);
-  const reading = read(run, task, attempt, mineWaits, hold);
+  const reading = taskReading(run, task, attempt, mineWaits, hold);
   const summary = taskStepSummary(task, attempt, attempt ? snapshot.reports?.[attempt.workerChatKey] : undefined);
   const steps = summary ? { done: summary.done, total: summary.total } : null;
   const mine = snapshot.attempts.filter((item) => item.taskId === task.id);
@@ -342,13 +345,14 @@ export function progressRow(
     percent: steps ? Math.round(steps.done / steps.total * 100) : reading.state === "done" ? 100 : null,
     model: attempt?.model || task.worker?.model || null,
     effort: attempt?.effort || task.worker?.effort || null,
-    // Only what still holds it: a dependency that finished is no longer
-    // something it is "after".
+    // Only what still holds it: a dependency that finished well is no
+    // longer something it is "after". One whose check failed still is: the
+    // host goes on holding what depends on it.
     after: reading.state !== "planned" ? [] : task.dependsOn.flatMap((id) => {
       const dependency = titles.get(id);
-      return dependency && dependency.status !== "completed" ? [dependency.title] : [];
+      return dependency && !finishedWell(dependency) ? [dependency.title] : [];
     }),
-    verdict: task.status === "completed" ? task.verdict ?? null : null,
+    verdict: isSettled(task) ? task.verdict ?? null : null,
     elapsedMs: taskElapsed(snapshot, task, now),
     tokens: sumUsage(mine),
     context: live && attempt && task.activeAttemptId === attempt.id ? contextPercent(attempt.context) : null,
@@ -443,13 +447,57 @@ function stripSide(strip: Pick<RunStrip, "state" | "needs" | "planOnly" | "faile
 }
 
 /** Whether a task is part of the run's count of work, by what the host says
- *  of it and nothing else: finished, or still owed. Cancelled, replaced
+ *  of it and nothing else: settled, or still owed. Cancelled, replaced
  *  (`supersededBy`), or left unfinished by a stopped run is neither, which
- *  is exactly the tasks `read` calls closed when nothing of theirs waits on
- *  the person. */
+ *  is exactly the tasks `taskReading` calls closed when nothing of theirs
+ *  waits on the person. */
 export function countsAsWork(run: Pick<OrchestrationRun, "status">, task: Pick<OrchestrationTask, "status" | "supersededBy">): boolean {
-  if (task.status === "completed") return true;
+  if (isSettled(task)) return true;
   return task.status !== "cancelled" && !task.supersededBy && run.status !== "stopped";
+}
+
+/** A run's three counts, which every surface that states one draws from
+ *  here: tasks done of the tasks that count as work, and tasks failed.
+ *
+ *  What is owed and what is settled: a cancelled or replaced task is
+ *  neither, so a run can reach its whole count. That is asked of the host's
+ *  facts and not of the reading: a replaced task whose card is still on the
+ *  person's screen is a row under Needs you, and keeps its decision, without
+ *  coming back into the count of work. Done the same way: a task that
+ *  finished well is done in the count while a card of its worker's is still
+ *  up. One whose check failed is not done, and is counted failed.
+ *
+ *  A run the host calls failed with no failed task is said as one failure,
+ *  unless what the host left failed is a task the person stopped: that one
+ *  says so itself, and nothing failed. */
+export function runTally(
+  run: Pick<OrchestrationRun, "status">,
+  readings: readonly { task: OrchestrationTask; state: RowState; hold?: TaskHold | null }[],
+): { done: number; total: number; failed: number } {
+  const counted = readings.filter((item) => countsAsWork(run, item.task));
+  const failed = readings.filter((item) => item.state === "failed").length;
+  return {
+    done: counted.filter((item) => finishedWell(item.task)).length,
+    total: counted.length,
+    failed: failed + (run.status === "failed" && !failed && !readings.some((item) => item.hold?.kind === "stopped") ? 1 : 0),
+  };
+}
+
+/** The same counts for a surface that draws no rows: the chat list's line,
+ *  the run picker. One reading per task and nothing else of a row. */
+export function runCounts(
+  snapshot: OrchestrationSnapshot,
+  run: OrchestrationRun,
+  waiting?: Waiting,
+  waits: RunWaits = runWaits(snapshot, run, waiting),
+): { done: number; total: number; failed: number } {
+  return runTally(run, snapshot.tasks.filter((task) => task.runId === run.id).map((task) => {
+    // A hold only ever says "held": whether one has lasted is not asked.
+    const hold = taskHold(task, run, snapshot.tasks, 0);
+    const { state } = taskReading(run, task, currentAttempt(snapshot, task), waits.tasks.get(task.id) ?? NO_WAITS, hold);
+    // As a row carries it: a hold is the reading of a planned task only.
+    return { task, state, hold: state === "planned" ? hold : null };
+  }));
 }
 
 /** What the strip's tooltip says of tasks something holds. Never on the
@@ -483,27 +531,14 @@ export function runProgress(
     return mine.length ? [{ key, label: GROUP_LABEL[key], rows: ordered(key, mine) }] : [];
   });
 
-  // What is owed and what is settled: a cancelled or replaced task is
-  // neither, so a run can reach its whole count. That is asked of the host's
-  // facts and not of the row's state: a replaced task whose card is still on
-  // the person's screen is a row under Needs you, and keeps its decision,
-  // without coming back into the count of work.
-  const counted = rows.filter((row) => countsAsWork(run, row.task));
-  // Finished the same way: a task that completed is done in the count while
-  // a card of its worker's is still up, unless its check failed.
-  const done = counted.filter((row) => row.task.status === "completed" && !(row.task.verdict === "fail" && !row.task.supersededBy)).length;
-  const total = counted.length;
+  // Done, the tasks that count, and what failed (`runTally`).
+  const { done, total, failed } = runTally(run, rows);
   const elapsedMs = runElapsed(snapshot, run.id, now);
   const tiles: RunTiles = { tasks: { done, total }, tokens: sumUsage(attempts), elapsedMs };
 
   const active = ACTIVE_RUN.has(run.status);
   // Per decision, never per row: two cards of one worker are two.
   const needs = waits.person.length;
-  // A run the host calls failed with no failed row is said as one failure,
-  // unless what the host left failed is a task the person stopped: that
-  // row says so, and nothing failed.
-  const failed = rows.filter((row) => row.state === "failed").length
-    + (run.status === "failed" && !rows.some((row) => row.state === "failed" || row.hold?.kind === "stopped") ? 1 : 0);
   const working = rows.filter((row) => row.flight).length;
 
   let strip: RunStrip | null = null;

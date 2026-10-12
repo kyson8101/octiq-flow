@@ -23,17 +23,21 @@ describe("a task row's state word (feedback ee0a43b0)", () => {
     expect(taskStateLabel(replaced, { ...attempt, status: "blocked" } as OrchestrationAttempt)).toBe("Blocked · replaced");
   });
 
-  it("never calls a finished check that failed plain Done", () => {
+  it("never calls a settled check that failed Done at all", () => {
     const done = { ...task, status: "completed", activeAttemptId: undefined } as OrchestrationTask;
     expect(taskStateLabel(done, undefined)).toBe("Done");
-    expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Done · check failed");
+    // The word every surface names a failed check with, and no "Done"
+    // beside it: completed is not finished well.
+    expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Check failed");
     expect(taskStateLabel({ ...done, verdict: "pass" }, undefined)).toBe("Done");
+    // A replaced one is history, and says that.
+    expect(taskStateLabel({ ...done, verdict: "fail", supersededBy: "t2" }, undefined)).toBe("Done · replaced");
   });
 
   it("says what a check found, and never lets a check without a verdict read as done", () => {
     const done = { ...task, status: "completed", activeAttemptId: undefined, kind: "review" } as OrchestrationTask;
     expect(taskStateLabel({ ...done, verdict: "pass" }, undefined)).toBe("Done · passed");
-    expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Done · check failed");
+    expect(taskStateLabel({ ...done, verdict: "fail" }, undefined)).toBe("Check failed");
     expect(taskStateLabel(done, undefined)).toBe("Done · no verdict");
     // Ordinary work with no kind keeps its plain word: nothing is invented.
     expect(taskStateLabel({ ...done, kind: undefined }, undefined)).toBe("Done");
@@ -41,7 +45,7 @@ describe("a task row's state word (feedback ee0a43b0)", () => {
     const settled = { ...attempt, status: "completed", execution: { state: "completed", pendingTools: {} } } as unknown as OrchestrationAttempt;
     const withAttempt = { ...done, activeAttemptId: "a" };
     expect(taskStateLabel({ ...withAttempt, verdict: "pass" }, settled)).toBe("Done · passed");
-    expect(taskStateLabel({ ...withAttempt, kind: undefined, verdict: "fail" }, settled)).toBe("Done · check failed");
+    expect(taskStateLabel({ ...withAttempt, kind: undefined, verdict: "fail" }, settled)).toBe("Check failed");
     expect(taskStateLabel({ ...withAttempt, kind: undefined }, settled)).toBe("Completed");
   });
 

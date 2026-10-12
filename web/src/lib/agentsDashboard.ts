@@ -10,12 +10,18 @@
 //     A conversation that ended, or sits idle between turns, is not work.
 //   * Blocked and failed tasks count only while their run is live. A stopped,
 //     finished or archived run's leftovers are history, not a current state.
+//   * A task that completed is current work while its check failed: it is
+//     listed as a failure, the way a failed task is and under the same rule
+//     of a live run. Only what finished well is folded away
+//     (`orchestration.finishedWell`, read through the run panel's own
+//     `taskReading`).
 //   * With no ledger at all the answer is UNKNOWN, not idle; with a ledger
 //     that has stopped updating the last answer is kept and marked stale.
 //
 // Everything is keyed on the agent's stable id, so a rename, or a change of
 // provider or model, keeps its work where it was.
 import type { OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
+import { taskReading } from "./runProgress";
 import { ledgerWaits, NO_WAITS, planWaits, type LedgerWaits, type Waiting, type Waits } from "./runWaits";
 import { taskHold, type TaskHold } from "./taskHold";
 // Types only: agentsMode opens the socket bridge on import, and this module
@@ -64,19 +70,25 @@ export function orgChart(team: TeamAgent[]): ChartRow[] {
 }
 
 /** Where an agent is, one word. `needs_you` is anything only the person can
- *  move: a plan to approve, a question, a permission card, a decision. */
-export type AgentState = "working" | "needs_you" | "blocked" | "stalled" | "queued" | "idle" | "unknown";
+ *  move: a plan to approve, a question, a permission card, a decision.
+ *  `failed` is a task of its that went wrong and that nothing is waiting
+ *  for: exactly what the run panel's row calls failed (it failed, it is
+ *  blocked with no decision open, or it completed with a failed check), in
+ *  the danger colour and counted as failed, as the strip counts it.
+ *  `blocked` is a warning: parked on someone else's decision, or out of
+ *  capacity. */
+export type AgentState = "working" | "needs_you" | "failed" | "blocked" | "stalled" | "queued" | "idle" | "unknown";
 
 export const AGENT_STATE_LABELS: Record<AgentState, string> = {
-  working: "Working", needs_you: "Needs you", blocked: "Blocked", stalled: "Stalled",
+  working: "Working", needs_you: "Needs you", failed: "Failed", blocked: "Blocked", stalled: "Stalled",
   queued: "Queued", idle: "Idle", unknown: "Unknown",
 };
 
 /** The chip an agent's row leads with: execution first, because "is it doing
  *  anything" is the question the page answers; the rest follow as counts. */
-const PRIMARY_ORDER: AgentState[] = ["working", "needs_you", "blocked", "stalled", "queued", "unknown", "idle"];
+const PRIMARY_ORDER: AgentState[] = ["working", "needs_you", "failed", "blocked", "stalled", "queued", "unknown", "idle"];
 /** The order of an agent's own list: what is owed first. */
-const LIST_ORDER: AgentState[] = ["needs_you", "blocked", "stalled", "working", "queued", "unknown", "idle"];
+const LIST_ORDER: AgentState[] = ["needs_you", "failed", "blocked", "stalled", "working", "queued", "unknown", "idle"];
 
 /** What a lead's conversation process is doing, as far as this page can tell. */
 export type ChatActivity = "busy" | "idle" | "ended" | "unknown";
@@ -90,8 +102,9 @@ export type AgentActivity = {
   state: AgentState;
   /** The specific reason, for the row: "Executing", "Plan awaiting approval". */
   label: string;
-  /** The warning colour on that reason: a hold that has lasted. */
-  tone?: "warn";
+  /** The colour on that reason: the warning colour for a hold that has
+   *  lasted, the danger colour for a failure. */
+  tone?: "warn" | "danger";
   /** Whole sentences behind the reason, for its tooltip: why a task that
    *  could start does not (`lib/taskHold`). */
   detail?: string;
@@ -174,7 +187,8 @@ function latestAttempt(snapshot: OrchestrationSnapshot, task: OrchestrationTask)
 }
 
 /** One task's current state for the agent it is assigned to, or null when it
- *  is not current work: settled, or left behind in a run that is over. */
+ *  is not current work: it finished well, was cancelled or replaced, or was
+ *  left behind in a run that is over. */
 export function taskState(
   task: OrchestrationTask,
   run: OrchestrationRun | undefined,
@@ -185,7 +199,7 @@ export function taskState(
   /** What holds it, when a start of it would be refused (`lib/taskHold`):
    *  the person's stop, the plan, a reopen whose notice is not confirmed. */
   hold: TaskHold | null,
-): { state: AgentState; label: string; tone?: "warn"; detail?: string } | null {
+): { state: AgentState; label: string; tone?: "warn" | "danger"; detail?: string } | null {
   if (!run) return null;
   // "Needs you" for exactly what `lib/runWaits` says is the person's, and
   // first: a card still on their screen is theirs whatever became of the
@@ -193,8 +207,16 @@ export function taskState(
   const mine = waits.person[0];
   if (mine) return { state: "needs_you", label: mine.kind === "gate" ? "Waiting on a decision" : "Needs your approval" };
   if (run.archivedAt || !LIVE_RUN.includes(run.status)) return null;
-  // A replaced task is history: the agent is on its replacement, if anyone.
-  if (task.status === "completed" || task.status === "cancelled" || task.supersededBy) return null;
+  // Whether it failed, finished well or is history is the run panel's
+  // reading (`lib/runProgress.taskReading`), asked and not worked out again,
+  // so this page and the panel cannot say different things of one task. A
+  // failure is listed under the panel row's own word, in the danger colour:
+  // "Failed", "Blocked" with no decision open, or "Check failed" for a task
+  // that completed and whose check did not pass. What finished well, was
+  // cancelled or was replaced is not current work, and is not listed.
+  const reading = taskReading(run, task, attempt, waits, hold);
+  if (reading.state === "failed") return { state: "failed", label: reading.why ?? AGENT_STATE_LABELS.failed, tone: "danger" };
+  if (reading.state === "done" || reading.state === "closed") return null;
   // The coordinator's, or an open gate the host put no name to, parks the
   // task without asking the person.
   if (waits.coordinator.length) return { state: "blocked", label: "Waiting on the coordinator" };
@@ -205,7 +227,9 @@ export function taskState(
   // task the person stopped is left failed by the host and did not fail. A
   // reopened task whose notice is not confirmed is not "Ready to start".
   if (hold) return { state: "queued", label: hold.label, detail: hold.detail, ...(hold.tone ? { tone: hold.tone } : {}) };
-  if (task.status === "failed") return { state: "blocked", label: "Failed" };
+  // Blocked with a decision on record that the host put no name to: the
+  // panel does not call that failed either. (A task that failed is never
+  // here: the reading above called it failed, the coordinator's or held.)
   if (task.status === "blocked") return { state: "blocked", label: "Blocked" };
   if (task.status === "pending" || task.status === "ready") {
     return { state: "queued", label: task.status === "ready" ? "Ready to start" : "Queued" };

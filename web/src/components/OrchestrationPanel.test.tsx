@@ -189,8 +189,12 @@ describe("a task row's reported checklist", () => {
     expect(line).toContain('<span class="run-row-pill" data-verdict="fail"');
     expect(line).not.toContain("5/5");
     expect(line).toContain('style="width:40%"');
+    // Opened, the state word is the same one, said once and never beside
+    // "Done": the separate chip is for a replaced check only.
     const opened = detail(done);
-    expect(opened).toContain("Done · check failed");
+    expect(opened).toContain('<span class="orch-task-state">Check failed</span>');
+    expect(opened).not.toContain("Done · check failed");
+    expect(opened).not.toContain("orch-task-blocker");
     expect(opened).toContain("Last step: Running tests");
   });
 

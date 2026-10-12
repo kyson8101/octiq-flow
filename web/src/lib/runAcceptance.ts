@@ -15,7 +15,7 @@
 // - deployed runtime   — not tracked per run, and said so;
 // - acceptance         — never inferred from counts. Checks that all passed
 //                        are reported as that, not as product acceptance.
-import type { OrchestrationAttempt, OrchestrationTask } from "./orchestration";
+import { isSettled, type OrchestrationAttempt, type OrchestrationTask } from "./orchestration";
 import type { SandboxEnvironment, SandboxSnapshot } from "./sandbox";
 
 export type CheckKind = NonNullable<OrchestrationTask["kind"]>;
@@ -49,11 +49,11 @@ export function checkCoverage(tasks: readonly OrchestrationTask[]): CheckCoverag
   for (const task of tasks) {
     if (task.status === "cancelled") continue;
     if (!requiresVerdict(task)) {
-      if (task.status === "completed" && task.verdict) coverage.observed[task.verdict === "pass" ? "passed" : "failed"] += 1;
+      if (isSettled(task) && task.verdict) coverage.observed[task.verdict === "pass" ? "passed" : "failed"] += 1;
       continue;
     }
     coverage.total += 1;
-    if (task.status !== "completed") coverage.awaiting += 1;
+    if (!isSettled(task)) coverage.awaiting += 1;
     else if (task.verdict === "pass") coverage.passed += 1;
     else if (task.verdict === "fail") coverage.failed += 1;
     else coverage.noVerdict += 1;
@@ -129,7 +129,9 @@ export function taskEnvironment(
   return { state, label: `${ENV_LABEL[state]}${age}`, tone: ENV_TONE[state], detail, checkedAt: env?.checkedAt ?? null };
 }
 
-export type Stage = { key: string; label: string; value: string; tone: EnvTone; note?: string };
+/** `danger` is a check that failed: a failure, where `warn` is only ever a
+ *  warning (a stale or unhealthy environment). */
+export type Stage = { key: string; label: string; value: string; tone: EnvTone | "danger"; note?: string };
 
 /** The run's stages, each from its own evidence. */
 export function runStages(
@@ -138,7 +140,8 @@ export function runStages(
   sandboxes: SandboxSnapshot | null | undefined,
 ): Stage[] {
   const live = tasks.filter((task) => task.status !== "cancelled");
-  const settled = live.filter((task) => task.status === "completed").length;
+  // Settled, and said as that: a check that failed settled too.
+  const settled = live.filter(isSettled).length;
   const checks = checkCoverage(tasks);
 
   const checkParts = [
@@ -173,7 +176,7 @@ export function runStages(
     .join(" · ");
 
   const acceptance: Stage = checks.failed
-    ? { key: "acceptance", label: "Acceptance", value: "Failing", tone: "warn", note: "A check, review or acceptance task found problems; its dependants wait." }
+    ? { key: "acceptance", label: "Acceptance", value: "Failing", tone: "danger", note: "A check, review or acceptance task found problems; its dependants wait." }
     : checks.total && !checks.awaiting && !checks.noVerdict
       ? { key: "acceptance", label: "Acceptance", value: "Every planned check passed", tone: "ok", note: "What the planned checks covered passed. It is not a record that the product was accepted." }
       : { key: "acceptance", label: "Acceptance", value: "Unverified", tone: "quiet", note: checks.total ? "Checks are still outstanding." : "No check, review or acceptance task in this mission. Task completion is not acceptance." };
@@ -183,7 +186,7 @@ export function runStages(
     {
       key: "checks", label: "Checks",
       value: checks.total ? checkParts.join(" · ") : "None planned",
-      tone: checks.failed ? "warn" : checks.total && checks.passed === checks.total ? "ok" : "quiet",
+      tone: checks.failed ? "danger" : checks.total && checks.passed === checks.total ? "ok" : "quiet",
       note: observed ? `${observed} other ${observed === 1 ? "task" : "tasks"} also reported a verdict (${checks.observed.passed} pass, ${checks.observed.failed} fail).` : undefined,
     },
     {

@@ -693,6 +693,11 @@
 /* A task the person stopped is left failed by the host and did not fail
    (lib/taskHold): its row is a held one, in the quiet colour. */
 .orch-task[data-status="failed"][data-hold="stopped"] { --task-color: var(--fg-3); }
+/* What the row reads as failed is the danger colour whatever the ledger's
+   status word: a task that completed with a failed check is not the colour
+   of one that finished well, and one blocked with nothing open to wait for
+   is not a warning (lib/runProgress.taskReading). */
+.orch-task[data-state="failed"] { --task-color: var(--danger); }
 
 /* The row is the surface: hover and the open-chat tint cover the summary AND
    its chevron, with room inside the edge, rather than hugging the text. */
@@ -857,6 +862,8 @@
 .orch-stage-value { color: var(--fg-1); }
 .orch-stage-value[data-tone="ok"], .orch-progress-acceptance[data-tone="ok"] { color: var(--ok); }
 .orch-stage-value[data-tone="warn"], .orch-progress-acceptance[data-tone="warn"] { color: var(--warn); }
+/* A check that failed is a failure, not a warning. */
+.orch-stage-value[data-tone="danger"], .orch-progress-acceptance[data-tone="danger"] { color: var(--danger); }
 @media (max-width: 480px) { .orch-stage { grid-template-columns: 1fr; } }
 .orch-task-reported, .orch-task-after { color: var(--fg-3); font-size: 10.5px; }
 /* Peer help: a worker's questions to teammates and their answers. Advice, not
@@ -1082,6 +1089,9 @@
 }
 .orch-person[data-state="blocked"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .orch-person[data-state="blocked"] .orch-person-state { color: var(--warn); }
+/* A task of theirs failed, is blocked with nothing open, or failed its check. */
+.orch-person[data-state="failed"] { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.orch-person[data-state="failed"] .orch-person-state { color: var(--danger); }
 .orch-person[data-state="done"],
 .orch-person[data-state="stopped"] { color: var(--fg-2); }
 .orch-person[data-overflow="all"] { display: none; }

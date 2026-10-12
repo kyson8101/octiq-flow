@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { isStuck, type ExecutionState, type OrchestrationAttempt, type OrchestrationSnapshot, type OrchestrationTask } from "./orchestration";
+import {
+  CHECK_FAILED_LABEL, checkFailed, finishedWell, isSettled, isStuck,
+  type ExecutionState, type OrchestrationAttempt, type OrchestrationSnapshot, type OrchestrationTask,
+} from "./orchestration";
 import type { TaskReport } from "./chatTask";
 import { taskGated } from "./runWaits";
 
@@ -41,7 +44,7 @@ export function taskElapsed(snapshot: OrchestrationSnapshot, task: Orchestration
 export function taskProgress(task: OrchestrationTask, report?: TaskReport) {
   const total = report?.steps.length ?? 0;
   const done = report?.steps.filter((step) => step.state === "done").length ?? 0;
-  const percent = task.status === "completed" ? 100 : total ? Math.round(done / total * 100)
+  const percent = isSettled(task) ? 100 : total ? Math.round(done / total * 100)
     : task.status === "pending" || task.status === "ready" ? 0 : null;
   return { total, done, remaining: total - done, percent };
 }
@@ -93,7 +96,8 @@ export const EXECUTION_LABELS: Record<ExecutionState, string> = {
 
 /** The one word a task row leads with. A worker parked on an approval card
  *  says so rather than "waiting for a tool" (feedback ee0a43b0), and a
- *  check that finished but failed never reads as plain "Done". */
+ *  check that settled but failed never reads as "Done" at all: it is said
+ *  with the word every surface names a failed check with. */
 export function taskStateLabel(
   task: OrchestrationTask,
   attempt: OrchestrationAttempt | undefined,
@@ -103,8 +107,9 @@ export function taskStateLabel(
   // "Completed" alone is exactly the word that hid a failed review.
   // Its history stays readable on the row; the word says nothing is owed.
   if (task.supersededBy) return `${TASK_LABELS[task.status]} · replaced`;
-  if (task.status === "completed" && (task.verdict === "fail" || (task.kind && task.kind !== "work"))) {
-    return task.verdict === "fail" ? "Done · check failed" : task.verdict === "pass" ? "Done · passed" : "Done · no verdict";
+  if (checkFailed(task)) return CHECK_FAILED_LABEL;
+  if (finishedWell(task) && task.kind && task.kind !== "work") {
+    return task.verdict === "pass" ? "Done · passed" : "Done · no verdict";
   }
   if (task.activeAttemptId === attempt?.id && proposedReportState(attempt) === "proposed"
     && (attempt?.status === "running" || attempt?.status === "preparing")) {
@@ -153,8 +158,10 @@ const TASK_PRIORITY: Record<OrchestrationTask["status"], number> = {
 export function sortTasksByActivity(tasks: readonly OrchestrationTask[], attempts: readonly OrchestrationAttempt[]): OrchestrationTask[] {
   const byId = new Map(attempts.map((attempt) => [attempt.id, attempt]));
   const priority = (task: OrchestrationTask) => {
+    // A check that failed is a failure, listed with what is blocked or failed.
+    if (checkFailed(task)) return TASK_PRIORITY.failed;
     // Stale execution evidence must not promote an already settled task.
-    if (task.status === "completed" || task.status === "cancelled") return TASK_PRIORITY[task.status];
+    if (isSettled(task) || task.status === "cancelled") return TASK_PRIORITY[task.status];
     const attempt = task.activeAttemptId ? byId.get(task.activeAttemptId) : undefined;
     return executionNeedsAttention(attempt) ? 0 : TASK_PRIORITY[task.status];
   };
@@ -173,12 +180,14 @@ export function taskStage(task: OrchestrationTask, report?: TaskReport, attempt?
 
 export function boardCounts(tasks: OrchestrationTask[], snapshot?: OrchestrationSnapshot) {
   const attemptFor = (task: OrchestrationTask) => snapshot && currentAttempt(snapshot, task);
-  const done = tasks.filter((task) => task.status === "completed").length;
+  // Done is finished well: a check that failed is counted with what needs
+  // attention, never here.
+  const done = tasks.filter(finishedWell).length;
   return {
     done, total: tasks.length, percent: tasks.length ? Math.round(done / tasks.length * 100) : 0,
     todo: tasks.filter((task) => task.status === "pending" || task.status === "ready").length,
     running: tasks.filter((task) => task.status === "running" && (!attemptFor(task)?.execution || attemptIsExecuting(attemptFor(task)!))).length,
-    blocked: tasks.filter((task) => isStuck(task) || (!task.supersededBy && executionNeedsAttention(attemptFor(task)))).length,
+    blocked: tasks.filter((task) => isStuck(task) || checkFailed(task) || (!task.supersededBy && executionNeedsAttention(attemptFor(task)))).length,
     cancelled: tasks.filter((task) => task.status === "cancelled").length,
   };
 }

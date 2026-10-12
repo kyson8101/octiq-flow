@@ -40,7 +40,7 @@ import { RunBridges } from "./RunBridges";
 import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import {
-  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, planStandsIn, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
+  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, planStandsIn, runCounts, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
@@ -50,7 +50,7 @@ import { useHoldClock } from "../lib/useHoldClock";
 import "./RunProgress.css";
 
 import {
-  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isPeerRequestGate, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  CHECK_FAILED_LABEL, checkFailed, deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isPeerRequestGate, isSettled, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -489,11 +489,13 @@ export function OrchestrationPanel({
             {newRunButton}
             <div className="orch-run-list">
               {runs.map((run) => {
-                const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
-                const done = runTasks.filter((task) => task.status === "completed").length;
                 // What waits on the person in it, by the one reading
-                // (`lib/runWaits`): the number its strip says.
-                const toDecide = runWaits(snapshot, run, pendingView.held).person.length;
+                // (`lib/runWaits`): the number its strip says. Done of the
+                // tasks that count is the strip's too (`runCounts`): a task
+                // whose check failed is not done here either.
+                const waits = runWaits(snapshot, run, pendingView.held);
+                const toDecide = waits.person.length;
+                const { done, total } = runCounts(snapshot, run, pendingView.held, waits);
                 return (
                   <button
                     className={`orch-run-pick${!creating && selectedId === run.id ? " is-on" : ""}`}
@@ -506,7 +508,7 @@ export function OrchestrationPanel({
                     <span className="orch-run-copy">
                       <span>{run.objective}</span>
                       <small>
-                        {done}/{runTasks.length} tasks
+                        {done}/{total} tasks
                         {toDecide > 0 ? ` · ${toDecide} to decide` : ""}
                       </small>
                     </span>
@@ -1146,8 +1148,9 @@ function RunLine({ snapshot, run, tasks, attempts, tiled = false }: {
   const working = attempts.filter(attemptIsExecuting).length;
   const elapsed = runElapsed(snapshot, run.id, now);
   const settled = counts.total > 0 && counts.done === counts.total;
-  // Finished is not passed: a check that failed is said out loud.
-  const failedChecks = tasks.filter((task) => task.status === "completed" && task.verdict === "fail").length;
+  // Settled is not finished well: a check that failed is said out loud, and
+  // is not one of the tasks done (`boardCounts`).
+  const failedChecks = tasks.filter(checkFailed).length;
   const planned = checkCoverage(tasks).total > 0;
   const acceptance = acceptanceLine(runStages(tasks, attempts, null));
   const parts = [
@@ -1169,7 +1172,7 @@ function RunLine({ snapshot, run, tasks, attempts, tiled = false }: {
 }
 
 const PERSON_LABEL: Record<PersonState, string> = {
-  working: "working", blocked: "blocked", assigned: "assigned", done: "done", stopped: "stopped",
+  working: "working", failed: "failed", blocked: "blocked", assigned: "assigned", done: "done", stopped: "stopped",
 };
 /** Chips shown before "+N"; a phone shows one fewer (see the CSS). */
 const PEOPLE_SHOWN = 3;
@@ -1409,7 +1412,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   const branch = task.workspace?.plan.branch || attempt?.branch;
   // What the run's attention count pointed at; a decision names its own task.
   const owed = !gateBlockedTasks.has(task.id)
-    && !task.supersededBy && (isStuck(task) || task.verdict === "fail" || executionNeedsAttention(attempt));
+    && !task.supersededBy && (isStuck(task) || checkFailed(task) || executionNeedsAttention(attempt));
   // Cards this task is holding for the person; answered in the main chat or
   // in this panel, never on the row.
   const pending = usePendingActions().forTask(task.id);
@@ -1485,7 +1488,10 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
               sentences follow: it is not said a third time here. */}
           {!row.hold && <span className="orch-task-state">{stateWord}</span>}
           {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
-          {task.verdict === "fail" && <span className="orch-task-blocker" title="It finished, and what it checked did not pass. Tasks that depend on it wait.">Check failed</span>}
+          {/* A failed check is the state word itself (`taskStateLabel`), in
+              the row's danger colour. It is said apart only for a replaced
+              one, whose word is that it was replaced. */}
+          {task.verdict === "fail" && stateWord !== CHECK_FAILED_LABEL && <span className="orch-task-blocker" title="It finished, and what it checked did not pass.">{CHECK_FAILED_LABEL}</span>}
           {requiresVerdict(task) && task.verdict !== "fail" && <span className="orch-task-kind" title="It settles only with a pass or fail verdict, and only a pass releases the tasks that depend on it.">{KIND_LABEL[task.kind!]}</span>}
           {mission && !requiresVerdict(task) && <span className="orch-task-kind">{KIND_LABEL.work}</span>}
           {mission && task.size && <span className="orch-task-size" title="What the task is worth when its result is accepted">{SIZE_LABEL[task.size]}</span>}
@@ -1632,7 +1638,7 @@ function WorkspaceDelivery({ task, busy, readOnly, active, stopped, onAction }: 
       </div>)}
       {!readOnly && !closed && <div className="orch-workspace-actions">
         <button type="button" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })}>Refresh delivery status</button>
-        {task.status === "completed" && !stopped && !delivery?.merged && <button type="button" disabled={busy} onClick={() => setFollowup(!followup)}>Continue after review</button>}
+        {isSettled(task) && !stopped && !delivery?.merged && <button type="button" disabled={busy} onClick={() => setFollowup(!followup)}>Continue after review</button>}
         {canCleanup && delivery.merged && <button type="button" disabled={busy} onClick={() => setCleanup("merged")}>Clean up worktree</button>}
         {canAbandon && !delivery.merged && <button type="button" disabled={busy} onClick={() => setCleanup("abandon")}>Abandon workspace…</button>}
       </div>}

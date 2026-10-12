@@ -125,8 +125,22 @@ describe("who a run is with", () => {
     ];
     const people = runPeople(a, tasks, [attempt("x3", "t3", { execution: { state: "executing", retryCount: 0 } })], [],
       [...roster, { id: "rex", name: "Rex" }]);
-    expect(people.map((p) => [p.name, p.state])).toEqual([["Noah", "working"], ["Rex", "blocked"], ["Maya", "assigned"], ["Tofu", "done"]]);
+    // Blocked with no decision open is what the panel's row calls failed.
+    expect(people.map((p) => [p.name, p.state])).toEqual([["Noah", "working"], ["Rex", "failed"], ["Maya", "assigned"], ["Tofu", "done"]]);
     expect(people[0].avatar).toBe("noah.png");
+  });
+
+  it("calls only work that finished well done: a task whose check failed is that person's failure", () => {
+    const review = (over: Partial<OrchestrationTask> = {}) => assigned("r", "completed", "tofu", { kind: "review", ...over });
+    const state = (task: OrchestrationTask) => runPeople(a, [task], [], [], roster)[0].state;
+    expect(state(review({ verdict: "pass" }))).toBe("done");
+    expect(state(review({ verdict: "fail" }))).toBe("failed");
+    // Replaced, it is history.
+    expect(state(review({ verdict: "fail", supersededBy: "r2" }))).toBe("done");
+    // And it is counted with what the run owes, once.
+    expect(runAttention(a, [review({ verdict: "fail" })], [], []).blocked).toBe(1);
+    expect(runAttention(a, [review({ verdict: "pass" })], [], []).blocked).toBe(0);
+    expect(runAttention(a, [review({ verdict: "fail", supersededBy: "r2" })], [], []).blocked).toBe(0);
   });
 
   it("does not call a running task working unless its worker is executing", () => {
@@ -143,7 +157,7 @@ describe("who a run is with", () => {
     const tasks = [assigned("t1", "completed", "noah"), assigned("t2", "failed", "noah"), assigned("t3", "ready", "noah")];
     const [noah, ...rest] = runPeople(a, tasks, [], [], roster);
     expect(rest).toHaveLength(0);
-    expect(noah).toMatchObject({ name: "Noah", state: "blocked", tasks: 3, removed: false });
+    expect(noah).toMatchObject({ name: "Noah", state: "failed", tasks: 3, removed: false });
   });
 
   it("falls back to the name the task was given when the roster no longer has them", () => {

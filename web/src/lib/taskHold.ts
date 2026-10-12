@@ -26,7 +26,7 @@
 // refuse. And it says what a pending plan holds of a whole run
 // (`planHoldsEveryStart`).
 import { TASK_LABELS } from "./agentTaskBoard";
-import { taskHeldByPlan, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
+import { isSettled, taskHeldByPlan, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
 
 export type HoldKind = "stopped" | "plan" | "reopen";
 
@@ -194,7 +194,8 @@ export function planHoldsEveryStart(
   const mine = tasks.filter((task) => task.runId === run.id);
   if (!mine.some((task) => typeof task.heldByPlan === "boolean")) return true;
   return mine.every((task) => {
-    if (task.supersededBy || task.status === "completed" || task.status === "cancelled") return true;
+    // Settled takes no worker, whatever its check said.
+    if (task.supersededBy || isSettled(task) || task.status === "cancelled") return true;
     // What is in flight is not held, whatever a later change did to its plan.
     return task.status !== "running" && task.heldByPlan === true;
   });
@@ -320,7 +321,7 @@ export function stopBlocker(
   const unsettled = !!attempt && task.activeAttemptId === attempt.id
     && (attempt.status === "preparing" || attempt.status === "running" || (attempt.status === "blocked" && gated));
   if (unsettled) return null;
-  if (task.status === "completed") return "This task has finished. No worker is running on it, so there is nothing to stop.";
+  if (isSettled(task)) return "This task has finished. No worker is running on it, so there is nothing to stop.";
   if (task.status === "cancelled") return "This task was cancelled. No worker is running on it, so there is nothing to stop.";
   return "No worker is running on this task yet, so there is nothing to stop.";
 }

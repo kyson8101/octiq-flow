@@ -8,11 +8,11 @@
 // an index: where the work is, and how to get to it.
 import { useEffect, useState } from "react";
 import { boardCounts, currentAttempt, runElapsed, runIsLive, sortTasksByActivity, taskAttempts, taskProgress, taskStage, useElapsedTick } from "../lib/agentTaskBoard";
-import type { OrchestrationSnapshot, OrchestrationTask } from "../lib/orchestration";
+import { CHECK_FAILED_LABEL, checkFailed, isSettled, type OrchestrationSnapshot, type OrchestrationTask } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
 import { elapsedLabel } from "../lib/working";
-import { ClockIcon, TaskMeter, TaskStatusIcon } from "./TaskMeter";
+import { ClockIcon, drawnStatus, TaskMeter, TaskStatusIcon } from "./TaskMeter";
 import { AgentAvatar } from "./AgentAvatar";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./AgentTaskBoard.css";
@@ -46,7 +46,7 @@ export function AgentTaskBoard(props: Props) {
       {snapshot.runs.map((item) => <option key={item.id} value={item.id}>{item.objective}</option>)}
     </select>}
     <div className="agent-board-overview">
-      <div className="agent-board-progress-label">Tasks completed</div>
+      <div className="agent-board-progress-label">Tasks done</div>
       <div className="agent-board-totals"><strong>{counts.done}<span> / {counts.total} tasks</span></strong><strong>{counts.percent}%</strong></div>
       <TaskMeter tasks={tasks} done={counts.done} />
       <div className="agent-board-acceptance" title="OctiqFlow does not yet track acceptance results. Review the test evidence separately.">Acceptance: unverified</div>
@@ -73,23 +73,26 @@ function TaskRow({ snapshot, conversations, currentConversation, onOpenChat, tas
   const chat = attempt && conversations.get(attempt.workerChatKey.replace(/^chat:/, ""));
   const report = attempt && snapshot.reports?.[attempt.workerChatKey];
   const progress = taskProgress(task, report);
-  const stage = !attempt?.execution && attempt?.status === "preparing" ? "Preparing workspace" : taskStage(task, report, attempt);
+  // A check that failed is said as that, never as how its worker's process
+  // ended ("Completed").
+  const stage = checkFailed(task) ? CHECK_FAILED_LABEL
+    : !attempt?.execution && attempt?.status === "preparing" ? "Preparing workspace" : taskStage(task, report, attempt);
   const selected = attempts.some((item) => item.workerChatKey === `chat:${currentConversation}`);
   const unread = !!chat && isUnread(chat, currentConversation);
   const body = <>
-    <span className="agent-task-glyph" aria-hidden="true"><TaskStatusIcon status={task.status} /></span>
+    <span className="agent-task-glyph" aria-hidden="true"><TaskStatusIcon status={drawnStatus(task)} /></span>
     <span className="agent-task-body">
       <span className="agent-task-heading">
         <strong title={task.title}>{task.title}</strong>
         {unread && <span className="agent-task-unread" title="Unread activity" />}
-        <span className="agent-task-percent" title={task.status === "completed" ? "Task completed" : progress.total ? `${progress.done} of ${progress.total} reported steps done` : "No checklist reported"}>{progress.percent === null ? "—" : `${progress.percent}%`}</span>
+        <span className="agent-task-percent" title={checkFailed(task) ? CHECK_FAILED_LABEL : isSettled(task) ? "Task completed" : progress.total ? `${progress.done} of ${progress.total} reported steps done` : "No checklist reported"}>{progress.percent === null ? "—" : `${progress.percent}%`}</span>
       </span>
       <span className="agent-task-meta">{task.assignee && <Assignee id={task.assignee.id} name={task.assignee.name} />}<span className="agent-task-stage" title={attempt?.execution?.latestError?.message || stage}>{stage}</span></span>
     </span>
   </>;
   // A task with no transcript yet is not navigation, so it is not a button —
   // a control that cannot go anywhere is worse than a line of text.
-  return <li className={`agent-task${selected ? " is-selected" : ""}`} data-status={task.status}>
+  return <li className={`agent-task${selected ? " is-selected" : ""}`} data-status={drawnStatus(task)}>
     {chat
       ? <button type="button" className="agent-task-row" aria-current={selected ? "page" : undefined}
           aria-label={`${task.title}, ${stage}${unread ? ", unread activity" : ""}`}

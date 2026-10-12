@@ -14,7 +14,7 @@ describe("compact agent task board", () => {
     const snapshot = taskBoardFixture();
     snapshot.tasks.forEach(task => { task.status = "completed"; task.result = "NOT RELEASE-READY"; });
     const out = renderToStaticMarkup(<AgentTaskBoard snapshot={snapshot} conversations={new Map()} currentConversation={null} onOpenChat={() => {}} />);
-    expect(out).toContain("Tasks completed");
+    expect(out).toContain("Tasks done");
     expect(out).toContain("100%");
     expect(out).toContain("Acceptance: unverified");
   });
@@ -53,7 +53,7 @@ describe("compact agent task board", () => {
 
   it("shows the run's shape and one tappable line per task", () => {
     const out = renderToStaticMarkup(<AgentTaskBoard snapshot={taskBoardFixture()} conversations={new Map(chats.map((chat) => [chat.id, chat]))} currentConversation={null} onOpenChat={() => {}} />);
-    expect(out).toContain('aria-valuetext="1 of 4 tasks completed"');
+    expect(out).toContain('aria-valuetext="1 of 4 tasks done"');
     expect(out).toContain("50%");
     expect(out).toContain("Run focused tests");
     expect(out).toContain("Document the access rules");

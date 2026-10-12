@@ -162,9 +162,44 @@ describe("agents dashboard", () => {
       attempts: [attempt("a", { execution: { state: "executing", retryCount: 0 } })],
     }) }));
     expect(rows.ada.state).toBe("working");
-    expect(rows.ada.counts).toEqual({ working: 1, blocked: 1, queued: 1 });
+    // Blocked with no decision open is a failure, as the panel's row has it.
+    expect(rows.ada.counts).toEqual({ working: 1, failed: 1, queued: 1 });
+    expect(rows.ada.activities[0]).toMatchObject({ taskId: "b", state: "failed", label: "Blocked", tone: "danger" });
     // Its own list puts what is owed first.
     expect(rows.ada.activities.map((a) => a.taskId)).toEqual(["b", "a", "c"]);
+  });
+
+  it("lists a task that completed with a failed check as a failure, and folds away only what finished well", () => {
+    const review = (id: string, over: Partial<OrchestrationTask>) => task(id, "completed", "ada", { kind: "review", ...over });
+    const rows = byId(roster({ snapshot: snap({ tasks: [
+      review("bad", { verdict: "fail" }), review("good", { verdict: "pass" }),
+      review("replaced", { verdict: "fail", supersededBy: "bad" }), task("plain", "completed", "ada"),
+    ] }) }));
+    expect(rows.ada.activities.map((a) => a.taskId)).toEqual(["bad"]);
+    expect(rows.ada.activities[0]).toMatchObject({ state: "failed", label: "Check failed", tone: "danger" });
+    expect(rows.ada).toMatchObject({ state: "failed", stateLabel: "Check failed", counts: { failed: 1 } });
+    expect(rosterSummary(Object.values(rows))).toEqual([{ state: "failed", count: 1 }, { state: "idle", count: 2 }]);
+    // Accepting its result does not lift the failed check: the host goes on
+    // holding what depends on it.
+    const accepted = byId(roster({ snapshot: snap({ tasks: [review("bad", {
+      verdict: "fail", activeAttemptId: "att_bad",
+      acceptance: { attemptId: "att_bad", by: { kind: "person" }, at: 9 } as OrchestrationTask["acceptance"],
+    })] }) }));
+    expect(accepted.ada.activities[0]).toMatchObject({ state: "failed", label: "Check failed" });
+    // A run that is over is history for a failed check too, as for a task
+    // that failed (the test below): the host calls a run completed once
+    // every task has settled, failed checks included.
+    const over = byId(roster({ snapshot: snap({ runs: [run({ status: "completed" })], tasks: [review("bad", { verdict: "fail" })] }) }));
+    expect(over.ada).toMatchObject({ state: "idle", activities: [] });
+  });
+
+  it("ranks a failure after what needs the person and before a wait", () => {
+    const rows = byId(roster({ snapshot: snap({ tasks: [
+      task("queued", "pending", "ada"), task("broke", "failed", "ada"),
+      task("parked", "running", "ada", { activeAttemptId: "att_parked" }),
+    ], attempts: [attempt("parked", { execution: { state: "capacity_blocked", retryCount: 0 } })] }) }));
+    expect(rows.ada.activities.map((a) => [a.taskId, a.state])).toEqual([["broke", "failed"], ["parked", "blocked"], ["queued", "queued"]]);
+    expect(rows.ada).toMatchObject({ state: "failed", stateLabel: "Failed" });
   });
 
   it("leaves history out: settled tasks and stopped, finished or archived runs", () => {

@@ -5,7 +5,7 @@
 // git's: Merged and Released come from `missionDelivery`, which the host fills
 // when someone asks it to check (`orchestration_mission_refresh`). An agent
 // saying "merged" moves nothing here.
-import type { OrchestrationRun, OrchestrationTask } from "./orchestration";
+import { checkFailed, isSettled, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
 import { planHoldsEveryStart } from "./taskHold";
 
 export type MissionStage =
@@ -40,11 +40,14 @@ export function isMission(run: Pick<OrchestrationRun, "workspaceMode">): boolean
 
 export function missionState(run: OrchestrationRun, tasks: readonly OrchestrationTask[]): MissionState {
   const abandoned = !!run.abandoned;
-  const blocked = run.status === "waiting" || tasks.some((task) => task.status === "blocked" && !task.supersededBy);
+  const live = tasks.filter((task) => task.status !== "cancelled");
+  // Settled is not finished well: a check that completed and did not pass
+  // holds what depends on it, and is somebody's to deal with.
+  const failedCheck = live.some(checkFailed);
+  const blocked = run.status === "waiting" || failedCheck || tasks.some((task) => task.status === "blocked" && !task.supersededBy);
   const state = (stage: MissionStage): MissionState => ({ stage, blocked: blocked && stage !== "closed", abandoned });
   if (run.status === "closed") return state("closed");
 
-  const live = tasks.filter((task) => task.status !== "cancelled");
   const open = live.filter((task) => OPEN.has(task.status));
   // Work added after a merge reopens the mission: the board follows the work.
   if (!open.length) {
@@ -60,13 +63,21 @@ export function missionState(run: OrchestrationRun, tasks: readonly Orchestratio
   // every start (`planHoldsEveryStart`), which an approved task that failed,
   // is blocked or was stopped by the person is not. A host that does not
   // say leaves it as it was: pending is draft.
+  //
+  // A check of approved work that failed is not a draft either, whatever the
+  // plan holds: the work was built and a review of it did not pass.
   const held = planHoldsEveryStart(run, live);
-  if (!live.length || held || run.planApproval?.status === "rejected") {
-    return state("draft");
+  if (!live.length || run.planApproval?.status === "rejected") return state("draft");
+  if (held) return state(failedCheck ? "review" : "draft");
+  if (!open.length) {
+    // Nothing is left to start. Ready to merge only when everything
+    // finished well: a task that failed (or that the person stopped) is
+    // still to be done, and a failed check keeps the mission under review.
+    if (live.some((task) => task.status === "failed" && !task.supersededBy)) return state("building");
+    return state(failedCheck ? "review" : "ready");
   }
-  if (!open.length) return state("ready");
   // Everything still open is a check, and some building is done: under review.
-  if (open.every((task) => CHECKS.has(task.kind ?? "work")) && live.some((task) => task.status === "completed")) {
+  if (open.every((task) => CHECKS.has(task.kind ?? "work")) && live.some(isSettled)) {
     return state("review");
   }
   if (live.every((task) => task.status === "pending" || task.status === "ready") && !live.some((task) => task.activeAttemptId)) {

@@ -284,6 +284,52 @@ export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy" 
   return (task.status === "blocked" || task.status === "failed") && !task.supersededBy && !task.stopped;
 }
 
+/* ---- How a task ended ---------------------------------------------------
+ *
+ * "Completed" is the host's word for a task whose worker settled it, and it
+ * is not "finished well": a review that completed with a failing verdict
+ * still holds whatever depends on it (the host's `releases_dependants`). So
+ * the ledger's status is read here and nowhere else, as three questions, and
+ * every surface that hides, folds, counts or colours a task by "done" asks
+ * one of them (`finishedWell.surfaces.test` asks every surface the same
+ * counts, and scans the source for a second reader):
+ *
+ *   isSettled     the worker settled it, whatever its check said. For what
+ *                 is true of any settled task: it takes no worker, its
+ *                 result can be accepted, its worker can be archived. A
+ *                 surface that counts these says "settled", never "done".
+ *   checkFailed   it settled and its own answer was "fail", and nobody
+ *                 replaced it: a failure, wherever a failure is shown.
+ *   finishedWell  it settled and its check did not fail: the only thing
+ *                 that is "done".
+ *
+ * Accepting a result does not lift a failed check: the host goes on holding
+ * its dependants, so the page goes on calling it a failure. A check that
+ * completed with no verdict at all (only an older or hand-edited record
+ * holds one) did not fail, and reads as done. */
+
+type Ended = Pick<OrchestrationTask, "status" | "verdict" | "supersededBy">;
+
+/** The word every surface names a failed check with. */
+export const CHECK_FAILED_LABEL = "Check failed";
+
+/** The task's worker settled it, whatever its check said. */
+export function isSettled(task: Pick<OrchestrationTask, "status">): boolean {
+  return task.status === "completed";
+}
+
+/** Settled with a failing verdict, and not replaced: a failure. A replaced
+ *  one keeps its history and is owed nothing, like a replaced task that
+ *  failed (`isStuck`). */
+export function checkFailed(task: Ended): boolean {
+  return isSettled(task) && task.verdict === "fail" && !task.supersededBy;
+}
+
+/** Settled, and its check did not fail. */
+export function finishedWell(task: Ended): boolean {
+  return isSettled(task) && !checkFailed(task);
+}
+
 export type OrchestrationAttempt = {
   id: string;
   runId: string;

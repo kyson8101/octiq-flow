@@ -31,13 +31,13 @@ describe("chat workflow navigation", () => {
     expect(runSummary(working, working.runs[0])).toBe("Running · 0/1 done");
     // A permission card the page holds for the worker.
     const held = new Map([["task", [{ key: "permission:p", kind: "permission" }]]]);
-    expect(runSummary(working, working.runs[0], held)).toBe("Needs decision · 0/1 done");
+    expect(runSummary(working, working.runs[0], held)).toBe("Needs you · 0/1 done");
     // A refusal the host says waits on the person, with no card on the page.
     const refused = { ...working, nativeDecisions: [{
       id: "nd", runId: "run", taskId: "task", attemptId: "second", chatKey: "chat:second", reason: "", blockedAction: null,
       status: "pending", continuation: "unverified", recovery: "", observedAt: 1, awaits: "person" as const,
     }] };
-    expect(runSummary(refused, refused.runs[0])).toBe("Needs decision · 0/1 done");
+    expect(runSummary(refused, refused.runs[0])).toBe("Needs you · 0/1 done");
     expect(runSummary({ ...refused, nativeDecisions: [{ ...refused.nativeDecisions[0], awaits: "nobody" as const }] }, refused.runs[0])).toBe("Running · 0/1 done");
   });
   it("speaks for the run that waits on the person before a newer one that only runs", () => {
@@ -46,21 +46,28 @@ describe("chat workflow navigation", () => {
     expect(rowRun(data)?.id).toBe("newer");
     const held = new Map([["task", [{ key: "permission:p", kind: "permission" }]]]);
     expect(rowRun(data, held)?.id).toBe("run");
-    expect(chatRunStatus(data, rowRun(data, held)!, held)).toBe("Needs decision · 0/1 done");
+    expect(chatRunStatus(data, rowRun(data, held)!, held)).toBe("Needs you · 0/1 done");
     expect(rowRun(chatSnapshot(snapshot, "chat:nobody"))).toBeUndefined();
   });
   it("distinguishes a reported block from an open decision", () => {
-    expect(runSummary(snapshot, snapshot.runs[0])).toBe("Needs attention · 0/1 done");
+    // A block with nothing open to wait for is what the strip counts as
+    // failed, and the line says that count.
+    expect(runSummary(snapshot, snapshot.runs[0])).toBe("1 failed · 0/1 done");
     const gate = { id: "gate", runId: "run", createdByChatKey: "chat:second", targetChatKey: "chat:main", question: "Choose", options: [], status: "open" as const, createdAt: 1, updatedAt: 1 };
-    // A decision is said only of a gate the host says is the person's.
-    expect(runSummary({ ...snapshot, gates: [{ ...gate, awaits: "person" as const }] }, snapshot.runs[0])).toBe("Needs decision · 0/1 done");
+    // A decision is said only of a gate the host says is the person's. It
+    // leads, and the block beside it is still said (the gate names no task).
+    expect(runSummary({ ...snapshot, gates: [{ ...gate, awaits: "person" as const }] }, snapshot.runs[0])).toBe("Needs you · 1 failed · 0/1 done");
+    expect(runSummary({ ...snapshot, gates: [{ ...gate, taskId: snapshot.tasks[0].id, awaits: "person" as const }] }, snapshot.runs[0])).toBe("Needs you · 0/1 done");
     // The coordinator's, or one the host put no name to, is not: the task
     // it parks is waiting, and a block beside it is still a block.
     const parked = { ...gate, taskId: snapshot.tasks[0].id };
     expect(runSummary({ ...snapshot, gates: [{ ...parked, awaits: "coordinator" as const }] }, snapshot.runs[0])).toBe("Running · 0/1 done");
     expect(runSummary({ ...snapshot, gates: [parked] }, snapshot.runs[0])).toBe("Running · 0/1 done");
-    expect(runSummary({ ...snapshot, gates: [gate] }, snapshot.runs[0])).toBe("Needs attention · 0/1 done");
-    expect(runSummary(snapshot, { ...snapshot.runs[0], status: "stopped" })).toBe("Stopped · 0/1 done");
+    expect(runSummary({ ...snapshot, gates: [gate] }, snapshot.runs[0])).toBe("1 failed · 0/1 done");
+    // A stopped run retries nothing: what it left unfinished is history, in
+    // no count, as on the strip. Nothing to count is not written "0/0".
+    expect(runSummary(snapshot, { ...snapshot.runs[0], status: "stopped" })).toBe("Stopped");
+    expect(runSummary({ ...snapshot, tasks: [] }, snapshot.runs[0])).toBe("Running");
   });
   it("says how many tasks a chat has had in all only when its runs hold more than the one on show", () => {
     const task = (id: string, runId: string, status: "completed" | "running") =>
