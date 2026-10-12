@@ -99,6 +99,30 @@ export function taskHold(
   return null;
 }
 
+/** Whether the host would refuse every start in `run` because its plan is
+ *  with the person: the one case in which "no worker starts until you
+ *  approve" is true. The host says, per task, whether the plan holds it
+ *  (`heldByPlan`, on a task that has not started and on one that failed or
+ *  is blocked alike), and starts whatever it does not hold: a first
+ *  dispatch, a retry, the person's Start of a task they stopped. So this is
+ *  true only while nothing is running and every task that could take a
+ *  worker is held. A task that completed, was cancelled or was replaced
+ *  takes none. A host that does not say reads as the page read it before:
+ *  a pending plan holds the run. */
+export function planHoldsEveryStart(
+  run: Pick<OrchestrationRun, "id" | "planApproval">,
+  tasks: readonly Pick<OrchestrationTask, "runId" | "status" | "supersededBy" | "heldByPlan">[],
+): boolean {
+  if (run.planApproval?.status !== "pending") return false;
+  const mine = tasks.filter((task) => task.runId === run.id);
+  if (!mine.some((task) => typeof task.heldByPlan === "boolean")) return true;
+  return mine.every((task) => {
+    if (task.supersededBy || task.status === "completed" || task.status === "cancelled") return true;
+    // What is in flight is not held, whatever a later change did to its plan.
+    return task.status !== "running" && task.heldByPlan === true;
+  });
+}
+
 /** Whether the person's Stop has anything to stop: the host cancels the
  *  task's unsettled attempt, and refuses when there is none (`No worker is
  *  running on this task, so there is nothing to stop.`). The reason is said

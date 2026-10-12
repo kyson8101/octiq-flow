@@ -6,6 +6,7 @@
 // when someone asks it to check (`orchestration_mission_refresh`). An agent
 // saying "merged" moves nothing here.
 import type { OrchestrationRun, OrchestrationTask } from "./orchestration";
+import { planHoldsEveryStart } from "./taskHold";
 
 export type MissionStage =
   | "draft" | "approved" | "building" | "review" | "ready"
@@ -55,11 +56,11 @@ export function missionState(run: OrchestrationRun, tasks: readonly Orchestratio
   // A plan waiting for approval is a draft while it holds the work. Once the
   // host says, per task, what the plan holds (`heldByPlan`), a mission whose
   // plan went back for one task's sake keeps the stage of the work the
-  // person already approved: it is a draft only while every task still open
-  // is held. A host that does not say leaves it as it was: pending is draft.
-  const pending = run.planApproval?.status === "pending";
-  const said = live.some((task) => typeof task.heldByPlan === "boolean");
-  const held = pending && (!said || open.every((task) => task.heldByPlan === true));
+  // person already approved: it is a draft only while the host would refuse
+  // every start (`planHoldsEveryStart`), which an approved task that failed,
+  // is blocked or was stopped by the person is not. A host that does not
+  // say leaves it as it was: pending is draft.
+  const held = planHoldsEveryStart(run, live);
   if (!live.length || held || run.planApproval?.status === "rejected") {
     return state("draft");
   }

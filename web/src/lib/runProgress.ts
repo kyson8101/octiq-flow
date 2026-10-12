@@ -111,6 +111,9 @@ export type RunStrip = {
   /** The only thing waiting on the person is the plan. */
   planOnly: boolean;
   failed: number;
+  /** Tasks the person stopped and has not started again: said on the line
+   *  only where no failure, worker or other run takes the second count. */
+  stopped: number;
   /** Attempts with a turn in flight. */
   working: number;
   /** The live runs of the chat this line stands for. One, unless the chat
@@ -352,6 +355,23 @@ export function progressRow(
   };
 }
 
+/** Whether a plan waiting for the person may stand in for the run's rows:
+ *  only when there is nothing else they would be shown. That is asked of the
+ *  rows themselves, so it cannot disagree with them: every task is finished
+ *  (completed without a failed check), closed (cancelled or replaced), or
+ *  has not started because the plan holds it. A task that failed, is
+ *  blocked, completed with a failed check, was stopped by the person, is
+ *  running, waits on anybody, or is approved and merely waiting its turn is
+ *  a row they have to see, and the plan is then drawn beside the rows and
+ *  the run's totals. */
+export function planStandsIn(
+  run: Pick<OrchestrationRun, "planApproval">,
+  rows: readonly Pick<ProgressRow, "state" | "hold">[],
+): boolean {
+  if (run.planApproval?.status !== "pending") return false;
+  return rows.every((row) => row.state === "done" || row.state === "closed" || (row.state === "planned" && row.hold?.kind === "plan"));
+}
+
 /** Rows in the order a group lists them. The ledger's order is kept, which
  *  is the order the plan was written in, except where time says more:
  *  what failed leads Running, a worker in trouble comes next, the latest
@@ -404,17 +424,21 @@ export function groupHeading(group: ProgressGroup): { label: string; spoken: str
 
 /** The counts beside the bar: the reason for the state first, said whole,
  *  then one more. A zero is left out. */
-function stripSide(strip: Pick<RunStrip, "state" | "needs" | "planOnly" | "failed" | "working" | "runs">, elapsedMs: number | null): StripSide[] {
+function stripSide(strip: Pick<RunStrip, "state" | "needs" | "planOnly" | "failed" | "stopped" | "working" | "runs">, elapsedMs: number | null): StripSide[] {
   const workers: StripSide | null = strip.working ? { text: `${strip.working} working`, strong: false } : null;
   const failed: StripSide | null = strip.failed ? { text: `${strip.failed} failed`, strong: false } : null;
   // A chat that coordinates several live runs says so: the bar is one of
   // them, and the count is what keeps the others from being forgotten.
   const runs: StripSide | null = strip.runs > 1 ? { text: `${strip.runs} runs`, strong: false } : null;
+  // A task the person stopped is theirs to start again. It takes a count
+  // only where nothing more urgent does, so a plan to approve, or a run
+  // that is otherwise quiet, does not leave it out of the line.
+  const stopped: StripSide | null = strip.stopped ? { text: `${strip.stopped} stopped`, strong: false } : null;
   const side: (StripSide | null)[] = strip.state === "needs"
-    ? [{ text: strip.planOnly ? "Plan to approve" : plural(strip.needs, "decision", "decisions"), strong: true }, runs ?? failed ?? workers]
-    : strip.state === "failed" ? [{ text: `${strip.failed} failed`, strong: true }, runs ?? workers]
+    ? [{ text: strip.planOnly ? "Plan to approve" : plural(strip.needs, "decision", "decisions"), strong: true }, runs ?? failed ?? workers ?? stopped]
+    : strip.state === "failed" ? [{ text: `${strip.failed} failed`, strong: true }, runs ?? workers ?? stopped]
     : strip.state === "done" ? [elapsedMs !== null && elapsedMs > 0 ? { text: minutesLabel(elapsedMs), strong: false } : null, runs]
-    : [workers, runs];
+    : [workers, runs ?? stopped];
   return side.filter((item): item is StripSide => !!item).slice(0, 2);
 }
 
@@ -495,7 +519,8 @@ export function runProgress(
       waits.unsaid.length ? `${plural(waits.unsaid.length, "open decision", "open decisions")}: the host does not say who ${waits.unsaid.length === 1 ? "it waits" : "they wait"} on.` : null,
       ...holdNotes(rows),
     ].filter((note): note is string => !!note);
-    const counts = { state, needs, planOnly: needs === 1 && waits.person[0].kind === "plan", failed, working, runs: 1 };
+    const stopped = rows.filter((row) => row.hold?.kind === "stopped").length;
+    const counts = { state, needs, planOnly: needs === 1 && waits.person[0].kind === "plan", failed, stopped, working, runs: 1 };
     strip = {
       ...counts,
       word: STRIP_WORD[state],
@@ -563,7 +588,7 @@ export function chatStrip(
   const counts = {
     state: picked.strip.state, needs,
     planOnly: needs === 1 && asking[0].strip.planOnly,
-    failed: picked.strip.failed, working: picked.strip.working, runs: live.length,
+    failed: picked.strip.failed, stopped: picked.strip.stopped, working: picked.strip.working, runs: live.length,
   };
   const others = live.length - 1;
   const allLive = live.every((item) => ACTIVE_RUN.has(item.run.status) && item.run.archivedAt == null);

@@ -53,9 +53,14 @@ const panel = (snapshot: OrchestrationSnapshot) => {
     coordinatorKey={run.coordinatorChatKey} initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
 };
 const rows = (html: string) => html.split('<article class="orch-task').slice(1).map((part) => part.slice(0, part.indexOf("</article>")));
-const group = (html: string, label: string) => {
-  const from = html.indexOf(`>${label} · `);
-  return from < 0 ? "" : html.slice(from, html.indexOf("</section>", from));
+/** One group of the panel, by its key: "" when it is not drawn. A row holds
+ *  no section of its own before its `</article>`, so the group ends at the
+ *  next group or at the tab panel's end. */
+const group = (html: string, key: "needs" | "running" | "finished" | "planned") => {
+  const from = html.indexOf(`<section class="run-group" data-group="${key}"`);
+  if (from < 0) return "";
+  const next = html.indexOf('<section class="run-group"', from + 1);
+  return html.slice(from, next < 0 ? html.indexOf('role="tabpanel"', from) : next);
 };
 const card = (snapshot: OrchestrationSnapshot) =>
   renderToStaticMarkup(<PlanReview run={snapshot.runs[0]} tasks={snapshot.tasks} drafting={false} onRequestChanges={() => {}} />);
@@ -179,32 +184,36 @@ describe("the run panel", () => {
     expect(rows(html)).toHaveLength(2);
     expect(html).toContain('<dl class="run-tiles" aria-label="Mission totals">');
     expect(html).toContain("<dt>Tasks</dt><dd>0 / 2</dd>");
-    // The plan is still there to approve.
+    // The plan is still there to approve, and the line under it says what
+    // the host holds: every start only where the one approved task is a
+    // review that finished, which takes no worker.
     expect(html).toContain("Approve plan");
-    expect(html).toContain(PLAN_HOLDS_SOME);
-    expect(html).not.toContain(PLAN_HOLDS_ALL);
+    const [said, unsaid] = name === "checkFailed" ? [PLAN_HOLDS_ALL, PLAN_HOLDS_SOME] : [PLAN_HOLDS_SOME, PLAN_HOLDS_ALL];
+    expect(html).toContain(said);
+    expect(html).not.toContain(unsaid);
   });
 
   it.each([["failed", "Failed"], ["blocked", "Blocked"], ["checkFailed", "Check failed"]] as const)(
     "%s: A is first under Running, in the danger colour, with the host's word", (name, word) => {
       const html = panel(CASES[name]());
-      const running = group(html, "Running");
+      const running = group(html, "running");
       expect(running).toContain('data-state="failed"');
       expect(running).toContain('data-tone="danger"');
       expect(running).toContain(`>${word}</span>`);
       expect(rows(running)).toHaveLength(1);
-      expect(group(html, "Planned")).toContain(">Waiting for plan approval</span>");
+      expect(running).toContain('aria-label="Running, 1 task"');
+      expect(group(html, "planned")).toContain(">Waiting for plan approval</span>");
     });
 
   it("stopped: A keeps Stopped by you and its way back", () => {
     const html = panel(CASES.stopped());
-    const planned = group(html, "Planned");
+    const planned = group(html, "planned");
     expect(rows(planned)).toHaveLength(2);
     // The one the person stopped leads the group.
     expect(rows(planned)[0]).toContain(`>${STOPPED_LABEL}</span>`);
     expect(rows(planned)[0]).toContain('data-hold="stopped"');
     expect(rows(planned)[0]).toContain(">Start it again</button>");
-    expect(html).not.toContain(">Running · ");
+    expect(group(html, "running")).toBe("");
   });
 
   it("draws the plan alone while everything else is finished, and says the tasks start once it is approved", () => {

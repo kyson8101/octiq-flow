@@ -278,25 +278,6 @@ export function taskHeldByPlan(
   return run?.planApproval?.status === "pending";
 }
 
-/** Whether a plan waiting for the person holds everything the run still has
- *  to do. A plan back in front of them holds only what they have not
- *  approved: a task they approved before keeps starting and running beside
- *  it. While the plan holds every task still open, the plan is the run and
- *  nothing starts; once one is not held, saying "nothing starts until you
- *  approve" would be false, and its row has to be on the page. A host that
- *  does not say reads as before: a pending plan holds the run. */
-export function planHoldsRun(
-  run: Pick<OrchestrationRun, "id" | "planApproval">,
-  tasks: readonly Pick<OrchestrationTask, "runId" | "status" | "heldByPlan">[],
-): boolean {
-  if (run.planApproval?.status !== "pending") return false;
-  const mine = tasks.filter((task) => task.runId === run.id);
-  if (!mine.some((task) => typeof task.heldByPlan === "boolean")) return true;
-  // What is in flight is not held, whatever a later change did to its plan.
-  return mine.every((task) => task.status === "pending" || task.status === "ready" ? task.heldByPlan === true
-    : task.status !== "running" && task.status !== "blocked");
-}
-
 export function isStuck(task: Pick<OrchestrationTask, "status" | "supersededBy" | "stopped">): boolean {
   // A task the person stopped is left failed by the host and did not fail:
   // they held it themselves, and its row says so (`lib/taskHold`).

@@ -20,14 +20,14 @@ import { indexBackfill, type IndexEntry } from "./chatIndex";
 import { chatSnapshot } from "./chatWorkflow";
 import { hostFacts } from "./__fixtures__/hostFacts";
 import { missionState } from "./mission";
-import { planHoldsRun, taskHeldByPlan, workerChatParents, type OrchestrationSnapshot } from "./orchestration";
+import { taskHeldByPlan, workerChatParents, type OrchestrationSnapshot } from "./orchestration";
 import { pendingLabel, pendingReading } from "./pendingActions";
 import { awaitingApproval } from "./planReview";
 import { holdsRunColumn } from "./runColumn";
 import { chatStrip, COORDINATOR_WORD, figuresLabel, runProgress, usageTotal } from "./runProgress";
 import { decisionSummary, runWaits } from "./runWaits";
 import { sameIndex, type Conversation } from "./store";
-import { PLAN_LABEL } from "./taskHold";
+import { PLAN_LABEL, planHoldsEveryStart } from "./taskHold";
 import { OrchestrationPanel, PLAN_HOLDS_ALL, PLAN_HOLDS_SOME } from "../components/OrchestrationPanel";
 import { PLAN_GOES_ON } from "../components/PlanReview";
 
@@ -278,7 +278,7 @@ describe("heldByPlan on a task", () => {
     expect(taskHeldByPlan(approved, run, plan.tasks)).toBe(false);
     expect(taskHeldByPlan(added, run, plan.tasks)).toBe(true);
     expect(awaitingApproval(plan.tasks)).toEqual([added.id]);
-    expect(planHoldsRun(run, plan.tasks)).toBe(false);
+    expect(planHoldsEveryStart(run, plan.tasks)).toBe(false);
     const { rows, strip, waits } = read(plan);
     expect(waits.person.map((wait) => wait.kind)).toEqual(["plan"]);
     expect(strip).toMatchObject({ state: "needs", planOnly: true });
@@ -305,7 +305,7 @@ describe("heldByPlan on a task", () => {
     // Changed for this test: nothing approved yet, as before the first approval.
     const first = hostFacts.heldByPlan();
     first.tasks[0] = { ...first.tasks[0], approvedAt: undefined, heldByPlan: true };
-    expect(planHoldsRun(first.runs[0], first.tasks)).toBe(true);
+    expect(planHoldsEveryStart(first.runs[0], first.tasks)).toBe(true);
     const html = panel(first);
     expect(html).toContain(`<p class="orch-task-none">${PLAN_HOLDS_ALL}</p>`);
     expect(html).toContain("No worker starts until you approve.");
@@ -319,7 +319,7 @@ describe("heldByPlan on a task", () => {
     // withdrawn. The plan stays with the person and holds nothing.
     const withdrawn = hostFacts.heldByPlan();
     withdrawn.tasks[1] = { ...withdrawn.tasks[1], status: "cancelled", heldByPlan: false };
-    expect(planHoldsRun(withdrawn.runs[0], withdrawn.tasks)).toBe(false);
+    expect(planHoldsEveryStart(withdrawn.runs[0], withdrawn.tasks)).toBe(false);
     expect(missionState(withdrawn.runs[0], withdrawn.tasks)).toMatchObject({ stage: "approved", blocked: false });
     const TEAM: TeamAgent[] = [{ id: "agent_dev", name: "Dev", role: "", agent: "codex", model: "gpt-5.6-terra", access: "manual", createdAt: 1, updatedAt: 1 }];
     const [dev] = agentRoster({

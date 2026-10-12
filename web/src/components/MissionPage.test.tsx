@@ -137,12 +137,21 @@ describe("a mission whose plan waits for approval", () => {
     expect(html).toContain("Start retry");
   });
 
-  it("leaves a run that is not a mission showing only the notice", () => {
+  it("leaves a run that is not a mission showing only the notice, while no task has anything else to show", () => {
+    const plain = pending("pending");
+    plain.runs[0].workspaceMode = "auto";
+    plain.tasks[0] = { ...plain.tasks[0], status: "ready" };
+    const html = render(plain);
+    expect(html).toContain("The tasks start once the plan above is approved.");
+    expect(rows(html)).toBe(0);
+  });
+
+  it("draws the rows of a run that is not a mission once one of its tasks failed", () => {
     const plain = pending("pending");
     plain.runs[0].workspaceMode = "auto";
     const html = render(plain);
     expect(html).toContain("The tasks start once the plan above is approved.");
-    expect(rows(html)).toBe(0);
+    expect(rows(html)).toBe(3);
   });
 });
 

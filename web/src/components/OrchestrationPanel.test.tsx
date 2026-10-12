@@ -256,10 +256,19 @@ describe("OrchestrationPanel", () => {
     const render = (current: OrchestrationSnapshot) => renderToStaticMarkup(<OrchestrationPanel embedded
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey={current.runs[0].coordinatorChatKey}
       initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
-    // Plan mode: the review stands in for the task list.
+    // Plan mode: the review stands in for the task list, while no task has
+    // anything else to show.
+    const unstarted = structuredClone(pending);
+    unstarted.tasks[0] = { ...unstarted.tasks[0], status: "ready", activeAttemptId: undefined };
+    unstarted.attempts = [];
+    unstarted.gates = [];
+    expect(render(unstarted)).toContain("Approve plan");
+    expect(render(unstarted)).toContain("The tasks start once the plan above is approved.");
+    expect(render(unstarted)).not.toContain('<span class="orch-task-title">');
+    // A task that is blocked is a row the person has to see, plan or no plan.
     expect(render(pending)).toContain("Approve plan");
     expect(render(pending)).toContain("The tasks start once the plan above is approved.");
-    expect(render(pending)).not.toContain('<span class="orch-task-title">');
+    expect(render(pending)).toContain('<span class="orch-task-title">Build the host ledger</span>');
     const approved = structuredClone(pending);
     approved.runs[0].planApproval = { status: "approved", requestedAt: 1 };
     expect(render(approved)).not.toContain("Approve plan");

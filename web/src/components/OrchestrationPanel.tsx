@@ -40,14 +40,15 @@ import { RunBridges } from "./RunBridges";
 import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import {
-  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
+  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, planStandsIn, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
+import { planHoldsEveryStart } from "../lib/taskHold";
 import "./RunProgress.css";
 
 import {
-  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isPeerRequestGate, isStuck, planHoldsRun, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isPeerRequestGate, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -545,7 +546,8 @@ export function OrchestrationPanel({
                           <strong>{run.objective}</strong>
                           {/* Open, its tiles are right under this line. */}
                           <RunLine snapshot={snapshot} run={run} tasks={runTasks} attempts={runAttempts}
-                            tiled={expanded && runTasks.length > 0 && !(planPending && planHoldsRun(run, runTasks))} />
+                            tiled={expanded && runTasks.length > 0
+                              && !(planPending && planStandsIn(run, runProgress(snapshot, run, 0, pendingView.held, waits).rows))} />
                           <RunPeople run={run} tasks={runTasks} attempts={runAttempts} gated={waits.gated} />
                         </span>
                       </button>
@@ -681,8 +683,9 @@ function NewRun({
  *  Needs you, Running, Finished (folded), Planned. */
 const TAB_LABELS: Record<RunTab, string> = { tasks: "Tasks", notifications: "Notifications", log: "Coordination log" };
 
-/** Under a plan that waits for the person: what it holds. All of the run,
- *  or only the tasks they have not approved (`planHoldsRun`). */
+/** Under a plan that waits for the person: what it holds. Every start the
+ *  host would make, or only the tasks they have not approved
+ *  (`lib/taskHold.planHoldsEveryStart`). */
 export const PLAN_HOLDS_ALL = "The tasks start once the plan above is approved.";
 export const PLAN_HOLDS_SOME = "The tasks you have not approved start once the plan above is approved. The ones you approved before go on.";
 
@@ -822,17 +825,22 @@ function RunDetail({
   // rows are where the next change of hands, or the correction of a wrong one,
   // is made. So they stay, unfiltered, with every start held by the host.
   //
-  // In any run, a plan back with the person holds only what they have not
-  // approved (the host's `heldByPlan`): a task they approved before keeps
-  // starting and running beside it. So the plan is the run only while it
-  // holds everything still open (`planHoldsRun`); once a task is not held,
-  // its row and the run's figures are on the page with the plan.
-  const planIsRun = planPending && planHoldsRun(run, tasks);
-  const pendingRows = planPending && (mission || !planIsRun);
   // A row that waits on one of the page's cards says so, in the group that
   // asks.
   const progress = runProgress(snapshot, run, now, pendingView.held);
-  // A plan that holds the whole run has nothing to total yet.
+  // In any run, a plan back with the person holds only what they have not
+  // approved (the host's `heldByPlan`): a task they approved before keeps
+  // starting and running beside it. So the plan stands in for the rows only
+  // while there is nothing else to show (`planStandsIn`): once a task is
+  // approved and waiting, running, failed, blocked, failed its check or was
+  // stopped by the person, its row and the run's figures are on the page
+  // with the plan.
+  const planIsRun = planPending && planStandsIn(run, progress.rows);
+  const pendingRows = planPending && (mission || !planIsRun);
+  // What the line under the plan says is the host's to decide, not what is
+  // drawn: nothing starts only while it would refuse every start.
+  const planHoldsAll = planPending && planHoldsEveryStart(run, tasks);
+  // A plan that stands in for the whole run has nothing to total yet.
   const tiled = tasks.length > 0 && !planIsRun;
   const awaitingReceipt = notifications.filter((item) => item.state === "pending" || item.state === "delivering").length;
 
@@ -1065,7 +1073,7 @@ function RunDetail({
 
       <div className="orch-tab-panel" role="tabpanel" id={`${tabsId}-tasks-panel`} aria-labelledby={`${tabsId}-tasks`} hidden={tab !== "tasks"}>
         {!planIsRun && tasks.length > 0 && <RunStages tasks={tasks} attempts={attempts} sandboxes={sandboxes} />}
-        {planPending && <p className="orch-task-none">{planIsRun ? PLAN_HOLDS_ALL : PLAN_HOLDS_SOME}</p>}
+        {planPending && <p className="orch-task-none">{planHoldsAll ? PLAN_HOLDS_ALL : PLAN_HOLDS_SOME}</p>}
         {planPending && (!pendingRows || tasks.length === 0) ? null : tasks.length === 0 ? (
           <div className="orch-planning"><span className="orch-pulse" />The main agent is planning the tasks.</div>
         ) : progress.groups.map((group) => {
