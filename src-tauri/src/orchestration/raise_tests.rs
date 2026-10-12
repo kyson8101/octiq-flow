@@ -176,7 +176,7 @@ fn a_raise_that_cannot_be_recorded_is_refused_and_nothing_is_assumed_later() {
             .clone()
             .expect_err("a raise whose record cannot be kept went through");
         assert!(
-            said.starts_with("The access level was not raised, and the card is still open: "),
+            said.starts_with("The access level was not raised, and nothing was changed: "),
             "{path:?}: {said}"
         );
         assert!(said.ends_with(&why), "{path:?}: {said}");
@@ -253,6 +253,46 @@ fn a_lowering_takes_hold_at_once_while_the_profile_is_away_and_is_recorded_later
             .count();
         assert_eq!(changes, usize::from(was_claude), "{path:?}: {written:?}");
     }
+}
+
+/// The same rule at the ledger itself, whoever calls it: the door that
+/// keeps a level "whether or not it can be saved" is for a lowering. Handed
+/// a level higher than the one on record it saves or refuses, and keeps
+/// nothing it could not write.
+#[test]
+fn the_ledger_keeps_only_a_lowering_without_its_record() {
+    let world = World::new(Path::ClaudeLive, Access::Edits);
+    let ledger = &world.svc.orchestrations;
+    let at = |level| crate::agent_chat::StartContext::for_test(ChatAgent::Claude, None).at(level);
+    let why = world.folder_goes();
+
+    let (kept, unsaved) =
+        crate::unsaved::told(|| ledger.keep_resume_context(LEAD, at(Access::Full)));
+    assert_eq!(
+        kept,
+        Err(why.clone()),
+        "a raise was kept without its record"
+    );
+    assert!(unsaved.is_empty(), "{unsaved:?}");
+    let level = |store: &OrchestrationStore| {
+        store
+            .saved_resume_context(LEAD)
+            .and_then(|start| start.access_level())
+    };
+    assert_eq!(level(ledger), Some(Access::Edits));
+    assert!(!ledger.owes());
+
+    let (kept, unsaved) =
+        crate::unsaved::told(|| ledger.keep_resume_context(LEAD, at(Access::Read)));
+    assert_eq!(kept, Ok(()));
+    assert_eq!(unsaved.len(), 1, "{unsaved:?}");
+    assert_eq!(level(ledger), Some(Access::Read));
+    assert!(ledger.owes());
+
+    world.folder_returns();
+    assert!(settle_owed(&world.svc).is_empty());
+    assert_eq!(on_disk(), Some(Access::Read));
+    world.svc.chats.test_end(LEAD);
 }
 
 /// Asking for the level the chat already has is not a raise: it needs no

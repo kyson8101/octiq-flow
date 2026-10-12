@@ -785,9 +785,15 @@ impl StartContext {
             .is_some_and(|id| safe_session_id(id).is_some())
     }
 
-    #[cfg(test)]
+    /// The access level these settings start a chat at.
     pub(crate) fn access_level(&self) -> Option<Access> {
         self.access
+    }
+
+    #[cfg(test)]
+    pub(crate) fn at(mut self, access: Access) -> Self {
+        self.access = Some(access);
+        self
     }
 
     #[cfg(test)]
@@ -6248,6 +6254,21 @@ pub fn chat_set_access_impl(
             access != Access::Read,
         )?;
     }
+    // WHICH WAY the level moves decides everything below (review of
+    // b894867, H8). A lowering takes hold at once and is written down when
+    // it can be. A raise outlives the moment it is given: a host resume, a
+    // queued turn and the next process all start at it, so it needs its
+    // record first, and while that cannot be written it is refused with
+    // nothing changed. Said before anything else is touched.
+    let before = manager.start_context(&key);
+    let level = before
+        .as_ref()
+        .and_then(|start| start.access)
+        .unwrap_or(Access::Read);
+    let raise = crate::access_request::rank(access) > crate::access_request::rank(level);
+    if raise {
+        crate::profile::available().map_err(not_raised)?;
+    }
     cancel_auto_resume(manager, &key, "cancelled when access changed");
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -6255,6 +6276,39 @@ pub fn chat_set_access_impl(
     };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
     let provider = provider_for(guard.agent);
+    let thread = guard.codex.is_some();
+    let live = !thread && provider.capabilities().supports_live_access_change;
+    // A process that keeps the conversation but cannot change its access
+    // (Antigravity) takes the new level in the process that resumes it.
+    let relaunch = !thread
+        && !live
+        && provider.capabilities().input.accepts_stdin()
+        && provider.capabilities().interrupt_ends_process;
+    // Every refusal that changes nothing comes before the record of a raise.
+    if relaunch && guard.busy {
+        return Err(format!(
+            "{} takes a new access level between turns. Wait for this turn or stop it, then change the access.",
+            provider.display_name()
+        ));
+    }
+    let payload = if live {
+        if matches!(access, Access::Full) {
+            return Err("Full access needs a fresh agent".into());
+        }
+        if guard.stdin.is_none() {
+            return Err("this chat does not take more input".into());
+        }
+        Some(
+            provider
+                .access_change_payload(access)
+                .ok_or("this chat does not take more input")?,
+        )
+    } else {
+        None
+    };
+    if raise {
+        manager.record_raise(&key, access)?;
+    }
     if let Some(codex) = guard.codex.as_mut() {
         // app-server accepts policy overrides on every `turn/start`. Do not
         // disturb a turn already running; the next queued/direct turn picks up
@@ -6269,46 +6323,68 @@ pub fn chat_set_access_impl(
         manager.keep_access_for_resume(&key);
         return Ok(());
     }
-    if !provider.capabilities().supports_live_access_change {
-        // A process that keeps the conversation but cannot change its access
-        // (Antigravity) takes the new level in the process that resumes it.
-        let relaunch = provider.capabilities().input.accepts_stdin()
-            && provider.capabilities().interrupt_ends_process;
-        if relaunch && guard.busy {
-            return Err(format!(
-                "{} takes a new access level between turns. Wait for this turn or stop it, then change the access.",
-                provider.display_name()
-            ));
+    if let Some(payload) = payload {
+        let told = guard
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "this chat does not take more input".to_string())
+            .and_then(|stdin| {
+                writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
+                stdin.flush().map_err(|e| e.to_string())
+            });
+        if let Err(why) = told {
+            // The agent was not told, so the chat still runs at the level
+            // it had: the record of a raise goes back to that.
+            if let (true, Some(before)) = (raise, before) {
+                manager.keep_resume_at(&key, before);
+            }
+            return Err(why);
         }
-        if let Some(mut start) = manager.start_context(&key) {
-            start.access = Some(access);
-            manager.remember_start(&key, start);
-        }
-        manager.keep_access_for_resume(&key);
-        if relaunch {
-            drop(guard);
-            end_process_when(manager, &key, Some(Duration::ZERO))?;
-        }
-        return Ok(());
     }
-    if matches!(access, Access::Full) {
-        return Err("Full access needs a fresh agent".into());
-    }
-    let payload = provider
-        .access_change_payload(access)
-        .ok_or("this chat does not take more input")?;
-    let stdin = guard
-        .stdin
-        .as_mut()
-        .ok_or("this chat does not take more input")?;
-    writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())?;
     if let Some(mut start) = manager.start_context(&key) {
         start.access = Some(access);
         manager.remember_start(&key, start);
     }
     manager.keep_access_for_resume(&key);
+    if relaunch {
+        drop(guard);
+        end_process_when(manager, &key, Some(Duration::ZERO))?;
+    }
     Ok(())
+}
+
+/// How a raise that cannot be recorded is refused, before the reason. The
+/// page knows the refusal by these words (`web/src/lib/accessRaise.ts`): it
+/// keeps the card that asked open and does not restart the agent.
+pub(crate) const NOT_RAISED: &str = "The access level was not raised, and nothing was changed: ";
+
+fn not_raised(why: String) -> String {
+    format!("{NOT_RAISED}{why}")
+}
+
+impl ChatManager {
+    /// Write down that `key` runs at `access` from here on, BEFORE the
+    /// agent is told: where a host resume reads it back from (the ledger,
+    /// for a chat a run knows). A chat no run knows has no host record of
+    /// its level beyond this server's memory; the page keeps it with the
+    /// chat, in the same folder, which the caller has just found there.
+    fn record_raise(&self, key: &str, access: Access) -> Result<(), String> {
+        let Some(mut start) = self.start_context(key) else {
+            return Ok(());
+        };
+        start.access = Some(access);
+        self.orchestrations
+            .save_resume_context(key, start)
+            .map_err(not_raised)
+    }
+
+    /// Put the record of a chat's level back to `start`, whether or not
+    /// that can be saved: only ever a lowering, back to what still runs.
+    fn keep_resume_at(&self, key: &str, start: StartContext) {
+        if let Err(why) = self.orchestrations.keep_resume_context(key, start) {
+            eprintln!("orchestration: could not keep the access level of {key}: {why}");
+        }
+    }
 }
 
 /// What the host asks an agent to do when the person completes its chat.
