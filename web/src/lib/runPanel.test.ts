@@ -177,6 +177,13 @@ describe("main chat routing", () => {
     expect(live.map((item) => item.id)).toEqual(["a"]);
     expect(archived.map((item) => item.id)).toEqual(["b"]);
   });
+
+  it("does not put away an archived run that still holds something for the person", () => {
+    const runs = [run("a", "c"), run("b", "c", { status: "completed", archivedAt: 5 }), run("d", "c", { status: "stopped", archivedAt: 6 })];
+    const { live, archived } = splitArchived(runs, (item) => item.id === "b");
+    expect(live.map((item) => item.id)).toEqual(["a", "b"]);
+    expect(archived.map((item) => item.id)).toEqual(["d"]);
+  });
 });
 
 describe("stop, then archive", () => {

@@ -155,7 +155,12 @@ export function OrchestrationPanel({
     () => embedded ? chatSnapshot(snapshot, coordinatorKey).runs : snapshot.runs.filter((run) => !project || run.workspaceId === project.id),
     [snapshot, project, embedded, coordinatorKey],
   );
-  const { live: liveRuns, archived: archivedRuns } = useMemo(() => splitArchived(scopedRuns), [scopedRuns]);
+  // An archived run that still holds a card for the person stays with the
+  // runs on screen: the strip and the badge count that card, and its
+  // decision has to be reachable from here too.
+  const { live: liveRuns, archived: archivedRuns } = useMemo(
+    () => splitArchived(scopedRuns, (run) => runWaits(snapshot, run, pendingView.held).person.length > 0),
+    [scopedRuns, snapshot, pendingView.held]);
   const runs = showArchived ? archivedRuns : liveRuns;
   const accordionMode = embedded && !allowManualRun;
 
@@ -544,10 +549,13 @@ export function OrchestrationPanel({
                           <RunPeople run={run} tasks={runTasks} attempts={runAttempts} gated={waits.gated} />
                         </span>
                       </button>
-                      {run.archivedAt != null
-                        ? !readOnly && <button type="button" className="orch-run-restore" disabled={busy}
-                          onClick={() => void archiveRun(run, false)}>Restore</button>
-                        : <AttentionButton attention={attention} onShow={() => showAttention(run)} />}
+                      {/* An archived run's heading offers Restore. One that
+                          still holds a decision of the person's says that
+                          first: Restore never takes its place. */}
+                      {(run.archivedAt == null || attention.decisions > 0)
+                        && <AttentionButton attention={attention} onShow={() => showAttention(run)} />}
+                      {run.archivedAt != null && !readOnly && <button type="button" className="orch-run-restore" disabled={busy}
+                        onClick={() => void archiveRun(run, false)}>Restore</button>}
                     </div>
                     <div className="orch-run-accordion-body" id={bodyId} hidden={!expanded}>
                       {expanded && runDetail(run)}
@@ -882,9 +890,8 @@ function RunDetail({
       {/* Without a goal header, the run's one line of state lives here. */}
       {!inAccordion && <div className="orch-summary">
         <RunLine snapshot={snapshot} run={run} tasks={tasks} attempts={attempts} tiled={tiled} />
-        {archived
-          ? !readOnly && <button type="button" className="orch-run-restore" disabled={busy} onClick={() => onArchive(false)}>Restore</button>
-          : <AttentionButton attention={attention} onShow={onShowAttention} />}
+        {(!archived || attention.decisions > 0) && <AttentionButton attention={attention} onShow={onShowAttention} />}
+        {archived && !readOnly && <button type="button" className="orch-run-restore" disabled={busy} onClick={() => onArchive(false)}>Restore</button>}
       </div>}
 
       {/* The run's totals, over everything else: whichever tab is open. */}

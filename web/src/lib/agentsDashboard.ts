@@ -16,7 +16,7 @@
 // Everything is keyed on the agent's stable id, so a rename, or a change of
 // provider or model, keeps its work where it was.
 import type { OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
-import { ledgerWaits, NO_WAITS, type LedgerWaits, type Waiting, type Waits } from "./runWaits";
+import { ledgerWaits, NO_WAITS, planWaits, type LedgerWaits, type Waiting, type Waits } from "./runWaits";
 import { taskHold, type TaskHold } from "./taskHold";
 // Types only: agentsMode opens the socket bridge on import, and this module
 // is pure.
@@ -415,5 +415,9 @@ export function pendingPlan(snapshot: OrchestrationSnapshot, chatKey: string | n
     && item.planApproval?.status === "pending"
     && !["stopped", "completed", "failed"].includes(item.status));
   if (!run) return null;
-  return { run, tasks: snapshot.tasks.filter((task) => task.runId === run.id) };
+  const tasks = snapshot.tasks.filter((task) => task.runId === run.id);
+  // The card is drawn for an empty plan too: it says the lead is still
+  // drafting. Whether anything is there to approve is `planWaits`' to say,
+  // and only that may be called "awaiting approval" (a tab's label, a count).
+  return { run, tasks, approvable: planWaits(run, tasks) !== null };
 }

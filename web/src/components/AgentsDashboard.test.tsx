@@ -36,7 +36,7 @@ describe("Agents page rows", () => {
   it("keeps Manage agents in the page's own header when it has no top bar to write into", () => {
     const html = renderToStaticMarkup(createElement(AgentsDashboard, {
       snapshot: null, ledgerError: null, connected: false, projects: [], running: new Set<string>(), busy: new Set<string>(),
-      waitingOn: () => 0, chatTitle: () => undefined, chatExists: () => false,
+      waitingOn: () => 0, held: new Map(), chatTitle: () => undefined, chatExists: () => false,
       onOpenChat: () => {}, onOpenRun: () => {}, onManage: () => {}, onClose: () => {},
     }));
     expect(html).toContain('<div class="workspace-actions"><button type="button" class="projects-page-secondary">Manage agents</button></div>');

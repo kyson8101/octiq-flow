@@ -319,6 +319,13 @@ describe("agents dashboard", () => {
     const pending = run({ planApproval: { status: "pending", requestedAt: 1 } });
     const snapshot: OrchestrationSnapshot = { ...EMPTY_ORCHESTRATION, runs: [pending], tasks: [task("a", "ready", "ada")] };
     expect(pendingPlan(snapshot, "chat:lead")?.tasks).toHaveLength(1);
+    expect(pendingPlan(snapshot, "chat:lead")?.approvable).toBe(true);
+    // F3: a pending plan the lead has put no task on yet. Its card is still
+    // drawn (it says the lead is drafting), and nothing awaits approval.
+    const empty = pendingPlan({ ...snapshot, tasks: [] }, "chat:lead");
+    expect(empty).toMatchObject({ tasks: [], approvable: false });
+    // The same for a plan whose only task the lead withdrew.
+    expect(pendingPlan({ ...snapshot, tasks: snapshot.tasks.map((item) => ({ ...item, status: "cancelled" as const })) }, "chat:lead")?.approvable).toBe(false);
     expect(pendingPlan(snapshot, "chat:other")).toBeNull();
     expect(pendingPlan({ ...snapshot, runs: [{ ...pending, status: "stopped" }] }, "chat:lead")).toBeNull();
     expect(pendingPlan({ ...snapshot, runs: [run()] }, "chat:lead")).toBeNull();

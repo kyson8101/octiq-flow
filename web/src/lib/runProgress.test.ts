@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  chatStrip, contextPercent, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, groupHeading, minutesLabel, parseDismissed, runProgress, shownRows,
+  chatStrip, contextPercent, countsAsWork, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, groupHeading, minutesLabel, parseDismissed, runProgress, shownRows,
   stepsLabel, stripHidden, stripRun, tasksLabel, tokensLabel, usageTotal, type ProgressRow, type Waiting,
 } from "./runProgress";
 import { chatSnapshot } from "./chatWorkflow";
@@ -569,6 +569,39 @@ describe("the strip", () => {
     expect(progress.tiles.tasks).toEqual({ done: 3, total: 3 });
   });
 
+  it("counts work by the host's facts: a replaced or cancelled task that still holds a card keeps its decision and stays out of the count", () => {
+    // The reviewer's shape (F1): a failed task was replaced, its replacement
+    // is running, and a permission card of the old worker is still up.
+    const old = going("old", "failed", "failed", { task: { supersededBy: "task_new" } });
+    const next = going("new", "running", "running", { attempt: { execution: { state: "executing", retryCount: 0 } } });
+    const made = ledger([old, next]);
+    const held = cards(old.task.id, ["permission", "p1"]);
+    const progress = runProgress(made.snapshot, made.run, NOW, held);
+    // The decision is kept, on the row that holds it.
+    expect(progress.rows.find((row) => row.task.id === old.task.id)).toMatchObject({ state: "needs", group: "needs", decisions: 1 });
+    expect(progress.strip).toMatchObject({ state: "needs", needs: 1, label: "Tasks 0/1", done: 0, total: 1 });
+    // And the replaced task is not work again: one task is owed, not two.
+    expect(progress.tiles.tasks).toEqual({ done: 0, total: 1 });
+    expect(countsAsWork(made.run, old.task)).toBe(false);
+    expect(countsAsWork(made.run, next.task)).toBe(true);
+
+    // The same without the card: nothing changed in the count.
+    expect(runProgress(made.snapshot, made.run, NOW).tiles.tasks).toEqual({ done: 0, total: 1 });
+    // Cancelled, with a card: the same.
+    const dropped = going("dropped", "cancelled", "cancelled");
+    const withDropped = ledger([dropped, next]);
+    expect(runProgress(withDropped.snapshot, withDropped.run, NOW, cards(dropped.task.id, ["question", "q1"])).tiles.tasks).toEqual({ done: 0, total: 1 });
+    // A finished task whose worker still has a card up is done in the count.
+    const finished = going("done", "completed", "completed");
+    const settled = ledger([finished, next]);
+    const stillAsked = runProgress(settled.snapshot, settled.run, NOW, cards(finished.task.id, ["permission", "p2"]));
+    expect(stillAsked.rows[0]).toMatchObject({ state: "needs" });
+    expect(stillAsked.tiles.tasks).toEqual({ done: 1, total: 2 });
+    // A stopped run's unfinished task is left out with or without one.
+    const halted = ledger([next], {}, run({ status: "stopped" }));
+    expect(runProgress(halted.snapshot, halted.run, NOW, cards(next.task.id, ["permission", "p3"])).tiles.tasks).toEqual({ done: 0, total: 0 });
+  });
+
   it("leaves out every count that is zero", () => {
     // Nobody working: no "0 working".
     const idle = ledger(mix(1, 0, 3));
@@ -617,6 +650,12 @@ describe("the strip", () => {
     const held = runProgress(stopped.snapshot, stopped.run, NOW, cards(worker.task.id, ["permission", "p1"]));
     expect(held.strip).toMatchObject({ state: "needs", needs: 1 });
     expect(held.rows.map((row) => [row.state, row.why, row.decisions])).toEqual([["needs", "Awaiting approval", 1]]);
+    // Its unfinished task is history, not work: the line says the run was
+    // stopped, and never "No tasks yet" of a run that has one.
+    expect(held.strip).toMatchObject({ total: 0, label: "Run stopped" });
+    const gone = ledger([going("old", "failed", "failed", { task: { supersededBy: "task_new" } })]);
+    expect(runProgress(gone.snapshot, gone.run, NOW, cards(gone.snapshot.tasks[0].id, ["permission", "p9"])).strip)
+      .toMatchObject({ state: "needs", total: 0, label: "No tasks left" });
   });
 
   it("is one line for the chat, and its count is every decision of the chat's runs", () => {

@@ -878,11 +878,29 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
   and the run picker's count (`runAttention`), the Tasks button
   (`taskColumnCounts`), the chat list's line (`rowRun`, `runSummary`) and
   its badge (`pendingReading`), and the Agents page (`taskState`,
-  `agentRoster`). `runWaits.surfaces.test.tsx` asks every one of them the
-  same count and the same yes or no over a table of ledger shapes (a host
-  that says `awaits` and one that does not; the card list delivered, not
-  arrived, failed), and scans the source for a second reader. A new surface
-  that says or counts a wait takes a `RunWaits`; it does not filter gates.
+  `agentRoster`). A new surface that says or counts a wait takes a
+  `RunWaits`; it does not filter gates.
+- **What is proven of that, and what is only guarded.** Three tests, each
+  with a limit to say:
+  - `runWaits.surfaces.test.tsx` asks each surface's own function or
+    component the same count and the same yes or no over a table of ledger
+    shapes: a host that says `awaits` and one that does not, the card list
+    delivered, not arrived, failed, and the ledger as the host really
+    serialises it (`web/src/lib/__fixtures__/host`, recorded from the host's
+    own tests and never hand-edited). It proves the surfaces agree when each
+    is given the one reading. It builds that hand-off itself and does not
+    run `App`.
+  - `runWaits.wiring.test.ts` is the hand-off: it reads `App.tsx` as text
+    and names each place a surface is given the cards (`pendingHeld`), and
+    shows the check failing for the mutations that drop one. The Agents
+    page's `held` is a required prop, so dropping it does not compile. No
+    test renders `App`.
+  - The scan for a second reader of `gates`, `nativeDecisions` or `awaits`
+    counts the usual spellings. It is a guard against writing one by habit,
+    not a proof: a computed property name, or a second sort of what
+    `openGates` returns, passes it.
+  A surface the table does not ask (a title, a notification, a tab's label)
+  is not covered by any of this until it is added to it.
 - **The host's word does not wait for the card.** A native decision the
   host says waits on the person is badged and counted with no card on the
   page (`PendingAction.cardMissing`: the list was not read yet, or its

@@ -5299,7 +5299,7 @@ export default function App() {
               ? () => openBeside(keyFor(conversationId)) : undefined}
             besideTitle={openRecord?.title}
             readOnly={workerChat}
-            planPending={!!plan}
+            planPending={!!plan?.approvable}
             pendingApprovals={pendingApprovals}
             onView={showWorkflowView} />}
           <div className={`workflow-surfaces${runSplit ? " is-split" : ""}`}>

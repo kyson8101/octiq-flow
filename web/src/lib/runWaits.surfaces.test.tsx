@@ -201,6 +201,9 @@ const SHAPES: Shape[] = [
   { name: "the person's gate on a task that has finished", host: "new", person: 1, ledger: ledger({ tasks: [task("a", { status: "completed" })], attempts: [attempt("a", { status: "completed", execution: { state: "completed", retryCount: 0 } })], gates: [gate("g", { taskId: "a", awaits: "person" })] }) },
   { name: "a refusal recorded on an attempt that was replaced", host: "new", person: 0, ledger: ledger({ tasks: [task("a", { activeAttemptId: "at_a2" })], attempts: [attempt("a", { status: "failed" }), attempt("a", { id: "at_a2", number: 2 })], nativeDecisions: [native("nd", "a", { awaits: "person" })] }) },
   { name: "an archived run with a gate left open", host: "new", person: 0, ledger: ledger({ runs: [run({ status: "completed", archivedAt: 9 })], tasks: [task("a", { status: "completed" })], gates: [gate("g", { taskId: "a", awaits: "person" })] }) },
+  // The reviewer's extension (F2): the panel put this run behind Archived
+  // and said 0 to decide while the strip and the badge said 1.
+  { name: "an archived run whose worker still has a card on the page", host: "old", person: 1, ledger: ledger({ runs: [run({ status: "completed", archivedAt: 9 })], tasks: [task("a", { status: "completed" })], attempts: [attempt("a", { status: "completed", execution: { state: "completed", retryCount: 0 } })] }), cards: { asks: { "orch-a": [{ id: "p1" }] } } },
 
   // The ledger as the host really serialises it (`__fixtures__/host`): the
   // shapes above are written by hand, and these are not.
@@ -353,6 +356,32 @@ describe("every surface says the same of who is waited on", () => {
     const outage = parked({ nativeDecisions: [native("nd", "a", { kind: "outage", groupId: "out", awaits: "person" })] });
     expect(pendingReading({ orchestration: outage, parents: workerChatParents(outage) }).actions)
       .toMatchObject([{ key: "safety:out", kind: "outage", cardMissing: true }]);
+  });
+
+  // F2: an archived run that still holds a card. Its decision is in the
+  // panel's own list, with the way to it beside Restore, never replaced by it.
+  it("keeps an archived run's decision reachable in the panel", () => {
+    const shape = SHAPES.find((item) => item.name === "an archived run whose worker still has a card on the page")!;
+    const { actions, held } = pendingReading({ orchestration: shape.ledger, parents: workerChatParents(shape.ledger), ...shape.cards });
+    const tasks = pendingByTask(actions);
+    const view: PendingActionsView = { forRow: () => [], forTask: (id) => tasks.get(id) ?? [], held, reveal: () => {} };
+    const draw = (value: PendingActionsView) => renderToStaticMarkup(
+      <PendingActionsContext.Provider value={value}>
+        <OrchestrationPanel embedded allowManualRun={false} project={{ id: "p1", name: "octiq-flow" }} coordinatorKey={MAIN}
+          initialSnapshot={shape.ledger} onOpenChat={() => {}} onClose={() => {}} />
+      </PendingActionsContext.Provider>);
+    const html = draw(view);
+    // Listed with the missions on screen, not behind Archived.
+    expect(html).toContain('aria-label="Missions"');
+    expect(html).not.toContain(">Archived</span>");
+    const head = html.slice(html.indexOf('class="orch-run-accordion-head"'), html.indexOf('class="orch-run-accordion-body"'));
+    expect(head).toContain('class="orch-attention" data-tone="decision" aria-label="1 decision waiting. Show"');
+    expect(head).toContain('class="orch-run-restore"');
+    expect(head.indexOf("orch-attention")).toBeLessThan(head.indexOf("orch-run-restore"));
+    // Once the card is answered the run goes back behind Archived.
+    const answered = draw({ ...view, forTask: () => [], held: new Map() });
+    expect(answered).toContain(">Archived</span>");
+    expect(answered).not.toContain("orch-attention");
   });
 
   it("gives the whole ledger and one chat's own scope the same answer", () => {

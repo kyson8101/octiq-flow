@@ -44,8 +44,11 @@ export function AgentsDashboard({
   busy: ReadonlySet<string>;
   /** Cards on this chat itself only the person can answer. */
   waitingOn: (chatKey: string) => number;
-  /** The cards the page holds, per task (`lib/pendingActions`). */
-  held?: Waiting;
+  /** The cards the page holds, per task (`lib/pendingActions`): the app's
+   *  one reading of them. Required, so a caller that drops it does not
+   *  compile: without it a worker's card would be on the row's badge and
+   *  nowhere on this page (`lib/runWaits.wiring.test.ts`). */
+  held: Waiting;
   /** A chat's title by key, when this browser knows it. */
   chatTitle: (chatKey: string) => string | undefined;
   chatExists: (chatKey: string) => boolean;

@@ -418,6 +418,16 @@ function stripSide(strip: Pick<RunStrip, "state" | "needs" | "planOnly" | "faile
   return side.filter((item): item is StripSide => !!item).slice(0, 2);
 }
 
+/** Whether a task is part of the run's count of work, by what the host says
+ *  of it and nothing else: finished, or still owed. Cancelled, replaced
+ *  (`supersededBy`), or left unfinished by a stopped run is neither, which
+ *  is exactly the tasks `read` calls closed when nothing of theirs waits on
+ *  the person. */
+export function countsAsWork(run: Pick<OrchestrationRun, "status">, task: Pick<OrchestrationTask, "status" | "supersededBy">): boolean {
+  if (task.status === "completed") return true;
+  return task.status !== "cancelled" && !task.supersededBy && run.status !== "stopped";
+}
+
 /** What the strip's tooltip says of tasks something holds. Never on the
  *  line: a hold asks nothing of the person. */
 function holdNotes(rows: readonly ProgressRow[]): string[] {
@@ -450,9 +460,14 @@ export function runProgress(
   });
 
   // What is owed and what is settled: a cancelled or replaced task is
-  // neither, so a run can reach its whole count.
-  const counted = rows.filter((row) => row.state !== "closed");
-  const done = counted.filter((row) => row.state === "done").length;
+  // neither, so a run can reach its whole count. That is asked of the host's
+  // facts and not of the row's state: a replaced task whose card is still on
+  // the person's screen is a row under Needs you, and keeps its decision,
+  // without coming back into the count of work.
+  const counted = rows.filter((row) => countsAsWork(run, row.task));
+  // Finished the same way: a task that completed is done in the count while
+  // a card of its worker's is still up, unless its check failed.
+  const done = counted.filter((row) => row.task.status === "completed" && !(row.task.verdict === "fail" && !row.task.supersededBy)).length;
   const total = counted.length;
   const elapsedMs = runElapsed(snapshot, run.id, now);
   const tiles: RunTiles = { tasks: { done, total }, tokens: sumUsage(attempts), elapsedMs };
@@ -486,7 +501,11 @@ export function runProgress(
       word: STRIP_WORD[state],
       done, total,
       percent: total ? Math.round(done / total * 100) : 0,
-      label: !total ? "No tasks yet" : state === "done" ? `Done · ${done}/${total}` : `Tasks ${done}/${total}`,
+      // Nothing to count: a run with no task yet, or one whose tasks are all
+      // history (a stopped run, or every task cancelled or replaced) and
+      // which is on the line only for a card it still holds.
+      label: !total ? (tasks.length === 0 ? "No tasks yet" : run.status === "stopped" ? "Run stopped" : "No tasks left")
+        : state === "done" ? `Done · ${done}/${total}` : `Tasks ${done}/${total}`,
       side: stripSide(counts, elapsedMs),
       live: state === "running" && active && working > 0,
       notes,

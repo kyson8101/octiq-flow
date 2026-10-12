@@ -158,10 +158,17 @@ export function mainChatTarget(
   return (runs.find((run) => run.id === selectedId) ?? runs[0])?.coordinatorChatKey ?? fallback;
 }
 
-export function splitArchived(runs: readonly OrchestrationRun[]) {
+export function splitArchived(
+  runs: readonly OrchestrationRun[],
+  /** An archived run that still holds something for the person: a card the
+   *  page has for one of its workers (`lib/runWaits`). It is counted on the
+   *  strip and the badge, so it is not put away behind Archived, where its
+   *  decision would be a count with nowhere to go. */
+  holds: (run: OrchestrationRun) => boolean = () => false,
+) {
   const live: OrchestrationRun[] = [];
   const archived: OrchestrationRun[] = [];
-  for (const run of runs) (run.archivedAt != null ? archived : live).push(run);
+  for (const run of runs) (run.archivedAt != null && !holds(run) ? archived : live).push(run);
   return { live, archived };
 }
 
