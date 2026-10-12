@@ -550,6 +550,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         _ => {}
     }
     match cmd {
+        // The profile folder this server fixed at startup: its path, the
+        // configured base it fell back from (if it did), whether it is
+        // there now, and the sentence to show when either is not as
+        // configured. Read-only.
+        "profile_status" => Ok(crate::profile::status()),
         // ---- projects -----------------------------------------------------
         "feedback_list" => crate::feedback::Store::profile().list(
             serde_json::from_value(args).map_err(|e| format!("Invalid feedback filter: {e}"))?,
@@ -739,6 +744,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             )
         }
         "chat_start" => {
+            // Said first, before the roster is read for the turn: a start
+            // whose record cannot be kept is refused in the profile's words.
+            crate::profile::available()?;
             let key: String = arg(&args, "key")?;
             let turn_id = crate::agent_chat::fresh_turn_id(arg(&args, "turnId")?);
             let prompt: Option<String> = arg(&args, "prompt")?;
@@ -754,6 +762,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // (`agent_chat::chat_complete_impl`). The page's command and nobody
         // else's: no hook routes here and the MCP server has no such tool.
         "chat_complete" => {
+            crate::profile::available()?;
             let key: String = arg(&args, "chatKey")?;
             let text = completion_wrap_up(svc, &key)?;
             if let Some(completing) =
@@ -786,6 +795,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             to_value(completion_preview(svc, &key))
         }
         "chat_send" => {
+            crate::profile::available()?;
             let key: String = arg(&args, "key")?;
             let words: String = arg(&args, "text")?;
             let record_user: Option<bool> = arg(&args, "recordUser")?;
@@ -891,6 +901,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // answer; the index stores nothing of it, and `chat_index_save`
         // ignores it coming back.
         "chat_index_list" => {
+            // A profile folder that is away is not a list with no chats in
+            // it: the page gets the reason, and keeps the list it has.
+            crate::profile::available()?;
             let coordinating = svc.orchestrations.coordinating_chats();
             let mut chats = json!(crate::agent_chat::chat_index_list());
             for chat in chats.as_array_mut().into_iter().flatten() {
@@ -2590,6 +2603,30 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("octiq_task_reopened"));
+    }
+
+    /// A message is not sent, and no chat started, while the profile folder
+    /// is away: the turn's record could not be kept. The page shows the
+    /// answer under the message, and reads the same from `profile_status`.
+    #[test]
+    fn a_message_is_refused_in_words_while_the_profile_folder_is_away() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let services = editing_in(&home.dir);
+        let dir = crate::profile::profile_dir();
+        home.unplug();
+        let why = dispatch(
+            &services,
+            "chat_send",
+            json!({ "key": "chat:away", "text": "Hello" }),
+        )
+        .unwrap_err();
+        assert!(why.contains(&dir.display().to_string()), "{why}");
+        assert!(why.contains("nothing was saved"), "{why}");
+        let status = dispatch(&services, "profile_status", json!({})).unwrap();
+        assert_eq!(status["available"], false);
+        assert_eq!(status["notice"], why);
+        assert_eq!(status["dir"], json!(dir));
     }
 
     /// The rule is the folder, not a list of names: everything in the

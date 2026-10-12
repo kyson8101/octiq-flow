@@ -517,7 +517,7 @@ fn read(path: &Path) -> Result<Stored, String> {
 
 fn write(path: &Path, stored: &Stored) -> Result<(), String> {
     let dir = path.parent().ok_or("Handovers have no storage directory")?;
-    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    crate::profile::make_dir(dir)?;
     let bytes = serde_json::to_vec_pretty(stored).map_err(|e| e.to_string())?;
     let tmp = dir.join(format!(".handovers-{}.tmp", uuid::Uuid::new_v4()));
     fs::write(&tmp, bytes).map_err(|e| e.to_string())?;

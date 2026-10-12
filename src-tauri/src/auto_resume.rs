@@ -493,7 +493,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or("Auto-resumes have no storage directory")?;
-    fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    crate::profile::make_dir(dir)?;
     let temp = dir.join(format!(".auto-resumes-{}.tmp", uuid::Uuid::new_v4()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);

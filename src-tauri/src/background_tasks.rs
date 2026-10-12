@@ -75,7 +75,7 @@ impl Store {
             return Err(error.clone());
         }
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            crate::profile::make_dir(parent)?;
         }
         let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
         fs::write(&temp, serde_json::to_vec(tasks).map_err(|e| e.to_string())?)

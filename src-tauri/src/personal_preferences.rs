@@ -76,7 +76,7 @@ pub fn save(path: &Path, text: &str) -> Result<Preferences, String> {
     let dir = path
         .parent()
         .ok_or("Personal preferences have no storage directory")?;
-    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    crate::profile::make_dir(dir)?;
     let bytes = serde_json::to_vec_pretty(&saved).map_err(|e| e.to_string())?;
     let tmp = dir.join(format!(".preferences-{}.tmp", uuid::Uuid::new_v4()));
     fs::write(&tmp, bytes).map_err(|e| e.to_string())?;

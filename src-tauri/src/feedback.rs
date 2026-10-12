@@ -183,7 +183,7 @@ impl Store {
             .path
             .parent()
             .ok_or("Feedback has no storage directory")?;
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        crate::profile::make_dir(dir)?;
         let tmp = dir.join(format!(".feedback-{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| {
             let bytes = serde_json::to_vec_pretty(inbox).map_err(|e| e.to_string())?;

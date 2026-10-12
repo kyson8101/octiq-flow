@@ -661,7 +661,7 @@ fn publish(record: &Record) {
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or("Questions have no storage directory")?;
-    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    crate::profile::make_dir(dir)?;
     let tmp = dir.join(format!(".questions-{}.tmp", uuid::Uuid::new_v4()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);

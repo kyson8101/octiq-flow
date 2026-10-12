@@ -191,7 +191,7 @@ pub fn load_config() -> WebConfig {
 pub fn save_config(cfg: &WebConfig) {
     let path = config_path();
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = crate::profile::make_dir(dir);
         private_dir(dir);
     }
     if let Ok(raw) = serde_json::to_string_pretty(cfg) {

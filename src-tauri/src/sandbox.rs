@@ -1284,7 +1284,7 @@ fn replays_as(validated: &Value, replayed: Result<Value, String>) -> Result<(), 
 }
 
 fn private_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    crate::profile::make_dir(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -722,7 +722,7 @@ fn read_authorizations(path: &Path) -> Result<AuthorizationStore, String> {
 
 fn write_authorizations(path: &Path, store: &AuthorizationStore) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        crate::profile::make_dir(parent)?;
     }
     let body = serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?;
     let temp = path.with_extension("json.tmp");

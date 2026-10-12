@@ -1212,7 +1212,7 @@ impl OrchestrationStore {
             return Ok(());
         };
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            crate::profile::make_dir(parent)?;
         }
         let bytes = serde_json::to_vec_pretty(data).map_err(|error| error.to_string())?;
         let temp = sibling_temp(path);

@@ -72,6 +72,10 @@ mod workspaces;
 /// the old desktop app opened a port as a side effect; running this binary is
 /// already the decision.
 pub async fn run_headless() {
+    // Before anything reads or writes profile state: the folder is resolved
+    // here, once, and is the same for every store until this process exits
+    // (profile.rs). The owner lock below is for exactly that folder.
+    profile::pin();
     // Refuse rather than fight. A service that silently overwrites another
     // copy's project list is worse than one that does not start.
     if let Err(owner) = profile_lock::acquire("server") {

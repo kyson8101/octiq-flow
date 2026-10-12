@@ -177,7 +177,7 @@ impl WorkspaceState {
     /// Write the current state back to disk as pretty JSON.
     fn save(&self, data: &WorkspaceData) -> Result<(), String> {
         let raw = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
-        fs::write(&self.file, raw).map_err(|e| e.to_string())
+        fs::write(&self.file, raw).map_err(|e| crate::profile::write_error(&self.file, e))
     }
 }
 

@@ -3039,6 +3039,10 @@ pub(crate) fn start_session(
     {
         return Err(format!("chat '{session_key}' is already running"));
     }
+    // No agent is started on a turn whose record cannot be kept: the
+    // profile folder went away under the server (`profile.rs`). The person
+    // reads why under the message they tried to send.
+    crate::profile::available()?;
     // Said before anything is prepared; decided below, under the lock the
     // process goes into the table with.
     if let Some(leaving) = manager.leaving_refusal(&session_key) {
@@ -4722,6 +4726,8 @@ fn chat_send_with_user_turn(
     if to.is_some() {
         return Err("additional agents are no longer supported".into());
     }
+    // As for a start: a message whose record cannot be kept is not sent.
+    crate::profile::available()?;
     if let Some(start) = manager.start_context(&key) {
         manager.admit_beside_writers(
             &key,

@@ -278,12 +278,16 @@ fn write(index: &Index) -> Result<(), String> {
         return Err("the disk is full".into());
     }
     let Some(path) = path() else {
-        return Err("could not find the profile folder".into());
+        // The chats folder is only ever missing with the profile folder
+        // itself, and that has its own words.
+        return Err(crate::profile::available()
+            .err()
+            .unwrap_or_else(|| "could not find the profile folder".into()));
     };
     let body = serde_json::to_vec_pretty(index).map_err(|e| e.to_string())?;
     let temp = path.with_extension("json.tmp");
-    fs::write(&temp, body).map_err(|e| e.to_string())?;
-    fs::rename(&temp, &path).map_err(|e| e.to_string())
+    fs::write(&temp, body).map_err(|e| crate::profile::write_error(&temp, e))?;
+    fs::rename(&temp, &path).map_err(|e| crate::profile::write_error(&path, e))
 }
 
 /// Whether the list has the chat `id` and it is not in the trash: the only
@@ -319,6 +323,10 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
     let mut index = match read_checked() {
         Ok(index) => index,
         Err(_) => {
+            // A profile folder that is away is not an index that is empty:
+            // starting a new list here would be written over the real one
+            // the moment the folder came back.
+            crate::profile::available()?;
             preserve_unreadable();
             Index::default()
         }
@@ -1519,9 +1527,14 @@ pub(crate) mod tests {
 
     #[test]
     fn reconcile_removes_a_transcript_nothing_points_at_and_keeps_the_rest() {
+        // In a profile of its own. `reconcile` removes every record no chat
+        // in the index lists, and in the folder the suite shares that is
+        // whatever another test is in the middle of using under a key it
+        // never listed: a memory_activity test lost its transcript that way.
+        let home = crate::test_dir::TestDir::new("reconcile");
+        let _process = crate::profile::started_in(&home);
         let kept = "test-reconcile-kept";
         let orphan = "test-reconcile-orphan";
-        cleanup(&[kept, orphan]);
 
         // One chat with both halves, one transcript with no entry.
         upsert(meta(kept, 500)).unwrap();

@@ -36,32 +36,22 @@ pub struct Recorded {
     pub event: Value,
 }
 
-/// The folder chat records live in.
+/// The folder chat records live in: `chats` in the profile folder, which is
+/// fixed when the server starts (`profile::profile_dir`). `None` while that
+/// folder is not there: `chats` is made inside it when missing, the profile
+/// folder itself never is (`profile::make_dir`), so a drive that went away
+/// gets no empty profile written where it was.
 ///
-/// Overridable so tests write into a temporary directory. Without it they run
-/// against the real profile — and `reconcile` DELETES files there, which is
-/// not a thing a test should be able to do to someone's chats.
+/// Tests never see the real profile here — and `reconcile` DELETES files in
+/// this folder, which is not a thing a test should be able to do to
+/// someone's chats. They share one temporary profile per test binary, or
+/// stand in a profile of their own (`profile::started_in`).
 pub(crate) fn chats_dir() -> Option<PathBuf> {
-    #[cfg(test)]
-    if !crate::profile::started_here() {
-        let dir = test_dir()?;
-        let _ = fs::create_dir_all(&dir);
-        return Some(dir);
-    }
     let dir = crate::profile::profile_dir().join("chats");
-    fs::create_dir_all(&dir).ok()?;
+    if !dir.is_dir() {
+        crate::profile::make_dir(&dir).ok()?;
+    }
     Some(dir)
-}
-
-/// A temporary directory, one per test binary, used instead of the profile.
-#[cfg(test)]
-fn test_dir() -> Option<PathBuf> {
-    use std::sync::OnceLock;
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    Some(
-        DIR.get_or_init(|| crate::test_dir::TestDir::new("test-chats").remove_at_exit())
-            .clone(),
-    )
 }
 
 /// Where a chat's record lives. `None` when the key is not a safe file name —

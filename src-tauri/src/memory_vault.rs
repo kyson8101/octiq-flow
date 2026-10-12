@@ -117,7 +117,7 @@ impl Vault {
                 .to_string_lossy()
                 .into_owned();
         }
-        fs::create_dir_all(&self.profile).map_err(|e| e.to_string())?;
+        crate::profile::make_dir(&self.profile)?;
         atomic_write(
             &self.profile.join("memory-vault.json"),
             &serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
