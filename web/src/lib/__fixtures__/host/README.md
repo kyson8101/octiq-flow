@@ -19,6 +19,7 @@ loads them; a test that needs another moment changes a copy and says so.
 | `task_stopped.json` | `approval_tests::the_person_stops_one_task_and_only_they_start_it_again` | `answer`: the task `orchestration_task_stop` returns; `snapshot`: the ledger after it |
 | `held_by_reopen.json` | `workspaces::tests::a_reopened_task_does_not_start_until_its_notice_is_in_the_coordinators_chat` | the snapshot while the notice cannot be written |
 | `reopen_notice_delivered.json` | same test | the snapshot after the notice is confirmed |
+| `plan_after_failed.json`, `plan_after_blocked.json`, `plan_after_check_failed.json`, `plan_after_stopped.json` | not a test in the tree: the probe below, run in `approval_tests` | the snapshot with A approved, started and then failed / blocked / completed with a failed check / stopped by the person, and B added afterwards so the plan is pending again |
 
 ## Recording them again
 
@@ -41,3 +42,54 @@ cargo test --lib -- --nocapture --test-threads=1 facts_tests:: an_open_gate_says
 and write each `FACT <name> {…}` line's JSON to `<name>.json`, indented by two
 spaces and otherwise unchanged. Ids and times differ from one recording to the
 next; nothing here depends on them.
+
+## The four `plan_after_*` ledgers
+
+These were answered by the real store at `4a7c4b1` (whose `src-tauri` is
+`0479c56`'s), by the independent review of that commit: the probe was added
+to a scratch copy of `src-tauri/src/orchestration/approval_tests.rs`, which
+already has the `run`, `task`, `start_task` and `launch_for` helpers it
+uses. The sequence is create A, approve the plan, reserve and activate A; A
+fails, is blocked, completes a review with a failed verdict, or is stopped
+by the person; then B is created and not approved. In all four the host
+answers `heldByPlan: false` for A and `true` for B, and for the failed and
+the blocked A a plain `reserve_attempt` succeeds while the plan waits.
+
+To record them again, add this test to the scratch copy and run
+`cargo test --lib -- --nocapture --test-threads=1 plan_after_a_settled_json`,
+then write each `FACT <name> {…}` line to `<name>.json` as above:
+
+```rust
+#[test]
+fn plan_after_a_settled_json() {
+    for scene in ["failed", "blocked", "check_failed", "stopped"] {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        store.require_plan_approval(&run.id).unwrap();
+        let a = task(&store, &run, Vec::new());
+        if scene == "check_failed" {
+            store.revise_task("chat:master", &a.id, TaskRevision { kind: Some(TaskKind::Review), ..Default::default() }).unwrap();
+        }
+        store.approve_plan("chat:master", &run.id, None, None).unwrap();
+        let attempt = start_task(&store, &a.id);
+        if scene == "stopped" {
+            store.stop_task(&a.id, Some("Review these instructions".into())).unwrap();
+        } else {
+            store.report_worker(&attempt.worker_chat_key, WorkerReport {
+                attempt_id: attempt.id.clone(),
+                outcome: if scene == "check_failed" { WorkerOutcome::Completed } else if scene == "blocked" { WorkerOutcome::Blocked } else { WorkerOutcome::Failed },
+                summary: "A did not pass the work".into(), files_modified: Vec::new(),
+                verdict: if scene == "check_failed" { Some(Verdict::Fail) } else { None },
+            }).unwrap();
+        }
+        let b = task(&store, &run, Vec::new());
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(snapshot.tasks.iter().find(|t| t.id == a.id).unwrap().held_by_plan, Some(false));
+        assert_eq!(snapshot.tasks.iter().find(|t| t.id == b.id).unwrap().held_by_plan, Some(true));
+        println!("FACT plan_after_{scene} {}", serde_json::to_value(&snapshot).unwrap());
+        if scene == "failed" || scene == "blocked" {
+            assert!(store.reserve_attempt("chat:master", &launch_for(&a.id)).is_ok());
+        }
+    }
+}
+```

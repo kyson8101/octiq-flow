@@ -1,0 +1,176 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "test",
+      "createdAt": 1791768484174,
+      "cwd": "/tmp",
+      "execution": {
+        "currentOperation": null,
+        "lastActivityAt": 1791768484174,
+        "lastProgress": "A did not pass the work",
+        "lastProgressAt": 1791768484174,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "blocked"
+      },
+      "filesModified": [],
+      "finishedAt": 1791768484174,
+      "id": "attempt_406286945e924734bac169ebed934b11",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_51af51f53d4c47b196780063b64ef3f4",
+      "status": "blocked",
+      "summary": "A did not pass the work",
+      "taskId": "task_ca247b1ab38a4233b379f4f5717ef8a9",
+      "updatedAt": 1791768484174,
+      "workerChatKey": "chat:orch-ea3a8a6838ba4053bfc4becb2e29a455"
+    }
+  ],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [
+    {
+      "attempts": 0,
+      "body": "Worker reported Blocked for task task_ca247b1ab38a4233b379f4f5717ef8a9 (Implement).\n\nA did not pass the work\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.",
+      "coalesced": 0,
+      "createdAt": 1791768484174,
+      "fromChatKey": "chat:orch-ea3a8a6838ba4053bfc4becb2e29a455",
+      "id": "octiq-notification-88a53b6d58c845f4ac36bc74683bd270",
+      "kind": "report",
+      "lastError": null,
+      "nextAttemptAt": 1791768484174,
+      "runId": "run_51af51f53d4c47b196780063b64ef3f4",
+      "source": "report:attempt_406286945e924734bac169ebed934b11",
+      "state": "pending",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791768484174
+    }
+  ],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1791768484095,
+      "id": "run_51af51f53d4c47b196780063b64ef3f4",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "planApproval": {
+        "consent": {
+          "at": 1791768484174,
+          "revision": 2,
+          "via": "button"
+        },
+        "requestedAt": 1791768484263,
+        "revisedAt": 1791768484263,
+        "revision": 3,
+        "scope": "ae2ba5f57e5c680542a13157e0fe2b3111716376d3e2668dde7bf735b81994ce",
+        "status": "pending"
+      },
+      "rootPath": "/tmp",
+      "status": "running",
+      "updatedAt": 1791768484263,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_406286945e924734bac169ebed934b11",
+      "approved": {
+        "at": 1791768484174,
+        "by": "plan",
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      "approvedAt": 1791768484174,
+      "createdAt": 1791768484173,
+      "dependsOn": [],
+      "heldByPlan": false,
+      "id": "task_ca247b1ab38a4233b379f4f5717ef8a9",
+      "result": "A did not pass the work",
+      "runId": "run_51af51f53d4c47b196780063b64ef3f4",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "blocked",
+      "title": "Implement",
+      "updatedAt": 1791768484174,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791768484132,
+        "provisional": true
+      }
+    },
+    {
+      "createdAt": 1791768484263,
+      "dependsOn": [],
+      "heldByPlan": true,
+      "id": "task_359f49daa71640bf9ab5f605275ae701",
+      "runId": "run_51af51f53d4c47b196780063b64ef3f4",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "ready",
+      "title": "Implement",
+      "updatedAt": 1791768484263,
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791768484216,
+        "provisional": true
+      }
+    }
+  ]
+}

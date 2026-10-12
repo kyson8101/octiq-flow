@@ -1,0 +1,181 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "test",
+      "createdAt": 1791768484451,
+      "cwd": "/tmp",
+      "execution": {
+        "currentOperation": null,
+        "lastActivityAt": 1791768484451,
+        "lastProgress": null,
+        "lastProgressAt": null,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "cancelled"
+      },
+      "filesModified": [],
+      "finishedAt": 1791768484451,
+      "id": "attempt_ae28c31109de48eb846f54a417789a6f",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+      "status": "cancelled",
+      "summary": "Stopped by the person.",
+      "taskId": "task_22dfaf811283411895e05f594fdbdda1",
+      "updatedAt": 1791768484451,
+      "workerChatKey": "chat:orch-955c45b501a24f22bb5d7ca7ac7f4ea6"
+    }
+  ],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [
+    {
+      "attempts": 0,
+      "body": "The person stopped the worker on task \"Implement\" (task_22dfaf811283411895e05f594fdbdda1, attempt attempt_ae28c31109de48eb846f54a417789a6f). Their reason was: “Review these instructions” The run goes on. The task is held: only the person starts it again. This records their decision; it is not an instruction to start or replace the task.",
+      "coalesced": 0,
+      "createdAt": 1791768484451,
+      "fromChatKey": "host",
+      "id": "octiq-notification-4f71ce5608eb42b3840f0fb53f7897fa",
+      "kind": "task_stopped",
+      "lastError": null,
+      "nextAttemptAt": 1791768484451,
+      "runId": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+      "source": "task-stopped:attempt_ae28c31109de48eb846f54a417789a6f",
+      "state": "pending",
+      "targetChatKey": "chat:master",
+      "updatedAt": 1791768484451
+    }
+  ],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1791768484385,
+      "id": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "planApproval": {
+        "consent": {
+          "at": 1791768484451,
+          "revision": 2,
+          "via": "button"
+        },
+        "requestedAt": 1791768484537,
+        "revisedAt": 1791768484538,
+        "revision": 3,
+        "scope": "e26d8abf96140d45262cf91b2f81b02e2bac9c3cecac3f5be71b41ce3978ad16",
+        "status": "pending"
+      },
+      "rootPath": "/tmp",
+      "status": "running",
+      "updatedAt": 1791768484537,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_ae28c31109de48eb846f54a417789a6f",
+      "approved": {
+        "at": 1791768484451,
+        "by": "plan",
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      "approvedAt": 1791768484451,
+      "createdAt": 1791768484450,
+      "dependsOn": [],
+      "heldByPlan": false,
+      "id": "task_22dfaf811283411895e05f594fdbdda1",
+      "result": "Stopped by the person. Their reason: Review these instructions",
+      "runId": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "failed",
+      "stopped": {
+        "at": 1791768484451,
+        "attemptId": "attempt_ae28c31109de48eb846f54a417789a6f",
+        "reason": "Review these instructions"
+      },
+      "title": "Implement",
+      "updatedAt": 1791768484451,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791768484417,
+        "provisional": true
+      }
+    },
+    {
+      "createdAt": 1791768484537,
+      "dependsOn": [],
+      "heldByPlan": true,
+      "id": "task_d7529275490b437e8a9aec855cd773d8",
+      "runId": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "ready",
+      "title": "Implement",
+      "updatedAt": 1791768484537,
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791768484490,
+        "provisional": true
+      }
+    }
+  ]
+}

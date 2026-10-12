@@ -15,6 +15,10 @@ import gatesOpen from "./host/gates_open.json?raw";
 import heldByPlan from "./host/held_by_plan.json?raw";
 import heldByReopen from "./host/held_by_reopen.json?raw";
 import peerGate from "./host/peer_gate.json?raw";
+import planAfterBlocked from "./host/plan_after_blocked.json?raw";
+import planAfterCheckFailed from "./host/plan_after_check_failed.json?raw";
+import planAfterFailed from "./host/plan_after_failed.json?raw";
+import planAfterStopped from "./host/plan_after_stopped.json?raw";
 import reopenNoticeDelivered from "./host/reopen_notice_delivered.json?raw";
 import taskStopped from "./host/task_stopped.json?raw";
 import usageContext from "./host/usage_context.json?raw";
@@ -34,6 +38,17 @@ export const hostFacts = {
   /** Approved A beside a pending plan that holds B: `heldByPlan` false and
    *  true, on every task of a run with a plan. */
   heldByPlan: ledger(heldByPlan),
+  /** A was approved, started and failed; then B was added, so the plan is
+   *  back with the person. A: `failed`, `heldByPlan: false` (the host starts
+   *  a retry of it); B: `ready`, `heldByPlan: true`. */
+  planAfterFailed: ledger(planAfterFailed),
+  /** The same with A blocked by its worker's report. */
+  planAfterBlocked: ledger(planAfterBlocked),
+  /** The same with A a review that completed with `verdict: "fail"`. */
+  planAfterCheckFailed: ledger(planAfterCheckFailed),
+  /** The same with A's worker stopped by the person: `failed`, `stopped`,
+   *  its attempt `cancelled`. */
+  planAfterStopped: ledger(planAfterStopped),
   /** A worker's gate (`awaits: "coordinator"`) and one the coordinator
    *  opened itself, which names no task (`awaits: "person"`). */
   gatesOpen: ledger(gatesOpen),
