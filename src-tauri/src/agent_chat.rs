@@ -7062,6 +7062,19 @@ impl ChatManager {
         TestChild(self.sessions.lock().unwrap().get(key).cloned().unwrap())
     }
 
+    /// Let a stand-in from `test_hold_heard` finish by itself: its stdin is
+    /// closed and its exit waited for, so everything it was written has
+    /// been echoed by the time its stdout is read. Ending it (`test_end`)
+    /// kills it, and what it had not echoed yet is lost with it.
+    pub(crate) fn test_finish(&self, key: &str) {
+        let Some(session) = self.sessions.lock().unwrap().remove(key) else {
+            return;
+        };
+        let mut session = session.lock().unwrap();
+        session.stdin.take();
+        let _ = session.child.wait();
+    }
+
     /// End a stand-in from `test_launch`, as the chat ending would.
     pub(crate) fn test_end(&self, key: &str) {
         end_process(self, key).expect("end the stand-in");

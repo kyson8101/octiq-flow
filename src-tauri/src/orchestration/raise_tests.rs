@@ -137,9 +137,12 @@ impl World {
         }
     }
 
-    /// End the stand-in and read everything it was ever written.
+    /// Everything the stand-in was ever written. It is left to finish by
+    /// itself (its stdin closed, its exit waited for), so nothing it was
+    /// written is lost to a kill; one the change of level already ended
+    /// has nothing more to say.
     fn written(self) -> Vec<String> {
-        self.svc.chats.test_end(LEAD);
+        self.svc.chats.test_finish(LEAD);
         assert!(self.agent.gone());
         self.heard.lines().map_while(Result::ok).collect()
     }

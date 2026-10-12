@@ -340,10 +340,11 @@ fn a_stop_holds_the_queue_of_an_agent_that_keeps_its_process() {
         );
         assert_eq!(world.queued(&key), ids[1..]);
         assert_eq!(deliveries(&key, &ids[0]), ["queued", "dispatched"]);
-        // Everything the agent was written, in order: the Stop (Codex has
-        // no turn to interrupt between two), then the first message.
+        // Everything the agent was written: of the two queued messages,
+        // the first and only the first. It is left to finish by itself, so
+        // nothing it was written is lost to a kill.
         drop(session);
-        world.chats().test_end(&key);
+        world.chats().test_finish(&key);
         let written: Vec<String> = (&mut heard).lines().map_while(Result::ok).collect();
         let prompts: Vec<&String> = written
             .iter()
