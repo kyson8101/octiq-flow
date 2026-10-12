@@ -72,6 +72,10 @@ struct State {
     load_error: Option<String>,
     /// `entries` holds a cancel the file does not.
     owed: bool,
+    /// The ids of cancels made while they could not be saved: their
+    /// transcript line could not be written either, so each keeps its
+    /// `Cancelled` tombstone until it has been (`unannounced`, `finish`).
+    unannounced: std::collections::BTreeSet<String>,
 }
 
 /// A profile-local schedule. Entries are keyed by chat because one native
@@ -230,7 +234,29 @@ impl Store {
         let unsaved = self.persist(&next).err();
         state.entries = next;
         state.owed = unsaved.is_some();
+        if unsaved.is_some() {
+            state.unannounced.insert(entry.id.clone());
+        }
         Ok(Some(Cancelled { entry, unsaved }))
+    }
+
+    /// The cancels that are on disk now and whose transcript line is still
+    /// to be written: none while the schedule itself is owed.
+    pub(crate) fn unannounced(&self) -> Vec<ScheduledResume> {
+        let Ok(state) = self.state.lock() else {
+            return Vec::new();
+        };
+        if state.owed {
+            return Vec::new();
+        }
+        state
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.delivery == Delivery::Cancelled && state.unannounced.contains(&entry.id)
+            })
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn scheduled(&self) -> Result<Vec<ScheduledResume>, String> {
@@ -290,11 +316,13 @@ impl Store {
             .get(&entry.chat_key)
             .is_none_or(|saved| saved.id != entry.id)
         {
+            state.unannounced.remove(&entry.id);
             return Ok(());
         }
         let mut next = state.entries.clone();
         next.remove(&entry.chat_key);
         self.save(&mut state, next)?;
+        state.unannounced.remove(&entry.id);
         Ok(())
     }
 
@@ -504,7 +532,9 @@ pub(crate) fn announce_scheduled(entry: &ScheduledResume) {
     );
 }
 
-pub(crate) fn announce_cancelled(entry: &ScheduledResume, reason: &str) {
+/// Say the cancel on the bus and in the chat's transcript. `None` is a line
+/// that could not be written: every open page still heard it.
+pub(crate) fn announce_cancelled(entry: &ScheduledResume, reason: &str) -> Option<u64> {
     record_chat_event(
         &entry.chat_key,
         json!({
@@ -512,7 +542,7 @@ pub(crate) fn announce_cancelled(entry: &ScheduledResume, reason: &str) {
             "id": entry.id,
             "reason": reason,
         }),
-    );
+    )
 }
 
 pub(crate) fn announce_started(entry: &ScheduledResume) {

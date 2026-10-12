@@ -97,7 +97,9 @@ all state from disk; no live teardown).
     `profile_status` gains `owed`, the names of the stores still owing
     (`auto-resumes`, `questions`, `the ledger`), empty when the disk has
     caught up. Nothing is written into a folder that replaced the profile,
-    and nothing makes the folder again.
+    and nothing makes the folder again. A cancelled auto-resume's line in
+    its chat's record, which could not be written either, is written then,
+    once, so a reloaded page reads no banner for it.
 
   What is covered, and what the caller is told when the record failed:
 

@@ -2241,17 +2241,20 @@ fn clear_cancelled_resume(manager: &ChatManager, entry: &crate::auto_resume::Sch
 
 /// Write the cancels that could not be saved when they were made, then say
 /// each in its chat's transcript, where the line could not be written
-/// either, and drop its tombstone. An error is a schedule still owed.
+/// either, and drop its tombstone once it has been. An error is a schedule
+/// still owed. A line that still cannot be written keeps its tombstone,
+/// which is `Cancelled` on disk by then: the next try, or the next start
+/// of the server, says it.
 fn settle_cancelled_resumes(manager: &ChatManager) -> Result<(), String> {
-    if !manager.auto_resumes.settle()? {
-        return Ok(());
-    }
-    for entry in manager.auto_resumes.cancelled()? {
-        crate::auto_resume::announce_cancelled(
+    manager.auto_resumes.settle()?;
+    for entry in manager.auto_resumes.unannounced() {
+        let said = crate::auto_resume::announce_cancelled(
             &entry,
             "cancelled while the profile folder was away",
         );
-        clear_cancelled_resume(manager, &entry);
+        if said.is_some() {
+            clear_cancelled_resume(manager, &entry);
+        }
     }
     Ok(())
 }

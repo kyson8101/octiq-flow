@@ -143,9 +143,17 @@ fn stop_ends_the_agent_while_the_profile_is_away_and_its_resume_does_not_come_ba
         "nothing was written while the folder was away"
     );
     assert!(settle_owed(&world.svc).is_empty());
-    assert_ne!(resume_on_disk(&key).as_deref(), Some("scheduled"));
+    assert_eq!(resume_on_disk(&key), None, "the cancel is not on disk");
     let status = crate::dispatch::dispatch(&world.svc, "profile_status", json!({})).unwrap();
     assert_eq!(status["owed"], json!([]), "{status}");
+    // The chat's own record says it too, once: a reload reads no banner.
+    let said = crate::transcript::of_type(&key, "octiq_auto_resume_cancelled");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(settle_owed(&world.svc).is_empty());
+    assert_eq!(
+        crate::transcript::of_type(&key, "octiq_auto_resume_cancelled").len(),
+        1
+    );
 
     // The server restarts on the folder that came back.
     let restarted = Services::at_profile();
