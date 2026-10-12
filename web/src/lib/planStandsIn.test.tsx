@@ -277,11 +277,13 @@ describe("the surfaces that never chose between the plan and the rows", () => {
     expect(runAttention(stopped.runs[0], stopped.tasks, stopped.attempts, runWaits(stopped, stopped.runs[0]))).toMatchObject({ decisions: 1, blocked: 0 });
   });
 
-  it("the chat list's line says the decision, which outranks what failed", () => {
+  it("the chat list's line leads with the decision, says what failed, and counts nothing failed as done", () => {
+    // A completed review whose check failed is not done: the line says 0/2
+    // and "1 failed", as the strip does (`finishedWell.surfaces.test`).
     for (const name of NAMES) {
       const snapshot = CASES[name]();
       const scoped = chatSnapshot(snapshot, snapshot.runs[0].coordinatorChatKey);
-      expect(chatRunStatus(scoped, rowRun(scoped)!)).toBe(name === "checkFailed" ? "Needs decision · 1/2 done" : "Needs decision · 0/2 done");
+      expect(chatRunStatus(scoped, rowRun(scoped)!)).toBe(name === "stopped" ? "Needs decision · 0/2 done" : "Needs decision · 1 failed · 0/2 done");
     }
   });
 
@@ -300,7 +302,9 @@ describe("the surfaces that never chose between the plan and the rows", () => {
     };
     expect(labels("failed")).toEqual(["Failed", "Waiting for plan approval"]);
     expect(labels("blocked")).toEqual(["Blocked", "Waiting for plan approval"]);
-    expect(labels("checkFailed")).toEqual(["Waiting for plan approval"]);
+    // A review that completed with a failed check is a failure, listed
+    // first under its agent with the panel row's own word.
+    expect(labels("checkFailed")).toEqual(["Check failed", "Waiting for plan approval"]);
     expect(labels("stopped").sort()).toEqual([STOPPED_LABEL, "Waiting for plan approval"].sort());
   });
 });
@@ -319,7 +323,15 @@ describe("a mission's stage", () => {
     expect(stage("stopped")).toBe("building");
   });
 
-  it("is a draft while the plan holds everything that could start", () => {
-    expect(stage("checkFailed")).toBe("draft");
+  it("is under review, not a draft, while the plan holds every start and an approved check has failed", () => {
+    expect(stage("checkFailed")).toBe("review");
+  });
+
+  it("is a draft while the plan holds everything and nothing approved went wrong", () => {
+    // Changed for this test: A completed and nothing failed.
+    const done = CASES.failed();
+    Object.assign(done.tasks[0], { status: "completed", result: "Done" });
+    done.runs[0].workspaceMode = "mission";
+    expect(missionState(done.runs[0], done.tasks).stage).toBe("draft");
   });
 });
