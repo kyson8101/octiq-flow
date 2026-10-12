@@ -348,8 +348,9 @@ until the process exits. It makes nothing and looks nothing up again.
   auto-resumes) goes on answering and never reloads while the server
   runs: its save fails in the profile's words and, once the folder is
   back, writes what it holds. **There is no global guard in front of
-  every command**: Stop and the answer to a permission card work while the
-  folder is away. A page that loads a whole value into a form and saves it
+  every command**: Stop, interrupt and the answer to a card work while the
+  folder is away, whatever they would have saved (Conventions, *An action
+  that ends work or answers a waiting agent never waits on a save*). A page that loads a whole value into a form and saves it
   back offers no Save when the load failed (`unread` on
   `PreferencesBlock` and `AgentPolicyBlock`; the vault form is not drawn).
 - **A new store reads `profile::profile_dir()`, makes folders with
@@ -1407,6 +1408,51 @@ time limit).
   module that owns it: the file editor's `write_file` refuses everything in
   the profile folder but the person's own `notify-hook` and `canvas/`
   (`paths::host_owned`).
+- **An action that ends work or answers a waiting agent never waits on a
+  save.** Stop, interrupt, a task or run stop, a cancel, a limit the host
+  enforces, and an answer to a call an agent is parked on all ACT first, or
+  act whatever the save answers. The save is tried; when it fails the
+  action has still happened, so the command answers as it always does and
+  the failure is said beside it, never instead of it. Three parts, and a
+  new ending or answering path needs all three:
+  - *No `?` on a save ahead of the act.* `cancel_auto_resume(…)?` at the
+    top of `chat_stop_impl` returned the schedule's write error and never
+    reached `end_process`: with the profile folder away a person could not
+    stop a running agent (review of 205bca2, H5). The order had always
+    been there and had only worked because `create_dir_all` made the
+    folder again. Ask of every `?` above the kill, the interrupt or the
+    `tx.send`: is this a save? The same goes for a pass that both writes
+    and stops (`recover_due_workers` stops ended workers before the part
+    that writes).
+  - *Say it with `unsaved::say(what, reason)`, where the save failed.*
+    `dispatch::told` collects what one command said on its thread; the
+    socket puts it beside the result (`unsaved: [{ what, reason }]`), an
+    agent's hook result carries the same list, and every page gets the
+    `unsaved` event. Do not return the save's error from a command whose
+    action happened, and do not swallow it.
+  - *Owe it.* The store keeps the change in memory and a flag that its file
+    is behind (`auto_resume::Store::cancel`, `QuestionStore::keep`,
+    `OrchestrationStore::mutate_regardless`), and
+    `dispatch::settle_owed` writes every such store again, every two
+    seconds while the server runs and through the same door as any save,
+    so nothing is written into a missing or a replaced profile folder.
+    `profile_status.owed` names what is still behind. A new store that an
+    ending or answering action writes joins `settle_owed` and `owed`.
+
+  What it does NOT cover, so these stay save-first and are refused whole
+  when they cannot be recorded: an action whose point is the record
+  (`chat_complete`, moving a chat to the trash, an answer to a question no
+  tool is waiting on), anything irreversible (mission Close and Abandon
+  remove worktrees), and anything durable a card offers. On a card, Deny
+  denies and Allow allows THAT call with the save failing; an "always" or a
+  stored authorization that could not be stored is refused in words and
+  never assumed later (`safety_block::authorize_for_project` leaves its
+  card up). Starting work is not ending it: a new turn still waits for a
+  folder its record can be kept in, so an answer that reaches its agent
+  only in a new turn (a gate's, to a worker whose turn ended) is taken at
+  once and delivered when that turn can start. What is owed lives in
+  memory: a restart before the folder is back loses it, and the disk's
+  word stands (`docs/plans/profiles.md`).
 - **Every reader of a chat record walks it with `transcript::for_each_line`
   or a reader built on it** (`since`, `of_type`, `page`). A line's position
   is its `seq`, so a line that cannot be decoded is skipped by the reader

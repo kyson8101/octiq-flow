@@ -58,7 +58,9 @@ all state from disk; no live teardown).
     their own rules: the preferences and agent-policy boxes are locked and
     the vault form is not drawn when their load failed.
 - **What the page can ask: `profile_status`** (read-only, no arguments) →
-  `{ dir, fallbackFrom, available, notice }`. `dir` is the folder in use.
+  `{ dir, fallbackFrom, available, notice, owed }` (`owed` is described
+  under *Stop and an answer never wait on a save* below). `dir` is the
+  folder in use.
   `fallbackFrom` is the configured base when the server started on the
   default one, else `null`. `available` is whether the folder at that path
   is there right now AND is the one the server started with. `notice` is
@@ -72,6 +74,81 @@ all state from disk; no live teardown).
   forms after a failed load (today: leave Settings and come back), the
   same lock on any future form that loads a whole value and saves it, and
   drawing `profile_status`.
+- **Stop and an answer never wait on a save (2026-10-12).** The three
+  rules above took away what an older order leaned on: Stop, interrupt, a
+  task stop and a question's answer all saved first, and that save only
+  ever worked with the folder gone because it made the folder again. With
+  the folder away they then answered the profile's sentence with the agent
+  still running. Now an action that ENDS work or ANSWERS a waiting agent
+  happens whatever its save does:
+  - *It acts.* The process is ended, the turn cut short, the answer handed
+    to the call parked on it. The save is tried beside it.
+  - *It says both things.* The command answers as it always does (the work
+    was stopped, the answer was delivered), and what could not be recorded
+    is listed beside that answer: `unsaved: [{ what, reason }]` on the
+    socket's reply frame, the same list inside an agent's hook result, and
+    the bus event `unsaved` for every open page. `reason` is the profile's
+    own sentence. Nothing that happened is reported as failed.
+  - *It is made good.* The store keeps what it could not write and a flag
+    that it owes it. Every two seconds the server writes each such store
+    again (`dispatch::settle_owed`), so the longest a save stays owed once
+    the folder is back is two seconds; any other save of the same store
+    that succeeds carries it too, since each write is the whole store.
+    `profile_status` gains `owed`, the names of the stores still owing
+    (`auto-resumes`, `questions`, `the ledger`), empty when the disk has
+    caught up. Nothing is written into a folder that replaced the profile,
+    and nothing makes the folder again.
+
+  What is covered, and what the caller is told when the record failed:
+
+  | Action | Does | Says as not recorded |
+  | --- | --- | --- |
+  | `chat_stop`, `chat_interrupt` | ends the process, or cuts the turn short | `the cancelled auto-resume`, `the cancelled questions` |
+  | `chat_cancel_auto_resume`, and every other path that cancels one (a new message, an access change, a retarget) | takes it off the schedule | `the cancelled auto-resume` |
+  | `question_answer`, `question_answer_batch`, with a tool waiting | wakes the tool, which takes its answer | `the answer`, then `the delivered answer` |
+  | `question_cancel` | tells the waiting tool it was cancelled | `the cancelled questions` |
+  | `orchestration_task_stop`, `orchestration_run_stop` | cancels the attempts, ends the workers | `the stopped task`, `the stopped run` |
+  | `orchestration_gate_resolve` (the person's, and a coordinator's) | takes the answer and queues it for the worker | `the gate's answer` |
+  | `orchestration_message_send` with `interrupt` | keeps the message, cuts the worker's turn short | `the coordinator's message` |
+  | `chat_retarget`, `chat_set_access` on a run's chat | ends the process, or changes the level | `the forgotten start settings`, `the chat's access level` |
+  | a peer request's time limit (the scheduler) | ends the attempt and stops its process | `the attempt ended at its time limit` |
+
+  Keeps nothing in the profile, so was never held up: `permission_decide`
+  (Allow, Deny and "Always" are in memory, for the chat),
+  `access_request_answer`, `safety_block_dismiss`, `chat_start_queued`,
+  `chat_cancel_queued`, the idle sweeper, a Stop's grace running out.
+
+  Still refused whole while the folder is away, on purpose, because the
+  record is the point and refusing leaves nothing half done: `chat_complete`
+  (Stop still stops the process), mission Close and Abandon (they remove
+  worktrees, and nothing irreversible goes ahead of its record; stop the
+  run instead), moving a chat to the trash, an ordinary message to a
+  worker, and an answer to a question no tool is waiting on (a record for a
+  later turn). A Codex card's "Allow for this project" IS a stored
+  authorization: it fails in the profile's sentence, the card stays up, and
+  nothing is assumed once the folder is back. Allow once and Keep it local
+  keep nothing and work.
+
+  **What an answer that needs a new turn waits for.** A worker whose turn
+  ended when it opened a gate is given the answer in a new turn, and a
+  start is still refused while its record cannot be kept. So the answer is
+  taken and kept at once, and reaches that worker within one scheduler pass
+  (two seconds) of the folder coming back.
+
+  **If the folder never comes back before a restart,** what was owed is
+  lost with the process that held it, and what is true is what the disk
+  says: a scheduled auto-resume that was cancelled is scheduled again and
+  will run at its reset time, a task the person stopped reads as
+  interrupted by the restart and is open to the host's ordinary recovery,
+  a gate's answer has to be given again, and an answered question is asked
+  again. The caller was told, at the time, that each was not recorded, and
+  `profile_status.owed` said so until the end. Not built: a second place to
+  keep these outside the profile, which would be a copy of the profile's
+  data in another folder, the thing the rules above exist to prevent.
+- **For the page (OCTIQ FE), not built:** drawing a reply's `unsaved` list
+  (or the `unsaved` event) as a notice, and `profile_status.owed`. Until
+  then the words are in the reply and on the server's log, and the page
+  shows the action as done, which it is.
 
 ## Target layout
 
