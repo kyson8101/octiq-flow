@@ -1284,7 +1284,8 @@ impl OrchestrationStore {
             // configuration. The person's hold is theirs to release.
             if task.environment == super::TaskEnvironment::Sandbox {
                 let sandboxes = crate::sandbox::Store::profile();
-                let envs = sandboxes.snapshot()?;
+                // What leads to a stop goes by what this server knows.
+                let envs = sandboxes.known()?;
                 let live = sandboxes.live_keys();
                 for attempt in snapshot.attempts.iter().filter(|a| a.task_id == task_id) {
                     let key = &attempt.worker_chat_key;

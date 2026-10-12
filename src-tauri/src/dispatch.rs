@@ -526,6 +526,9 @@ pub fn settle_owed(svc: &Services) -> Vec<&'static str> {
     if svc.orchestrations.settle_owed().is_err() {
         owed.push(crate::orchestration::OWED);
     }
+    if crate::sandbox::Store::profile().settle().is_err() {
+        owed.push(crate::sandbox::OWED);
+    }
     owed
 }
 
@@ -534,6 +537,9 @@ fn owed(svc: &Services) -> Vec<&'static str> {
     let mut owed = crate::agent_chat::owed(&svc.chats);
     if svc.orchestrations.owes() {
         owed.push(crate::orchestration::OWED);
+    }
+    if crate::sandbox::Store::profile().owes() {
+        owed.push(crate::sandbox::OWED);
     }
     owed
 }

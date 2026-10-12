@@ -182,7 +182,9 @@ fn reconcile(
         return Ok(());
     }
     let data = store.snapshot(None)?;
-    let envs = sandboxes.snapshot()?;
+    // What this server knows, not the state file: this pass only stops, and
+    // a stop does not wait on the profile folder (`sandbox::Store::known`).
+    let envs = sandboxes.known()?;
     let now = crate::sandbox::now();
     let stops = plan_stops(
         &data,
@@ -794,7 +796,7 @@ mod tests {
         assert_eq!(crate::sandbox::stand_in::taken_down(&asked).len(), 1);
 
         home.move_back();
-        assert_eq!(crate::sandbox::Store::settle_owed(), Ok(()));
+        assert_eq!(sandboxes.settle(), Ok(true));
         let saved = sandboxes.snapshot().unwrap().environments[&key].clone();
         assert_eq!(saved.state, "stopped");
         assert_eq!(saved.stopped.unwrap().by, "host");
