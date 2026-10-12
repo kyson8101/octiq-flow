@@ -82,9 +82,13 @@ export type Question = {
    *  alongside `batch`. */
   batchSize?: number;
   answer?: string;
-  status?: "pending" | "saved" | "failed";
+  /** `saved`: the answer is on the server's disk. `delivered`: the agent has
+   *  it and the server could not write it down (`unsaved` says why). */
+  status?: "pending" | "saved" | "delivered" | "failed";
   error?: string;
   retryable?: boolean;
+  /** Why an answered question is not saved, in the server's words. */
+  unsaved?: string;
 };
 
 /** Explicitly skipped questions in a submitted batch, and the legacy server's
@@ -121,7 +125,17 @@ export function UserQuestion({
   const savedAnswer = (q: Question) => q.answer ?? savedAnswers[q.id];
   const allSaved = questions.length > 0 && questions.every((q) => savedAnswer(q) !== undefined);
   const deliveryError = questions.find((q) => q.error)?.error;
-  const title = deliveryError ? "Answers need attention" : allSaved ? "Answers saved · waiting for agent" : "Agent is asking";
+  /** Why answers that reached the agent are not saved: from this card's own
+   *  receipt, or from what the server says of the questions on a reload.
+   *  `null` when they are saved. Never an error: the answers did arrive. */
+  const [unsavedReceipt, setUnsavedReceipt] = useState<string | null>(null);
+  const said = questions.find((q) => q.status === "delivered" || q.unsaved !== undefined);
+  const unsaved = said ? (said.unsaved ?? "") : questions.some((q) => q.status === "saved") ? null : unsavedReceipt;
+  const title = deliveryError
+    ? "Answers need attention"
+    : allSaved
+      ? unsaved !== null ? "Answers sent · not saved" : "Answers saved · waiting for agent"
+      : "Agent is asking";
   /** Put aside from the moment it appears — see the note at the top of the
    *  file. Fresh per batch: the card is keyed on the first question's id, so a
    *  new batch is a new card and starts put aside again, while a question
@@ -199,6 +213,8 @@ export function UserQuestion({
     try {
       const receipt = await submitQuestionAnswers((command, args) => bridge.invoke(command, args), answers);
       if (receipt === "delivered") { onDone(answers.map((a) => a.id)); return; }
+      // Delivered and not saved is its own outcome, said as that.
+      setUnsavedReceipt(typeof receipt === "object" ? receipt.unsaved : null);
       setSavedAnswers(Object.fromEntries(answers.map(({ id, answer }) => [id, answer])));
       // Keep the saved card until the backend reports delivery. An RPC receipt
       // confirms storage, not that the agent has resumed yet.
@@ -277,7 +293,14 @@ export function UserQuestion({
           {questions.map((q) => <section className="qa-question-item" key={q.id}>
             <p className="qa-question">{q.question}</p><p className="qa-hint">{savedAnswer(q)}</p>
           </section>)}
-          <p className="qa-hint">Saved. You can leave this page.</p>
+          {unsaved === null ? (
+            <p className="qa-hint">Saved. You can leave this page.</p>
+          ) : (
+            <>
+              <p className="qa-hint">Your answers reached the agent and could not be saved.</p>
+              {unsaved && <details className="qa-unsaved"><summary>Why</summary><p className="qa-hint">{unsaved}</p></details>}
+            </>
+          )}
           {(sendError || deliveryError) && <p className="qa-hint" role="alert">{sendError || deliveryError}</p>}
           {deliveryError && questions.some((q) => q.error && q.retryable !== false) && <button className="ask-btn is-primary" disabled={sending} onClick={() => void retry()}>Retry delivery</button>}
           <button className="ask-btn" disabled={sending} onClick={() => void cancel()}>Cancel pending delivery</button>

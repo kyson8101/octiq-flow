@@ -1282,9 +1282,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "question_pending" => to_value(svc.chats.questions.pending()),
         // An answer a tool is waiting for reaches it whether or not it could
         // be saved; then it is said as not recorded beside this answer, and
-        // the store owes the save. `saved` is "the host has your answers",
-        // which the page takes as its receipt; `recorded: false` is "not on
-        // disk yet".
+        // the store owes the save.
+        //
+        // The receipt says which of the two happened and never more
+        // (review of b894867, H9). `saved: true` is "these answers are on
+        // disk" and nothing else. An answer that reached its tool and could
+        // not be written is `{ saved: false, delivered: true, unsaved }`,
+        // with the reason. The single-question command predates receipts:
+        // its `true` is "accepted", which is all an older page reads it as.
         "question_answer" => {
             let unsaved = svc
                 .chats
@@ -1305,14 +1310,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     .answer(&arg::<Vec<crate::question_store::Answer>>(
                         &args, "answers",
                     )?)?;
-            let recorded = unsaved.is_none();
-            if let Some(why) = unsaved {
-                crate::unsaved::say("the answer", why);
-            }
-            if recorded {
-                Ok(json!({ "saved": true }))
-            } else {
-                Ok(json!({ "saved": true, "recorded": false }))
+            match unsaved {
+                None => Ok(json!({ "saved": true })),
+                Some(why) => {
+                    crate::unsaved::say("the answer", why.clone());
+                    Ok(json!({ "saved": false, "delivered": true, "unsaved": why }))
+                }
             }
         }
         "question_cancel" => unit(crate::agent_chat::cancel_questions(

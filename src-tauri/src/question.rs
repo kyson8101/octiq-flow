@@ -142,6 +142,10 @@ pub struct Asked {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
     pub(crate) retryable: bool,
+    /// Why this answer is not on disk, when the agent has it and no file
+    /// does: `status` is then `delivered`, never `saved`. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) unsaved: Option<String>,
 }
 
 /// A `/hook/ask` body, in either of the two shapes that arrive.
@@ -522,9 +526,11 @@ mod tests {
             status: "pending".into(),
             error: None,
             retryable: false,
+            unsaved: None,
         };
         let json = serde_json::to_string(&alone).expect("serialises");
         assert!(!json.contains("batch"), "{json}");
+        assert!(!json.contains("unsaved"), "{json}");
 
         let together = Asked {
             id: "b".into(),
@@ -535,6 +541,7 @@ mod tests {
             status: "pending".into(),
             error: None,
             retryable: false,
+            unsaved: None,
         };
         let json = serde_json::to_string(&together).expect("serialises");
         assert!(json.contains(r#""batch":"one-call""#), "{json}");
