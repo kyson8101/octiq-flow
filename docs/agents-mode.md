@@ -1237,7 +1237,13 @@ here, so the task waits for it:
   and never `Ready to start`. It asks nothing of you, so it is no "Needs
   you". If it has stayed that way for a minute, which is where the back-off
   below has run out, the row takes the warning colour and adds what the
-  refusal says of a hold that lasts.
+  refusal says of a hold that lasts. The minute is counted on the page's
+  own clock from when the page first saw the hold, never by comparing the
+  reopen's stamp (the host's clock) with the browser's: a page reloaded
+  starts it over, unless the ledger's own later stamps show it has passed.
+  Its details say `Task: Reopened · notice not yet saved · ledger status:
+  Ready`, and `Start next attempt` is there switched off with this refusal
+  beside it.
 - The host writes the notice right after the ledger, and again on every pass
   of the scheduler (about every two seconds) until it holds
   (`deliver_reopen_notices`). A transcript that gives no confirmation is
@@ -1292,10 +1298,29 @@ On the page, Stop is on the reopening's own line in the coordinator's chat,
 once you have opened it to read the new instructions: `Stop this task…`, then
 a confirm. It is off, with the reason beside it, while no worker is on the
 task (not started yet, finished, or reopened again since: Stop is then on
-the later line). After it the line and the task's row say `Stopped by you`,
+the later line), and when the line is not the task's own: its event names
+another run than the task is in, or the chat it is drawn in does not
+coordinate that run. After it the line and the task's row say `Stopped by you`,
 the row's detail gives the sentence above and your reason, and `Start it
 again` on that row is your Start. A stopped task is not shown as failed or
 as needing attention anywhere: you held it.
+
+The confirm opens with the keyboard on `Keep it running`: Enter or Space
+again cancels, a key held down answers nothing, and Tab to `Stop worker`
+then Enter stops. `Start it again` asks nothing first, like the page's
+other Starts; a held key presses it once, and a press that repeats the one
+that opened its row does not land on it. While the plan holds the task, or
+a reopen of it is not told yet, `Start it again` is switched off with that
+reason beside it, as `Start next attempt` and `Start retry` are.
+
+**A plan back with you does not hide what went wrong.** When a task you
+approved failed, is blocked, failed its check or was stopped by you, and
+the plan then comes back for a task added since, the run panel draws the
+plan and the rows and totals together. `No worker starts until you approve`
+is said only while the host would refuse every start: a retry of an
+approved task that failed, or your Start of one you stopped, is not held by
+the plan, and the card then says `What you approved before goes on. The
+rest waits for this.`
 
 **A replaced task does not start again.** Superseding a blocked or failed
 task (`supersedes` on `orchestration_task_create`) takes back the retry the

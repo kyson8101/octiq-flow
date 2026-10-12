@@ -566,12 +566,15 @@ folded line and are not part of this.
   the card is anchored (on the composer and growing up, or in the transcript
   and growing down), the pointer that opened it is never left over that
   card's own answer.
-- **A repeated press is dropped** (`cardFold.strayPress`, `CardFold`'s
-  document listener). Shutting the lower of two stacked cards brings the upper
-  one down, and its Allow can arrive under a pointer that has not moved. A
-  press within 700 ms and 8 px of the one on a disclosure, landing on anything
-  but that disclosure, does nothing; a pointer that moved, or a press made
-  later, goes through.
+- **A repeated press is dropped** (`cardFold.strayPress`, kept by
+  `lib/pressGuard`'s document listener). Shutting the lower of two stacked
+  cards brings the upper one down, and its Allow can arrive under a pointer
+  that has not moved. A press within 700 ms and 8 px of the one on a
+  disclosure (`pressGuard.notePress`), landing on anything but that
+  disclosure, does nothing; a pointer that moved, or a press made later, goes
+  through. The run panel's disclosures are remembered by the same guard (see
+  **An action that stops or starts work is never fired by the key or press
+  that brought it on screen**).
 - **The question card folds nothing.** Its options and what each means are the
   decision, and it has controls on every side of where a disclosure could go,
   so opening or shutting one would slide a control under the pointer. Its
@@ -969,13 +972,50 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
     notice on its next pass (about two seconds) and asks a transcript that
     gave none again after 4, 8, 16 and 32 seconds, then once a minute: a
     minute in, it has failed five times and is at its slowest. Before that
-    it is the ordinary moment between a reopen and its notice. It is
-    measured from the oldest reopen still owed (`reopens[].at`, the host's
-    clock) against this browser's clock.
+    it is the ordinary moment between a reopen and its notice.
+  - **That minute is counted on one clock.** The reopen's stamp is the
+    host's and is never compared with the browser's `Date.now()`: a browser
+    five minutes fast warned at once, and one five minutes slow about six
+    minutes late. It runs from when this page first saw the hold
+    (`taskHold.seeHolds`, recorded as `orchestrationFeed` reads a ledger and
+    as a surface draws one) to the reader's `now`, both the page's clock.
+    The ledger may also say it on the host's clock alone: a task the host
+    stamped a minute after the reopen, in an answer that still says the
+    notice is owed, and then a page loaded late warns at once. A hold is
+    keyed by its task and the reopen that is owed, so a later reopen is a
+    new hold. Nothing ticks for it: `useHoldClock` sets one timer for the
+    moment the earliest hold lasts, so the warning arrives in a run where
+    nothing else moves. First sights are in memory: a reload starts the
+    minute over unless the ledger shows it has passed.
   - A task the person stopped is left `failed` by the host and did not
     fail: it is not stuck (`isStuck`), not an attention count, not a
     failure on the strip, and its row offers the one start the host
-    accepts, `Start it again` (`retryOf` the stopped attempt).
+    accepts, `Start it again` (`retryOf` the stopped attempt). The strip
+    says `1 stopped` as its second count where no other run, failure or
+    worker takes it, with or without a plan to approve.
+- **One reader decides whether the page may start a task**
+  (`taskHold.startControl`, `startBlocker`). A task has at most one control
+  that starts an attempt, and `StartButton` draws every one of them: `Start
+  it again` (the person's Start of the attempt they stopped, and the only
+  start a stopped task offers), `Start next attempt` (ready again after an
+  attempt completed), `Start retry` (failed or blocked, with nothing open
+  that holds it). A start the host would refuse stays on the page switched
+  off (`aria-disabled`, no handler) with the reason beside it, asked in the
+  host's own order (`reserve_attempt_for`): the plan holds the task
+  (`heldByPlan`, which the host says of a failed or blocked task too), its
+  reopen is not told yet (`heldByReopen`), it was replaced. A run that is
+  stopped, closed, completed or archived offers none. A new control that
+  starts an attempt is a `StartKind` there, never a button of its own:
+  Task details used to offer an enabled `Start next attempt` on a reopened
+  task the host held. `taskStart.test.tsx` scans the panel for a second
+  sender and for a start label written outside the reader.
+- **The ledger's status in a task's details is said as the ledger's**
+  (`taskHold.statusLine`): `Ledger status: Working`, kept apart from what
+  the worker's process is doing. A task something holds leads with the
+  hold, `Task: Reopened · notice not yet saved · ledger status: Ready`,
+  `Task: Stopped by you · ledger status: Failed`: never `Task: Ready` of a
+  task that cannot start. `AgentTaskBoard` and `TaskMeter` still print the
+  raw word and are mounted by nothing (only their tests import them).
 - **A chat that coordinates several runs has one line** (`chatStrip`): a
   run that waits on the person outranks a newer one that runs, a failure
   outranks plain progress, the decisions of every run of the chat are
@@ -1020,17 +1060,37 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
   draft, only while the host's `heldByPlan` says the plan holds it. A host
   that sends the field for no task of the run leaves both reading the
   run's own approval, as before.
-- **A plan back with the person is the whole run only while it holds
-  every task still open** (`orchestration.planHoldsRun`). The host holds
-  only what they have not approved, and starts the rest beside the card.
-  The panel used to draw any pending plan as the run: no rows, no totals,
-  `No worker starts until you approve`, beside tasks the host was starting.
-  With a task not held (or one running or blocked), its rows and figures
-  are drawn with the plan, the tab panel says `The tasks you have not
-  approved start once the plan above is approved. The ones you approved
-  before go on.`, and the card says `What you approved before goes on. The
-  rest waits for this.` A host that says `heldByPlan` of no task reads as
-  before.
+- **A plan waiting for approval never hides work the person must see, and
+  never says nothing can start while the host would start something.** Two
+  facts, two readers, and neither stands in for the other:
+  - *Whether the plan stands in for the run's rows* is asked of the rows
+    themselves (`runProgress.planStandsIn`): every row is done (completed
+    without a failed check), closed (cancelled or replaced), or has not
+    started because the plan holds it. A task that failed, is blocked,
+    completed with a failed check, was stopped by the person, is running,
+    waits on anybody, or is approved and waiting its turn is a row, and the
+    plan is then drawn beside the rows and the run's totals: what failed
+    first under Running in the danger colour, a stopped task with `Stopped
+    by you` and its `Start it again`. A mission draws its rows always, and
+    its totals by this rule too. `planHoldsRun` counted failed,
+    completed-with-a-failed-check and stopped as finished, and hid all
+    three behind the card.
+  - *Whether nothing starts* is the host's to say
+    (`taskHold.planHoldsEveryStart`): only while nothing is running and
+    `heldByPlan` is true of every task that could take a worker (unstarted,
+    failed or blocked; a completed, cancelled or replaced task takes none).
+    Then the card says `No worker starts until you approve.` and the line
+    under it `The tasks start once the plan above is approved.`; otherwise
+    `What you approved before goes on. The rest waits for this.` and `The
+    tasks you have not approved start once the plan above is approved. The
+    ones you approved before go on.` A mission is a Draft only while this
+    holds. The host starts a retry of an approved task that failed while
+    the plan waits, and the card used to say no worker starts.
+  A new place that chooses between the plan and the rows asks the first; a
+  new sentence about what starts asks the second. A host that says
+  `heldByPlan` of no task reads as before for the sentence (a pending plan
+  holds every start) and for an unstarted task's row; a task of its that
+  failed, is blocked or was stopped is a row all the same.
 - **Whether an attempt can go on is the host's sentence, not the page's**
   (`runWaits.decisionSummary`). `continuation: "unavailable"` was read as
   `cannot resume; a new attempt is needed`. The host sends it for a safety
@@ -1107,11 +1167,57 @@ app's dialog (`components/Confirm`, never `window.confirm`). The ledger
 decides whether it is offered: a worker on the task and this its latest
 reopening. Otherwise the control is off (`aria-disabled`) with the reason
 beside it: no worker yet, finished, reopened again since, ledger not read.
+**Stop belongs to the line's run.** The line is an event in one chat's
+transcript and its task is found in the whole ledger by id, so both ends
+are asked before anything is said of the task: the event's `runId` is the
+run the task is in, and the chat the line is drawn in (`ReopenedChatContext`,
+which `MessageList` provides) coordinates that run. An event of another
+run, a chat that no longer coordinates it, or a transcript with no chat
+known gets the control off with the reason, and what the ledger says is
+asked again when the question is answered.
 After a stop the line says `Stopped by you. Only your Start starts it again:
 Start is on its row in the run panel.` in place of the control. The line
 takes the ledger and the command from `TaskStopContext`, which `App`
 provides: a module of the transcript must not import the socket bridge or
 the ledger feed, which open a connection on import.
+
+**An action that stops or starts work is never fired by the key or press
+that brought it on screen** (`lib/pressGuard`). With focus on Stop, Enter
+opened the question, the focus went to its confirming button, and a second
+Enter stopped the worker. Three guards, and a new control that stops or
+starts something takes the ones that apply:
+
+- **A question puts the focus on its safe answer** (`components/Confirm`,
+  and `CompleteChatConfirm`, which asks the same way through
+  `useCarefulAnswer`). A second Enter or Space cancels. Tab to the
+  confirming button and Enter is an answer, and Escape cancels, as before.
+  The comment that said Enter was not wired to the confirming button was
+  never true of a focused button. Every question is drawn anew, so one that
+  replaced another has the focus on its safe answer too.
+- **A held key answers nothing** (`heldKey`, `dropHeld`): the repeats of
+  Enter and Space are dropped inside a question, on every start control and
+  on Stop of a reopened line.
+- **A pointer press that repeats the one that opened something does not
+  land on what it opened.** A question remembers the press it was opened
+  with (`lastPointerPress`) and its confirming answer drops a repeat in the
+  same spot (`strayAnswer`, the cards' 700 ms and 8 px). `Start it again`,
+  `Start next attempt` and `Start retry` have no question in front of them,
+  like the page's other Starts, so the disclosures that bring them on
+  screen are remembered by the cards' guard (`notePress`): a row's
+  disclosure, its Task details, a group's fold and `N more`. So are the
+  panel's own Stop, Close mission, Abandon and Archive buttons, each of
+  which is replaced where it stands by the question it opens. A row that
+  opens under the pointer cannot start a worker.
+
+Who asks through the shared `Confirm` is listed in `Confirm.test.tsx`,
+which fails when a caller is added without it: closing a mission after its
+chat was completed (`App`), discarding or overwriting a file (`EditorMode`,
+`FilePanel`), deleting a project (`ProjectSettings`) or a saved command
+(`TerminalDrawer`), and stopping a task's worker (`ReopenedNote`). Not
+through it: deleting a chat has its own countdown, the run panel's Stop,
+Close, Abandon and Archive are its own inline questions, whose safe answer
+already had the focus, and Remove on an agent's or a team's row in Settings
+asks nothing at all (the host refuses an agent with work in progress).
 
 **A chat row that changes place moves there** (`lib/rowMotion`): the list is
 sorted by activity, and a row that only changed position used to be
