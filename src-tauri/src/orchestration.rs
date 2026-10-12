@@ -34,6 +34,8 @@ pub mod bridge;
 pub mod brief;
 pub mod consent;
 pub mod destination;
+#[cfg(test)]
+mod ending_tests;
 pub mod environments;
 pub mod execution;
 #[cfg(test)]

@@ -6346,6 +6346,39 @@ impl ChatManager {
         };
     }
 
+    /// A stand-in under `key` that takes what is written to it, in a turn
+    /// or between two: what a Stop or an interrupt has something to do to.
+    pub(crate) fn test_hold(&self, key: &str, agent: ChatAgent, busy: bool) -> TestChild {
+        let mut child = stand_in::echo()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a stand-in agent");
+        let stdin = child.stdin.take();
+        self.sessions.lock().unwrap().insert(
+            key.to_string(),
+            Arc::new(Mutex::new(ChatSession {
+                launch_id: "test-launch".into(),
+                user_turn_id: None,
+                answering: None,
+                child,
+                stdin,
+                codex: None,
+                agent,
+                busy,
+                last_active: Instant::now(),
+                cut_off: CutOff::No,
+                leaving: None,
+            })),
+        );
+        self.test_child(key)
+    }
+
+    /// The process under `key`, to ask after once the chat has let go of it.
+    pub(crate) fn test_child(&self, key: &str) -> TestChild {
+        TestChild(self.sessions.lock().unwrap().get(key).cloned().unwrap())
+    }
+
     /// End a stand-in from `test_launch`, as the chat ending would.
     pub(crate) fn test_end(&self, key: &str) {
         end_process(self, key).expect("end the stand-in");
@@ -6356,6 +6389,30 @@ impl ChatManager {
     pub(crate) fn test_seat(&self, session_key: &str, chat_key: &str) {
         let sessions = self.sessions.lock().unwrap();
         self.grant_capability(&sessions, session_key, chat_key, "test-launch");
+    }
+}
+
+/// A stand-in's process, held past the session table (`test_child`).
+#[cfg(test)]
+pub(crate) struct TestChild(Arc<Mutex<ChatSession>>);
+
+#[cfg(test)]
+impl TestChild {
+    /// Whether the process is still running.
+    pub(crate) fn alive(&self) -> bool {
+        matches!(self.0.lock().unwrap().child.try_wait(), Ok(None))
+    }
+
+    /// Whether the process ends within a few seconds: a kill is asked for,
+    /// and the exit is seen a moment later.
+    pub(crate) fn gone(&self) -> bool {
+        for _ in 0..500 {
+            if !self.alive() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
     }
 }
 
@@ -6776,6 +6833,10 @@ fn decode_attachment(data_base64: &str) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+#[path = "ending_tests.rs"]
+mod ending_tests;
 
 #[cfg(test)]
 mod upload_tests {

@@ -1385,6 +1385,32 @@ fn publish_block(block: BlockedAction) -> bool {
     true
 }
 
+/// A Codex safety card for a chat in the project at `cwd`, as a refused
+/// command leaves one. Answers the card's id.
+#[cfg(test)]
+pub(crate) fn test_codex_card(chat_key: &str, cwd: &str) -> String {
+    remember_project(chat_key, cwd);
+    let detail = format!("refused for {chat_key}");
+    assert!(publish(
+        chat_key,
+        "This command reads credentials.".into(),
+        detail.clone()
+    ));
+    with_pending(|pending| {
+        pending
+            .values()
+            .find(|block| block.chat_key == chat_key && block.detail == detail)
+            .map(|block| block.id.clone())
+            .expect("the card just published")
+    })
+}
+
+/// Whether the card `id` is still waiting for an answer.
+#[cfg(test)]
+pub(crate) fn test_is_pending(id: &str) -> bool {
+    with_pending(|pending| pending.contains_key(id))
+}
+
 fn presentation(summary: &str) -> (&'static str, &'static str) {
     let lower = summary.to_ascii_lowercase();
     let external = (lower.contains("external") || summary.contains("外部"))

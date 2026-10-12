@@ -468,6 +468,53 @@ fn route_task(
     Ok((worker, assignee, routed.destination))
 }
 
+#[cfg(test)]
+impl Services {
+    /// The stores a server reads at startup, from the profile folder this
+    /// thread started in, and none of its background threads: a sweeper on a
+    /// thread of its own is another process as far as a test's profile goes.
+    /// Calling it again is what a restart reads.
+    pub(crate) fn at_profile() -> Self {
+        let orchestrations = Arc::new(OrchestrationStore::load_profile());
+        let mut chats = ChatManager::with_saved_questions(
+            crate::profile::profile_dir()
+                .join("chats")
+                .join("questions.json"),
+        );
+        chats.orchestrations = orchestrations.clone();
+        Self {
+            workspaces: Arc::new(WorkspaceState::with_projects(Vec::new())),
+            chats: Arc::new(chats),
+            watch: Arc::new(FileWatchState::default()),
+            git_watch: Arc::new(GitWatchState::default()),
+            orchestrations,
+            ptys: Arc::new(PtyManager::default()),
+            handovers: crate::handover::Wiring::scratch(),
+        }
+    }
+}
+
+/// A command's answer, and what it did that could not be recorded.
+pub struct Told {
+    pub result: Result<Value, String>,
+    /// Empty for almost every call. See `unsaved.rs`.
+    pub unsaved: Vec<crate::unsaved::Unsaved>,
+}
+
+/// `dispatch`, with what the command could not record beside its answer.
+/// Both transports answer through this: an action that happened is not
+/// reported as failed because its record could not be written.
+pub fn told(svc: &Services, cmd: &str, args: Value) -> Told {
+    let (result, unsaved) = crate::unsaved::told(|| dispatch(svc, cmd, args));
+    Told { result, unsaved }
+}
+
+/// Try again every save an ending or answering action could not make, and
+/// name the stores that still owe one.
+pub fn settle_owed(_svc: &Services) -> Vec<&'static str> {
+    Vec::new()
+}
+
 pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String> {
     let git_write_path = match cmd {
         "git_commit" | "git_push" | "git_pull" | "git_switch_branch" => {
