@@ -493,14 +493,30 @@ folded line and are not part of this.
   `\u{202E}`, set apart as a mark (`cardFold.commandDrawn`): the control
   characters U+0000 to U+001F and U+007F, but for the tab, the line feed and
   a carriage return that a line feed follows; then U+00A0, U+00AD, U+061C,
-  U+200B to U+200F, U+2028 to U+202E, U+2060, U+2066 to U+2069 and U+FEFF.
-  One full-strength line under the block says how many the whole command
-  holds. Only the drawing changes: `notShown` and what Allow sends are the
-  text itself. Past `MARKS_MAX` (5,000) the codes are written into the text
-  without an element each. Left out on purpose, for a later decision: the
-  wider Unicode spaces (U+2000 to U+200A, U+202F, U+205F, U+3000, ordinary
-  in Chinese and Japanese text), U+2061 to U+2064, U+206A to U+206F, U+180E,
-  the Hangul fillers and the tag characters.
+  U+115F, U+1160, U+180E, U+200B to U+200F, U+2028 to U+202E, U+2060 to
+  U+2064, U+2066 to U+206F, U+3164, U+FEFF, U+FFA0 and the tag characters
+  U+E0001 to U+E007F. One full-strength line under the block says how many
+  the whole command holds. Only the drawing changes: `notShown` and what
+  Allow sends are the text itself.
+  - **A wider space is marked too, outside CJK text.** U+2000 to U+200A,
+    U+202F, U+205F and U+3000 draw as a gap and are not a space to a shell
+    (`rm -rf a<U+3000>b` is one path). Each is drawn as its code unless the
+    run it is in has a CJK character on BOTH sides (Han, kana, Hangul, CJK
+    and full-width punctuation), where it is how the text is written. One
+    side is not enough: beside a Latin word, a quote, or the start or end of
+    a line it is marked. This is the whole rule; it applies only in a
+    command, script or code block, like every mark.
+  - **Past `MARKS_MAX` (5,000) a code is still never text that was typed.**
+    Up to that many, each code is an element of its own and is told from the
+    same characters typed into the command by how it is drawn. Past it the
+    codes are written into the text with no element each, so a backslash
+    typed before `u{` is written as `\u{005C}`: what is drawn then has one
+    reading back to the command, and the line under the block says so. The
+    card decides which way for the whole command (`marksInText`) and draws
+    both of its texts that way.
+  - **The scan is a table, not a pattern** (`cardFold.eachMarked`). A
+    pattern matched 5,000,000 times took 2.4 s to count and 12 s to size
+    when the card arrived; the table takes 0.1 s.
 - **The lines a command card states are the rows it draws**, for any mix of
   `\n`, `\r\n` and a return alone. A Windows line end is drawn as the pair
   it is, with no mark at the end of every line; a return anywhere else is
@@ -529,7 +545,13 @@ folded line and are not part of this.
   opened in part, and its card cannot approve it: the card says `This command
   is too long to show in full (N characters), so it cannot be allowed here.
   Deny it and ask for it in smaller steps.` and its approving buttons stay
-  off for good (`tooLong`, `tooLongNote`). What is still on the card differs
+  off for good (`tooLong`, `tooLongNote`). **For a command the limit is on
+  what is drawn** (`cardFold.drawnChars`, `CommandFold.drawn`), not on what
+  is sent: a character drawn as its code is eight characters for one, so
+  5,000,000 zero-width characters were within the limit and drew 40,000,000,
+  8.6 s to open. Past `WHOLE_MAX` as drawn the command is not opened either,
+  and the card gives both sizes (`N characters, M as drawn`). Nothing is cut
+  to keep to the bound. What is still on the card differs
   by kind. A command keeps what any folded command has, its leading whole
   lines with `N more lines not shown` under them, and has no control to open
   it. A plan, an older host's change text or a route's first message or brief
@@ -911,7 +933,9 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
   or archived; a card the page still holds is not.** Its buttons are on the
   person's screen, so it is counted wherever it is said, and the row that
   holds a decision of the person's says Needs you whatever became of its
-  task.
+  task. An archived run that still holds one is not put behind Archived
+  (`runPanel.splitArchived`): it stays with the runs on screen, and its
+  heading keeps the decision's count beside Restore.
 - **Four states, in this order:** Needs you, Failed (a failed task, a block
   with no decision open, a check whose verdict is fail, none of them
   replaced, and only while nothing waits on the person), Done, Running. A
@@ -919,6 +943,39 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
   whole count. A stopped, closed or archived run, and a run with no task,
   draws no strip, unless something in it waits on the person: then the
   line is drawn, and a run with nothing to count yet says `No tasks yet`.
+- **The count of work is asked of the host's facts, never of a row's
+  state** (`runProgress.countsAsWork`): a task is counted when it completed,
+  or when it is not cancelled, not replaced (`supersededBy`) and its run was
+  not stopped. A row's state asks the person first, so a replaced task
+  whose card is still up is a row under Needs you; counted by that state it
+  came back into the total (`Tasks 0/2` with one task owed). Done is asked
+  the same way. A run on the line only for such a card says `Run stopped`
+  or `No tasks left`, never `No tasks yet`.
+- **A task the host would refuse to start says what holds it**
+  (`lib/taskHold`, one function for every surface that names a task's
+  state). Three things hold a task that has not started, each a fact the
+  host sends and each said in the words of the host's own refusal:
+  `stopped` (the person stopped its worker: `Stopped by you`, and only their
+  Start starts it again), `heldByPlan` (`Waiting for plan approval`), and
+  `heldByReopen` (`Reopened · notice not yet saved`: it was reopened and the
+  notice of that is not confirmed on disk). None is a decision asked of the
+  person: no Needs you, no count, no badge. The row sits with what has not
+  started, first in its group, with a Held mark, the hold as its line and
+  the host's sentences in its tooltip and its opened detail; the Agents
+  page says the same words. A reopened task used to read `Ready to start`
+  there while every start of it was refused.
+  - The warning colour is for a reopen held longer than a minute
+    (`REOPEN_LASTED_MS`), and for nothing else here. The host confirms a
+    notice on its next pass (about two seconds) and asks a transcript that
+    gave none again after 4, 8, 16 and 32 seconds, then once a minute: a
+    minute in, it has failed five times and is at its slowest. Before that
+    it is the ordinary moment between a reopen and its notice. It is
+    measured from the oldest reopen still owed (`reopens[].at`, the host's
+    clock) against this browser's clock.
+  - A task the person stopped is left `failed` by the host and did not
+    fail: it is not stuck (`isStuck`), not an attention count, not a
+    failure on the strip, and its row offers the one start the host
+    accepts, `Start it again` (`retryOf` the stopped attempt).
 - **A chat that coordinates several runs has one line** (`chatStrip`): a
   run that waits on the person outranks a newer one that runs, a failure
   outranks plain progress, the decisions of every run of the chat are
@@ -963,6 +1020,31 @@ tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
   draft, only while the host's `heldByPlan` says the plan holds it. A host
   that sends the field for no task of the run leaves both reading the
   run's own approval, as before.
+- **A plan back with the person is the whole run only while it holds
+  every task still open** (`orchestration.planHoldsRun`). The host holds
+  only what they have not approved, and starts the rest beside the card.
+  The panel used to draw any pending plan as the run: no rows, no totals,
+  `No worker starts until you approve`, beside tasks the host was starting.
+  With a task not held (or one running or blocked), its rows and figures
+  are drawn with the plan, the tab panel says `The tasks you have not
+  approved start once the plan above is approved. The ones you approved
+  before go on.`, and the card says `What you approved before goes on. The
+  rest waits for this.` A host that says `heldByPlan` of no task reads as
+  before.
+- **Whether an attempt can go on is the host's sentence, not the page's**
+  (`runWaits.decisionSummary`). `continuation: "unavailable"` was read as
+  `cannot resume; a new attempt is needed`. The host sends it for a safety
+  card the person still has to answer on an attempt that is also blocked on
+  a gate, and for a refusal the worker carries on past: both false. The
+  row's chip gives the host's `recovery`, is never `cannot resume` for a
+  decision that is the person's, and calls a refusal nobody can approve
+  `Refusal recorded`.
+- **The page is tested against the ledger as the host serialises it**
+  (`web/src/lib/__fixtures__/host`, loaded by `hostFacts.ts`; the README
+  there says which host test answers each and how to record it again).
+  Never hand-edit one. A field the page reads from the host is first read
+  from one of these: a fixture written by hand is how the three readings
+  above came to be wrong.
 - **Hiding the strip** is remembered against what it said
   (`octiq.v2.runStripHidden`, one signature per run): it comes back when a
   task settles, something asks or something fails, and not because a worker
@@ -1005,6 +1087,19 @@ the same event read twice draws once. A line is one reopening (the task,
 the attempt it starts and the host's stamp): the host numbers the attempt a
 reopening will start, so a task reopened twice before it is dispatched says
 the same attempt both times and still draws two lines.
+
+**Opened, and only opened, the line offers Stop** (`taskReopened.reopenedStop`,
+`ReopenedLine`). It is the one thing the person can do about words they did
+not approve: the page's own `orchestration_task_stop`, asked first in the
+app's dialog (`components/Confirm`, never `window.confirm`). The ledger
+decides whether it is offered: a worker on the task and this its latest
+reopening. Otherwise the control is off (`aria-disabled`) with the reason
+beside it: no worker yet, finished, reopened again since, ledger not read.
+After a stop the line says `Stopped by you. Only your Start starts it again:
+Start is on its row in the run panel.` in place of the control. The line
+takes the ledger and the command from `TaskStopContext`, which `App`
+provides: a module of the transcript must not import the socket bridge or
+the ledger feed, which open a connection on import.
 
 **A chat row that changes place moves there** (`lib/rowMotion`): the list is
 sorted by activity, and a row that only changed position used to be

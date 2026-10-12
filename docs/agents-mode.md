@@ -1231,7 +1231,13 @@ here, so the task waits for it:
   not start: …`. The line may already show in that chat: it is sent to the
   page as it is written, before it is confirmed. The ready wave passes it
   over, and the task says `heldByReopen: true` in `orchestration_snapshot`,
-  in every view. The key is left out otherwise.
+  in every view. The key is left out otherwise. The page says it wherever
+  it names the task's state (its row in the run panel, the Agents page):
+  `Reopened · notice not yet saved`, with this refusal's words behind it,
+  and never `Ready to start`. It asks nothing of you, so it is no "Needs
+  you". If it has stayed that way for a minute, which is where the back-off
+  below has run out, the row takes the warning colour and adds what the
+  refusal says of a hold that lasts.
 - The host writes the notice right after the ledger, and again on every pass
   of the scheduler (about every two seconds) until it holds
   (`deliver_reopen_notices`). A transcript that gives no confirmation is
@@ -1281,6 +1287,15 @@ it does no agent and no host recovery starts it: your Start on its row
 (`orchestration_worker_start` with `retryOf` the stopped attempt) does, and so
 does your approval of a plan it is put back on. Before this the only stop the
 page had was the whole run (`orchestration_run_stop`).
+
+On the page, Stop is on the reopening's own line in the coordinator's chat,
+once you have opened it to read the new instructions: `Stop this task…`, then
+a confirm. It is off, with the reason beside it, while no worker is on the
+task (not started yet, finished, or reopened again since: Stop is then on
+the later line). After it the line and the task's row say `Stopped by you`,
+the row's detail gives the sentence above and your reason, and `Start it
+again` on that row is your Start. A stopped task is not shown as failed or
+as needing attention anywhere: you held it.
 
 **A replaced task does not start again.** Superseding a blocked or failed
 task (`supersedes` on `orchestration_task_create`) takes back the retry the
