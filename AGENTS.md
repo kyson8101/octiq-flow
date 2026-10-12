@@ -1075,6 +1075,18 @@ chat is open opens it as before, and from the next load the browser
 remembers that the chat coordinates. The split is never made by the
 ledger's first answer, or by the chat list's, under what is already drawn.
 
+**A linked chat that is not open yet is not drawn as a new conversation**
+(`lib/arrivingChat`). On a cold open of `#/p/<project>/c/<chat>` no chat is
+open until the chat list answers, and the composer drawn in that moment was
+a new conversation's, with its project-and-branch row: 42px that left when
+the chat opened (206 to 165px, 0.0215 of layout shift). The page keeps the
+id the address asked for until a chat is on screen, the linked one is
+called unavailable, or three seconds have passed since the chat list
+answered; a composer drawn meanwhile has no such row (0.002 to 0.004 with
+the chat list answering before the ledger). The other order is not covered
+by this: when the ledger answers first, the empty page becomes the chat
+with its run column in one step, 0.26, as it did before.
+
 **A task the coordinator reopened is one folded line in its chat**
 (`lib/taskReopened`, `ReopenedNote`). A coordinator may reopen an approved
 task with new instructions and no new approval, and the page has to show
