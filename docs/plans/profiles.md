@@ -33,15 +33,45 @@ all state from disk; no live teardown).
   on every call and fell back whenever that failed, which split a running
   server across two folders (transcripts, chat index, roster and vault
   settings in one; ledger, project list and questions in the other).
+- **Never made again, never mistaken, never read as empty (2026-10-12).**
+  Three rules hold for a folder that goes while the server runs:
+  - *Never made again.* After launch the profile folder is only found.
+    Every folder the host makes goes through one function that, for a path
+    in the profile, makes only what is below the profile folder, so nothing
+    can put an empty profile where the real one was, however the moment is
+    timed.
+  - *Never mistaken.* The folder in use is the directory the server took,
+    not whatever is at its path. The server leaves a mark for the run on
+    the owner lock's line (`owner.lock`: `pid kind mark`) and every "is the
+    folder there" reads it back. A folder made at the same path, or a link
+    to another one, has no such mark: the host writes nothing into it and
+    answers with its own sentence (`… is not the folder OctiqFlow started
+    with …`). Put the original back and everything works again; restart to
+    use the new one. A second server that starts in the new folder writes
+    its own mark, and the first then stops writing. Known limits: a copy
+    of the folder with its lock, made while the server runs and put at the
+    path, passes; deleting `owner.lock` by hand reads as replaced until a
+    restart.
+  - *Never read as empty.* A store read from a folder that is not there is
+    an error carrying the folder's sentence, not the value of a first run.
+    Settings does not draw a blank form it would let the person save over
+    their own rules: the preferences and agent-policy boxes are locked and
+    the vault form is not drawn when their load failed.
 - **What the page can ask: `profile_status`** (read-only, no arguments) →
   `{ dir, fallbackFrom, available, notice }`. `dir` is the folder in use.
   `fallbackFrom` is the configured base when the server started on the
-  default one, else `null`. `available` is whether the folder is there
-  right now. `notice` is the sentence to show, or `null` when there is
-  nothing to say: the fallback sentence while the folder is there, and the
-  not-available sentence (the same one a refused send answers) while it is
-  not. The page does not draw it yet; today the words reach the person as
-  the error of the action they tried, and on the server's log.
+  default one, else `null`. `available` is whether the folder at that path
+  is there right now AND is the one the server started with. `notice` is
+  the sentence to show, or `null` when there is nothing to say: the
+  fallback sentence while the folder is there, and otherwise the
+  not-available or the replaced sentence (the same one a refused send or a
+  failed read answers). The page does not draw it yet; today the words
+  reach the person as the error of the action they tried, and on the
+  server's log.
+- **For the page (OCTIQ FE), not built:** a retry on the three Settings
+  forms after a failed load (today: leave Settings and come back), the
+  same lock on any future form that loads a whole value and saves it, and
+  drawing `profile_status`.
 
 ## Target layout
 
