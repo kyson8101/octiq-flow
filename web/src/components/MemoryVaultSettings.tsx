@@ -12,6 +12,10 @@ export function MemoryVaultSettings() {
   const [config, setConfig] = useState<VaultConfig>(emptyConfig);
   const [path, setPath] = useState("");
   const [loading, setLoading] = useState(true);
+  // The host could not read the vault's settings (its profile folder is
+  // away). The form is not drawn then: it would show no vault connected, and
+  // connecting one from it would replace settings nobody saw.
+  const [unread, setUnread] = useState(false);
   const [saving, setSaving] = useState(false);
   const [finding, setFinding] = useState(false);
   const [picker, setPicker] = useState(false);
@@ -27,7 +31,7 @@ export function MemoryVaultSettings() {
     let alive = true;
     bridge.invoke<VaultConfig>("memory_vault_settings").then((value) => {
       if (alive) { setConfig(value); setPath(value.path); }
-    }).catch((reason) => { if (alive) setError(String(reason)); })
+    }).catch((reason) => { if (alive) { setUnread(true); setError(String(reason)); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; request.current++; };
   }, []);
@@ -70,7 +74,7 @@ export function MemoryVaultSettings() {
       <h2 id="memory-vault-title">Shared Memory Vault</h2>
       <p>One place for Claude, Codex, and your other agents to share knowledge.</p>
     </div></header>
-    {loading ? <p role="status">Loading vault settings…</p> : <>
+    {loading ? <p role="status">Loading vault settings…</p> : unread ? null : <>
       <form className="vault-connect" onSubmit={(event) => { event.preventDefault(); void configure({ path: path.trim(), writable: path.trim() === config.path && config.writable }); }}>
         <label htmlFor="vault-path">Vault folder on the server</label>
         <div className="vault-input-row">

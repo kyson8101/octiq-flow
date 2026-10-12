@@ -886,14 +886,23 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &svc.chats,
             &arg::<String>(&args, "key")?,
         )),
-        "chat_since" => Ok(json!(crate::agent_chat::chat_since(
-            arg(&args, "key")?,
-            arg(&args, "after")?,
-        ))),
-        "chat_page" => to_value(crate::transcript::page(
-            &arg::<String>(&args, "key")?,
-            arg(&args, "before")?,
-        )),
+        // A record read from a profile folder that is not there is not a
+        // conversation with nothing in it: the page gets the reason, and
+        // keeps what it has drawn.
+        "chat_since" => {
+            crate::profile::available()?;
+            Ok(json!(crate::agent_chat::chat_since(
+                arg(&args, "key")?,
+                arg(&args, "after")?,
+            )))
+        }
+        "chat_page" => {
+            crate::profile::available()?;
+            to_value(crate::transcript::page(
+                &arg::<String>(&args, "key")?,
+                arg(&args, "before")?,
+            ))
+        }
         // The list the page draws first, before it has read the ledger. A
         // chat that coordinates a run the person has not archived says so
         // (`coordinatesRun: true`), so the page can hold the run column
@@ -916,7 +925,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             }
             Ok(chats)
         }
-        "chat_index_deleted" => Ok(json!(crate::agent_chat::chat_index_deleted())),
+        "chat_index_deleted" => {
+            crate::profile::available()?;
+            Ok(json!(crate::agent_chat::chat_index_deleted()))
+        }
         // Where this chat is and what became of its work. The report half is
         // whatever the agent last said; everything else is checked with git on
         // the way out (`chat_task.rs`).

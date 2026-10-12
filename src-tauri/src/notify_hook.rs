@@ -94,7 +94,9 @@ fn apply_patch(alert: Alert, patch: HookPatch) -> Option<Alert> {
 /// Path of the user's hook, if it exists and is a file. A directory or a
 /// missing entry means "no hook".
 fn hook_path() -> Option<PathBuf> {
-    let path = crate::profile::profile_dir().join("notify-hook");
+    // Only the hook in the folder the server started with is the person's:
+    // a file of that name in a folder put at the same path is not run.
+    let path = crate::profile::available().ok()?.join("notify-hook");
     path.is_file().then_some(path)
 }
 

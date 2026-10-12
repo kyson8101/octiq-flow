@@ -329,17 +329,27 @@ fn ledger_path() -> Option<PathBuf> {
 }
 
 fn load(path: &Path) -> Ledger {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            // A torn ledger costs the snapshots and unconfirmed intents, not
-            // the chats' lines or their duplicate guard, which are in the
-            // transcripts. Keep it for a person to read.
-            eprintln!("memory_activity: unreadable ledger, starting over: {error}");
-            let _ = fs::rename(path, path.with_extension("json.corrupt"));
-            Ledger::default()
-        }),
-        Err(_) => Ledger::default(),
-    }
+    load_to_write(path).unwrap_or_default()
+}
+
+/// The ledger, for a call that will write it back. No file, in a profile
+/// that is there, is an empty ledger. A profile folder that is not there is
+/// an error: an empty ledger written back once the folder returned would
+/// replace every intent and snapshot the real one holds.
+fn load_to_write(path: &Path) -> Result<Ledger, String> {
+    Ok(
+        match crate::profile::read(path, |error| error.to_string())? {
+            Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                // A torn ledger costs the snapshots and unconfirmed intents, not
+                // the chats' lines or their duplicate guard, which are in the
+                // transcripts. Keep it for a person to read.
+                eprintln!("memory_activity: unreadable ledger, starting over: {error}");
+                let _ = fs::rename(path, path.with_extension("json.corrupt"));
+                Ledger::default()
+            }),
+            None => Ledger::default(),
+        },
+    )
 }
 
 /// Write the whole ledger in place of the old one: synced, renamed, and the
@@ -506,9 +516,16 @@ fn record_locked(
     emit: &impl Fn(&str, Value) -> Option<u64>,
     out: &mut Recorded,
 ) -> Result<(), Crashed> {
+    let ledger = match load_to_write(path) {
+        Ok(ledger) => ledger,
+        Err(error) => {
+            eprintln!("memory_activity: could not read the ledger, nothing recorded: {error}");
+            return Ok(());
+        }
+    };
     let mut book = Book {
         path,
-        ledger: load(path),
+        ledger,
         dirty: true,
     };
     let old = book
@@ -748,9 +765,12 @@ fn recover_at(
         return out;
     }
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ledger) = load_to_write(path) else {
+        return out;
+    };
     let mut book = Book {
         path,
-        ledger: load(path),
+        ledger,
         dirty: false,
     };
     for (id, chat, owed) in owed {

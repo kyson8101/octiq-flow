@@ -268,24 +268,27 @@ struct Store {
 /// report at once, and the loser of that race would otherwise erase the winner.
 static LOCK: Mutex<()> = Mutex::new(());
 
-fn path() -> Option<PathBuf> {
-    Some(crate::transcript::chats_dir()?.join("task-status.json"))
+fn path() -> Result<PathBuf, String> {
+    Ok(crate::transcript::chats_folder()?.join("task-status.json"))
 }
 
-fn read() -> Store {
-    let Some(path) = path() else {
-        return Store::default();
-    };
-    match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
-        Err(_) => Store::default(),
-    }
+/// The stored record. No file, in a profile that is there, is an empty
+/// one. A profile folder that is not there is an error, never an empty
+/// record: whoever read "empty", added one chat to it and wrote it back
+/// would have replaced every other chat's status with that one.
+fn read() -> Result<Store, String> {
+    Ok(
+        match crate::profile::read(&path()?, |error| error.to_string())? {
+            Some(raw) => serde_json::from_slice(&raw).unwrap_or_default(),
+            None => Store::default(),
+        },
+    )
 }
 
 /// Write the whole file through a temporary and a rename, so a process that
 /// dies mid-write leaves the previous record rather than half of the new one.
 fn write(store: &Store) -> Result<(), String> {
-    let path = path().ok_or("could not find the profile folder")?;
+    let path = path()?;
     let body = serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?;
     let temp = path.with_extension("json.tmp");
     fs::write(&temp, body).map_err(|e| e.to_string())?;
@@ -323,7 +326,7 @@ pub fn reports_for_chat_keys<'a>(
     if keys.is_empty() {
         return Default::default();
     }
-    let store = read();
+    let store = read().unwrap_or_default();
     keys.into_iter()
         .filter_map(|key| {
             let id = key.strip_prefix("chat:")?;
@@ -348,7 +351,7 @@ pub fn chat_task_report_impl(
     }
     {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut store = read();
+        let mut store = read()?;
         let entry = store.chats.entry(chat_id.clone()).or_default();
         entry.report = Some(TaskReport {
             objective,
@@ -390,7 +393,7 @@ pub fn chat_task_set_target_impl(
     }
     {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut store = read();
+        let mut store = read()?;
         let entry = store.chats.entry(chat_id.clone()).or_default();
         entry.target = Some(TaskTarget {
             branch,
@@ -423,7 +426,7 @@ pub fn chat_task_set_release_check_impl(
         command: clean(command),
     };
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut store = read();
+    let mut store = read()?;
     if check.configured() {
         store.projects.insert(project_id, check.clone());
     } else {
@@ -435,7 +438,7 @@ pub fn chat_task_set_release_check_impl(
 
 /// This chat's status, verified unless it was verified moments ago.
 pub fn chat_task_impl(chat_id: String, refresh: bool) -> Result<TaskStatus, String> {
-    let store = read();
+    let store = read()?;
     let mut stored = store.chats.get(&chat_id).cloned().unwrap_or_default();
     let fresh = verified_at()
         .lock()
@@ -473,7 +476,7 @@ pub fn chat_task_impl(chat_id: String, refresh: bool) -> Result<TaskStatus, Stri
             != Some(stored.project_id.clone())
     {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut store = read();
+        let mut store = read()?;
         let entry = store.chats.entry(chat_id.clone()).or_default();
         entry.workspace = workspace.clone();
         entry.delivery = delivery.clone();
@@ -522,7 +525,10 @@ fn assemble(chat_id: String, stored: Stored, store: &Store) -> TaskStatus {
 /// its branch was at. `chat_recover` reads this to put back a folder that has
 /// since been removed, which is exactly when nothing on disk can say.
 pub(crate) fn remembered(chat_id: &str) -> (Option<Workspace>, Option<Delivery>) {
-    let stored = read().chats.remove(chat_id).unwrap_or_default();
+    let stored = read()
+        .ok()
+        .and_then(|mut store| store.chats.remove(chat_id))
+        .unwrap_or_default();
     (stored.workspace, stored.delivery)
 }
 
@@ -538,7 +544,10 @@ pub(crate) fn expire(chat_id: &str) {
 /// Forget one chat's record, for a chat that is being deleted.
 pub fn forget(chat_id: &str) {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut store = read();
+    // A record that cannot be read is left as it is.
+    let Ok(mut store) = read() else {
+        return;
+    };
     if store.chats.remove(chat_id).is_some() {
         let _ = write(&store);
     }
@@ -805,7 +814,10 @@ const RELEASE_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 /// status board asks once git says its branch is merged. Same rule as a chat:
 /// a project nobody taught answers `None`.
 pub fn release_status(project_id: &str, root: &str, head: &str) -> (Option<bool>, String) {
-    let check = read().projects.get(project_id).cloned().unwrap_or_default();
+    let check = read()
+        .ok()
+        .and_then(|store| store.projects.get(project_id).cloned())
+        .unwrap_or_default();
     check_release(root, head, &check)
 }
 

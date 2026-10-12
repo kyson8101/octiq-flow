@@ -204,11 +204,14 @@ impl Store {
     }
 
     fn read(&self) -> Result<Snapshot, String> {
-        match fs::read(self.root.join("state.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+        let read = crate::profile::read(&self.root.join("state.json"), |e| {
+            format!("Could not read sandbox state: {e}")
+        })?;
+        match read {
+            Some(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|_| "Sandbox state is unreadable; it has not been overwritten.".into()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Snapshot::default()),
-            Err(e) => Err(format!("Could not read sandbox state: {e}")),
+            // No file, in a profile that is there: no sandbox made yet.
+            None => Ok(Snapshot::default()),
         }
     }
 

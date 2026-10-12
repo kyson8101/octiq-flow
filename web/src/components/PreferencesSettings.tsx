@@ -15,12 +15,15 @@ export function PreferencesSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
+  // The host could not read what is saved (its profile folder is away). A
+  // blank form is not offered then: saving it would replace words nobody saw.
+  const [unread, setUnread] = useState(false);
 
   useEffect(() => {
     let alive = true;
     loadPersonalPreferences()
       .then((value) => { if (alive) { setSaved(value.text); setText(value.text); } })
-      .catch((reason) => { if (alive) setError(String(reason)); })
+      .catch((reason) => { if (alive) { setUnread(true); setError(String(reason)); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
@@ -39,28 +42,31 @@ export function PreferencesSettings() {
       <h2 id="preferences-title">Personal preferences</h2>
       <p>How you like every agent to work with you, in your own words.</p>
     </div></header>
-    <PreferencesBlock saved={saved} text={text} loading={loading} busy={busy} done={done}
+    <PreferencesBlock saved={saved} text={text} loading={loading} busy={busy} done={done} unread={unread}
       onChange={(next) => { setText(next); setDone(false); }}
       onSave={() => void save(text)} onClear={() => void save("")} />
     {error && <p className="set-warn" role="alert">{error}</p>}
   </section>;
 }
 
-export function PreferencesBlock({ saved, text, loading, busy, done, onChange, onSave, onClear }: {
+export function PreferencesBlock({ saved, text, loading, busy, done, unread = false, onChange, onSave, onClear }: {
   saved: string;
   text: string;
   loading: boolean;
   busy: boolean;
   done: boolean;
+  /** What is saved could not be read: nothing can be typed or saved over it. */
+  unread?: boolean;
   onChange: (text: string) => void;
   onSave: () => void;
   onClear: () => void;
 }) {
   const changed = text.trim() !== saved.trim();
   const over = charCount(text) > PERSONAL_PREFERENCES_MAX;
+  loading = loading || unread;
   return (
     <form className="agent-policy" aria-labelledby="preferences-field"
-      onSubmit={(event) => { event.preventDefault(); if (changed && !over) onSave(); }}>
+      onSubmit={(event) => { event.preventDefault(); if (changed && !over && !unread) onSave(); }}>
       <div className="team-field-head">
         <h3 id="preferences-field">Added to every chat</h3>
         <CharCounter text={text} max={PERSONAL_PREFERENCES_MAX} />

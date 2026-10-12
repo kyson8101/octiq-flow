@@ -224,9 +224,11 @@ struct Unreadable;
 /// is shared by every test in this module, and a test that wrote nonsense into
 /// it would break the others.
 fn read_path(path: &std::path::Path) -> Result<Index, Unreadable> {
-    match fs::read_to_string(path) {
-        Ok(raw) => serde_json::from_str(&raw).map_err(|_| Unreadable),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Index::default()),
+    // "No file" is an empty index only in a profile folder that is there
+    // (`profile::read`): one that went as this was read is unknown, not empty.
+    match crate::profile::read(path, |error| error.to_string()) {
+        Ok(Some(raw)) => serde_json::from_slice(&raw).map_err(|_| Unreadable),
+        Ok(None) => Ok(Index::default()),
         Err(_) => Err(Unreadable),
     }
 }

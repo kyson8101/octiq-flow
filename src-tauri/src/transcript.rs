@@ -54,9 +54,15 @@ pub struct Recorded {
 /// someone's chats. They share one temporary profile per test binary, or
 /// stand in a profile of their own (`profile::started_in`).
 pub(crate) fn chats_dir() -> Option<PathBuf> {
+    chats_folder().ok()
+}
+
+/// `chats_dir`, or why there is none, in the profile's own words: for what
+/// answers the person, where "not found" would read as "nothing saved".
+pub(crate) fn chats_folder() -> Result<PathBuf, String> {
     let dir = crate::profile::profile_dir().join("chats");
-    crate::profile::make_dir(&dir).ok()?;
-    Some(dir)
+    crate::profile::make_dir(&dir)?;
+    Ok(dir)
 }
 
 /// Where a chat's record lives. `None` when the key is not a safe file name —
@@ -980,6 +986,13 @@ pub fn forget(key: &str) {
 /// The count goes too, or a chat started again under the same name would
 /// number its first event as though the deleted one were still there.
 pub(crate) fn forget_file(path: &Path) -> bool {
+    // Nothing is removed from a folder that is not the server's own.
+    if path
+        .parent()
+        .is_some_and(|dir| crate::profile::create_dir_all(dir).is_err())
+    {
+        return false;
+    }
     let record = identity(path);
     let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     // Whether or not there was a file: what is there afterwards is not
@@ -1015,6 +1028,13 @@ pub(crate) fn rewrite_numbered(
     path: &Path,
     mut edit: impl FnMut(u64, &[u8]) -> Option<String>,
 ) -> std::io::Result<bool> {
+    // The path was found in a listing made a while ago (a compaction pass
+    // walks every record): the folder it names is asked now whether it is
+    // still the server's own, so a record of the same name in a folder put
+    // at that path is not rewritten.
+    if let Some(dir) = path.parent() {
+        crate::profile::create_dir_all(dir)?;
+    }
     let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     let temp = path.with_extension("jsonl.rewrite");
     // Whether a line this replaced was a host event's: one a receipt may

@@ -448,6 +448,37 @@ pub fn make_dir(dir: &Path) -> Result<(), String> {
     create_dir_all(dir).map_err(|e| e.to_string())
 }
 
+/// **Read a file a store keeps in the profile: what it holds, `None` when
+/// the file is not there in a profile that is, and an error when the
+/// profile is not.** The two look the same to `fs::read`, and they are
+/// opposite facts: no file in a profile that is there is a first run, and
+/// its answer is the store's default; no file because the folder is away
+/// says nothing about what is saved. Read as a default, the page drew a
+/// blank form over the person's saved rules and an ordinary Save wrote the
+/// blank form's text over them once the folder was back.
+///
+/// The folder is asked after the read, so one that went, or was swapped,
+/// while the read ran is caught too. `worded` puts a store's own words on
+/// any other failure; the profile's sentence is never wrapped.
+///
+/// A path outside the profile is read as `fs::read` reads it. A store that
+/// keeps its state in memory does not come through here after startup: it
+/// goes on answering, and its saves fail in the profile's words.
+pub fn read(
+    path: &Path,
+    worded: impl FnOnce(std::io::Error) -> String,
+) -> Result<Option<Vec<u8>>, String> {
+    let read = fs::read(path);
+    if let Some(why) = with_pinned(|pinned| pinned.holds(path).and_then(|_| pinned.missing())) {
+        return Err(why);
+    }
+    match read {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(worded(error)),
+    }
+}
+
 /// Why a write to `path` failed, for the person: the words of `available`
 /// when the cause is that the profile folder is gone, else the system's own.
 pub fn write_error(path: &Path, error: std::io::Error) -> String {

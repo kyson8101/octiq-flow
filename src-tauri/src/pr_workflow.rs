@@ -136,9 +136,7 @@ impl Default for Store {
 static LOCK: Mutex<()> = Mutex::new(());
 
 fn store_path() -> Result<PathBuf, String> {
-    crate::transcript::chats_dir()
-        .map(|dir| dir.join(STORE_FILE))
-        .ok_or_else(|| "Could not find the profile chats folder.".to_string())
+    Ok(crate::transcript::chats_folder()?.join(STORE_FILE))
 }
 
 fn workflow_key(root: &str, number: u64) -> String {
@@ -149,10 +147,12 @@ fn workflow_key(root: &str, number: u64) -> String {
 }
 
 fn read_store(path: &Path) -> Result<Store, String> {
-    let raw = match fs::read(path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Store::default()),
-        Err(error) => return Err(format!("Could not read PR workflows: {error}")),
+    let read = crate::profile::read(path, |error| {
+        format!("Could not read PR workflows: {error}")
+    })?;
+    // No file, in a profile that is there: no workflow recorded yet.
+    let Some(raw) = read else {
+        return Ok(Store::default());
     };
     let store: Store = serde_json::from_slice(&raw)
         .map_err(|error| format!("Saved PR workflows could not be read: {error}"))?;
@@ -336,10 +336,12 @@ fn validate_chat(chat_id: &str, root: &str) -> Result<(), String> {
 /// read-only and preserve host-owned delivery state.
 fn is_recorded_worker(chat_id: &str) -> Result<bool, String> {
     let path = crate::profile::profile_dir().join("orchestrations.json");
-    let raw = match fs::read(&path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("Could not validate the linked chat: {error}")),
+    let read = crate::profile::read(&path, |error| {
+        format!("Could not validate the linked chat: {error}")
+    })?;
+    // No ledger, in a profile that is there: no run has had a worker.
+    let Some(raw) = read else {
+        return Ok(false);
     };
     let value: serde_json::Value = serde_json::from_slice(&raw)
         .map_err(|error| format!("Could not validate the linked chat: {error}"))?;

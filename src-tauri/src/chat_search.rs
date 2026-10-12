@@ -122,8 +122,7 @@ pub fn search(
             .into_iter()
             .map(|workspace| (workspace.id, workspace.name))
             .collect();
-    let root = crate::transcript::chats_dir()
-        .ok_or_else(|| "The chat archive is unavailable.".to_string())?;
+    let root = crate::transcript::chats_folder()?;
     let mut guard = SEARCH_STATE.lock().map_err(|e| e.to_string())?;
     if guard.as_ref().is_none_or(|state| state.root != root) {
         *guard = Some(SearchState {

@@ -86,11 +86,12 @@ impl Vault {
     }
 
     fn load_config(&self) -> Result<Config, String> {
-        match fs::read(self.profile.join("memory-vault.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+        let path = self.profile.join("memory-vault.json");
+        match crate::profile::read(&path, |e| e.to_string())? {
+            Some(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|e| format!("Cannot read Memory Vault settings: {e}")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(e.to_string()),
+            // No file, in a profile that is there: no vault connected yet.
+            None => Ok(Config::default()),
         }
     }
 
@@ -264,8 +265,9 @@ impl Vault {
     }
 
     fn load_receipt(&self, id: &str) -> Result<Receipt, String> {
-        serde_json::from_slice(&fs::read(self.receipt_path(id)?).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())
+        let bytes = crate::profile::read(&self.receipt_path(id)?, |e| e.to_string())?
+            .ok_or("No receipt has that ID.")?;
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())
     }
 
     fn reconcile(&self, receipt: &mut Receipt) -> Result<(), String> {

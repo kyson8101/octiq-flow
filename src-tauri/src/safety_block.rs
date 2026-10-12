@@ -712,11 +712,11 @@ fn authorization_path() -> PathBuf {
 }
 
 fn read_authorizations(path: &Path) -> Result<AuthorizationStore, String> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
+    match crate::profile::read(path, |e| e.to_string())? {
+        Some(bytes) => serde_json::from_slice(&bytes)
             .map_err(|_| "Saved safety authorizations could not be read.".to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AuthorizationStore::default()),
-        Err(e) => Err(e.to_string()),
+        // No file, in a profile that is there: nothing authorized yet.
+        None => Ok(AuthorizationStore::default()),
     }
 }
 

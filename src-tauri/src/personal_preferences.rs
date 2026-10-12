@@ -45,11 +45,11 @@ fn now_ms() -> i64 {
 }
 
 fn read(path: &Path) -> Result<Preferences, String> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| format!("Personal preferences could not be read: {e}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Preferences::default()),
-        Err(e) => Err(format!("Personal preferences could not be read: {e}")),
+    let unread = |e: &dyn std::fmt::Display| format!("Personal preferences could not be read: {e}");
+    match crate::profile::read(path, |e| unread(&e))? {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| unread(&e)),
+        // No file, in a profile that is there: none written yet.
+        None => Ok(Preferences::default()),
     }
 }
 

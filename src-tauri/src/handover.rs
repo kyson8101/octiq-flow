@@ -507,11 +507,11 @@ fn now_ms() -> i64 {
 }
 
 fn read(path: &Path) -> Result<Stored, String> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| format!("Saved handovers could not be read: {e}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Stored::default()),
-        Err(e) => Err(format!("Saved handovers could not be read: {e}")),
+    let unread = |e: &dyn std::fmt::Display| format!("Saved handovers could not be read: {e}");
+    match crate::profile::read(path, |e| unread(&e))? {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| unread(&e)),
+        // No file, in a profile that is there: no handover yet.
+        None => Ok(Stored::default()),
     }
 }
 
