@@ -120,7 +120,9 @@ const server = await createServer({
 const errors = [];
 const report = { artifacts, theme, wideFont, classic, scenes: {} };
 
-async function open(browser, snapshot, { width, height, phone = false }) {
+/** `tap` sees every command the page sends (`tap.sent`) and may hold one
+ *  back unanswered (`tap.hold(request)`), as a slow host would. */
+async function open(browser, snapshot, { width, height, phone = false }, tap = null) {
   const { stored, resultFor } = mock(snapshot);
   const context = await browser.newContext({
     viewport: { width, height }, reducedMotion: "reduce",
@@ -142,6 +144,8 @@ async function open(browser, snapshot, { width, height, phone = false }) {
   await context.routeWebSocket(/.*/, (socket) => socket.onMessage((raw) => {
     const request = JSON.parse(String(raw));
     if (request.t !== "invoke") return;
+    tap?.sent.push(request);
+    if (tap?.hold?.(request)) return;
     socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
   }));
   const page = await context.newPage();
@@ -352,6 +356,135 @@ function checkStrip(label, item, strip, out) {
   if (item.row.failure === "coordinator") assert.match(strip.title, /1 failure with the coordinator, which is fixing it: nothing is asked of you\./, `${label}: said in the tooltip only`);
 }
 
+/** A gate's answer is the person's decision the moment it is sent, with no
+ *  question in front of it (review 3, H1). So, in the real App, on the
+ *  host's own escalated ledger:
+ *
+ *  - a press that repeats one just made on something else in the same spot
+ *    sends nothing, for an option and for the written Answer;
+ *  - the repeats of a held Enter are dropped;
+ *  - a press that is the person's own sends one answer, every control of
+ *    the gate is off until the host answers, and is still off when the
+ *    run panel is drawn anew (another chat, and back);
+ *  - a gate that does not wait on the person is not sent through the
+ *    person's door at all. */
+async function gateAnswers(browser) {
+  const scene = SCENES.find((each) => each.name === "escalated");
+  const size = { width: 1280, height: 900 };
+  const resolves = (tap) => tap.sent.filter((request) => request.cmd === "orchestration_gate_resolve");
+  const out = report.gate = {};
+  /** A press on what stands over `at`, and its repeat 40 ms later in the
+   *  same spot, which lands on whatever is under it by then. The repeat is
+   *  made in the page, so the guard's 700 ms is never missed on a loaded
+   *  machine; the reviewer's probe makes it with the mouse. */
+  const pressTwice = async (page, at) => {
+    await page.evaluate(([x, y]) => {
+      const layer = document.createElement("div");
+      layer.id = "stood-here";
+      Object.assign(layer.style, { position: "fixed", inset: "0", zIndex: "99999", background: "transparent" });
+      layer.addEventListener("click", () => {
+        layer.remove();
+        setTimeout(() => {
+          const under = document.elementFromPoint(x, y);
+          window.__repeatedOn = under?.className ?? null;
+          under?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y, detail: 2, view: window }));
+        }, 40);
+      });
+      document.body.append(layer);
+    }, at);
+    await page.mouse.click(...at);
+    await page.waitForFunction(() => typeof window.__repeatedOn === "string");
+    await page.waitForTimeout(150);
+    return page.evaluate(() => { const on = window.__repeatedOn; window.__repeatedOn = undefined; return on; });
+  };
+
+  for (const control of ["option", "written"]) {
+    const tap = { sent: [] };
+    const { context, page } = await open(browser, await ledger(scene.file), size, tap);
+    await openRunPanel(page, scene);
+    const gate = page.locator(".orch-gate").first();
+    await gate.waitFor();
+    const label = `gate ${control}`;
+    if (control === "written") await gate.locator(".orch-gate-write input").fill("Start it again once the linker is fixed");
+    const button = control === "option" ? gate.locator(".orch-gate-options button").first() : gate.locator(".orch-gate-write button");
+    await button.scrollIntoViewIfNeeded();
+    const box = await button.boundingBox();
+    const at = [box.x + box.width / 2, box.y + box.height / 2];
+    const mine = out[control] = {};
+    mine.note = (await gate.locator(".orch-gate-door").textContent())?.trim();
+    assert.equal(mine.note, "Answered here as your own decision.", `${label}: where the answer goes is said in words`);
+
+    // A press aimed at what stood here, repeated onto the control.
+    await page.waitForTimeout(800);
+    mine.repeatedOn = await pressTwice(page, at);
+    assert.match(mine.repeatedOn, /orch-gate-answer/, `${label}: the repeat landed on the control`);
+    assert.equal(resolves(tap).length, 0, `${label}: a press that repeats one made on something else answers nothing`);
+
+    // A held key.
+    mine.heldDropped = await button.evaluate((el) => {
+      el.focus();
+      const held = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+      el.dispatchEvent(held);
+      return held.defaultPrevented;
+    });
+    assert.equal(mine.heldDropped, true, `${label}: the repeats of a held Enter are dropped`);
+    assert.equal(resolves(tap).length, 0, `${label}: and answer nothing`);
+
+    // The person's own press: one answer, and off until the host has answered.
+    await page.waitForTimeout(800);
+    tap.hold = (request) => request.cmd === "orchestration_gate_resolve";
+    await page.mouse.click(...at);
+    await page.waitForFunction(() => [...document.querySelectorAll(".orch-gate .orch-gate-answer")].every((el) => el.getAttribute("aria-disabled") === "true"));
+    assert.equal(resolves(tap).length, 1, `${label}: the person's press sends one answer`);
+    mine.sent = resolves(tap)[0].args;
+    assert.equal(mine.sent.gateId, (await ledger(scene.file)).gates[0].id, `${label}: for this gate`);
+    assert.equal(mine.sent.resolution, control === "option" ? "Start it again" : "Start it again once the linker is fixed", `${label}: with what was chosen`);
+    await page.waitForTimeout(800);
+    await page.mouse.click(...at);
+    await page.mouse.click(box.x + 4, box.y + 4);
+    await page.waitForTimeout(150);
+    assert.equal(resolves(tap).length, 1, `${label}: nothing more is sent while that answer is out`);
+    // Another chat and back: the run panel is drawn anew, and so is the gate.
+    await page.locator("li[data-row]").filter({ hasText: "Another conversation" }).first().click();
+    await gate.waitFor({ state: "detached" });
+    await page.locator("li[data-row]").filter({ hasText: "Move the export controls" }).first().click();
+    await openRunPanel(page, scene);
+    await gate.waitFor();
+    await page.waitForTimeout(800);
+    mine.offAfterRemount = await gate.locator(".orch-gate-answer").evaluateAll((all) => all.map((el) => el.getAttribute("aria-disabled")));
+    assert(mine.offAfterRemount.length > 0 && mine.offAfterRemount.every((off) => off === "true"), `${label}: drawn again, its controls are still off (${mine.offAfterRemount})`);
+    const again = await gate.locator(".orch-gate-options button").first().boundingBox();
+    await page.mouse.click(again.x + again.width / 2, again.y + again.height / 2);
+    await page.waitForTimeout(150);
+    assert.equal(resolves(tap).length, 1, `${label}: and a press on them sends nothing`);
+    await page.screenshot({ path: join(artifacts, `${tag}-gate-${control}-out.png`) });
+    await context.close();
+  }
+
+  // Changed for this check, as the reviewer changed it: the same gate said
+  // to wait on the coordinator. It is listed under Open decisions, and the
+  // page does not send the person's door for it.
+  const others = await ledger(scene.file);
+  others.gates[0].awaits = "coordinator";
+  const tap = { sent: [] };
+  const { context, page } = await open(browser, others, size, tap);
+  await openRunPanel(page, scene);
+  const gate = page.locator(".orch-decisions.is-others .orch-gate").first();
+  await gate.waitFor();
+  out.others = {
+    send: (await gate.locator(".orch-gate-write button").textContent())?.trim(),
+    note: (await gate.locator(".orch-gate-door").textContent())?.trim(),
+  };
+  assert.equal(out.others.send, "Send to main chat", "a gate that does not wait on the person: its words go to the main chat");
+  assert.equal(out.others.note, "This does not wait on you. What you write goes to the coordinator as a message; it decides.", "and it says so");
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: join(artifacts, `${tag}-gate-others.png`) });
+  await gate.locator(".orch-gate-options button").first().click();
+  await page.waitForTimeout(300);
+  assert.equal(resolves(tap).length, 0, "a gate that does not wait on the person is never answered through the person's door");
+  await context.close();
+}
+
 let browser;
 try {
   await server.listen();
@@ -366,6 +499,7 @@ try {
       await scene(browser, item, size);
     }
   }
+  if (!only || only === "gate") await gateAnswers(browser);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, ...report }, null, 1));
 } catch (error) {

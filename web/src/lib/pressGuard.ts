@@ -1,7 +1,7 @@
 // A press or a key that was not aimed at what it reached.
 //
 // An action that stops or starts work is never fired by the key or the
-// press that brought it on screen. Three things can do that, and each has
+// press that brought it on screen. Four things can do that, and each has
 // its guard here:
 //
 // - A pointer press on something that opens (a disclosure, a row, a group)
@@ -14,6 +14,11 @@
 //   question's confirming answer, which is drawn where the page puts it and
 //   not where the pointer was aimed. The question remembers the press that
 //   opened it (`lastPointerPress`) and drops that repeat (`strayAnswer`).
+// - A control that answers where it stands, with no question in front of
+//   it (a gate's options and its Answer), has no opener of its own to
+//   remember: whatever brought it under the pointer was pressed somewhere
+//   else. It drops a press that repeats the one made just before on
+//   anything but itself (`repeatsAnother`, `strayOnto`).
 // - A key held down repeats. The repeats of Enter and Space answer nothing
 //   (`heldKey`, `dropHeld`), so a key that opened something cannot also
 //   answer it; a key pressed again is a new press, and lands on whatever
@@ -69,13 +74,18 @@ export function notePress(event: { detail: number; clientX: number; clientY: num
   document.addEventListener("click", dropStray, true);
 }
 
-/** The last pointer press anywhere on the page. */
-let lastPointer: Press | null = null;
+/** The last pointer press anywhere on the page, the one before it, and
+ *  what each landed on. */
+type Landed = Press & { on: EventTarget | null };
+let lastPointer: Landed | null = null;
+let pointerBefore: Landed | null = null;
 if (typeof document !== "undefined") {
   // Before `dropStray`, which is added on a first disclosure press at the
   // earliest, so a press it drops is still the latest one known here.
   document.addEventListener("click", (event) => {
-    if (event.detail !== 0) lastPointer = { x: event.clientX, y: event.clientY, at: performance.now() };
+    if (event.detail === 0) return;
+    pointerBefore = lastPointer;
+    lastPointer = { x: event.clientX, y: event.clientY, at: performance.now(), on: event.target };
   }, true);
 }
 
@@ -83,4 +93,29 @@ if (typeof document !== "undefined") {
  *  one that opened it. `null` before any. */
 export function lastPointerPress(): Press | null {
   return lastPointer;
+}
+
+/** Whether a click on a control repeats a pointer press that was made on
+ *  something else: in the same spot, a moment before. That press was aimed
+ *  at what stood there then (a badge that brought the control on screen, a
+ *  disclosure, a row that has since moved), and its repeat is not an answer.
+ *  A second press on the control itself is the person's own, and a key
+ *  press (`detail` 0) has no spot. */
+export function strayOnto(prior: Press | null, click: Press & { detail: number }, sameControl: boolean): boolean {
+  return click.detail !== 0 && !sameControl && strayPress(prior, click);
+}
+
+/** `strayOnto`, asked of a click as its handler runs. The document's own
+ *  listener has already noted this click, so the press it may repeat is the
+ *  one before it. A control that answers where it stands, with no question
+ *  in front of it and no opener of its own to remember, asks this. */
+export function repeatsAnother(event: { detail: number; clientX: number; clientY: number; currentTarget: Element }): boolean {
+  const prior = pointerBefore;
+  if (!prior) return false;
+  const same = typeof Node !== "undefined" && prior.on instanceof Node && event.currentTarget.contains(prior.on);
+  const stray = strayOnto(prior, { x: event.clientX, y: event.clientY, at: performance.now(), detail: event.detail }, same);
+  // A press that was dropped was not a press on this control: a third in
+  // the same spot repeats it, and is dropped too.
+  if (stray && lastPointer) lastPointer = { ...lastPointer, on: null };
+  return stray;
 }

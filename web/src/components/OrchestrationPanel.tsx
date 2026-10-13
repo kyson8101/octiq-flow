@@ -46,16 +46,17 @@ import {
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
 import { planHoldsEveryStart, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
-import { dropHeld, notePress } from "../lib/pressGuard";
+import { gateFlight, IN_FLIGHT, once, useInFlight } from "../lib/inFlight";
+import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
 import { useCarefulAnswer } from "./Confirm";
 import { useHoldClock } from "../lib/useHoldClock";
 import "./RunProgress.css";
 
 import {
-  CHECK_FAILED_LABEL, checkFailed, deliveryTone, EMPTY_ORCHESTRATION as EMPTY, failureShown, isFailureGate, isPeerRequestGate, isSettled, shownRunStatus, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  CHECK_FAILED_LABEL, checkFailed, deliveryTone, EMPTY_ORCHESTRATION as EMPTY, failureShown, gateDoor, isSettled, shownRunStatus, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
-  type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
+  type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type GateDoor, type OrchestrationMessage, type OrchestrationNotification,
 } from "../lib/orchestration";
 export type { OrchestrationSnapshot } from "../lib/orchestration";
 
@@ -252,36 +253,44 @@ export function OrchestrationPanel({
     }
   };
 
-  const resolveGate = async (run: OrchestrationRun, gate: OrchestrationGate, resolution: string) => {
-    if (readOnly || !resolution.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      // A peer request's gate is answered by the person and by no agent, so
-      // the answer goes to the host, not through the main chat. So does the
-      // answer to a decision the coordinator opened about a failed task: the
-      // person's own answer on the page is what gives the task its retries
-      // back, and the host tells the coordinator to carry it out.
-      if (isPeerRequestGate(gate, snapshot.tasks) || isFailureGate(gate)) {
-        await bridge.invoke("orchestration_gate_resolve", {
-          actorChatKey: run.coordinatorChatKey,
-          gateId: gate.id,
-          resolution: resolution.trim(),
-          resumeTarget: true,
-        });
+  /** Send one gate's answer through the door its controls were drawn for
+   *  (`gateDoor`). One answer to a gate is out at a time, whichever control
+   *  sent it and however often the panel was shut and opened since
+   *  (`lib/inFlight`): the socket's door is the person's own decision, and a
+   *  second one must not follow a first that has not been answered. */
+  const resolveGate = async (run: OrchestrationRun, gate: OrchestrationGate, resolution: string, door: GateDoor) => {
+    if (readOnly || door === "none" || !resolution.trim()) return;
+    const sent = await once(gateFlight(gate.id), async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        // A peer request's gate is answered by the person and by no agent, so
+        // the answer goes to the host, not through the main chat. So does the
+        // answer to a decision the coordinator opened about a failed task: the
+        // person's own answer on the page is what gives the task its retries
+        // back, and the host tells the coordinator to carry it out.
+        if (door === "person") {
+          await bridge.invoke("orchestration_gate_resolve", {
+            actorChatKey: run.coordinatorChatKey,
+            gateId: gate.id,
+            resolution: resolution.trim(),
+            resumeTarget: true,
+          });
+          setAnswers((current) => ({ ...current, [gate.id]: "" }));
+          await read();
+          return;
+        }
+        onOpenChat(run.coordinatorChatKey,
+          `For orchestration gate ${gate.id}:\n\n${gate.question}\n\nMy answer: ${resolution.trim()}\n\nReview this answer and coordinate the next step through orchestration_gate_resolve.`);
         setAnswers((current) => ({ ...current, [gate.id]: "" }));
-        await read();
-        return;
+        onClose();
+      } catch (problem) {
+        setError(messageOf(problem));
+      } finally {
+        setBusy(false);
       }
-      onOpenChat(run.coordinatorChatKey,
-        `For orchestration gate ${gate.id}:\n\n${gate.question}\n\nMy answer: ${resolution.trim()}\n\nReview this answer and coordinate the next step through orchestration_gate_resolve.`);
-      setAnswers((current) => ({ ...current, [gate.id]: "" }));
-      onClose();
-    } catch (problem) {
-      setError(messageOf(problem));
-    } finally {
-      setBusy(false);
-    }
+    });
+    if (sent === IN_FLIGHT) return;
   };
 
   const retryTask = async (run: OrchestrationRun, task: OrchestrationTask, attempt: OrchestrationAttempt) => {
@@ -441,7 +450,7 @@ export function OrchestrationPanel({
       onShowAttention={() => showAttention(run)}
       onArchive={(archived) => void archiveRun(run, archived)}
       onAnswer={(gateId, answer) => setAnswers((current) => ({ ...current, [gateId]: answer }))}
-      onResolve={(gate, answer) => void resolveGate(run, gate, answer)}
+      onResolve={(gate, answer, door) => void resolveGate(run, gate, answer, door)}
       onRetry={(task, attempt) => void retryTask(run, task, attempt)}
       onWorkspaceAction={(command, args) => void workspaceAction(run, command, args)}
       onBridge={(command, args) => void bridgeAction(run, command, args)}
@@ -777,7 +786,7 @@ function RunDetail({
   onShowAttention: () => void;
   onArchive: (archived: boolean) => void;
   onAnswer: (gateId: string, answer: string) => void;
-  onResolve: (gate: OrchestrationGate, answer: string) => void;
+  onResolve: (gate: OrchestrationGate, answer: string, door: GateDoor) => void;
   onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
   onBridge: (command: string, args: Record<string, unknown>) => void;
@@ -965,7 +974,9 @@ function RunDetail({
 
       {/* A gate is "Needs you" only when it is the person's (`lib/runWaits`).
           The others are shown, each saying whose it is, in no decision
-          colour: the person may still write to the main chat about one. */}
+          colour: the person may still write to the main chat about one, and
+          the page sends the person's own door for none of them
+          (`orchestration.gateDoor`). */}
       {[true, false].map((mine) => {
         const listed = open.filter((gate) => mineGates.has(`gate:${gate.id}`) === mine);
         if (!listed.length) return null;
@@ -983,22 +994,8 @@ function RunDetail({
                 : <p className="orch-gate-waits" data-on={gateWaitsOn(gate, tasks)}
                   title={gateWaitsOn(gate, tasks) === "unsaid" ? UNSAID_NOTE : undefined}>{GATE_WAITS[gateWaitsOn(gate, tasks)]}</p>)}
               <p>{gate.question}</p>
-              {!readOnly && gate.options.length > 0 && (
-                <div className="orch-gate-options">
-                  {gate.options.map((option) => (
-                    <button type="button" key={option} disabled={busy} onClick={() => onResolve(gate, option)}>{option}</button>
-                  ))}
-                </div>
-              )}
-              {!readOnly && <div className="orch-gate-write">
-                <input
-                  value={answers[gate.id] ?? ""}
-                  placeholder="Write a decision"
-                  aria-label={`Decision for ${gate.question}`}
-                  onChange={(event) => onAnswer(gate.id, event.target.value)}
-                />
-                <button type="button" disabled={busy || !(answers[gate.id] ?? "").trim()} onClick={() => onResolve(gate, answers[gate.id] ?? "")}>{isPeerRequestGate(gate, tasks) || isFailureGate(gate) ? "Answer" : "Send to main chat"}</button>
-              </div>}
+              {!readOnly && <GateAnswer gate={gate} door={gateDoor(gate, tasks, mine)} mine={mine} busy={busy}
+                value={answers[gate.id] ?? ""} onChange={(text) => onAnswer(gate.id, text)} onResolve={onResolve} />}
             </article>
           ))}
         </section>;
@@ -1685,6 +1682,80 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
       </div>
     </article>
   );
+}
+
+/** What is said under a gate's controls, by where its answer goes. */
+export const GATE_DOOR_NOTE: Record<GateDoor, { mine: string; others: string }> = {
+  person: {
+    mine: "Answered here as your own decision.",
+    others: "",
+  },
+  chat: {
+    mine: "Sent as a message to the coordinator, which records the decision.",
+    others: "This does not wait on you. What you write goes to the coordinator as a message; it decides.",
+  },
+  none: {
+    mine: "",
+    others: "Only you can answer a peer request, and this one does not wait on you. Nothing is sent from here.",
+  },
+};
+
+/** The controls that answer one open gate: its options, and a written
+ *  answer.
+ *
+ *  An answer has no question in front of it, and through the person's door
+ *  it is their decision the moment it is sent, so every control here is
+ *  guarded where it stands (`lib/pressGuard`, `lib/inFlight`):
+ *  - a press that repeats one just made on something else is dropped
+ *    (`repeatsAnother`): the badge that brought the gate on screen, a
+ *    disclosure, whatever stood in this spot a moment before;
+ *  - the repeats of a held Enter or Space answer nothing (`dropHeld`);
+ *  - from the press until the host has answered, every control of the gate
+ *    is off, in this panel and in any other drawing of it (`useInFlight`).
+ *  Off is `aria-disabled`, never removed from the keyboard, and the handler
+ *  itself refuses. */
+function GateAnswer({ gate, door, mine, busy, value, onChange, onResolve }: {
+  gate: OrchestrationGate;
+  door: GateDoor;
+  mine: boolean;
+  busy: boolean;
+  value: string;
+  onChange: (text: string) => void;
+  onResolve: (gate: OrchestrationGate, answer: string, door: GateDoor) => void;
+}) {
+  const flying = useInFlight(gateFlight(gate.id));
+  const noteId = useId();
+  const note = GATE_DOOR_NOTE[door][mine ? "mine" : "others"];
+  if (door === "none") return <p className="orch-gate-door">{note}</p>;
+  const off = busy || flying;
+  const answer = (text: string) => (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (off || !text.trim() || repeatsAnother(event)) {
+      event.preventDefault();
+      return;
+    }
+    onResolve(gate, text, door);
+  };
+  return <>
+    {gate.options.length > 0 && (
+      <div className="orch-gate-options">
+        {gate.options.map((option) => (
+          <button type="button" className="orch-gate-answer" key={option} aria-disabled={off || undefined} aria-describedby={noteId}
+            onKeyDown={dropHeld} onClick={answer(option)}>{option}</button>
+        ))}
+      </div>
+    )}
+    <div className="orch-gate-write">
+      <input
+        value={value}
+        placeholder="Write a decision"
+        aria-label={`Decision for ${gate.question}`}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <button type="button" className="orch-gate-answer" aria-disabled={off || !value.trim() || undefined} aria-describedby={noteId}
+        onKeyDown={dropHeld} onClick={answer(value)}>{flying ? "Sending…" : door === "person" ? "Answer" : "Send to main chat"}</button>
+    </div>
+    <p className="orch-gate-door" id={noteId}>{note}</p>
+  </>;
 }
 
 /** Every control of the panel that starts an attempt. What it starts and

@@ -431,6 +431,31 @@ export function isFailureGate(gate: Pick<OrchestrationGate, "aboutTaskId">): boo
   return !!gate.aboutTaskId;
 }
 
+/** Where the page sends an answer to an open gate, and whether it offers
+ *  one at all.
+ *
+ *  - `person`: the socket's `orchestration_gate_resolve`, which the host
+ *    takes as the person's own decision (it gives a failed task its retries
+ *    back, and it is the only answer a peer request's gate takes). Offered
+ *    only for a gate the one reading says waits on the person (`mine`,
+ *    from `lib/runWaits`): the page does not send the person's door for a
+ *    gate that waits on the coordinator or on nobody.
+ *  - `chat`: a message to the coordinator's chat, which decides and
+ *    resolves the gate itself. It is the person writing to their agent, so
+ *    it is there for any gate an agent can answer, theirs or not.
+ *  - `none`: a peer request's gate that does not wait on the person. No
+ *    agent may answer it, so there is nobody to write to. */
+export type GateDoor = "person" | "chat" | "none";
+
+export function gateDoor(
+  gate: Pick<OrchestrationGate, "taskId"> & Parameters<typeof isFailureGate>[0],
+  tasks: readonly Pick<OrchestrationTask, "id" | "peerRequest">[],
+  mine: boolean,
+): GateDoor {
+  if (isPeerRequestGate(gate, tasks)) return mine ? "person" : "none";
+  return isFailureGate(gate) && mine ? "person" : "chat";
+}
+
 /** A run's status as a surface draws it. The host calls a run `failed` when
  *  a task failed and nothing else is left to run, and `completed` when every
  *  task settled, failed checks included: such a run has not ended while a
