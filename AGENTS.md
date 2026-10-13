@@ -593,13 +593,36 @@ plan by saying so in the chat.
   and has no confirm in front of it, like the page's other Starts. The
   bar's button and every disclosure of the panel are remembered by the
   cards' guard (`notePress`), Start drops a held key (`dropHeld`) and a
-  press that repeats the one the panel was opened with (`strayAnswer`), and
-  it is off from the press until its answer, so two Start turns are never
-  sent. It sits outside the panel's scroller, so nothing an item opens
-  moves it.
+  press that repeats the one the panel was opened with (`strayAnswer`). It
+  sits outside the panel's scroller, so nothing an item opens moves it.
+- **One Start is out for a chat at a time, held by the sender and not by
+  the control** (`useChatPlan.askPlanStart`, `lib/inFlight`). The control
+  is drawn anew every time the panel opens, and it kept "a Start is out" in
+  its own state: shut on a Start the host had not answered and opened
+  again, it was on, and a press sent the same `chat_plan_start` a second
+  time, for Start and for `Tell the agent` (review 3, H2). The hold is the
+  sender's now, by the chat (`planFlight`), and Start and Tell share it: a
+  second ask while one is out sends nothing (`IN_FLIGHT`), whichever
+  control or surface asked, and the control draws `Sending…` from that
+  hold (`useInFlight`), so one mounted while a Start is out is off. What
+  the host said of the last Start is the hook's to keep as well
+  (`planFeed.said`), so a refusal that arrives while the panel is shut is
+  still said. The host records one Start for two at once; the page does
+  not lean on that.
+- **`Tell the agent` is also offered for a Start turn the page can see was
+  not sent** (`planTurn.startTurnLost`). The host leaves `started.told`
+  true when the turn was marked not sent, or was queued by a server that
+  did not live to hand it over, and puts it right on the next ask. For the
+  latest try under the Start's id that the page holds, not sent and not
+  taken up, the panel says `Started 18:06 · the turn that tells the agent
+  was not sent` with the same control. A turn the page does not hold
+  (behind `Load earlier messages`, or cleared) is not told apart from one
+  delivered long ago: nothing is offered for it.
 - **The host's turn is named, not quoted** (`lib/planTurn`): a turn whose id
   starts `octiq-plan-start-` is drawn as `Plan started` with the host's text
-  behind a disclosure, like a completion's wrap-up. Its take-back says
+  behind a disclosure, like a completion's wrap-up, under a mark of its own
+  (`WrapUpNote` with `mark="start"`): a Start is not a completion and does
+  not wear its flag. Its take-back says
   Cancel, takes the turn back and never the Start, and returns nothing to
   the composer (`reclaim` skips it).
 - `scripts/test-plan-panel.mjs` draws the host's four plans in the real App
@@ -791,6 +814,27 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   reason is in words under it (`submitReason`), where it moves nothing.
   `Other…` is the last row of every question with options and shows its
   text box under itself; a question with no options shows the box directly.
+- **A block is whole before it can be sent** (`Batch.missing`,
+  `submitReason`). The host says how many questions a call carried
+  (`batchSize`) and sends them one event each, so a block can be on screen
+  before its last question is. Until every one has arrived the button is
+  off and the reason under it says `Still reading the questions: 1 of 2 has
+  arrived.` With one of two arrived and a recommended option the button was
+  on and sent that one; the host kept it and went on waiting for the other
+  (review 3, H4). What has arrived is counted by what this page was told
+  (`batchesOf`), so a question the page itself took off its list (an older
+  host keeps no record of an answer) still counts and the rest stays
+  answerable. In memory: a reload starts from what the host lists.
+- **A call answered in part is drawn in parts** (`batchParts`). The host
+  takes a call's answers one question at a time and wakes the agent only
+  when every one is in, so a call can be half answered: by another tab, by
+  an older page, by a record read back after a reload. What has an answer
+  is a quiet line and the person's bubble, each answer with its question,
+  under `Answered · the agent waits for 1 more question` (never `saved`:
+  the host calls a record saved only when it is whole); what has none is
+  asked, in the same block. What this page remembers sending is read only
+  for the questions it was sent for (`Sent.ids`): no branch draws from it
+  alone, which is how a question that arrived afterwards was hidden.
 - **It is never answered by the press or the key that was already going
   on.** It arrives under the pointer with an answer already selected, so:
   it never takes the focus (no `autoFocus`; the composer keeps it), the
@@ -801,12 +845,15 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
 - **Answered, it is a quiet line and the person's bubble** (`AnswerBubble`):
   the bare answer for one question, the question and its answer for
   several. The bubble is drawn from what the host holds, never from what
-  the page remembers, so a reload and a second tab draw the same: the
-  question's record while the host lists it, the call's result once it has
-  one (`lib/askAnswer`), or the host's own turn when the answer came after
-  the call had ended. That turn (`octiq-question-<record>`,
+  the page remembers, so delivery, a reload and a second tab draw the same:
+  the question's record while the host lists it, the call's result once it
+  has one (`lib/askAnswer`), the host's `octiq_question_answered` line in
+  the chat's record (next), or the host's own turn when the answer came
+  after the call had ended. That turn (`octiq-question-<record>`,
   `isAnswerTurn`, `answerTurn`) is drawn as the bubble and not as the
-  host's words, where it stands in the conversation.
+  host's words, where it stands in the conversation. What the page
+  remembers of an answer it just sent is shown only until the host's word
+  arrives.
 - **The host keeps an answer that was handed over in the chat's record**
   (`question_store::Record::answered`, `docs/question-delivery.md`, The
   answered line). When an answer reaches the agent while its call waits,
@@ -821,12 +868,32 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   `profile_status.owed`) and written by `settle_notes`, which looks for it
   by `id` first. Review 3 of the batch (H3) found the answer to a Codex
   question gone from the page after delivery and after a reload: nothing a
-  transcript reader finds held it. The page's type is `QuestionAnswered`;
-  drawing a batch it cannot attach to a call from this line is the page's
-  half.
+  transcript reader finds held it.
+- **The page draws a delivered question from that line**
+  (`question.readQuestionAnswered`, `questionBlock.placeAnswered`,
+  `AnsweredInline`). The reducer keeps it as one transcript item for a
+  record (`octiq-answered-<id>`: the same line can be heard twice), with a
+  block of its own kind (`answered`). One rule for every line, whichever
+  way the answer went: it is attached to the `ask_user` call these turns
+  hold for it (the newest call before the line that asked those words and
+  has no line yet; the line is written between a call and its result), and
+  otherwise drawn where the line stands, as the questions asked and the
+  person's bubble. Attached, the call draws the answer (from its result,
+  or from the line before the result is in, so a tab that did not send it
+  draws it too) and the line draws nothing: a question answered through
+  the tool is drawn once. A question the line answers is not also drawn
+  from the pending list while the host still lists it, and the host's late
+  turn for the same record wins over the line. A line that is not whole (no
+  id, no question, an answer that is not text) draws nothing, in part or
+  otherwise.
+- **A Codex question is still drawn at the end of the transcript while it
+  waits.** The provider's own request leaves no tool call in the
+  transcript, so there is no call to draw it at. Answered, it is where its
+  line stands in the record, which is where the conversation had got to.
 - **The bubble is not a message.** No edit, retry, take-back or copy on it,
   no point on the conversation map, not grouped as a turn, and never
-  returned to the composer (`reclaim` skips an answer turn).
+  returned to the composer (`reclaim` skips an answer turn). The record's
+  line is the host's item in the reply's own column, never a person's turn.
 - **The half-states keep their own words** (`answeredNote`): `Answers saved
   · waiting for the agent` only for what is on disk, `Answers sent · not
   saved` with the host's reason behind a disclosure, `Answers need
@@ -1431,28 +1498,44 @@ person is drawn waiting, not working (`lib/chatWait`).
   snapshot). They are named in one place, `pendingActions.WAIT_SOURCES`, and
   the reading says how whole it is (`wholeOf`, `PendingReading.whole`):
   `read` when every one has answered, `unread` while one is still out,
-  `gaveUp` when no more is coming. `waitingChats` turns that into a third
-  answer, a value of the same map: a chat whose checkpoint brought it back
-  parked (`turnClock.parkRestored`) and that no card names is `unknown`
-  while the reading is `unread`. A card is a card however little was read.
-  - **Unknown is drawn as neither.** The composer's line says `Checking
+  `gaveUp` when no more is coming unless they are asked again.
+  `waitingChats` turns that into a third answer, a value of the same map: a
+  chat whose checkpoint brought it back parked (`turnClock.parkRestored`)
+  and that no card names is held until the reading is `read`: `unknown`
+  while it is `unread`, `unchecked` once it is `gaveUp`. A card is a card
+  however little was read.
+  - **Held is drawn as neither.** The composer's line says `Checking
     what waits on you` in grey with the clock stopped and the companion
     still; the chat list and the projects page draw no working mark; the
     task bar says where the work stands, as an idle chat's does, never
     `Working` and never `Needs you`. Every surface has it because it is a
     value of the one map; there is no flag beside it, and no surface reads
     a list's state itself.
-  - **A chat with no restored wait is never unknown.** A turn that starts
+  - **A chat with no restored wait is never held.** A turn that starts
     after the reload is drawn working at once and its clock runs.
   - **A list that fails is asked once more** (`lib/listRead`, three seconds
     on); a second failure is that list not readable on this connection.
     When every source has answered or failed for good, or one has said
     nothing for five minutes (`pendingActions.SILENT_MS`: a request on an
     open socket has no timeout, and a socket that closes fails it and asks
-    again on the next), the reading is `gaveUp` and the page goes on with
-    what it has: a chat no card names is drawn working, as it is for any
-    chat whose cards the page cannot read. A page with no connection has
-    asked nothing and stays `unread`.
+    again on the next), the reading is `gaveUp`. A page with no connection
+    has asked nothing and stays `unread`. A host that has no such list (an
+    older backend: `not available on this backend`) has answered, emptily:
+    it holds no card of that kind (`useChatRequests.lacksCommand`).
+  - **A list that failed or was given up on ends no restored wait.** It
+    proves nothing about what waits, so the held chat is not let go: it is
+    `unchecked`, drawn like `unknown` (no thinking, no working mark, no
+    `Needs you`, the clock standing) under `Could not check what waits on
+    you`, with `Check again` beside the words (a button, never a tooltip).
+    That asks every list again on the connection (`useChatRequests.reread`)
+    and the ledger (`orchestrationFeed.refresh`), and the chat is `unknown`
+    while they are out. Only a read ends it. There is no guess: the page
+    used to let the wait go here and count from there, and a card that came
+    back later took the guessed time off again only when it was the last
+    list to answer (24 of the 120 orders five lists answer in; review 1c).
+    What is left: a chat that is in fact working, behind a list the page
+    cannot read, says it could not check until its turn ends or a read
+    answers. That is the cost of not counting a wait as work.
 - **Never the length of a card list.** The host goes on listing a question
   the person has answered (`status: "saved"`, then `delivered`) until its
   agent has it, so `questions[chat].length` is one while nobody is waited
@@ -1502,8 +1585,8 @@ person is drawn waiting, not working (`lib/chatWait`).
     clock is told the reading's three answers and how whole the reading is
     (`chatWait.seenWait`, `withWait(state, seen, now, whole)`). Unknown
     changes nothing; a card confirms the wait and keeps the moment it
-    began; only a whole reading that names no card ends it, with the time
-    it was held left out. The page used to say `false` for a list it had
+    began; only a whole reading that names no card ends it (`read`, never
+    `unread` and never `gaveUp`), with the time it was held left out. The page used to say `false` for a list it had
     not read: with `question_pending` held back 120 s, `1m 30s` read `3m
     31s`, drawn as thinking, and kept it once the question was back.
     `noteWait` refuses that `false` itself (`unread`), so the rule holds in
@@ -1517,18 +1600,16 @@ person is drawn waiting, not working (`lib/chatWait`).
     there. It can read less than the turn really worked (what was seen
     after the last checkpoint, and the time the lists took, are not kept);
     it never reads time the turn spent waiting, or time nobody saw. That
-    holds in every order the lists arrive in.
-  - *When the page never comes to know* (`gaveUp`): the restored wait is let
-    go on a guess, the time it was held is left out, and the clock goes on
-    from the checkpoint's work with the moment kept (`TurnWaits.guessed`).
-    It is not held for ever. If a list read after that says the chat waits
-    (the silent one answers after all, or a new connection asks them all
-    again), the time since the guess is taken back off the clock: nobody
-    knew it was work. If every list answers and nothing waits, the guess
-    stands. A card that arrives while the page is still giving up is a wait
-    that begins then. A guess never answered is not carried through another
-    reload. What is left: while it guesses, the page says `thinking` for a
-    chat whose card it cannot read, as it does for any such chat.
+    holds in every order the lists arrive in, before and after the page
+    gives up on one (`turnClock.unread.test.tsx` walks all 120, three
+    ways).
+  - *When the page cannot read a list* (`gaveUp`): nothing changes on the
+    clock. The restored wait stays on with the moment it began, the chat is
+    held as `unchecked`, and the person can ask again. A card that a later
+    read finds confirms the wait, so there is nothing to take back; every
+    list read with no card ends it there, with all the time held left out.
+    A checkpoint an earlier build wrote may still hold a guess
+    (`guessed`): the time from it to the save is left out on restore.
   - *Without one* (a chat never saved or evicted from the twelve kept, one
     read in pages, storage blocked): neither comes back. The turn starts
     when the page joined it, as for any turn joined part-way, and the wait
@@ -1549,6 +1630,15 @@ person is drawn waiting, not working (`lib/chatWait`).
 - **The chat list** draws no working mark on a row whose chat waits
   (`Sidebar`'s `waiting`); its pending badge is unchanged. `busy` still
   means a turn is on record there, which is what holds Archive.
+- **A pending badge is the colour of what it says**
+  (`pendingActions.pendingTone`, `data-tone` on the badge): `--decide` for
+  what waits on the person's decision (a permission, a question, a gate, a
+  plan, a handover), `--warn` for a problem they are told of (a refused
+  action to review, the safety check down, an answer not delivered), and
+  `--danger` for a failure that is theirs to decide, as the run panel draws
+  it. Several of one state are that state; mixed, the decision colour. It
+  was amber for all nine. The ring on the card a badge leads to is
+  `--decide` too. `lib/decideColour.test.ts` reads the badge's sheet.
   `ChatTaskBar` says `Needs you` in `--decide`, never the accent and never
   amber, and only for what parks the chat: an outage card or an answer that
   could not be delivered is badged and does not say it.
@@ -2093,15 +2183,52 @@ are read by `lib/runProgress` off the ledger this tab already holds.
       the host's terms (`because`), and what moves it. The row's one start
       where the host takes one (`taskHold.startControl`; no second start
       control), the decision above the rows for one the coordinator put to
-      them, or, for a settled check that takes no worker, `ask the
-      coordinator in its chat, or stop or archive the run` with a button to
-      that chat. With the coordinator's chat gone it says so and offers no
-      way there.
+      them, or, for a settled check that takes no worker, the person's own
+      reopen: `Open this row for Continue after review to put it back to
+      work with what you write`. Only where the page has no reopen to offer
+      (no kept workspace) does it say `ask the coordinator in its chat, or
+      stop or archive the run` with a button to that chat, and with the
+      coordinator's chat gone it says so and offers no way there.
+    - **A failed check that is the person's is reopened from its row**
+      (`taskHold.reopenControl`, `REOPEN_CONTROL`). The host takes the
+      person's own reopen (the socket's `orchestration_task_reopen`, which
+      no hook reaches) for a check whose retries are used or whose
+      coordinator is gone, and no Start: a completed task takes none. It is
+      `Continue after review`, on the Delivery row above the tabs, guarded
+      as that row's other decisions are, and offered where the ledger says
+      the host would take it: a settled task that is no peer request, with
+      a workspace that is kept and not merged, in a run that is not
+      stopped, closed or archived. A failed task whose coordinator is gone
+      and a peer request out of working time take the person's Start
+      instead. A reopen that was the person's own says so in the chat's
+      line (`byPerson`: `You reopened …`, `Your instructions`).
     - **A gate about a failed task is answered on the page.** It is drawn
       in the Needs you box named for its task, and its button is `Answer`:
       the socket's `orchestration_gate_resolve`, like a peer request's
       gate, never a message through the main chat. Only the person's own
       answer gives the task its retries back.
+    - **Every control that answers a gate is one guarded component**
+      (`GateAnswer`). An answer has no question in front of it, and through
+      the person's door it is their decision the moment it is sent, so: a
+      press that repeats one just made on something else is dropped
+      (`pressGuard.repeatsAnother`), the repeats of a held Enter or Space
+      are dropped, and from the press until the host has answered every
+      control of the gate is off (`aria-disabled`, and the handler
+      refuses). That last is held by the gate, outside the component
+      (`lib/inFlight`, `gateFlight`), so a panel drawn again is still off
+      and the sender refuses a second answer. Review 3 (H1): a press
+      repeated in the spot where the button was about to be was sent as the
+      person's decision. `gateAnswer.test.tsx` scans the panel for an
+      answer sent without a guard.
+    - **The person's door is sent only for a gate that waits on the person**
+      (`orchestration.gateDoor`). A failure's gate or a peer request's that
+      the one reading calls theirs goes to the socket (`Answer`, with
+      `Answered here as your own decision.` under it). Any other gate an
+      agent can answer goes to the coordinator's chat as a message (`Send
+      to main chat`), and under `Open decisions` it says so: `This does not
+      wait on you. What you write goes to the coordinator as a message; it
+      decides.` A peer request's gate that does not wait on the person
+      offers no control: no agent may answer it.
     - *History* (`awaits: "nobody"`: replaced, or its run was stopped,
       closed or archived): not red, counted nowhere. A replaced one reads
       `Replaced`, as before; the other is listed in the panel's Finished
@@ -2302,6 +2429,15 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   task settles, something asks or something fails, and not because a worker
   started or stopped.
 
+**A run is never wider than the column it is in.** The list of a chat's
+runs is one grid column bounded by the panel (`.orch-run-accordions`,
+`minmax(0, 1fr)`). With an implicit `auto` track every run was as wide as
+its widest content wanted, and in the 300px column beside the chat and a
+side column the panel scrolled sideways (333px in 284px), which on Windows
+is a scrollbar that takes room. The run's own tab row still scrolls
+sideways inside it, by design and with no scrollbar.
+`scripts/test-composer-fit.mjs` asserts it in the three-column scene.
+
 **The run column's place is held before the ledger answers**
 (`lib/runColumn`). The ledger arrives after the chat is drawn, and the page
 used to split in two then. Four things say a chat has a run before the
@@ -2350,7 +2486,9 @@ enters once as it is said, is not replayed when the chat is read back, and
 the same event read twice draws once. A line is one reopening (the task,
 the attempt it starts and the host's stamp): the host numbers the attempt a
 reopening will start, so a task reopened twice before it is dispatched says
-the same attempt both times and still draws two lines.
+the same attempt both times and still draws two lines. A reopen the person
+made themselves on the page carries `byPerson`, and its line says `You
+reopened <title>` with `Your instructions` behind it: the words are theirs.
 
 **Opened, and only opened, the line offers Stop** (`taskReopened.reopenedStop`,
 `ReopenedLine`). It is the one thing the person can do about words they did
@@ -2376,8 +2514,8 @@ the ledger feed, which open a connection on import.
 **An action that stops or starts work is never fired by the key or press
 that brought it on screen** (`lib/pressGuard`). With focus on Stop, Enter
 opened the question, the focus went to its confirming button, and a second
-Enter stopped the worker. Three guards, and a new control that stops or
-starts something takes the ones that apply:
+Enter stopped the worker. Five guards, and a new control that stops,
+starts or decides something takes the ones that apply:
 
 - **A question puts the focus on its safe answer** (`components/Confirm`,
   and `CompleteChatConfirm`, which asks the same way through
@@ -2414,6 +2552,25 @@ starts something takes the ones that apply:
   remembered too, because the row comes back under the pointer, and the
   keyboard goes back to the control that asked. `Remove validation
   checkout` has no question and drops a held key.
+- **A control that answers where it stands drops a press that repeats one
+  just made on something else** (`repeatsAnother`, `strayOnto`). A gate's
+  options and its Answer have no question in front of them and no opener of
+  their own to remember: whatever brought them under the pointer (the badge
+  that led there, a disclosure, a row that moved) was pressed somewhere
+  else. The page keeps the last pointer press and the one before it, with
+  what each landed on, and such a control drops a press within the cards'
+  700 ms and 8 px of the one before it unless that one was on the control
+  itself. A press it dropped is not a press on it, so a third in the same
+  spot is dropped too.
+- **"Off until its answer" is held by what is asked about, never by the
+  control** (`lib/inFlight`: `once`, `useInFlight`). A control unmounts: a
+  panel is shut and opened, a view is switched, a second surface draws the
+  same thing. A request that is out is kept outside every component, under
+  a key that names the thing (`planFlight(chat)`, `gateFlight(gate)`). The
+  sender takes the key in the same step as it asks and refuses while it is
+  taken, and every control for that thing draws itself from it. A new
+  action that must not be sent twice is sent through `once`; `busy` in a
+  component's own state is not that guard.
 
 Who asks through the shared `Confirm` is listed in `Confirm.test.tsx`,
 which fails when a caller is added without it: closing a mission after its
@@ -2988,6 +3145,27 @@ time limit).
   and the target are intact and byte-identical to the original after 24
   carries at once, the other pauses a last-resort copy and asserts that a
   second carry does not answer until the file is whole.
+- **A test that reads source as text reads it through `lib/sourceText.lf`.**
+  Git for Windows checks files out with CRLF line ends by default and the
+  repository has no `.gitattributes`, so a pattern or a replacement that
+  names `\n` finds nothing on a Windows checkout: `taskStart.test.tsx` threw
+  on a tree that was right. Normalise once, where the file is imported, or
+  write `\s+` between lines. A clock's words differ by locale too (`9:05
+  PM`, `09:05 pm` in en-MY, `21:05`): a pattern on one allows all three.
+- **A browser script takes its paths with `fileURLToPath` and imports a
+  module named by a path through `pathToFileURL`.** A URL's `pathname` is
+  `/C:/…` on Windows, which `resolve` makes `C:\C:\…`, and Node's loader
+  refuses a drive path as a specifier. Every script takes `OCTIQ_WEB_ROOT`.
+  A wait in a script is on something that stays true: text a
+  `RollingText` draws is every digit its wheels turn through, so a pattern
+  on it holds for the first frame only (`test-top-chrome.mjs` timed out in
+  Edge and Chrome on Windows on exactly that).
+- **A probe of a control that waits on a request holds the request and then
+  takes the control away.** Review 3 found four highs that every ordinary
+  check passed: a Start not yet answered with its panel shut and opened, a
+  batch's questions arriving one event at a time, a delivered question
+  after `question-expired` and after a reload, and a press repeated where a
+  button was about to be. Test the lifecycle, not only the press.
 - **A mutation check of a script section switches off the one thing the
   section claims to prove, and sees that section fail.** A mock that sends
   two signals for one fact proves neither: with the first switched off the
