@@ -67,7 +67,13 @@ let snapshot = {
     attempt("a2", "run-now", "t2", "chat:orch-2", "capacity_blocked"), // provider capacity is NOT the person's action
     attempt("a3", "run-old", "t3", "chat:orch-3", "blocked"),
   ],
-  gates: [{ id: "gate-7", runId: "run-old", taskId: "t3", createdByChatKey: "chat:orch-3", targetChatKey: "chat:lead",
+  // The coordinator's own question to the person about the older run, as
+  // the host sends one (`__fixtures__/host/gates_open.json`): it names no
+  // task, its coordinator opened it, and the host says it waits on the
+  // person. A gate with no `awaits` is from a host that does not say who a
+  // gate waits on, and is shown without being counted (`lib/runWaits`); a
+  // worker's own gate waits on its coordinator. Neither is "Action needed".
+  gates: [{ id: "gate-7", runId: "run-old", createdByChatKey: "chat:lead", targetChatKey: "chat:lead", awaits: "person",
     question: "Drop the legacy column?", options: ["Drop it", "Keep it"], status: "open", createdAt: now - 60_000, updatedAt: now - 60_000 }],
   messages: [],
 };
