@@ -12,6 +12,9 @@ use super::retry::{Because, Failure, FailureKind, RetryBy, RETRIES_USED, RETRY_L
 use super::tests::launch_for;
 use super::*;
 
+/// The ledger's file, in a `Lead::on_disk`'s folder.
+const LEDGER: &str = "ledger.json";
+
 /// Print what a fixture is recorded from, when asked to.
 fn fact(name: &str, snapshot: &Snapshot) {
     if std::env::var_os("OCTIQ_RECORD_FACTS").is_some() {
@@ -41,10 +44,23 @@ impl Lead {
         Self::of(format!("retry-gone-{}", compact_id()))
     }
 
+    /// The same as `new`, with its ledger in a file: for what is asked of
+    /// the disk.
+    fn on_disk() -> Self {
+        let id = format!("retry-{}", compact_id());
+        list(&id);
+        let dir = crate::test_dir::TestDir::new("retry");
+        let store = OrchestrationStore::load(dir.0.join(LEDGER));
+        Self::with(id, dir, store)
+    }
+
     fn of(id: String) -> Self {
         let dir = crate::test_dir::TestDir::new("retry");
+        Self::with(id, dir, OrchestrationStore::default())
+    }
+
+    fn with(id: String, dir: crate::test_dir::TestDir, store: OrchestrationStore) -> Self {
         let key = format!("chat:{id}");
-        let store = OrchestrationStore::default();
         let run = store
             .create_run(
                 key.clone(),
@@ -195,9 +211,14 @@ impl Lead {
 
     /// The coordinator reopens a completed task, and its notice is told.
     fn reopens(&self, task_id: &str) -> Result<Task, String> {
-        let reopened = self
-            .store
-            .reopen_task(&self.key, task_id, "Check it again".into())?;
+        self.reopens_as(task_id, ReopenedBy::Coordinator)
+    }
+
+    /// A reopen of a completed task by `by`, and its notice is told.
+    fn reopens_as(&self, task_id: &str, by: ReopenedBy) -> Result<Task, String> {
+        let reopened =
+            self.store
+                .reopen_task_as(&self.key, task_id, "Check it again".into(), by)?;
         self.store
             .mutate(|data| {
                 for reopen in &mut data.tasks.get_mut(task_id).unwrap().reopens {
@@ -207,6 +228,48 @@ impl Lead {
             })
             .unwrap();
         Ok(reopened)
+    }
+
+    /// A provider failure of `attempt`, of the kind the host recovers from
+    /// by itself when the task's retries allow one.
+    fn capacity(&self, attempt: &Attempt) {
+        self.store
+            .observe_worker_event(
+                &attempt.worker_chat_key,
+                &json!({"type":"turn.failed", "error":{"message":"Selected model is at capacity"}}),
+            )
+            .unwrap();
+    }
+
+    /// When the host will recover `attempt` by itself, if it will.
+    fn recovery_at(&self, attempt: &Attempt) -> Option<i64> {
+        self.snapshot()
+            .attempts
+            .into_iter()
+            .find(|read| read.id == attempt.id)
+            .unwrap()
+            .execution
+            .next_retry_at
+    }
+
+    /// A review that completed with a failing verdict and has used both of
+    /// its automatic retries, with the workspace a reopen needs.
+    fn spent_check(&self) -> Task {
+        let review = self.task_of(TaskKind::Review);
+        self.keeps_a_workspace(&review.id);
+        let first = self.start(&review.id).unwrap();
+        self.report(&first, WorkerOutcome::Completed, Some(Verdict::Fail));
+        for _ in 0..RETRY_LIMIT {
+            self.reopens(&review.id).unwrap();
+            let again = self.start(&review.id).unwrap();
+            self.report(&again, WorkerOutcome::Completed, Some(Verdict::Fail));
+        }
+        self.now(&review.id)
+    }
+
+    /// The ledger as the file holds it now.
+    fn on_file(&self) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(self.dir.0.join(LEDGER)).unwrap()).unwrap()
     }
 
     fn asks_the_person(&self, task_id: &str) -> Result<Gate, String> {
@@ -270,7 +333,7 @@ fn a_failed_task_has_two_automatic_retries_and_the_third_start_is_refused() {
             lead.now(&task.id).retries_used,
             lead.now(&task.id).retry_limit
         ),
-        (0, RETRY_LIMIT)
+        (0, Some(RETRY_LIMIT))
     );
     let first = lead.fails(&task.id);
     assert_eq!(first.retry, None, "a first start retries nothing");
@@ -503,6 +566,7 @@ fn a_failed_check_is_a_failure_and_checking_again_uses_the_retries() {
     );
     assert_eq!(lead.reopens(&review.id).unwrap_err(), RETRIES_USED);
     assert_eq!(lead.now(&review.id).status, TaskStatus::Completed);
+    fact("failure_check_retries_used", &lead.snapshot());
 
     // The person's answer to the coordinator's question gives two more,
     // and a check that then passes is no failure and owes nothing.
@@ -668,6 +732,10 @@ fn a_peer_requests_failure_waits_on_its_runs_coordinator_then_the_person() {
             Some(Because::TimeLimit)
         )
     );
+    fact(
+        "failure_time_limit",
+        &store.snapshot(Some(&made.run_id)).unwrap(),
+    );
     let _ = crate::chat_index::remove(lead_id);
 }
 
@@ -689,6 +757,7 @@ fn a_failure_whose_coordinator_is_gone_is_the_persons_at_once() {
     // However long ago its run settled: a run the host calls failed has
     // not ended, and nobody is left to retry this.
     assert_eq!(gone.snapshot().runs[0].status, RunStatus::Failed);
+    fact("failure_coordinator_gone", &gone.snapshot());
 
     let lead = Lead::new();
     let task = lead.task();
@@ -944,6 +1013,514 @@ fn what_a_read_says_of_a_failure_is_never_read_back() {
     let read: Task = serde_json::from_value(said).unwrap();
     assert_eq!(
         (read.failure, read.retrying, read.retry_limit),
-        (None, false, 0)
+        (None, false, None)
     );
+}
+
+// ---- what is shown is not what is counted (review of 16e4188, H1) --------
+
+/// A provider failure the host has scheduled its own recovery of is SHOWN
+/// as a retry on its way, with no failure. Replacing it is one of the
+/// task's automatic retries all the same: it is held to the budget, it
+/// uses one, and the replacement carries the count on. So a chain of such
+/// replacements ends at the person after two, where it used to have no
+/// end: each replacement read "no failure" and was neither asked the
+/// budget nor counted (the reviewer replaced five times with
+/// `retriesUsed: 0` on both sides).
+#[test]
+fn replacing_a_failure_the_host_is_recovering_is_a_retry_and_the_chain_ends_at_the_person() {
+    let lead = Lead::new();
+    let mut task = lead.task();
+    for number in 1..=RETRY_LIMIT {
+        let attempt = lead.start(&task.id).unwrap();
+        assert_eq!(attempt.retry, None, "a first start retries nothing");
+        lead.capacity(&attempt);
+        let waiting = lead.now(&task.id);
+        assert_eq!(waiting.status, TaskStatus::Blocked);
+        assert!(lead.recovery_at(&attempt).is_some(), "recovery scheduled");
+        assert_eq!(
+            (waiting.failure, waiting.retrying),
+            (None, true),
+            "shown as a retry on its way, not as a failure"
+        );
+
+        let replacement = lead.task();
+        lead.store
+            .check_supersede(&lead.key, &lead.run.id, &task.id)
+            .unwrap();
+        lead.store
+            .supersede(&lead.key, &task.id, &replacement.id)
+            .unwrap();
+        assert_eq!(
+            lead.now(&replacement.id).retries_used,
+            number,
+            "replacement {number} is retry {number}"
+        );
+        assert_eq!(lead.recovery_at(&attempt), None, "the recovery is off");
+        task = replacement;
+    }
+
+    // Both are used. The host schedules no recovery of the last one, so
+    // its provider failure is a failure, and it is the person's.
+    let last = lead.start(&task.id).unwrap();
+    assert_eq!(last.retry, None);
+    lead.capacity(&last);
+    let ended = lead.now(&task.id);
+    assert_eq!(ended.status, TaskStatus::Failed);
+    assert_eq!(lead.recovery_at(&last), None);
+    assert_eq!(
+        ended.failure,
+        waits_on(
+            FailureKind::Failed,
+            Awaits::Person,
+            Some(Because::RetriesUsed)
+        )
+    );
+    // No third replacement, and no start, without them.
+    let third = lead.task();
+    assert_eq!(
+        lead.store
+            .check_supersede(&lead.key, &lead.run.id, &task.id)
+            .unwrap_err(),
+        RETRIES_USED
+    );
+    assert_eq!(
+        lead.store
+            .supersede(&lead.key, &task.id, &third.id)
+            .unwrap_err(),
+        RETRIES_USED
+    );
+    assert_eq!(lead.now(&third.id).retries_used, 0, "nothing was carried");
+    assert_eq!(lead.now(&task.id).superseded_by, None);
+    assert_eq!(lead.start(&task.id).unwrap_err(), RETRIES_USED);
+}
+
+/// The same count at the one door: the coordinator's own start of a task
+/// whose recovery the host has scheduled is a retry of that failure and
+/// uses one, and takes the host's recovery off.
+#[test]
+fn the_coordinators_start_of_a_failure_the_host_is_recovering_uses_a_retry() {
+    let lead = Lead::new();
+    let task = lead.task();
+    let first = lead.start(&task.id).unwrap();
+    lead.capacity(&first);
+    assert!(lead.recovery_at(&first).is_some());
+    assert_eq!(lead.failure(&task.id), None);
+
+    let second = lead.start(&task.id).unwrap();
+    let retry = second.retry.clone().unwrap();
+    assert_eq!(
+        (retry.after, retry.by, retry.number),
+        (FailureKind::Failed, RetryBy::Coordinator, Some(1))
+    );
+    assert_eq!(lead.now(&task.id).retries_used, 1);
+    assert_eq!(lead.recovery_at(&first), None);
+}
+
+/// The one caller of the shown reading that decides anything is
+/// `create_gate`: whether a coordinator's question is about a task in
+/// failure. Where what is shown and what is counted differ it gives
+/// nothing: the question is refused, no decision is opened that the
+/// person's answer would give retries for, and nothing is used or given.
+#[test]
+fn a_question_about_a_task_that_is_not_shown_as_failed_opens_no_decision() {
+    let lead = Lead::new();
+    // A failure the host is recovering.
+    let task = lead.task();
+    let first = lead.start(&task.id).unwrap();
+    lead.capacity(&first);
+    assert!(lead
+        .asks_the_person(&task.id)
+        .unwrap_err()
+        .contains("has settled"));
+    assert!(lead.recovery_at(&first).is_some(), "still scheduled");
+
+    // A failed check the coordinator reopened: ready, verdict kept.
+    let review = lead.task_of(TaskKind::Review);
+    lead.keeps_a_workspace(&review.id);
+    let checked = lead.start(&review.id).unwrap();
+    lead.report(&checked, WorkerOutcome::Completed, Some(Verdict::Fail));
+    lead.reopens(&review.id).unwrap();
+    assert_eq!(lead.failure(&review.id), None);
+    assert!(lead
+        .asks_the_person(&review.id)
+        .unwrap_err()
+        .contains("has settled"));
+
+    let after = lead.snapshot();
+    assert!(after.gates.is_empty(), "{:?}", after.gates);
+    assert!(after.tasks.iter().all(|task| task.retries_used == 0));
+}
+
+/// `failed_as` is what a failure is SHOWN as. Every place that calls it is
+/// named here with what it does with the answer, and none of them counts
+/// with it: the budget and the count ask `counted`. A new caller fails
+/// this until it is added with its reason, which is where "does this
+/// decide something?" gets asked.
+#[test]
+fn who_reads_what_a_failure_is_shown_as() {
+    // (file, calls, what each does with it)
+    const READERS: &[(&str, usize, &str)] = &[
+        (
+            "orchestration/retry.rs",
+            3,
+            "its definition; `failure`: what a read says of the task; `expectation`: what the coordinator is told",
+        ),
+        (
+            "orchestration/plan_link.rs",
+            1,
+            "`state_of`: how a plan item's linked task is drawn",
+        ),
+        (
+            "orchestration.rs",
+            1,
+            "`create_gate`: whether a question is tied to the row that shows a failure; refused where the readings differ (the test above)",
+        ),
+    ];
+    fn walk(dir: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                into.push(path);
+            }
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&src, &mut files);
+    let mut found = BTreeMap::new();
+    for path in files {
+        let name = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if name.ends_with("_tests.rs") || name.ends_with("/tests.rs") {
+            continue;
+        }
+        let calls = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| line.matches("failed_as(").count())
+            .sum::<usize>();
+        if calls > 0 {
+            found.insert(name, calls);
+        }
+    }
+    let expected: BTreeMap<String, usize> = READERS
+        .iter()
+        .map(|(file, calls, _)| (file.to_string(), *calls))
+        .collect();
+    assert_eq!(
+        found, expected,
+        "`retry::failed_as` is the shown reading. A count or a budget asks `retry::counted`."
+    );
+}
+
+// ---- derived facts are not stored (review of 16e4188, H3) ----------------
+
+/// What a read derives for a task, a gate and an attempt, by its key.
+const DERIVED_ON_A_TASK: [&str; 5] = [
+    "retryLimit",
+    "failure",
+    "retrying",
+    "heldByPlan",
+    "heldByReopen",
+];
+
+/// None of what a read derives is in the ledger's file, after real writes
+/// and with a read made in between: a task that was created, one that
+/// failed, one whose retry is at work, a decision that is open and a plan
+/// that waits. `retryLimit` was there, as `0`, on every task a build with
+/// 104d6b9 saved: `skip_deserializing` kept it from being read back and
+/// nothing kept it from being written.
+#[test]
+fn the_ledger_on_file_holds_nothing_a_read_derives() {
+    let lead = Lead::on_disk();
+    let created = lead.task();
+    let failed = lead.task();
+    lead.fails(&failed.id);
+    lead.asks_the_person(&failed.id).unwrap();
+    let retried = lead.task();
+    lead.fails(&retried.id);
+    lead.start(&retried.id).unwrap();
+    lead.store.require_plan_approval(&lead.run.id).unwrap();
+
+    // The read says every one of them.
+    let said = serde_json::to_value(lead.snapshot()).unwrap();
+    let tasks = said["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 3);
+    assert!(tasks.iter().all(|task| task["retryLimit"] == json!(2)));
+    assert!(tasks.iter().all(|task| task["heldByPlan"].is_boolean()));
+    let of = |id: &str| tasks.iter().find(|task| task["id"] == id).unwrap().clone();
+    assert_eq!(of(&failed.id)["failure"]["because"], "escalated");
+    assert_eq!(of(&retried.id)["retrying"], true);
+    assert_eq!(said["gates"][0]["awaits"], "person");
+
+    // And a write after that read puts none of them in the file.
+    lead.task();
+    let file = lead.on_file();
+    let stored = file["tasks"].as_object().unwrap();
+    assert_eq!(stored.len(), 4);
+    for (id, task) in stored {
+        for key in DERIVED_ON_A_TASK {
+            assert!(task.get(key).is_none(), "{key} is stored on {id}: {task}");
+        }
+        // What the host counts is stored.
+        assert!(task["retriesUsed"].is_u64(), "{task}");
+    }
+    assert_eq!(stored[&retried.id]["retriesUsed"], 1);
+    assert_eq!(stored[&created.id]["retriesUsed"], 0);
+    let gates = file["gates"].as_object().unwrap();
+    assert_eq!(gates.len(), 1);
+    for gate in gates.values() {
+        assert!(gate.get("awaits").is_none(), "{gate}");
+        assert_eq!(gate["aboutTaskId"], json!(failed.id), "stored: {gate}");
+    }
+    let attempts = file["attempts"].as_object().unwrap();
+    assert_eq!(attempts.len(), 3);
+    for attempt in attempts.values() {
+        for key in ["usage", "context"] {
+            assert!(attempt.get(key).is_none(), "{key}: {attempt}");
+        }
+    }
+}
+
+/// A ledger an earlier build wrote `retryLimit: 0` into needs nothing done
+/// to it: the key is ignored on read, like any other value a file or an
+/// agent offers for a derived fact, every read goes on saying 2, and the
+/// next write of the ledger leaves it out.
+#[test]
+fn a_ledger_written_with_a_retry_limit_reads_as_any_other_and_loses_it_at_the_next_write() {
+    let lead = Lead::on_disk();
+    let task = lead.task();
+    let other = lead.task();
+    lead.fails(&task.id);
+    let path = lead.dir.0.join(LEDGER);
+    let mut earlier = lead.on_file();
+    // What 104d6b9 saved, and what a file could claim.
+    earlier["tasks"][&task.id]["retryLimit"] = json!(0);
+    earlier["tasks"][&other.id]["retryLimit"] = json!(99);
+    earlier["tasks"][&other.id]["retrying"] = json!(true);
+    earlier["tasks"][&other.id]["failure"] = json!({ "kind": "failed", "awaits": "nobody" });
+    std::fs::write(&path, serde_json::to_vec_pretty(&earlier).unwrap()).unwrap();
+
+    let restarted = OrchestrationStore::load(path.clone());
+    let read = restarted.snapshot(Some(&lead.run.id)).unwrap();
+    assert_eq!(read.tasks.len(), 2);
+    assert!(read
+        .tasks
+        .iter()
+        .all(|task| task.retry_limit == Some(RETRY_LIMIT)));
+    let of = |id: &str| read.tasks.iter().find(|task| task.id == id).unwrap();
+    assert_eq!(
+        of(&task.id).failure,
+        waits_on(FailureKind::Failed, Awaits::Coordinator, None)
+    );
+    assert_eq!(
+        (of(&other.id).failure.clone(), of(&other.id).retrying),
+        (None, false)
+    );
+    // The budget is what it was: the stored zero limited nothing.
+    assert_eq!(of(&task.id).retries_used, 0);
+
+    // The first write of this build carries none of it.
+    restarted
+        .create_task(
+            &lead.key,
+            lead.run.id.clone(),
+            "Another".into(),
+            "Make another change".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+    let file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let stored = file["tasks"].as_object().unwrap();
+    assert_eq!(stored.len(), 3);
+    for task in stored.values() {
+        for key in DERIVED_ON_A_TASK {
+            assert!(task.get(key).is_none(), "{key}: {task}");
+        }
+    }
+}
+
+// ---- the person's own reopen (review of 16e4188, M1) ---------------------
+
+/// A failed check whose automatic retries are used takes nothing an agent
+/// sends, and the person's Start is refused for a completed task. Their
+/// own reopen, from the page, is the door: it is taken, it gives both
+/// retries back and closes the decision the coordinator opened, and the
+/// start that follows is theirs and uses none, exactly as their Start on a
+/// failed task's row does.
+#[test]
+fn the_persons_own_reopen_of_a_spent_check_is_taken_and_gives_the_retries_back() {
+    let lead = Lead::new();
+    let review = lead.spent_check();
+    assert_eq!(review.retries_used, RETRY_LIMIT);
+    assert_eq!(
+        lead.failure(&review.id),
+        waits_on(
+            FailureKind::CheckFailed,
+            Awaits::Person,
+            Some(Because::RetriesUsed)
+        )
+    );
+    // The coordinator's: neither a reopen nor a start.
+    assert_eq!(lead.reopens(&review.id).unwrap_err(), RETRIES_USED);
+    assert_eq!(lead.start(&review.id).unwrap_err(), RETRIES_USED);
+    // And the person's Start has nothing to start: the task is completed.
+    assert!(lead
+        .person_starts(&review.id)
+        .unwrap_err()
+        .contains("no longer accepts workers"));
+    let asked = lead.asks_the_person(&review.id).unwrap();
+    assert_eq!(lead.now(&review.id).retries_used, RETRY_LIMIT);
+
+    let reopened = lead.reopens_as(&review.id, ReopenedBy::Person).unwrap();
+    assert_eq!(reopened.status, TaskStatus::Ready);
+    let now = lead.now(&review.id);
+    assert_eq!(now.retries_used, 0, "their decision gives both back");
+    assert_eq!(
+        now.verdict,
+        Some(Verdict::Fail),
+        "what it found still holds"
+    );
+    let last = now.reopens.last().unwrap();
+    assert!(last.by_person);
+    assert!(now.reopens[..now.reopens.len() - 1]
+        .iter()
+        .all(|reopen| !reopen.by_person));
+    let closed = lead
+        .snapshot()
+        .gates
+        .into_iter()
+        .find(|gate| gate.id == asked.id)
+        .unwrap();
+    assert_eq!(closed.status, GateStatus::Cancelled, "answered by acting");
+    // The person is shown it where every reopen is, and it says whose.
+    let notices = crate::transcript::of_type(&lead.key, "octiq_task_reopened");
+    assert_eq!(notices.len() as u32, RETRY_LIMIT + 1);
+    let (theirs, coordinators) = notices.split_last().unwrap();
+    assert_eq!(theirs["byPerson"], true);
+    assert!(coordinators
+        .iter()
+        .all(|notice| notice.get("byPerson").is_none()));
+
+    // The start that follows is theirs, whoever carries it out.
+    let started = lead.start(&review.id).unwrap();
+    let retry = started.retry.clone().unwrap();
+    assert_eq!(
+        (retry.after, retry.by, retry.number),
+        (FailureKind::CheckFailed, RetryBy::Person, None)
+    );
+    assert_eq!(lead.now(&review.id).retries_used, 0);
+
+    // Its worker fails outright: the coordinator's to fix, with both. The
+    // newest reopen on record is still the person's, and this start is not
+    // the first after it, so it is the coordinator's and it is counted.
+    lead.report(&started, WorkerOutcome::Failed, None);
+    assert_eq!(
+        lead.failure(&review.id),
+        waits_on(FailureKind::Failed, Awaits::Coordinator, None)
+    );
+    assert!(lead.now(&review.id).reopens.last().unwrap().by_person);
+    let counted = lead.start(&review.id).unwrap();
+    let retry = counted.retry.clone().unwrap();
+    assert_eq!(
+        (retry.after, retry.by, retry.number),
+        (FailureKind::Failed, RetryBy::Coordinator, Some(1)),
+        "only the first start after their reopen was theirs"
+    );
+    assert_eq!(lead.now(&review.id).retries_used, 1);
+
+    // It fails its check again, and the coordinator's own reopen and the
+    // start after it are counted as they always were.
+    lead.report(&counted, WorkerOutcome::Completed, Some(Verdict::Fail));
+    lead.reopens(&review.id).unwrap();
+    let again = lead.start(&review.id).unwrap();
+    let retry = again.retry.clone().unwrap();
+    assert_eq!(
+        (retry.after, retry.by, retry.number),
+        (FailureKind::CheckFailed, RetryBy::Coordinator, Some(2))
+    );
+}
+
+/// With the coordinator's chat gone a failed check is the person's at once,
+/// and there is no chat to show a reopen in. The coordinator's reopen is
+/// refused for that, as before. The person's is taken: the words are their
+/// own, so it is recorded as told and nothing holds its start, which their
+/// Start on the row makes.
+#[test]
+fn with_its_coordinator_gone_the_persons_reopen_is_the_door_and_owes_no_notice() {
+    let gone = Lead::unlisted();
+    let review = gone.task_of(TaskKind::Review);
+    gone.keeps_a_workspace(&review.id);
+    let first = gone.start(&review.id).unwrap();
+    gone.report(&first, WorkerOutcome::Completed, Some(Verdict::Fail));
+    assert_eq!(
+        gone.failure(&review.id),
+        waits_on(
+            FailureKind::CheckFailed,
+            Awaits::Person,
+            Some(Because::CoordinatorGone)
+        )
+    );
+    fact("failure_check_coordinator_gone", &gone.snapshot());
+
+    let refused = gone
+        .store
+        .reopen_task(&gone.key, &review.id, "Check it again".into())
+        .unwrap_err();
+    assert!(refused.contains("no longer exists"), "{refused}");
+    assert_eq!(gone.now(&review.id).status, TaskStatus::Completed);
+
+    let reopened = gone
+        .store
+        .reopen_task_as(
+            &gone.key,
+            &review.id,
+            "Check the linker flags too".into(),
+            ReopenedBy::Person,
+        )
+        .unwrap();
+    assert_eq!(reopened.status, TaskStatus::Ready);
+    let now = gone.now(&review.id);
+    let last = now.reopens.last().unwrap();
+    assert!(last.by_person && last.notice_delivered);
+    assert!(!now.held_by_reopen, "nothing is owed, so nothing holds it");
+    assert!(crate::transcript::of_type(&gone.key, "octiq_task_reopened").is_empty());
+    assert_eq!(gone.store.deliver_reopen_notices_now(), Ok(0));
+
+    let theirs = gone.person_starts(&review.id).unwrap();
+    let retry = theirs.retry.clone().unwrap();
+    assert_eq!(
+        (retry.after, retry.by, retry.number),
+        (FailureKind::CheckFailed, RetryBy::Person, None)
+    );
+    assert_eq!(gone.now(&review.id).spec, "Check the linker flags too");
+}
+
+/// A review that used both automatic retries, in a ledger a server can be
+/// stood on: for the two doors to a reopen (`web::tests`).
+pub(crate) struct Spent {
+    pub store: std::sync::Arc<OrchestrationStore>,
+    pub chat_key: String,
+    pub task: Task,
+    _lead: Lead,
+}
+
+pub(crate) fn spent_check() -> Spent {
+    let mut lead = Lead::new();
+    let task = lead.spent_check();
+    Spent {
+        store: std::sync::Arc::new(std::mem::take(&mut lead.store)),
+        chat_key: lead.key.clone(),
+        task,
+        _lead: lead,
+    }
 }

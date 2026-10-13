@@ -2235,11 +2235,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "taskId")?,
         )),
-        "orchestration_task_reopen" => to_value(svc.orchestrations.reopen_task(
-            &arg::<String>(&args, "actorChatKey")?,
-            &arg::<String>(&args, "taskId")?,
-            arg(&args, "spec")?,
-        )),
+        // Two doors, as for a worker start and a gate's answer. The
+        // coordinator's reopen comes only through `/hook/orchestration` as
+        // `_in_chat`, which the person's socket refuses, and is held to the
+        // task's automatic retries. The person's comes only through the
+        // socket, and is their decision about the task: it is taken when
+        // the retries are used, and gives them back (`ReopenedBy`).
+        "orchestration_task_reopen" | "orchestration_task_reopen_in_chat" => {
+            let by = if cmd == "orchestration_task_reopen_in_chat" {
+                crate::orchestration::ReopenedBy::Coordinator
+            } else {
+                crate::orchestration::ReopenedBy::Person
+            };
+            to_value(svc.orchestrations.reopen_task_as(
+                &arg::<String>(&args, "actorChatKey")?,
+                &arg::<String>(&args, "taskId")?,
+                arg(&args, "spec")?,
+                by,
+            ))
+        }
         "orchestration_worker_archive" => to_value(svc.orchestrations.set_worker_archived(
             &svc.chats,
             &arg::<String>(&args, "actorChatKey")?,

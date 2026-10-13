@@ -1358,6 +1358,17 @@ one. `assignee` is the task's, or `null`. `at` is the host's clock, and
 `previousSpecChars` counts characters. A reopen that is refused writes
 nothing. A peer request is still never reopened.
 
+**Who reopened it is the route's to say, never an argument's.** The
+coordinator's reopen reaches the host only through `/hook/orchestration`
+(`task_reopen`, routed to `orchestration_task_reopen_in_chat`, which the
+socket refuses). The page's `orchestration_task_reopen` is the person's own,
+and no hook action maps to it. The two differ in what a failed check's
+retries allow (**A failure, and whose move it is**, below): the
+coordinator's is held to them, the person's gives them back. The person's
+entry in `reopens` and its event carry `byPerson: true`; a coordinator's
+carries no such key, so its event is the one it always was. `byChatKey` is
+the run's coordinator on both: it is the chat the notice belongs in.
+
 **A reopened task starts only once you have been shown the reopen** (review
 of 931b5f0). The notice is the one thing that stands in for an approval
 here, so the task waits for it:
@@ -1365,7 +1376,11 @@ here, so the task waits for it:
 - Each entry of `reopens` carries `noticeDelivered`. It is `false` from the
   reopen until that event is in the coordinator's transcript and the host
   holds a confirmed sync of it to disk. An entry that does not say reads as
-  `false` too, and is confirmed like any other.
+  `false` too, and is confirmed like any other. One reopen is born `true`:
+  the person's own, from the page, of a task whose coordinator chat is gone.
+  The words are theirs and there is no chat to show them in, so nothing is
+  owed and nothing is written. In a chat that is there the person's reopen
+  owes its notice like any other.
 - While any is `false`, no start of the task is accepted, by the
   coordinator, the host's own dispatch and recovery, or the page: `This task
   was reopened with new instructions, and the notice of that in the
@@ -1683,17 +1698,34 @@ dispatch), and the host's own recovery after a provider failure. A
 replacement (`supersedes`) uses one too and the new task carries the count
 on, so a chain of replacements ends at the person like a chain of retries.
 
+**What is counted is not what is shown.** A provider failure the host has
+scheduled its own recovery of is shown as a retry on its way: `retrying:
+true`, no `failure`, because nobody is asked to do anything about it. It is
+a failure all the same for everything that is counted. Replacing such a
+task is one of its retries, is refused once both are used, and the
+replacement carries the count on; the coordinator's own start of it uses one
+too and takes the host's recovery off. (Until the fix of 2026-10-14 a
+replacement read what is shown, found no failure, and was neither held to
+the budget nor counted: a coordinator could replace without end.) In the
+host the two readings are two functions, `retry::failed_as` (shown: the
+task's `failure`, a plan item's progress, the notice to the coordinator)
+and `retry::counted` (the budget and the count), and a test names every
+caller of the first.
+
 With both used, the one door (`reserve_attempt_for`) refuses the next start
-by the coordinator or the host, `orchestration_task_reopen` refuses to make a
-failed check ready again, and a replacement is refused, all in the same
-words: the retries are used up and the person decides. The host schedules no
-recovery the door would refuse.
+by the coordinator or the host, the coordinator's `orchestration_task_reopen`
+refuses to make a failed check ready again, and a replacement is refused,
+all in the same words: the retries are used up and the person decides. The
+host schedules no recovery the door would refuse.
 
 Only the person gives more. Each of these sets `retriesUsed` to 0, and no
 agent's call reaches any of them:
 
 - their Start on the task's row (`orchestration_worker_start` on the socket,
   never counted and never refused for the budget);
+- their own reopen of a completed task, from the page
+  (`orchestration_task_reopen` on the socket; below, **What the page may
+  offer for a failure that is the person's**);
 - their answer on the page to a decision the coordinator opened about the
   task (below);
 - their approval of a plan the task was put back on.
@@ -1701,13 +1733,22 @@ agent's call reaches any of them:
 The task finishing well (completed, and not with a failing verdict) also
 sets it to 0: that failure is over.
 
-**How this combines with the host's provider recovery.** The recovery policy
-(`maxRetries`, 0 to 5, default 2) still decides whether a provider failure is
-worth another attempt and how long to wait. It no longer has a count of its
-own: each recovery is one of the task's 2. So the most a task is started
-again without the person is 2, whoever starts it, and `retriesUsed` is the
-one number that says how far along that is. `attempt.execution.retryCount`
-is still there and still says how many host recoveries led to that attempt.
+**How this combines with the host's provider recovery.** There are two
+counts, and a host recovery has to pass both:
+
+- `attempt.execution.retryCount`, the recovery policy's own: how many host
+  recoveries in a row led to this attempt. It is compared with the policy's
+  `maxRetries` (0 to 5, default 2) and sets the backoff before the next one.
+  It goes up only on a host recovery, and an attempt anyone else starts
+  begins at 0 again.
+- `task.retriesUsed`, the task's shared total of 2, which every automatic
+  retry uses whoever makes it: a host recovery, the coordinator's retry, a
+  reopened check starting again, a replacement.
+
+The host schedules a recovery only while `retryCount < maxRetries` AND
+`retriesUsed < 2`, so a policy can allow fewer recoveries than 2 and never
+more. The most a task is started again without the person is 2, whoever
+starts it, and `retriesUsed` is the number that says how far along that is.
 
 **Putting a failure to the person.** The coordinator calls
 `orchestration_gate_create` with the failed task's `taskId`. On a task that
@@ -1726,8 +1767,8 @@ read and the coordinator's:
 
 | Field | On | Values |
 | --- | --- | --- |
-| `retriesUsed` | every task | `0`, `1`, `2`. Stored; written by the door. |
-| `retryLimit` | every task | `2`. Derived; its presence says this host counts retries. |
+| `retriesUsed` | every task | `0`, `1`, `2`. Stored; written by the door, and by a replacement. |
+| `retryLimit` | every task | `2`. Derived for the answer and never in the ledger's file; its presence says this host counts retries. |
 | `retrying` | a task whose retry is at work, or scheduled | `true`, absent otherwise. Its latest attempt started on a failed task and is preparing or running, or the host has scheduled its recovery (`execution.nextRetryAt`). |
 | `failure` | a task that is in failure | `{ kind, awaits, because?, gateId? }`, absent otherwise |
 | `attempt.retry` | an attempt that started on a failed task | `{ after, by, number? }`. Stored; written once by the door. |
@@ -1772,6 +1813,58 @@ person's start.
   "failure": { "kind": "failed", "awaits": "person", "because": "retries_used" }
 }
 ```
+
+**What the page may offer for a failure that is the person's.** For each
+`failure` with `awaits: "person"`, what the host takes from the socket, and
+so what a row may offer. Everything here is the person's own door: no hook
+action maps to any of these commands, and an argument that claims to be the
+person changes nothing.
+
+| `kind` | `because` | The host takes |
+| --- | --- | --- |
+| `failed`, `blocked` | `retries_used`, `coordinator_gone` | **Start** on the row: `orchestration_worker_start` with `retryOf` its latest attempt. Sets `retriesUsed` to 0; the attempt's `retry.by` is `person` and it has no `number`. |
+| `failed`, `blocked` | `time_limit` | The same Start, and nothing else: it is what gives a peer request more working time. A peer request is never reopened. |
+| any | `escalated` | **Answer** the gate `gateId` (`orchestration_gate_resolve`), which gives the retries back and tells the coordinator. The Start (a failed or blocked task) or the reopen (a failed check) is taken too and closes the gate (`cancelled`). |
+| `check_failed` | `retries_used` | **Reopen**: `orchestration_task_reopen { actorChatKey, taskId, spec }`. Start is refused for it, as for any completed task. |
+| `check_failed` | `coordinator_gone` | The same reopen. |
+
+The person's reopen of a failed check (`check_failed`), from the page:
+
+- is not asked whether retries remain, sets `retriesUsed` to 0 and closes
+  the decision the coordinator opened about the task, exactly as their Start
+  does for a failed task. The coordinator's reopen (the hook's
+  `task_reopen`, which the host routes to
+  `orchestration_task_reopen_in_chat`; the socket refuses that name) is
+  still held to the budget and still refused in the budget's words.
+- leaves the task `ready` with its `verdict` still `fail` (what it found
+  holds until it is checked again) and no `failure`; the reopen is the last
+  of `reopens`, with `byPerson: true`.
+- makes the first start after it the person's, whoever carries it out (the
+  host's dispatch, the coordinator, or `Start next attempt` on the row):
+  that attempt's `retry` is `{ after: "check_failed", by: "person" }` with no
+  `number`, and `retriesUsed` stays 0. A start after that one is counted as
+  usual.
+- **with the coordinator's chat there**, is shown in it like every reopen:
+  the `octiq_task_reopened` event carries `byPerson: true`, and the task is
+  `heldByReopen` until that notice is confirmed on disk.
+- **with the coordinator's chat gone** (`coordinator_gone`), owes no notice:
+  the words are the person's own and there is no chat to show them in, so
+  the reopen is recorded as told, no event is written and the task is not
+  `heldByReopen`. Nobody is there to start it, so the row's `Start next
+  attempt` does. (The coordinator's reopen is refused there, as before: it
+  would change a task's words where the person could not be shown them.)
+
+It is refused for the person as for anyone, in the host's words, when the
+task is a peer request, is not completed, has no workspace it kept or one
+that is closed (cleaned, abandoned or merged), has a dependant that already
+started, or its run is stopped or archived; and when the chat list cannot be
+read, which is not a chat that is gone. A failed check the host will not
+reopen has no start either: what is left is the coordinator's chat (if it
+is there) and stopping or archiving the run.
+
+Fixtures (`web/src/lib/__fixtures__/host`): `failure_check_retries_used`,
+`failure_coordinator_gone` (a failed task), `failure_check_coordinator_gone`
+and `failure_time_limit`.
 
 **Who is told.** The coordinator, in the notice of the failure it already
 gets (a worker's report, a host-detected failure, a recovery that could not

@@ -119,9 +119,21 @@ fn latest<'a>(data: &'a Stored, task: &Task) -> Option<&'a Attempt> {
         .and_then(|id| data.attempts.get(id))
 }
 
-/// What a task, as it stands, failed as. Nothing for a task the person
-/// stopped, for a worker waiting on its own open gate, and for a failure
-/// the host has already scheduled its recovery of.
+/// What a task, as it stands, is SHOWN as having failed as: on the page
+/// (`Task::failure`, a plan item's progress) and in what the coordinator is
+/// told (`expectation`). Nothing for a task the person stopped, for a
+/// worker waiting on its own open gate, and for a failure the host has
+/// already scheduled its recovery of: nobody is asked to do anything about
+/// that one, so it is drawn as a retry on its way and not as a failure.
+///
+/// **It decides nothing that is counted.** Whether an act uses one of a
+/// task's automatic retries, and whether the budget allows it, is asked of
+/// `counted`, which knows the failure this reading leaves out. A
+/// replacement asked this reading, found no failure in a task whose
+/// recovery was scheduled, and so was neither held to the budget nor
+/// counted: the limit could be gone round without end (review of 16e4188,
+/// H1). `retry_tests` reads the source for every caller and holds each to
+/// drawing or telling (`who_reads_what_a_failure_is_shown_as`).
 pub(super) fn failed_as(data: &Stored, task: &Task) -> Option<FailureKind> {
     if task.stopped.is_some() {
         return None;
@@ -148,10 +160,18 @@ pub(super) fn failed_as(data: &Stored, task: &Task) -> Option<FailureKind> {
     }
 }
 
-/// The failure a start of `task` right now would retry. Unlike `failed_as`
-/// it knows a failed check that was reopened (`reopen_task` makes the task
-/// ready and keeps its verdict) and the recovery the host owes.
-pub(super) fn retried(data: &Stored, task: &Task) -> Option<FailureKind> {
+/// The failure an act on `task` right now would answer, for everything
+/// that is COUNTED: a start, a reopen, a replacement. It is what the
+/// budget is asked about (`allows`) and what uses one of the task's
+/// automatic retries (`started`, `replaced`).
+///
+/// Unlike `failed_as`, which is what is shown, it leaves no failure out
+/// because nobody is asked about it: a failure the host has scheduled its
+/// own recovery of is a failure here, and so is a failed check that was
+/// reopened (`reopen_task` makes the task ready and keeps its verdict).
+/// Nothing for a task the person stopped, which did not fail, and for a
+/// worker waiting on its own open gate.
+pub(super) fn counted(data: &Stored, task: &Task) -> Option<FailureKind> {
     if task.stopped.is_some() {
         return None;
     }
@@ -159,12 +179,16 @@ pub(super) fn retried(data: &Stored, task: &Task) -> Option<FailureKind> {
     match task.status {
         TaskStatus::Failed => Some(FailureKind::Failed),
         TaskStatus::Blocked => match last?.status {
+            // Whether or not the host has scheduled its recovery of it.
             AttemptStatus::Failed => Some(FailureKind::Failed),
             AttemptStatus::Blocked if !attempt_has_open_gate(data, last?) => {
                 Some(FailureKind::Blocked)
             }
             _ => None,
         },
+        TaskStatus::Completed if task.verdict == Some(Verdict::Fail) => {
+            Some(FailureKind::CheckFailed)
+        }
         TaskStatus::Ready | TaskStatus::Pending
             if task.verdict == Some(Verdict::Fail)
                 && last.is_some_and(|attempt| attempt.status == AttemptStatus::Completed) =>
@@ -209,12 +233,7 @@ pub(super) fn started(
     now: i64,
 ) -> Option<AttemptRetry> {
     if by == RetryBy::Person {
-        given_more(data, task_id);
-        for gate in data.gates.values_mut().filter(|gate| {
-            gate.status == GateStatus::Open && gate.about_task_id.as_deref() == Some(task_id)
-        }) {
-            gate.close(GateStatus::Cancelled, now);
-        }
+        person_decided(data, task_id, now);
     }
     let kind = kind?;
     let task = data.tasks.get_mut(task_id)?;
@@ -229,6 +248,19 @@ pub(super) fn started(
     })
 }
 
+/// The person acted on this task themselves, by a door no agent's call
+/// reaches: their Start on its row, or their reopen of it from the page.
+/// Its automatic retries are whole again, and the decision the coordinator
+/// opened about it is closed: they have answered it by acting.
+pub(super) fn person_decided(data: &mut Stored, task_id: &str, now: i64) {
+    given_more(data, task_id);
+    for gate in data.gates.values_mut().filter(|gate| {
+        gate.status == GateStatus::Open && gate.about_task_id.as_deref() == Some(task_id)
+    }) {
+        gate.close(GateStatus::Cancelled, now);
+    }
+}
+
 /// The person decided about this task, or it finished well: its automatic
 /// retries are whole again.
 pub(super) fn given_more(data: &mut Stored, task_id: &str) {
@@ -239,14 +271,16 @@ pub(super) fn given_more(data: &mut Stored, task_id: &str) {
 
 /// `new` replaces the failed `old`: that is one of old's retries, and the
 /// replacement carries the count on, so a chain of replacements ends at the
-/// person like a chain of retries.
+/// person like a chain of retries. Asked of `counted`, like the budget that
+/// allowed it (`supersedable`): a replacement of a failure the host had
+/// scheduled its recovery of is a retry like any other.
 pub(super) fn replaced(data: &mut Stored, old: &str, new: &str) {
     let Some(before) = data.tasks.get(old) else {
         return;
     };
     let used = before
         .retries_used
-        .saturating_add(u32::from(failed_as(data, before).is_some()));
+        .saturating_add(u32::from(counted(data, before).is_some()));
     if let Some(task) = data.tasks.get_mut(new) {
         task.retries_used = task.retries_used.max(used);
     }
@@ -305,7 +339,7 @@ fn ended(run: &Run) -> bool {
 
 /// Put on `task` what a read says of its retries and its failure.
 pub(super) fn derive(data: &Stored, task: &mut Task, reach: &mut Reach, now: i64) {
-    task.retry_limit = RETRY_LIMIT;
+    task.retry_limit = Some(RETRY_LIMIT);
     let attempt = latest(data, task);
     task.retrying = attempt.is_some_and(|attempt| {
         let executing = matches!(

@@ -910,7 +910,7 @@ impl OrchestrationStore {
                 held_by_plan: None,
                 held_by_reopen: false,
                 retries_used: 0,
-                retry_limit: 0,
+                retry_limit: None,
                 retrying: false,
                 failure: None,
                 created_at: now,

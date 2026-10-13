@@ -1627,7 +1627,10 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     ("workspace_refresh", "orchestration_workspace_refresh"),
     // Read-only: where the mission's branches stand. Closing is the person's.
     ("mission_refresh", "orchestration_mission_refresh"),
-    ("task_reopen", "orchestration_task_reopen"),
+    // The coordinator's reopen, held to the task's automatic retries. NOT
+    // the socket's `orchestration_task_reopen`, which is the person's own
+    // decision about the task and gives the retries back.
+    ("task_reopen", "orchestration_task_reopen_in_chat"),
     // A lead accepting a report's result; never the person's acceptance.
     ("task_accept", "orchestration_task_accept_in_chat"),
     ("validation_create", "orchestration_validation_create"),
@@ -1749,7 +1752,7 @@ const PLAN_GATED_COMMANDS: &[&str] = &[
     "orchestration_task_create",
     "orchestration_worker_start_in_chat",
     "orchestration_dispatch_ready",
-    "orchestration_task_reopen",
+    "orchestration_task_reopen_in_chat",
 ];
 
 /// Why `command` is refused to `chat_key`'s agent while its plan waits on
@@ -2409,6 +2412,11 @@ const CHAT_ONLY_COMMANDS: &[&str] = &[
     // The coordinator's own answer to a gate. The page's answer is the
     // person's, and a peer request's gate takes no other.
     "orchestration_gate_resolve_in_chat",
+    // The coordinator's reopen of a completed task. The page's reopen is
+    // the person's own decision and is not held to the automatic retries;
+    // only a capability may ask as the coordinator, and nothing an agent
+    // reaches may ask as the person.
+    "orchestration_task_reopen_in_chat",
     // Acts as the chat's registered agent on its own memory, and what it
     // writes is shown in that chat as the agent's own update: only the
     // agent's capability, on /hook/vault, may say so.
@@ -4995,6 +5003,10 @@ mod tests {
         // The page's own answer to a gate: the one a peer request's gate
         // takes. A coordinator's goes through `_in_chat`.
         "orchestration_gate_resolve",
+        // The page's own reopen of a completed task: the person's decision,
+        // not held to the automatic retries. A coordinator's goes through
+        // `_in_chat`.
+        "orchestration_task_reopen",
         "orchestration_task_access",
         "team_head_set",
         // An agent only proposes these, on a card (`team_tools`).
@@ -5359,6 +5371,74 @@ mod tests {
             orchestration_hook_command("gate_resolve"),
             Some("orchestration_gate_resolve_in_chat")
         );
+        // Nor its reopen of a completed task for the person's.
+        assert_eq!(
+            orchestration_hook_command("task_reopen"),
+            Some("orchestration_task_reopen_in_chat")
+        );
+    }
+
+    /// A failed check whose automatic retries are used is reopened by the
+    /// person, from the page, and by nothing an agent can send: the hook's
+    /// reopen is the coordinator's whatever its arguments claim, and is
+    /// refused in the budget's words; the socket's is the person's, is
+    /// taken, and gives the retries back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spent_check_is_reopened_from_the_page_and_never_through_a_hook() {
+        let spent = crate::orchestration::retry_tests::spent_check();
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let lead = chats.test_launch(&spent.chat_key);
+        let (ctx, base) = test_server(chats.clone(), spent.store.clone()).await;
+        let of = || {
+            spent
+                .store
+                .snapshot(Some(&spent.task.run_id))
+                .unwrap()
+                .tasks
+                .into_iter()
+                .find(|task| task.id == spent.task.id)
+                .unwrap()
+        };
+
+        let (status, answer) = hook(
+            &base,
+            Some(&lead),
+            json!({ "chatKey": spent.chat_key, "action": "task_reopen", "args": {
+                "taskId": spent.task.id, "spec": "Check it again",
+                "by": "person", "reopenedBy": "Person", "source": "page",
+            } }),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(
+            answer["error"],
+            crate::orchestration::retry::RETRIES_USED,
+            "{answer}"
+        );
+        let kept = of();
+        assert_eq!(kept.status, crate::orchestration::TaskStatus::Completed);
+        assert_eq!((kept.retries_used, kept.reopens.len()), (2, 2));
+        // No hook action reaches the page's command, and the socket will
+        // not run the coordinator's.
+        assert!(ORCHESTRATION_HOOK_ACTIONS
+            .iter()
+            .all(|(_, command)| *command != "orchestration_task_reopen"));
+        assert!(socket_refusal("orchestration_task_reopen_in_chat").is_some());
+
+        let reopened = crate::dispatch::dispatch(
+            &ctx.services,
+            "orchestration_task_reopen",
+            json!({
+                "actorChatKey": spent.chat_key, "taskId": spent.task.id,
+                "spec": "Check the linker flags too",
+            }),
+        )
+        .unwrap();
+        assert_eq!(reopened["status"], "ready", "{reopened}");
+        assert_eq!(reopened["retriesUsed"], 0, "{reopened}");
+        let now = of();
+        assert!(now.reopens.last().unwrap().by_person);
+        chats.test_end(&spent.chat_key);
     }
 
     /// The peer tools speak as the chat's registered agent, so a room seat
@@ -5454,6 +5534,7 @@ mod tests {
             "orchestration_peer_request",
             "orchestration_worker_start_in_chat",
             "orchestration_gate_resolve_in_chat",
+            "orchestration_task_reopen_in_chat",
             "memory_vault_agent",
         ] {
             assert!(socket_refusal(command).is_some(), "{command}");
@@ -5468,6 +5549,7 @@ mod tests {
             "memory_vault_call",
             "orchestration_worker_start",
             "orchestration_gate_resolve",
+            "orchestration_task_reopen",
         ] {
             assert!(socket_refusal(command).is_none(), "{command}");
         }

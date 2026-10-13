@@ -134,7 +134,7 @@ While a plan is not started and has at least one item that is not dropped
 - `orchestration_task_create`
 - `orchestration_worker_start` (the hook's `orchestration_worker_start_in_chat`)
 - `orchestration_dispatch_ready`
-- `orchestration_task_reopen`
+- `orchestration_task_reopen` (the hook's `orchestration_task_reopen_in_chat`)
 
 The refusal begins `This chat's plan has not been started.` and says that
 only the person's Start does that.

@@ -2492,7 +2492,13 @@ page's. Nothing but an approval writes it. So:
   delivery removes the notice with the chat's history and is not undone. A
   reopen whose coordinator
   chat the person cannot open (not in the chat list, or in the trash) is
-  refused. A write whose receipt says whether it held
+  refused. **One reopen owes no notice: the person's own, where that chat is
+  gone.** The notice stands in for an approval of words the person did not
+  write; these they wrote, on the page, and there is no chat left to show
+  them in, so the reopen is recorded as told (`reopen_task_as`) and its
+  start is not held. Where the chat is there the person's reopen owes its
+  notice like any other, and the event says `byPerson`. A chat list that
+  cannot be read is not a chat that is gone: that reopen is refused. A write whose receipt says whether it held
   (`record_chat_event_synced` answers `Option`) has that receipt read: a
   step that only counts once the person was told waits for it.
 - A replaced task (`superseded_by`) and a task the person stopped
@@ -2507,26 +2513,65 @@ failure is a task that failed, one its worker reported blocked with no
 decision open, or one that completed with a failing verdict; a task the
 person stopped did not fail. So:
 
-- **The budget is counted at the one door and nowhere else.**
+- **The budget is counted at the one door, and at a replacement.**
   `Task::retries_used` goes up in `reserve_attempt_for`, with the
   reservation, for every start of a task in failure that is not the person's
-  (`retry::retried`, `retry::started`): the coordinator's, the host's
+  (`retry::counted`, `retry::started`): the coordinator's, the host's
   dispatch of a check that was reopened, the host's own recovery. At
   `retry::RETRY_LIMIT` (2) the door refuses in `retry::RETRIES_USED`'s words.
   A new way to start a task goes through that door, so it is counted; a new
   way to get a failed task going again that is not a start (as
   `reopen_task` and `supersede` are) asks `retry::allows` first, and a
-  replacement carries the count on (`retry::replaced`).
-- **The host's provider recovery has no count of its own any more.**
-  `execution::fail` schedules none the door would refuse, so the most a task
-  is started again without the person is 2 whoever starts it. Anything new
-  that restarts a task for the host is a `StartedBy::Recovery`.
+  replacement uses one and carries the count on (`retry::replaced`).
+- **No count and no budget reads a fact that exists to be shown.** A failure
+  has two readings and they differ on purpose. `retry::failed_as` is what is
+  SHOWN (`Task::failure`, a plan item's progress, the notice to the
+  coordinator): it says nothing of a failure the host has scheduled its own
+  recovery of, because nobody is asked about that one. `retry::counted` is
+  what an act right now would answer, for everything that is counted: that
+  scheduled recovery is a failure there, and so is a failed check that was
+  reopened. `retry::allows`, `retry::started` and `retry::replaced` are
+  given `counted`, never `failed_as`. A replacement read the shown one,
+  found no failure in a task whose recovery was scheduled, and was neither
+  held to the budget nor counted: the limit could be gone round without end
+  (review of 16e4188, H1). `retry_tests::who_reads_what_a_failure_is_shown_as`
+  names every caller of `failed_as` with what it does with the answer, and
+  fails for a new one: that is where "does this decide something?" is
+  asked. The one caller that decides is `create_gate` (is this question
+  about a task in failure), and where the two readings differ it refuses.
+  The same holds for every derived fact the page reads (`heldByPlan`,
+  `heldByReopen`, `retrying`, `failure`, `awaits`): they are written onto a
+  copy for the answer, and nothing in the host reads them back to decide.
+- **The host's provider recovery keeps its own count, and shares the
+  task's.** `execution.retry_count` is the recovery policy's: how many host
+  recoveries in a row led to an attempt, compared with the policy's
+  `maxRetries` and used for the backoff. `Task::retries_used` is the shared
+  total of 2 that every automatic retry uses, the host's included.
+  `execution::fail` schedules a recovery only while both allow one, so the
+  most a task is started again without the person is 2 whoever starts it,
+  and a policy can allow fewer. Anything new that restarts a task for the
+  host is a `StartedBy::Recovery`.
 - **Only the person gives more**, and each way is one no agent's call
-  reaches: their Start (`StartedBy::Page`), their answer on the page to a
+  reaches: their Start (`StartedBy::Page`), their own reopen of a completed
+  task from the page (`ReopenedBy::Person`), their answer on the page to a
   decision about the task (`ResolvedBy::Person` on a gate with
   `about_task_id`), their approval of a plan the task is put back on. A task
   that finishes well is also at zero again. A new reset is one of the
   person's own doors, never an argument an agent can send.
+- **A reopen has two doors, like a start and a gate's answer**
+  (`ReopenedBy`). The coordinator's comes only through `/hook/orchestration`
+  (`task_reopen` → `orchestration_task_reopen_in_chat`, which the socket
+  refuses and the plan's Start gate holds) and is held to the budget. The
+  person's comes only through the socket (`orchestration_task_reopen`,
+  which no hook action maps to): it is taken when the retries are used,
+  gives them back, closes the decision the coordinator opened about the
+  task (`retry::person_decided`, which their Start calls too), and the
+  first start after it is theirs and uses none, whoever carries it out
+  (`workspaces::persons_reopen`, asked at the door). Without it a failed
+  check whose retries were used had no door at all once its coordinator
+  was gone: the page's Start is refused for a completed task. A new thing
+  the person may do about a task that an agent may not is a new variant
+  chosen by the route in `dispatch`, never a field of the request.
 - **A gate about a failed task is not that task's gate.** The coordinator
   names the task in `orchestration_gate_create`; on a task in failure the
   host records `Gate::about_task_id` and leaves `task_id` empty
@@ -2609,7 +2654,16 @@ chat's index entry, `awaitsStart` on a chat's plan and `progress` and
 `linked` on its items. Each is
 `skip_deserializing` or added at the dispatch arm, and absent rather than
 zero or guessed when the host does not know (`docs/agents-mode.md`, What the
-run panel reads from the host). A fact the host does know is said outright:
+run panel reads from the host). **Not read back is half of "never stored";
+the other half is not written.** A derived field of a stored struct is
+`skip_deserializing` AND left out of what is saved (`skip_serializing_if`,
+with a value the stored copy never holds: `None`, `false`). `retryLimit`
+was a plain `u32` with `skip_deserializing` alone, and every task was saved
+with `retryLimit: 0` while the answer said 2 (review of 16e4188, H3). A
+ledger that holds one needs nothing done to it: the key is ignored on read
+and gone at the next write. A new derived field gets a line in
+`retry_tests::the_ledger_on_file_holds_nothing_a_read_derives`, which makes
+real writes and reads the file. A fact the host does know is said outright:
 `heldByPlan` is `true` or `false` on every task of a run that has a plan
 approval, because a page sent nothing for "not held" could not tell it from
 a host that does not say, and read an approved task as held. `awaits` says

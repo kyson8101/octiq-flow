@@ -56,7 +56,7 @@ mod reporting_tests;
 mod retention;
 pub mod retry;
 #[cfg(test)]
-mod retry_tests;
+pub(crate) mod retry_tests;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
@@ -499,9 +499,14 @@ pub struct Task {
     #[serde(default)]
     pub retries_used: u32,
     /// How many it has (`retry::RETRY_LIMIT`). Derived for each read, and
-    /// said on every task, so a reader can tell this host counts retries.
-    #[serde(default, skip_deserializing)]
-    pub retry_limit: u32,
+    /// said on every task of an answer, so a reader can tell this host
+    /// counts retries. Never stored: the ledger's own tasks hold `None`,
+    /// which is not written, and a ledger an earlier build wrote
+    /// `retryLimit: 0` into has it ignored on read (review of 16e4188, H3:
+    /// `skip_deserializing` alone kept it from being read back and still
+    /// wrote the zero).
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub retry_limit: Option<u32>,
     /// A retry of this task is at work, or the host has scheduled one.
     /// Derived for each read in `snapshot`; present only while it holds.
     #[serde(
@@ -675,6 +680,12 @@ pub struct TaskReopen {
     /// one without it.
     #[serde(default)]
     pub notice_delivered: bool,
+    /// The person reopened it themselves, from the page
+    /// (`ReopenedBy::Person`), and `by_chat_key` is the run's coordinator
+    /// only as the chat the notice belongs in. Written by `reopen_task_as`
+    /// from the route the command came by, never from an argument.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_person: bool,
 }
 
 /// The person's stop of one task (`OrchestrationStore::stop_task`).
@@ -1163,6 +1174,22 @@ pub enum ResolvedBy {
     /// The run's coordinator, an agent.
     Coordinator,
     /// The person, on the page.
+    Person,
+}
+
+/// Who reopens a completed task. As with [`StartedBy`] and [`ResolvedBy`],
+/// the two reach the host by different doors and no argument can claim the
+/// other: the coordinator only through `/hook/orchestration` (`task_reopen`
+/// → `orchestration_task_reopen_in_chat`, which the person's socket
+/// refuses), the person only through their socket
+/// (`orchestration_task_reopen`, which no hook action maps to).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReopenedBy {
+    /// The run's coordinator, an agent: held to the task's automatic
+    /// retries, and its start uses one (`retry.rs`).
+    Coordinator,
+    /// The person, on the page: their decision about the task, like their
+    /// Start on a failed task's row (`OrchestrationStore::reopen_task_as`).
     Person,
 }
 
@@ -2375,7 +2402,7 @@ impl OrchestrationStore {
                 held_by_plan: None,
                 held_by_reopen: false,
                 retries_used: 0,
-                retry_limit: 0,
+                retry_limit: None,
                 retrying: false,
                 failure: None,
                 created_at: now,
@@ -2873,9 +2900,19 @@ impl OrchestrationStore {
             // the host's own recovery. After that, and while a decision the
             // coordinator opened about it is with the person, only the
             // person starts it (`retry.rs`). Their Start asks nothing here.
-            let retried = retry::retried(data, &task);
+            let retried = retry::counted(data, &task);
+            // A task the person reopened themselves starts as theirs,
+            // whoever carries the start out: the reopen was their decision,
+            // and its first start is that decision being made, not one of
+            // the coordinator's retries.
+            let attempts = data
+                .attempts
+                .values()
+                .filter(|attempt| attempt.task_id == task.id)
+                .count();
             let retry_by = match by {
                 StartedBy::Page { .. } => retry::RetryBy::Person,
+                _ if workspaces::persons_reopen(&task, attempts) => retry::RetryBy::Person,
                 StartedBy::Recovery(_) => retry::RetryBy::Host,
                 StartedBy::Coordinator => retry::RetryBy::Coordinator,
             };
@@ -3945,6 +3982,15 @@ impl OrchestrationStore {
             // failure. Nothing of that task waits on a gate, so this one is
             // not the task's (`Gate::about_task_id`): it changes no status,
             // resumes no worker, and reaches no worker's brief.
+            //
+            // Asked of what is SHOWN (`retry::failed_as`), on purpose: this
+            // gate is itself something shown, tied by the page to the row
+            // whose `failure` it reads, so it is about a task exactly when
+            // that row says a failure. It grants nothing where the shown
+            // and the counted readings differ: a task whose recovery the
+            // host has scheduled, and a failed check that was reopened,
+            // have a settled attempt and are refused just below, and no
+            // retry is given or used by asking.
             let mut about = None;
             if let Some(requested) = task_id.as_deref() {
                 let task = data
@@ -4719,8 +4765,10 @@ fn supersedable(
     if !matches!(task.status, TaskStatus::Blocked | TaskStatus::Failed) {
         return Err("Only a blocked or failed task can be replaced.".into());
     }
-    // A replacement is one of a failed task's automatic retries.
-    retry::allows(data, task, retry::failed_as(data, task))?;
+    // A replacement is one of a failed task's automatic retries, whatever
+    // the page is shown of the failure: one the host has scheduled its own
+    // recovery of is held to the budget too (`retry::counted`).
+    retry::allows(data, task, retry::counted(data, task))?;
     if task
         .active_attempt_id
         .as_ref()

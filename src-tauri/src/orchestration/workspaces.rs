@@ -69,7 +69,7 @@ pub(super) fn untold_reopen(task: &Task) -> Option<&TaskReopen> {
 /// The one event that tells the person of a reopen, made from what the
 /// ledger keeps of it: the same on every try.
 fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
-    json!({
+    let mut event = json!({
         "type": "octiq_task_reopened",
         "runId": task.run_id,
         "taskId": task.id,
@@ -79,7 +79,13 @@ fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
         "spec": reopen.spec,
         "previousSpecChars": reopen.previous_spec.chars().count(),
         "at": reopen.at,
-    })
+    });
+    // Said only of the person's own, so the event of every other reopen is
+    // the one it always was: a notice is found again by what it says.
+    if reopen.by_person {
+        event["byPerson"] = json!(true);
+    }
+    event
 }
 
 /// Whether the host holds a durability receipt for each of `events` in
@@ -188,11 +194,33 @@ pub(super) fn notice_wait(failures: u32) -> i64 {
 /// nothing lists cannot be opened, and is removed when the server next
 /// starts (`chat_index::reconcile`).
 fn shown_to_the_person(chat_key: &str) -> Result<(), String> {
-    match crate::chat_index::listed(chat_key.strip_prefix("chat:").unwrap_or(chat_key)) {
+    match shown_in(chat_key) {
         Ok(true) => Ok(()),
-        Ok(false) => Err("The coordinator's chat no longer exists, so the person could not be shown this reopen. Nothing was reopened. Create a new task for the follow-up work, from a chat that exists.".into()),
-        Err(error) => Err(format!("Whether the coordinator's chat still exists could not be checked ({error}), so the person could not be shown this reopen. Nothing was reopened. Try again.")),
+        Ok(false) => Err(CHAT_GONE.into()),
+        Err(error) => Err(chat_unknown(&error)),
     }
+}
+
+/// Whether the chat list has `chat_key` and it is not in the trash, or why
+/// that could not be asked.
+fn shown_in(chat_key: &str) -> Result<bool, String> {
+    crate::chat_index::listed(chat_key.strip_prefix("chat:").unwrap_or(chat_key))
+}
+
+const CHAT_GONE: &str = "The coordinator's chat no longer exists, so the person could not be shown this reopen. Nothing was reopened. Create a new task for the follow-up work, from a chat that exists.";
+
+fn chat_unknown(error: &str) -> String {
+    format!("Whether the coordinator's chat still exists could not be checked ({error}), so the person could not be shown this reopen. Nothing was reopened. Try again.")
+}
+
+/// The reopen of `task` nothing has started on yet, when it was the
+/// person's own (`ReopenedBy::Person`): the start it is waiting for is
+/// theirs, whoever carries it out, and uses none of the task's automatic
+/// retries (`reserve_attempt_for`). `attempts` is how many the task has had.
+pub(super) fn persons_reopen(task: &Task, attempts: usize) -> bool {
+    task.reopens
+        .last()
+        .is_some_and(|reopen| reopen.by_person && reopen.attempt as usize == attempts + 1)
 }
 
 /// What the host WILL allocate for a task that has no workspace yet, worked
@@ -1020,6 +1048,34 @@ impl OrchestrationStore {
     /// with nowhere to be shown is refused outright: the coordinator's chat
     /// has to be one the person can open.
     pub fn reopen_task(&self, actor: &str, task_id: &str, spec: String) -> Result<Task, String> {
+        self.reopen_task_as(actor, task_id, spec, ReopenedBy::Coordinator)
+    }
+
+    /// `reopen_task`, for whoever asks (`ReopenedBy`). The person's own
+    /// reopen, from the page, differs in three things, each of which their
+    /// Start on a failed task's row already does:
+    ///
+    /// - it is not asked whether automatic retries remain, and it gives
+    ///   them all back: a failed check whose retries are used is theirs to
+    ///   decide, and this is them deciding (review of 16e4188, M1: nothing
+    ///   the page could send got such a check going again);
+    /// - it closes the decision the coordinator opened about the task;
+    /// - the start that follows is theirs, and uses no retry
+    ///   (`persons_reopen`).
+    ///
+    /// And one of its own: the words are the person's, so where the
+    /// coordinator's chat is gone there is nobody left to show them to, and
+    /// the reopen is recorded as told. In a chat that is there the notice
+    /// is written and waited for like any other, which keeps the record of
+    /// it in the conversation. A list of chats that cannot be read is not a
+    /// chat that is gone: that reopen is refused, as before.
+    pub fn reopen_task_as(
+        &self,
+        actor: &str,
+        task_id: &str,
+        spec: String,
+        by: ReopenedBy,
+    ) -> Result<Task, String> {
         let spec = required_text("follow-up instructions", spec, 40_000)?;
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let reopened = self.mutate(|data| {
@@ -1037,7 +1093,9 @@ impl OrchestrationStore {
             // coordinator put to the person, is not made ready to fail again:
             // its start would be refused, and it would wait where nobody
             // is told of it (`retry.rs`).
-            super::retry::allows(data, &task, super::retry::failed_as(data, &task))?;
+            if by == ReopenedBy::Coordinator {
+                super::retry::allows(data, &task, super::retry::counted(data, &task))?;
+            }
             let ws = task.workspace.as_ref().ok_or("This task has no retained workspace.")?;
             if ws.state == WorkspaceState::Cleaned || ws.abandoned || ws.delivery.as_ref().is_some_and(|d| d.merged) {
                 return Err("This workspace is closed. Create a new task for new work.".into());
@@ -1048,8 +1106,14 @@ impl OrchestrationStore {
                 return Err("A dependent task already started. Create a separate follow-up task instead.".into());
             }
             // The person is shown every reopen in the coordinator's chat.
-            // With no chat of theirs to show it in, there is no reopen.
-            shown_to_the_person(&coordinator_chat)?;
+            // With no chat of theirs to show it in, there is no reopen,
+            // unless the words are their own.
+            let told = match (by, shown_in(&coordinator_chat)) {
+                (_, Ok(true)) => false,
+                (ReopenedBy::Person, Ok(false)) => true,
+                (ReopenedBy::Coordinator, Ok(false)) => return Err(CHAT_GONE.into()),
+                (_, Err(error)) => return Err(chat_unknown(&error)),
+            };
             for dependent in data.tasks.values_mut() {
                 if dependent.depends_on.iter().any(|id| id == task_id) && dependent.status == TaskStatus::Ready {
                     dependent.status = TaskStatus::Pending;
@@ -1057,10 +1121,14 @@ impl OrchestrationStore {
             }
             let attempt = data.attempts.values().filter(|a| a.task_id == task_id).count().saturating_add(1) as u32;
             let now = now_ms();
+            let by_person = by == ReopenedBy::Person;
+            if by_person {
+                super::retry::person_decided(data, task_id, now);
+            }
             let task = data.tasks.get_mut(task_id).unwrap();
             let previous_spec = std::mem::replace(&mut task.spec, spec);
             task.status = TaskStatus::Ready; task.result = None; task.updated_at = now;
-            task.reopens.push(TaskReopen { by_chat_key: actor.to_owned(), at: now, attempt, previous_spec, spec: task.spec.clone(), notice_delivered: false });
+            task.reopens.push(TaskReopen { by_chat_key: actor.to_owned(), at: now, attempt, previous_spec, spec: task.spec.clone(), notice_delivered: told, by_person });
             // Both texts of each are kept whole, so the list has an end.
             let over = task.reopens.len().saturating_sub(MAX_REOPENS_KEPT);
             task.reopens.drain(..over);
