@@ -4406,6 +4406,39 @@ body {
   text-decoration-color: var(--fg-3);
 }
 
+/* A composer too narrow for its row at ANY window width: the same fold as a
+   phone's. A chat column beside the run panel and a side column is about
+   340px on a 1280px window, the window's own width said "desktop", and the
+   row's overflow landed on Send, drawn past the composer's right edge. The
+   row is measured (`lib/composerFit`), never assumed from a font. */
+.composer-row.is-tight .composer-settings {
+  display: none;
+}
+.composer-row.is-tight .settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* No control of the row is drawn outside it. Folded, what is left can still
+   be wider than a very narrow column, so everything but Send gives way: the
+   settings button is cut, then the chip, and Send stays whole at the end. */
+.composer-row { min-width: 0; }
+.composer-row .settings-toggle { overflow: hidden; white-space: nowrap; }
+/* The sheet that button opens is a phone's: across the foot of the window.
+   On a wide window it is a card at the foot of it. */
+@media (min-width: 701px) {
+  .sheet.settings-sheet {
+    right: auto;
+    left: 50%;
+    width: min(440px, calc(100vw - 24px));
+    translate: -50% 0;
+    border: 1px solid var(--border);
+    border-bottom: 0;
+  }
+}
+
 @media (max-width: 700px) {
   .composer-identity { max-width: 60%; }
   /* At 360px the three pickers, the attach button and Send needed 358px in a

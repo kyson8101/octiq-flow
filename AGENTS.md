@@ -1288,6 +1288,30 @@ text, `opus · high · Auto` (`AgentIdentityChip`, `lib/chatSettings`).
   tooltip in an ordinary chat. The eyebrow carries no receipt and no model
   name.
 
+### No control of the composer is drawn outside it
+
+The row under the text box folds its three pickers (model, access, effort)
+behind one button when it cannot hold them side by side. That is decided by
+the row's own width, measured (`lib/composerFit.rowFit`, a `ResizeObserver`
+on the row and a look when what the row holds changes), and never by the
+window's alone: with the run column and a side column open on a 1280px
+window the chat is about 340px, the window still said "desktop", and the
+row's overflow landed on Send, drawn past the composer's right edge. (That
+is older than the Plan column: the git and files columns did the same.)
+
+- **Side by side while what the row holds is no wider than the row; folded,
+  it comes back only when the row is as wide as the pickers needed when
+  they left**, so it does not flip at one width. Nothing is assumed from a
+  font: a wider fallback font folds sooner.
+- **The fold is the phone's** (`.composer-row.is-tight`, beside the 700px
+  rule): the same button, opening the same sheet. On a wide window that
+  sheet is a card at the foot of the window, not a band across it.
+- **Send never gives way.** Everything else of a folded row can be cut: the
+  settings button, then the agent's chip.
+- `scripts/test-composer-fit.mjs` draws it in the real App and walks a
+  desktop window down to 861px with both columns open (a 321px chat): no
+  control of the composer reaches past its box.
+
 ### A chat that waits on the person is not drawn as running
 
 The agent is already parked when it asks: the tool it called blocks until

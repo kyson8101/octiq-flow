@@ -36,6 +36,7 @@ import { BackgroundNote } from "./Background";
 import { RollingText } from "./RollingNumber";
 import { useLate } from "../lib/useArrival";
 import { receiptLines, runsAtLine, runsAtParts, runsAtRows, type KnownSettings } from "../lib/chatSettings";
+import { ROW_FITS, rowFit, type RowFit } from "../lib/composerFit";
 import { WAIT_WORDS, type ChatWait } from "../lib/chatWait";
 import { turnElapsed, type TurnWaits } from "../lib/turnClock";
 import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/commandMenu";
@@ -537,6 +538,25 @@ export function Composer({
   const [menu, setMenu] = useState(false);
   /** The phone's stand-in for the three pickers: one sheet holding all of them. */
   const [sheet, setSheet] = useState(false);
+  // Whether the row has room for its pickers side by side, by its own
+  // width and never the window's (`lib/composerFit`): a chat column beside
+  // the run panel and a side column is narrower than a phone. Read when the
+  // row's size changes, and when what it holds does.
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState<RowFit>(ROW_FITS);
+  const measureRow = useCallback(() => {
+    const row = rowRef.current;
+    if (row) setFit((before) => rowFit(before, row));
+  }, []);
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!row || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measureRow);
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [measureRow]);
+  const rowHolds = [choice.agent, choice.model, access, effort, identity?.name, !!advanced, !!onTerminal, focusMode, fit.tight].join("|");
+  useLayoutEffect(measureRow, [measureRow, rowHolds]);
   const [permMenu, setPermMenu] = useState(false);
   const [pick, setPick] = useState(0);
   // Every option list depends on which provider is chosen: the agents do
@@ -1256,7 +1276,7 @@ export function Composer({
           />
 
         </div>
-        <div className="composer-row">
+        <div className={`composer-row${fit.tight ? " is-tight" : ""}`} ref={rowRef}>
 
           {/* One "+", two ways in. They were a clip and a picture standing
               side by side, which read as the same idea drawn twice — see
