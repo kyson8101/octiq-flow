@@ -258,8 +258,9 @@ async function desktop(browser, name, out) {
   // Every action is a button with an icon and a short word, in one line.
   const row = await buttons(page);
   out.buttons = row.map((each) => `${each.id}:${each.label}`);
-  const order = ["tasks", "preview", "git", "focus", "details", "copy-id", "complete", "delete"];
-  const words = { tasks: "Tasks", preview: "Preview", git: "Git", focus: "Focus", details: "Details", "copy-id": "Copy ID", complete: "Complete", delete: "Delete", more: "More" };
+  // `plan` joined the bar with the Plan panel, after `tasks`.
+  const order = ["tasks", "plan", "preview", "git", "focus", "details", "copy-id", "complete", "delete"];
+  const words = { tasks: "Tasks", plan: "Plan", preview: "Preview", git: "Git", focus: "Focus", details: "Details", "copy-id": "Copy ID", complete: "Complete", delete: "Delete", more: "More" };
   const inRow = row.map((each) => each.id).filter((id) => id !== "more");
   // A wider font may already have put the last of them behind More here.
   if (!wideFont) assert.deepEqual(inRow, order, "the direct actions lead, then what was behind the menu, in its order");
