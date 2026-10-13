@@ -1,0 +1,41 @@
+{
+  "at": 1791926691445,
+  "id": "70b3f2e5-850c-4701-b3e4-edae689869ef",
+  "questions": [
+    {
+      "answer": "SQLite",
+      "id": "29041469-fd37-45f4-8386-74140f8b4314",
+      "multiple": false,
+      "options": [
+        {
+          "label": "Postgres"
+        },
+        {
+          "description": "One file, no server",
+          "label": "SQLite"
+        }
+      ],
+      "question": "Which database?",
+      "recommended": 1
+    },
+    {
+      "answer": "cargo test, pnpm test",
+      "id": "ea58b0ff-31f4-48a0-98f9-f93ccf48405c",
+      "multiple": true,
+      "options": [
+        {
+          "label": "cargo test"
+        },
+        {
+          "label": "pnpm test"
+        },
+        {
+          "label": "the browser scripts"
+        }
+      ],
+      "question": "Which checks should run?"
+    }
+  ],
+  "type": "octiq_question_answered",
+  "via": "tool"
+}

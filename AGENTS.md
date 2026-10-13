@@ -796,6 +796,23 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   the call had ended. That turn (`octiq-question-<record>`,
   `isAnswerTurn`, `answerTurn`) is drawn as the bubble and not as the
   host's words, where it stands in the conversation.
+- **The host keeps an answer that was handed over in the chat's record**
+  (`question_store::Record::answered`, `docs/question-delivery.md`, The
+  answered line). When an answer reaches the agent while its call waits,
+  the host writes one `octiq_question_answered` event there, before it says
+  `question-expired`: the questions as asked, the answers as given, the
+  record's `id`, and `via` (`native` for a provider's own request, which
+  has no tool call in the transcript; `tool` for `ask_user`). It is written
+  by the one `take_tool` or `take_native` that hands the answer over, so
+  once; a cancelled or unanswered question writes none, and a late answer's
+  record is its host turn. The answer never waits for the line: one the
+  record would not take is said `unsaved`, owed (`answered questions` in
+  `profile_status.owed`) and written by `settle_notes`, which looks for it
+  by `id` first. Review 3 of the batch (H3) found the answer to a Codex
+  question gone from the page after delivery and after a reload: nothing a
+  transcript reader finds held it. The page's type is `QuestionAnswered`;
+  drawing a batch it cannot attach to a call from this line is the page's
+  half.
 - **The bubble is not a message.** No edit, retry, take-back or copy on it,
   no point on the conversation map, not grouped as a turn, and never
   returned to the composer (`reclaim` skips an answer turn).

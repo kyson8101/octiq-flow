@@ -5,6 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -119,9 +120,135 @@ impl Record {
 /// This store, in the list of what still owes a save (`profile_status`).
 pub(crate) const OWED: &str = "questions";
 
+/// The answered questions' lines, in that same list: what `Note`s are owed.
+pub(crate) const NOTES_OWED: &str = "answered questions";
+
 /// What an answer handed to its tool is called when the hand-over could not
 /// be recorded (`unsaved::say`).
 const DELIVERED: &str = "the delivered answer";
+
+/// The `type` of the one line that keeps an answered question in its
+/// chat's record (`Record::answered`).
+pub(crate) const ANSWERED: &str = "octiq_question_answered";
+
+/// What that line is called when it could not be written (`unsaved::say`).
+const ANSWERED_LINE: &str = "the answered questions in the chat's record";
+
+/// How an answer reached the agent that asked, while its call was waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Via {
+    /// The provider's own question request (Codex's app-server). Nothing
+    /// in the agent's stream is a tool call of ours to draw it at.
+    Native,
+    /// The `ask_user` MCP tool, whose result carries the answer too.
+    Tool,
+}
+
+impl Record {
+    /// The line that keeps this question in its chat's record once its
+    /// answer has been handed over: the questions as they were asked and
+    /// the answers as they were given, under the record's own id.
+    ///
+    /// `question-expired` takes a delivered question off every page, and
+    /// until this line nothing a transcript reader finds said what was
+    /// asked or answered when the provider asked by itself (review 3 of the
+    /// UI batch, H3). Made from the stored record, so every try at writing
+    /// it writes the same line, and found again by `id`.
+    fn answered(&self, via: Via, at: i64) -> serde_json::Value {
+        let questions = self
+            .questions
+            .iter()
+            .enumerate()
+            .map(|(i, q)| {
+                let mut asked = serde_json::json!({
+                    "id": self.ids[i],
+                    "question": q.question,
+                    "options": q.options,
+                    "multiple": q.multiple,
+                    "answer": self.answers[i],
+                });
+                // Absent, never null or a guess, when the agent named none.
+                if let Some(recommended) = q.recommended {
+                    asked["recommended"] = serde_json::json!(recommended);
+                }
+                asked
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "type": ANSWERED,
+            "id": self.id,
+            "via": match via {
+                Via::Native => "native",
+                Via::Tool => "tool",
+            },
+            "at": at,
+            "questions": questions,
+        })
+    }
+}
+
+/// An answered question's line that its chat's record does not hold yet.
+#[derive(Clone)]
+struct Note {
+    chat: String,
+    event: serde_json::Value,
+    /// Which record the chat had when the answer was handed over. `None`
+    /// when that could not be asked: the profile folder was away.
+    seen: Option<crate::transcript::Generation>,
+    why: String,
+    /// Tries made with the profile folder there, and when the next is due.
+    tries: u32,
+    after: Instant,
+}
+
+/// What a record that took no line is said to be, in words a person can
+/// act on: the profile's own sentence when the folder is away.
+fn unwritten(chat: &str) -> String {
+    crate::profile::available()
+        .err()
+        .unwrap_or_else(|| format!("The record of {chat} could not be written or synced to disk."))
+}
+
+/// How long a record that refused the line is left alone, after that many
+/// tries in a row: 4 s, doubling to a minute. Each try reads the record for
+/// the line first, and a fault that lasts should cost one read a minute.
+fn note_wait(tries: u32) -> Duration {
+    Duration::from_secs((2_u64 << tries.min(5)).min(60))
+}
+
+impl Note {
+    /// Put the line in the chat's record, unless it is there or the record
+    /// it belonged to is gone. An error is the line still owed.
+    fn write(&self, id: &str) -> Result<(), String> {
+        let Some(now) = crate::transcript::generation(&self.chat) else {
+            return Err(unwritten(&self.chat));
+        };
+        // The record the answer was given in was removed since (`/clear`,
+        // the chat deleted): its history went with it, and this line is not
+        // put into whatever was started under the name afterwards.
+        if self.seen.as_ref().is_some_and(|seen| *seen != now) {
+            return Ok(());
+        }
+        // A write that answered nothing may still have left its line (the
+        // sync failed, not the write). Looked for by id, so it is never
+        // there twice.
+        if crate::transcript::of_type(&self.chat, ANSWERED)
+            .iter()
+            .any(|line| line["id"] == id)
+        {
+            return Ok(());
+        }
+        crate::agent_chat::record_chat_event_synced(&self.chat, self.event.clone())
+            .map(|_| ())
+            .ok_or_else(|| unwritten(&self.chat))
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as i64)
+}
 
 #[derive(Default)]
 struct State {
@@ -132,6 +259,9 @@ struct State {
     /// not, and this is why it could not be written. `None` when the file
     /// holds everything.
     owed: Option<String>,
+    /// The answered questions whose line is not in their chat's record, by
+    /// record id. In memory, like every owed save: a restart loses them.
+    notes: BTreeMap<String, Note>,
 }
 
 #[derive(Default)]
@@ -141,6 +271,10 @@ pub(crate) struct QuestionStore {
     // Submit/recovery and explicit cancellation share this lock. A Stop cannot
     // fall between a dispatch decision and starting the replacement process.
     pub delivery_lock: Mutex<()>,
+    /// One pass at a time writes the lines that are owed (`settle_notes`):
+    /// it looks for a line and then writes it, and two that looked together
+    /// would both write.
+    noting: Mutex<()>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -174,6 +308,7 @@ impl QuestionStore {
             path: Some(path),
             state: Mutex::new(state),
             delivery_lock: Mutex::new(()),
+            noting: Mutex::new(()),
         }
     }
 
@@ -342,6 +477,95 @@ impl QuestionStore {
         self.state.lock().is_ok_and(|state| state.owed.is_some())
     }
 
+    /// Say in the chat's record that the question `id` was answered, as its
+    /// answer is handed to the agent that is waiting for it: one line, the
+    /// questions as asked and the answers as given (`Record::answered`).
+    ///
+    /// Called once for a record, by the one `take_tool` or `take_native`
+    /// that hands its answer over (each answers once and then never again),
+    /// and before `question-expired` is said, so a page hears where the
+    /// answer went before it is told to stop drawing the question.
+    ///
+    /// The answer is not held for it. A line the record would not take is
+    /// said (`unsaved`) and owed: `settle_notes` writes it.
+    fn note(state: &mut State, id: &str, via: Via) {
+        let record = &state.records[id];
+        let chat = record.origin.chat_key.clone();
+        let event = record.answered(via, now_ms());
+        let seen = crate::transcript::generation(&chat);
+        if crate::agent_chat::record_chat_event_synced(&chat, event.clone()).is_some() {
+            return;
+        }
+        let why = unwritten(&chat);
+        crate::unsaved::say(ANSWERED_LINE, why.clone());
+        state.notes.insert(
+            id.to_string(),
+            Note {
+                chat,
+                event,
+                seen,
+                why,
+                tries: 0,
+                after: Instant::now(),
+            },
+        );
+    }
+
+    /// Whether an answered question's line is still owed to its chat's
+    /// record.
+    pub fn owes_notes(&self) -> bool {
+        self.state.lock().is_ok_and(|state| !state.notes.is_empty())
+    }
+
+    /// Write the answered questions' lines their records would not take
+    /// when the answers were handed over. An error is why one is still
+    /// owed. With nothing owed it is two locks; with the profile folder
+    /// away nothing is read or made.
+    ///
+    /// Each line is written once: one pass at a time, and a pass looks for
+    /// the line before it writes. A line whose record was removed since is
+    /// dropped with it (`Note::write`).
+    pub fn settle_notes(&self) -> Result<(), String> {
+        let _one = self.noting.lock().unwrap_or_else(|e| e.into_inner());
+        let owed: Vec<(String, Note)> = {
+            let state = self.state.lock().map_err(|e| e.to_string())?;
+            state
+                .notes
+                .iter()
+                .map(|(id, note)| (id.clone(), note.clone()))
+                .collect()
+        };
+        if owed.is_empty() {
+            return Ok(());
+        }
+        crate::profile::available()?;
+        let now = Instant::now();
+        let mut still = None;
+        for (id, note) in owed {
+            if now < note.after {
+                still = Some(note.why);
+                continue;
+            }
+            // Outside the store's lock: the look reads a whole record.
+            let written = note.write(&id);
+            let mut state = self.state.lock().map_err(|e| e.to_string())?;
+            match written {
+                Ok(()) => {
+                    state.notes.remove(&id);
+                }
+                Err(why) => {
+                    if let Some(kept) = state.notes.get_mut(&id) {
+                        kept.tries = kept.tries.saturating_add(1);
+                        kept.after = now + note_wait(kept.tries);
+                        kept.why = why.clone();
+                    }
+                    still = Some(why);
+                }
+            }
+        }
+        still.map_or(Ok(()), Err)
+    }
+
     /// Write what could not be saved when it happened. `true` when this
     /// call wrote it; an error when it is still owed. Every open card that
     /// was drawn as "answered, not saved" is said again, saved now.
@@ -380,6 +604,7 @@ impl QuestionStore {
             crate::unsaved::say(DELIVERED, why);
         }
         state.waiters.remove(id);
+        Self::note(&mut state, id, Via::Tool);
         publish(&state.records[id], state.owed.as_deref());
         Ok(Some(answer))
     }
@@ -408,6 +633,7 @@ impl QuestionStore {
             crate::unsaved::say(DELIVERED, why);
         }
         state.waiters.remove(id);
+        Self::note(&mut state, id, Via::Native);
         publish(&state.records[id], state.owed.as_deref());
         Ok(Some(answers))
     }

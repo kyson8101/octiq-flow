@@ -89,6 +89,29 @@ OCTIQ_RECORD_FACTS=1 cargo test --lib -- --nocapture --test-threads=1 \
 Write each `FACT <name> {…}` to `<name>.json`, indented by two spaces and
 otherwise unchanged.
 
+## An answered question's line
+
+Recorded at the commit that added the line. Each is one event of a chat's
+record, read back from the record itself (`transcript::of_type`), as
+`chat_since` and `chat_page` hand it to the page and as a `chat-event`
+carries it (`../../question.ts` has its type, `QuestionAnswered`, and
+`docs/question-delivery.md` the contract). These are not ledgers.
+
+| File | Host test (`src-tauri/src/answered_tests.rs`) | What is printed |
+| --- | --- | --- |
+| `question_answered_native.json` | `a_natively_asked_questions_answer_stays_in_the_chats_record` | the line written when the answers to two questions Codex asked through its own request (`item/tool/requestUserInput`) were handed to it: `via: "native"`, a question with two options (one described) and a free-text one (`options: []`), no `recommended` |
+| `question_answered_tool.json` | `a_tool_question_answered_while_its_call_waits_leaves_the_same_line` | the line for an `ask_user` call answered while it waited: `via: "tool"`, a question with `recommended: 1` and one with `multiple: true` |
+
+```bash
+cd src-tauri
+OCTIQ_RECORD_FACTS=1 cargo test --lib -- --nocapture --test-threads=1 \
+  answered_tests::a_natively answered_tests::a_tool_question
+```
+
+Write each `FACT <name> {…}` to `<name>.json`, indented by two spaces and
+otherwise unchanged. The keys come out sorted: that is how the host writes
+them.
+
 ## Recording them again
 
 The tests assert on these values and do not print them. To record, in a

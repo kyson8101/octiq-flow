@@ -2477,6 +2477,9 @@ pub(crate) fn settle_owed(manager: &ChatManager) -> Vec<&'static str> {
     if manager.questions.settle().is_err() {
         owed.push(crate::question_store::OWED);
     }
+    if manager.questions.settle_notes().is_err() {
+        owed.push(crate::question_store::NOTES_OWED);
+    }
     if manager.settle_unsent().is_err() {
         owed.push(UNSENT_OWED);
     }
@@ -2491,6 +2494,9 @@ pub(crate) fn owed(manager: &ChatManager) -> Vec<&'static str> {
     }
     if manager.questions.owes() {
         owed.push(crate::question_store::OWED);
+    }
+    if manager.questions.owes_notes() {
+        owed.push(crate::question_store::NOTES_OWED);
     }
     if manager.owes_unsent() {
         owed.push(UNSENT_OWED);
@@ -7740,6 +7746,10 @@ mod ending_tests;
 #[cfg(test)]
 #[path = "reach_tests.rs"]
 mod reach_tests;
+
+#[cfg(test)]
+#[path = "answered_tests.rs"]
+mod answered_tests;
 
 #[cfg(test)]
 #[path = "host_turn_tests.rs"]

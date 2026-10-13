@@ -8,6 +8,7 @@
 // says what it changed.
 import type { ChatPlan } from "../chatPlan";
 import type { OrchestrationSnapshot, OrchestrationTask } from "../orchestration";
+import type { QuestionAnswered } from "../question";
 import cardOnGateBlocked from "./host/card_on_gate_blocked.json?raw";
 import cardPending from "./host/card_pending.json?raw";
 import chatPlanDecided from "./host/chat_plan_decided.json?raw";
@@ -34,6 +35,8 @@ import planAfterBlocked from "./host/plan_after_blocked.json?raw";
 import planAfterCheckFailed from "./host/plan_after_check_failed.json?raw";
 import planAfterFailed from "./host/plan_after_failed.json?raw";
 import planAfterStopped from "./host/plan_after_stopped.json?raw";
+import questionAnsweredNative from "./host/question_answered_native.json?raw";
+import questionAnsweredTool from "./host/question_answered_tool.json?raw";
 import reopenNoticeDelivered from "./host/reopen_notice_delivered.json?raw";
 import retryExecuting from "./host/retry_executing.json?raw";
 import taskStopped from "./host/task_stopped.json?raw";
@@ -44,6 +47,10 @@ const ledger = (raw: string) => (): OrchestrationSnapshot => JSON.parse(raw) as 
 
 /** An answer to `chat_plan_get`, a fresh copy each time. */
 const plan = (raw: string) => (): ChatPlan => JSON.parse(raw) as ChatPlan;
+
+/** One `octiq_question_answered` line of a chat's record, a fresh copy
+ *  each time. */
+const answered = (raw: string) => (): QuestionAnswered => JSON.parse(raw) as QuestionAnswered;
 
 /** A chat's entry in `chat_index_list`, with the one key these tests read. */
 export type HostChatEntry = { id: string; projectId: string; title: string; createdAt: number; updatedAt: number; coordinatesRun?: boolean };
@@ -149,4 +156,13 @@ export const hostFacts = {
    *  i6 dropped, i7 added after Start (`addedIn: 2`): none of the three has
    *  `progress` or `linked`. */
   chatPlanStarted: plan(chatPlanStarted),
+  /** The line the host wrote into a chat's record when the answers to two
+   *  questions Codex asked by itself were handed to it: `via: "native"`, one
+   *  question with two options (one described) and one free-text question
+   *  (`options: []`), neither with `recommended`. */
+  questionAnsweredNative: answered(questionAnsweredNative),
+  /** The same line for an `ask_user` call answered while it waited: `via:
+   *  "tool"`, a question with `recommended: 1` and one with `multiple:
+   *  true`, whose answer is the picked labels joined as the page sent them. */
+  questionAnsweredTool: answered(questionAnsweredTool),
 };

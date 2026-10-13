@@ -1,0 +1,30 @@
+{
+  "at": 1791926691389,
+  "id": "1ae2fc94-688c-4168-b610-a8c320f87df4",
+  "questions": [
+    {
+      "answer": "develop",
+      "id": "02f5961a-c062-49f8-91f7-444f4e52f68e",
+      "multiple": false,
+      "options": [
+        {
+          "description": "The base for new work",
+          "label": "develop"
+        },
+        {
+          "label": "main"
+        }
+      ],
+      "question": "Which branch should this go to?"
+    },
+    {
+      "answer": "v0.3.11",
+      "id": "02e418a7-78f7-4e57-9454-54038323b2f4",
+      "multiple": false,
+      "options": [],
+      "question": "What should the tag be called?"
+    }
+  ],
+  "type": "octiq_question_answered",
+  "via": "native"
+}
