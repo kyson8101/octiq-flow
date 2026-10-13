@@ -56,16 +56,25 @@ pub const DENIED: &str = "you denied it";
 /// not marked read-only BEFORE `--allowedTools` is read (the front desk met
 /// the same thing, 2f8aa87). So a read-only chat put a card up each time its
 /// agent saved a memory entry or reported its status. None of these touch the
-/// project: they keep the host's own bookkeeping (memory, status, title,
-/// feedback, previews), or they already put their own card in front of the
-/// person (handover, registering an agent, the shared policy, a team), where a
-/// second card would only ask the same thing twice.
+/// project: they keep the host's own bookkeeping (memory, status, the chat's
+/// plan, title, feedback, previews), or they already put their own card in
+/// front of the person (handover, registering an agent, the shared policy, a
+/// team), where a second card would only ask the same thing twice.
+///
+/// The two plan tools are here by the person's decision of 2026-10-13 (gate
+/// `gate_c0bf34a9…` of the task that added them): they read and write only
+/// the chat's plan record (`chat_plan.rs`), which the person reads beside
+/// the chat. Neither is on Claude's `--allowedTools`, a command line, so
+/// this list is what keeps a card off every change to a plan. Starting a
+/// plan is no tool at all.
 pub fn host_bookkeeping(tool: &str) -> bool {
     matches!(
         tool.strip_prefix("mcp__octiq__"),
         Some(
             "vault_agent_memory_append"
                 | "task_status"
+                | "plan_read"
+                | "plan_update"
                 | "set_chat_title"
                 | "ask_user"
                 | "feedback_submit"
@@ -665,6 +674,13 @@ mod tests {
     fn only_the_hosts_own_bookkeeping_skips_the_card() {
         assert!(host_bookkeeping("mcp__octiq__vault_agent_memory_append"));
         assert!(host_bookkeeping("mcp__octiq__task_status"));
+        // The chat's plan is the host's own record too, read by the person
+        // beside the chat: the person's decision. Nothing that would start
+        // one is a tool, whatever it were called.
+        assert!(host_bookkeeping("mcp__octiq__plan_read"));
+        assert!(host_bookkeeping("mcp__octiq__plan_update"));
+        assert!(!host_bookkeeping("mcp__octiq__plan_begin"));
+        assert!(!host_bookkeeping("mcp__octiq__chat_plan_update"));
         assert!(host_bookkeeping("mcp__octiq__handover"));
         assert!(host_bookkeeping("mcp__octiq__request_access"));
         assert!(host_bookkeeping("mcp__octiq__agent_delete"));

@@ -268,6 +268,11 @@ Offered to a chat's own agent only: not to a worker, a front desk, or a
 process with no chat. The host refuses the same callers whatever the script
 offered.
 
+Neither tool raises a permission card (the person's decision of 2026-10-13):
+both are in `permission::host_bookkeeping`, beside `task_status`. They are
+not on Claude's `--allowedTools`, which is a command line; that list answers
+the permission request at every access level.
+
 ### The Start turn
 
 A recorded user turn whose id starts `octiq-plan-start-`. The page knows it
