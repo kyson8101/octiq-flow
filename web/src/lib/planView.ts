@@ -274,9 +274,11 @@ export function tasksLabel(tasks: number): string {
  *  - `start`: the host says Start can be pressed (`awaitsStart`). The
  *    person's Start. Never worked out from the items here.
  *  - `tell`: started, and the turn that tells the agent could not be handed
- *    over (`started.told` is false). Both halves are said apart, never
- *    "Started" alone. The control sends the same command again: the host
- *    tries the turn under a new id and records nothing twice.
+ *    over (`started.told` is false), or was handed over and is gone: the
+ *    page holds that turn and its line says it was not sent. Both halves
+ *    are said apart, never "Started" alone. The control sends the same
+ *    command again: the host reads what became of the turn, tries it under
+ *    the next id and records nothing twice.
  *  - `started`: started and the agent has its turn. Nothing to press.
  *  - `nothing`: a plan that was not started and that the host would not
  *    start (every item dropped). Said in words; no dead button.
@@ -289,19 +291,24 @@ export type PlanStart =
   | { kind: "started"; state: string };
 
 export const NOT_TOLD = "the agent has not been told yet";
+export const TURN_NOT_SENT = "the turn that tells the agent was not sent";
 export const NOTHING_TO_START = "Nothing to start";
 export const NOT_CONNECTED = "Not connected.";
 
 export function planStart(
   plan: ChatPlan | null | undefined,
   now: number,
-  live: { connected: boolean } = { connected: true },
+  /** `turnLost`: the page can see that the Start's own turn is gone
+   *  (`planTurn.startTurnLost`). The host still says `told`, and puts that
+   *  right when it is asked again, so the ask is offered. */
+  live: { connected: boolean; turnLost?: boolean } = { connected: true },
   clock: Clock = {},
 ): PlanStart {
   if (!plan) return { kind: "none" };
   const off = live.connected ? null : NOT_CONNECTED;
   if (plan.started) {
     const state = `Started ${stampLabel(plan.started.at, now, clock)}`;
+    if (plan.started.told && live.turnLost) return { kind: "tell", revision: plan.revision, label: "Tell the agent", state, note: TURN_NOT_SENT, off };
     if (plan.started.told) return { kind: "started", state };
     return { kind: "tell", revision: plan.revision, label: "Tell the agent", state, note: NOT_TOLD, off };
   }

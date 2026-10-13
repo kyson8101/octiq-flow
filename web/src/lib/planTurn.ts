@@ -33,3 +33,31 @@ export function planStartBubble(message: Pick<Message, "turnId" | "delivery" | "
     detail: waiting ? "Telling the agent after the current reply" : "The agent was told to begin",
   };
 }
+
+/** Whether the turn that tells an agent its plan was started is gone, as
+ *  far as these messages say: the page holds the Start's own turn, and its
+ *  line says it was not sent (the write to the agent failed, its process
+ *  was ended with the turn still queued, or the host's queue no longer
+ *  holds it: `lib/recovery` marks that one).
+ *
+ *  The host leaves `started.told` true in those cases until it is asked
+ *  again, and puts it right on that ask (`docs/chat-plan.md`, A turn that
+ *  is gone can be told again). So the page offers the ask, for a turn it
+ *  can see is gone. A try is under the Start's id or one counted on from
+ *  it (`…`, `…-try2`), and the latest try is the one that counts.
+ *
+ *  `false` when the page does not hold the turn at all: one delivered long
+ *  ago and behind `Load earlier messages` is not told apart from one a
+ *  `/clear` removed, so nothing is offered for it. */
+export function startTurnLost(
+  messages: readonly Pick<Message, "role" | "turnId" | "echo" | "takenUp" | "queueLost" | "delivery">[],
+  turnId: string | null | undefined,
+): boolean {
+  if (!isPlanStartTurn(turnId)) return false;
+  const base = turnId!.replace(/-try\d+$/, "");
+  const tries = messages.filter((message) => message.role === "user" && typeof message.turnId === "string"
+    && (message.turnId === base || (message.turnId.startsWith(`${base}-try`) && /^\d+$/.test(message.turnId.slice(base.length + 4)))));
+  const last = tries.at(-1);
+  if (!last || last.echo || last.takenUp) return false;
+  return !!last.queueLost || last.delivery === "failed";
+}

@@ -208,7 +208,7 @@ import { useChatCompletions } from "./lib/useChatCompletions";
 import { IN_FLIGHT } from "./lib/inFlight";
 import { useChatPlan } from "./lib/useChatPlan";
 import { openQuestions, planOffered, tasksInFlight, type PlanTaskView } from "./lib/planView";
-import { isPlanStartTurn } from "./lib/planTurn";
+import { isPlanStartTurn, startTurnLost } from "./lib/planTurn";
 import { PlanButton, PlanPanel } from "./components/PlanPanel";
 import { useConfirm } from "./components/Confirm";
 import { CopyChatIdButton } from "./components/CopyChatIdButton";
@@ -5245,6 +5245,7 @@ export default function App() {
   const planQuestions = planFor ? openQuestions(planFeed.plan) : 0;
   const planPanel = (page: boolean) => planFor && <PlanPanel key={planFor} page={page}
     plan={planFeed.plan} chatId={planFor} said={planFeed.said} error={planFeed.held?.error} unread={!planFeed.held}
+    startTurnLost={startTurnLost(chat.messages, planFeed.plan?.started?.turnId)}
     flying={planFlying} connected={conn === "open"}
     onClose={() => showPlan(false, planFor, page)}
     onStart={(revision) => startPlan(planFor, revision)}

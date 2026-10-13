@@ -199,13 +199,16 @@ function StartControl({ start, chatId, said, opener, onStart }: {
   );
 }
 
-export function PlanPanel({ plan, chatId, said = null, error, unread = false, flying, connected, page = false, onClose, onStart, onOpenTask }: {
+export function PlanPanel({ plan, chatId, said = null, startTurnLost = false, error, unread = false, flying, connected, page = false, onClose, onStart, onOpenTask }: {
   /** The chat's plan as the host last answered, or `null` before it has. */
   plan: ChatPlan | null;
   /** The chat the plan is of: what a Start is held by while it is out. */
   chatId?: string | null;
   /** What the host said of the chat's last Start (`useChatPlan`). */
   said?: StartSaid | null;
+  /** The page can see the Start's own turn was not sent
+   *  (`planTurn.startTurnLost`): `Tell the agent` is offered again. */
+  startTurnLost?: boolean;
   /** Why the last read failed, in the host's words. */
   error?: string | null;
   /** Nothing has been heard yet for this chat. */
@@ -228,7 +231,7 @@ export function PlanPanel({ plan, chatId, said = null, error, unread = false, fl
   const header = has ? planHeader(plan, now) : null;
   const items = has ? planItems(plan, flying) : [];
   const open = openQuestions(plan);
-  const start = planStart(has ? plan : null, now, { connected });
+  const start = planStart(has ? plan : null, now, { connected, turnLost: startTurnLost });
   return (
     <aside className={`cplan-panel${page ? " is-page" : ""}`} aria-label="Plan">
       <header className="cplan-head">

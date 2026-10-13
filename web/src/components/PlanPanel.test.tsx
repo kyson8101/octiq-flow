@@ -8,7 +8,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { hostFacts } from "../lib/__fixtures__/hostFacts";
 import type { ChatPlan, ChatPlanStartAnswer } from "../lib/chatPlan";
-import { NOTHING_TO_START } from "../lib/planView";
+import type { Message } from "../lib/chat";
+import { NOTHING_TO_START, planStart, TURN_NOT_SENT } from "../lib/planView";
+import { isPlanStartTurn, startTurnLost } from "../lib/planTurn";
 import { PlanButton, PlanPanel } from "./PlanPanel";
 import panelSource from "./PlanPanel.tsx?raw";
 import appSource from "../App.tsx?raw";
@@ -262,6 +264,58 @@ describe("Start is never fired by the press or the key that brought it on screen
 
   it("asks through no confirm: the page's other Starts have none", () => {
     expect(panelSource).not.toMatch(/useConfirm|window\.confirm|<Confirm\b/);
+  });
+});
+
+describe("a Start turn that was handed over and is gone", () => {
+  // The host leaves `started.told` true when the Start's turn was marked
+  // not sent, or was queued by a server that did not live to hand it over,
+  // and puts it right on the next ask. The page offers that ask for a turn
+  // it can see is gone (`docs/chat-plan.md`).
+  const started = () => hostFacts.chatPlanStarted();
+  const turn = (over: Partial<Message>): Message => ({ id: "u1", role: "user", streaming: false, blocks: [], turnId: started().started!.turnId, ...over });
+
+  it("is known from the turn's own line, and only when the page holds that turn", () => {
+    const id = started().started!.turnId;
+    expect(isPlanStartTurn(id)).toBe(true);
+    // Marked not sent, or queued and no longer in the host's queue.
+    expect(startTurnLost([turn({ delivery: "failed", queueLost: true })], id)).toBe(true);
+    expect(startTurnLost([turn({ delivery: "queued", queueLost: true })], id)).toBe(true);
+    // Handed over: written, acknowledged, taken up, or its process ended
+    // before saying so. Never told twice.
+    for (const over of [{ delivery: "dispatched" as const }, { delivery: "unknown" as const }, { echo: "e1" }, { takenUp: true }, { delivery: "queued" as const }, { delivery: "starting" as const }]) {
+      expect(startTurnLost([turn(over)], id), JSON.stringify(over)).toBe(false);
+    }
+    // Not held: behind Load earlier messages, or cleared. Nothing is known.
+    expect(startTurnLost([], id)).toBe(false);
+    expect(startTurnLost([turn({ turnId: "turn-of-the-persons", delivery: "failed", queueLost: true })], id)).toBe(false);
+    // No Start, or a plan with none.
+    expect(startTurnLost([turn({ delivery: "failed" })], undefined)).toBe(false);
+    // The latest try is the one that counts.
+    const first = turn({ id: "u1", delivery: "failed", queueLost: true });
+    const second = turn({ id: "u2", turnId: `${id}-try2`, delivery: "dispatched" });
+    expect(startTurnLost([first, second], id)).toBe(false);
+    expect(startTurnLost([first, second], `${id}-try2`)).toBe(false);
+    expect(startTurnLost([first, { ...second, delivery: "failed", queueLost: true }], `${id}-try2`)).toBe(true);
+    // Another Start's turn is not this one's try.
+    expect(startTurnLost([turn({ turnId: `${id}0`, delivery: "failed" })], id)).toBe(false);
+  });
+
+  it("offers Tell the agent again, and says the turn was not sent", () => {
+    const plan = started();
+    expect(plan.started).toMatchObject({ told: true });
+    expect(planStart(plan, Date.now(), { connected: true })).toMatchObject({ kind: "started" });
+    expect(planStart(plan, Date.now(), { connected: true, turnLost: true })).toMatchObject({
+      kind: "tell", label: "Tell the agent", note: TURN_NOT_SENT, revision: plan.revision, off: null,
+    });
+    const html = draw(plan, { startTurnLost: true });
+    expect(text(foot(html))).toMatch(/^Started .+ · the turn that tells the agent was not sent Tell the agent$/);
+    expect(foot(html)).toContain('class="cplan-start"');
+    // Without it, a told plan has nothing to press.
+    expect(foot(draw(plan))).not.toContain('class="cplan-start"');
+    // A plan that was never started is not this.
+    expect(planStart(hostFacts.chatPlanDecided(), Date.now(), { connected: true, turnLost: true })).toMatchObject({ kind: "start" });
+    expect(appSource).toMatch(/startTurnLost=\{startTurnLost\(chat\.messages, planFeed\.plan\?\.started\?\.turnId\)\}/);
   });
 });
 
