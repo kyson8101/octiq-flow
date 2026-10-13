@@ -505,22 +505,31 @@ async function arrivalScene(browser, size, label, out) {
   await second.page.evaluate((where) => {
     document.body.dispatchEvent(new MouseEvent("click", { ...where, detail: 1, bubbles: true, cancelable: true }));
     window.__pressedAt = performance.now();
+    // The repeat is made in the page, the moment the block is drawn. Made
+    // from here it crossed to the browser and back first, and on a busy
+    // machine that alone outlasted the guard's 700 ms: the press then went
+    // through, answered the question, and the next step found no button
+    // (two runs in eight).
+    const click = (target) => {
+      const event = new MouseEvent("click", { ...where, detail: 1, bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    const watch = new MutationObserver(() => {
+      const button = document.querySelector(".qa-submit");
+      const dismiss = document.querySelector(".qa-dismiss");
+      if (!button || !dismiss) return;
+      watch.disconnect();
+      const since = performance.now() - window.__pressedAt;
+      window.__stray = { since: Math.round(since), repeat: click(button), dismiss: click(dismiss) };
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
   }, at);
   pending = [...pending, question];
   second.send("user-question", question);
   await second.page.locator(".qa-block").waitFor();
-  out.stray = await second.page.evaluate((where) => {
-    const button = document.querySelector(".qa-submit");
-    const click = (target, spot, detail = 1) => {
-      const event = new MouseEvent("click", { ...spot, detail, bubbles: true, cancelable: true });
-      target.dispatchEvent(event);
-      return event.defaultPrevented;
-    };
-    const since = performance.now() - window.__pressedAt;
-    const repeat = click(button, where);
-    const dismiss = click(document.querySelector(".qa-dismiss"), where);
-    return { since: Math.round(since), repeat, dismiss };
-  }, at);
+  await second.page.waitForFunction(() => !!window.__stray);
+  out.stray = await second.page.evaluate(() => window.__stray);
   await second.page.waitForTimeout(150);
   out.stray.sentByRepeat = sent("question_answer_batch").length - before;
   out.stray.cancelledByRepeat = sent("question_cancel").length - cancelsBefore;
@@ -635,10 +644,18 @@ async function streamScene(browser, size, label, out) {
   const rowOne = whole.indexOf("\n    ]") + 6;
   const rowTwo = whole.indexOf("\n    ]", rowOne) + 6;
   const lastNode = whole.lastIndexOf("}", whole.lastIndexOf("}") - 1) + 1;
-  for (const stop of [whole.indexOf("```octiq-diagram") + 20, rowOne, rowTwo, lastNode]) {
+  for (const [rows, stop] of [whole.indexOf("```octiq-diagram") + 20, rowOne, rowTwo, lastNode].entries()) {
     say(at, stop);
     at = stop;
-    await page.waitForFunction(() => !!document.querySelector(".dgm-pending"));
+    // Waited for, not timed: the rows written so far are held once the page
+    // has taken the delta in, and on a busy machine that is not always
+    // within the 400 ms that used to be all this waited (one run in four
+    // read the row count of the stop before). The settle after it is what
+    // would show a row too many.
+    await page.waitForFunction((held) => {
+      const wait = document.querySelector(".dgm-pending");
+      return !!wait && wait.querySelectorAll(".dgm-ghost .dgm-row").length >= held;
+    }, rows);
     await page.waitForTimeout(400);
     seen.push({ ...(await look()), wrote: JSON.stringify(whole.slice(Math.max(0, stop - 14), stop)) });
   }
