@@ -387,9 +387,13 @@ pub struct Handover {
     /// pruned; records written before it existed start from `outcomes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outcome_receipts: Vec<OutcomeReceipt>,
-    /// The one-time lift (`lift.rs`) has looked at this record, whether it
-    /// lifted the chat or left it: it is never looked at again. Private,
-    /// like `origin`.
+    /// The one-time lift (`lift.rs`) has nothing to look at in this record.
+    /// Every record this build makes is born with it, and so is one whose
+    /// chat this build starts on the settings it read from the roster
+    /// (`prepare`); the lift sets it on a record it has looked at, whether
+    /// it lifted the chat or left it. So only a record an earlier build
+    /// left reads `false`, which is what a record that does not say reads
+    /// as. Private, like `origin`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lift_settled: bool,
 }
@@ -1053,7 +1057,8 @@ pub fn request(path: &Path, host: &dyn Host, source: Source, ask: Ask) -> Result
         asks: Vec::new(),
         outcomes: Vec::new(),
         outcome_receipts: Vec::new(),
-        lift_settled: false,
+        // Made by this build: nothing an earlier one narrowed (`lift.rs`).
+        lift_settled: true,
         kind: Kind::Handover,
         route: None,
     };
@@ -1376,7 +1381,8 @@ pub fn confirm(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, Strin
         Status::Pending | Status::Starting => {}
     }
     // Started before the record could say so (a failed save, a restart):
-    // finish the record, never start a second time.
+    // finish the record, never start a second time. Nothing is read from the
+    // roster here, so `lift_settled` stays as it is, as in `recover`.
     if record.status == Status::Starting && launched(&record, host) {
         return finish(path, record);
     }
@@ -1489,6 +1495,11 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
         None => (None, record.settings.clone()),
     };
     record.settings = settings;
+    // From here its chat is started by this build, on those settings: a
+    // record an earlier build left pending or starting at read is no longer
+    // one the lift may raise later (`lift.rs`). Set with the settings, so
+    // every save of the record from here on carries both.
+    record.lift_settled = true;
     // A discussion recorded before its note changed says the chat is
     // read-only, which it is not: its first message is written again from
     // the record, so the agent is told what is true now.
@@ -1850,6 +1861,10 @@ pub fn recover(path: &Path, host: &dyn Host) -> Result<Vec<String>, String> {
         .filter(|h| h.status == Status::Starting && !confirmed_routes.contains(&h.id))
     {
         if launched(record, host) {
+            // Its chat was started before this start of the server, on what
+            // the record says: `lift_settled` stays as it is. This build's
+            // record was born with it; an earlier build's is one the lift
+            // looks at once it is confirmed, which is the next start.
             record.status = Status::Confirmed;
             record.error = None;
             record.abandonable = false;

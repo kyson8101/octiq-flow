@@ -197,11 +197,13 @@ server that has this change, and by nothing else.
 
 | | |
 | --- | --- |
-| **Which records** | A handover record of kind `route`, status `confirmed`, `route.discuss: true`, `settings.access: read`, with a `targetChatKey`, and not yet marked `liftSettled`. That record is the proof the product opened the chat at read. A chat with no such record is never lifted: an ordinary chat, a PR Study or Review chat, a chat the old "Discuss read-only" retry narrowed, the front desk, a worker's chat. |
+| **Which records** | A handover record of kind `route`, status `confirmed`, `route.discuss: true`, `settings.access: read`, with a `targetChatKey`, and not marked `liftSettled`: a record an earlier build left that this pass has not looked at yet. That record is the proof the product opened the chat at read. A chat with no such record is never lifted: an ordinary chat, a PR Study or Review chat, a chat the old "Discuss read-only" retry narrowed, the front desk, a worker's chat, and every chat this build opens. |
+| **This build's records are born marked** | Every record this build makes is stored with `liftSettled: true` (both constructors: `handover::request`, `route::request`), and `handover::prepare` sets it together with the settings it reads from the roster, so a card an earlier build left that this build confirms, and a confirmed route this build finishes starting after a restart (`finish_route`), are marked in the write that records them. Such a chat was opened by this build at its agent's own level: a discussion opened at read because the agent is registered at read is never raised when that registration is raised later. A record that does not say is an earlier build's (the field is new and reads `false`). |
 | **Lifted only when all hold** | The record's agent (`to.agentId`) is on the roster and registered above read. The chat is that agent's own conversation: its lead record names the same agent, and it is not a front desk's or a worker's chat. The agent's scope, as it is now, covers the project the lead record names. The chat index lists the chat, out of the trash, at exactly `read` (any other level was changed since, by a card's Upgrade or the picker, and is never touched). No process runs under the chat's key. |
 | **Otherwise** | The chat is left exactly as it is, and its record is marked all the same. |
 | **What is written, in order** | (1) The ledger's saved start settings for the chat, when it holds some and they are at exactly read (the index and the ledger must agree, or a run's notification is refused after a restart); settings at any other level are left. (2) The chat index entry's `access`, to the agent's registered access, and nothing else of the entry. (3) Last, the record's `liftSettled: true`. Each through its owner's own function: `OrchestrationStore::lift_resume_context`, `chat_index::lift_read`, the handover store. |
-| **The mark** | `liftSettled` is the one mark and means "the one-time pass has looked at this record", lifted or left. A marked record is never looked at again, so a registration that changes later lifts nothing. It is stored only, is not sent to the page (`Public`), and is absent until set. The record's `settings` are not written: they stay what it was confirmed with. |
+| **The mark** | `liftSettled` is the one mark and means "the one-time pass has nothing to look at here": it has looked, lifted or left, or this build made the record or started its chat. A marked record is never looked at, so a registration that changes later lifts nothing. It is stored only, is not sent to the page (`Public`), and is absent until set. The pass does not write the record's `settings`: they stay what it was confirmed with. |
+| **What an earlier build's record cannot say** | That build put every discussion at read, so the record of an agent who was registered at read then is the same as one of an agent registered higher. If that agent's registration was raised before the start of this build that looks at the record (its first, unless something could not be read), the chat is lifted to the level registered then. The product forced read on it either way; the record cannot say which it was. |
 | **Could not read or write** | The record stays unmarked and the next start tries again. Every step is safe to repeat: a ledger entry or an index entry already lifted is no longer at read. A record whose own write failed after its chat was lifted finds the chat changed at the next start and is marked then. A profile folder that is away or is not the one the server started with, an unreadable handover store, and an unreadable roster each refuse the whole pass before anything is written. |
 | **When** | Once per server start, in `Services::load`: after the ledger is loaded and before the idle sweeper, the auto-resume scheduler and the run scheduler exist, so before anything can start a chat. Not on a timer, not from a page, not from a hook. |
 | **What it does not do** | No bus event, no line in a transcript, no page command, nothing kept in memory. It never raises above the registered access and never lowers. It does not touch `origin.start` of a pending question or handover. |
@@ -215,10 +217,13 @@ Two things follow from where it runs:
 
 - **A route a restart cut off.** `handover::recover` runs after the lift, on
   its own thread. A discussion confirmed by the earlier build whose chat had
-  not started is started then on the registered settings, so its record is
-  never at read. One whose chat HAD started at read, with the record not yet
-  saying confirmed, is marked confirmed by `recover` and lifted at the start
-  after this one.
+  not started is started then on the registered settings (`finish_route`,
+  through `prepare`), so its record is marked and is never the lift's. One
+  whose chat HAD started at read, with the record not yet saying confirmed,
+  is only set to confirmed by `recover` (or by Try again on its card), which
+  reads nothing from the roster and leaves `liftSettled` as it is: an
+  earlier build's record still does not say and is lifted at the start after
+  this one, and a record this build made keeps the mark it was born with.
 - **A page that stayed open across the restart** may save the chat's old
   level back with its index entry (the page's save is as it always was).
   That chat is then where it was before this change, and its record is

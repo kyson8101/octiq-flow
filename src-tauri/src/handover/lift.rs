@@ -8,9 +8,27 @@
 //! lifted here, one time, and by nothing else.
 //!
 //! **Which chats.** Only the chat a route's own record names: a `Route`
-//! that is `Confirmed`, was a discussion, and whose settings say read. That
-//! record is the proof the product put the chat at read, not the person.
-//! A chat with no such record is never touched.
+//! that is `Confirmed`, was a discussion, whose settings say read, and that
+//! an earlier build left and this pass has not looked at yet
+//! (`lift_settled` is not set). That record is the proof the product put
+//! the chat at read, not the person. A chat with no such record is never
+//! touched.
+//!
+//! **A record this build makes, confirms or finishes is born looked at.**
+//! Both constructors store `lift_settled`, and `prepare` sets it with the
+//! settings it reads from the roster, so a chat this build opens at read
+//! because its agent is registered at read is never raised here when that
+//! registration changes: no standing rule raises a chat. A record that does
+//! not say (the field is new) is an earlier build's. One whose chat an
+//! earlier build had started before the restart cut its record at
+//! `Starting` is only flipped to `Confirmed` by `recover`, with the field
+//! as it was, and is looked at by the next start's pass.
+//!
+//! **What an earlier build's record cannot say.** That build forced read
+//! on every discussion, so a record of an agent who was registered at read
+//! then looks the same as one of an agent registered higher. If that
+//! registration was raised before this build's first start, the chat is
+//! lifted to the level registered then.
 //!
 //! **When it is lifted.** Only when all of this holds; otherwise the chat is
 //! left as it is:

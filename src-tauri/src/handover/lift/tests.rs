@@ -12,6 +12,8 @@ use crate::agent_chat::{ChatAgent, StartContext};
 use crate::profile::tests::{everything_in, Home};
 use crate::team::TeamDraft;
 
+mod born;
+
 struct World {
     ledger: OrchestrationStore,
     store: PathBuf,

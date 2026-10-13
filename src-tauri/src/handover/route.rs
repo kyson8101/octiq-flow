@@ -577,7 +577,9 @@ pub fn request(
         asks: Vec::new(),
         outcomes: Vec::new(),
         outcome_receipts: Vec::new(),
-        lift_settled: false,
+        // Made by this build, on the agent's registered settings: never
+        // one the lift looks at (`lift.rs`).
+        lift_settled: true,
         kind: Kind::Route,
         route: Some(RouteDetail {
             message,
@@ -814,6 +816,8 @@ mod tests {
         let mut stored = read(&w.store).unwrap();
         let record = stored.handovers.get_mut(id).unwrap();
         record.settings.access = Access::Read;
+        // That host's records did not say whether the lift had looked.
+        record.lift_settled = false;
         let route = record.route.as_mut().unwrap();
         route.discuss = true;
         route.message = route.message.replace(DISCUSSION_NOTE, OLD_NOTE);
