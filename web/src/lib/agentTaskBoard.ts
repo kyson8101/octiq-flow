@@ -55,16 +55,20 @@ export function taskProgress(task: OrchestrationTask, report?: TaskReport) {
  *  this attempt existed belongs to another one. No steps, nothing to say:
  *  never `0/0`, and never the completion fallback `taskProgress` gives a
  *  finished task. The first active step names it, as the checklist lists
- *  them; a blank title names nothing. */
-export type TaskStepSummary = { done: number; total: number; step: string | null; current: boolean };
+ *  them; a blank title names nothing. `at` is where that step stands in the
+ *  list, counted from one, and `reportedAt` when the worker said so. */
+export type TaskStepSummary = { done: number; total: number; step: string | null; at: number | null; current: boolean; reportedAt: number };
 
 export function taskStepSummary(task: OrchestrationTask, attempt: OrchestrationAttempt | undefined, report?: TaskReport): TaskStepSummary | null {
   if (!attempt || !report?.steps.length || report.reportedAt < attempt.createdAt) return null;
-  const step = report.steps.find((item) => item.state === "active")?.title.trim() || null;
+  const active = report.steps.findIndex((item) => item.state === "active");
+  const step = report.steps[active]?.title.trim() || null;
   return {
     done: report.steps.filter((item) => item.state === "done").length,
     total: report.steps.length,
     step,
+    at: step ? active + 1 : null,
+    reportedAt: report.reportedAt,
     // Still underway only while the task is running on this very attempt.
     // A blocked, failed or finished one keeps the step it stopped on, as
     // the last one it reported — never as one it is still doing.

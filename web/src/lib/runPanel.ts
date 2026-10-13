@@ -13,14 +13,39 @@ export const RUN_TABS: readonly RunTab[] = ["tasks", "notifications", "log"];
 /** Roving focus across a tablist: arrows wrap, Home/End jump. Anything else
  *  is not the tablist's key and answers null. */
 export function nextRunTab(current: RunTab, key: string): RunTab | null {
-  const at = RUN_TABS.indexOf(current);
+  return nextTab(RUN_TABS, current, key);
+}
+
+function nextTab<T>(tabs: readonly T[], current: T, key: string): T | null {
+  const at = tabs.indexOf(current);
   switch (key) {
-    case "ArrowRight": return RUN_TABS[(at + 1) % RUN_TABS.length];
-    case "ArrowLeft": return RUN_TABS[(at - 1 + RUN_TABS.length) % RUN_TABS.length];
-    case "Home": return RUN_TABS[0];
-    case "End": return RUN_TABS[RUN_TABS.length - 1];
+    case "ArrowRight": return tabs[(at + 1) % tabs.length];
+    case "ArrowLeft": return tabs[(at - 1 + tabs.length) % tabs.length];
+    case "Home": return tabs[0];
+    case "End": return tabs[tabs.length - 1];
     default: return null;
   }
+}
+
+/** The two views of an opened task row. Steps is what a row is opened for,
+ *  so it is the one a row opens on, whether or not any were reported. What
+ *  starts or decides something is in neither: it stands above both. */
+export type TaskTab = "steps" | "details";
+export const TASK_TABS: readonly TaskTab[] = ["steps", "details"];
+export const TASK_TAB_LABEL: Record<TaskTab, string> = { steps: "Steps", details: "Details" };
+/** What the Steps tab says of a task whose worker reported no checklist. */
+export const NO_STEPS = "No steps reported yet";
+
+/** What a key does on a row's tablist. `to` is the tab it moves to. `drop`
+ *  says the key is the tablist's and goes no further: a key that moved it,
+ *  or the repeat of one held down, which moves nothing and presses nothing
+ *  (an arrow held would flick between the two views, and Enter or Space held
+ *  would press the tab again and again). Any other key is not the
+ *  tablist's. */
+export function taskTabKey(current: TaskTab, event: { key: string; repeat: boolean }): { to: TaskTab | null; drop: boolean } {
+  const to = nextTab(TASK_TABS, current, event.key);
+  if (event.repeat) return { to: null, drop: to !== null || event.key === "Enter" || event.key === " " || event.key === "Spacebar" };
+  return { to, drop: to !== null };
 }
 
 export type RunAttention = {

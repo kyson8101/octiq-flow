@@ -151,6 +151,8 @@ try {
 
     // The task details carry the full evidence list.
     await page.getByRole("button", { name: "Expand task progress: Build the import", exact: true }).click();
+    // Task details is in the row's Details tab; a row opens on Steps.
+    await card("Build the import").getByRole("tab", { name: "Details", exact: true }).click();
     await card("Build the import").getByText("Task details", { exact: true }).click();
     await card("Build the import").getByText("/repos/api @ 01234567").waitFor();
     await card("Build the import").getByText("Fixture ihrms-tomei-v1").waitFor();

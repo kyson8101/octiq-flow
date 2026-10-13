@@ -1573,10 +1573,47 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   disconnected or retrying worker with the host's label in the warning
   colour. An empty group is not drawn, and the task on screen is never
   behind a fold.
-- **A row's words are the task's title and the host's own label.** The step
-  a worker says it is on, its summary, a path and a commit are the worker's
-  text and sit behind the row's disclosure with everything the row had
-  before (state word, kind, size, environment, branch, checklist, brief).
+- **A row's words are the task's title and the host's own label, with one
+  exception that is exact.** While an attempt of the task is executing (the
+  row's `flight`) and its worker's report marks a step active, the folded
+  row's third line names that step after its place in the checklist: `1/7 ·
+  <the step's title>` (`runProgress.rowStep`, `stepAtLabel`, `stepOneLine`).
+  The number is where the active step stands in the list, not how many are
+  done. It is the step's title and nothing else of the worker's: one line,
+  cut with an ellipsis, drawn as text (never markdown, never a link, its
+  line breaks as spaces), with the whole title in the tooltip and in the
+  Steps tab, so it is never behind a hover alone. A row that is planned,
+  held, finished, failed or closed, one whose worker is stalled,
+  disconnected, retrying or preparing, and one that waits on anybody keeps
+  the count alone (`0/7 steps`) or the host's word, which always comes
+  first. A report older than ten minutes (`STEP_STALE_MS`) has its step
+  muted and the tooltip says when it was reported. The worker's summary, a
+  path, a commit and what it is running stay behind the row's disclosure
+  with everything the row had before (state word, kind, size, environment,
+  branch, checklist, brief).
+- **An opened row is its status line, what starts or decides, then two
+  tabs.** The status line (state word, last step, branch) stays on top.
+  Under it, above the tabs and so on screen whichever is open: a hold's
+  sentence, the decision the task waits on, and the task's one start
+  (`Start it again`, `Start next attempt`, `Start retry`, with the reason
+  when it is switched off). Nothing a person must act on is drawn only
+  inside a tab: a new control that starts or decides goes above the
+  tablist (`taskStart.test.tsx` reads the row for it). `Steps` is the tab a
+  row opens on: the checklist with its current step, and its count line; a
+  task with no reported steps says `No steps reported yet` there and does
+  not open on the other tab. `Details` is every other field: the plan card
+  (project, branch, work directory, worktree, owner, model, effort, size,
+  problem, goal, acceptance), peer help and the Task details disclosure.
+  It is a real tablist (`runPanel.TASK_TABS`, `taskTabKey`: arrows, Home
+  and End, the panel labelled by its tab; a key held down moves it once).
+  The chosen tab is the row's own state while the row is on screen, by its
+  task; nothing remembers it and there is no setting. The chosen tab is the
+  row's ink and a rule under it, never the accent. Choosing a tab changes
+  what is under the pointer, so the press is remembered like a
+  disclosure's (below). The panel's scroller keeps room for a scrollbar
+  that takes room (`scrollbar-gutter: stable` on `.orch-content`): on
+  Windows a longer tab brought the scrollbar and made every row 15px
+  narrower.
 - **Colour is state.** The accent is a turn in flight and nothing else, as
   a tint: `strip.live` and a row's `flight` are true only while an attempt
   of the run is executing. A run that is all planned, or whose only worker
@@ -1738,9 +1775,11 @@ starts something takes the ones that apply:
   with (`lastPointerPress`) and its confirming answer drops a repeat in the
   same spot (`strayAnswer`, the cards' 700 ms and 8 px). `Start it again`,
   `Start next attempt` and `Start retry` have no question in front of them,
-  like the page's other Starts, so the disclosures that bring them on
-  screen are remembered by the cards' guard (`notePress`): a row's
-  disclosure, its Task details, a group's fold and `N more`. So are the
+  like the page's other Starts, so the controls that bring them on screen
+  or move them are remembered by the cards' guard (`notePress`): a row's
+  disclosure, its two tabs (the start stands above them, and a shorter tab
+  slides the row under a pointer near the foot of the panel), its Task
+  details, a group's fold and `N more`. So are the
   panel's own Stop, Close mission, Abandon and Archive buttons, each of
   which is replaced where it stands by the question it opens. A row that
   opens under the pointer cannot start a worker.

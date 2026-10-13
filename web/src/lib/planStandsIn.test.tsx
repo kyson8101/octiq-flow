@@ -55,12 +55,13 @@ const panel = (snapshot: OrchestrationSnapshot) => {
 const rows = (html: string) => html.split('<article class="orch-task').slice(1).map((part) => part.slice(0, part.indexOf("</article>")));
 /** One group of the panel, by its key: "" when it is not drawn. A row holds
  *  no section of its own before its `</article>`, so the group ends at the
- *  next group or at the tab panel's end. */
+ *  next group or at the run's next view (Notifications). A row has tab
+ *  panels of its own, so the end is asked of the run's, by its class. */
 const group = (html: string, key: "needs" | "running" | "finished" | "planned") => {
   const from = html.indexOf(`<section class="run-group" data-group="${key}"`);
   if (from < 0) return "";
   const next = html.indexOf('<section class="run-group"', from + 1);
-  return html.slice(from, next < 0 ? html.indexOf('role="tabpanel"', from) : next);
+  return html.slice(from, next < 0 ? html.indexOf('class="orch-tab-panel orch-notifications"', from) : next);
 };
 const card = (snapshot: OrchestrationSnapshot) =>
   renderToStaticMarkup(<PlanReview run={snapshot.runs[0]} tasks={snapshot.tasks} drafting={false} onRequestChanges={() => {}} />);

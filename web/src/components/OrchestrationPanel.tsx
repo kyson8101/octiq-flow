@@ -10,8 +10,9 @@ import {
 import { acceptanceLine, checkCoverage, KIND_LABEL, requiresVerdict, runStages, taskEnvironment } from "../lib/runAcceptance";
 import { useSandboxes, type SandboxSnapshot } from "../lib/sandbox";
 import {
-  attentionLabel, attentionSpoken, attentionTone, mainChatTarget, nextRunTab, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
-  type PersonState, type RunAttention, type RunTab,
+  attentionLabel, attentionSpoken, attentionTone, mainChatTarget, nextRunTab, NO_STEPS, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
+  TASK_TAB_LABEL, TASK_TABS, taskTabKey,
+  type PersonState, type RunAttention, type RunTab, type TaskTab,
 } from "../lib/runPanel";
 import { agoLabel } from "../lib/chatTask";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
@@ -40,7 +41,7 @@ import { RunBridges } from "./RunBridges";
 import { PeerHelpLog } from "./PeerHelpLog";
 import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import {
-  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, planStandsIn, runCounts, runProgress, shownRows, stepsLabel, tasksLabel, tokensLabel,
+  COORDINATOR_WORD, figuresLabel, GROUP_FOLDED, GROUP_SHOWN, groupHeading, minutesLabel, planStandsIn, runCounts, runProgress, shownRows, stepAtLabel, stepOneLine, stepsLabel, tasksLabel, tokensLabel,
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
@@ -1370,6 +1371,20 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   const [expanded, setExpanded] = useState(false);
   const [reassigning, setReassigning] = useState(false);
   const detailId = useId();
+  // Which of the opened row's two views is shown. The row's own, for as
+  // long as it is on screen (it is keyed by its task): nothing remembers it.
+  const [tab, setTab] = useState<TaskTab>("steps");
+  const tabsId = useId();
+  const tabRefs = useRef<Partial<Record<TaskTab, HTMLButtonElement | null>>>({});
+  const onTabKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Arrows, Home and End move between the two; the repeats of a held key
+    // move nothing and press nothing (`taskTabKey`).
+    const { to, drop } = taskTabKey(tab, event);
+    if (drop) event.preventDefault();
+    if (!to) return;
+    setTab(to);
+    tabRefs.current[to]?.focus();
+  };
   const assigneeFace = useRosterAgent(task.assignee?.id);
   const mine = attempts.filter((candidate) => candidate.taskId === task.id).sort((a, b) => b.number - a.number);
   const attempt = attempts.find((candidate) => candidate.id === task.activeAttemptId) ?? mine[0];
@@ -1381,15 +1396,20 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   // status word, which line one already carries. Saying "Blocked · Blocked"
   // is how a row starts looking busy while telling you less.
   const reportedStage = attempt?.execution || stage === TASK_LABELS[task.status] ? null : stage;
-  // The worker's own checklist. The row carries its counts and nothing of
-  // its words: the step it says it is on is the worker's own text, and sits
-  // with the checklist behind the disclosure. A stopped task's is its last.
+  // The worker's own checklist. The row carries its counts, and of its
+  // words one thing only: the title of the step it is on, while its turn is
+  // in flight (`runProgress.rowStep`). Everything else of the worker's sits
+  // behind the disclosure. A stopped task's step is its last.
   const steps = taskStepSummary(task, attempt, report);
   const step = steps && stepLabel(steps);
-  // What the row says under the title: the host's word when the task waits
-  // on something or went wrong, else how far its checklist has got.
-  const note = row.why ?? (row.steps ? stepsLabel(row.steps) : null);
+  // The host's word comes first: a row that waits on something or went
+  // wrong says that, and names no step.
+  const doing = row.why ? null : row.step;
+  // What the row says under the title: the host's word, else the step its
+  // worker is on, else how far its checklist has got.
+  const note = row.why ?? (doing ? stepAtLabel(doing) : row.steps ? stepsLabel(row.steps) : null);
   const figures = figuresLabel(row);
+  const reported = steps ? `${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(steps.reportedAt, now)}` : null;
   // "Awaiting approval" is said only of a row whose wait is the person's
   // (`lib/runWaits`): a decision the coordinator has, or one nobody can
   // approve, leaves the worker's own state word.
@@ -1452,8 +1472,13 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             {!note && figures && <span className="run-row-figures">{figures}</span>}
           </span>
           {note && <span className="run-row-nums">
-            <span className="run-row-note" data-tone={row.tone ?? undefined}
-              title={[steps ? `${stateWord} · ${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(report!.reportedAt, now)}` : stateWord, hint].filter(Boolean).join("\n")}>{note}</span>
+            {/* A step's title is the worker's text: one line of plain text,
+                cut with an ellipsis, whole in the tooltip and in the Steps
+                tab. An old report is muted, and the tooltip says how old. */}
+            <span className="run-row-note" data-tone={row.tone ?? undefined} data-stale={doing?.stale || undefined}
+              title={[doing && `Step ${doing.at} of ${doing.total}: ${doing.title}`, reported ? `${stateWord} · ${reported}` : stateWord, hint].filter(Boolean).join("\n")}>
+              {note}{doing && <span className="run-row-step"> · {stepOneLine(doing.title)}</span>}
+            </span>
             {figures && <span className="run-row-figures">{figures}</span>}
           </span>}
           {row.percent !== null && <span className="orch-task-track run-row-bar" aria-hidden="true"><span style={{ width: `${row.percent}%` }} /></span>}
@@ -1498,23 +1523,46 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
           {reportedStage && !step && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
           {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
         </div>
+        {/* What starts or decides something stands above the two tabs, so it
+            is on screen whichever is open: why a task that could start does
+            not, the decision it waits on, and its one start. */}
         {/* Why a task that could start does not, in the host's own words. */}
         {row.hold && <p className="orch-task-hold" data-hold={row.hold.kind} data-tone={row.hold.tone ?? undefined}>{row.hold.detail}</p>}
+        {gate && <p className="orch-task-blocker orch-task-gate">Waiting on a decision: {gate.question}</p>}
         {/* The one start of a task the person stopped: theirs, and of the
             attempt they stopped, as that attempt ran (`retryOf`). */}
         {start?.kind === "again" && !readOnly && <div className="orch-task-start"><StartButton start={start} busy={busy} onStart={begin} /></div>}
+        {/* The next attempt or a retry. One the host would refuse (the plan
+            holds the task, its reopen is not told yet, it was replaced) is
+            drawn switched off with the reason beside it. */}
+        {start && start.kind !== "again" && !readOnly && (
+          <div className="orch-attempt-retry" data-blocked={start.blocked ? true : undefined}>
+            <small>{start.note}</small>
+            <StartButton start={start} busy={busy} onStart={begin} />
+          </div>
+        )}
+        {/* Steps is what a row is opened for; everything else is Details.
+            Switching changes what is under the pointer, so the press on a
+            tab is remembered like a disclosure's (`lib/pressGuard`). */}
+        <div className="orch-task-tabs" role="tablist" aria-label={`Task views: ${task.title}`} onKeyDown={onTabKey}>
+          {TASK_TABS.map((key) => <button key={key} type="button" role="tab" className="orch-task-tab" onClick={(event) => { notePress(event); setTab(key); }}
+            id={`${tabsId}-${key}`} aria-selected={tab === key} aria-controls={`${tabsId}-${key}-panel`} tabIndex={tab === key ? 0 : -1}
+            ref={(node) => { tabRefs.current[key] = node; }}>{TASK_TAB_LABEL[key]}</button>)}
+        </div>
+        <div className="orch-task-tab-panel" role="tabpanel" id={`${tabsId}-steps-panel`} aria-labelledby={`${tabsId}-steps`} tabIndex={0} hidden={tab !== "steps"}>
+          {report?.steps.length ? <>
+            <ol className="orch-task-steps" aria-label="Reported checklist">
+              {report.steps.map((step, index) => <li key={index} data-state={step.state}>
+                <span aria-label={step.state}>{step.state === "done" ? "✓" : step.state === "active" ? "◉" : "○"}</span>{step.title}
+              </li>)}
+            </ol>
+            <p className="orch-task-reported">{progress.done} of {progress.total} steps done · reported {agoLabel(report.reportedAt, now)}</p>
+          </> : <p className="orch-task-reported">{NO_STEPS}</p>}
+        </div>
+        <div className="orch-task-tab-panel" role="tabpanel" id={`${tabsId}-details-panel`} aria-labelledby={`${tabsId}-details`} hidden={tab !== "details"}>
         {/* The standard plan card: where it runs (planned until the host
             prepares it), who owns it on which model, and what done means. */}
         <TaskPlanCard task={task} run={run} attempt={attempt} projectName={projectName} />
-        {report?.steps.length ? <ol className="orch-task-steps" aria-label="Reported checklist">
-          {report.steps.map((step, index) => <li key={index} data-state={step.state}>
-            <span aria-label={step.state}>{step.state === "done" ? "✓" : step.state === "active" ? "◉" : "○"}</span>{step.title}
-          </li>)}
-        </ol> : null}
-        {report && <p className="orch-task-reported">
-          {progress.total ? `${progress.done} of ${progress.total} steps done` : "No checklist reported"} · reported {agoLabel(report.reportedAt, now)}
-        </p>}
-        {!report && <p className="orch-task-reported">No checklist reported</p>}
         <PeerHelpLog asks={taskPeerAsks(snapshot, task.id)} ago={(at) => agoLabel(at, now)} />
         <details className="orch-task-more">
           <summary className="orch-task-more-summary" onClick={(event) => { notePress(event); }}>Task details</summary>
@@ -1530,7 +1578,6 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             <p className="orch-task-ledger">{statusLine(task, (row.hold ?? taskHold(task, run, snapshot.tasks, now))?.label ?? null)}</p>
             <WorkerExecutionEvidence execution={attempt.execution} />
           </>}
-          {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
           {task.dependsOn.length > 0 && <p className="orch-task-after">After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}
           {mission && (task.handoffs?.length ?? 0) > 0 && <ul className="orch-task-handoffs" aria-label="Changes of hands">
             {task.handoffs!.map((handoff, index) => <li key={index}>
@@ -1547,15 +1594,6 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
               {attempt.isWorktree && <span>worktree</span>}
               {attempt.summary && !attempt.proposedReport?.confirmedAt && <p>{attempt.summary}</p>}
               <ProposedReportNote attempt={attempt} ago={(at) => agoLabel(at, now)} />
-              {/* The next attempt or a retry. One the host would refuse (the
-                  plan holds the task, its reopen is not told yet, it was
-                  replaced) is drawn switched off with the reason beside it. */}
-              {start && start.kind !== "again" && start.attempt.id === attempt.id && !readOnly && (
-                <div className="orch-attempt-retry" data-blocked={start.blocked ? true : undefined}>
-                  <small>{start.note}</small>
-                  <StartButton start={start} busy={busy} onStart={begin} />
-                </div>
-              )}
             </div>
           )}
           {history.length > 0 && <details className="orch-attempt-history">
@@ -1578,6 +1616,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             <p>{task.spec}</p>
           </details>
         </details>
+        </div>
       </div>
     </article>
   );
@@ -1590,10 +1629,10 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
  *
  *  A start has no question in front of it, like the page's other Starts,
  *  so it is guarded where it stands (`lib/pressGuard`): the repeats of a
- *  held key are dropped, and the disclosures that bring it on screen (the
- *  row's, its Task details, the group's fold and "N more") are remembered
- *  by the cards' stray-press guard, so a row that opens under the pointer
- *  cannot start a worker. */
+ *  held key are dropped, and the controls that bring it on screen or move
+ *  it (the row's disclosure, its two tabs, its Task details, the group's
+ *  fold and "N more") are remembered by the cards' stray-press guard, so a
+ *  row that opens or changes under the pointer cannot start a worker. */
 function StartButton({ start, busy, onStart }: {
   start: StartControl<OrchestrationAttempt>;
   busy: boolean;

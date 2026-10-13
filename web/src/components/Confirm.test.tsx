@@ -122,7 +122,9 @@ describe("the controls that start or stop a worker", () => {
     expect(panelSource).toMatch(/function StartButton\([\s\S]*?onKeyDown=\{dropHeld\}/);
     // Each disclosure of the panel that can bring a start under the pointer
     // is remembered by the guard the cards use (`lib/pressGuard.notePress`).
-    for (const control of ["orch-task-expand", "run-group-head", "run-group-more", "orch-task-more-summary"]) {
+    // A row's two tabs are among them: switching changes what is under the
+    // pointer as a disclosure does.
+    for (const control of ["orch-task-expand", "run-group-head", "run-group-more", "orch-task-more-summary", "orch-task-tab"]) {
       expect(panelSource, control).toMatch(new RegExp(`className="${control}"[^>]*?onClick=\\{\\(event\\) => \\{\\s*notePress\\(event\\)`));
     }
     expect(noteSource).toMatch(/className="reopened-note-stop"[^>]*onKeyDown=\{dropHeld\}/);

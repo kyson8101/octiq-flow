@@ -17,6 +17,7 @@ import type { OrchestrationSnapshot } from "./orchestration";
 import {
   PLAN_DETAIL, PLAN_LABEL, REOPEN_DETAIL, REOPEN_LABEL, startBlocker, startControl, statusLine, STOPPED_LABEL,
 } from "./taskHold";
+import { taskTabKey } from "./runPanel";
 import { OrchestrationPanel } from "../components/OrchestrationPanel";
 
 afterEach(() => vi.useRealTimers());
@@ -183,6 +184,98 @@ describe("the ledger's status in a task's details", () => {
     expect(statusLine({ status: "running" }, null)).toBe("Ledger status: Working");
     expect(statusLine({ status: "failed" }, STOPPED_LABEL)).toBe(`Task: ${STOPPED_LABEL} · ledger status: Failed`);
     expect(statusLine({ status: "ready" }, PLAN_LABEL)).toBe(`Task: ${PLAN_LABEL} · ledger status: Ready`);
+  });
+});
+
+/** An opened row in its three parts: what stands above the tabs, and what
+ *  each tab holds. */
+const parts = (row: string) => {
+  const tabs = row.indexOf('role="tablist"');
+  const steps = row.indexOf('role="tabpanel"');
+  const details = row.indexOf('role="tabpanel"', steps + 1);
+  expect(tabs).toBeGreaterThan(-1);
+  expect(details).toBeGreaterThan(steps);
+  return { above: row.slice(row.indexOf('class="orch-task-detail"'), tabs), steps: row.slice(steps, details), details: row.slice(details) };
+};
+
+describe("an opened row's tabs", () => {
+  const ledgers: [string, () => OrchestrationSnapshot, string][] = [
+    ["a next attempt the host would refuse", hostFacts.heldByReopen, "Start next attempt"],
+    ["a next attempt it would take", hostFacts.reopenNoticeDelivered, "Start next attempt"],
+    ["a retry", hostFacts.planAfterFailed, "Start retry"],
+    ["a retry of a blocked task", hostFacts.planAfterBlocked, "Start retry"],
+    ["the person's own Start", () => hostFacts.taskStopped().snapshot, "Start it again"],
+  ];
+
+  it.each(ledgers)("keep %s above both, in neither", (_name, ledger, label) => {
+    const row = rows(panel(ledger())).find((item) => item.includes(`>${label}</button>`))!;
+    const { above, steps, details } = parts(row);
+    // The one start, with its reason when it is switched off, stands above
+    // the tablist: on screen whichever tab is open.
+    expect(starts(above)).toHaveLength(1);
+    expect(starts(above)[0]).toContain(`>${label}</button>`);
+    const why = /aria-describedby="([^"]+)"/.exec(starts(above)[0])?.[1];
+    if (why) expect(above).toContain(`<span id="${why}" class="task-start-why">`);
+    for (const tab of [steps, details]) {
+      expect(tab).not.toContain("task-start");
+      expect(tab).not.toContain("orch-attempt-retry");
+    }
+  });
+
+  it("keep a hold's sentence above both", () => {
+    for (const ledger of [hostFacts.heldByReopen(), hostFacts.taskStopped().snapshot]) {
+      const row = rows(panel(ledger)).find((item) => item.includes('class="orch-task-hold"'))!;
+      const { above, steps, details } = parts(row);
+      expect(above).toContain('class="orch-task-hold"');
+      expect(steps + details).not.toContain("orch-task-hold");
+    }
+  });
+
+  it("keep the decision a task waits on above both", () => {
+    // Changed for this test: an open gate on the blocked task.
+    const snapshot = hostFacts.planAfterBlocked();
+    const [task] = snapshot.tasks;
+    snapshot.gates = [{
+      id: "gate_x", runId: task.runId, taskId: task.id, createdByChatKey: "chat:w", targetChatKey: "chat:m",
+      question: "Use the durable schema?", options: [], status: "open", awaits: "person", createdAt: 1, updatedAt: 2,
+    }];
+    const row = rows(panel(snapshot)).find((item) => item.includes("Use the durable schema?"))!;
+    const { above, steps, details } = parts(row);
+    expect(above).toContain('<p class="orch-task-blocker orch-task-gate">Waiting on a decision: Use the durable schema?</p>');
+    expect(steps + details).not.toContain("Use the durable schema?");
+  });
+
+  it("put nothing that sends a start, an answer or a stop only inside a tab", () => {
+    // What the two panels hold in the source: between the tablist and the
+    // end of the row's detail there is no start and no decision's answer.
+    const from = panelSource.indexOf('className="orch-task-tabs"');
+    const to = panelSource.indexOf("</article>", from);
+    expect(from).toBeGreaterThan(-1);
+    const inTabs = panelSource.slice(from, to);
+    expect(inTabs).not.toContain("<StartButton");
+    expect(inTabs).not.toMatch(/orchestration_(worker_start|gate_resolve|plan_approve|task_stop)/);
+    // The one place a row draws its starts is above that.
+    expect(panelSource.slice(0, from).match(/<StartButton /g)).toHaveLength(2);
+    expect(panelSource.match(/<StartButton /g)).toHaveLength(2);
+  });
+
+  it("remember the press that switched them, and drop a held key", () => {
+    // Switching changes what is under the pointer, so a tab's press is
+    // remembered by the cards' guard like a disclosure's: one that repeats
+    // it cannot land on a start.
+    expect(panelSource).toMatch(/className="orch-task-tab"\s+onClick=\{\(event\) => \{\s*notePress\(event\);\s*setTab\(key\);/);
+    // Keys go through the one reader, which moves a held key once.
+    expect(panelSource).toMatch(/role="tablist"[^>]*onKeyDown=\{onTabKey\}/);
+    expect(panelSource).toMatch(/const \{ to, drop \} = taskTabKey\(tab, event\);\s*if \(drop\) event\.preventDefault\(\);\s*if \(!to\) return;/);
+    for (const key of ["Enter", " ", "Spacebar", "ArrowRight", "ArrowLeft", "Home", "End"]) {
+      expect(taskTabKey("steps", { key, repeat: true }), key).toEqual({ to: null, drop: true });
+      expect(taskTabKey("details", { key, repeat: true }), key).toEqual({ to: null, drop: true });
+    }
+    // A key pressed once on a tab is the browser's to turn into its click.
+    expect(taskTabKey("steps", { key: "Enter", repeat: false })).toEqual({ to: null, drop: false });
+    expect(taskTabKey("steps", { key: " ", repeat: false })).toEqual({ to: null, drop: false });
+    // Tab leaves the tablist, held or not.
+    expect(taskTabKey("steps", { key: "Tab", repeat: true })).toEqual({ to: null, drop: false });
   });
 });
 

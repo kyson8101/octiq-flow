@@ -96,7 +96,7 @@ describe("a task row's reported steps", () => {
   it("counts the steps as reported and names the one the running worker is on", () => {
     const { task, attempt, report } = board();
     const summary = taskStepSummary(task, attempt, report)!;
-    expect(summary).toEqual({ done: 2, total: 4, step: "Run focused tests", current: true });
+    expect(summary).toEqual({ done: 2, total: 4, step: "Run focused tests", at: 3, current: true, reportedAt: report.reportedAt });
     expect(stepCountLabel(summary)).toBe("2/4 steps");
     expect(stepLabel(summary)).toBe("Run focused tests");
     // Host execution never takes the step's place: it is the row's first word.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  chatStrip, contextPercent, countsAsWork, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, groupHeading, minutesLabel, parseDismissed, runProgress, shownRows,
-  stepsLabel, stripHidden, stripRun, tasksLabel, tokensLabel, usageTotal, type ProgressRow, type Waiting,
+  chatStrip, contextPercent, countsAsWork, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, groupHeading, minutesLabel, parseDismissed, rowStep, runProgress, shownRows,
+  STEP_STALE_MS, stepAtLabel, stepOneLine, stepsLabel, stripHidden, stripRun, tasksLabel, tokensLabel, usageTotal, type ProgressRow, type Waiting,
 } from "./runProgress";
 import { chatSnapshot } from "./chatWorkflow";
 import { UNSAID_NOTE } from "./runWaits";
@@ -46,7 +46,8 @@ function going(title: string, status: OrchestrationTask["status"], attemptStatus
 const report = (done: number, total: number, at = START + MINUTE): TaskReport => ({
   objective: "x", reportedAt: at, reportedBy: "claude",
   steps: Array.from({ length: total }, (_, index) => ({
-    // A worker's own words: they must never reach a row.
+    // A worker's own words. They reach a row in one place only: as the
+    // step it is on, while its turn is in flight (`rowStep`).
     title: `Reading /Users/me/secret/path and commit ${"a".repeat(40)}`,
     state: index < done ? "done" : index === done ? "active" : "pending",
   })),
@@ -443,20 +444,126 @@ describe("one row", () => {
     expect(rowOf({ task: task("H", "pending") })).toMatchObject({ state: "planned", steps: null, percent: null, elapsedMs: null });
   });
 
-  it("holds none of the worker's own words: not its step, its summary, a path or a commit", () => {
-    const sha = "a".repeat(40);
+  it("holds one thing of the worker's, the step it is on, and none of its summary, result, operation or brief", () => {
+    const sha = "b".repeat(40);
     const part = going("C · Server", "running", "running", {
       task: { result: `Done in /Users/me/repo at ${sha}` },
-      attempt: { summary: `Wrote /Users/me/repo/src at ${sha}`, execution: { state: "executing", retryCount: 0, lastProgress: "Started Bash /Users/me", currentOperation: "Bash" } },
+      attempt: { summary: `Wrote /Users/me/repo/src at ${sha}`, execution: { state: "executing", retryCount: 0, lastProgress: "Started Bash /Users/me/repo", currentOperation: "Bash" } },
     });
-    const row = rowOf(part, { reports: { [part.attempt.workerChatKey]: report(3, 9) } });
-    const { task: _task, attempt: _attempt, ...drawn } = row;
+    const told = report(3, 9);
+    const row = rowOf(part, { reports: { [part.attempt.workerChatKey]: told } });
+    // The step, as the worker wrote it, with where it stands in the list.
+    expect(row.flight).toBe(true);
+    expect(row.step).toEqual({ at: 4, total: 9, title: told.steps[3].title, reportedAt: told.reportedAt, stale: true });
+    // Everything else the row draws is the host's or the task's.
+    const { task: _task, attempt: _attempt, step: _step, ...drawn } = row;
     const text = JSON.stringify(drawn);
     expect(text).not.toContain("/Users/");
     expect(text).not.toContain(sha);
     expect(text).not.toContain("Reading");
     expect(text).not.toContain("brief");
     expect(text).not.toContain("Bash");
+  });
+
+  describe("the step a folded row names", () => {
+    const fresh = (done = 0, total = 7) => report(done, total, NOW - MINUTE);
+    const withReport = (part: ReturnType<typeof going>, told = fresh(), over: Partial<OrchestrationSnapshot> = {}, theRun = run()) =>
+      rowOf(part, { reports: { [part.attempt.workerChatKey]: told }, ...over }, theRun);
+    const executing = (state: "executing" | "waiting_tool" = "executing") =>
+      going("x", "running", "running", { attempt: { execution: { state, retryCount: 0 } } });
+
+    it("is the active step's place and title while an attempt is executing", () => {
+      const row = withReport(executing());
+      expect(row.steps).toEqual({ done: 0, total: 7 });
+      expect(row.step).toMatchObject({ at: 1, total: 7, stale: false });
+      expect(stepAtLabel(row.step!)).toBe("1/7");
+      // Parked on a tool is still its turn.
+      expect(withReport(executing("waiting_tool"), fresh(2, 7)).step).toMatchObject({ at: 3, total: 7 });
+      // A worker with no execution record yet is running by its status.
+      expect(withReport(going("x", "running", "running")).step).toMatchObject({ at: 1 });
+    });
+
+    it("is the place of the step marked active, whatever is done around it", () => {
+      const told = fresh();
+      told.steps = [
+        { title: "One", state: "done" }, { title: "Two", state: "pending" }, { title: "Three", state: "active" }, { title: "Four", state: "done" },
+      ];
+      const row = withReport(executing(), told);
+      expect(row.steps).toEqual({ done: 2, total: 4 });
+      expect(row.step).toMatchObject({ at: 3, total: 4, title: "Three" });
+    });
+
+    it("is nothing with no step marked active, or one with a blank title", () => {
+      const none = fresh();
+      none.steps = none.steps.map((step) => ({ ...step, state: "pending" as const }));
+      expect(withReport(executing(), none)).toMatchObject({ flight: true, step: null, steps: { done: 0, total: 7 } });
+      const blank = fresh();
+      blank.steps[0].title = "   ";
+      expect(withReport(executing(), blank).step).toBeNull();
+      // Nothing reported at all.
+      expect(rowOf(executing()).step).toBeNull();
+    });
+
+    it("is nothing on a row that is planned, held, finished, failed, closed, or whose worker is in trouble", () => {
+      const quiet: [string, ProgressRow][] = [
+        ["stalled", withReport(going("x", "running", "running", { attempt: { execution: { state: "stalled", retryCount: 0 } } }))],
+        ["disconnected", withReport(going("x", "running", "running", { attempt: { execution: { state: "disconnected", retryCount: 0 } } }))],
+        ["retrying", withReport(going("x", "running", "running", { attempt: { execution: { state: "retrying", retryCount: 1 } } }))],
+        ["capacity", withReport(going("x", "running", "running", { attempt: { execution: { state: "capacity_blocked", retryCount: 0 } } }))],
+        ["preparing", withReport(going("x", "running", "preparing"))],
+        ["failed", withReport(going("x", "failed", "failed"))],
+        ["blocked", withReport(going("x", "blocked", "blocked"))],
+        ["finished", withReport(going("x", "completed", "completed"))],
+        ["check failed", withReport(going("x", "completed", "completed", { task: { kind: "review", verdict: "fail" } }))],
+        ["cancelled", withReport(going("x", "cancelled", "cancelled"))],
+        ["reopened and ready", withReport(going("x", "ready", "completed"))],
+        ["stopped by the person", withReport(going("x", "failed", "failed", { task: { stopped: { at: NOW, attemptId: "attempt_x" } } }))],
+        ["stopped run", withReport(executing(), fresh(), {}, run({ status: "stopped" }))],
+      ];
+      for (const [name, row] of quiet) {
+        expect(row.flight, name).toBe(false);
+        expect(row.step, name).toBeNull();
+        // The count is kept: the row says how far it got, and no more.
+        expect(row.steps, name).toEqual({ done: 0, total: 7 });
+      }
+      // Never started: no attempt, so no report is its own.
+      expect(rowOf({ task: task("x", "pending") })).toMatchObject({ state: "planned", step: null, steps: null });
+    });
+
+    it("is nothing while the row waits on the person or the coordinator", () => {
+      const part = executing("waiting_tool");
+      const made = ledger([part], { reports: { [part.attempt.workerChatKey]: fresh() } });
+      const asked = runProgress(made.snapshot, made.run, NOW, cards(part.task.id, ["permission", "p1"])).rows[0];
+      expect(asked).toMatchObject({ state: "needs", flight: false, step: null });
+      const mine = executing();
+      expect(withReport(mine, fresh(), { gates: [gate(mine.task.id)] })).toMatchObject({ state: "needs", why: "Asks a decision", step: null });
+      const theirs = executing();
+      expect(withReport(theirs, fresh(), { gates: [gate(theirs.task.id, "open", "coordinator")] }))
+        .toMatchObject({ why: "Waiting on the coordinator", flight: false, step: null });
+    });
+
+    it("is nothing for a report made before the attempt the row shows", () => {
+      const part = going("x", "running", "running", { attempt: { execution: { state: "executing", retryCount: 0 }, createdAt: NOW - MINUTE } });
+      expect(withReport(part, report(0, 7, NOW - 2 * MINUTE))).toMatchObject({ flight: true, step: null, steps: null });
+    });
+
+    it("is muted once the report is more than ten minutes old, and not a moment before", () => {
+      expect(STEP_STALE_MS).toBe(10 * MINUTE);
+      expect(withReport(executing(), report(0, 7, NOW - 10 * MINUTE)).step!.stale).toBe(false);
+      expect(withReport(executing(), report(0, 7, NOW - 10 * MINUTE - 1)).step!.stale).toBe(true);
+      expect(rowStep(true, { done: 0, total: 7, step: "A", at: 1, current: true, reportedAt: 5 }, 5 + STEP_STALE_MS)!.stale).toBe(false);
+      // A browser clock behind the host's never makes a report old.
+      expect(rowStep(true, { done: 0, total: 7, step: "A", at: 1, current: true, reportedAt: 5_000 }, 0)!.stale).toBe(false);
+    });
+
+    it("is drawn on one line, with nothing of the title changed but its white space", () => {
+      expect(stepOneLine("  Read\nthe  row\r\n\tand [commit](https://x.test) **now**  ")).toBe("Read the row and [commit](https://x.test) **now**");
+      expect(stepOneLine("一步\n两步")).toBe("一步 两步");
+      // What the reader hands on is the title as written.
+      const told = fresh();
+      told.steps[0].title = "Read\nthe row";
+      expect(withReport(executing(), told).step!.title).toBe("Read\nthe row");
+    });
   });
 
   it("names the model and effort of the attempt, else of the worker the task was planned for", () => {

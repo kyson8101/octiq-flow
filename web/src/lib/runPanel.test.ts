@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { EMPTY_ORCHESTRATION, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
-import { attentionLabel, attentionSpoken, attentionTone, mainChatTarget, nextRunTab, runAttention as attentionOf, runPeople as peopleOf, splitArchived, stopRun, taskColumnCounts } from "./runPanel";
+import {
+  attentionLabel, attentionSpoken, attentionTone, mainChatTarget, nextRunTab, NO_STEPS, runAttention as attentionOf, runPeople as peopleOf, splitArchived, stopRun,
+  TASK_TAB_LABEL, TASK_TABS, taskColumnCounts, taskTabKey,
+} from "./runPanel";
 import { runWaits, type Waiting } from "./runWaits";
 
 const run = (id: string, coordinatorChatKey: string, extra: Partial<OrchestrationRun> = {}): OrchestrationRun => ({
@@ -34,6 +37,39 @@ describe("run tabs", () => {
     expect(nextRunTab("notifications", "Home")).toBe("tasks");
     expect(nextRunTab("tasks", "End")).toBe("log");
     expect(nextRunTab("tasks", "Enter")).toBeNull();
+  });
+});
+
+describe("an opened task row's tabs", () => {
+  const press = (key: string) => ({ key, repeat: false });
+
+  it("are Steps then Details, and a row opens on Steps", () => {
+    expect(TASK_TABS).toEqual(["steps", "details"]);
+    expect(TASK_TAB_LABEL).toEqual({ steps: "Steps", details: "Details" });
+    expect(NO_STEPS).toBe("No steps reported yet");
+  });
+
+  it("move with the arrows, wrap, and jump with Home and End", () => {
+    expect(taskTabKey("steps", press("ArrowRight"))).toEqual({ to: "details", drop: true });
+    expect(taskTabKey("details", press("ArrowRight"))).toEqual({ to: "steps", drop: true });
+    expect(taskTabKey("steps", press("ArrowLeft"))).toEqual({ to: "details", drop: true });
+    expect(taskTabKey("details", press("ArrowLeft"))).toEqual({ to: "steps", drop: true });
+    expect(taskTabKey("details", press("Home"))).toEqual({ to: "steps", drop: true });
+    expect(taskTabKey("steps", press("End"))).toEqual({ to: "details", drop: true });
+  });
+
+  it("leave every other key to the page", () => {
+    for (const key of ["Tab", "Escape", "ArrowDown", "ArrowUp", "a", "Enter", " "]) {
+      expect(taskTabKey("steps", press(key)), key).toEqual({ to: null, drop: false });
+    }
+  });
+
+  it("move once for a key held down, and press nothing with its repeats", () => {
+    for (const key of ["ArrowRight", "ArrowLeft", "Home", "End", "Enter", " ", "Spacebar"]) {
+      expect(taskTabKey("steps", { key, repeat: true }), key).toEqual({ to: null, drop: true });
+    }
+    expect(taskTabKey("steps", { key: "Tab", repeat: true })).toEqual({ to: null, drop: false });
+    expect(taskTabKey("steps", { key: "ArrowDown", repeat: true })).toEqual({ to: null, drop: false });
   });
 });
 

@@ -172,6 +172,10 @@
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  /* A scrollbar that takes room (Windows) has its room from the start: a
+     row that opens, or a tab of it that is longer than the other, brings
+     the scrollbar without making every row narrower. */
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   padding: 40px 48px 72px;
 }
@@ -810,7 +814,48 @@
 
 /* Under the title: the row's 12px inset + the 26px glyph + its 12px gap. */
 .orch-task-detail { padding: 4px 18px 16px 50px; }
-.orch-task-detail > p, .orch-task-more > p { margin: 0 0 10px; color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
+.orch-task-detail > p, .orch-task-tab-panel > p, .orch-task-more > p { margin: 0 0 10px; color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
+/* An opened row's two views: Steps, which a row is opened for, and Details,
+   which is every other field. What starts or decides something is above
+   them, in neither. The chosen tab is the row's own ink and a rule under
+   it: never the accent, which is a turn in flight. Its weight does not
+   change, so choosing one moves no label. One line at any width and in any
+   font: a label is cut before the row grows a second line. */
+.orch-task-tabs {
+  display: flex; gap: 2px; min-width: 0;
+  margin: 0 0 10px -10px; overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+.orch-task-tab {
+  position: relative; flex: 0 1 auto; min-width: 0; min-height: 28px; padding: 0 10px;
+  overflow: hidden; border: 0; background: transparent; color: var(--fg-3);
+  font: inherit; font-size: 11.5px; line-height: 28px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+  transition: color 130ms ease-out;
+}
+.orch-task-tab:hover { color: var(--fg-1); }
+.orch-task-tab[aria-selected="true"] { color: var(--fg-0); }
+.orch-task-tab::after {
+  content: ""; position: absolute; right: 10px; bottom: 0; left: 10px; height: 2px;
+  border-radius: 2px 2px 0 0; background: var(--fg-1); transform: scaleX(0); transition: transform 160ms ease-out;
+}
+.orch-task-tab[aria-selected="true"]::after { transform: scaleX(1); }
+.orch-task-tab:focus-visible, .orch-task-tab-panel:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: var(--r-sm); }
+.orch-task-tab-panel { min-width: 0; animation: orch-task-tab-in 160ms ease-out; }
+.orch-task-tab-panel[hidden] { display: none; }
+.orch-task-tab-panel > :last-child { margin-bottom: 0; }
+@keyframes orch-task-tab-in { from { opacity: 0; } }
+/* A finger needs more than 28px, on a phone and on a laptop with a touch
+   screen, whose first pointer is a mouse. */
+@media (max-width: 859.98px), (any-pointer: coarse) {
+  .orch-task-tab { min-height: 40px; line-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .orch-task-tab, .orch-task-tab::after { transition: none; }
+  .orch-task-tab-panel { animation: none; }
+}
+/* The start of a next attempt or a retry stands above the tabs, with the
+   detail's own rhythm under it. */
+.orch-task-detail > .orch-attempt-retry { margin: 0 0 12px; }
 .orch-task-more > summary { padding: 2px 0; color: var(--fg-3); font-size: 10.5px; cursor: pointer; }
 .orch-task-more[open] > summary { margin-bottom: 10px; }
 .orch-task-lifecycle { margin-bottom: 12px; overflow-wrap: anywhere; }

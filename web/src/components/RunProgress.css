@@ -384,6 +384,14 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
   white-space: nowrap;
 }
 
+/* The step a running row's worker says it is on, after its count: the one
+   text of the worker's a folded row carries, in the line's own ink and cut
+   with the line. A report older than ten minutes is muted: it may no longer
+   be what the worker is doing. Its colour eases; nothing here moves (the
+   strip's texture is the one thing that does). */
+.run-row-step { transition: color 160ms ease-out; }
+.run-row-note[data-stale] .run-row-step { color: var(--fg-3); }
+
 .run-row-note[data-tone="decide"] { color: var(--decide); }
 .run-row-note[data-tone="danger"] { color: var(--danger); }
 .run-row-note[data-tone="warn"] { color: var(--warn); }
@@ -431,5 +439,5 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
 
 @media (prefers-reduced-motion: reduce) {
   .run-strip[data-live] .run-strip-meter::after { animation: none; }
-  .run-strip-fill, .run-group-chevron, .run-group-more { transition: none; }
+  .run-strip-fill, .run-group-chevron, .run-group-more, .run-row-step { transition: none; }
 }

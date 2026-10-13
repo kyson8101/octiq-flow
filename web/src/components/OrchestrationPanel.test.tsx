@@ -140,15 +140,19 @@ describe("a task row's reported checklist", () => {
     return current;
   };
 
-  it("shows the count and a bar, and keeps the worker's own words behind the disclosure", () => {
+  it("names the step a running worker is on after its place in the checklist, and nothing else of the worker's", () => {
     const line = row(running());
-    expect(line).toContain('<span class="run-row-note" title="Waiting for a tool · 2 of 5 reported steps done');
-    expect(line).toContain(">2/5 steps</span>");
+    // The count, then the step's title as text of its own; the whole title
+    // and when it was reported are the tooltip's.
+    expect(line).toMatch(/<span class="run-row-note" data-stale="true" title="Step 3 of 5: Running tests\nWaiting for a tool · 2 of 5 reported steps done · reported [^"]+">3\/5<span class="run-row-step"> · Running tests<\/span><\/span>/);
+    expect(line).not.toContain("steps</span>");
     expect(line).toContain('style="width:40%"');
-    // The step is the worker's text: never the row's default line.
-    for (const words of ["Running tests", "Read", "Review", "Ship", "Bash"]) expect(line).not.toContain(`>${words}<`);
-    expect(line).not.toContain("Running tests");
-    // It is one disclosure away, with the host's state word.
+    // No other step, and nothing of what the worker is running.
+    // ("Build" is also the task's own title, so that step is asked by its
+    // place: nothing follows the one step drawn.)
+    for (const words of ["Read", "Review", "Ship", "Bash"]) expect(line).not.toContain(words);
+    expect(line.match(/run-row-step/g)).toHaveLength(1);
+    // Opened, the host's state word and the whole checklist.
     const opened = detail(running());
     expect(opened).toContain('<span class="orch-task-state">Waiting for a tool</span>');
     expect(opened).toContain('<span class="orch-task-step" title="Running tests">Running tests</span>');
@@ -158,9 +162,45 @@ describe("a task row's reported checklist", () => {
   it("follows the report as it moves, with nothing kept from the one before", () => {
     const next = running();
     next.reports!["chat:worker"] = report(["done", "done", "done", "active", "pending"], ["Read", "Build", "Running tests", "Review", "Ship"]);
-    expect(row(next)).toContain(">3/5 steps</span>");
+    expect(row(next)).toContain('>4/5<span class="run-row-step"> · Review</span></span>');
+    expect(row(next)).not.toContain("Running tests");
     expect(row(next)).toContain('style="width:60%"');
     expect(detail(next)).toContain('<span class="orch-task-step" title="Review">Review</span>');
+  });
+
+  it("draws a step's title as plain text on one line: never markdown, a link or markup", () => {
+    const odd = running();
+    const title = 'See [the plan](https://example.test/x) and **ship**\n<b onclick="x()">now</b> `rm -rf` https://example.test/y';
+    odd.reports!["chat:worker"] = report(["active", "pending"], [title, "Next"]);
+    const line = row(odd);
+    // One text node, escaped, with the line break as a space.
+    expect(line).toContain('>1/2<span class="run-row-step"> · See [the plan](https://example.test/x) and **ship** &lt;b onclick=&quot;x()&quot;&gt;now&lt;/b&gt; `rm -rf` https://example.test/y</span></span>');
+    expect(line).not.toMatch(/<a\b|<b\b|<strong|<code|<em\b/);
+    // The tooltip has the title as written, break and all.
+    expect(line).toContain('title="Step 1 of 2: See [the plan](https://example.test/x) and **ship**\n&lt;b onclick=&quot;x()&quot;&gt;now&lt;/b&gt;');
+  });
+
+  it("mutes the step of a report older than ten minutes, and not of a newer one", () => {
+    // The panel's clock here is the real one: a report from this moment is
+    // new, and the fixture's (1970) is old.
+    const fresh = running();
+    fresh.attempts[0].createdAt = Date.now() - 60_000;
+    fresh.reports!["chat:worker"].reportedAt = Date.now();
+    expect(row(fresh)).toMatch(/<span class="run-row-note" title="Step 3 of 5: Running tests\nWaiting for a tool · 2 of 5 reported steps done · reported just now">3\/5<span class="run-row-step">/);
+    expect(row(fresh)).not.toContain("data-stale");
+    expect(row(running())).toContain('<span class="run-row-note" data-stale="true"');
+  });
+
+  it("keeps the count alone on a row whose worker is stalled or disconnected, with the host's word", () => {
+    for (const state of ["stalled", "disconnected"] as const) {
+      const trouble = running();
+      trouble.attempts[0].execution = { state, retryCount: 0 };
+      const line = row(trouble);
+      expect(line, state).toContain(`>${EXECUTION_LABELS[state]}</span>`);
+      expect(line, state).not.toContain("run-row-step");
+      expect(line, state).not.toContain("Running tests");
+      expect(line, state).toContain('style="width:40%"');
+    }
   });
 
   it("says a blocked task is blocked in the host's word, and keeps its last step for the disclosure", () => {
@@ -217,6 +257,90 @@ describe("a task row's reported checklist", () => {
     retry.tasks[0].activeAttemptId = "attempt_2";
     expect(row(retry)).not.toContain("steps");
     expect(row(retry)).not.toContain("Running tests");
+  });
+
+  describe("opened, in two tabs", () => {
+    /** The opened row in its parts: the tablist, what stands above it, and
+     *  each tab's panel. */
+    const opened = (current: OrchestrationSnapshot) => {
+      const html = detail(current);
+      const all = html.slice(0, html.indexOf("</article>"));
+      const tabs = all.indexOf('<div class="orch-task-tabs"');
+      const steps = all.indexOf('<div class="orch-task-tab-panel"');
+      const details = all.indexOf('<div class="orch-task-tab-panel"', steps + 1);
+      return { above: all.slice(0, tabs), tablist: all.slice(tabs, steps), steps: all.slice(steps, details), details: all.slice(details) };
+    };
+
+    it("is a tablist of Steps and Details, Steps chosen, each panel labelled by its tab", () => {
+      const { tablist, steps, details } = opened(running());
+      expect(tablist).toContain('role="tablist" aria-label="Task views: Build the host ledger"');
+      const tabs = [...tablist.matchAll(/<button type="button" role="tab" class="orch-task-tab" id="([^"]+)" aria-selected="(true|false)" aria-controls="([^"]+)" tabindex="(-?\d)">([^<]+)<\/button>/g)];
+      expect(tabs.map((tab) => [tab[5], tab[2], tab[4]])).toEqual([["Steps", "true", "0"], ["Details", "false", "-1"]]);
+      // The Steps panel can take the keyboard: it holds no control of its own.
+      expect(steps).toMatch(new RegExp(`^<div class="orch-task-tab-panel" role="tabpanel" id="${tabs[0][3]}" aria-labelledby="${tabs[0][1]}" tabindex="0">`));
+      expect(details).toMatch(new RegExp(`^<div class="orch-task-tab-panel" role="tabpanel" id="${tabs[1][3]}" aria-labelledby="${tabs[1][1]}" hidden="">`));
+      expect(new Set([tabs[0][1], tabs[1][1], tabs[0][3], tabs[1][3]]).size).toBe(4);
+    });
+
+    it("keeps the status line above the tabs, on both", () => {
+      const { above, steps, details } = opened(running());
+      expect(above).toContain('<div class="orch-task-meta"><span class="orch-task-state">Waiting for a tool</span>');
+      expect(above).toContain('<span class="orch-task-step" title="Running tests">Running tests</span>');
+      expect(above).toContain('class="orch-task-branch"');
+      expect(steps + details).not.toContain("orch-task-meta");
+    });
+
+    it("holds the checklist, its current step and its count line in Steps, and nothing else", () => {
+      const { steps } = opened(running());
+      expect(steps).toContain('<ol class="orch-task-steps" aria-label="Reported checklist">');
+      expect(steps).toContain('<li data-state="active"><span aria-label="active">◉</span>Running tests</li>');
+      expect(steps.match(/<li data-state=/g)).toHaveLength(5);
+      expect(steps).toMatch(/<p class="orch-task-reported">2 of 5 steps done · reported [^<]+<\/p><\/div>$/);
+      for (const other of ["plan-card", "orch-task-more", "Problem", "Work directory", "Task details"]) expect(steps).not.toContain(other);
+    });
+
+    it("holds every other field in Details, the Task details disclosure included", () => {
+      const carded = running();
+      carded.tasks[0].card = { problem: "The ledger is lost on restart.", goal: "Keep it on disk.", acceptance: ["Survives a restart"] };
+      const { details } = opened(carded);
+      for (const field of ["Project", "Branch", "Work directory", "Owner", "Problem", "Goal", "Acceptance"]) expect(details, field).toContain(`<dt>${field}</dt>`);
+      expect(details).toContain("The ledger is lost on restart.");
+      expect(details).toContain('<summary class="orch-task-more-summary">Task details</summary>');
+      expect(details).toContain("<summary>Brief</summary>");
+      expect(details).not.toContain("orch-task-steps");
+      expect(details).not.toContain("steps done");
+    });
+
+    it("says one line for a task with no reported steps, and stays on Steps", () => {
+      const silent = running();
+      silent.reports = {};
+      const empty = running();
+      empty.reports!["chat:worker"] = report([]);
+      const queued = structuredClone(snapshot);
+      queued.gates = [];
+      queued.tasks[0].status = "pending";
+      queued.tasks[0].activeAttemptId = undefined;
+      queued.attempts = [];
+      for (const current of [silent, empty, queued]) {
+        const { tablist, steps, details } = opened(current);
+        expect(steps).toMatch(/^<div class="orch-task-tab-panel" role="tabpanel"[^>]*tabindex="0"><p class="orch-task-reported">No steps reported yet<\/p><\/div>$/);
+        expect(tablist).toMatch(/aria-selected="true"[^>]*>Steps</);
+        expect(details).toMatch(/^<div class="orch-task-tab-panel" role="tabpanel"[^>]*hidden="">/);
+      }
+    });
+
+    it("wraps a Windows work directory in its own cell and copies it whole", () => {
+      const path = "C:\\Users\\kyson\\03-projects\\.worktrees\\octiq-flow\\feature\\mission-7ead4bf8c2d740dbaee3e731163b5226";
+      const windows = running();
+      windows.attempts[0].cwd = path;
+      const { details } = opened(windows);
+      // The path as it is, in the cell that breaks anywhere, with the copy
+      // control inside it; what is copied is the same string.
+      expect(details).toContain(`<span class="plan-card-path" title="${path}">${path}<button type="button" class="plan-card-copy" aria-label="Copy work directory path" title="Copy ${path}">`);
+      const posix = running();
+      posix.attempts[0].cwd = "/Users/kyson/03-projects/.worktrees/octiq-flow/feature/t1";
+      expect(opened(posix).details).toContain('<span class="plan-card-path" title="/Users/kyson/03-projects/.worktrees/octiq-flow/feature/t1">');
+    });
   });
 
   it("draws a queued task as planned, with its word behind the disclosure", () => {

@@ -115,7 +115,7 @@ try {
     const empty = page.getByRole("button", { name: "Open task chat: Record final evidence", exact: true });
     assert.equal(await empty.isDisabled(), true);
     await page.getByRole("button", { name: "Expand task progress: Record final evidence", exact: true }).click();
-    await page.getByText("No checklist reported", { exact: true }).waitFor();
+    await page.getByText("No steps reported yet", { exact: true }).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({ path: join(artifacts, mobile ? "mobile-expanded.png" : "desktop-expanded.png") });
     await page.getByRole("button", { name: "Collapse task progress: Record final evidence", exact: true }).click();
@@ -131,6 +131,8 @@ try {
       await row.focus();
       await page.keyboard.press("Enter");
       assert.deepEqual(await page.evaluate(() => window.picks), ["chat:current-worker", "chat:current-worker"]);
+      // Task details is in the row's Details tab; a row opens on Steps.
+      await taskCard.getByRole("tab", { name: "Details", exact: true }).click();
       await page.getByText("Task details", { exact: true }).first().click();
       await page.getByRole("button", { name: "codex worker #2", exact: true }).waitFor();
     }

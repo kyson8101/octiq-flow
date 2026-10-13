@@ -7,12 +7,14 @@
 // ever fills up with "0 failed · 0 working".
 //
 // Words come from two places only: a task's title, and the host's own label
-// for what a task is waiting on. A worker's free text (the step it says it is
-// on, its summary, a path, a commit) is never a row's default line; it stays
-// behind the row's disclosure.
+// for what a task is waiting on. A worker's free text (its summary, a path,
+// a commit) is never a row's default line; it stays behind the row's
+// disclosure. One exception, and it is exact (`rowStep`): the title of the
+// step the worker says it is on, one line of plain text, and only while an
+// attempt of the task is executing.
 import {
   attemptIsExecuting, currentAttempt, EXECUTION_LABELS, executionNeedsAttention, proposedReportState, runElapsed,
-  taskElapsed, taskStepSummary,
+  taskElapsed, taskStepSummary, type TaskStepSummary,
 } from "./agentTaskBoard";
 import {
   CHECK_FAILED_LABEL, checkFailed, finishedWell, isSettled,
@@ -72,8 +74,12 @@ export type ProgressRow = {
    *  start of it (`lib/taskHold`): the person's stop, the plan, a reopen
    *  whose notice is not confirmed yet. Its label is the row's `why`. */
   hold: TaskHold | null;
-  /** The worker's checklist as counts. Its words are not on the row. */
+  /** The worker's checklist as counts. */
   steps: { done: number; total: number } | null;
+  /** The step the worker says it is on, while its turn is in flight and
+   *  for no other row (`rowStep`). The one text of the worker's a folded
+   *  row carries. */
+  step: RowStep | null;
   /** The thin bar. `null` draws none: nothing was reported to draw. */
   percent: number | null;
   model: string | null;
@@ -214,6 +220,43 @@ export function stepsLabel(steps: { done: number; total: number }): string {
   return `${steps.done}/${steps.total} ${steps.total === 1 ? "step" : "steps"}`;
 }
 
+/** The step a running row names: where it stands in the checklist, its
+ *  title as the worker wrote it, and whether the report is old. */
+export type RowStep = { at: number; total: number; title: string; reportedAt: number; stale: boolean };
+
+/** A report older than this is not called what the worker is doing now: the
+ *  step is drawn muted and the tooltip says when it was reported. */
+export const STEP_STALE_MS = 10 * 60_000;
+
+/** The step a folded row names, or `null` for the count alone. Only while
+ *  the row's turn is in flight (`flight`: the task is running on this very
+ *  attempt and the host says it is executing), and only the step the worker
+ *  marked active. A planned, held, finished or failed row, and one whose
+ *  worker is stalled, disconnected or waits on anybody, says nothing of the
+ *  worker's. */
+export function rowStep(flight: boolean, summary: TaskStepSummary | null, now: number): RowStep | null {
+  if (!flight || !summary?.current || !summary.step || summary.at === null) return null;
+  return {
+    at: summary.at, total: summary.total, title: summary.step, reportedAt: summary.reportedAt,
+    stale: now - summary.reportedAt > STEP_STALE_MS,
+  };
+}
+
+/** The count that leads the step: "1/7". The title follows it as text of
+ *  its own, so it is never joined into a string that could be read as the
+ *  host's. */
+export function stepAtLabel(step: Pick<RowStep, "at" | "total">): string {
+  return `${step.at}/${step.total}`;
+}
+
+/** A step's title on one line: the worker's text with every run of white
+ *  space, line breaks included, as one space. Nothing else is changed and
+ *  nothing is read out of it: it is drawn as text, never as markdown or a
+ *  link. The whole title, as written, is the tooltip's and the checklist's. */
+export function stepOneLine(title: string): string {
+  return title.replace(/\s+/g, " ").trim();
+}
+
 /** "13 / 22" for the tile. */
 export function tasksLabel(tasks: { done: number; total: number }): string {
   return `${tasks.done} / ${tasks.total}`;
@@ -333,10 +376,12 @@ export function progressRow(
   const mine = snapshot.attempts.filter((item) => item.taskId === task.id);
   const titles = new Map(snapshot.tasks.map((item) => [item.id, item]));
   const live = reading.state === "running" || reading.state === "needs";
+  const flight = inFlight(task, attempt, reading);
   return {
     task, attempt, ...reading,
     group: GROUP_OF[reading.state],
-    flight: inFlight(task, attempt, reading),
+    flight,
+    step: rowStep(flight, summary, now),
     decisions: reading.state === "needs" ? mineWaits.person.length : 0,
     // Said only of a row that is still owed something: a finished or closed
     // one waits for nothing, whatever the ledger kept.

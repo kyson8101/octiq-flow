@@ -204,6 +204,8 @@ try {
   results.rowText = (await taskRow.innerText()).replace(/\s+/g, " ").slice(0, 300);
   const expand = taskRow.locator(".orch-task-expand");
   if ((await expand.getAttribute("aria-expanded")) !== "true") await expand.click();
+  // Task details is in the row's Details tab; a row opens on Steps.
+  await taskRow.getByRole("tab", { name: "Details", exact: true }).click();
   await taskRow.locator("details.orch-task-more > summary").click();
   const notice = page.locator(`.orch-proposed-report[data-proposal="${proposal.id}"]`);
   await notice.first().waitFor({ timeout: 20_000 });
