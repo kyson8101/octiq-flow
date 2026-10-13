@@ -2556,7 +2556,14 @@ page's. Nothing but an approval writes it. So:
   step that only counts once the person was told waits for it.
 - A replaced task (`superseded_by`) and a task the person stopped
   (`Task::stopped`, from the socket-only `orchestration_task_stop`) do not
-  start again; only the person starts the second.
+  start again; only the person starts the second. **Nor is a stopped task
+  replaced** (`supersedable`, `STOPPED_NOT_REPLACED`): a replacement is the
+  stopped work starting again under another id, and in a run with no plan
+  card it started with nobody asked. A stopped task did not fail, so the
+  retry budget says nothing of it and did not hold this. Once the person
+  has started it again it is an ordinary task. A new way to get stopped
+  work going again that is not a start of the task asks `task.stopped`
+  first, the same way.
 - A review of an approval boundary checks the shape that actually runs
   against a durable source of authority.
 

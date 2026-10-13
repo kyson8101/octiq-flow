@@ -930,6 +930,114 @@ fn the_person_stops_one_task_and_only_they_start_it_again() {
     assert!(task.stopped.is_none());
 }
 
+/// A coordinator cannot get round the person's Stop by replacing the task.
+/// In a run with no plan card a replacement starts with nobody asked, and
+/// it is the stopped work under another id: `supersedable` used to let it
+/// through, because a stopped task did not fail and so the retry budget
+/// said nothing of it (found with a probe during the fix round of the
+/// review of 16e4188, decided by the lead on 2026-10-14).
+///
+/// Through the real `orchestration_task_create` command with `supersedes`:
+/// refused in words that say whose move it is, and nothing is created or
+/// changed. Once the person has started the task again themselves it is an
+/// ordinary task: a failure of that attempt can be replaced like any other.
+#[test]
+fn a_task_the_person_stopped_is_not_replaced_by_its_coordinator() {
+    let fixture = crate::test_dir::TestDir::new("stopped-replace");
+    let wiring = crate::handover::Wiring::scratch();
+    let team = wiring.team.clone();
+    let _team = crate::team::use_test_path(team.clone());
+    let agent = |value| crate::team::save(&team, serde_json::from_value(value).unwrap()).unwrap();
+    let lead = agent(json!({
+        "name": "Lead", "role": "Coordinates", "agent": "codex", "model": "gpt-5.6-terra",
+    }));
+    let dev = agent(json!({
+        "name": "Dev", "role": "Builds", "agent": "codex", "model": "gpt-5.6-terra",
+        "reportsTo": lead.id,
+    }));
+    crate::team::record_lead(&team, "chat:master", &lead, "workspace", false).unwrap();
+    let store = Arc::new(OrchestrationStore::default());
+    // No plan card: what a coordinator creates here starts without the
+    // person.
+    let run = run(&store);
+    let work = task(&store, &run, Vec::new());
+    let first = start_task(&store, &work.id);
+    let (stopped, _) = store.stop_task(&work.id, None).unwrap();
+    assert!(stopped.stopped.is_some());
+    assert_eq!(stopped.status, TaskStatus::Failed);
+
+    let svc = crate::dispatch::Services {
+        workspaces: Arc::new(crate::workspaces::WorkspaceState::with_projects(vec![
+            serde_json::from_value(json!({
+                "id": "workspace", "name": "Project", "primary_path": fixture.0, "paths": [],
+            }))
+            .unwrap(),
+        ])),
+        chats: Arc::new(ChatManager::default()),
+        watch: Arc::new(crate::file_watch::FileWatchState::default()),
+        git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
+        orchestrations: store.clone(),
+        ptys: Arc::new(crate::pty::PtyManager::default()),
+        handovers: wiring,
+    };
+    let replace = |title: &str| {
+        crate::dispatch::dispatch(
+            &svc,
+            "orchestration_task_create",
+            json!({
+                "actorChatKey": "chat:master", "runId": run.id, "supersedes": work.id,
+                "title": title, "spec": "The same work again",
+                "assignee": dev.id, "project": "workspace",
+            }),
+        )
+    };
+    let before = serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap();
+    let refused = replace("Work again").unwrap_err();
+    assert!(
+        refused.contains("The person stopped this task's worker, so it is not replaced"),
+        "{refused}"
+    );
+    assert!(refused.contains("Only they start it again"), "{refused}");
+    assert!(store
+        .check_supersede("chat:master", &run.id, &work.id)
+        .is_err());
+    assert_eq!(
+        serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap(),
+        before,
+        "a refused replacement creates and changes nothing"
+    );
+    // Nor is the record of a replacement taken for a task made another way.
+    let beside = task(&store, &run, Vec::new());
+    let refused = store
+        .supersede("chat:master", &work.id, &beside.id)
+        .unwrap_err();
+    assert!(refused.contains("it is not replaced"), "{refused}");
+    assert!(task_now(&store, &work.id).superseded_by.is_none());
+
+    // The person starts it again: their Start, and theirs alone.
+    let (_, started, second, _) = store
+        .reserve_attempt_for(
+            "chat:master",
+            &launch_for(&work.id),
+            StartedBy::Page {
+                retry_of: Some(&first.id),
+            },
+        )
+        .unwrap();
+    assert!(started.stopped.is_none());
+    let second = store
+        .activate_attempt(&second.id, "/tmp".into(), "test".into(), true)
+        .unwrap();
+    finish_attempt(&store, second, WorkerOutcome::Failed);
+    // That failure is its coordinator's to fix, like any other.
+    let made = replace("Work, corrected").unwrap();
+    let replacement: Task = serde_json::from_value(made).unwrap();
+    assert_eq!(
+        task_now(&store, &work.id).superseded_by.as_deref(),
+        Some(replacement.id.as_str())
+    );
+}
+
 /// `heldByPlan` of the task `id` as each view of the snapshot serialises
 /// it: the page's full read, the coordinator's compact read, and its read
 /// of that one task in detail. `None` is the key left out.

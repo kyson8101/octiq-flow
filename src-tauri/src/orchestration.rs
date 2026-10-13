@@ -4624,6 +4624,11 @@ const STOPPED_RESULT: &str = "Stopped by the person.";
 /// refused.
 const STOPPED_BY_PERSON: &str = "The person stopped this task's worker, so only they start it again: Start on its row in the run panel, or their approval of a plan it is put back on. Nothing was started.";
 
+/// Why a task the person stopped is not replaced (`supersedable`). Nothing
+/// an agent reaches replaces it, and the page has no replacement of its own:
+/// the person's way on is their Start of the task itself.
+const STOPPED_NOT_REPLACED: &str = "The person stopped this task's worker, so it is not replaced: a replacement would be the same work starting again without them. Only they start it again, with Start on its row in the run panel. Nothing was created or replaced. If the work should change, say so in your reply and leave the task as it is.";
+
 fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec<String> {
     for notification in data.notifications.values_mut().filter(|notification| {
         notification.run_id == run_id
@@ -4764,6 +4769,14 @@ fn supersedable(
     }
     if !matches!(task.status, TaskStatus::Blocked | TaskStatus::Failed) {
         return Err("Only a blocked or failed task can be replaced.".into());
+    }
+    // The person stopped it, so the person starts it again. A replacement
+    // is that work starting again under another id: in a run with no plan
+    // card it started with nobody asked. A stopped task did not fail
+    // (`retry::counted` says nothing of it), so the budget below would not
+    // have held it either.
+    if task.stopped.is_some() {
+        return Err(STOPPED_NOT_REPLACED.into());
     }
     // A replacement is one of a failed task's automatic retries, whatever
     // the page is shown of the failure: one the host has scheduled its own
