@@ -7,6 +7,9 @@
 // waiting read `1m 30s` before a reload and `4m 31s` after it. So this goes
 // through the real checkpoint and the real `loadChat`, not the pure clock
 // alone.
+//
+// Every look here is one the page KNOWS (its lists of what waits have all
+// answered). What it does before they have is `turnClock.unread.test.tsx`.
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addUserTurn, emptyChat, type ChatState } from "./chat";
@@ -31,7 +34,8 @@ function page() {
     publish: (next: ChatState) => { state = next; }, cancelled: () => false };
   return {
     get state() { return state; },
-    /** What `App` does with every look at who is waited on. */
+    /** What `App` does with every look at who is waited on, once its lists
+     *  have all answered. */
     see(waiting: boolean, now: number) { state = withWait(state, waiting, now); },
     load: (request: (after: number) => Promise<Frame[]>) => loadChat({ ...options, request }),
   };
@@ -56,8 +60,10 @@ describe("a reload while the chat waits on the person, with a checkpoint", () =>
     const next = page();
     await next.load(async () => []);
     expect(next.state.turnStartedAt).toBe(T);
-    expect(next.state.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(90) });
-    expect(next.state.turnWaits).toEqual(saved.turnWaits);
+    // The wait and the moment it began, marked as the checkpoint's word
+    // until a look of this page confirms it.
+    expect(next.state.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(90), restored: true });
+    expect(next.state.turnWaits).toMatchObject(saved.turnWaits!);
   });
 
   it("puts no waited time back on the clock", async () => {
@@ -87,7 +93,7 @@ describe("a reload while the chat waits on the person, with a checkpoint", () =>
     await vi.waitFor(async () => expect((await readChatCheckpoint("a"))?.updatedAt).not.toBe(T + s(91)));
     const again = (await readChatCheckpoint("a"))!.state;
     expect(again.turnStartedAt).toBe(T);
-    expect(again.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(90) });
+    expect(again.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(90), restored: true });
   });
 
   it("counts a wait answered while no page was open as waited, never as work", async () => {
@@ -123,7 +129,7 @@ describe("a reload with a checkpoint older than what the page last saw", () => {
     await next.load(async () => []);
     expect(next.state.turnStartedAt).toBe(T);
     // Back parked since the checkpoint was written: nobody saw it after.
-    expect(next.state.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(60) });
+    expect(next.state.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(60), restored: true });
     const reloaded = T + s(271);
     // The start alone read every second since as work.
     expect(elapsedLabel(turnElapsed(T, undefined, reloaded))).toBe("4m 31s");
@@ -158,7 +164,7 @@ describe("a reload with a checkpoint older than what the page last saw", () => {
     await saveChatCheckpoint({ id: "a", seq: 1, state, updatedAt: T + s(60) });
     const next = page();
     await next.load(async () => []);
-    expect(next.state.turnWaits).toEqual({ turn: T, waited: s(20), since: T + s(60) });
+    expect(next.state.turnWaits).toEqual({ turn: T, waited: s(20), since: T + s(60), restored: true });
     expect(clock(next.state, T + s(500))).toBe("40s");
   });
 });

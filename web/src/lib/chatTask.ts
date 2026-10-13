@@ -15,6 +15,7 @@
 //     because it finished; it is interesting because something is still owed —
 //     a commit, a push, a merge, a release. The label names that, so a chat
 //     read a week later says what is left rather than what happened.
+import type { ChatHold } from "./chatWait";
 
 export type StepState = "done" | "active" | "pending";
 
@@ -176,9 +177,13 @@ export function deliveryTone(stage: DeliveryStage): Tone {
  *  can carry. */
 export function phaseOf(
   status: TaskStatus | undefined,
-  live: { busy?: boolean; waiting?: boolean } = {},
+  live: { busy?: boolean; waiting?: ChatHold | boolean | null } = {},
 ): { label: string; tone: Tone; stage: DeliveryStage } {
   const stage = deliveryStage(status?.delivery);
+  // `unknown`: the page cannot say yet whether the chat waits (a reload,
+  // before the lists of what waits have answered). It is then neither
+  // `Needs you` nor `Working`, and the line says where the work stands.
+  if (live.waiting === "unknown") return { label: DELIVERY_LABELS[stage], tone: deliveryTone(stage), stage };
   if (live.waiting) return { label: "Needs you", tone: "decide", stage };
   if (live.busy) return { label: "Working", tone: "accent", stage };
   return { label: DELIVERY_LABELS[stage], tone: deliveryTone(stage), stage };

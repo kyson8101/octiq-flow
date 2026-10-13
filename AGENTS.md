@@ -1330,6 +1330,37 @@ person is drawn waiting, not working (`lib/chatWait`).
   the person, asks it: the composer and its clock, the chat list, the
   projects page, `ChatTaskBar` (the action bar's status and its panel) and
   the task chat beside the main one (`TaskChatPane`).
+- **There are three answers, and "not read yet" is not "nothing waits".**
+  That list starts EMPTY on a page that has just loaded and is filled by one
+  request each: `permission_pending`, `access_request_pending`,
+  `question_pending` and `safety_block_pending` (asked on every connection
+  by `useChatRequests`, which says where each stands), and the ledger
+  (`orchestration_snapshot`, read once `orchestrationFeed` holds a
+  snapshot). They are named in one place, `pendingActions.WAIT_SOURCES`, and
+  the reading says how whole it is (`wholeOf`, `PendingReading.whole`):
+  `read` when every one has answered, `unread` while one is still out,
+  `gaveUp` when no more is coming. `waitingChats` turns that into a third
+  answer, a value of the same map: a chat whose checkpoint brought it back
+  parked (`turnClock.parkRestored`) and that no card names is `unknown`
+  while the reading is `unread`. A card is a card however little was read.
+  - **Unknown is drawn as neither.** The composer's line says `Checking
+    what waits on you` in grey with the clock stopped and the companion
+    still; the chat list and the projects page draw no working mark; the
+    task bar says where the work stands, as an idle chat's does, never
+    `Working` and never `Needs you`. Every surface has it because it is a
+    value of the one map; there is no flag beside it, and no surface reads
+    a list's state itself.
+  - **A chat with no restored wait is never unknown.** A turn that starts
+    after the reload is drawn working at once and its clock runs.
+  - **A list that fails is asked once more** (`lib/listRead`, three seconds
+    on); a second failure is that list not readable on this connection.
+    When every source has answered or failed for good, or one has said
+    nothing for five minutes (`pendingActions.SILENT_MS`: a request on an
+    open socket has no timeout, and a socket that closes fails it and asks
+    again on the next), the reading is `gaveUp` and the page goes on with
+    what it has: a chat no card names is drawn working, as it is for any
+    chat whose cards the page cannot read. A page with no connection has
+    asked nothing and stays `unread`.
 - **Never the length of a card list.** The host goes on listing a question
   the person has answered (`status: "saved"`, then `delivered`) until its
   agent has it, so `questions[chat].length` is one while nobody is waited
@@ -1354,8 +1385,8 @@ person is drawn waiting, not working (`lib/chatWait`).
 - **The clock leaves the wait out** (`lib/turnClock`): the turn's start plus
   the waited intervals gives elapsed, so work goes on from where the clock
   stopped. All on the page's clock; no host stamp is compared with it.
-- **The clock counts what a page saw the turn work, and nothing else.** Two
-  rules make that hold across a reload:
+- **The clock counts what a page saw the turn work, and nothing else.**
+  Three rules make that hold across a reload:
   - *A turn's start and its waits are restored together or not at all.* The
     waits are a field of the chat's own state, beside the start
     (`ChatState.turnWaits` next to `turnStartedAt`; `App` notes them with
@@ -1369,19 +1400,43 @@ person is drawn waiting, not working (`lib/chatWait`).
     older than a wait the page did see begin. So a turn that was working
     when its checkpoint was written comes back parked since that moment
     (`turnClock.restoredTurn`, in `loadChat`, from the checkpoint's own
-    `updatedAt`), and the page's first look decides: a card that is up
-    keeps it parked, and no card ends the wait there. Keeping the waits
-    beside the start was not enough by itself: the review's clock probe,
-    run again, restored a checkpoint from before the wait once in three
-    runs and read `4m 31s`.
+    `updatedAt`), and the page's first look that KNOWS decides: a card
+    that is up keeps it parked, and no card ends the wait there. Keeping
+    the waits beside the start was not enough by itself: the review's clock
+    probe, run again, restored a checkpoint from before the wait once in
+    three runs and read `4m 31s`.
+  - *A look made before the lists were read ends no restored wait.* The
+    wait a checkpoint brings back is marked (`TurnWaits.restored`), and the
+    clock is told the reading's three answers and how whole the reading is
+    (`chatWait.seenWait`, `withWait(state, seen, now, whole)`). Unknown
+    changes nothing; a card confirms the wait and keeps the moment it
+    began; only a whole reading that names no card ends it, with the time
+    it was held left out. The page used to say `false` for a list it had
+    not read: with `question_pending` held back 120 s, `1m 30s` read `3m
+    31s`, drawn as thinking, and kept it once the question was back.
+    `noteWait` refuses that `false` itself (`unread`), so the rule holds in
+    the clock as well as in what it is told.
 
   What each path does:
   - *With a checkpoint* (the usual reload): the start and the waits come
-    back, and the clock reads the work seen up to the checkpoint. While a
-    card is up it stands there; after the answer, or with no card, it goes
-    on from there. It can read less than the turn really worked (what was
-    seen after the last checkpoint is not kept); it never reads time the
-    turn spent waiting, or time nobody saw.
+    back, and the clock reads the work seen up to the checkpoint. It stands
+    there while the lists are unread and while a card is up; after the
+    answer, or once every list has answered with no card, it goes on from
+    there. It can read less than the turn really worked (what was seen
+    after the last checkpoint, and the time the lists took, are not kept);
+    it never reads time the turn spent waiting, or time nobody saw. That
+    holds in every order the lists arrive in.
+  - *When the page never comes to know* (`gaveUp`): the restored wait is let
+    go on a guess, the time it was held is left out, and the clock goes on
+    from the checkpoint's work with the moment kept (`TurnWaits.guessed`).
+    It is not held for ever. If a list read after that says the chat waits
+    (the silent one answers after all, or a new connection asks them all
+    again), the time since the guess is taken back off the clock: nobody
+    knew it was work. If every list answers and nothing waits, the guess
+    stands. A card that arrives while the page is still giving up is a wait
+    that begins then. A guess never answered is not carried through another
+    reload. What is left: while it guesses, the page says `thinking` for a
+    chat whose card it cannot read, as it does for any such chat.
   - *Without one* (a chat never saved or evicted from the twelve kept, one
     read in pages, storage blocked): neither comes back. The turn starts
     when the page joined it, as for any turn joined part-way, and the wait
@@ -1392,6 +1447,13 @@ person is drawn waiting, not working (`lib/chatWait`).
   never a state of the page's beside it. `turnClock.reload.test.ts` is the
   round trip through the real checkpoint and `loadChat`, for a checkpoint
   written during the wait, one written before it, and none.
+  `turnClock.unread.test.tsx` goes on from there through the three steps
+  `App` makes (the reading, which chats wait, the clock) to what the
+  composer, the task bar and the chat list draw: the lists unread for 120 s
+  and then the question still pending, the lists empty, one that never
+  arrives, one that failed twice, and the page as it was, which fails them.
+  A probe of a restore holds a request back: a fast reload passing ten
+  times of ten says nothing of the slow one.
 - **The chat list** draws no working mark on a row whose chat waits
   (`Sidebar`'s `waiting`); its pending badge is unchanged. `busy` still
   means a turn is on record there, which is what holds Archive.
@@ -1785,7 +1847,8 @@ are read by `lib/runProgress` off the ledger this tab already holds.
 - **The host's word does not wait for the card.** A native decision the
   host says waits on the person is badged and counted with no card on the
   page (`PendingAction.cardMissing`: the list was not read yet, or its
-  request failed, which is not tried again within a connection). The page
+  request failed twice: a card list is asked once more after a failure,
+  `lib/listRead`, and not again within a connection). The page
   then asks for `safety_block_pending` again, once for each set of missing
   cards and once more when the badge is pressed; nothing polls.
 - **What the ledger alone records is history once a run is stopped, closed

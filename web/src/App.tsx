@@ -189,7 +189,7 @@ import {
 import { useHandovers } from "./lib/handoverStore";
 import { composerLanding, forgetIdentity, landIdentity, routeAfter, routeStands, type PageNow, type RouteTravel } from "./lib/identityTravel";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
-import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type PendingAction } from "./lib/pendingActions";
+import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type PendingAction, type SourcesRead } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
@@ -223,8 +223,8 @@ import { ChatRequests, SafetyLines } from "./components/ChatRequests";
 import { SafetyToast } from "./components/SafetyToast";
 import type { Continue } from "./components/SafetyBlock";
 import { splitSafety, useSafetyToast } from "./lib/safetyToast";
-import { foldedSafetyKeys, waitingChats, workingChats } from "./lib/chatWait";
-import { withWait } from "./lib/turnClock";
+import { foldedSafetyKeys, seenWait, waitingChats, workingChats } from "./lib/chatWait";
+import { parkRestored, withWait } from "./lib/turnClock";
 import { knownSettings } from "./lib/chatSettings";
 import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
@@ -801,7 +801,7 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks } =
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks, read: listsRead, late: listsLate } =
     useChatRequests(conn, (...args) => announceOnce(...args));
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
@@ -5010,9 +5010,18 @@ export default function App() {
   // row, and a chat never opened still says so. This is the page's ONE
   // reading of who is waited on: `held` is its own cards, which every surface
   // below hands to `lib/runWaits`, and the list is what that says.
+  //
+  // It also says how much it was read from (`whole`): each card list starts
+  // empty on a page that has just loaded and is filled by one request, and
+  // so is the ledger, so "not read yet" is kept apart from "nothing waits".
+  const ledgerFailed = !ledgerRead && !!orchestrationState.error;
+  const waitSources = useMemo<SourcesRead>(
+    () => ({ ...listsRead, orchestration_snapshot: ledgerRead ? "answered" : ledgerFailed ? "failed" : "asked" }),
+    [listsRead, ledgerRead, ledgerFailed],
+  );
   const pendingRead = useMemo(
-    () => pendingReading({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, handovers }),
-    [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, handovers],
+    () => pendingReading({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, handovers, sources: waitSources, late: listsLate }),
+    [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, handovers, waitSources, listsLate],
   );
   const pendingList = pendingRead.actions;
   const pendingHeld = pendingRead.held;
@@ -5025,9 +5034,19 @@ export default function App() {
     () => foldedSafetyKeys(safetyBlocks, (id) => !!chats[id]?.busy && !interruptedIds.has(id), splitSafety).join(" "),
     [safetyBlocks, chats, interruptedIds],
   );
+  // The chats whose turn stands on a wait their checkpoint brought back
+  // (`turnClock.restoredTurn`). Until the reading above is whole, such a chat
+  // is `unknown`: not drawn working, not said to wait, its clock held. Joined
+  // to a string for the same reason as the folded refusals.
+  const restoredParks = useMemo(
+    () => Object.keys(chats).filter((id) => parkRestored(chats[id])).sort().join(" "),
+    [chats],
+  );
   const chatWaits = useMemo(
-    () => waitingChats(pendingList, new Set(foldedSafety ? foldedSafety.split(" ") : [])),
-    [pendingList, foldedSafety],
+    () => waitingChats(pendingList, new Set(foldedSafety ? foldedSafety.split(" ") : []), {
+      whole: pendingRead.whole, restored: restoredParks ? restoredParks.split(" ") : [],
+    }),
+    [pendingList, foldedSafety, pendingRead.whole, restoredParks],
   );
   const workingSet = useMemo(() => workingChats(busySet, chatWaits), [busySet, chatWaits]);
   // What each turn in flight has waited, so its clock leaves that out
@@ -5035,11 +5054,14 @@ export default function App() {
   // start: the checkpoint that brings the start back after a reload brings
   // the waits with it, and nothing keeps one without the other. A state
   // that did not change is handed back as it was, so this settles in one
-  // pass.
+  // pass. Each chat is told the reading's own three answers (`seenWait`) and
+  // how whole the reading is: a look made before the lists were read ends
+  // no wait a checkpoint brought back.
+  const waitsWhole = pendingRead.whole;
   useEffect(() => {
     const now = Date.now();
-    for (const id of Object.keys(chats)) patch(id, (state) => withWait(state, chatWaits.has(id), now));
-  }, [chats, chatWaits, patch]);
+    for (const id of Object.keys(chats)) patch(id, (state) => withWait(state, seenWait(chatWaits, id), now, waitsWhole));
+  }, [chats, chatWaits, waitsWhole, patch]);
   const waitingHere = (conversationId && chatWaits.get(conversationId)) || null;
   // The host says a decision waits on the person and the page has no card
   // for it: the list it comes in was not read, or its request failed. Ask
@@ -5288,9 +5310,11 @@ export default function App() {
       context={panelContext}
       busy={chat.busy && !cutOff}
       // The page's one reading of a wait (`lib/chatWait`), as the composer
-      // and the chat list have it. Never the length of a card list: the
-      // host goes on listing a question the person has answered.
-      waiting={!!waitingHere}
+      // and the chat list have it, its third answer included: a chat the
+      // page cannot yet say waits is neither `Needs you` nor `Working`.
+      // Never the length of a card list: the host goes on listing a
+      // question the person has answered.
+      waiting={waitingHere}
     />),
     onChat && chat.agents.length > 0 && act("agents", 66, <RailButton count={chat.agents.length} open={!railShut && !previewVisible}
       onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }} />),
@@ -6183,7 +6207,7 @@ export default function App() {
             onLoadEarlier={loadEarlierBeside}
             connected={conn === "open"}
             context={besideContext}
-            waiting={chatWaits.has(besideId)}
+            waiting={chatWaits.get(besideId) ?? null}
             split={besideSplit}
             hidden={!besideShown}
             onExpand={expandBeside}

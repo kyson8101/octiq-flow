@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WAIT_WORDS, foldedSafetyKeys, waitingChats, workingChats } from "./chatWait";
+import { WAIT_WORDS, asksPerson, foldedSafetyKeys, seenWait, waitingChats, workingChats } from "./chatWait";
 import { pendingActions, type PendingAction } from "./pendingActions";
 import type { OrchestrationSnapshot } from "./orchestration";
 
@@ -15,7 +15,7 @@ describe("which chats wait on the person", () => {
     expect(waitingChats([card({ key: "question:q1", kind: "question" })]).get("main")).toBe("answer");
     // A plan is the ledger's record: it names the chat that coordinates.
     expect(waitingChats([{ key: "plan:run_1", kind: "plan", rowId: "main", openChatId: "main", surface: "chat", runId: "run_1" }]).get("main")).toBe("approval");
-    expect(WAIT_WORDS).toEqual({ answer: "Waiting for your answer", approval: "Waiting for your approval" });
+    expect(WAIT_WORDS).toMatchObject({ answer: "Waiting for your answer", approval: "Waiting for your approval" });
   });
 
   it("is parked on a full safety card, and not on a refusal the agent carried on past", () => {
@@ -91,5 +91,49 @@ describe("which chats are drawn working", () => {
     const waits = new Map([["b", "answer" as const], ["z", "approval" as const]]);
     expect([...workingChats(busy, waits)]).toEqual(["a", "c"]);
     expect([...workingChats(busy, new Map())]).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("a chat the page cannot yet say waits", () => {
+  const question = card({ key: "question:q1", kind: "question" });
+  const unread = (restored: string[]) => ({ whole: "unread" as const, restored });
+
+  it("is unknown while a source is still to answer, if its checkpoint brought it back parked", () => {
+    const waits = waitingChats([], new Set(), unread(["main"]));
+    expect(waits.get("main")).toBe("unknown");
+    expect(WAIT_WORDS.unknown).toBe("Checking what waits on you");
+    // It asks nothing of the person, and is not drawn working.
+    expect(asksPerson(waits.get("main"))).toBe(false);
+    expect([...workingChats(new Set(["main"]), waits)]).toEqual([]);
+    expect(seenWait(waits, "main")).toBe("unknown");
+  });
+
+  it("is never unknown for a chat with no restored wait", () => {
+    // A turn that starts after the reload is drawn working at once.
+    const waits = waitingChats([], new Set(), unread(["other"]));
+    expect(waits.has("main")).toBe(false);
+    expect(seenWait(waits, "main")).toBe(false);
+    expect([...workingChats(new Set(["main", "other"]), waits)]).toEqual(["main"]);
+  });
+
+  it("waits as soon as a card says so, however little has been read", () => {
+    const waits = waitingChats([question], new Set(), unread(["main"]));
+    expect(waits.get("main")).toBe("answer");
+    expect(asksPerson(waits.get("main"))).toBe(true);
+    expect(seenWait(waits, "main")).toBe(true);
+  });
+
+  it("does not wait once every source has answered and no card names it", () => {
+    expect(waitingChats([], new Set(), { whole: "read", restored: ["main"] }).has("main")).toBe(false);
+    // Nor once no more are coming: the page goes on with what it has.
+    expect(waitingChats([], new Set(), { whole: "gaveUp", restored: ["main"] }).has("main")).toBe(false);
+    // A caller that says nothing of its sources has read them.
+    expect(waitingChats([]).has("main")).toBe(false);
+  });
+
+  it("is not lifted by a refusal the agent carried on past", () => {
+    // A folded refusal parks nothing, so it says nothing of the chat either.
+    const safety = card({ key: "safety:s1", kind: "safety" });
+    expect(waitingChats([safety], new Set(["safety:s1"]), unread(["main"])).get("main")).toBe("unknown");
   });
 });

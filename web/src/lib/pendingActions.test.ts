@@ -4,8 +4,9 @@ import {
   type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
 import {
-  pendingActions, pendingByRow, pendingByTask, pendingDescription, pendingLabel, pendingSelector,
-  type PendingActionInput,
+  SILENT_MS, WAIT_SOURCES, pendingActions, pendingByRow, pendingByTask, pendingDescription, pendingLabel, pendingReading,
+  pendingSelector, unreadSources, wholeOf,
+  type PendingActionInput, type SourceRead, type SourcesRead,
 } from "./pendingActions";
 import { PendingRequests, type RequestState } from "./pendingRequests";
 import type { Question } from "./question";
@@ -291,5 +292,54 @@ describe("pending actions", () => {
   it("finds a card by any of the keys it carries", () => {
     expect(pendingSelector("question:b")).toBe('[data-pending-keys~="question:b"]');
     expect(pendingSelector('odd"key')).toBe('[data-pending-keys~="odd\\"key"]');
+  });
+});
+
+describe("how much of what waits has been read", () => {
+  const every = (state: SourceRead, over: Partial<SourcesRead> = {}): SourcesRead =>
+    ({ ...Object.fromEntries(WAIT_SOURCES.map((source) => [source, state])), ...over }) as SourcesRead;
+
+  it("is made of the four card lists and the ledger, each by its request", () => {
+    expect([...WAIT_SOURCES]).toEqual(["permission_pending", "access_request_pending", "question_pending", "safety_block_pending", "orchestration_snapshot"]);
+  });
+
+  it("is whole only when every one has answered", () => {
+    expect(wholeOf(every("answered"))).toBe("read");
+    for (const source of WAIT_SOURCES) {
+      // One still out: an empty list is not yet "nothing waits".
+      expect(wholeOf(every("answered", { [source]: "asked" })), source).toBe("unread");
+      expect(unreadSources(every("answered", { [source]: "asked" }))).toEqual([source]);
+    }
+    expect(wholeOf(every("asked"))).toBe("unread");
+  });
+
+  it("is not given up on at once for a list that failed, while another is still out", () => {
+    expect(wholeOf(every("asked", { question_pending: "failed" }))).toBe("unread");
+    expect(wholeOf(every("answered", { question_pending: "failed", orchestration_snapshot: "asked" }))).toBe("unread");
+  });
+
+  it("is given up on when nothing more is coming: all answered or failed for good", () => {
+    expect(wholeOf(every("answered", { question_pending: "failed" }))).toBe("gaveUp");
+    expect(wholeOf(every("failed"))).toBe("gaveUp");
+  });
+
+  it("is given up on for a source that has said nothing for too long, and never held for ever", () => {
+    expect(SILENT_MS).toBe(300_000);
+    expect(wholeOf(every("answered", { question_pending: "asked" }), false)).toBe("unread");
+    expect(wholeOf(every("answered", { question_pending: "asked" }), true)).toBe("gaveUp");
+    expect(wholeOf(every("asked"), true)).toBe("gaveUp");
+    // Late is nothing to a reading that is whole.
+    expect(wholeOf(every("answered"), true)).toBe("read");
+  });
+
+  it("is the reading's own word, and whole for a caller that names no source", () => {
+    const input: PendingActionInput = { orchestration: EMPTY_ORCHESTRATION, parents: new Map() };
+    expect(pendingReading(input).whole).toBe("read");
+    expect(pendingReading({ ...input, sources: every("asked") }).whole).toBe("unread");
+    expect(pendingReading({ ...input, sources: every("asked"), late: true }).whole).toBe("gaveUp");
+    expect(pendingReading({ ...input, sources: every("answered") }).whole).toBe("read");
+    // What it lists is the same however much was read: a card is a card.
+    const questions = { a: [{ id: "q1", chatKey: "chat:a", status: "pending" as const }] };
+    expect(pendingReading({ ...input, questions, sources: every("asked") }).actions.map((action) => action.key)).toEqual(["question:q1"]);
   });
 });

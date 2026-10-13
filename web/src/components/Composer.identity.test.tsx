@@ -221,6 +221,25 @@ describe("a chat that waits on the person does not look like it is running", () 
     expect(eyebrow(composer(null, { ...running, turnWaits: { ...over, turn: 1 } }))).toMatch(/<span class="working-clock">5m 0\ds<\/span>/);
   });
 
+  it("says it is checking, in grey and still, while the page cannot yet say whether the chat waits", () => {
+    // A reload: the lists of what waits have not answered. Not `thinking`,
+    // no working face, and nothing asked of the person.
+    const waits = { turn: running.turnStartedAt, waited: 0, since: running.turnStartedAt + 90_000, restored: true as const };
+    const html = eyebrow(composer(agentIdentity(ryan, "Ryan", opus), { ...running, waiting: "unknown", turnWaits: waits }));
+    expect(html).toContain('<span class="working-waits enter-fade is-unknown">Checking what waits on you</span>');
+    expect(html).toContain('<span class="working-clock">1m 30s</span>');
+    expect(html).not.toContain("thinking");
+    expect(html).not.toContain("is-working");
+    expect(html).not.toContain("is working");
+    expect(html).not.toContain("is waiting for you");
+    expect(html).not.toContain("tokens");
+    expect(eyebrow(composer(null, { ...running, waiting: "unknown" }))).toContain('data-mood="still"');
+    // Grey: not the decision colour (nothing is asked) and not the accent.
+    const rule = /\.working-waits\.is-unknown \{([^}]*)\}/.exec(styles)?.[1] ?? "";
+    expect(rule).toMatch(/color: var\(--fg-2\);/);
+    expect(rule).not.toMatch(/--decide|--accent/);
+  });
+
   it("says nothing of waiting on an idle composer", () => {
     expect(composer(null, { waiting: "answer" })).not.toContain("Waiting for your");
   });

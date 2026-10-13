@@ -24,7 +24,7 @@ const props = (over: Partial<TaskChatPaneProps> = {}): TaskChatPaneProps => ({
   loadingEarlier: false,
   onLoadEarlier: async () => {},
   connected: true,
-  waiting: false,
+  waiting: null,
   split: true,
   hidden: false,
   onExpand: () => {},

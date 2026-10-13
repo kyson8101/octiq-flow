@@ -9,6 +9,7 @@
 import { forwardRef, type Ref } from "react";
 import type { Message } from "../lib/chat";
 import type { Persona } from "../lib/agentPersona";
+import type { ChatHold } from "../lib/chatWait";
 import { MessageList } from "./MessageList";
 import { BackgroundProvider } from "./Background";
 import { PathCwdProvider } from "./ProsePath";
@@ -39,7 +40,8 @@ export type TaskChatPaneProps = {
   onLoadEarlier: () => Promise<void>;
   connected: boolean;
   context?: PanelContext;
-  waiting: boolean;
+  /** The page's one reading of this chat (`lib/chatWait`). */
+  waiting: ChatHold | null;
   /** Side by side. Otherwise the panes take turns (not enough room), and the
    *  bar above them carries Close split and the way back to Main. */
   split: boolean;

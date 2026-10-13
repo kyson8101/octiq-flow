@@ -32,12 +32,15 @@ import {
 } from "../lib/chatTask";
 import { EVIDENCE_LABEL, taskEnvironment, type EnvironmentInput } from "../lib/taskEnvironment";
 import type { Persona } from "../lib/agentPersona";
+import type { ChatHold } from "../lib/chatWait";
 import { copyText } from "../lib/clipboard";
 import { entryClass, useEntry } from "../lib/useArrival";
 import { AgentAvatar } from "./AgentAvatar";
 import "./ChatTaskBar.css";
 
-type Live = { busy?: boolean; waiting?: boolean };
+/** `waiting` is the page's one reading of the chat (`lib/chatWait`): what it
+ *  waits on the person for, `unknown` while the page cannot say, or nothing. */
+type Live = { busy?: boolean; waiting?: ChatHold | boolean | null };
 
 /** How long after the last `git-status-changed` the bar asks once more. It
  *  must outlast the backend's verification cache (`FRESH_FOR`, 4 s, in

@@ -37,7 +37,7 @@ import { RollingText } from "./RollingNumber";
 import { useLate } from "../lib/useArrival";
 import { receiptLines, runsAtLine, runsAtParts, runsAtRows, type KnownSettings } from "../lib/chatSettings";
 import { ROW_FITS, rowFit, type RowFit } from "../lib/composerFit";
-import { WAIT_WORDS, type ChatWait } from "../lib/chatWait";
+import { asksPerson, WAIT_WORDS, type ChatHold } from "../lib/chatWait";
 import { turnElapsed, type TurnWaits } from "../lib/turnClock";
 import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/commandMenu";
 import {
@@ -526,7 +526,7 @@ export function Composer({
   /** The chat waits on the person (`lib/chatWait`): the agent is parked on a
    *  card, so the running line says so in the decision colour, its clock
    *  stops and nothing on it moves. Only read while `busy`. */
-  waiting?: ChatWait | null;
+  waiting?: ChatHold | null;
   /** The waits of the turn in flight, so its clock leaves them out
    *  (`lib/turnClock`). */
   turnWaits?: TurnWaits;
@@ -2658,8 +2658,13 @@ function Working({
    *  says so in the decision colour in place of what the agent is doing, the
    *  clock stops, and the companion stands still. Work the agent left
    *  running in the background is not this line's and goes on being said
-   *  beside it. */
-  waiting?: ChatWait;
+   *  beside it.
+   *
+   *  `unknown` is the page not knowing yet whether it waits (a reload, with
+   *  the lists of what waits still to be read): the clock and the companion
+   *  stand as still, and the line says so in grey. It asks nothing, so it
+   *  is not the decision colour, and it is not "thinking". */
+  waiting?: ChatHold;
 }) {
   const [, tick] = useState(0);
   // The second hand runs only while there is work to count: a clock that is
@@ -2682,7 +2687,7 @@ function Working({
     <>
       {/* A turn switches the same companion from dancing to thinking or typing. */}
       {persona
-        ? <AgentAvatar name={persona.name} label={waiting ? `${persona.name} is waiting for you` : `${persona.name} is working`} avatar={persona.avatar} id={persona.id ?? persona.name} size={18}
+        ? <AgentAvatar name={persona.name} label={asksPerson(waiting) ? `${persona.name} is waiting for you` : waiting ? persona.name : `${persona.name} is working`} avatar={persona.avatar} id={persona.id ?? persona.name} size={18}
             className={`composer-hint-avatar${waiting ? "" : " is-working"}`} />
         : <Mascot robot={robot} alert={background} mood={waiting ? "still" : thinking ? "think" : "work"} />}
       {since !== undefined && (
@@ -2695,7 +2700,7 @@ function Working({
         // The stopped clock and the words, and nothing between them: how
         // much was written is not news while nothing is being written, and
         // on a phone it pushed the one thing to read off the line.
-        <span className="working-waits enter-fade">{WAIT_WORDS[waiting]}</span>
+        <span className={`working-waits enter-fade${asksPerson(waiting) ? "" : " is-unknown"}`}>{WAIT_WORDS[waiting]}</span>
       ) : (
         <RollingText>
           {workingLine({

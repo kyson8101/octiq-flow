@@ -109,6 +109,22 @@ describe("the status line above the chat", () => {
     expect(sheet).toMatch(/\.chat-task-dot\[data-tone="decide"\] \{ background: var\(--decide\); \}/);
   });
 
+  it("says neither while the page cannot yet say whether the chat waits", () => {
+    // A reload, with the lists of what waits still to be read
+    // (`lib/chatWait`'s third answer): not `Working`, not `Needs you`.
+    const html = bar({ status: status(), open: false, now: NOW, busy: true, waiting: "unknown", onToggle: () => {} });
+    const owed = bar({ status: status(), open: false, now: NOW, onToggle: () => {} });
+    expect(html).not.toContain("Working");
+    expect(html).not.toContain("Needs you");
+    expect(html).not.toContain('data-tone="accent"');
+    expect(html).not.toContain('data-tone="decide"');
+    // It says where the work stands, as an idle chat's line does.
+    expect(html).toBe(owed);
+    // What it waits for, once known, is `Needs you` as before.
+    expect(bar({ status: status(), open: false, now: NOW, busy: true, waiting: "answer", onToggle: () => {} })).toContain("Needs you");
+    expect(bar({ status: status(), open: false, now: NOW, busy: true, waiting: null, onToggle: () => {} })).toContain("Working");
+  });
+
   it("opens a panel with the delivery evidence and the paths", () => {
     const html = bar({ status: status(), open: true, now: NOW, onToggle: () => {} });
     expect(html).toContain("Task &amp; workspace");

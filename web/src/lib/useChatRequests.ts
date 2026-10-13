@@ -7,9 +7,20 @@ import type { SafetyBlockNotice } from "../components/SafetyBlock";
 import type { Question } from "./question";
 import { accessRequestTitle, type AccessRequest } from "./accessRequest";
 import { keepArrivals, stampArrival } from "./askClock";
+import { readTwice } from "./listRead";
+import { SILENT_MS, type SourceRead, type WaitSource } from "./pendingActions";
 
 import { PendingRequests, requestConversation, type PendingRequest, type RequestState } from "./pendingRequests";
 type Announce = (key: string, kind: NoticeKind, id: string, detail: string) => void;
+
+/** The card lists this hook asks for, and where each request stands for the
+ *  connection (`pendingActions.wholeOf`). The ledger is the fifth source of
+ *  what waits and is read elsewhere (`orchestrationFeed`). */
+type ListSource = Exclude<WaitSource, "orchestration_snapshot">;
+export type ListsRead = Readonly<Record<ListSource, SourceRead>>;
+const ASKED: ListsRead = {
+  permission_pending: "asked", access_request_pending: "asked", question_pending: "asked", safety_block_pending: "asked",
+};
 
 /** Keep the public setters compatible with useState, while applying local
  * answers to the same journal as live events before React schedules a render. */
@@ -33,6 +44,14 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
   const { items: accessRequests, setItems: setAccessRequests } = raises;
   const notice = useRef(announce);
   notice.current = announce;
+  // Whether each list has answered for this connection. Before the first
+  // connection none has: an empty list then is not "nothing waits".
+  const [read, setRead] = useState<ListsRead>(ASKED);
+  // A list that has said nothing for `SILENT_MS` since it was asked.
+  const [late, setLate] = useState(false);
+  const mark = useCallback((source: ListSource, state: SourceRead) => {
+    setRead((before) => (before[source] === state ? before : { ...before, [source]: state }));
+  }, []);
 
   // What is waiting on YOU right now, asked for rather than waited for.
   //
@@ -47,20 +66,36 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
   // than no card at all.
   useEffect(() => {
     if (conn !== "open") return;
+    // Every list is asked again, so none has answered for this connection.
+    setRead(ASKED);
+    setLate(false);
+    const silent = setTimeout(() => setLate(true), SILENT_MS);
     function refill<T extends PendingRequest>(
-      collection: ReturnType<typeof usePendingRequests<T>>, command: string,
+      collection: ReturnType<typeof usePendingRequests<T>>, command: ListSource,
       // What the page knows about a request that the host's list does not say.
       known?: (list: readonly T[] | null, current: RequestState<T>) => T[],
     ) {
-      const token = collection.store.begin();
-      bridge.invoke<T[]>(command).then((list) => {
-        const reconciled = collection.store.finish(token, known ? known(list, collection.store.current) : list);
-        if (reconciled) collection.publish(reconciled);
-      }).catch(() => {
-        // Older servers may lack the command; live events still work.
-        collection.store.cancel(token);
-      });
-      return () => collection.store.cancel(token);
+      let token: number | null = null;
+      // Asked once more after a failure (`lib/listRead`): an older server
+      // may lack the command, and live events still work, but a list that
+      // failed once has not said that nothing waits.
+      const stop = readTwice(async () => {
+        const mine = token = collection.store.begin();
+        try {
+          const list = await bridge.invoke<T[]>(command);
+          const reconciled = collection.store.finish(mine, known ? known(list, collection.store.current) : list);
+          if (reconciled) collection.publish(reconciled);
+          // Not taken: a newer ask of this list is out, and says so itself.
+          return !!reconciled;
+        } catch (problem) {
+          collection.store.cancel(mine);
+          throw problem;
+        }
+      }, (answered) => mark(command, answered ? "answered" : "failed"));
+      return () => {
+        stop();
+        if (token !== null) collection.store.cancel(token);
+      };
     }
     const cancel = [
       // A question seen arriving keeps its clock across a reconnect; one first
@@ -70,7 +105,10 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       refill(prompts, "question_pending"),
       refill(raises, "access_request_pending"),
     ];
-    return () => cancel.forEach((stop) => stop());
+    return () => {
+      clearTimeout(silent);
+      cancel.forEach((stop) => stop());
+    };
   }, [conn]);
 
   useEffect(() => {
@@ -150,9 +188,22 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
     const token = safetyStore.begin();
     bridge.invoke<SafetyBlockNotice[]>("safety_block_pending").then((list) => {
       const reconciled = safetyStore.finish(token, list);
-      if (reconciled) publishSafety(reconciled);
-    }).catch(() => safetyStore.cancel(token));
-  }, [safetyStore, publishSafety]);
+      if (!reconciled) return;
+      publishSafety(reconciled);
+      // This ask may have taken the place of the connection's own, whose
+      // answer was then not taken: the list has answered through this one.
+      mark("safety_block_pending", "answered");
+    }).catch(() => {
+      safetyStore.cancel(token);
+      // And if it took that place and failed, nothing else will say so.
+      setRead((before) => (before.safety_block_pending === "asked" ? { ...before, safety_block_pending: "failed" } : before));
+    });
+  }, [safetyStore, publishSafety, mark]);
 
-  return { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks };
+  return {
+    asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks,
+    /** Whether each list has answered for this connection, and whether one
+     *  has been silent too long: what `pendingActions.wholeOf` reads. */
+    read, late,
+  };
 }

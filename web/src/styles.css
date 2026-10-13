@@ -4284,6 +4284,18 @@ body {
   color: var(--decide);
 }
 
+/* The page does not know yet whether the chat waits (a reload, before the
+   lists of what waits have answered). Nothing is asked, so it is not the
+   decision colour; nothing is known to run, so it is not the accent. The
+   lists usually answer within a moment of the page loading, so the words
+   come in only after one: an ordinary reload shows the stopped clock and
+   then what the chat is doing, and never these words for a blink. */
+.working-waits.is-unknown {
+  color: var(--fg-2);
+  animation-delay: 400ms;
+  animation-fill-mode: backwards;
+}
+
 /* Holds the place the status line used to take in the row, so Send stays at
    the right end of it. */
 .composer-gap {

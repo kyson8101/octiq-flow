@@ -166,6 +166,11 @@
   color: var(--decide);
 }
 
+/* Not known yet whether it waits: nothing is asked, so no decision colour. */
+.focus-activity[data-waiting="unknown"] {
+  color: var(--fg-2);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .focus-activity { transition: none; }
 }
