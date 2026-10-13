@@ -517,6 +517,24 @@ to the level the chat still runs at instead of restarting the agent, which is
 what it does for every other refusal. A lowering takes hold at once and is
 written when it can be (see **Conventions**, rule C).
 
+**A chat's level is its own, and the product never narrows it.** A chat opened
+for a registered agent (a route, a handover, a conversation the person starts
+with it) opens on that agent's registered settings, and nothing in the host,
+the MCP server or the page opens, re-sends or switches a chat to read-only on
+the product's own initiative: a route's `purpose: "discuss"` is wording only.
+After that the chat keeps the level it has. The page sends the level it holds
+and works nothing out; no host rule raises a chat at a start, and there is no
+level event. Three ways of making an agent's chat follow its registration
+afterwards were built, failed review and are not here: a rule on the page (it
+does not reliably know the roster or what is running when it must decide), a
+level event from the host to the page (an unordered frame overwrote a level
+the person had just picked), and the host as the only writer of the chat's
+saved level (it dropped a level picked on the access picker, which is drawn
+for an agent's chat whenever agents mode is off). Chats an earlier build
+opened as read-only discussions are lifted to their agent's registered level
+once, at startup; that pass, its limits and what is still open are in
+`docs/agents-mode.md`.
+
 ### An auto-mode refusal the agent carries on past is a notice, not a card
 
 Claude's auto mode refuses a call mid-turn and the agent usually goes on
@@ -721,8 +739,8 @@ undecided its primary answer names the action and the agent. `docs/mocks/
 handover-cards-namecard.html` is the mock they were built from.
 
 - **Facts are sentences, not rows.** What kind of chat and where is one line
-  (`handover.routeFact`: `Read-only discussion · starfall`, `New chat ·
-  starfall · new worktree`), a handover's is two (`Takes over this task ·
+  (`handover.routeFact`: `Discussion · starfall`, `New chat · starfall · new
+  worktree`), a handover's is two (`Takes over this task ·
   <project>`, then `handover.handoverWhere`), the files a route carries are
   `With 3 files: a, b, c`, and the chat's settings are one line of small
   print (`settingsLine`), never chips.
@@ -1996,6 +2014,12 @@ time limit).
   and the target are intact and byte-identical to the original after 24
   carries at once, the other pauses a last-resort copy and asserts that a
   second carry does not answer until the file is whole.
+- **A mutation check of a script section switches off the one thing the
+  section claims to prove, and sees that section fail.** A mock that sends
+  two signals for one fact proves neither: with the first switched off the
+  section goes on passing on the second. Section G of
+  `scripts/test-front-desk-discussion.mjs` claims the page listens for no
+  level event, and it fails when a listener for one is put back.
 - **The `src-tauri/` folder name is historical.** There is no Tauri in it. It
   was left alone so paths, the service plist and muscle memory keep working;
   renaming it is a separate job.

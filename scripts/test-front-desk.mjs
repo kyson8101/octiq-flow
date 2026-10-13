@@ -164,6 +164,8 @@ async function layout(page) {
 }
 
 let browser;
+// The page a failure is told from.
+let shown;
 try {
   await server.listen();
   browser = await engine.launch({
@@ -196,8 +198,11 @@ try {
     const page = await context.newPage();
     page.setDefaultTimeout(30_000);
     page.on("pageerror", (error) => errors.push(error.stack ?? String(error)));
-    await page.goto(`${base}#/p/starfall`, { waitUntil: "domcontentloaded" });
-    await page.getByRole("heading", { name: "Talk to Front desk", exact: true }).waitFor();
+    shown = page;
+    // Vite transforms the app as it is first asked for, which takes a while
+    // on a cold cache or a busy machine: the page is given time to draw.
+    await page.goto(`${base}#/p/starfall`, { waitUntil: "domcontentloaded", timeout: 180_000 });
+    await page.getByRole("heading", { name: "Talk to Front desk", exact: true }).waitFor({ timeout: 180_000 });
     return { page, context };
   };
 
@@ -296,11 +301,29 @@ try {
     await card.waitFor();
     await card.scrollIntoViewIfNeeded();
     await page.waitForTimeout(300);
-    assert.match(await card.innerText(), /Open a chat with STAR STORY Vesper\?/);
-    assert.match(await card.innerText(), /starfall-novel · new worktree/);
-    assert.match(await card.innerText(), /Keep Lyra's voice from chapter 2/);
+    // A name card: the question is what the card is called, its title on
+    // the card is the agent, and the answer names the action and the agent.
+    assert.equal(await card.getAttribute("aria-label"), "Open a chat with STAR STORY Vesper?");
+    assert.equal((await card.locator(".handover-name").innerText()).trim(), "STAR STORY Vesper");
+    assert.match((await card.locator(".handover-fact").first().innerText()).replace(/\s+/g, " "), /^New chat · starfall-novel · new worktree$/);
+    assert.deepEqual(await card.locator(".handover-actions button").allInnerTexts(), ["Cancel", "Open chat with STAR STORY Vesper"]);
+    // Folded, the brief and the first message are a label and a size each,
+    // and no piece of their words (`cardFold`: folding is never a slice).
+    const folded = (await card.innerText()).replace(/\s+/g, " ");
+    assert.match(folded, new RegExp(`Brief · ${BRIEF.length} characters`));
+    assert.match(folded, /Exact first message · 6 lines/);
+    assert.doesNotMatch(folded, /Keep Lyra's voice from chapter 2/, "folded, the card shows none of the brief's words");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: join(artifacts, `confirm-card-${width}.png`) });
+    // Opened by its one disclosure, both are whole.
+    await card.locator(".card-fold-toggle").click();
+    const opened = await card.innerText();
+    assert(opened.includes(BRIEF), "opened, the brief is whole");
+    assert(opened.includes("(Opened by Front desk, the person's front desk, once the person confirmed it.)"), "and so is the first message");
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await page.screenshot({ path: join(artifacts, `confirm-card-opened-${width}.png`) });
+    // A press that repeats the one on the disclosure is dropped (`pressGuard`).
+    await page.waitForTimeout(800);
 
     // 5. Confirming opens the routed chat and lands the person in it.
     const before = calls.length;
@@ -339,7 +362,9 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, artifacts }));
 } catch (error) {
-  console.error(JSON.stringify({ error: String(error), errors }));
+  const page = await shown?.locator("body").innerText().catch(() => "");
+  await shown?.screenshot({ path: join(artifacts, "failure.png") }).catch(() => {});
+  console.error(JSON.stringify({ error: String(error), errors, page: page?.slice(0, 1500), artifacts }));
   throw error;
 } finally {
   await browser?.close();

@@ -9,9 +9,8 @@ import type { Message } from "./chat";
  *  retry. It may exist already, so it can no longer be declined.
  *  `abandoned`: its chat could not start, and the person gave up on it. */
 export type HandoverStatus = "pending" | "starting" | "confirmed" | "declined" | "abandoned";
-/** What the person can do on a card. `discuss`: open a route that could not
- *  start as a read-only discussion instead (`handover_discuss`). */
-export type HandoverAction = "confirm" | "decline" | "abandon" | "discuss";
+/** What the person can do on a card. */
+export type HandoverAction = "confirm" | "decline" | "abandon";
 export type HandoverNotice = "pending" | "tool" | "delivered" | "failed";
 
 export type HandoverParty = { agentId?: string; name: string };
@@ -75,8 +74,8 @@ export type RouteDetail = {
   unreadable?: { path: string; problem: string }[];
   /** A route to the head: its conversation spans every project. */
   crossProject?: boolean;
-  /** A discussion: the chat opens read-only, so no writer in the project
-   *  keeps it from opening. */
+  /** A discussion: how the card words the chat it opens, and nothing else.
+   *  The chat runs on its agent's registered settings like any other. */
   discuss?: boolean;
 };
 
@@ -334,17 +333,17 @@ export function routePlace(handover: Handover): { project: string; notes: string
   return { project: handover.destination.projectName, notes };
 }
 
-const DISCUSSION_NOTE = "discussion, read-only";
+const DISCUSSION_NOTE = "discussion";
 
 /** A routed chat as the sentence its name card says under the agent's name:
  *  what kind of chat it is, the project, then what is worth knowing about
- *  the place. "Read-only discussion · starfall", "New chat · starfall · new
+ *  the place. "Discussion · starfall", "New chat · starfall · new
  *  worktree". The same facts as `routePlace`, with the discussion said first
  *  and once. */
 export function routeFact(handover: Handover): { lead: string; project: string; notes: string[] } {
   const { project, notes } = routePlace(handover);
   return {
-    lead: handover.route?.discuss ? "Read-only discussion" : "New chat",
+    lead: handover.route?.discuss ? "Discussion" : "New chat",
     project,
     notes: notes.filter((note) => note !== DISCUSSION_NOTE),
   };
@@ -383,15 +382,6 @@ export function routePlaceLine(handover: Handover): string {
 /** A path with the person's home folder written as `~`, for a label. */
 export function homeShort(path: string): string {
   return path.replace(/^(?:\/Users|\/home|[A-Za-z]:[\\/]Users)[\\/][^\\/]+(?=[\\/]|$)/, "~");
-}
-
-/** Whether a route whose chat could not start may be opened as a read-only
- *  discussion instead: the host made sure no chat started (`abandonable`),
- *  and it is not one already. A writer elsewhere in the project then no
- *  longer stands in its way. */
-export function canDiscussInstead(handover: Handover): boolean {
-  return isRoute(handover) && handover.status === "starting" && !!handover.error
-    && !!handover.abandonable && !handover.route?.discuss;
 }
 
 /** The headline of a card, from where it is drawn. */
