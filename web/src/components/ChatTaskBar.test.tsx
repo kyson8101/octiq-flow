@@ -8,6 +8,7 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn(), on: vi.fn(() => () 
 import { ChatTaskBarView, SETTLED_AFTER_MS } from "./ChatTaskBar";
 import type { TaskStatus } from "../lib/chatTask";
 import { singleFlight, withTrailingRun } from "../lib/singleFlight";
+import sheet from "./ChatTaskBar.css?raw";
 
 const NOW = 1_800_000_000_000;
 
@@ -89,7 +90,11 @@ describe("the status line above the chat", () => {
   it("says a chat needs you above everything else", () => {
     const html = bar({ status: status(), open: false, now: NOW, busy: true, waiting: true, onToggle: () => {} });
     expect(html).toContain("Needs you");
-    expect(html).toContain('data-tone="warn"');
+    // The decision colour: a chat parked on a card is not a turn in flight
+    // (the accent) and nothing has gone wrong (amber).
+    expect(html).toContain('data-tone="decide"');
+    expect(html).not.toContain('data-tone="accent"');
+    expect(sheet).toMatch(/\.chat-task-dot\[data-tone="decide"\] \{ background: var\(--decide\); \}/);
   });
 
   it("opens a panel with the delivery evidence and the paths", () => {

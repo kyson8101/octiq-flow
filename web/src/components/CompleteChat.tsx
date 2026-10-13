@@ -22,6 +22,7 @@ import {
 import { count } from "../lib/cardFold";
 import type { MissionOffer } from "../lib/useChatCompletions";
 import { FoldBody, FoldLine, useFold } from "./CardFold";
+import { StatusDismiss } from "./ChatStatus";
 import { useCarefulAnswer } from "./Confirm";
 import "./CompleteChat.css";
 
@@ -210,8 +211,8 @@ export function ChatCompletionLine({
   if (!line) return null;
   const error = offers.find((offer) => offer.error)?.error;
   return (
-    <div className="chat-completion" data-kind={line.kind} role="status">
-      <span className="chat-completion-mark" aria-hidden="true">
+    <div className="chat-completion status-row" data-kind={line.kind} role="status">
+      <span className="status-row-icon chat-completion-mark" aria-hidden="true">
         {line.kind === "done" ? (
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="m5 12.5 4.5 4.5L19 7.5" />
@@ -234,13 +235,7 @@ export function ChatCompletionLine({
           {offer.closing ? "Closing…" : "Close mission"}
         </button>
       ))}
-      {line.kind !== "completing" && onDismiss && (
-        <button type="button" className="chat-completion-dismiss" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
-            <path d="M6 6l12 12M18 6 6 18" />
-          </svg>
-        </button>
-      )}
+      {line.kind !== "completing" && onDismiss && <StatusDismiss label="Dismiss" onClick={onDismiss} />}
     </div>
   );
 }

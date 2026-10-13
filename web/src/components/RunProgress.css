@@ -4,7 +4,8 @@
    (`data-live`), as a tint, and nothing else: a run that is all planned, or
    whose only worker has stalled, is drawn in the page's own greys; `--decide` is something waiting on the person; `--ok` is done;
    `--danger` is a failure; `--warn` is a worker in trouble. Nothing here is
-   amber for emphasis, and nothing draws text on a solid fill.
+   amber for emphasis, and nothing draws text on a fill: the strip's bar has
+   no words in it at all.
 
    One thing moves: the texture over the part of the strip still to do, while
    a turn is in flight. Rows do not animate. */
@@ -12,25 +13,20 @@
 /* ---- The strip above the composer --------------------------------------- */
 
 .run-strip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  max-width: calc(var(--chat-column) - 32px);
-  width: calc(100% - 32px);
-  min-height: 28px;
-  margin: 0 auto;
-  padding: 0 2px 8px;
-  color: var(--fg-2);
-  font-size: 13px;
+  /* A row of the group above the composer (`ChatStatus.css`): its height,
+     its left edge and the column its dot sits in are the group's. */
+  font-size: 12.5px;
 }
 
 .run-strip-open {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--status-gap, 6px);
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 28px;
+  min-height: var(--status-row, 28px);
+  /* Whatever the font, what does not fit is cut inside the row. */
+  overflow: hidden;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
@@ -41,14 +37,12 @@
   cursor: pointer;
 }
 
-.run-strip-open:focus-visible,
-.run-strip-hide:focus-visible {
+.run-strip-open:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
 
 .run-strip-dot {
-  flex: 0 0 8px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -67,12 +61,15 @@
   white-space: nowrap;
 }
 
+/* The bar says how far and nothing else: no words inside it. The count is
+   beside it, once. */
 .run-strip-meter {
   position: relative;
   flex: 1 1 160px;
-  min-width: 104px;
-  max-width: 280px;
-  height: 22px;
+  min-width: 56px;
+  max-width: 220px;
+  height: 6px;
+  margin: 0 2px;
   overflow: hidden;
   border-radius: var(--r-pill);
   background: var(--bg-2);
@@ -82,37 +79,24 @@
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--fg-3) 30%, var(--bg-2));
+  background: color-mix(in srgb, var(--fg-3) 60%, var(--bg-2));
   transition: width 200ms ease-out;
 }
 
-.run-strip[data-live] .run-strip-fill { background: color-mix(in srgb, var(--accent) 22%, var(--bg-2)); }
+.run-strip[data-live] .run-strip-fill { background: color-mix(in srgb, var(--accent) 55%, var(--bg-2)); }
 
-.run-strip[data-state="needs"] .run-strip-fill { background: color-mix(in srgb, var(--decide) 30%, var(--bg-2)); }
-.run-strip[data-state="done"] .run-strip-fill { background: color-mix(in srgb, var(--ok) 30%, var(--bg-2)); }
-.run-strip[data-state="failed"] .run-strip-fill { background: color-mix(in srgb, var(--danger) 28%, var(--bg-2)); }
-
-.run-strip-label {
-  position: absolute;
-  inset: 0 auto 0 0;
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
-  color: var(--fg-0);
-  font-size: 12px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
+.run-strip[data-state="needs"] .run-strip-fill { background: color-mix(in srgb, var(--decide) 60%, var(--bg-2)); }
+.run-strip[data-state="done"] .run-strip-fill { background: color-mix(in srgb, var(--ok) 60%, var(--bg-2)); }
+.run-strip[data-state="failed"] .run-strip-fill { background: color-mix(in srgb, var(--danger) 55%, var(--bg-2)); }
 
 /* The one moving thing: the part still to do, while a turn is in flight. */
 .run-strip[data-live] .run-strip-meter::after {
   content: "";
   position: absolute;
   inset: 0;
-  background-image: radial-gradient(circle, color-mix(in srgb, var(--fg-3) 55%, transparent) 1px, transparent 1.4px);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--fg-3) 70%, transparent) 1px, transparent 1.4px);
   background-size: 6px 6px;
-  opacity: 0.55;
+  opacity: 0.6;
   -webkit-mask-image: linear-gradient(90deg, transparent var(--at), #000 calc(var(--at) + 6%));
   mask-image: linear-gradient(90deg, transparent var(--at), #000 calc(var(--at) + 6%));
   animation: run-strip-drift 2.4s linear infinite;
@@ -122,10 +106,11 @@
   to { background-position: 12px 0; }
 }
 
-.run-strip-pct {
+.run-strip-count {
   flex: 0 0 auto;
-  color: var(--fg-2);
+  color: var(--fg-1);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .run-strip-side {
@@ -143,41 +128,12 @@
 }
 
 .run-strip[data-state="needs"] .run-strip-reason { color: var(--decide); }
-.run-strip[data-state="failed"] .run-strip-reason { color: var(--danger); }
-
-.run-strip-hide {
-  display: grid;
-  place-items: center;
-  flex: 0 0 26px;
-  width: 26px;
-  height: 26px;
-  margin-left: auto;
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-3);
-  cursor: pointer;
-  transition: background 130ms ease-out, color 130ms ease-out;
-}
-
-.run-strip-hide:hover {
-  background: var(--accent-tint);
-  color: var(--fg-0);
-}
 
 @media (hover: hover) {
   .run-strip-open:hover .run-strip-word { text-decoration: underline; text-underline-offset: 3px; }
 }
 
-/* A phone: the percent says what the bar and its count already do, and the
-   second count gives way before the first is cut. */
-@media (max-width: 520px) {
-  .run-strip-open { gap: 8px; }
-  .run-strip-pct { display: none; }
-  .run-strip-meter { flex-basis: 104px; }
-}
-
+/* A phone: the second count gives way before the first is cut. */
 @media (max-width: 400px) {
   .run-strip-then { display: none; }
 }
@@ -475,5 +431,5 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
 
 @media (prefers-reduced-motion: reduce) {
   .run-strip[data-live] .run-strip-meter::after { animation: none; }
-  .run-strip-fill, .run-strip-hide, .run-group-chevron, .run-group-more { transition: none; }
+  .run-strip-fill, .run-group-chevron, .run-group-more { transition: none; }
 }

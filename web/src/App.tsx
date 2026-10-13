@@ -97,6 +97,7 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
+import { ChatStatus } from "./components/ChatStatus";
 import { Arrive } from "./components/Arrive";
 import { useEntry, entryClass, useLateKeys } from "./lib/useArrival";
 import { backgroundCalls } from "./lib/background";
@@ -214,6 +215,9 @@ import { ChatRequests, SafetyLines } from "./components/ChatRequests";
 import { SafetyToast } from "./components/SafetyToast";
 import type { Continue } from "./components/SafetyBlock";
 import { splitSafety, useSafetyToast } from "./lib/safetyToast";
+import { foldedSafetyKeys, waitingChats, workingChats } from "./lib/chatWait";
+import { noteWaits, type TurnWaits } from "./lib/turnClock";
+import { knownSettings, runsAtLine } from "./lib/chatSettings";
 import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
 import { requestConversation } from "./lib/pendingRequests";
@@ -2243,6 +2247,19 @@ export default function App() {
   const openRecord = useMemo(
     () => conversations.find((conversation) => conversation.id === conversationId),
     [conversations, conversationId],
+  );
+  // What this chat runs at, said beside the agent's name where an ordinary
+  // chat has its pickers (`lib/chatSettings`): the page's own values for the
+  // session, each only where this chat's record says it. A conversation not
+  // saved yet starts with exactly what the page holds.
+  const runsAt = useMemo(
+    () => (composerIdentity
+      ? runsAtLine(knownSettings({
+        record: conversationId ? openRecord : null,
+        reported: chat.model, choice, effort, access,
+      }))
+      : ""),
+    [composerIdentity, conversationId, openRecord, chat.model, choice, effort, access],
   );
   // The chat on screen counts as read, and stays that way for as long as it
   // is the one on screen — this covers both opening it (its own `updatedAt`
@@ -4908,6 +4925,29 @@ export default function App() {
   );
   const pendingList = pendingRead.actions;
   const pendingHeld = pendingRead.held;
+  // A chat that waits on the person is parked on a card, so it is not drawn
+  // as running (`lib/chatWait`): its clock stops, its line says it waits, and
+  // its row draws no working mark. Read off the one list above, never off
+  // the cards or the ledger a second time. The folded refusals are joined to
+  // a string so a delta that moves none of them makes no new set.
+  const foldedSafety = useMemo(
+    () => foldedSafetyKeys(safetyBlocks, (id) => !!chats[id]?.busy && !interruptedIds.has(id), splitSafety).join(" "),
+    [safetyBlocks, chats, interruptedIds],
+  );
+  const chatWaits = useMemo(
+    () => waitingChats(pendingList, new Set(foldedSafety ? foldedSafety.split(" ") : [])),
+    [pendingList, foldedSafety],
+  );
+  const workingSet = useMemo(() => workingChats(busySet, chatWaits), [busySet, chatWaits]);
+  // What each turn in flight has waited, so its clock leaves that out
+  // (`lib/turnClock`). In memory, on this page's clock.
+  const [turnWaits, setTurnWaits] = useState<Readonly<Record<string, TurnWaits>>>({});
+  useEffect(() => {
+    setTurnWaits((before) => noteWaits(
+      before, chatWaits, (id) => (chats[id]?.busy ? chats[id]?.turnStartedAt : undefined), Date.now(),
+    ));
+  }, [chats, chatWaits]);
+  const waitingHere = (conversationId && chatWaits.get(conversationId)) || null;
   // The host says a decision waits on the person and the page has no card
   // for it: the list it comes in was not read, or its request failed. Ask
   // for the list again, once for each such set, so the card can be drawn
@@ -5115,7 +5155,9 @@ export default function App() {
               (accessRequests[conversationId]?.length ?? 0) +
               // A refusal the agent carried on past waits on nobody.
               safetySplit.cards.length >
-            0
+            0 ||
+            // A plan to approve for a run this chat coordinates, too.
+            !!waitingHere
           }
         />}
         <RailButton count={chat.agents.length} open={!railShut && !previewVisible}
@@ -5193,6 +5235,7 @@ export default function App() {
         currentConversation={conversationId}
         running={running}
         busy={busySet}
+        waiting={chatWaits}
         completing={completingChats}
         deleting={deleting}
         leaving={leaving}
@@ -5342,7 +5385,7 @@ export default function App() {
             shelved={shelved}
             conversations={conversations}
             selectedProjectId={projectsPage.projectId}
-            busy={busySet}
+            busy={workingSet}
             chatParents={chatParents}
             ledgerSnapshot={orchestrationState.snapshot}
             coordinatorChatKeys={coordinatorChatKeys}
@@ -5767,39 +5810,6 @@ export default function App() {
           )}</Arrive>}
 
           {conversationId && !workerChat && (
-            <RemovedFolderBanner
-              chatId={conversationId}
-              connected={conn === "open"}
-              projectPath={project?.primary_path ?? undefined}
-            />
-          )}
-
-          {conversationId && !workerChat && (
-            <ChatCompletionLine
-              line={completionLine({
-                completing: completions.state.completing[conversationId],
-                ended: completions.state.ended[conversationId],
-                done: !!openRecord && isChatDone(openRecord),
-                messages: chat.messages,
-              })}
-              offers={completions.offers[conversationId]}
-              onCloseMission={(runId) => void closeMissionAfter(conversationId, runId)}
-              onDismiss={() => completions.dismiss(conversationId)}
-            />
-          )}
-
-          {/* Mounted for as long as the chat is, so it can tell a notice that
-              turned up from one that was here when the chat opened. */}
-          {conversationId && (
-            <Arrive when={visibleNotices.length > 0} scope={conversationId}>
-              <ChatNotices
-                notices={visibleNotices}
-                onClear={() => patch(conversationId, (s) => ({ ...s, notices: [] }))}
-              />
-            </Arrive>
-          )}
-
-          {conversationId && !workerChat && (
             <ChatRequests
               scope={conversationId}
               asks={asks[conversationId] ?? []}
@@ -5869,12 +5879,47 @@ export default function App() {
             );
           })}
 
-          {/* How far the run has got, on the composer. It grows upward like the
-              cards above it, so arriving never moves the composer. */}
-          {conversationId && !workerChat && (
-            <Arrive when={stripShown} scope={conversationId}>
-              {runStrip && <RunProgressStrip strip={runStrip.strip} onOpen={openAgentsPanel} onHide={hideStrip} />}
-            </Arrive>
+          {/* The rows that report, as one group on the composer (`ChatStatus`):
+              the chat's folder is gone, the chat is completing, background
+              notices, how far the run has got. They ask nothing, so they sit
+              under the cards that do, and the group grows upward: a row
+              arriving never moves the composer. */}
+          {conversationId && (
+            <ChatStatus>
+              {!workerChat && (
+                <RemovedFolderBanner
+                  chatId={conversationId}
+                  connected={conn === "open"}
+                  projectPath={project?.primary_path ?? undefined}
+                />
+              )}
+              {!workerChat && (
+                <ChatCompletionLine
+                  line={completionLine({
+                    completing: completions.state.completing[conversationId],
+                    ended: completions.state.ended[conversationId],
+                    done: !!openRecord && isChatDone(openRecord),
+                    messages: chat.messages,
+                  })}
+                  offers={completions.offers[conversationId]}
+                  onCloseMission={(runId) => void closeMissionAfter(conversationId, runId)}
+                  onDismiss={() => completions.dismiss(conversationId)}
+                />
+              )}
+              {/* Mounted for as long as the chat is, so it can tell a notice
+                  that turned up from one that was here when the chat opened. */}
+              <Arrive when={visibleNotices.length > 0} scope={conversationId}>
+                <ChatNotices
+                  notices={visibleNotices}
+                  onClear={() => patch(conversationId, (s) => ({ ...s, notices: [] }))}
+                />
+              </Arrive>
+              {!workerChat && (
+                <Arrive when={stripShown} scope={conversationId}>
+                  {runStrip && <RunProgressStrip strip={runStrip.strip} onOpen={openAgentsPanel} onHide={hideStrip} />}
+                </Arrive>
+              )}
+            </ChatStatus>
           )}
 
           {/* A task chat takes no messages: no composer, and no block in its
@@ -5941,12 +5986,16 @@ export default function App() {
               overridden: executionPlan.chosenBy === "advanced",
             } : undefined}
             cwd={effectiveCwd}
-            /* The last turn's receipt. It had a row of its own under the box
-               until now; it rides on the composer's own eyebrow instead. */
-            model={chat.model}
+            /* The last turn's receipt, for a tooltip in the composer's row:
+               it is not drawn on the eyebrow. */
             lastDurationMs={chat.lastDurationMs}
             lastCostUsd={chat.lastCostUsd}
             identity={composerIdentity}
+            runsAt={runsAt}
+            /* Parked on a card: the running line says so, and its clock
+               leaves the wait out. */
+            waiting={waitingHere}
+            turnWaits={conversationId ? turnWaits[conversationId] : undefined}
             terminalOpen={termOpen}
             onTerminal={
               project && !focusMode

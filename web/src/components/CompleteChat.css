@@ -167,40 +167,19 @@
   color: var(--fg-3);
 }
 
-/* ---- The line above the composer ----------------------------------------- */
+/* ---- The line above the composer -----------------------------------------
+   A row of the group there (`ChatStatus.css`): one line, no fill and no box
+   of its own. Its state is its mark's colour. */
 
 .chat-completion {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  max-width: calc(var(--chat-column) - 32px);
-  width: calc(100% - 32px);
-  min-height: 38px;
-  margin: 0 auto 6px;
-  padding: 5px 6px 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--bg-1);
-  color: var(--fg-2);
-  font-size: 12.5px;
   animation: chat-completion-in 180ms ease-out;
 }
 
 @keyframes chat-completion-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(2px);
   }
-}
-
-.chat-completion-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  color: var(--fg-2);
 }
 
 .chat-completion[data-kind="done"] .chat-completion-mark {
@@ -223,13 +202,17 @@
   }
 }
 
+/* One line in the ordinary case. Why a completion did not happen is the
+   host's sentence and is never cut: it wraps inside the row, which grows
+   upward for it. */
 .chat-completion-copy {
   display: flex;
   flex: 1 1 auto;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px 8px;
+  gap: 0 8px;
   min-width: 0;
+  padding: 4px 0;
 }
 
 .chat-completion-label {
@@ -242,29 +225,39 @@
   overflow-wrap: anywhere;
 }
 
-.chat-completion-action,
-.chat-completion-dismiss {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+/* Completing and completed are a few words the label already carries: they
+   keep to the one line, and give way inside it on a narrow screen. */
+.chat-completion:not([data-kind="not-done"]) .chat-completion-copy {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.chat-completion:not([data-kind="not-done"]) .chat-completion-label {
   flex: 0 0 auto;
-  min-height: 28px;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-1);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: background-color 130ms ease-out, color 130ms ease-out;
+}
+
+.chat-completion:not([data-kind="not-done"]) .chat-completion-detail {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Closing a mission is the person's decision, so it takes that colour. */
 .chat-completion-action {
-  padding: 3px 10px;
-  border-color: var(--decide);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 1px 9px;
+  border: 1px solid var(--decide);
+  border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--decide) 14%, var(--bg-1));
   color: var(--fg-0);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 130ms ease-out, color 130ms ease-out;
 }
 
 .chat-completion-action:hover:not(:disabled) {
@@ -276,18 +269,7 @@
   cursor: wait;
 }
 
-.chat-completion-dismiss {
-  width: 28px;
-  color: var(--fg-2);
-}
-
-.chat-completion-dismiss:hover {
-  background: var(--bg-2);
-  color: var(--fg-0);
-}
-
-.chat-completion-action:focus-visible,
-.chat-completion-dismiss:focus-visible {
+.chat-completion-action:focus-visible {
   outline: 2px solid var(--decide);
   outline-offset: 2px;
 }
@@ -353,8 +335,7 @@
     animation: none;
   }
 
-  .chat-completion-action,
-  .chat-completion-dismiss {
+  .chat-completion-action {
     transition: none;
   }
 }

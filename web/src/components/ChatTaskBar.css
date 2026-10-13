@@ -17,6 +17,7 @@
    chat is merely owed stays the colour of ordinary text. */
 .chat-task-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--fg-3); transition: background 160ms ease-out; }
 .chat-task-dot[data-tone="accent"] { background: var(--accent); }
+.chat-task-dot[data-tone="decide"] { background: var(--decide); }
 .chat-task-dot[data-tone="warn"] { background: var(--warn); }
 .chat-task-dot[data-tone="ok"] { background: var(--ok); }
 

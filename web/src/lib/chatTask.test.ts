@@ -106,6 +106,12 @@ describe("the line above the chat", () => {
     expect(phaseOf({ chatId: "c" }, { busy: true, waiting: true }).label).toBe("Needs you");
   });
 
+  it("draws a chat that waits on the person in the decision colour, never the accent of a turn in flight", () => {
+    // The agent is parked on the card, whatever the turn's record says.
+    expect(phaseOf({ chatId: "c" }, { busy: true, waiting: true }).tone).toBe("decide");
+    expect(phaseOf({ chatId: "c" }, { waiting: true }).tone).toBe("decide");
+  });
+
   it("keeps everything merely owed quiet", () => {
     expect(phaseOf({ chatId: "c", delivery: delivery() }).tone).toBe("quiet");
     expect(phaseOf({ chatId: "c", delivery: delivery({ merged: true, mergedRemote: true, released: true }) }).tone)
@@ -147,13 +153,53 @@ describe("where the chat is", () => {
 
   it("promises a removed task worktree no more than a rebuild gives back", () => {
     const gone = workspace({ exists: false, cwd: "/trees/app/task-1" });
-    expect(removedFolderNote(gone, "/repos/app")).toEqual({
-      title: "Task worktree removed: /trees/app/task-1",
-      detail:
-        "Your next message rebuilds it from its branch with committed work only. Uncommitted and untracked files are not restored. If it cannot be rebuilt, this chat moves to the project's own folder.",
+    const note = removedFolderNote(gone, "/repos/app")!;
+    expect(note).toEqual({
+      label: "Worktree removed",
+      next: "next message rebuilds it from its branch",
+      path: "/trees/app/task-1",
+      detail: [
+        "Your next message rebuilds it from its branch with committed work only.",
+        "Uncommitted and untracked files are not restored.",
+        "If it cannot be rebuilt, this chat moves to the project's own folder.",
+      ],
     });
     // Review R4: "restores it" read as the folder coming back as it was.
-    expect(removedFolderNote(gone, "/repos/app")?.detail).not.toContain("restores it");
+    expect([note.next, ...note.detail].join(" ")).not.toContain("restores it");
+  });
+
+  it("says the folded row in a few words, with no path in it", () => {
+    const long = "/Users/kyson/01-pandaworks/production/pandahrms/mobile-app/.worktrees/pandaworks-app/polish";
+    const worktree = removedFolderNote(workspace({ exists: false, cwd: long }), "/repos/app")!;
+    const moved = removedFolderNote(
+      workspace({ exists: false, isWorktree: false, cwd: long, primaryRoot: "C:\\repos\\mobile-app\\" }), "/repos/app",
+    )!;
+    for (const note of [worktree, moved]) {
+      expect(`${note.label} ${note.next}`).not.toMatch(/[\\/]/);
+      expect(`${note.label} · ${note.next}`.length).toBeLessThan(64);
+      // The whole path is kept for the disclosure.
+      expect(note.path).toBe(long);
+    }
+    // A folder is called by its last name, on either kind of path.
+    expect(moved.next).toBe("next message moves this chat to mobile-app");
+    expect(moved.detail[0]).toBe("Your next message moves this chat to C:\\repos\\mobile-app\\.");
+  });
+
+  it("reads a Windows path the way it reads a POSIX one", () => {
+    const tree = "C:\\Users\\kyson\\src\\.worktrees\\pandaworks-app\\polish";
+    const worktree = removedFolderNote(workspace({ exists: false, cwd: tree, primaryRoot: "C:\\Users\\kyson\\src\\mobile-app" }))!;
+    expect(worktree).toMatchObject({ label: "Worktree removed", next: "next message rebuilds it from its branch", path: tree });
+    const folder = workspace({ exists: false, isWorktree: false, cwd: "C:\\Users\\kyson\\src\\old-app", primaryRoot: "C:\\Users\\kyson\\src\\old-app" });
+    // The project's folder, with and without the backslash a picker leaves.
+    for (const project of ["D:\\work\\mobile app", "D:\\work\\mobile app\\"]) {
+      const moved = removedFolderNote(folder, project)!;
+      expect(moved.next).toBe("next message moves this chat to mobile app");
+      expect(moved.detail[0]).toBe(`Your next message moves this chat to ${project}.`);
+    }
+    // The same folder spelled with a trailing backslash is not another folder.
+    expect(removedFolderNote(folder, "C:\\Users\\kyson\\src\\old-app\\")!.next).toBe("no folder to continue in, start a new chat");
+    // A drive alone has no last name: it is said as it is.
+    expect(removedFolderNote(folder, "D:\\")!.next).toBe("next message moves this chat to D:");
   });
 
   it("names where a chat that was never in a worktree continues", () => {
@@ -164,19 +210,22 @@ describe("where the chat is", () => {
       primaryRoot: "/repos/old-app",
     });
     expect(removedFolderNote(gone, "/repos/app/")).toEqual({
-      title: "Directory removed: /repos/old-app",
-      detail:
-        "Your next message moves this chat to /repos/app/. Nothing from the removed folder is restored.",
+      label: "Folder removed",
+      next: "next message moves this chat to app",
+      path: "/repos/old-app",
+      detail: ["Your next message moves this chat to /repos/app/.", "Nothing from the removed folder is restored."],
     });
     // The repository's own checkout outranks the project's folder.
-    expect(removedFolderNote({ ...gone, cwd: "/repos/old-app/packages/web" }, "/repos/app")?.detail)
-      .toBe("Your next message moves this chat to /repos/old-app. Nothing from the removed folder is restored.");
+    const inside = removedFolderNote({ ...gone, cwd: "/repos/old-app/packages/web" }, "/repos/app")!;
+    expect(inside.next).toBe("next message moves this chat to old-app");
+    expect(inside.detail).toEqual(["Your next message moves this chat to /repos/old-app.", "Nothing from the removed folder is restored."]);
   });
 
   it("does not promise a folder it cannot name", () => {
     const gone = workspace({ exists: false, isWorktree: false, cwd: "/repos/app", primaryRoot: "" });
-    expect(removedFolderNote(gone, "/repos/app/")?.detail)
-      .toBe("There is no other folder to continue in. Start a new chat.");
+    const note = removedFolderNote(gone, "/repos/app/")!;
+    expect(note.next).toBe("no folder to continue in, start a new chat");
+    expect(note.detail).toEqual(["There is no other folder to continue in. Start a new chat."]);
   });
 
   it("reads the working tree in one line", () => {

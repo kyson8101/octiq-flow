@@ -146,7 +146,7 @@ function surfaces(snapshot: OrchestrationSnapshot) {
   // The strip, as read and as drawn.
   const picked = chatStrip(scoped, now);
   const stripHtml = picked ? renderToStaticMarkup(<RunProgressStrip strip={picked.strip} onOpen={() => {}} onHide={() => {}} />) : "";
-  const label = /<span class="run-strip-label">(?:Tasks|Done ·) (\d+)\/(\d+)<\/span>/.exec(stripHtml);
+  const label = /<span class="run-strip-count" aria-hidden="true">(\d+)\/(\d+)<\/span>/.exec(stripHtml);
 
   // The panel beside the chat, as drawn: its tile and its rows.
   const panelHtml = renderToStaticMarkup(<OrchestrationPanel embedded allowManualRun={false} project={{ id: "p1", name: "Project" }}

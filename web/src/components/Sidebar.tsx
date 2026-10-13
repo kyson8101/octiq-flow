@@ -42,6 +42,7 @@ export type Project = ProjectAppearance & {
 export type SidebarView = "search" | "settings" | "agents" | "projects" | "pulls";
 
 const NONE: ReadonlySet<string> = new Set();
+const NO_WAITS: ReadonlyMap<string, unknown> = new Map();
 const NO_PARENTS: ReadonlyMap<string, string> = new Map();
 const COLLAPSED_KEY = "octiq.chat.collapsed-agents";
 const FILTER_KEY = "octiq.chat.filter";
@@ -70,7 +71,7 @@ export function Sidebar({
   ledgerUnavailable = false,
   coordinatorChatKeys = NONE,
   projects, shelved, deletedCount = 0, onShowDeleted,
-  conversations: everyChat, currentConversation, running, busy, completing = NONE, deleting = NONE,
+  conversations: everyChat, currentConversation, running, busy, waiting = NO_WAITS, completing = NONE, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, newLabel = "New task", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
@@ -104,6 +105,9 @@ export function Sidebar({
   currentConversation: string | null;
   running: Set<string>;
   busy: Set<string>;
+  /** The chats parked on a card for the person (`lib/chatWait`). Their rows
+   *  draw no working mark; `busy` still says a turn is on record. */
+  waiting?: ReadonlyMap<string, unknown>;
   /** Chats wrapping up to be marked done (`lib/chatComplete`). */
   completing?: ReadonlySet<string>;
   deleting?: ReadonlySet<string>;
@@ -263,9 +267,14 @@ export function Sidebar({
     onToggleDone(chat.id);
   };
 
+  // A turn in flight that waits on nobody. A chat parked on a card for the
+  // person has a turn on record and is not working: its row draws no working
+  // mark, and its pending badge, which is unchanged, says what it waits for.
+  const working = (id: string) => busy.has(id) && !waiting.has(id);
+
   const renderChat = ({ chat, children, descendants }: ChatNode): ReactNode => {
     const expanded = !collapsed.has(chat.id);
-    const workingCount = descendants.filter((child) => busy.has(child.id)).length;
+    const workingCount = descendants.filter((child) => working(child.id)).length;
     const unreadCount = descendants.filter((child) => isUnread(child, currentConversation)).length;
     const childListId = `chat-agents-${chat.id}`;
     const parent = conversationById.get(chatParents.get(chat.id) ?? "");
@@ -319,13 +328,13 @@ export function Sidebar({
     // Everything this chat and its hidden task chats are waiting on you for.
     const pending = showArchived ? [] : pendingView.forRow(chat.id);
     const snippet = going ? "Deleting…"
-      : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
+      : latest?.text ?? chat.latestResponse ?? (working(chat.id) ? "Working…" : "No response yet");
 
     return (
       <AnimatedChatRow id={chat.id} entering={listed === "settled" && !seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
         <div className={[
           "chat", chat.id === currentConversation ? "is-on" : "",
-          running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
+          running.has(chat.id) ? "is-live" : "", working(chat.id) ? "is-busy" : "",
           tasksWorking > 0 ? "is-tasks-running" : "",
           going ? "is-going" : "", isLeaving ? "is-leaving" : "",
           chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
@@ -355,7 +364,7 @@ export function Sidebar({
             <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
               busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
               className="chat-btn" type="button"
-              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${completing.has(chat.id) ? ", completing" : ""}${tasksWorking > 0 ? `, ${tasksWorking} ${tasksWorking === 1 ? "task" : "tasks"} running` : ""}${pending.length ? `, ${pendingLabel(pending)}` : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
+              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${working(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${completing.has(chat.id) ? ", completing" : ""}${tasksWorking > 0 ? `, ${tasksWorking} ${tasksWorking === 1 ? "task" : "tasks"} running` : ""}${pending.length ? `, ${pendingLabel(pending)}` : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
               disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
               aria-description={`${parent ? `Agent chat under ${parent.title}. ` : ""}Hover to preview. Hold for chat actions.`}
               onPointerDown={(event) => {

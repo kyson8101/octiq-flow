@@ -115,10 +115,12 @@ export type DeliveryStage =
 /** How loud a state is allowed to be.
  *
  *  `accent` is reserved for a turn that is IN FLIGHT — the one moving thing —
- *  and `warn` for something waiting on the person. Everything a chat is merely
- *  owed stays quiet: a row of amber chips across four open tabs is noise, and
- *  noise is what made the status line worth reading gone. */
-export type Tone = "accent" | "warn" | "ok" | "quiet";
+ *  and `decide` for something waiting on the person, which is not a turn in
+ *  flight even while one is recorded: the agent is parked on the card.
+ *  `warn` is a problem. Everything a chat is merely owed stays quiet: a row
+ *  of amber chips across four open tabs is noise, and noise is what made the
+ *  status line worth reading gone. */
+export type Tone = "accent" | "decide" | "warn" | "ok" | "quiet";
 
 export const DELIVERY_LABELS: Record<DeliveryStage, string> = {
   unverified: "Unverified",
@@ -177,7 +179,7 @@ export function phaseOf(
   live: { busy?: boolean; waiting?: boolean } = {},
 ): { label: string; tone: Tone; stage: DeliveryStage } {
   const stage = deliveryStage(status?.delivery);
-  if (live.waiting) return { label: "Needs you", tone: "warn", stage };
+  if (live.waiting) return { label: "Needs you", tone: "decide", stage };
   if (live.busy) return { label: "Working", tone: "accent", stage };
   return { label: DELIVERY_LABELS[stage], tone: deliveryTone(stage), stage };
 }
@@ -200,26 +202,49 @@ export function locationOf(workspace?: TaskWorkspace): string {
   return workspace.isWorktree ? "Task worktree" : "Primary checkout";
 }
 
-/** What to say above the composer when the chat's own folder is gone, or
- *  nothing when it is there.
+/** The last name of a path, the way a person calls a folder. */
+function folderName(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+}
+
+/** What the line above the composer says when the chat's own folder is gone,
+ *  or nothing when it is there.
  *
  *  The host puts it right before the next message starts the agent
  *  (`chat_recover.rs`): a task worktree is rebuilt at the same path from its
  *  branch, anything else moves to the repository's primary checkout or the
- *  project's folder. So this line promises only what that does, and never
- *  blocks the send: a rebuilt worktree holds committed work and nothing else,
- *  and a chat that moves is in a different folder afterwards. `projectPath`
- *  is the project's folder as the page has it now. */
+ *  project's folder. So this promises only what that does, and never blocks
+ *  the send: a rebuilt worktree holds committed work and nothing else, and a
+ *  chat that moves is in a different folder afterwards. `projectPath` is the
+ *  project's folder as the page has it now.
+ *
+ *  Folded, the row is `label` and `next`: what happened and what the next
+ *  message does, a few words each, with a folder by its name. The path and
+ *  the whole sentences (`detail`) are behind the row's disclosure. */
+export type RemovedFolderNote = {
+  label: string;
+  next: string;
+  /** The folder that is gone, whole. */
+  path: string;
+  /** What the next message does and does not bring back, a sentence each. */
+  detail: string[];
+};
+
 export function removedFolderNote(
   workspace?: TaskWorkspace,
   projectPath = "",
-): { title: string; detail: string } | undefined {
+): RemovedFolderNote | undefined {
   if (!workspace || workspace.exists || !workspace.cwd) return undefined;
   if (workspace.isWorktree) {
     return {
-      title: `Task worktree removed: ${workspace.cwd}`,
-      detail:
-        "Your next message rebuilds it from its branch with committed work only. Uncommitted and untracked files are not restored. If it cannot be rebuilt, this chat moves to the project's own folder.",
+      label: "Worktree removed",
+      next: "next message rebuilds it from its branch",
+      path: workspace.cwd,
+      detail: [
+        "Your next message rebuilds it from its branch with committed work only.",
+        "Uncommitted and untracked files are not restored.",
+        "If it cannot be rebuilt, this chat moves to the project's own folder.",
+      ],
     };
   }
   const plain = (path: string) => path.replace(/[\\/]+$/, "");
@@ -227,10 +252,12 @@ export function removedFolderNote(
     (path) => path && plain(path) !== plain(workspace.cwd),
   );
   return {
-    title: `Directory removed: ${workspace.cwd}`,
+    label: "Folder removed",
+    next: next ? `next message moves this chat to ${folderName(next)}` : "no folder to continue in, start a new chat",
+    path: workspace.cwd,
     detail: next
-      ? `Your next message moves this chat to ${next}. Nothing from the removed folder is restored.`
-      : "There is no other folder to continue in. Start a new chat.",
+      ? [`Your next message moves this chat to ${next}.`, "Nothing from the removed folder is restored."]
+      : ["There is no other folder to continue in. Start a new chat."],
   };
 }
 

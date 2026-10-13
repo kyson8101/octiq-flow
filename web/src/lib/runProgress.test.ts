@@ -506,7 +506,7 @@ describe("the strip", () => {
   it("says Running, how far, and how many are working", () => {
     const made = ledger(mix(13, 4, 22));
     expect(runProgress(made.snapshot, made.run, NOW).strip).toMatchObject({
-      state: "running", word: "Running", label: "Tasks 13/22", percent: 59, done: 13, total: 22, live: true,
+      state: "running", word: "Running", label: "13/22", percent: 59, done: 13, total: 22, live: true,
       side: [{ text: "4 working", strong: false }],
     });
   });
@@ -515,7 +515,7 @@ describe("the strip", () => {
     const asking = going("D", "blocked", "blocked");
     const made = ledger([...mix(13, 3, 21), asking], { gates: [gate(asking.task.id)] });
     expect(runProgress(made.snapshot, made.run, NOW).strip).toMatchObject({
-      state: "needs", word: "Needs you", label: "Tasks 13/22", percent: 59, live: false,
+      state: "needs", word: "Needs you", label: "13/22", percent: 59, live: false,
       side: [{ text: "1 decision", strong: true }, { text: "3 working", strong: false }],
     });
   });
@@ -534,13 +534,13 @@ describe("the strip", () => {
     const broke = going("x", "failed", "failed");
     const made = ledger([...mix(10, 2, 21), broke]);
     expect(runProgress(made.snapshot, made.run, NOW).strip).toMatchObject({
-      state: "failed", word: "Failed", label: "Tasks 10/22", percent: 45,
+      state: "failed", word: "Failed", label: "10/22", percent: 45,
       side: [{ text: "1 failed", strong: true }, { text: "2 working", strong: false }],
     });
     // A failed check is completed in the ledger, and is not counted done.
     const check = going("review", "completed", "completed", { task: { kind: "review", verdict: "fail" } });
     const reviewed = ledger([...mix(2, 0, 2), check]);
-    expect(runProgress(reviewed.snapshot, reviewed.run, NOW).strip).toMatchObject({ state: "failed", label: "Tasks 2/3", side: [{ text: "1 failed" }] });
+    expect(runProgress(reviewed.snapshot, reviewed.run, NOW).strip).toMatchObject({ state: "failed", label: "2/3", side: [{ text: "1 failed" }] });
   });
 
   it("puts a decision ahead of a failure, and names both", () => {
@@ -556,7 +556,7 @@ describe("the strip", () => {
     const last = going("last", "completed", "completed", { attempt: { finishedAt: START + 161 * MINUTE } });
     const made = ledger([...mix(21, 0, 21), last], {}, run({ status: "completed" }));
     expect(runProgress(made.snapshot, made.run, NOW + 999 * MINUTE).strip).toMatchObject({
-      state: "done", word: "Done", label: "Done · 22/22", percent: 100, live: false,
+      state: "done", word: "Done", label: "22/22", percent: 100, live: false,
       side: [{ text: "2h 41m", strong: false }],
     });
   });
@@ -565,7 +565,7 @@ describe("the strip", () => {
     const replaced = going("old", "failed", "failed", { task: { supersededBy: "task_new" } });
     const made = ledger([...mix(3, 0, 3), replaced, { task: task("dropped", "cancelled") }], {}, run({ status: "completed" }));
     const progress = runProgress(made.snapshot, made.run, NOW);
-    expect(progress.strip).toMatchObject({ state: "done", label: "Done · 3/3" });
+    expect(progress.strip).toMatchObject({ state: "done", label: "3/3" });
     expect(progress.tiles.tasks).toEqual({ done: 3, total: 3 });
   });
 
@@ -579,7 +579,7 @@ describe("the strip", () => {
     const progress = runProgress(made.snapshot, made.run, NOW, held);
     // The decision is kept, on the row that holds it.
     expect(progress.rows.find((row) => row.task.id === old.task.id)).toMatchObject({ state: "needs", group: "needs", decisions: 1 });
-    expect(progress.strip).toMatchObject({ state: "needs", needs: 1, label: "Tasks 0/1", done: 0, total: 1 });
+    expect(progress.strip).toMatchObject({ state: "needs", needs: 1, label: "0/1", done: 0, total: 1 });
     // And the replaced task is not work again: one task is owed, not two.
     expect(progress.tiles.tasks).toEqual({ done: 0, total: 1 });
     expect(countsAsWork(made.run, old.task)).toBe(false);
@@ -731,7 +731,7 @@ describe("the strip", () => {
       const line = chatStrip(snapshot, NOW)!;
       expect(line.run.id).toBe("run_old");
       expect(line.strip).toMatchObject({
-        state: "needs", word: "Needs you", label: "Tasks 1/2", runs: 2, live: false,
+        state: "needs", word: "Needs you", label: "1/2", runs: 2, live: false,
         side: [{ text: "1 decision", strong: true }, { text: "2 runs", strong: false }],
       });
       expect(line.strip.notes[0]).toBe("The bar is one of 2 live runs of this chat, the one that waits on you.");

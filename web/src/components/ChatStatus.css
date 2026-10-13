@@ -1,0 +1,278 @@
+/* The rows above the composer that report: one calm group, not four boxes.
+
+   Every row is one line of the same height on the same left edge, with its
+   icon or dot in the same column. That column is the eyebrow's own (the
+   composer's 12px and the eyebrow's 13px in, 18px wide, 6px before the
+   words), so the face under the rows stands in line with them. No row has a
+   fill or a border of its own: a hairline between two rows is all that
+   separates them. State is the colour of the icon or dot and nothing else:
+   `--warn` a problem, `--ok` done, `--decide` what waits on the person,
+   `--danger` a failure, the accent a turn in flight. */
+
+.chat-status {
+  --status-row: 28px;
+  --status-icon: 18px;
+  --status-gap: 6px;
+  /* A hairline of the text's own ink, so it is as faint in a mode whose
+     border token is a drawn frame (Manga) as in the others. */
+  --status-rule: color-mix(in srgb, var(--fg-3) 22%, transparent);
+  /* Never squeezed by the column it sits in: a row that gave up height drew
+     its words over its neighbours. */
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0 25px;
+}
+
+.chat-status > * {
+  max-width: calc(var(--chat-column) - 26px);
+  margin-inline: auto;
+}
+
+.chat-status > * + * {
+  border-top: 1px solid var(--status-rule);
+}
+
+/* ---- One row ------------------------------------------------------------ */
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--status-gap);
+  min-width: 0;
+  min-height: var(--status-row);
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+
+/* A row that opens: the whole line is the control, for a pointer, a finger
+   and the keyboard alike. */
+.status-row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--status-gap);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--status-row);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-row-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 var(--status-icon);
+  width: var(--status-icon);
+  height: var(--status-icon);
+  color: var(--fg-3);
+}
+
+.status-row-icon[data-tone="warn"] { color: var(--warn); }
+.status-row-icon[data-tone="ok"] { color: var(--ok); }
+
+/* The words give way before the label does, and neither is ever drawn
+   outside the row: one line, cut with an ellipsis, whole behind the row's
+   disclosure. */
+.status-row-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-0);
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-row-text {
+  flex: 0 100000 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Right after the words it opens, in every row that opens: the far end of
+   the row is the dismiss's alone, so the two never trade places. */
+.status-row-chevron {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-3);
+  transition: transform 160ms ease-out;
+}
+
+.status-row-main[aria-expanded="true"] > .status-row-chevron {
+  transform: rotate(180deg);
+}
+
+/* A row's own way out: there under the pointer and the keyboard, and always
+   where there is no pointer to bring it. */
+.status-row-dismiss {
+  display: grid;
+  place-items: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 130ms ease-out, background-color 130ms ease-out, color 130ms ease-out;
+}
+
+.status-row:hover .status-row-dismiss,
+.status-row:focus-within .status-row-dismiss {
+  opacity: 1;
+}
+
+/* No pointer that hovers, or a finger beside one that does (a touch
+   laptop): nothing is reachable by hover alone. */
+@media (hover: none), (any-pointer: coarse) {
+  .status-row-dismiss { opacity: 1; }
+}
+
+.status-row-dismiss:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.status-row-main:focus-visible,
+.status-row-dismiss:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+@media (hover: hover) {
+  .status-row-main:hover .status-row-label { text-decoration: underline; text-underline-offset: 3px; }
+}
+
+/* What a row opens: under its words, in the group's own ink. It pushes the
+   rows above it up, never the composer down. */
+.status-row-panel {
+  padding: 0 0 8px calc(var(--status-icon) + var(--status-gap));
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  animation: status-panel-in 160ms ease-out;
+}
+
+.status-row-panel p { margin: 0; }
+.status-row-panel p + p { margin-top: 2px; }
+
+@keyframes status-panel-in {
+  from { opacity: 0; }
+}
+
+/* ---- The chat's folder is gone -------------------------------------------
+   A task chat outlives its worktree. The row says so and what the next
+   message does about it; the path and the whole sentences are behind it. It
+   reports, and never stands in the way of sending. */
+
+.chat-folder-gone {
+  animation: status-row-in 180ms ease-out;
+}
+
+.chat-folder-gone-path {
+  color: var(--fg-1);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+@keyframes status-row-in {
+  from { opacity: 0; transform: translateY(2px); }
+}
+
+/* ---- Background notices ---------------------------------------------------
+   Provider diagnostics are useful when debugging, but they are not part of
+   the conversation and usually offer no immediate action. One row keeps them
+   available without turning raw logs into a stack of warning cards. */
+
+.chat-notices-title {
+  color: var(--fg-1);
+}
+
+/* The one part of the group that can scroll, and only down: a classic
+   scrollbar takes width here, never height, and no row has one. */
+.chat-notices-panel {
+  max-height: min(42vh, 360px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.chat-notice-item + .chat-notice-item {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--status-rule);
+}
+
+.chat-notice-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--fg-1);
+  font-weight: 600;
+}
+
+.chat-notice-count {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.chat-notice-item p {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.chat-notice-technical {
+  margin-top: 6px;
+}
+
+.chat-notice-technical summary {
+  width: max-content;
+  border-radius: 2px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.chat-notice-technical summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.chat-notice-technical pre {
+  max-height: 130px;
+  margin: 6px 0 0;
+  overflow: auto;
+  padding: 8px 9px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  color: var(--fg-2);
+  font: 10.5px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-folder-gone,
+  .status-row-panel { animation: none; }
+  .status-row-chevron,
+  .status-row-dismiss { transition: none; }
+}

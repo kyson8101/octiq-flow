@@ -1,27 +1,42 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { RunProgressStrip, stripSpoken, stripTitle } from "./RunProgressStrip";
-import type { RunStrip } from "../lib/runProgress";
+import { stripLine, type RunStrip } from "../lib/runProgress";
 import css from "./RunProgress.css?raw";
+import statusCss from "./ChatStatus.css?raw";
 
 const strip = (over: Partial<RunStrip> = {}): RunStrip => ({
-  state: "running", word: "Running", done: 13, total: 22, percent: 59, label: "Tasks 13/22",
+  state: "running", word: "Running", done: 13, total: 22, percent: 59, label: "13/22",
   side: [{ text: "4 working", strong: false }], live: true, needs: 0, planOnly: false, failed: 0, stopped: 0, working: 4, runs: 1,
   notes: [], signature: "run_1:running:13/22:0:0", ...over,
 });
 
 const render = (value: RunStrip) => renderToStaticMarkup(<RunProgressStrip strip={value} onOpen={() => {}} onHide={() => {}} />);
+/** What a person reads off the line: the words between the tags. */
+const words = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+const once = (text: string, part: string) => text.split(part).length - 1;
 
 describe("the run's line above the composer", () => {
-  it("draws the state, the count in its bar, the percent and who is working", () => {
+  it("draws the dot, the state word, a bar with nothing in it, then the count and who is working", () => {
     const html = render(strip());
-    expect(html).toContain('<div class="run-strip" data-state="running" data-live="true"');
+    expect(html).toContain('<div class="run-strip status-row" data-state="running" data-live="true"');
+    expect(html).toContain('<span class="status-row-icon" aria-hidden="true"><span class="run-strip-dot"></span></span>');
     expect(html).toContain('<span class="run-strip-word">Running</span>');
-    expect(html).toContain('style="--at:59%"');
-    expect(html).toContain('<span class="run-strip-fill" style="width:59%"></span><span class="run-strip-label">Tasks 13/22</span>');
-    expect(html).toContain('<span class="run-strip-pct" aria-hidden="true">59%</span>');
+    // The bar is a fill and nothing else: no words, no count, no percent.
+    expect(html).toContain('<span class="run-strip-meter" style="--at:59%" aria-hidden="true"><span class="run-strip-fill" style="width:59%"></span></span>');
+    expect(html).toContain('<span class="run-strip-count" aria-hidden="true">13/22</span>');
     // The number in the line's ink, the word beside it.
-    expect(html).toContain("<span><b>4</b> working</span>");
+    expect(html).toContain("<span> · <b>4</b> working</span>");
+    expect(words(html)).toBe("Running 13/22 · 4 working");
+  });
+
+  it("says no percent, in any state", () => {
+    for (const value of [strip(), strip({ percent: 100, state: "done", word: "Done", label: "22/22", done: 22 }), strip({ percent: 0, done: 0, label: "0/22" })]) {
+      // Not between the tags and not in what is spoken: only the fill's width.
+      expect(render(value).replace(/style="[^"]*"/g, "")).not.toContain("%");
+      expect(render(value)).not.toContain("run-strip-pct");
+      expect(render(value)).not.toContain("run-strip-label");
+    }
   });
 
   it("says what waits in the decision's own words, then who is still working", () => {
@@ -33,39 +48,59 @@ describe("the run's line above the composer", () => {
     expect(html).not.toContain("data-live");
     expect(html).toContain('<b class="run-strip-reason">1 decision</b>');
     expect(html).toContain('<span class="run-strip-then"> · 3 working</span>');
+    expect(words(html)).toBe("Needs you 13/22 · 1 decision · 3 working");
+    expect(once(words(html), "Needs you")).toBe(1);
   });
 
-  it("turns to Done with the whole count and how long it took, and offers Dismiss", () => {
+  it("turns to Done once, with a full bar, the whole count and how long it took, and offers Dismiss", () => {
     const html = render(strip({
-      state: "done", word: "Done", done: 22, total: 22, percent: 100, label: "Done · 22/22", live: false,
+      state: "done", word: "Done", done: 22, total: 22, percent: 100, label: "22/22", live: false,
       side: [{ text: "2h 41m", strong: false }],
     }));
     expect(html).toContain('data-state="done"');
-    expect(html).toContain('<span class="run-strip-label">Done · 22/22</span>');
-    expect(html).toContain("<span>2h 41m</span>");
+    expect(html).toContain('<span class="run-strip-fill" style="width:100%"></span>');
+    expect(words(html)).toBe("Done 22/22 · 2h 41m");
+    expect(once(words(html), "Done")).toBe(1);
     expect(html).toContain('aria-label="Dismiss"');
   });
 
-  it("says a failure in red's own word", () => {
-    const html = render(strip({
-      state: "failed", word: "Failed", done: 10, percent: 45, label: "Tasks 10/22", live: false,
+  it("says a failure once: how many failed is the word, and the counts are what is left", () => {
+    const failed = strip({
+      state: "failed", word: "Failed", done: 10, percent: 45, label: "10/22", live: false, failed: 1,
       side: [{ text: "1 failed", strong: true }, { text: "2 working", strong: false }],
-    }));
+    });
+    const html = render(failed);
     expect(html).toContain('data-state="failed"');
-    expect(html).toContain('<b class="run-strip-reason">1 failed</b>');
+    expect(html).toContain('<span class="run-strip-word">1 failed</span>');
+    expect(words(html)).toBe("1 failed 10/22 · 2 working");
+    expect(once(words(html).toLowerCase(), "failed")).toBe(1);
+    expect(stripLine(failed)).toEqual({ word: "1 failed", side: [{ text: "2 working", strong: false }] });
+    // Every other state keeps its word and all of its counts.
+    expect(stripLine(strip())).toEqual({ word: "Running", side: [{ text: "4 working", strong: false }] });
+    // What is spoken is whole, as before.
+    expect(stripSpoken(failed)).toBe("Run: Failed, 10 of 22 tasks done, 1 failed, 2 working");
   });
 
   it("leaves the side out when there is nothing to count", () => {
     const html = render(strip({ side: [] }));
     expect(html).not.toContain("run-strip-side");
     expect(html).not.toMatch(/\b0 (working|failed|decisions?)\b/);
+    expect(words(html)).toBe("Running 13/22");
   });
 
-  it("says no percent before anything is done", () => {
-    const html = render(strip({ done: 0, total: 2, percent: 0, label: "Tasks 0/2", side: [{ text: "1 working", strong: false }] }));
-    expect(html).not.toContain("run-strip-pct");
-    expect(html).not.toContain(">0%<");
-    expect(html).toContain('<span class="run-strip-label">Tasks 0/2</span>');
+  it("draws an empty bar and the count before anything is done", () => {
+    const html = render(strip({ done: 0, total: 2, percent: 0, label: "0/2", side: [{ text: "1 working", strong: false }] }));
+    expect(html).toContain('<span class="run-strip-fill" style="width:0%"></span>');
+    expect(words(html)).toBe("Running 0/2 · 1 working");
+  });
+
+  it("draws no bar for a run with nothing to count, and says why in the count's place", () => {
+    const html = render(strip({
+      state: "needs", word: "Needs you", done: 0, total: 0, percent: 0, label: "No tasks yet", live: false, needs: 1, planOnly: true,
+      side: [{ text: "Plan to approve", strong: true }],
+    }));
+    expect(html).not.toContain("run-strip-meter");
+    expect(words(html)).toBe("Needs you No tasks yet · Plan to approve");
   });
 
   it("is one button that opens the agents, and one that hides the line", () => {
@@ -78,7 +113,7 @@ describe("the run's line above the composer", () => {
 
   it("is drawn still, and without the live mark, while no turn is in flight", () => {
     const html = render(strip({ live: false, working: 0, side: [] }));
-    expect(html).toContain('<div class="run-strip" data-state="running" role="group"');
+    expect(html).toContain('<div class="run-strip status-row" data-state="running" role="group"');
     expect(html).not.toContain("data-live");
   });
 
@@ -157,7 +192,11 @@ describe("the run progress sheet", () => {
   });
 
   it("keeps every transition between 130 and 220 ms, easing out, off layout", () => {
-    const transitions = rules.flatMap((rule) => [...rule.body.matchAll(/transition:([^;]+);/g)].map((m) => ({ selector: rule.selector, value: m[1].trim() })))
+    // The strip's own sheet, and the group's it is a row of (its dismiss and
+    // the chevron of a row that opens are drawn from there).
+    const group = [...statusCss.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .map((m) => ({ selector: m[1].trim().replace(/\s+/g, " "), body: m[2] }));
+    const transitions = [...rules, ...group].flatMap((rule) => [...rule.body.matchAll(/transition:([^;]+);/g)].map((m) => ({ selector: rule.selector, value: m[1].trim() })))
       .filter((item) => item.value !== "none");
     expect(transitions.length).toBeGreaterThan(3);
     for (const { selector, value } of transitions) {
@@ -168,7 +207,7 @@ describe("the run progress sheet", () => {
         expect(Number(ms), selector).toBeLessThanOrEqual(220);
         expect(ease, selector).toBe("ease-out");
         // The bar's fill is clipped inside its track: its width moves nothing.
-        expect(["background", "color", "transform", "width"], selector).toContain(property);
+        expect(["background", "background-color", "color", "opacity", "transform", "width"], selector).toContain(property);
       }
     }
   });

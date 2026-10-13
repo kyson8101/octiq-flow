@@ -245,7 +245,7 @@ describe("the strip above the composer", () => {
   };
 
   it.each(["failed", "blocked", "checkFailed"] as const)("%s: says the plan and the failure", (name) => {
-    expect(strip(name)).toMatchObject({ state: "needs", needs: 1, planOnly: true, failed: 1, label: "Tasks 0/2" });
+    expect(strip(name)).toMatchObject({ state: "needs", needs: 1, planOnly: true, failed: 1, label: "0/2" });
     expect(strip(name).side.map((item) => item.text)).toEqual(["Plan to approve", "1 failed"]);
   });
 

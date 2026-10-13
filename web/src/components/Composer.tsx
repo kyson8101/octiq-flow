@@ -35,6 +35,9 @@ import type { BackgroundTask } from "../lib/background";
 import { BackgroundNote } from "./Background";
 import { RollingText } from "./RollingNumber";
 import { useLate } from "../lib/useArrival";
+import { receiptLines } from "../lib/chatSettings";
+import { WAIT_WORDS, type ChatWait } from "../lib/chatWait";
+import { turnElapsed, type TurnWaits } from "../lib/turnClock";
 import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/commandMenu";
 import {
   AGENT_NAME,
@@ -386,9 +389,11 @@ export function Composer({
   terminalOpen,
   onRestart,
   installed,
-  model,
   lastDurationMs,
   lastCostUsd,
+  runsAt,
+  waiting,
+  turnWaits,
   identity,
   advanced,
 }: {
@@ -508,13 +513,22 @@ export function Composer({
   /** End the agent and keep the conversation. Absent when nothing is running:
    *  the next message spawns a fresh one anyway, so there is nothing to offer. */
   onRestart?: () => void;
-  /** What the last turn was: which model actually answered, how long it took
-   *  and what it cost. All three arrive with the agent's `result`, so there is
-   *  nothing to draw until a turn has finished. Drawn on the eyebrow's right
-   *  half rather than on a row under the box — see `.composer-last`. */
-  model?: string;
+  /** The last turn's receipt: how long it took and what it cost. Both arrive
+   *  with the agent's `result`. Never on the eyebrow: two lines of a tooltip,
+   *  on the agent's chip or on the model picker (`lib/chatSettings`). */
   lastDurationMs?: number;
   lastCostUsd?: number;
+  /** An agent's chat: what this chat runs at, `opus · high · Auto`, said
+   *  beside the agent's name. Read-only. Absent or shorter where the page
+   *  does not know (`lib/chatSettings.knownSettings`). */
+  runsAt?: string;
+  /** The chat waits on the person (`lib/chatWait`): the agent is parked on a
+   *  card, so the running line says so in the decision colour, its clock
+   *  stops and nothing on it moves. Only read while `busy`. */
+  waiting?: ChatWait | null;
+  /** The waits of the turn in flight, so its clock leaves them out
+   *  (`lib/turnClock`). */
+  turnWaits?: TurnWaits;
 }) {
   const [text, setText] = useState("");
   const [focusOptions, setFocusOptions] = useState(false);
@@ -973,13 +987,13 @@ export function Composer({
     setAttachError(null);
   }
 
-  // The last turn's receipt is read off the transcript, so on a chat that has
-  // just been opened it turns up a moment after the box does.
-  const receiptLate = useLate(!!model || lastDurationMs !== undefined || lastCostUsd !== undefined, session ?? "");
+  // The last turn's receipt, for a tooltip: on the agent's chip, or on the
+  // model picker of an ordinary chat. It is not on the eyebrow.
+  const receipt = receiptLines(lastDurationMs, lastCostUsd);
 
   return (
     <div className={`composer ${focusMode ? "composer-focus" : ""} ${focusMode && focusOptions ? "focus-options-open" : ""}`} data-composer-style={choice.composerStyle} data-model-id={choice.id}>
-      {focusMode && <div className="focus-activity" role="status">{activity || (busy ? "Working…" : "\u00a0")}</div>}
+      {focusMode && <div className="focus-activity" role="status" data-waiting={(busy && waiting) || undefined}>{busy && waiting ? WAIT_WORDS[waiting] : activity || (busy ? "Working…" : "\u00a0")}</div>}
       {/* Everything ABOUT the turn sits above the box: the thought being had,
           and under it how long this has taken and how much has been written.
           Both are lines of text, and a line of text in a row of buttons gets
@@ -990,9 +1004,10 @@ export function Composer({
         </div>
       )}
 
-      {/* The eyebrow: the hint on the left, compact glanceable controls and the
-          last-turn receipt on the right. No new row — this one was already
-          here, saying "Enter to send". */}
+      {/* The eyebrow: the hint on the left, and on a touch screen the history
+          keys on the right. What the chat runs at and the last turn's receipt
+          are not here: the first is beside the agent's name in the row below,
+          the second in a tooltip there. */}
       <div className="composer-hint">
         <span className="composer-hint-said">
         {/* Work the turn left running behind it rides on this same line: a dot
@@ -1003,6 +1018,8 @@ export function Composer({
         {busy ? (
           <Working
             since={turnStartedAt}
+            waits={turnWaits}
+            waiting={waiting ?? undefined}
             tokens={turnTokens}
             approx={turnApprox}
             activity={activity}
@@ -1028,46 +1045,6 @@ export function Composer({
         })()}
         </BackgroundNote>
         </span>
-
-        {/* The last turn's receipt, on the half of this row that was empty the
-            whole time. It used to be a row of its own UNDER the box — a third
-            line of chrome below the thing you type in, holding three facts you
-            glance at once. Icons rather than words because it sits at the end
-            of a line that a running turn writes a whole sentence on: what it
-            says has to survive being read in a quarter of a second, and the
-            tooltip spells all of it out. */}
-        {(model || lastDurationMs !== undefined || lastCostUsd !== undefined) && (
-          <span
-            className={`composer-last${receiptLate ? " enter-fade" : ""}`}
-            title={[
-              model && `Model · ${model}`,
-              lastDurationMs !== undefined &&
-                `Last turn · ${(lastDurationMs / 1000).toFixed(1)}s`,
-              lastCostUsd !== undefined && `Cost · $${lastCostUsd.toFixed(3)}`,
-            ]
-              .filter(Boolean)
-              .join("\n")}
-          >
-            {model && <span className="composer-last-model">{model}</span>}
-            {lastDurationMs !== undefined && (
-              <span className="composer-last-item">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="9" />
-                  <path d="M12 7v5l3 2" />
-                </svg>
-                <RollingText>{`${(lastDurationMs / 1000).toFixed(1)}s`}</RollingText>
-              </span>
-            )}
-            {lastCostUsd !== undefined && (
-              <span className="composer-last-item">
-                {/* No icon here on purpose: the `$` in front of the number is
-                    one, and a coin drawn at 11px beside it read as a circled
-                    dollar next to a dollar — the same mark twice. */}
-                <RollingText>{`$${lastCostUsd.toFixed(3)}`}</RollingText>
-              </span>
-            )}
-          </span>
-        )}
 
         {/* Software keyboards have no Up/Down history keys. On touch screens
             their equivalent sits at the right of this eyebrow: close to the
@@ -1373,7 +1350,7 @@ export function Composer({
               <SlidersIcon />
             </button>
           )}
-          {identity ? <AgentIdentityChip identity={identity} chat={session} /> : <>
+          {identity ? <AgentIdentityChip identity={identity} chat={session} runsAt={runsAt} receipt={receipt} /> : <>
           <div className="composer-settings">
           <div className="picker">
             <button
@@ -1381,7 +1358,7 @@ export function Composer({
               type="button"
               aria-haspopup="menu"
               aria-expanded={menu}
-              title={`${choice.name} · ${choice.model}`}
+              title={[`${choice.name} · ${choice.model}`, ...receipt].join("\n")}
               onClick={() => setMenu((v) => !v)}
             >
               {/* The mark, not the name. "Claude · Opus" spent a third of the
@@ -1654,21 +1631,36 @@ export function Composer({
  *  `chat` is the saved chat this composer is the composer of: a confirmed
  *  route's face and name land on the chip of the chat it opened and on no
  *  other (`lib/identityTravel.composerLanding`), whoever the chip names. */
-export function AgentIdentityChip({ identity, chat }: { identity: AgentIdentity; chat?: string }) {
-  // The face and the name are the whole chip. Role, provider and model are
-  // the agent's settings, not its voice: they stay in the tooltip and in
-  // Settings, Agents, where they are changed.
+export function AgentIdentityChip({ identity, chat, runsAt, receipt = [] }: {
+  identity: AgentIdentity;
+  chat?: string;
+  /** What THIS chat runs at, `opus · high · Auto` (`lib/chatSettings`):
+   *  only what the page knows of it, so it may be shorter or absent. */
+  runsAt?: string;
+  /** The last turn's receipt, a line each, for the tooltip. */
+  receipt?: readonly string[];
+}) {
+  // The face and the name are the chip, with what the chat runs at beside
+  // them in small quiet text. That text is not a control: there is no picker
+  // behind it and nothing to click, because the agent's registration owns
+  // those settings and Settings, Agents is where they are changed. The role
+  // and the provider stay in the tooltip, and so does the last turn's
+  // receipt.
   const provider = AGENT_NAME[identity.provider];
   const tip = [
     identity.name,
     identity.role,
     `${provider} ${identity.model} · set in Settings, Agents`,
     identity.removed ? "No longer registered: this conversation keeps its last settings" : "",
+    ...receipt,
   ].filter(Boolean).join("\n");
   return (
     <div className="composer-identity" title={tip} data-removed={identity.removed || undefined} data-chat={chat || undefined}>
       <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={22} removed={identity.removed} decorative />
+      {/* What a confirmed route's name lands on (`identityTravel`): it stays
+          the name alone, and it is the last thing here to be cut short. */}
       <span className="composer-identity-name">{identity.name}</span>
+      {runsAt && <span className="composer-identity-runs">{runsAt}</span>}
     </div>
   );
 }
@@ -2587,6 +2579,8 @@ function Working({
   background,
   robot,
   persona,
+  waits,
+  waiting,
 }: {
   /** A registered agent works under its own face, not a model's robot. */
   persona?: AgentIdentity | null;
@@ -2603,12 +2597,23 @@ function Working({
   /** Something started by this turn is still running behind it. It reaches the
    *  mascot's eyes rather than a dot of its own — see `BackgroundNote`. */
   background?: boolean;
+  /** The waits of this turn, which its clock leaves out (`lib/turnClock`). */
+  waits?: TurnWaits;
+  /** The chat waits on the person: the agent is parked on a card. The line
+   *  says so in the decision colour in place of what the agent is doing, the
+   *  clock stops, and the companion stands still. Work the agent left
+   *  running in the background is not this line's and goes on being said
+   *  beside it. */
+  waiting?: ChatWait;
 }) {
   const [, tick] = useState(0);
+  // The second hand runs only while there is work to count: a clock that is
+  // stopped is not redrawn once a second to say the same thing.
   useEffect(() => {
+    if (waiting) return;
     const timer = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [waiting]);
 
   // The clock is the one figure on this line that is NOT rolled. It changes
   // every second, and a wheel that turns and then flashes takes 1.46s to do it
@@ -2622,23 +2627,31 @@ function Working({
     <>
       {/* A turn switches the same companion from dancing to thinking or typing. */}
       {persona
-        ? <AgentAvatar name={persona.name} label={`${persona.name} is working`} avatar={persona.avatar} id={persona.id ?? persona.name} size={18} className="composer-hint-avatar is-working" />
-        : <Mascot robot={robot} alert={background} mood={thinking ? "think" : "work"} />}
+        ? <AgentAvatar name={persona.name} label={waiting ? `${persona.name} is waiting for you` : `${persona.name} is working`} avatar={persona.avatar} id={persona.id ?? persona.name} size={18}
+            className={`composer-hint-avatar${waiting ? "" : " is-working"}`} />
+        : <Mascot robot={robot} alert={background} mood={waiting ? "still" : thinking ? "think" : "work"} />}
       {since !== undefined && (
         <>
-          <span className="working-clock">{elapsedLabel(Date.now() - since)}</span>
+          <span className="working-clock">{elapsedLabel(turnElapsed(since, waits, Date.now()))}</span>
           {" · "}
         </>
       )}
-      <RollingText>
-        {workingLine({
-          tokens,
-          approx,
-          activity,
-          thinking,
-          effort,
-        })}
-      </RollingText>
+      {waiting ? (
+        // The stopped clock and the words, and nothing between them: how
+        // much was written is not news while nothing is being written, and
+        // on a phone it pushed the one thing to read off the line.
+        <span className="working-waits enter-fade">{WAIT_WORDS[waiting]}</span>
+      ) : (
+        <RollingText>
+          {workingLine({
+            tokens,
+            approx,
+            activity,
+            thinking,
+            effort,
+          })}
+        </RollingText>
+      )}
     </>
   );
 }

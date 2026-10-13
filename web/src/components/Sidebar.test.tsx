@@ -303,6 +303,20 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain('aria-label="Task a, octiq-flow, working"');
   });
 
+  it("draws no working mark on a chat that waits on the person, whatever its turn says", () => {
+    // Parked on a card: a turn is on record and nothing is being worked on.
+    const out = html({
+      conversations: [chat("a"), chat("b")], running: new Set(["a", "b"]), busy: new Set(["a", "b"]),
+      waiting: new Map([["a", "answer"]]),
+    });
+    expect(out).toContain('aria-label="Task a, octiq-flow, session running"');
+    expect(out).not.toContain('aria-label="Task a, octiq-flow, working"');
+    // The session is still up, and the chat beside it is still working.
+    expect(out.match(/class="chat is-live is-busy"/g)).toHaveLength(1);
+    expect(out).toContain('aria-label="Task b, octiq-flow, working"');
+    expect(out.match(/class="chat-snippet">Working…<\/span>/g)).toHaveLength(1);
+  });
+
   it("runs the logo ring on the one main chat whose tasks are working, pinned or not", () => {
     const ledger = (state: "executing" | "queued", taskStatus: "running" | "completed" = "running"): OrchestrationSnapshot => ({
       runs: [{ id: "run", coordinatorChatKey: "chat:lead", objective: "Ship", workspaceId: "p1", rootPath: "/r", status: "running", maxConcurrent: 2, createdAt: 1, updatedAt: 1 }],

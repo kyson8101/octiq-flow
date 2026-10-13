@@ -163,7 +163,7 @@ describe("the row after a stop", () => {
     const waits = runWaits(snapshot, run);
     expect(runAttention(run, snapshot.tasks, snapshot.attempts, waits)).toMatchObject({ decisions: 0, blocked: 0, total: 0 });
     const strip = chatStrip(chatSnapshot(snapshot, run.coordinatorChatKey), NOW)!.strip;
-    expect(strip).toMatchObject({ state: "running", needs: 0, failed: 0, label: "Tasks 0/2" });
+    expect(strip).toMatchObject({ state: "running", needs: 0, failed: 0, label: "0/2" });
     expect(strip.notes).toEqual(["1 task stopped by you: only your Start starts it again."]);
     const scoped = chatSnapshot(snapshot, run.coordinatorChatKey);
     expect(chatRunStatus(scoped, rowRun(scoped)!)).not.toMatch(/attention|decision/i);

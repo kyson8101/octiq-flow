@@ -43,7 +43,7 @@ import composer from "../components/Composer.tsx?raw";
 const SITES: { name: string; in: "app" | "composer"; has: RegExp }[] = [
   // The composer says which chat it is the composer of, on the chip.
   { name: "the app tells the composer its chat", in: "app", has: /<Composer\b[^>]*?\bsession=\{conversationId \?\? undefined\}/s },
-  { name: "the composer tells the chip", in: "composer", has: /<AgentIdentityChip identity=\{identity\} chat=\{session\} \/>/ },
+  { name: "the composer tells the chip", in: "composer", has: /<AgentIdentityChip identity=\{identity\} chat=\{session\}[^>]*\/>/ },
   { name: "the chip writes it", in: "composer", has: /className="composer-identity"[^>]*\bdata-chat=\{chat \|\| undefined\}/ },
   // A travel is the confirmation's, from the chat it was pressed in.
   { name: "a travel starts in the chat on screen", in: "app", has: /routeTravel\.current = \{ id, from: visibleRef\.current, to: null, arrived: false \};/ },
@@ -121,7 +121,7 @@ describe("where a confirmed route's face and name land", () => {
   });
 
   it("fails when the chip does not say which chat it is in", () => {
-    const edited = composer.replace(" chat={session} />", " />");
+    const edited = composer.replace("<AgentIdentityChip identity={identity} chat={session}", "<AgentIdentityChip identity={identity}");
     expect(edited).not.toBe(composer);
     expect(wrong({ app, composer: edited })).toEqual(["the composer tells the chip"]);
   });

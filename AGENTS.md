@@ -482,8 +482,15 @@ missing. The order:
   prompt carries a one-line note (`chat_recover::with_note`, taken in
   `start_session`) that stays out of the person's bubble.
 - **Before any of that, the page says it is coming.** `RemovedFolderBanner`
-  reads `chat_task`'s `workspace.exists` and shows one line above the
-  composer (`removedFolderNote`). It never blocks a send.
+  reads `chat_task`'s `workspace.exists` and shows one row above the
+  composer (`removedFolderNote`). Folded it is a label and what the next
+  message does, a few words each with a folder by its last name (`Worktree
+  removed · next message rebuilds it from its branch`, `Folder removed ·
+  next message moves this chat to <folder>`, on a POSIX or a Windows path).
+  The whole path and the whole sentences (uncommitted and untracked files
+  are not restored; where it falls back to) are behind the row's own
+  disclosure, which is the row: a button, never a tooltip alone. It never
+  blocks a send.
 - Only `chat_start` recovers. Auto-resume, restart and a queued Codex turn
   reuse the remembered start context and are not covered.
 
@@ -852,6 +859,105 @@ handover-cards-namecard.html` is the mock they were built from.
   (`awayFromWarm`). Green and teal are not avoided: too few colours would be
   left to tell agents apart.
 
+### The rows above the composer are one group
+
+Four things report above the composer and ask nothing: the chat's folder is
+gone (`RemovedFolderBanner`), the chat is completing (`ChatCompletionLine`),
+background notices (`ChatNotices`), the run's progress (`RunProgressStrip`).
+They are one group (`components/ChatStatus`), mounted in that order directly
+on the composer, under the cards that ask.
+
+- **A row is one line, with no box and no fill of its own.** The same
+  height (28px), the same left edge and the same icon column, which is the
+  eyebrow's own, so the face under the rows stands in line with them. A
+  hairline between two rows is all that separates them. A row's state is
+  the colour of its icon or dot and nothing else. The shared frame is
+  `ChatStatus.css` (`.status-row`, `-main`, `-icon`, `-label`, `-text`,
+  `-chevron`, `-dismiss`, `-panel`); a new row uses it and adds no border,
+  background or tint.
+- **Nothing is drawn outside a row.** The group is `flex: 0 0 auto`: a row
+  with a `min-height` was squeezed to it by the column, and its wrapped
+  words were drawn over the borders (the person's screenshot). A row's
+  words are one line, cut with an ellipsis inside it at any width and in
+  any font. Only two things take a second line: what a row opens, and why a
+  completion did not happen (the host's sentence, never cut).
+- **Folded, a row is a short label.** A notice is its short title, or `3
+  notices` (`chatNotices.noticesHeadline`); the host's sentence for
+  interrupted background tasks is `1 background task interrupted`, with the
+  sentence and the task ids inside the opened panel. A long notice is
+  titled by what it leads with (`Could not switch models`) or `Notice`,
+  never by its first sixty characters.
+- **A row that opens is a button**, so a pointer, a finger and the keyboard
+  open it; nothing is a tooltip alone. Its chevron follows its words, and
+  the far end of the row is the dismiss's.
+- **A dismiss shows under the pointer and the focus, and always where a
+  finger can be** (`(hover: none), (any-pointer: coarse)`, which a touch
+  laptop matches). Nothing is reachable by hover alone.
+- **The group grows upward**, so a row arriving, or one opening, never
+  moves the composer. Only the notices' panel can scroll, and only down.
+- **A card that asks is not a row of this group** (permission, question,
+  access, safety) and keeps its look.
+
+### What a chat runs at is beside the agent's name
+
+An agent's chat has no pickers: the registration owns its settings. So the
+composer says what THIS chat runs at beside the agent's name, as small quiet
+text, `opus · high · Auto` (`AgentIdentityChip`, `lib/chatSettings`).
+
+- **It is read-only.** No picker, no click target: the person changes them
+  in Settings, Agents.
+- **Only what the page knows of this chat** (`knownSettings`). The values
+  are the page's own for the session (`choice`, `effort`, `access`). A
+  conversation not saved yet runs at exactly those, which the page copied
+  from the agent's registration as it opened it. A saved chat's model is
+  known when its index entry names one or the agent reported one, and its
+  effort and access when the entry has them; otherwise that part is left
+  out. Never filled in from the roster: a chat can differ from its agent.
+- **The settings text gives way before the name.** On a narrow composer, or
+  in a wider font, it is cut short and then gone before the name loses a
+  letter. `.composer-identity-name` stays the name alone: it is what a
+  confirmed route's name lands on (`identityTravel.composerLanding`,
+  `cutShort`).
+- **The last turn's receipt is a tooltip.** `Last turn · 178.1s` and `Cost ·
+  $9.526` (`receiptLines`) are two lines of the chip's tooltip, and of the
+  model picker's in an ordinary chat. The eyebrow carries no receipt and no
+  model name.
+
+### A chat that waits on the person is not drawn as running
+
+The agent is already parked when it asks: the tool it called blocks until
+the card is answered. So a chat with a turn on record that waits on the
+person is drawn waiting, not working (`lib/chatWait`).
+
+- **One answer, from the page's one list.** `waitingChats(pendingList, …)`
+  reads `lib/pendingActions`' list and nothing else: not the cards, not the
+  ledger. A new surface that draws a turn in flight asks it.
+  `chatWait.wiring.test.ts` reads `App.tsx` as text for each hand-off; it is
+  an alarm on spelling, not a proof.
+- **What parks a chat:** its own permission card or access request
+  (`Waiting for your approval`), its own question or full safety card
+  (`Waiting for your answer`), and a plan awaiting approval for a run it
+  coordinates (approval). **What does not:** a worker's card drawn in its
+  coordinator's chat (it parks the worker), a gate, an auto-mode refusal
+  the agent carried on past (`safetyToast.splitSafety`, asked with the turn
+  itself), a safety-check outage, an answer that could not be delivered, a
+  handover to confirm.
+- **The composer's line** says the waiting words in `--decide` where
+  `thinking…` was, the companion stands still (no working ring, which is
+  the accent), and the clock stops. Background work the turn started is not
+  this line's and goes on being said beside it.
+- **The clock leaves the wait out** (`lib/turnClock`): the turn's start plus
+  the waited intervals gives elapsed, so work goes on from where the clock
+  stopped. All on the page's clock, in memory. A page loaded in the middle
+  of a wait knows neither when the turn began nor how long it has waited:
+  it shows a clock stopped at about nothing beside the waiting words, and
+  after the answer counts the work done since.
+- **The chat list** draws no working mark on a row whose chat waits
+  (`Sidebar`'s `waiting`); its pending badge is unchanged. `busy` still
+  means a turn is on record there, which is what holds Archive.
+  `ChatTaskBar` says `Needs you` in `--decide`, never the accent and never
+  amber.
+
 ### Both agents' full stops carry their closing words
 
 `turn_is_over` reads `result` (Claude) and `turn.completed` / `turn.failed`
@@ -1160,10 +1266,20 @@ message starts it again and takes the tick away.
 ### A run's progress is one line above the composer, and the Agents panel
 
 The chat that coordinates a run carries one line on its composer
-(`RunProgressStrip`): the state, tasks done of total as a bar, and at most
-two counts. A click opens the run panel, which draws the same run as three
-tiles (Tasks, Tokens, Time), then its tasks in four groups. Both are read by
-`lib/runProgress` off the ledger this tab already holds.
+(`RunProgressStrip`): a dot, the state word, how far as a bar, the count, and
+at most two more counts. A click opens the run panel, which draws the same
+run as three tiles (Tasks, Tokens, Time), then its tasks in four groups. Both
+are read by `lib/runProgress` off the ledger this tab already holds.
+
+- **Nothing on the line is said twice.** The bar has no words in it and
+  there is no percent: `1/2` is beside it, once (`strip.label`, which is the
+  count and nothing of the state). A finished run is `Done ▬▬ 1/1 · 23m`.
+  A failure's reason is `1 failed`, which says the state's word again
+  beside `Failed`, so there the reason IS the word and the counts are what
+  is left (`runProgress.stripLine`): `1 failed ▬▬ 10/22 · 2 working`. Needs
+  you keeps its word, and its reason (`1 decision`, `Plan to approve`) says
+  what is asked. A run with nothing to count draws no bar. What is spoken
+  and the tooltip are whole, as before (`stripSpoken`, `stripTitle`).
 
 - **Nothing is estimated.** A figure the host did not send is `null` and the
   part that would draw it is left out; a zero is left out the same way. The

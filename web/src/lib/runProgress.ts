@@ -97,8 +97,11 @@ export type RunStrip = {
   word: string;
   done: number;
   total: number;
+  /** How far the bar is filled. It is drawn and never said: the count is. */
   percent: number;
-  /** "Tasks 13/22", or "Done · 22/22". */
+  /** The count beside the bar, "13/22", and nothing of the state: the word
+   *  says that, once. With nothing to count, what stands in for it:
+   *  "No tasks yet", "Run stopped", "No tasks left". */
   label: string;
   /** At most two, most urgent first. */
   side: StripSide[];
@@ -446,6 +449,20 @@ function stripSide(strip: Pick<RunStrip, "state" | "needs" | "planOnly" | "faile
   return side.filter((item): item is StripSide => !!item).slice(0, 2);
 }
 
+/** What the line draws beside its dot and bar, each thing once: the state
+ *  word, then the counts.
+ *
+ *  A failure's reason is "1 failed", which says the state's own word again
+ *  beside "Failed". So there the reason is the word, and the counts are what
+ *  is left. Needs you keeps its word: its reason ("1 decision", "Plan to
+ *  approve") says what is asked, not the state a second time. What is spoken
+ *  and what the tooltip says are not this function's: they stay whole. */
+export function stripLine(strip: Pick<RunStrip, "state" | "word" | "side">): { word: string; side: StripSide[] } {
+  const [reason, ...rest] = strip.side;
+  if (strip.state === "failed" && reason?.strong) return { word: reason.text, side: rest };
+  return { word: strip.word, side: strip.side };
+}
+
 /** Whether a task is part of the run's count of work, by what the host says
  *  of it and nothing else: settled, or still owed. Cancelled, replaced
  *  (`supersededBy`), or left unfinished by a stopped run is neither, which
@@ -565,7 +582,7 @@ export function runProgress(
       // history (a stopped run, or every task cancelled or replaced) and
       // which is on the line only for a card it still holds.
       label: !total ? (tasks.length === 0 ? "No tasks yet" : run.status === "stopped" ? "Run stopped" : "No tasks left")
-        : state === "done" ? `Done · ${done}/${total}` : `Tasks ${done}/${total}`,
+        : `${done}/${total}`,
       side: stripSide(counts, elapsedMs),
       live: state === "running" && active && working > 0,
       notes,

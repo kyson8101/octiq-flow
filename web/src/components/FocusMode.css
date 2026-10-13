@@ -156,6 +156,16 @@
   color: var(--fg-2);
   font-size: 12px;
   min-height: 18px;
+  transition: color 160ms ease-out;
+}
+
+/* The chat waits on the person: said in the decision colour. */
+.focus-activity[data-waiting] {
+  color: var(--decide);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-activity { transition: none; }
 }
 
 .app.focus-mode .composer .send:not(.stop) {

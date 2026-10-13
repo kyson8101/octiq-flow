@@ -3642,262 +3642,6 @@ body {
   }
 }
 
-/* ---- The chat's folder is gone ----------------------------------------
-   A task chat outlives its worktree. One quiet row above the composer says
-   so and what the next message will do about it; it reports, and never
-   stands in the way of sending. */
-.chat-folder-gone {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  max-width: calc(var(--chat-column) - 32px);
-  width: calc(100% - 32px);
-  min-height: 38px;
-  margin: 0 auto 6px;
-  padding: 7px 10px;
-  border: 1px solid color-mix(in srgb, var(--warn) 32%, var(--border));
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--warn) 7%, var(--bg-1));
-  color: var(--fg-2);
-  font-size: 12.5px;
-  animation: chat-folder-gone-in 180ms ease-out;
-}
-
-.chat-folder-gone-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  color: var(--warn);
-}
-
-.chat-folder-gone-copy {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 8px;
-  min-width: 0;
-}
-
-.chat-folder-gone-title {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--fg-1);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-folder-gone-hint {
-  color: var(--fg-3);
-}
-
-@keyframes chat-folder-gone-in {
-  from { opacity: 0; transform: translateY(2px); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chat-folder-gone { animation: none; }
-}
-
-/* ---- Background notices ----------------------------------------------
-   Provider diagnostics are useful when debugging, but they are not part of
-   the conversation and usually offer no immediate action. One quiet row keeps
-   them available without turning raw logs into a stack of warning cards. */
-.chat-notices {
-  max-width: var(--chat-column);
-  width: 100%;
-  margin: 0 auto 6px;
-  padding: 0 16px;
-}
-
-.chat-notices-bar {
-  display: flex;
-  align-items: stretch;
-  min-height: 38px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--bg-1) 74%, transparent);
-  color: var(--fg-2);
-}
-
-.chat-notices.is-open .chat-notices-bar {
-  border-radius: var(--r-sm) var(--r-sm) 0 0;
-  background: var(--bg-1);
-}
-
-.chat-notices-toggle {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex: 1 1 auto;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  padding: 7px 8px 7px 10px;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.chat-notices-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  color: var(--fg-3);
-}
-
-.chat-notices-icon svg {
-  width: 16px;
-  height: 16px;
-}
-
-.chat-notices-copy {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.chat-notices-title {
-  flex: 0 1 auto;
-  overflow: hidden;
-  color: var(--fg-1);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.chat-notices-hint {
-  flex: 1 1 auto;
-  overflow: hidden;
-  color: var(--fg-3);
-  font-size: 11.5px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.chat-notices-chevron {
-  display: inline-flex;
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: var(--fg-3);
-  transition: transform 140ms ease;
-}
-
-.chat-notices-chevron svg {
-  width: 14px;
-  height: 14px;
-}
-
-.chat-notices.is-open .chat-notices-chevron {
-  transform: rotate(180deg);
-}
-
-.chat-notices-clear {
-  flex: 0 0 34px;
-  border: 0;
-  border-left: 1px solid transparent;
-  background: transparent;
-  padding: 0;
-  color: var(--fg-2);
-  font: 17px/1 var(--sans);
-  cursor: pointer;
-}
-
-.chat-notices-toggle:hover,
-.chat-notices-clear:hover {
-  background: var(--bg-2);
-  color: var(--fg-1);
-}
-
-.chat-notices-clear:hover {
-  border-left-color: var(--border);
-}
-
-.chat-notices-toggle:focus-visible,
-.chat-notices-clear:focus-visible,
-.chat-notice-technical summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.chat-notices-panel {
-  max-height: min(42vh, 360px);
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-top: 0;
-  border-radius: 0 0 var(--r-sm) var(--r-sm);
-  background: var(--bg-0);
-}
-
-.chat-notice-item {
-  padding: 11px 12px;
-}
-
-.chat-notice-item + .chat-notice-item {
-  border-top: 1px solid var(--border);
-}
-
-.chat-notice-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-1);
-}
-
-.chat-notice-count {
-  flex: 0 0 auto;
-  color: var(--fg-3);
-  font-size: 10.5px;
-  font-weight: 500;
-}
-
-.chat-notice-item p {
-  margin: 4px 0 0;
-  color: var(--fg-2);
-  font-size: 11.5px;
-  line-height: 1.45;
-}
-
-.chat-notice-technical {
-  margin-top: 7px;
-}
-
-.chat-notice-technical summary {
-  width: max-content;
-  border-radius: 2px;
-  color: var(--fg-3);
-  font-size: 10.5px;
-  cursor: pointer;
-}
-
-.chat-notice-technical pre {
-  max-height: 130px;
-  margin: 7px 0 0;
-  overflow: auto;
-  padding: 8px 9px;
-  border-radius: var(--r-sm);
-  background: var(--bg-sunken);
-  color: var(--fg-2);
-  font: 10.5px/1.45 var(--mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 560px) {
-  .chat-notices-hint {
-    display: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chat-notices-chevron {
-    transition: none;
-  }
-}
-
 /* ---- Composer --------------------------------------------------------- */
 .composer {
   /* The fallback is the app's ordinary blue, but every registered model
@@ -4559,41 +4303,11 @@ body {
   text-overflow: ellipsis;
 }
 
-/* The last turn's receipt, at the right end of the eyebrow: which model
-   answered, how long it took, what it cost. It had a centred row of its own
-   under the box, which is a third line of chrome below the thing you type in
-   for three facts you glance at. Never grows — the words on the left are what
-   yields, and they already ellipsise. */
-.composer-last {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 10.5px;
-  color: var(--fg-3);
-  font-variant-numeric: tabular-nums;
-}
-
-.composer-last-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-/* Quieter than the number it labels: the icon says which number this is, and
-   is not itself worth reading. */
-.composer-last svg {
-  flex: 0 0 auto;
-  opacity: 0.62;
-}
-
-/* The exact id, not the picker's friendly name — `claude-opus-5`, not "Opus".
-   Capped because a provider id can be half a line long. */
-.composer-last-model {
-  max-width: 15ch;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+/* The chat waits on the person: the agent is parked on a card. Said where
+   "thinking…" was, in the decision colour and never the accent, which is a
+   turn in flight and is not what this is. */
+.working-waits {
+  color: var(--decide);
 }
 
 /* Holds the place the status line used to take in the row, so Send stays at
@@ -4641,18 +4355,17 @@ body {
   color: var(--fg-0);
   font-weight: 500;
 }
-.composer-identity-role,
-.composer-identity-model {
+/* What this chat runs at, `opus · high · Auto`: small quiet text beside the
+   name, read-only. It is what gives way: on a narrow composer, or in a wider
+   font, it is cut short (and then gone) before the name loses a letter. */
+.composer-identity-runs {
+  flex: 0 100000 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-.composer-identity-role { flex: 0 1 auto; }
-.composer-identity-model {
-  flex: 0 0 auto;
-  max-width: 12ch;
   color: var(--fg-3);
+  font-size: 11.5px;
 }
 .composer-identity[data-removed] .composer-identity-name {
   color: var(--fg-2);
@@ -4662,7 +4375,6 @@ body {
 
 @media (max-width: 700px) {
   .composer-identity { max-width: 60%; }
-  .composer-identity-role { display: none; }
   /* At 360px the three pickers, the attach button and Send needed 358px in a
      334px box, and the overflow landed on Send — the one control that must
      never move. The pickers collapse into one button here. */
@@ -4683,16 +4395,6 @@ body {
      Send into the middle of the bar. It also still has something to say here:
      "working…" and the activity line matter more on a phone, not less. */
 
-  /* The two numbers stay; the model id goes. It is the one part of the receipt
-     that never changes between turns, and 15 characters of it here come
-     straight out of what the line to its left can say. */
-  .composer-last-model {
-    display: none;
-  }
-
-  .composer-last {
-    gap: 7px;
-  }
 }
 
 .sheet-scrim {
