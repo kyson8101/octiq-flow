@@ -24,7 +24,10 @@
 //! Both constructors store `lift_settled`, and `prepare` sets it with the
 //! settings it reads from the roster, so a chat this build opens at read
 //! because its agent is registered at read is never raised here when that
-//! registration changes: no standing rule raises a chat. A record that does
+//! registration changes: no standing rule raises a chat. Both are on disk
+//! before this build starts the chat (`launch`), and a start whose record
+//! cannot be saved is refused, so a save that fails after the start, or a
+//! server that stops there, leaves the mark behind. A record that does
 //! not say (the field is new) is an earlier build's. One whose chat an
 //! earlier build had started before the restart cut its record at
 //! `Starting` is only flipped to `Confirmed` by `recover`, with the field

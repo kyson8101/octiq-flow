@@ -9,6 +9,8 @@ use super::*;
 use crate::handover::tests::{mend_store, project, repo, scratch, FakeHost};
 use crate::handover::{confirm, get, recover, request, route, Ask, Brief, Handover, Source, Start};
 
+mod recorded;
+
 /// A front desk on the world's own roster, and a project with a repository.
 struct Desk {
     host: FakeHost,

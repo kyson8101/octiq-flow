@@ -1386,7 +1386,7 @@ pub fn confirm(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, Strin
     if record.status == Status::Starting && launched(&record, host) {
         return finish(path, record);
     }
-    let checked = match prepare(&mut record, host) {
+    let mut checked = match prepare(&mut record, host) {
         Ok(checked) => checked,
         Err(error) => {
             record.error = Some(error.clone());
@@ -1407,6 +1407,8 @@ pub fn confirm(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, Strin
         // On disk before anything irreversible. If this save fails nothing
         // was created, and the handover stays pending.
         save_record(path, &record)?;
+        // That write is the one `launch` would make: not made twice.
+        checked.recorded = true;
     }
     if let Err(error) = launch(path, &mut record, host, &checked) {
         record.error = Some(error.clone());
@@ -1451,7 +1453,16 @@ struct Checked {
     projects: Vec<Workspace>,
     agent: Option<TeamAgent>,
     fence: Fence,
+    /// Whether the record as checked is on disk. `prepare` changed it and
+    /// saves nothing, so this is false until someone has saved it since:
+    /// `launch` does, unless a caller that just did says so.
+    recorded: bool,
 }
+
+/// How the refusal of a start begins, when the record that says what the
+/// chat is started on could not be saved first.
+pub(crate) const NOT_RECORDED: &str =
+    "The new chat was not started, because its record could not be saved first:";
 
 /// Every check that can still refuse a confirm, run immediately before the
 /// start. Changes nothing outside the record.
@@ -1498,7 +1509,8 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
     // From here its chat is started by this build, on those settings: a
     // record an earlier build left pending or starting at read is no longer
     // one the lift may raise later (`lift.rs`). Set with the settings, so
-    // every save of the record from here on carries both.
+    // every save of the record from here on carries both, and the first of
+    // those is made before the chat is started (`launch`).
     record.lift_settled = true;
     // A discussion recorded before its note changed says the chat is
     // read-only, which it is not: its first message is written again from
@@ -1540,6 +1552,7 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
         projects,
         agent,
         fence,
+        recorded: false,
     })
 }
 
@@ -1617,6 +1630,9 @@ fn recheck_checkout(destination: &TaskDestination, plan: &mut WorkspacePlan) -> 
 /// the worktree is made once and remembered, the index and the lead record
 /// are rewritten in place, and the agent is started only when its first turn
 /// is not already on record.
+///
+/// The record is on disk before any of it. This is the one place a chat is
+/// started for a handover, so the one place that has to make sure.
 fn launch(
     path: &Path,
     record: &mut Handover,
@@ -1628,6 +1644,19 @@ fn launch(
         .clone()
         .ok_or("This handover has no chat id to start.")?;
     let chat_id = key.strip_prefix("chat:").unwrap_or(&key).to_owned();
+
+    // What `prepare` read from the roster and the mark that this build
+    // starts the chat (`lift_settled`), in one write, before the start. A
+    // pending handover's confirm has just made it. A record left starting
+    // comes here with both in memory only, and its start used to be made
+    // on that: when the save after the start then failed, or the server
+    // stopped first, the disk still held an earlier build's record of a
+    // chat this build had opened at its agent's own level, which the lift
+    // later raised. So a start whose record cannot be saved is refused,
+    // and nothing is made or started.
+    if !checked.recorded {
+        save_record(path, record).map_err(|why| format!("{NOT_RECORDED} {why}"))?;
+    }
 
     let cwd = match (
         &record.workspace.prepared_cwd,
