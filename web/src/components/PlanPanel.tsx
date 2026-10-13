@@ -12,12 +12,14 @@
 // What each part says is `lib/planView`'s; this file draws it. On a desktop
 // the panel is a column beside the chat; on a phone it is drawn in the
 // chat's place (`App`'s `chatShown`).
-import { useEffect, useId, useRef, useState, type MouseEvent } from "react";
-import type { ChatPlan, ChatPlanStartAnswer } from "../lib/chatPlan";
+import { useId, useRef, useState, type MouseEvent } from "react";
+import type { ChatPlan } from "../lib/chatPlan";
+import { planFlight, useInFlight } from "../lib/inFlight";
 import {
-  hasPlan, moreDecisionsLabel, openQuestions, planHeader, planItems, planStart, startNote, stampTitle, tasksLabel,
+  hasPlan, moreDecisionsLabel, openQuestions, planHeader, planItems, planStart, stampTitle, tasksLabel,
   type PlanItemView, type PlanStart, type PlanTaskView,
 } from "../lib/planView";
+import type { StartSaid } from "../lib/useChatPlan";
 import { dropHeld, lastPointerPress, notePress, strayAnswer } from "../lib/pressGuard";
 import type { Press } from "../lib/cardFold";
 import "./PlanPanel.css";
@@ -140,26 +142,24 @@ function PlanItem({ item, onOpenTask }: { item: PlanItemView; onOpenTask?: (task
  *  fired by the press or the key that brought it on screen: a held key
  *  presses it once at most, and a pointer press that repeats the one the
  *  panel was opened with is dropped (`lib/pressGuard`). There is no confirm
- *  in front of it; the page's other Starts have none. */
-function StartControl({ start, opener, onStart }: {
+ *  in front of it; the page's other Starts have none.
+ *
+ *  Whether a Start is out is not this control's to remember: it is drawn
+ *  again every time the panel is opened, and a control that kept it sent
+ *  the same Start twice (shut the panel on a Start not yet answered, open
+ *  it, press). It asks the sender's own hold, by the chat
+ *  (`lib/inFlight`), and so does any other drawing of the plan. What the
+ *  host said of the last Start is handed in for the same reason. */
+function StartControl({ start, chatId, said, opener, onStart }: {
   start: PlanStart;
+  chatId: string | null;
+  said: StartSaid | null;
   opener: Press | null;
-  onStart: (revision: number) => Promise<ChatPlanStartAnswer>;
+  onStart: (revision: number) => Promise<unknown>;
 }) {
-  const [busy, setBusy] = useState(false);
-  /** The host's words, and the revision they were said of: a plan the agent
-   *  has changed since is another plan. */
-  const [said, setSaid] = useState<{ revision: number; text: string } | null>(null);
+  const busy = useInFlight(chatId ? planFlight(chatId) : null);
   const [why, setWhy] = useState(false);
   const whyId = useId();
-  const alive = useRef(true);
-  // Set on every mount, not only cleared on unmount: an effect that is run
-  // twice (strict mode) would otherwise leave it cleared on a live control,
-  // and a Start's answer would never switch the button back on.
-  useEffect(() => {
-    alive.current = true;
-    return () => { alive.current = false; };
-  }, []);
   const hintId = useId();
 
   if (start.kind === "none") return null;
@@ -167,20 +167,13 @@ function StartControl({ start, opener, onStart }: {
     return <footer className="cplan-foot" data-kind={start.kind}><p className="cplan-started" role="status">{start.state}</p></footer>;
   }
   const off = busy ? "Sending…" : start.off;
-  const reason = said && said.revision === start.revision ? said.text : null;
+  const reason = !busy && said && said.revision === start.revision ? said.text : null;
   const press = (event: MouseEvent<HTMLButtonElement>) => {
     if (off) return;
     if (strayAnswer(opener, { x: event.clientX, y: event.clientY, at: performance.now(), detail: event.detail })) return;
-    setBusy(true);
-    setSaid(null);
-    onStart(start.revision).then(
-      (answer) => {
-        if (!alive.current) return;
-        const note = startNote(answer);
-        setSaid(note ? { revision: answer.plan.revision, text: note } : null);
-      },
-      (error) => { if (alive.current) setSaid({ revision: start.revision, text: String((error as Error)?.message ?? error) }); },
-    ).finally(() => { if (alive.current) setBusy(false); });
+    // The sender holds the chat until the host answers and keeps what the
+    // host says: a refusal is drawn from `said`, not caught here.
+    void onStart(start.revision).catch(() => {});
   };
   return (
     <footer className="cplan-foot" data-kind={start.kind}>
@@ -206,9 +199,13 @@ function StartControl({ start, opener, onStart }: {
   );
 }
 
-export function PlanPanel({ plan, error, unread = false, flying, connected, page = false, onClose, onStart, onOpenTask }: {
+export function PlanPanel({ plan, chatId, said = null, error, unread = false, flying, connected, page = false, onClose, onStart, onOpenTask }: {
   /** The chat's plan as the host last answered, or `null` before it has. */
   plan: ChatPlan | null;
+  /** The chat the plan is of: what a Start is held by while it is out. */
+  chatId?: string | null;
+  /** What the host said of the chat's last Start (`useChatPlan`). */
+  said?: StartSaid | null;
   /** Why the last read failed, in the host's words. */
   error?: string | null;
   /** Nothing has been heard yet for this chat. */
@@ -219,7 +216,8 @@ export function PlanPanel({ plan, error, unread = false, flying, connected, page
   /** Drawn in the chat's place (a phone), not beside it. */
   page?: boolean;
   onClose: () => void;
-  onStart: (revision: number) => Promise<ChatPlanStartAnswer>;
+  /** Sends the Start. Its answer is the sender's to keep, not the panel's. */
+  onStart: (revision: number) => Promise<unknown>;
   onOpenTask?: (task: PlanTaskView) => void;
 }) {
   // The press that opened the panel, as the page last saw one: Start drops
@@ -262,7 +260,8 @@ export function PlanPanel({ plan, error, unread = false, flying, connected, page
           <p className="cplan-none-hint">The agent keeps one when you ask it to plan. You read it here and press Start when it is right.</p>
         </div>
       )}
-      <StartControl key={plan?.chatId ?? "none"} start={start} opener={opener.current} onStart={onStart} />
+      <StartControl key={plan?.chatId ?? "none"} start={start} chatId={chatId ?? plan?.chatId ?? null} said={said}
+        opener={opener.current} onStart={onStart} />
     </aside>
   );
 }

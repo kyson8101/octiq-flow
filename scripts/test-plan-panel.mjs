@@ -142,12 +142,17 @@ async function open(browser, state, { width, height, phone = false }, chat = "ma
       if (request.t !== "invoke") return;
       if (request.cmd === "chat_plan_start") {
         state.starts.push(request.args);
+        const reply = (answer) => {
+          if (answer.error) { socket.send(JSON.stringify({ t: "reply", id: request.id, ok: false, error: answer.error })); return; }
+          state.plan = answer.plan;
+          // The host says a recorded Start before it answers.
+          for (const each of sockets) each.send(JSON.stringify({ t: "event", event: "chat-plan", payload: { chatId: "main", plan: answer.plan } }));
+          socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: answer }));
+        };
         const answer = state.onStart(request.args);
-        if (answer.error) { socket.send(JSON.stringify({ t: "reply", id: request.id, ok: false, error: answer.error })); return; }
-        state.plan = answer.plan;
-        // The host says a recorded Start before it answers.
-        for (const each of sockets) each.send(JSON.stringify({ t: "event", event: "chat-plan", payload: { chatId: "main", plan: answer.plan } }));
-        socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: answer }));
+        // A host that has not answered yet: `state.release(answer)` answers.
+        if (answer.hold) { state.release = reply; return; }
+        reply(answer);
         return;
       }
       socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
@@ -383,6 +388,78 @@ async function startScene(browser, size) {
   await context.close();
 }
 
+/** A Start the host has not answered, with the panel shut and opened again
+ *  (review 3, H2). The control is drawn anew each time the panel opens, so
+ *  what is out cannot be its own to remember: shut on a Start not yet
+ *  answered and opened again, it used to be on, and a press sent the same
+ *  Start twice. The same for `Tell the agent`, which is the same command. */
+async function flightScene(browser, size) {
+  for (const kind of ["start", "tell"]) {
+    const label = `${tag}-${size.name}-flight-${kind}`;
+    const out = ((report.scenes.flight ??= {})[size.name] ??= {})[kind] = {};
+    const decided = await plan("decided");
+    const untold = { ...decided, awaitsStart: false, started: { at: 1791886010700, revision: decided.revision, turnId: "octiq-plan-start-1", told: false } };
+    const state = fresh(kind === "tell" ? untold : decided);
+    state.onStart = () => ({ hold: true });
+    const { context, page } = await open(browser, state, size);
+    await openPlan(page);
+    const start = page.locator(".cplan-start");
+    await start.waitFor();
+    assert.equal((await start.textContent())?.trim(), kind === "tell" ? "Tell the agent" : "Start", `${label}: the control`);
+    await page.waitForTimeout(800);
+    await start.click();
+    await page.waitForFunction(() => document.querySelector(".cplan-start")?.getAttribute("aria-disabled") === "true");
+    assert.equal(state.starts.length, 1, `${label}: one command`);
+    out.sending = (await page.locator(".cplan-foot-side").textContent())?.trim();
+    assert.equal(out.sending, "Sending…", `${label}: and it says it is out`);
+
+    // Shut and opened again, twice: a new control each time, still off, and
+    // a press on it sends nothing.
+    out.reopened = [];
+    for (let round = 0; round < 2; round++) {
+      await page.locator(".cplan-close").click();
+      await panel(page).waitFor({ state: "detached" });
+      await page.waitForTimeout(800);
+      await openPlan(page);
+      await start.waitFor();
+      await page.waitForTimeout(800);
+      out.reopened.push(await start.getAttribute("aria-disabled"));
+      const box = await start.boundingBox();
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      await start.evaluate((button) => { button.focus(); });
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(200);
+    }
+    assert.deepEqual(out.reopened, ["true", "true"], `${label}: drawn again, the control is still off`);
+    assert.equal(state.starts.length, 1, `${label}: and no press on it sends a second command`);
+    await page.screenshot({ path: join(artifacts, `${label}-out.png`) });
+
+    // A refusal that arrives while the panel is shut is still said: the
+    // sender keeps the host's words, not the control that asked.
+    await page.locator(".cplan-close").click();
+    await panel(page).waitFor({ state: "detached" });
+    const REFUSAL = "The plan changed since you looked: it is at revision 3 and you pressed Start on revision 2.";
+    state.release({ error: REFUSAL });
+    await page.waitForTimeout(400);
+    await openPlan(page);
+    await start.waitFor();
+    await page.waitForFunction(() => document.querySelector(".cplan-start")?.getAttribute("aria-disabled") !== "true");
+    if (kind === "tell") await page.locator(".cplan-why").click();
+    out.said = (await page.locator(".cplan-refusal").textContent())?.trim();
+    assert.equal(out.said, REFUSAL, `${label}: the host's answer is said in the panel that was opened afterwards`);
+
+    // Answered, the next press is a new command, and one only.
+    const told = { ...untold, started: { ...untold.started, told: true } };
+    state.onStart = () => ({ plan: told, turnId: "octiq-plan-start-1", delivered: true, state: "started" });
+    await page.waitForTimeout(800);
+    await start.click();
+    await page.locator(".cplan-foot[data-kind='started']").waitFor();
+    out.sent = state.starts.length;
+    assert.equal(state.starts.length, 2, `${label}: two presses that were the person's own, two commands`);
+    await context.close();
+  }
+}
+
 /** A started plan beside the ledger of its tasks: the accent, and the way
  *  to a task's row in the run panel. */
 async function linkedScene(browser, size) {
@@ -489,6 +566,7 @@ try {
   for (const size of SIZES) {
     for (const [name, expect] of Object.entries(SCENES)) if (!only || only === name) await fixtureScene(browser, name, size, expect);
     if (!only || only === "start") await startScene(browser, size);
+    if (!only || only === "flight") await flightScene(browser, size);
     if (!only || only === "linked") await linkedScene(browser, size);
     if (!only || only === "event") await eventScene(browser, size);
   }

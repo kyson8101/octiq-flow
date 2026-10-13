@@ -205,6 +205,7 @@ import { ChatDeleteButton } from "./components/ChatDeleteButton";
 import { ChatCompletionLine, CompleteChatButton, CompleteChatDialog } from "./components/CompleteChat";
 import { chatKindOf, completeAction, completingIds, completionLine, isWrapUpTurn, type CompletePreview } from "./lib/chatComplete";
 import { useChatCompletions } from "./lib/useChatCompletions";
+import { IN_FLIGHT } from "./lib/inFlight";
 import { useChatPlan } from "./lib/useChatPlan";
 import { openQuestions, planOffered, tasksInFlight, type PlanTaskView } from "./lib/planView";
 import { isPlanStartTurn } from "./lib/planTurn";
@@ -4199,6 +4200,8 @@ export default function App() {
    *  started with that turn from the settings `send` would use. */
   const startPlan = useCallback(async (id: string, revision: number) => {
     const answer = await planFeed.start(id, revision, startSettingsOf(id));
+    // One is already out for this chat: nothing was sent.
+    if (answer === IN_FLIGHT) return answer;
     // The agent has a turn now, in a process that may be new.
     if (answer.delivered && answer.state !== "told") setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
     return answer;
@@ -5233,7 +5236,7 @@ export default function App() {
   });
   const planQuestions = planFor ? openQuestions(planFeed.plan) : 0;
   const planPanel = (page: boolean) => planFor && <PlanPanel key={planFor} page={page}
-    plan={planFeed.plan} error={planFeed.held?.error} unread={!planFeed.held}
+    plan={planFeed.plan} chatId={planFor} said={planFeed.said} error={planFeed.held?.error} unread={!planFeed.held}
     flying={planFlying} connected={conn === "open"}
     onClose={() => showPlan(false, planFor, page)}
     onStart={(revision) => startPlan(planFor, revision)}

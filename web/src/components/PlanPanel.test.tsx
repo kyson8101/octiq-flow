@@ -239,9 +239,17 @@ describe("Start is never fired by the press or the key that brought it on screen
     expect(panelSource).toMatch(/const opener = useRef<Press \| null>\(lastPointerPress\(\)\)/);
   });
 
-  it("is off from the press until its answer, so two cannot be sent at once", () => {
+  it("is off from the press until its answer, by the chat and not by the control that was pressed", () => {
     expect(panelSource).toMatch(/const off = busy \? "Sending…" : start\.off;/);
-    expect(panelSource).toMatch(/setBusy\(true\);[\s\S]*?onStart\(start\.revision\)[\s\S]*?\.finally\(\(\) => \{ if \(alive\.current\) setBusy\(false\); \}\)/);
+    // What is out is the sender's to say (`lib/inFlight`): a control that
+    // kept it in its own state forgot it when the panel was shut.
+    expect(panelSource).toMatch(/const busy = useInFlight\(chatId \? planFlight\(chatId\) : null\);/);
+    expect(panelSource).not.toMatch(/setBusy|useState\(false\);\s*\/\*\* The host's words/);
+    expect(panelSource).toMatch(/if \(off\) return;[\s\S]{0,400}?void onStart\(start\.revision\)\.catch\(\(\) => \{\}\);/);
+    // The sender takes the chat before it asks, for Start and Tell alike.
+    expect(hookSource).toMatch(/return once\(planFlight\(id\), async \(\) => \{\s*const ask = \(\) => bridge\.invoke<ChatPlanStartAnswer>\("chat_plan_start"/);
+    expect(hookSource.match(/"chat_plan_start"/g)).toHaveLength(1);
+    expect(appSource).toMatch(/<PlanPanel key=\{planFor\} page=\{page\}\s+plan=\{planFeed\.plan\} chatId=\{planFor\} said=\{planFeed\.said\}/);
   });
 
   it("has the button that opens the panel, and every disclosure in it, remembered by the cards' guard", () => {
