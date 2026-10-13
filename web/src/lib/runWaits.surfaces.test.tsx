@@ -234,6 +234,11 @@ const SHAPES: Shape[] = [
   { name: "the host's own ledger: a replaced failure", host: "new", person: 0, ledger: real(hostFacts.failureReplaced()) },
   { name: "the host's own ledger: a failed check in a run the host calls completed", host: "new", person: 0, ledger: real(hostFacts.failureInCompletedRun()) },
   { name: "the host's own ledger: a failure in a stopped run", host: "new", person: 0, ledger: real(hostFacts.failureInStoppedRun()) },
+  // The edges the host recorded afterwards: each is the person's, one decision.
+  { name: "the host's own ledger: a failed check with both retries used", host: "new", person: 1, said: "failed", ledger: real(hostFacts.failureCheckRetriesUsed()) },
+  { name: "the host's own ledger: a failure whose coordinator chat is gone", host: "new", person: 1, said: "failed", ledger: real(hostFacts.failureCoordinatorGone()) },
+  { name: "the host's own ledger: a failed check whose coordinator chat is gone", host: "new", person: 1, said: "failed", ledger: real(hostFacts.failureCheckCoordinatorGone()) },
+  { name: "the host's own ledger: a peer request out of working time", host: "new", person: 1, said: "failed", ledger: real(hostFacts.failureTimeLimit()) },
   // Beside a card of another kind the failure is one of two decisions, and
   // the surfaces say "Needs you". The ledger is the host's; the card is the
   // page's own, for the worker whose attempt failed.

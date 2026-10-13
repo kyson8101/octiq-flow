@@ -62,6 +62,24 @@ const SCENES = [
     row: { state: "running", failure: "coordinator", group: "Running", note: COORDINATOR, red: false }, ask: null, attention: null, badge: false },
   { name: "stopped", file: "failure_in_stopped_run", line: "Stopped", lineTone: null, strip: null,
     row: { state: "closed", failure: "history", group: "Finished", note: "Failed", red: false }, ask: null, attention: null, badge: false },
+  // The edges the host recorded after its own review: each is the person's.
+  // A settled check takes no Start: the person's reopen is its door.
+  { name: "check-spent", file: "failure_check_retries_used", line: "1 failed · 0/1 done", lineTone: "danger", strip: ["failed", "1 failed"],
+    row: { state: "failed", failure: "person", group: "Needs you", note: "Check failed", red: true },
+    ask: "Its 2 automatic retries are used. Open this row for Continue after review to put it back to work with what you write, or stop or archive the run.",
+    attention: "1 failed", badge: true, starts: [], reopen: true },
+  { name: "coordinator-gone", file: "failure_coordinator_gone", line: "1 failed · 0/1 done", lineTone: "danger", strip: ["failed", "1 failed"],
+    row: { state: "failed", failure: "person", group: "Needs you", note: "Failed", red: true },
+    ask: "The chat that coordinated this run is gone, so nobody retries it. Open this row for Start retry, or stop or archive the run.",
+    attention: "1 failed", badge: true },
+  { name: "check-gone", file: "failure_check_coordinator_gone", line: "1 failed · 0/1 done", lineTone: "danger", strip: ["failed", "1 failed"],
+    row: { state: "failed", failure: "person", group: "Needs you", note: "Check failed", red: true },
+    ask: "The chat that coordinated this run is gone, so nobody retries it. Open this row for Continue after review to put it back to work with what you write, or stop or archive the run.",
+    attention: "1 failed", badge: true, starts: [], reopen: true },
+  { name: "time-limit", file: "failure_time_limit", line: "1 failed · 0/1 done", lineTone: "danger", strip: ["failed", "1 failed"],
+    row: { state: "failed", failure: "person", group: "Needs you", note: "Failed", red: true },
+    ask: "This peer request used up its working time. Open this row for Start retry, or stop or archive the run.",
+    attention: "1 failed", badge: true },
 ];
 
 /** One of the host's ledgers, set in the mock's chat and project. */
@@ -233,7 +251,8 @@ async function scene(browser, item, size) {
   const label = `${tag}-${size.name}-${item.name}`;
   const out = (report.scenes[item.name] ??= {})[size.name] = {};
   const snapshot = await ledger(item.file);
-  const { context, page } = await open(browser, snapshot, size);
+  const tap = { sent: [] };
+  const { context, page } = await open(browser, snapshot, size, tap);
   await openRunPanel(page, item);
 
   // The run panel's row.
@@ -330,7 +349,12 @@ async function scene(browser, item, size) {
       assert.notEqual(opened.stateColour, row.danger, `${label}: the ledger's word is not red`);
       assert.notEqual(opened.stateColour, row.warn, `${label}: nor the warning colour`);
     }
-    if (item.row.failure === "person") assert.deepEqual(opened.starts, ["Start retry"], `${label}: the one start`);
+    if (item.row.failure === "person") assert.deepEqual(opened.starts, item.starts ?? ["Start retry"], `${label}: the one start, or none for a settled check`);
+    // The person's own reopen: on the row of what decides the workspace,
+    // above the tabs, and nowhere for a task that takes a start.
+    const opener = rowOf(page).locator(".orch-delivery-opener[data-asks='reopen']");
+    assert.equal(await opener.count(), item.reopen ? 1 : 0, `${label}: Continue after review is ${item.reopen ? "" : "not "}offered`);
+    if (item.reopen) await reopenFromRow(page, label, snapshot, tap, out);
     if (item.row.failure === "history") assert.deepEqual(opened.starts, [], `${label}: history offers no start`);
     await rowOf(page).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(artifacts, `${label}-opened.png`) });
@@ -354,6 +378,44 @@ function checkStrip(label, item, strip, out) {
   assert.deepEqual(strip ? [strip.state, strip.word] : null, item.strip, `${label}: the line above the composer`);
   if (strip && !item.row.red) assert(!/failed/i.test(strip.text), `${label}: nothing failed on the line (${strip.text})`);
   if (item.row.failure === "coordinator") assert.match(strip.title, /1 failure with the coordinator, which is fixing it: nothing is asked of you\./, `${label}: said in the tooltip only`);
+}
+
+/** The person's reopen of a failed check, from its row. The control is
+ *  replaced where it stands by its question; the box has the focus, where
+ *  Enter is a new line; the answer is off until something is written; and
+ *  one press of it sends one `orchestration_task_reopen` with what was
+ *  written. */
+async function reopenFromRow(page, label, snapshot, tap, out) {
+  const row = rowOf(page);
+  const opener = row.locator(".orch-delivery-opener[data-asks='reopen']");
+  assert.equal((await opener.textContent())?.trim(), "Continue after review", `${label}: its label`);
+  const above = await row.evaluate((article) => {
+    const actions = article.querySelector(".orch-delivery-actions");
+    const tabs = article.querySelector(".orch-task-tabs");
+    return !!actions && !!tabs && !!(actions.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING) && !actions.closest(".orch-task-tab-panel");
+  });
+  assert.equal(above, true, `${label}: it stands above the two tabs, in neither`);
+  const reopens = () => tap.sent.filter((request) => request.cmd === "orchestration_task_reopen");
+  // The press that opens the question, repeated in the same spot.
+  const box = await opener.boundingBox();
+  const at = [box.x + box.width / 2, box.y + box.height / 2];
+  await page.mouse.click(...at);
+  const field = row.locator("textarea").first();
+  await field.waitFor();
+  assert.equal(await field.evaluate((el) => document.activeElement === el), true, `${label}: the question puts the keyboard in the box`);
+  await page.keyboard.press("Enter");
+  assert.equal(reopens().length, 0, `${label}: Enter in the box is a new line`);
+  await field.fill("Check the linker flags and run the suite again.");
+  // The answer was off until something was written, so the press that
+  // opened the question had nothing to land on.
+  assert.equal(reopens().length, 0, `${label}: nothing is sent before the answer is pressed`);
+  await page.waitForTimeout(800);
+  await row.locator(".orch-delivery-go").click();
+  await page.waitForTimeout(300);
+  out.reopened = reopens().map((request) => request.args);
+  assert.equal(out.reopened.length, 1, `${label}: one reopen is sent`);
+  assert.equal(out.reopened[0].taskId, snapshot.tasks[0].id, `${label}: for this task`);
+  assert.equal(out.reopened[0].spec, "Check the linker flags and run the suite again.", `${label}: with what was written`);
 }
 
 /** A gate's answer is the person's decision the moment it is sent, with no

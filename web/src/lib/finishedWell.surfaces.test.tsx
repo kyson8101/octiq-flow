@@ -58,7 +58,7 @@ import { runStages } from "./runAcceptance";
 import { attentionLabel, attentionSpoken, attentionTone, runAttention, runPeople } from "./runPanel";
 import { chatStrip, COORDINATOR_WORD, failureNote, planStandsIn, RETRYING_WORD, runCounts, runProgress, runTally, stripLine } from "./runProgress";
 import { runWaits } from "./runWaits";
-import { STOPPED_LABEL } from "./taskHold";
+import { reopenControl, STOPPED_LABEL } from "./taskHold";
 import { OrchestrationPanel } from "../components/OrchestrationPanel";
 import { RunProgressStrip } from "../components/RunProgressStrip";
 import { drawnStatus } from "../components/TaskMeter";
@@ -526,6 +526,10 @@ describe("a run that is over", () => {
 //   replaced      another task replaced it             history: "Replaced", counted nowhere
 //   completedRun  a failed check, run "completed"      quiet: the run has not ended
 //   stoppedRun    its run was stopped                  history: muted "Failed", counted nowhere
+//   checkSpent           a failed check, both retries used      red; the person's reopen is the door
+//   coordinatorGone      failed once, its coordinator's chat gone  red; the person's Start
+//   checkCoordinatorGone a failed check, coordinator's chat gone  red; the person's reopen
+//   timeLimit            a peer request out of working time     red; the person's Start
 
 type Told = {
   ledger: () => OrchestrationSnapshot;
@@ -589,6 +593,33 @@ const TOLD: Record<string, Told> = {
     strip: null, line: ["Stopped", null], attention: null,
     people: ["stopped"], agent: null, status: "stopped",
   },
+  // The four edges the host recorded after the review of 16e4188. Each is
+  // the person's: red, one decision, and never the run's own status word.
+  checkSpent: {
+    ledger: hostFacts.failureCheckRetriesUsed, total: 1, failed: 1, decisions: 1,
+    row: { state: "failed", group: "needs", why: "Check failed", tone: "danger" },
+    // The host calls this run completed. It has not ended: a check in it failed.
+    strip: ["failed", "1 failed"], line: ["1 failed · 0/1 done", "danger"], attention: ["1 failed", "failed"],
+    people: ["failed"], agent: ["failed", "Check failed"], status: "failed",
+  },
+  coordinatorGone: {
+    ledger: hostFacts.failureCoordinatorGone, total: 1, failed: 1, decisions: 1,
+    row: { state: "failed", group: "needs", why: "Failed", tone: "danger" },
+    strip: ["failed", "1 failed"], line: ["1 failed · 0/1 done", "danger"], attention: ["1 failed", "failed"],
+    people: ["failed"], agent: ["failed", "Failed"], status: "failed",
+  },
+  checkCoordinatorGone: {
+    ledger: hostFacts.failureCheckCoordinatorGone, total: 1, failed: 1, decisions: 1,
+    row: { state: "failed", group: "needs", why: "Check failed", tone: "danger" },
+    strip: ["failed", "1 failed"], line: ["1 failed · 0/1 done", "danger"], attention: ["1 failed", "failed"],
+    people: ["failed"], agent: ["failed", "Check failed"], status: "failed",
+  },
+  timeLimit: {
+    ledger: hostFacts.failureTimeLimit, total: 1, failed: 1, decisions: 1,
+    row: { state: "failed", group: "needs", why: "Failed", tone: "danger" },
+    strip: ["failed", "1 failed"], line: ["1 failed · 0/1 done", "danger"], attention: ["1 failed", "failed"],
+    people: ["failed"], agent: ["failed", "Failed"], status: "failed",
+  },
 };
 const MOVES = Object.entries(TOLD).map(([name, told]) => ({ name, ...told }));
 
@@ -607,7 +638,14 @@ describe("the failure ledgers", () => {
     expect(first("completedRun")).toMatchObject({ status: "completed", verdict: "fail", failure: { kind: "check_failed", awaits: "coordinator" } });
     expect(first("stoppedRun")).toMatchObject({ status: "failed", failure: { awaits: "nobody", because: "run_ended" } });
     // What the host calls the run is not whether a failure in it is history.
-    expect(MOVES.map((move) => move.ledger().runs[0].status)).toEqual(["failed", "running", "failed", "waiting", "running", "completed", "stopped"]);
+    expect(first("checkSpent")).toMatchObject({ status: "completed", verdict: "fail", retriesUsed: 2, failure: { kind: "check_failed", awaits: "person", because: "retries_used" } });
+    expect(first("coordinatorGone")).toMatchObject({ status: "failed", retriesUsed: 0, failure: { kind: "failed", awaits: "person", because: "coordinator_gone" } });
+    expect(first("checkCoordinatorGone")).toMatchObject({ status: "completed", verdict: "fail", retriesUsed: 0, failure: { kind: "check_failed", awaits: "person", because: "coordinator_gone" } });
+    expect(first("timeLimit")).toMatchObject({ status: "failed", peerRequest: { maxMinutes: 1 }, failure: { kind: "failed", awaits: "person", because: "time_limit" } });
+    // The two checks keep the workspace the person's reopen puts back to work.
+    for (const name of ["checkSpent", "checkCoordinatorGone"]) expect(first(name).workspace).toMatchObject({ state: "retained" });
+    // What the host calls the run is not whether a failure in it is history.
+    expect(MOVES.map((move) => move.ledger().runs[0].status)).toEqual(["failed", "running", "failed", "waiting", "running", "completed", "stopped", "completed", "failed", "completed", "failed"]);
   });
 });
 
@@ -710,24 +748,83 @@ describe("a failure that waits on the person is one decision, with what moves it
     expect(box).not.toContain("Send to main chat");
   });
 
-  it("a failed check with nothing to start says where to go, with the way there", () => {
-    // Changed in a copy of the host's ledger: the same failed check with
-    // both retries used, as `retry_tests` leaves a failed task
-    // (`failure_awaits_person`). The host records no such ledger for a check.
-    const ledger = placed(hostFacts.failureInCompletedRun());
-    Object.assign(ledger.tasks[0], { retriesUsed: 2, failure: { kind: "check_failed", awaits: "person", because: "retries_used" } });
+  // A settled check takes no worker, so no Start moves it. What does is the
+  // person's own reopen, which the host takes from the page for a check
+  // whose retries are used or whose coordinator is gone. The ledgers are the
+  // host's (`failure_check_retries_used`, `failure_check_coordinator_gone`).
+  it.each([
+    ["retries used", hostFacts.failureCheckRetriesUsed, "Its 2 automatic retries are used."],
+    ["its coordinator's chat gone", hostFacts.failureCheckCoordinatorGone, "The chat that coordinated this run is gone, so nobody retries it."],
+  ] as const)("a failed check, %s: the row says the person's reopen moves it, and offers it above the tabs", (_name, fixture, why) => {
+    const ledger = placed(fixture());
     const { a, drawnRows, line, attention, stage } = surfaces(ledger);
     expect(a).toMatchObject({ state: "failed", group: "needs", why: "Check failed", tone: "danger", decisions: 1 });
-    expect(a.failure).toMatchObject({ askCoordinator: true });
-    expect(a.failure!.note).toBe("Its 2 automatic retries are used. It cannot be started from here: ask the coordinator in its chat, or stop or archive the run.");
-    expect(drawnRows[0]).toContain(`<span>${a.failure!.note}</span><button type="button" class="orch-task-ask-go">Open the coordinator&#x27;s chat</button>`);
-    expect(drawnRows[0]).not.toContain(">Start retry<");
+    expect(a.failure).toMatchObject({ move: "person", kind: "check_failed", askCoordinator: false });
+    expect(a.failure!.note).toBe(`${why} Open this row for Continue after review to put it back to work with what you write, or stop or archive the run.`);
+    const row = drawnRows[0];
+    expect(row).toContain(`<p class="orch-task-ask"><span>${a.failure!.note}</span></p>`);
+    // Nothing sends them to the coordinator, and nothing offers a start.
+    expect(row).not.toContain("orch-task-ask-go");
+    expect(row).not.toMatch(/>Start (retry|next attempt|it again)</);
+    // The door itself: once, on the row of what decides the task's
+    // workspace, which stands above the two tabs.
+    expect(row.split(">Continue after review<").length - 1).toBe(1);
+    const actions = row.indexOf('class="orch-delivery-actions"');
+    expect(actions).toBeGreaterThan(-1);
+    expect(row.indexOf(">Continue after review<")).toBeGreaterThan(actions);
+    expect(row.indexOf(">Continue after review<")).toBeLessThan(row.indexOf('class="orch-task-tabs"'));
+    expect(reopenControl(a.task, ledger.runs[0])).toEqual({ label: "Continue after review" });
     expect(line).toBe("1 failed · 0/1 done");
     expect(attentionLabel(attention)).toBe("1 failed");
+    // The host calls this run completed; a check in it waits on the person.
+    expect(ledger.runs[0].status).toBe("completed");
     expect(shownRunStatus(ledger.runs[0], ledger.tasks)).toBe("failed");
     expect(stage).toMatchObject({ stage: "review", blocked: true });
     const stages = runStages(ledger.tasks, ledger.attempts, null);
     expect(stages.find((item) => item.key === "acceptance")).toMatchObject({ value: "Failing", tone: "danger" });
+  });
+
+  it("the person's reopen is offered only where the host would take it", () => {
+    const ledger = placed(hostFacts.failureCheckRetriesUsed());
+    const [task] = ledger.tasks;
+    const [run] = ledger.runs;
+    expect(reopenControl(task, run)).toEqual({ label: "Continue after review" });
+    // Changed in copies, one fact each, to what the host refuses.
+    expect(reopenControl({ ...task, status: "failed" }, run)).toBeNull();
+    expect(reopenControl({ ...task, workspace: undefined }, run)).toBeNull();
+    expect(reopenControl({ ...task, workspace: { ...task.workspace!, state: "cleaned" } }, run)).toBeNull();
+    expect(reopenControl({ ...task, peerRequest: hostFacts.failureTimeLimit().tasks[0].peerRequest }, run)).toBeNull();
+    for (const over of [{ status: "stopped" as const }, { status: "closed" as const }, { archivedAt: 5 }]) {
+      expect(reopenControl(task, { ...run, ...over }), JSON.stringify(over)).toBeNull();
+    }
+    expect(reopenControl(task, undefined)).toBeNull();
+    // With no door on the row, the sentence still ends in what moves it.
+    // Changed in a copy: the check's workspace was removed.
+    const gone = placed(hostFacts.failureCheckRetriesUsed());
+    gone.tasks[0].workspace = { ...gone.tasks[0].workspace!, state: "cleaned" };
+    const { a, drawnRows } = surfaces(gone);
+    expect(a.failure).toMatchObject({ askCoordinator: true });
+    expect(a.failure!.note).toBe("Its 2 automatic retries are used. It cannot be started from here: ask the coordinator in its chat, or stop or archive the run.");
+    expect(drawnRows[0]).toContain(`<span>${a.failure!.note}</span><button type="button" class="orch-task-ask-go">Open the coordinator&#x27;s chat</button>`);
+    expect(drawnRows[0]).not.toContain(">Continue after review<");
+  });
+
+  it("a failed task whose coordinator is gone, and a peer request out of time, are started by the person", () => {
+    for (const [fixture, why] of [
+      [hostFacts.failureCoordinatorGone, "The chat that coordinated this run is gone, so nobody retries it."],
+      [hostFacts.failureTimeLimit, "This peer request used up its working time."],
+    ] as const) {
+      const ledger = placed(fixture());
+      const { a, drawnRows } = surfaces(ledger);
+      expect(a).toMatchObject({ state: "failed", group: "needs", why: "Failed", tone: "danger", decisions: 1 });
+      expect(a.failure!.note).toBe(`${why} Open this row for Start retry, or stop or archive the run.`);
+      expect(drawnRows[0].split(">Start retry<").length - 1).toBe(1);
+      expect(drawnRows[0]).not.toContain("orch-task-ask-go");
+      // Neither is reopened from the page: one did not complete, and a peer
+      // request is one approved job.
+      expect(reopenControl(a.task, ledger.runs[0])).toBeNull();
+      expect(drawnRows[0]).not.toContain(">Continue after review<");
+    }
   });
 
   it("beside a card of another kind the line says Needs you, and the failure is still said", () => {
@@ -868,6 +965,15 @@ describe("whose move a failure is has one reader", () => {
     expect(failureNote(failed("coordinator_gone", "check_failed"), null, null)).toMatchObject({
       askCoordinator: false, note: "The chat that coordinated this run is gone, so nobody retries it. Stop or archive the run to put it away.",
     });
+    // The person's reopen is the door for a settled check, and is said
+    // only where no start is: a task that takes a start is started.
+    const reopen = { label: "Continue after review" };
+    expect(failureNote(failed("retries_used", "check_failed"), null, null, reopen)!.note)
+      .toBe(`Its 2 automatic retries are used. Open this row for Continue after review to put it back to work with what you write, or ${put}.`);
+    expect(failureNote(failed("coordinator_gone", "check_failed"), null, null, reopen)).toMatchObject({
+      askCoordinator: false, note: `The chat that coordinated this run is gone, so nobody retries it. Open this row for Continue after review to put it back to work with what you write, or ${put}.`,
+    });
+    expect(failureNote(failed("retries_used"), start, null, reopen)!.note).toBe(`Its 2 automatic retries are used. Open this row for Start retry, or ${put}.`);
     expect(failureNote(failed("time_limit"), start, null)!.note).toBe(`This peer request used up its working time. Open this row for Start retry, or ${put}.`);
     expect(failureNote(failed("escalated"), null, "Replace it?")!.note).toBe(`Its coordinator asks you: Replace it? Answer it under Needs you above, or ${put}.`);
     // A start the host would refuse says why, and that is what moves it.

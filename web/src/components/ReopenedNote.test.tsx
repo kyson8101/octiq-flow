@@ -72,6 +72,26 @@ describe("the event a host writes when a coordinator reopens a task", () => {
   });
 });
 
+describe("a reopen that was the person's own", () => {
+  it("is said as theirs: the words behind the line are the ones they wrote", () => {
+    // `byPerson` is on the event only for the person's reopen, made on the
+    // page (`orchestration/workspaces.rs`); the coordinator's carries none.
+    const theirs = reopened({ byPerson: true });
+    expect(theirs.byPerson).toBe(true);
+    expect(reopenedHeadline(theirs)).toBe("You reopened L · Run progress for OCTIQ FE · attempt 2");
+    expect(reopenedFoldLabel(theirs)).toBe("Your instructions · 6 lines · was 8,000 characters");
+    const html = renderToStaticMarkup(<ReopenedNote reopened={theirs} />);
+    expect(words(html)).toContain("You reopened L · Run progress for OCTIQ FE · attempt 2 Your instructions · 6 lines");
+    // Anything but the host's own `true` is the coordinator's.
+    for (const value of [undefined, false, "true", 1, null]) {
+      const other = reopened({ byPerson: value });
+      expect("byPerson" in other, String(value)).toBe(false);
+      expect(reopenedHeadline(other)).toBe("Reopened L · Run progress for OCTIQ FE · attempt 2");
+    }
+    expect(readTaskReopened({ run_id: "r", task_id: "t", by_person: true })?.byPerson).toBe(true);
+  });
+});
+
 describe("the chat's record of it", () => {
   const fold = (state: ChatState, ...events: object[]) => events.reduce<ChatState>((held, item) => reduceChat(held, item), state);
   const lines = (state: ChatState) => state.messages.flatMap((message) => message.blocks.filter((block) => block.kind === "reopened"));
@@ -108,9 +128,9 @@ describe("the reopened line", () => {
   it("is one folded line: what happened, how much is behind it, and the one control", () => {
     const html = draw();
     // Then the time it happened, in the reader's own clock.
-    expect(words(html)).toMatch(/^Reopened L · Run progress for OCTIQ FE · attempt 2 New instructions · 6 lines · was 8,000 characters \d{1,2}:05( [AP]M)?$/);
+    expect(words(html)).toMatch(/^Reopened L · Run progress for OCTIQ FE · attempt 2 New instructions · 6 lines · was 8,000 characters \d{1,2}:05( ?[AaPp]\.?[Mm]\.?)?$/);
     // The time is the last thing said before the control, never past it.
-    expect(html).toMatch(/<span>\d{1,2}:05( [AP]M)?<\/span><\/span><button type="button" class="card-fold-toggle"/);
+    expect(html).toMatch(/<span>\d{1,2}:05( ?[AaPp]\.?[Mm]\.?)?<\/span><\/span><button type="button" class="card-fold-toggle"/);
     // A host that sent no time: the line says none.
     expect(words(draw({ at: undefined }))).toBe("Reopened L · Run progress for OCTIQ FE · attempt 2 New instructions · 6 lines · was 8,000 characters");
     expect(html.match(/<button /g)).toHaveLength(1);

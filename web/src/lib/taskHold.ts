@@ -297,6 +297,34 @@ export function startControl<A extends { id: string; taskId: string; number: num
   return { kind, label: START_LABEL[kind], attempt, note, blocked: startBlocker(task, run, tasks) };
 }
 
+/** The label of the person's reopen of a settled task. */
+export const REOPEN_CONTROL = "Continue after review";
+
+/** The person's own reopen of a settled task, or `null` when the page has
+ *  none to offer: `Continue after review`, on the row of what decides a
+ *  task's workspace. It is the socket's `orchestration_task_reopen`, which
+ *  the host takes as the person's (no hook reaches it): it puts the task
+ *  back to work in its kept workspace with what they write, and for a
+ *  failed check whose retries are used, or whose coordinator is gone, it is
+ *  the one door there is, because a completed task takes no Start
+ *  (`docs/agents-mode.md`, What the page may offer for a failure that is
+ *  the person's).
+ *
+ *  Offered only where the host would take it, as far as the ledger says:
+ *  a settled task that is no peer request, with a workspace that is kept
+ *  and not merged, in a run that is not stopped, closed or archived. The host's other refusals (a dependant that already
+ *  started, a chat list it cannot read) are its own to say. */
+export function reopenControl(
+  task: Pick<OrchestrationTask, "status" | "workspace" | "peerRequest">,
+  run: Pick<OrchestrationRun, "status" | "archivedAt"> | undefined,
+): { label: string } | null {
+  if (!run || run.archivedAt != null || run.status === "stopped" || run.status === "closed") return null;
+  if (!isSettled(task) || task.peerRequest) return null;
+  const workspace = task.workspace;
+  if (!workspace || workspace.state === "cleaned" || workspace.delivery?.merged) return null;
+  return { label: REOPEN_CONTROL };
+}
+
 /** The ledger's own status of a task, for its details, where it is kept
  *  apart from what the worker's process is doing. It is always said as the
  *  ledger's, and a task something holds leads with the hold (`held`, its

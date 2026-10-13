@@ -45,7 +45,7 @@ import {
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
-import { planHoldsEveryStart, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
+import { planHoldsEveryStart, reopenControl, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
 import { gateFlight, IN_FLIGHT, once, useInFlight } from "../lib/inFlight";
 import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
 import { useCarefulAnswer } from "./Confirm";
@@ -53,7 +53,7 @@ import { useHoldClock } from "../lib/useHoldClock";
 import "./RunProgress.css";
 
 import {
-  CHECK_FAILED_LABEL, checkFailed, deliveryTone, EMPTY_ORCHESTRATION as EMPTY, failureShown, gateDoor, isSettled, shownRunStatus, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  CHECK_FAILED_LABEL, checkFailed, deliveryTone, EMPTY_ORCHESTRATION as EMPTY, failureShown, gateDoor, shownRunStatus, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type GateDoor, type OrchestrationMessage, type OrchestrationNotification,
@@ -1602,7 +1602,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             with the review's fixes, its merged worktree removed, abandoned.
             Above the tabs like the start, with the question each opens in
             its place; the facts they act on are in Details. */}
-        {task.workspace && !readOnly && <DeliveryActions task={task} busy={busy} stopped={run.status === "stopped"}
+        {task.workspace && !readOnly && <DeliveryActions task={task} run={run} busy={busy}
           active={!!attempt && (["preparing", "running"].includes(attempt.status) || gateBlockedTasks.has(task.id))}
           onAction={onWorkspaceAction} />}
         {/* Steps is what a row is opened for; everything else is Details.
@@ -1831,8 +1831,8 @@ type DeliveryAsk = "reopen" | "merged" | "abandon";
  *  - The way out of a question is remembered too, because the row comes
  *    back under the pointer that pressed it, and the three that open one
  *    drop a held key, so the key that answered does not ask again. */
-function DeliveryActions({ task, busy, active, stopped, onAction }: {
-  task: OrchestrationTask; busy: boolean; active: boolean; stopped: boolean;
+function DeliveryActions({ task, run, busy, active, onAction }: {
+  task: OrchestrationTask; run: OrchestrationRun; busy: boolean; active: boolean;
   onAction: (command: string, args: Record<string, unknown>) => void;
 }) {
   const [asking, setAsking] = useState<DeliveryAsk | null>(null);
@@ -1851,6 +1851,7 @@ function DeliveryActions({ task, busy, active, stopped, onAction }: {
   const canCleanup = !active && workspace.plan.managed && workspace.plan.mode === "worktree" && !!delivery && !delivery.dirty;
   const canAbandon = canCleanup && (delivery.pushed || !delivery.hasCommits);
   const several = workspace.validationPaths.length > 1;
+  const reopen = reopenControl(task, run);
   const close = () => setAsking(null);
   if (asking === "reopen") {
     return <ReopenQuestion task={task} busy={busy} onCancel={close}
@@ -1863,8 +1864,11 @@ function DeliveryActions({ task, busy, active, stopped, onAction }: {
   }
   return <div className="orch-delivery-actions" role="group" aria-label={`Delivery of ${task.title}`} ref={row}>
     <button type="button" className="orch-delivery-action" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })}>Refresh delivery status</button>
-    {isSettled(task) && !stopped && !delivery?.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("reopen"); }}
-      data-asks="reopen" disabled={busy} onKeyDown={dropHeld}>Continue after review</button>}
+    {/* The person's own reopen (`taskHold.reopenControl`). For a failed
+        check whose retries are used, or whose coordinator is gone, it is
+        the one door: a completed task takes no Start. */}
+    {reopen && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("reopen"); }}
+      data-asks="reopen" disabled={busy} onKeyDown={dropHeld}>{reopen.label}</button>}
     {canCleanup && delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("merged"); }}
       data-asks="merged" disabled={busy} onKeyDown={dropHeld}>Clean up worktree</button>}
     {canAbandon && !delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("abandon"); }}

@@ -30,6 +30,10 @@ export type TaskReopened = {
   /** How long the instructions it replaces were, in characters. */
   previousSpecChars: number | null;
   at: number | null;
+  /** The person reopened it themselves, on the page: the words behind the
+   *  line are theirs. Absent on the coordinator's reopen, which is every
+   *  other one. */
+  byPerson?: true;
 };
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -65,13 +69,15 @@ export function readTaskReopened(event: Record<string, unknown>): TaskReopened |
     spec: text(event.spec),
     previousSpecChars: whole(event.previousSpecChars ?? event.previous_spec_chars),
     at,
+    ...((event.byPerson ?? event.by_person) === true ? { byPerson: true as const } : {}),
   };
 }
 
-/** "Reopened Build the ledger for OCTIQ BE · attempt 2". */
-export function reopenedHeadline(reopened: Pick<TaskReopened, "title" | "assignee" | "attempt">): string {
+/** "Reopened Build the ledger for OCTIQ BE · attempt 2", or "You reopened
+ *  …" for the person's own. */
+export function reopenedHeadline(reopened: Pick<TaskReopened, "title" | "assignee" | "attempt" | "byPerson">): string {
   return [
-    `Reopened ${reopened.title}${reopened.assignee ? ` for ${reopened.assignee}` : ""}`,
+    `${reopened.byPerson ? "You reopened" : "Reopened"} ${reopened.title}${reopened.assignee ? ` for ${reopened.assignee}` : ""}`,
     reopened.attempt ? `attempt ${reopened.attempt}` : null,
   ].filter(Boolean).join(" · ");
 }
@@ -79,10 +85,10 @@ export function reopenedHeadline(reopened: Pick<TaskReopened, "title" | "assigne
 /** What is behind the line, by name and size: "New instructions · 14 lines",
  *  and how long the ones they replace were when the host said. `null` when
  *  the host sent no instructions: there is nothing to open. */
-export function reopenedFoldLabel(reopened: Pick<TaskReopened, "spec" | "previousSpecChars">): string | null {
+export function reopenedFoldLabel(reopened: Pick<TaskReopened, "spec" | "previousSpecChars" | "byPerson">): string | null {
   if (!reopened.spec.trim()) return null;
   return [
-    "New instructions",
+    reopened.byPerson ? "Your instructions" : "New instructions",
     count(lineCount(reopened.spec), "line"),
     reopened.previousSpecChars ? `was ${digits(reopened.previousSpecChars)} characters` : null,
   ].filter(Boolean).join(" · ");

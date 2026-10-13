@@ -22,7 +22,7 @@ import {
   type OrchestrationTask, type TaskFailure,
 } from "./orchestration";
 import { ledgerWaits, NO_WAITS, openGates, runWaits, UNSAID_NOTE, type RunWaits, type WaitKind, type Waiting, type Waits } from "./runWaits";
-import { startControl, taskHold, type TaskHold } from "./taskHold";
+import { reopenControl, startControl, taskHold, type TaskHold } from "./taskHold";
 
 export type { Waiting } from "./runWaits";
 
@@ -319,6 +319,10 @@ export function failureNote(
   task: Pick<OrchestrationTask, "failure" | "retryLimit" | "retriesUsed">,
   start: { label: string; blocked: string | null } | null,
   question: string | null,
+  /** The person's own reopen of a settled task, when the page offers one
+   *  (`lib/taskHold.reopenControl`): the one door for a failed check, which
+   *  takes no Start. */
+  reopen: { label: string } | null = null,
 ): RowFailure | null {
   const failure = failureOf(task);
   if (!failure) return null;
@@ -343,12 +347,16 @@ export function failureNote(
   // The decision is drawn above the rows, where it is answered.
   const answer = because === "escalated" ? "Answer it under Needs you above" : null;
   const begin = start && !start.blocked ? `open this row for ${start.label}` : null;
-  const ways = [answer, begin].filter(Boolean) as string[];
+  // A settled check takes no worker. What puts it back to work is the
+  // person's reopen, with what they want fixed, on the same row.
+  const again = !start && reopen ? `open this row for ${reopen.label} to put it back to work with what you write` : null;
+  const ways = [answer, begin, again].filter(Boolean) as string[];
   const cap = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
   if (ways.length) return { ...base, askCoordinator: false, note: `${why} ${cap(ways.join(", "))}, or ${put}.` };
   // A start the host would refuse says why, and that is what moves it.
   if (start?.blocked) return { ...base, askCoordinator: false, note: `${why} ${start.blocked}` };
-  // Nothing on the row moves it: a settled check takes no worker.
+  // Nothing on the row moves it: a settled check takes no worker, and the
+  // page has no reopen to offer (no kept workspace, a peer request).
   return gone ? { ...base, askCoordinator: false, note: `${why} ${cap(put)} to put it away.` }
     : { ...base, askCoordinator: true, note: `${why} It cannot be started from here: ask the coordinator in its chat, or ${put}.` };
 }
@@ -486,7 +494,8 @@ export function progressRow(
   const moved = failureOf(task);
   const begin = moved?.move === "person" ? startControl(task, run, snapshot.tasks, snapshot.attempts, waits.gated.has(task.id)) : null;
   const asked = moved?.gateId ? openGates(snapshot, run.id).find((gate) => gate.id === moved.gateId)?.question ?? null : null;
-  const failure = failureNote(task, begin, asked);
+  const again = moved?.move === "person" ? reopenControl(task, run) : null;
+  const failure = failureNote(task, begin, asked, again);
   const summary = taskStepSummary(task, attempt, attempt ? snapshot.reports?.[attempt.workerChatKey] : undefined);
   const steps = summary ? { done: summary.done, total: summary.total } : null;
   const mine = snapshot.attempts.filter((item) => item.taskId === task.id);

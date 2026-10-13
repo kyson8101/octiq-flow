@@ -264,6 +264,9 @@ export type TaskReopenRecord = {
   previousSpec: string;
   spec: string;
   noticeDelivered?: boolean;
+  /** Present and `true` only on the person's own reopen, made on the page
+   *  (the socket's `orchestration_task_reopen`). The coordinator's has none. */
+  byPerson?: boolean;
 };
 
 /** Blocked or failed and not replaced: something someone still has to deal
