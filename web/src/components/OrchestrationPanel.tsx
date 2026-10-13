@@ -47,6 +47,7 @@ import {
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
 import { planHoldsEveryStart, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
 import { dropHeld, notePress } from "../lib/pressGuard";
+import { useCarefulAnswer } from "./Confirm";
 import { useHoldClock } from "../lib/useHoldClock";
 import "./RunProgress.css";
 
@@ -1600,6 +1601,13 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             <StartButton start={start} busy={busy} onStart={begin} />
           </div>
         )}
+        {/* What the person decides about the task's workspace: back to work
+            with the review's fixes, its merged worktree removed, abandoned.
+            Above the tabs like the start, with the question each opens in
+            its place; the facts they act on are in Details. */}
+        {task.workspace && !readOnly && <DeliveryActions task={task} busy={busy} stopped={run.status === "stopped"}
+          active={!!attempt && (["preparing", "running"].includes(attempt.status) || gateBlockedTasks.has(task.id))}
+          onAction={onWorkspaceAction} />}
         {/* Steps is what a row is opened for; everything else is Details.
             Switching changes what is under the pointer, so the press on a
             tab is remembered like a disclosure's (`lib/pressGuard`). */}
@@ -1656,7 +1664,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             </div>
           )}
           {history.length > 0 && <details className="orch-attempt-history">
-            <summary>Previous attempts ({history.length})</summary>
+            <summary onClick={(event) => { notePress(event); }}>Previous attempts ({history.length})</summary>
             {history.map((previous) => <div key={previous.id}>
               <button type="button" onClick={() => onOpenChat(previous.workerChatKey)}>{previous.agent} worker #{previous.number}</button>
               <span>{statusLabel(previous.status)}</span>
@@ -1666,12 +1674,10 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
               <ProposedReportNote attempt={previous} ago={(at) => agoLabel(at, now)} />
             </div>)}
           </details>}
-          {task.workspace && <WorkspaceDelivery task={task} busy={busy} readOnly={readOnly} stopped={run.status === "stopped"}
-            active={!!attempt && (["preparing", "running"].includes(attempt.status) || gateBlockedTasks.has(task.id))}
-            onAction={onWorkspaceAction} />}
+          {task.workspace && <WorkspaceDelivery task={task} />}
           {!attempt && task.result && <p className="orch-task-result">{task.result}</p>}
           <details className="orch-task-brief">
-            <summary>Brief</summary>
+            <summary onClick={(event) => { notePress(event); }}>Brief</summary>
             <p>{task.spec}</p>
           </details>
         </details>
@@ -1706,20 +1712,15 @@ function StartButton({ start, busy, onStart }: {
   </>;
 }
 
-function WorkspaceDelivery({ task, busy, readOnly, active, stopped, onAction }: {
-  task: OrchestrationTask; busy: boolean; readOnly: boolean; active: boolean; stopped: boolean;
-  onAction: (command: string, args: Record<string, unknown>) => void;
-}) {
-  const [cleanup, setCleanup] = useState<"merged" | "abandon" | null>(null);
-  const [followup, setFollowup] = useState(false);
-  const [spec, setSpec] = useState("");
+/** What a task's workspace is and where its work has got to: the path, the
+ *  host's warnings, when git was last asked and what it said. Facts only,
+ *  in the Details tab. Nothing here sends a command: whatever the person
+ *  can do about the workspace is `DeliveryActions`, above the tabs. */
+function WorkspaceDelivery({ task }: { task: OrchestrationTask }) {
   const workspace = task.workspace!;
   const delivery = workspace.delivery;
-  const closed = workspace.state === "cleaned";
-  const canCleanup = !active && !closed && workspace.plan.managed && workspace.plan.mode === "worktree" && !!delivery && !delivery.dirty;
-  const canAbandon = canCleanup && (delivery.pushed || !delivery.hasCommits);
   return <details className="orch-workspace" data-tone={deliveryTone(workspace)} aria-label={`Workspace for ${task.title}`}>
-    <summary><span>Delivery</span><strong>{workspaceDeliveryLabel(workspace)}</strong></summary>
+    <summary onClick={(event) => { notePress(event); }}><span>Delivery</span><strong>{workspaceDeliveryLabel(workspace)}</strong></summary>
     <div className="orch-workspace-body">
       <code title={workspace.plan.cwd}>{shortWorkspacePath(workspace.plan.cwd)}</code>
       {workspace.plan.warnings.map((warning) => <p className="orch-workspace-warning" key={warning}>{warning}</p>)}
@@ -1727,29 +1728,121 @@ function WorkspaceDelivery({ task, busy, readOnly, active, stopped, onAction }: 
         {delivery.pullRequest && <> · <a href={delivery.pullRequest} target="_blank" rel="noreferrer">Pull request</a></>}
       </p>}
       {delivery?.notes.map((note) => <p key={note}>{note}</p>)}
-      {workspace.validationPaths.map((path) => <div className="orch-validation" key={path}>
-        <span>Validation: <code>{path}</code></span>
-        {!readOnly && <button type="button" disabled={busy} onClick={() => onAction("orchestration_validation_remove", { taskId: task.id, path })}>Remove validation checkout</button>}
-      </div>)}
-      {!readOnly && !closed && <div className="orch-workspace-actions">
-        <button type="button" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })}>Refresh delivery status</button>
-        {isSettled(task) && !stopped && !delivery?.merged && <button type="button" disabled={busy} onClick={() => setFollowup(!followup)}>Continue after review</button>}
-        {canCleanup && delivery.merged && <button type="button" disabled={busy} onClick={() => setCleanup("merged")}>Clean up worktree</button>}
-        {canAbandon && !delivery.merged && <button type="button" disabled={busy} onClick={() => setCleanup("abandon")}>Abandon workspace…</button>}
-      </div>}
-      {!readOnly && followup && !closed && <div className="orch-followup">
-        <label>Review fixes<textarea aria-label={`Review fixes for ${task.title}`} value={spec} onChange={(event) => setSpec(event.target.value)} rows={3} /></label>
-        <button type="button" disabled={busy || !spec.trim()} onClick={() => { onAction("orchestration_task_reopen", { taskId: task.id, spec: spec.trim() }); setFollowup(false); }}>Reopen task in this workspace</button>
-      </div>}
-      {!readOnly && cleanup && !closed && <div className="orch-cleanup-confirm" role="group" aria-label="Confirm workspace cleanup">
-        <p>{cleanup === "abandon" ? "Abandon this task and remove its clean worktree?" : "Remove this merged worktree?"} Branches and published history are kept.</p>
-        <button type="button" disabled={busy} onClick={() => setCleanup(null)}>Keep worktree</button>
-        <button type="button" disabled={busy || !delivery || (cleanup === "abandon" ? !canAbandon : !canCleanup || !delivery.merged)} onClick={() => {
-          onAction("orchestration_workspace_cleanup", { taskId: task.id, abandon: cleanup === "abandon", expectedHead: delivery?.headSha }); setCleanup(null);
-        }}>Confirm removal</button>
-      </div>}
+      {workspace.validationPaths.map((path) => <p className="orch-validation" key={path}>Validation: <code>{path}</code></p>)}
     </div>
   </details>;
+}
+
+/** Which question a delivery action has open, in the row's place. */
+type DeliveryAsk = "reopen" | "merged" | "abandon";
+
+/** What the person can do about a task's workspace: ask git again, put the
+ *  task back to work with a review's fixes, remove its merged worktree,
+ *  abandon it, remove a validation checkout. Reopen puts work back, Abandon
+ *  cancels the task and can cancel what depends on it, Clean up removes a
+ *  worktree: they decide the task's life, so the row stands above the two
+ *  tabs beside the task's start, on screen whichever tab is open. The facts
+ *  they act on are `WorkspaceDelivery`, in Details.
+ *
+ *  Each is guarded as anything that starts or stops work is
+ *  (`lib/pressGuard`):
+ *  - `Continue after review`, `Clean up worktree` and `Abandon workspace…`
+ *    are replaced where they stand by the question they open, so the press
+ *    is remembered (`notePress`): one that repeats it cannot land on the
+ *    question's confirming answer.
+ *  - A question puts the focus on its safe answer: the box the fixes are
+ *    written in, where Enter is a new line, or `Keep worktree`. A second
+ *    Enter or Space therefore answers nothing or keeps the worktree, and
+ *    Escape takes the question away.
+ *  - `Reopen task in this workspace` and `Confirm removal` drop the repeats
+ *    of a held key and a pointer press that repeats the one the question
+ *    was opened with (`useCarefulAnswer`).
+ *  - The way out of a question is remembered too, because the row comes
+ *    back under the pointer that pressed it, and the three that open one
+ *    drop a held key, so the key that answered does not ask again. */
+function DeliveryActions({ task, busy, active, stopped, onAction }: {
+  task: OrchestrationTask; busy: boolean; active: boolean; stopped: boolean;
+  onAction: (command: string, args: Record<string, unknown>) => void;
+}) {
+  const [asking, setAsking] = useState<DeliveryAsk | null>(null);
+  // The control to give the keyboard back to when its question goes.
+  const asked = useRef<DeliveryAsk | null>(null);
+  const row = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (asking) { asked.current = asking; return; }
+    const from = asked.current;
+    asked.current = null;
+    if (from) row.current?.querySelector<HTMLButtonElement>(`[data-asks="${from}"]`)?.focus();
+  }, [asking]);
+  const workspace = task.workspace!;
+  const delivery = workspace.delivery;
+  if (workspace.state === "cleaned") return null;
+  const canCleanup = !active && workspace.plan.managed && workspace.plan.mode === "worktree" && !!delivery && !delivery.dirty;
+  const canAbandon = canCleanup && (delivery.pushed || !delivery.hasCommits);
+  const several = workspace.validationPaths.length > 1;
+  const close = () => setAsking(null);
+  if (asking === "reopen") {
+    return <ReopenQuestion task={task} busy={busy} onCancel={close}
+      onReopen={(spec) => { close(); onAction("orchestration_task_reopen", { taskId: task.id, spec }); }} />;
+  }
+  if (asking) {
+    return <RemovalQuestion abandon={asking === "abandon"} busy={busy} onCancel={close}
+      allowed={!!delivery && (asking === "abandon" ? canAbandon : canCleanup && delivery.merged)}
+      onConfirm={() => { close(); onAction("orchestration_workspace_cleanup", { taskId: task.id, abandon: asking === "abandon", expectedHead: delivery?.headSha }); }} />;
+  }
+  return <div className="orch-delivery-actions" role="group" aria-label={`Delivery of ${task.title}`} ref={row}>
+    <button type="button" className="orch-delivery-action" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })}>Refresh delivery status</button>
+    {isSettled(task) && !stopped && !delivery?.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("reopen"); }}
+      data-asks="reopen" disabled={busy} onKeyDown={dropHeld}>Continue after review</button>}
+    {canCleanup && delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("merged"); }}
+      data-asks="merged" disabled={busy} onKeyDown={dropHeld}>Clean up worktree</button>}
+    {canAbandon && !delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("abandon"); }}
+      data-asks="abandon" disabled={busy} onKeyDown={dropHeld}>Abandon workspace…</button>}
+    {workspace.validationPaths.map((path) => <button type="button" className="orch-delivery-action" key={path} disabled={busy} title={path} onKeyDown={dropHeld}
+      onClick={() => onAction("orchestration_validation_remove", { taskId: task.id, path })}>
+      Remove validation checkout{several && <> <code>{shortWorkspacePath(path)}</code></>}
+    </button>)}
+  </div>;
+}
+
+/** The fixes a review asks for, and the reopening that puts the task back to
+ *  work with them. Drawn where `Continue after review` stood. */
+function ReopenQuestion({ task, busy, onCancel, onReopen }: {
+  task: OrchestrationTask; busy: boolean; onCancel: () => void; onReopen: (spec: string) => void;
+}) {
+  const [spec, setSpec] = useState("");
+  const box = useRef<HTMLTextAreaElement>(null);
+  // The safe place for the keyboard: Enter in the box is a new line.
+  useEffect(() => { box.current?.focus(); }, []);
+  const careful = useCarefulAnswer(() => { if (spec.trim()) onReopen(spec.trim()); });
+  return <div className="orch-followup" role="group" aria-label={`Continue ${task.title} after review`}
+    onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancel(); } }}>
+    <label>Review fixes<textarea ref={box} aria-label={`Review fixes for ${task.title}`} value={spec} onChange={(event) => setSpec(event.target.value)} rows={3}
+      // The key that opened this, still held, writes nothing into it.
+      onKeyDown={(event) => { if (!spec) dropHeld(event); }} /></label>
+    <div className="orch-delivery-answers">
+      <button type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy} onKeyDown={dropHeld}>Cancel</button>
+      <button type="button" className="orch-delivery-go" disabled={busy || !spec.trim()} onKeyDown={careful.keys} onClick={careful.confirm}>Reopen task in this workspace</button>
+    </div>
+  </div>;
+}
+
+/** Whether to remove a task's worktree: one that is merged, or one that is
+ *  abandoned with its task. Drawn where the control that asked stood. */
+function RemovalQuestion({ abandon, allowed, busy, onCancel, onConfirm }: {
+  abandon: boolean; allowed: boolean; busy: boolean; onCancel: () => void; onConfirm: () => void;
+}) {
+  const keep = useRef<HTMLButtonElement>(null);
+  const questionId = useId();
+  // The safe answer has the focus: a second Enter or Space keeps the worktree.
+  useEffect(() => { keep.current?.focus(); }, []);
+  const careful = useCarefulAnswer(onConfirm);
+  return <div className="orch-cleanup-confirm" role="group" aria-labelledby={questionId}
+    onKeyDown={(event) => { careful.keys(event); if (event.key === "Escape") { event.stopPropagation(); onCancel(); } }}>
+    <p id={questionId}>{abandon ? "Abandon this task and remove its clean worktree?" : "Remove this merged worktree?"} Branches and published history are kept.</p>
+    <button ref={keep} type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy}>Keep worktree</button>
+    <button type="button" className="orch-delivery-go" disabled={busy || !allowed} onClick={careful.confirm}>Confirm removal</button>
+  </div>;
 }
 
 function StatusMark({ status }: { status: string }) {

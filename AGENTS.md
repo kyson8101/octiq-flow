@@ -1932,14 +1932,33 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   branch, checklist, brief).
 - **An opened row is its status line, what starts or decides, then two
   tabs.** The status line (state word, last step, branch) stays on top.
-  Under it, above the tabs and so on screen whichever is open: a hold's
-  sentence, whose a failure is when nobody here has to act on it, the
-  decision the task waits on, and the task's one start
-  (`Start it again`, `Start next attempt`, `Start retry`, with the reason
-  when it is switched off). Nothing a person must act on is drawn only
-  inside a tab: a new control that starts or decides goes above the
-  tablist (`taskStart.test.tsx` reads the row for it). `Steps` is the tab a
-  row opens on: the checklist with its current step, and its count line; a
+  Under it, above the tabs and so on screen whichever is open, in this
+  order:
+  - a hold's sentence, and whose a failure is when nobody here has to act
+    on it;
+  - the decision the task waits on;
+  - the task's one start (`Start it again`, `Start next attempt`, `Start
+    retry`, with the reason when it is switched off);
+  - what the person decides about the task's workspace (`DeliveryActions`,
+    one row of buttons): `Refresh delivery status`, `Continue after review`
+    (its box for the fixes and `Reopen task in this workspace`), `Clean up
+    worktree` and `Abandon workspace…` (their question, `Keep worktree` and
+    `Confirm removal`), and `Remove validation checkout`. A question is
+    drawn in the row's place, never in a tab.
+
+  **Nothing inside a tab sends a command**, with one exception that is
+  counted: `Archive worker` and `Restore worker` on an attempt in Task
+  details, which hide a worker's chat from the list and bring it back,
+  start, stop and remove nothing, and are undone by the same button. The
+  facts the workspace's decisions act on stay in Details (`WorkspaceDelivery`:
+  the delivery's word, the path, the host's warnings, when git was asked
+  and what it said, the validation checkouts' paths). A new control that
+  starts, decides or removes goes above the tablist. `taskStart.test.tsx`
+  reads the tabs for it, and follows every component drawn in them into
+  its own source (`inTabs`): a scan that stopped at the row's `</article>`
+  never saw the helper that drew Reopen, Clean up and Abandon in Details.
+
+  `Steps` is the tab a row opens on: the checklist with its current step, and its count line; a
   task with no reported steps says `No steps reported yet` there and does
   not open on the other tab. `Details` is every other field: the plan card
   (project, branch, work directory, worktree, owner, model, effort, size,
@@ -2120,10 +2139,22 @@ starts something takes the ones that apply:
   or move them are remembered by the cards' guard (`notePress`): a row's
   disclosure, its two tabs (the start stands above them, and a shorter tab
   slides the row under a pointer near the foot of the panel), its Task
-  details, a group's fold and `N more`. So are the
-  panel's own Stop, Close mission, Abandon and Archive buttons, each of
+  details and the disclosures inside it, a group's fold and `N more`. So are
+  the panel's own Stop, Close mission, Abandon and Archive buttons, each of
   which is replaced where it stands by the question it opens. A row that
   opens under the pointer cannot start a worker.
+- **A task's workspace is decided the same way** (`DeliveryActions`).
+  `Continue after review`, `Clean up worktree` and `Abandon workspace…` are
+  replaced where they stand by their question: the press is remembered
+  (`notePress`) and a held key is dropped. The question puts the focus on
+  its safe answer (the box the fixes are written in, where Enter is a new
+  line and the key that opened it writes nothing; `Keep worktree`), and
+  Escape takes it away. `Reopen task in this workspace` and `Confirm
+  removal` drop a held key and a press that repeats the one the question
+  was opened with (`useCarefulAnswer`). `Cancel` and `Keep worktree` are
+  remembered too, because the row comes back under the pointer, and the
+  keyboard goes back to the control that asked. `Remove validation
+  checkout` has no question and drops a held key.
 
 Who asks through the shared `Confirm` is listed in `Confirm.test.tsx`,
 which fails when a caller is added without it: closing a mission after its

@@ -935,6 +935,35 @@
   font-weight: 650;
 }
 .orch-task-start button:disabled { opacity: .45; cursor: default; }
+/* What the person decides about the task's workspace stands above the tabs
+   with its start: a row of plain bordered buttons, and in the row's place
+   the question one of them opens. Nothing here has a colour of its own:
+   what is removed is said in words, and the safe answer comes first. */
+.orch-delivery-actions, .orch-delivery-answers { display: flex; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+.orch-task-detail > .orch-delivery-actions,
+.orch-task-detail > .orch-followup,
+.orch-task-detail > .orch-cleanup-confirm { margin: 0 0 12px; font-size: 11.5px; }
+.orch-task-detail > .orch-followup,
+.orch-task-detail > .orch-cleanup-confirm { animation: orch-task-tab-in 160ms ease-out; }
+.orch-delivery-actions button, .orch-followup button, .orch-cleanup-confirm button {
+  min-width: 0; min-height: var(--task-control); padding: 4px 10px; overflow-wrap: anywhere;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-1); color: var(--fg-1); font: inherit; font-size: 11.5px; cursor: pointer;
+  transition: background-color 130ms ease-out, color 130ms ease-out;
+}
+.orch-delivery-actions button:hover, .orch-followup button:hover, .orch-cleanup-confirm button:hover { background: var(--bg-2); color: var(--fg-0); }
+.orch-delivery-actions button:disabled, .orch-followup button:disabled, .orch-cleanup-confirm button:disabled { opacity: .5; cursor: default; }
+.orch-delivery-actions button:focus-visible, .orch-followup button:focus-visible, .orch-cleanup-confirm button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.orch-delivery-actions code { font-family: var(--mono); font-size: 10.5px; }
+.orch-followup .orch-delivery-go, .orch-cleanup-confirm .orch-delivery-go { border-color: var(--border-strong); color: var(--fg-0); font-weight: 650; }
+.orch-cleanup-confirm p { margin: 0; color: var(--fg-1); line-height: 1.5; }
+@media (max-width: 859.98px), (any-pointer: coarse) {
+  .orch-delivery-actions button, .orch-followup button, .orch-cleanup-confirm button { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .orch-task-detail > .orch-followup, .orch-task-detail > .orch-cleanup-confirm { animation: none; }
+  .orch-delivery-actions button, .orch-followup button, .orch-cleanup-confirm button { transition: none; }
+}
 /* A check's kind, its environment and a native decision: each a state of
    its own, beside the task's status and never folded into it. */
 .orch-task-kind, .orch-task-env, .orch-task-decision { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1079,9 +1108,8 @@
 .orch-workspace-body > code { overflow-wrap: anywhere; color: var(--fg-2); font-family: var(--mono); font-size: 10.5px; }
 .orch-workspace p { margin: 0; }
 .orch-workspace-warning { color: var(--fg-2); line-height: 1.6; }
-.orch-workspace-actions, .orch-cleanup-confirm { display: flex; flex-wrap: wrap; gap: 8px; }
-.orch-workspace button { border: 1px solid var(--border); background: var(--bg-2); color: var(--fg-0); padding: 6px 9px; border-radius: var(--r-md); cursor: pointer; }
-.orch-workspace button:disabled { opacity: .5; cursor: default; }
+.orch-cleanup-confirm { display: flex; flex-wrap: wrap; gap: 8px; }
+.orch-validation code { overflow-wrap: anywhere; font-family: var(--mono); font-size: 10.5px; }
 .orch-delivery-evidence { color: var(--fg-2); }
 .orch-delivery-evidence a { color: var(--accent); }
 .orch-followup { display: grid; gap: 8px; }

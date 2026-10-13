@@ -103,7 +103,12 @@ const snapshot = {
       },
     }),
     task("t6", QUEUED, "pending", { dependsOn: ["t1"] }),
-    task("t7", DONE, "completed", { activeAttemptId: "a7" }),
+    // A settled task in a worktree the host kept: pushed, clean, not merged.
+    task("t7", DONE, "completed", { activeAttemptId: "a7", workspace: {
+      plan: { mode: "worktree", cwd: "/test/tree", checkoutRoot: "/test/tree", repositoryRoot: "/test", branch: "feature/probe", baseBranch: "develop", baseSha: "12345678", managed: true, isRepo: true, warnings: [], initialStatus: "" },
+      state: "retained", abandoned: false, validationPaths: [],
+      delivery: { headSha: "abcdef12345678", dirty: false, hasCommits: true, pushed: true, merged: false, checkedAt: now - 4 * MINUTE, notes: [] },
+    } }),
     task("t8", HELD, "ready", { activeAttemptId: "a8", heldByReopen: true }),
     task("t9", SILENT, "running", { activeAttemptId: "a9" }),
   ],
@@ -131,6 +136,8 @@ const snapshot = {
 };
 
 const started = [];
+/** What the row sent about a task's workspace. */
+const decided = [];
 function resultFor(request) {
   switch (request.cmd) {
     case "list_workspaces": return [{ id: "octiq", name: "octiq-flow", primary_path: root }];
@@ -143,6 +150,8 @@ function resultFor(request) {
     case "chat_queue_state": return { live: false, queuedTurnIds: [] };
     case "orchestration_snapshot": return snapshot;
     case "orchestration_worker_start": started.push(request.args); return null;
+    case "orchestration_task_reopen": case "orchestration_workspace_cleanup": case "orchestration_workspace_refresh":
+      decided.push({ cmd: request.cmd, ...request.args }); return null;
     case "memory_usage": return { totalMb: 0, procs: 0, rows: [] };
     case "usage_summary": return {};
     case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }];
@@ -446,6 +455,122 @@ async function opened(page, label, out, phone) {
   await page.screenshot({ path: join(artifacts, `${label}-opened-all.png`), fullPage: false });
 }
 
+/** What decides a task's workspace (back to work after a review, its
+ *  worktree removed or abandoned) stands above the tabs on both of them,
+ *  and is not fired by the key or press that brought it on screen. */
+async function delivery(page, label, out, phone) {
+  const press = (locator) => phone ? locator.tap() : locator.click();
+  const group = page.locator(".run-group-head").filter({ hasText: "Finished" });
+  if (await group.getAttribute("aria-expanded") !== "true") await press(group);
+  const row = rowOf(page, DONE);
+  await press(expand(page, DONE));
+  const tablist = row.getByRole("tablist");
+  await tablist.waitFor();
+  const reopen = row.getByRole("button", { name: "Continue after review", exact: true });
+  const abandon = row.getByRole("button", { name: "Abandon workspace…", exact: true });
+  // The row's own two panels: the whole row sits in the run panel's Tasks
+  // tabpanel, so `[role="tabpanel"]` alone is true of everything on it.
+  const inTab = (locator) => locator.evaluate((el) => !!el.closest(".orch-task-tab-panel"));
+  decided.length = 0;
+
+  // On both tabs, above the tablist, in neither panel.
+  for (const tab of ["Steps", "Details"]) {
+    await press(row.getByRole("tab", { name: tab, exact: true }));
+    for (const [name, control] of [["Continue after review", reopen], ["Abandon workspace", abandon]]) {
+      assert.equal(await control.isVisible(), true, `${label}: ${name} is on screen with ${tab}`);
+      assert.equal(await inTab(control), false, `${label}: ${name} is in no tab`);
+      assert((await place(control)).b <= (await place(tablist)).t + 0.5, `${label}: ${name} stands above the tabs`);
+    }
+  }
+  assert.equal(await row.locator(".orch-task-tab-panel button", { hasText: /Continue after review|Clean up worktree|Abandon workspace|Reopen task|Confirm removal|Refresh delivery/ }).count(), 0,
+    `${label}: no tab holds a delivery control`);
+  // The facts stay in Details.
+  await press(row.locator(".orch-task-more-summary"));
+  assert.match(await row.locator(".orch-task-tab-panel .orch-workspace > summary").evaluate((el) => el.textContent), /^Delivery\s*Pushed · awaiting review$/,
+    `${label}: Details keeps the delivery's facts`);
+  await press(row.getByRole("tab", { name: "Steps", exact: true }));
+  await row.screenshot({ path: join(artifacts, `${label}-delivery-row.png`) });
+
+  // Abandon, by the keyboard: a held Enter opens the question and answers
+  // nothing; the focus is on the safe answer, which a second Enter gives.
+  await abandon.focus();
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.up("Enter");
+  const keep = row.getByRole("button", { name: "Keep worktree", exact: true });
+  const confirm = row.getByRole("button", { name: "Confirm removal", exact: true });
+  await confirm.waitFor();
+  assert.equal(await inTab(confirm), false, `${label}: the question is in no tab`);
+  assert((await place(confirm)).b <= (await place(tablist)).t + 0.5, `${label}: and stands above the tabs`);
+  assert.equal(await keep.evaluate((el) => el === document.activeElement), true, `${label}: the question puts the focus on Keep worktree`);
+  assert.equal(decided.length, 0, `${label}: a held Enter removes nothing`);
+  await row.screenshot({ path: join(artifacts, `${label}-delivery-question.png`) });
+  await page.keyboard.press("Enter");
+  await abandon.waitFor();
+  assert.equal(await confirm.count(), 0, `${label}: a second Enter keeps the worktree`);
+  assert.equal(await abandon.evaluate((el) => el === document.activeElement), true, `${label}: and the keyboard is back on the control that asked`);
+  assert.equal(decided.length, 0);
+  // Escape takes the question away.
+  await page.keyboard.press("Enter");
+  await confirm.waitFor();
+  await page.keyboard.press("Escape");
+  await abandon.waitFor();
+  assert.equal(decided.length, 0, `${label}: Escape removes nothing`);
+
+  // By a press: one that repeats the opener's, where the confirming answer
+  // was drawn, removes nothing; a press aimed at it later does.
+  await page.waitForTimeout(800);
+  const at = await abandon.evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  if (phone) await page.touchscreen.tap(at.x, at.y); else await page.mouse.click(at.x, at.y);
+  await confirm.waitFor();
+  const stray = await confirm.evaluate((el, spot) => {
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1, clientX: spot.x, clientY: spot.y });
+    el.dispatchEvent(click);
+    return click.defaultPrevented;
+  }, at);
+  assert.equal(stray, true, `${label}: a press that repeats the opener's is dropped`);
+  assert.equal(decided.length, 0, `${label}: and removes nothing`);
+  assert.equal(await confirm.isVisible(), true, `${label}: the question is still asked`);
+  // Held on the confirming answer, Enter answers once and opens nothing again.
+  await page.waitForTimeout(800);
+  await confirm.focus();
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.up("Enter");
+  await page.waitForFunction(() => true);
+  await page.waitForTimeout(200);
+  assert.deepEqual(decided, [{ cmd: "orchestration_workspace_cleanup", actorChatKey: decided[0]?.actorChatKey, taskId: "t7", abandon: true, expectedHead: "abcdef12345678" }],
+    `${label}: Confirm removal, aimed at, abandons this task's worktree once`);
+  assert.equal(await confirm.count(), 0, `${label}: and the held key does not ask again`);
+  decided.length = 0;
+
+  // Continue after review: the fixes' box has the focus, where a held Enter
+  // writes nothing; the reopening is sent once, with the words.
+  await reopen.focus();
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.up("Enter");
+  const box = row.getByRole("textbox", { name: `Review fixes for ${DONE}`, exact: true });
+  const send = row.getByRole("button", { name: "Reopen task in this workspace", exact: true });
+  await box.waitFor();
+  assert.equal(await box.evaluate((el) => el === document.activeElement), true, `${label}: the reopening puts the focus in the box`);
+  assert.equal(await box.inputValue(), "", `${label}: the key that opened it writes nothing`);
+  assert.equal(await inTab(send), false, `${label}: the reopening is in no tab`);
+  assert.equal(await send.isDisabled(), true, `${label}: and cannot be sent empty`);
+  await box.fill("Correct the review findings.");
+  await row.screenshot({ path: join(artifacts, `${label}-delivery-reopen.png`) });
+  await press(send);
+  await page.waitForTimeout(200);
+  assert.deepEqual(decided, [{ cmd: "orchestration_task_reopen", actorChatKey: decided[0]?.actorChatKey, taskId: "t7", spec: "Correct the review findings." }],
+    `${label}: the reopening is sent once, for this task`);
+  assert.equal(await noSidewaysScroll(page), true, `${label}: no sideways scroll with the delivery row`);
+  out.delivery = { controls: await row.locator(".orch-delivery-actions button").allTextContents() };
+  decided.length = 0;
+}
+
 /** With scrollbars that take room: a tab whose content makes the panel
  *  scroll must not change the row's width. */
 async function scrollbars(page, label, out) {
@@ -509,6 +634,7 @@ try {
       await rowOf(page, FAILED).screenshot({ path: join(artifacts, `${label}-opened.png`) });
     } else {
       await opened(page, label, out, size.phone);
+      await delivery(page, label, out, size.phone);
     }
     await context.close();
     if (classic && !size.phone) {
