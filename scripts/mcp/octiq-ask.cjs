@@ -1184,8 +1184,11 @@ const TASK_STATUS = {
  *
  *  How to keep a plan is said HERE, in the descriptions, and not in the
  *  server's instructions: Claude Code keeps only the first 4,096 characters
- *  of those, and a tool's description is never cut. The limits below are
- *  the host's (`chat_plan::MAX_*`); it refuses what is over, in words. */
+ *  of those. A tool's description has the same limit, to itself, so what
+ *  is said here is not out of its reach: these two are well within it
+ *  (1,674 characters the longer), and `instructions.test.cjs` holds every
+ *  tool's description under it. The limits below are the host's
+ *  (`chat_plan::MAX_*`); it refuses what is over, in words. */
 const PLAN_ITEM_FIELDS = {
   title: { type: "string", minLength: 1, maxLength: 120, description: "The piece of work, in one line the person would recognise." },
   status: {
@@ -2502,7 +2505,8 @@ const AGENT_WAIT_SECONDS = ASK_USER_ENABLED ? 180 : 50;
 const DIAGRAM_INSTRUCTIONS = 'A reply can hold one card diagram: a fenced code block with the info string octiq-diagram whose body is JSON {"rows":[[{"title":"...","note":"...","icon":"...","plain":true}]]}. Rows run top to bottom with an arrow between them, the nodes of a row sit side by side, and plain draws a node with no frame (a conclusion); only title is required. Limits: 8 rows, 4 nodes a row, title 60 characters, note 120. Icons: moon, coffee, screen, user, users, server, database, file, folder, code, terminal, branch, check, cross, alert, clock, lock, key, globe, cloud, bolt, search, message, box. Draw one only when a relation or a flow is clearer as a picture than as a sentence, never by default, and at most one per reply.';
 
 /** The one sentence about a chat's plan that no single tool can say: WHEN
- *  to keep one. How is in the plan tools' descriptions, which are never cut.
+ *  to keep one. How is in the plan tools' descriptions, which are within
+ *  the limit a description has to itself.
  *  Word for word the host's `PLAN_PROMPT` (agent_provider.rs), which is how
  *  Codex's app-server and Antigravity are told; a test on each side reads
  *  this. A worker is not told: its task is its plan. */
@@ -2511,9 +2515,11 @@ const PLAN_INSTRUCTIONS = "When the person says several things are coming before
 /** What Claude Code keeps of a server's instructions. Everything past this
  *  many characters is silently dropped (seen in a live chat on 2026-10-13,
  *  cut mid-word), so the text below stays under it and a test holds it
- *  there. What belongs to one tool is said in that tool's description, which
- *  is never cut; these sentences say only when to reach for a tool, and
- *  what no single tool can say. */
+ *  there. What belongs to one tool is said in that tool's description,
+ *  which Claude Code cuts at the same mark, each on its own: a description
+ *  is not a place the limit does not reach, only one with room of its own,
+ *  and the same test holds every one of them under it. These sentences say
+ *  only when to reach for a tool, and what no single tool can say. */
 const INSTRUCTIONS_KEPT = 4096;
 
 const BASE_SERVER_INSTRUCTIONS =

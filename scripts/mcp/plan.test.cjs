@@ -1,7 +1,8 @@
 "use strict";
 // A chat's plan, as the MCP server offers it to a chat agent: two tools
 // (read it, change it), no tool that starts it, and how to keep one said in
-// the descriptions, which no client cuts.
+// the descriptions, which are within the limit Claude Code has for one
+// (`instructions.test.cjs` holds every description under it).
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");

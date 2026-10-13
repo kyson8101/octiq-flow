@@ -11,10 +11,20 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-/** What Claude Code keeps. */
+//
+// The same limit applies to each tool's description, on its own (Claude
+// Code's changelog, 2.1.296: server instructions AND upfront MCP tool
+// descriptions). So moving a sentence from the instructions into a tool's
+// description does not put it out of reach of the limit: it puts it under
+// that tool's own. The longest description is 2,008 characters today
+// (orchestration_peer_request); the last test here holds every one of them
+// under the limit, for every kind of chat.
+
+/** What Claude Code keeps: of a server's instructions, and of each tool's
+ *  description. */
 const KEPT = 4096;
 
-function instructions(env = {}, flags = []) {
+function ask(method, env = {}, flags = []) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...flags], {
       env: { ...process.env, OCTIQ_CHAT_KEY: "chat:lead", OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", ...env },
@@ -26,10 +36,14 @@ function instructions(env = {}, flags = []) {
     child.on("exit", () => { clearTimeout(timer); if (!out) reject(new Error("No MCP response")); });
     child.stdout.on("data", chunk => {
       out += chunk;
-      if (out.includes("\n")) { clearTimeout(timer); resolve(JSON.parse(out.split("\n")[0]).result.instructions); child.stdin.end(); }
+      if (out.includes("\n")) { clearTimeout(timer); resolve(JSON.parse(out.split("\n")[0]).result); child.stdin.end(); }
     });
-    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: {} }) + "\n");
   });
+}
+
+async function instructions(env = {}, flags = []) {
+  return (await ask("initialize", env, flags)).instructions;
 }
 
 const KINDS = [
@@ -47,8 +61,25 @@ test("every kind of chat gets instructions Claude Code keeps whole", async () =>
       said.length <= KEPT,
       `${kind}: the instructions are ${said.length} characters, and Claude Code keeps only the first ${KEPT}. ` +
         `The last ${said.length - KEPT} would never reach the agent: ${JSON.stringify(said.slice(KEPT - 40))}. ` +
-        "Move what belongs to one tool into that tool's description, which is never cut.",
+        "Move what belongs to one tool into that tool's description, which has the same limit to itself and is held under it by the last test here.",
     );
+  }
+});
+
+test("every tool's description is one Claude Code keeps whole, for every kind of chat", async () => {
+  for (const [kind, env, flags] of KINDS) {
+    const { tools } = await ask("tools/list", env, flags);
+    assert.ok(tools.length > 0, `${kind} is offered tools`);
+    for (const tool of tools) {
+      const said = tool.description ?? "";
+      assert.ok(said.length > 0, `${kind}: ${tool.name} has a description`);
+      assert.ok(
+        said.length <= KEPT,
+        `${kind}: the description of ${tool.name} is ${said.length} characters, and Claude Code keeps only the first ${KEPT} of a tool's description. ` +
+          `The last ${said.length - KEPT} would never reach the agent: ${JSON.stringify(said.slice(KEPT - 40))}. ` +
+          "Say less, or put what is about one argument in that argument's own description.",
+      );
+    }
   }
 });
 

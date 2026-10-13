@@ -507,15 +507,19 @@ it covers work started through the host, not an agent editing files in its
 own chat. The peer tools and the host's scheduler for a run that existed
 before the plan are not gated either.
 
-Agents are told how to keep a plan in the two tools' descriptions, which no
-client cuts, and when to keep one in a single sentence (`PLAN_PROMPT` in
-`agent_provider.rs`, word for word `PLAN_INSTRUCTIONS` in the script; a test
-on each side). Like the card diagram it rides no command line. **The MCP
-server's instructions stay under 4,096 characters**
-(`scripts/mcp/instructions.test.cjs`): Claude Code drops what is past that
-without a word, and at 5,658 the end of read_conversation, the orchestration
-and peer sentences, task_status and the ask_user sentence never reached a
-Claude chat. What belongs to one tool goes in that tool's description.
+Agents are told how to keep a plan in the two tools' descriptions, and when
+to keep one in a single sentence (`PLAN_PROMPT` in `agent_provider.rs`, word
+for word `PLAN_INSTRUCTIONS` in the script; a test on each side). Like the
+card diagram it rides no command line. **The MCP server's instructions stay
+under 4,096 characters, and so does every tool's description**
+(`scripts/mcp/instructions.test.cjs`, for each kind of chat): Claude Code
+drops what is past that without a word, and at 5,658 the end of
+read_conversation, the orchestration and peer sentences, task_status and the
+ask_user sentence never reached a Claude chat. What belongs to one tool
+goes in that tool's description. That is room of its own, not a place the
+limit does not reach: Claude Code applies the same limit to each upfront
+tool description (the longest is 2,008 today), so a description that keeps
+growing is cut like the instructions were.
 
 A plan follows the chat's task status when the chat goes: kept through the
 trash window, removed when the chat is purged, kept by `/clear`.
