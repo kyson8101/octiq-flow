@@ -7,7 +7,6 @@
 import { bridge } from "./bridge";
 import type { LeadRecord } from "./agentsDashboard";
 import { recall, remember } from "./remember";
-import { accessRank } from "./accessRequest";
 import {
   MODELS, claudeModelName, effortFor, effortSteps, accessFor,
   type AccessLevel, type Effort, type ModelChoice, type Provider,
@@ -395,35 +394,6 @@ export function leadSettings(agent: TeamAgent): { choice: ModelChoice; effort: E
     effort: effortFor(agent.agent, agent.effort ?? "medium"),
     access: accessFor(agent.agent, agent.access),
   };
-}
-
-/** The registered agent a conversation is with, as the roster has it now.
- *  Null for an ordinary chat (no agent was handed it), for an agent that is
- *  no longer registered, and for a roster that has not been read yet. */
-export function conversationAgent(
-  chatKey: string,
-  leads: readonly Pick<LeadRecord, "chatKey" | "leadId">[],
-  roster: readonly TeamAgent[],
-): TeamAgent | null {
-  const record = leads.find((item) => item.chatKey === chatKey);
-  return (record && roster.find((agent) => agent.id === record.leadId)) || null;
-}
-
-/** The level a conversation is started at, from the one saved for it and the
- *  agent it is with (`conversationAgent`). A registered agent's chat runs on
- *  that agent's registered access: a saved level below it is from a time the
- *  page opened discussions read-only, and gives way. It is never lowered: a
- *  raise the person approved above the registered level is kept. With no
- *  agent the saved level stands. `provider` is the one the chat is started
- *  with, which owns the levels on offer. */
-export function startAccess(
-  saved: AccessLevel,
-  agent: Pick<TeamAgent, "agent" | "access"> | null | undefined,
-  provider: Provider | undefined = agent?.agent,
-): AccessLevel {
-  if (!agent || !provider) return saved;
-  const registered = accessFor(provider, agent.access);
-  return accessRank(saved) < accessRank(registered) ? registered : saved;
 }
 
 export { readTaskBrief } from "./taskBrief";

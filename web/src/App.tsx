@@ -59,6 +59,7 @@ import {
   removeIndexEntry,
   saveIndexEntry,
   saveIndexEntries,
+  saveMark,
   setChatDone,
   type DeletedIndexEntry,
   type IndexEntry,
@@ -146,8 +147,8 @@ import { AgentsDashboard } from "./components/AgentsDashboard";
 import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import { crossProjectChatKeys } from "./lib/conversationProjects";
 import {
-  agentIdentity, conversationAgent, conversationRecipient, conversationRecipients, leadSettings, loadFrontDesk, loadHead, loadHome,
-  loadLeads, loadTeam, loadUnfinishedDeskChats, onTeamChanged, recallAgentsMode, rememberAgentsMode, startAccess, taskBrief,
+  agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadFrontDesk, loadHead, loadHome,
+  loadLeads, loadTeam, loadUnfinishedDeskChats, onTeamChanged, recallAgentsMode, rememberAgentsMode, taskBrief,
   type TeamAgent, type UnfinishedDeskChat,
 } from "./lib/agentsMode";
 import { ContinueDesk } from "./components/ContinueDesk";
@@ -225,6 +226,7 @@ import {
   type ChatQueueState,
 } from "./lib/recovery";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage, unconfirmedSend } from "./lib/messageQueue";
+import { ACCESS_CHANGED, accessWord, aheadOfRow, levelFromRow, mirrorAccess } from "./lib/chatAccess";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
 import {
@@ -894,28 +896,6 @@ export default function App() {
   // it changes.
   const runningRef = useRef(running);
   runningRef.current = running;
-  // The same, for who each chat is with: the paths that start a chat ask at
-  // the moment they start it, with the roster as it is then.
-  const rosterRef = useRef(roster);
-  rosterRef.current = roster;
-  const leadsRef = useRef(leads);
-  leadsRef.current = leads;
-  const chatParentsRef = useRef(chatParents);
-  chatParentsRef.current = chatParents;
-  /** The registered agent a chat's level is the registration's to say, or
-   *  null: an ordinary chat, a removed agent, a roster not read yet. A
-   *  worker's level comes with its task, and the front desk's is set where
-   *  its chat is opened. */
-  const agentOfChat = useCallback((id: string): TeamAgent | null => {
-    if (isWorkerChat(id, chatParentsRef.current) || frontDeskChatIds.current.has(id)) return null;
-    return conversationAgent(keyFor(id), leadsRef.current, rosterRef.current);
-  }, []);
-  /** The level a chat's next process is started at (`startAccess`): its
-   *  agent's registered access where the saved one is below it. A process
-   *  that is running keeps the level it has; nothing here tells it. */
-  const startLevel = useCallback((id: string, saved: AccessLevel, provider: Provider): AccessLevel => (
-    runningRef.current.has(id) ? saved : startAccess(saved, agentOfChat(id), provider)
-  ), [agentOfChat]);
   // The same, for the loaded chats. `openConversation` has to know whether the
   // one being opened already has words in it — and it must NOT be rebuilt every
   // time any chat says anything, because the sidebar and the notification
@@ -1359,6 +1339,11 @@ export default function App() {
   // The browser's own chats are now kept, and the next save re-offers them to
   // the index.
   const refreshIndex = useCallback(() => {
+    // What this page holds of each loaded chat's level as it asks, so an
+    // answer older than the page's own word is not taken for news of it.
+    const asked = new Map(
+      Object.entries(meta.current).map(([id, held]) => [id, { held: held.access, ...saveMark(id) }]),
+    );
     // Trash is a second view of the same server-side index. Read both views as
     // one refresh so a row found in Trash can never be folded back in from an
     // active-list reply that raced the delete.
@@ -1468,6 +1453,28 @@ export default function App() {
           ) {
             forgetLocally(c.id);
           }
+        }
+        // The level kept with a loaded chat follows its row (`levelFromRow`).
+        // The host writes the level a process was started at to the index;
+        // a page that did not hear it say so (it was not connected) would
+        // otherwise send its older level, and save it back over the host's.
+        for (const row of remote) {
+          const held = meta.current[row.id];
+          if (!held) continue;
+          const agent = (modelFromId(held.modelId) ?? MODELS[0]).agent;
+          const said = accessWord(row.access);
+          const cached = conversationsRef.current.find((c) => c.id === row.id);
+          const sending = sendingTurns.current.size > 0
+            && (chatsRef.current[row.id]?.messages ?? []).some((m) => !!m.turnId && sendingTurns.current.has(m.turnId));
+          const level = levelFromRow(
+            said && accessFor(agent, said),
+            held.access,
+            cached && accessFor(agent, (cached.permission as AccessLevel) ?? "read"),
+            aheadOfRow(asked.get(row.id), { held: held.access, ...saveMark(row.id) }, sending),
+          );
+          if (!level) continue;
+          held.access = level;
+          if (row.id === visibleRef.current) setAccess(level);
         }
         setConversations((local) => {
           const byId = new Map(local.map((c) => [c.id, c]));
@@ -1809,6 +1816,30 @@ export default function App() {
         },
       ),
     [patch],
+  );
+
+  // The level a chat's process really runs at is the host's to say, on
+  // `chat-access-changed` (`lib/chatAccess`). A mirror: what this page holds
+  // of the chat is brought to it, and nothing is sent. The index entry is the
+  // host's own write; the page's ordinary save then carries the same level.
+  useEffect(
+    () =>
+      bridge.on(ACCESS_CHANGED, (payload) => {
+        const change = mirrorAccess(payload, (id) => {
+          const row = conversationsRef.current.find((c) => c.id === id);
+          return { held: meta.current[id]?.access, listed: !!row, row: row?.permission };
+        }, visibleRef.current);
+        if (!change) return;
+        if (change.held) meta.current[change.id].access = change.access;
+        if (change.composer) setAccess(change.access);
+        if (change.listed) setConversations((current) => {
+          if (!current.some((c) => c.id === change.id && c.permission !== change.access)) return current;
+          const list = current.map((c) => (c.id === change.id ? { ...c, permission: change.access } : c));
+          saveConversations(list);
+          return list;
+        });
+      }),
+    [],
   );
 
   // The commands a session reports at startup, kept per PROJECT AND PROVIDER.
@@ -2806,9 +2837,7 @@ export default function App() {
     setUnavailableChat(null);
     setNewChatError(null);
     const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
-    // The level saved for this chat, or its agent's registered level where
-    // the saved one is below it (`startLevel`).
-    const conversationAccess = startLevel(c.id, accessFor(model.agent, (c.permission as AccessLevel) ?? "read"), model.agent);
+    const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
     // The level this chat runs at, not the one the page last held: a resumed
     // agent is started with it. A chat from before it was kept has none, and
     // keeps whatever the page shows.
@@ -2831,20 +2860,7 @@ export default function App() {
     setSearchPage(false);
     setAppSettings(false);
     setAgentsDashboard(false);
-  }, [holdConversation, startLevel]);
-  // A chat can be opened before the roster has been read, and an agent's
-  // registration can change while its chat is open. The level held for the
-  // open chat is asked again then, so it is the one its next start would
-  // use; a send asks once more for itself. Only ever a raise.
-  useEffect(() => {
-    if (!conversationId) return;
-    const held = meta.current[conversationId];
-    if (!held) return;
-    const level = startLevel(conversationId, held.access, modelFromId(held.modelId)?.agent ?? choice.agent);
-    if (level === held.access) return;
-    held.access = level;
-    setAccess(level);
-  }, [conversationId, roster, leads, running, choice.agent, startLevel]);
+  }, [holdConversation]);
 
   // Load the task beside the main chat the way opening it would, once per
   // task: its stored words at once, then whatever this device has not seen.
@@ -2859,15 +2875,13 @@ export default function App() {
       meta.current[besideConversation.id] = {
         projectId: besideConversation.projectId,
         modelId: model.id,
-        access: startLevel(
-          besideConversation.id, accessFor(model.agent, (besideConversation.permission as AccessLevel) ?? "read"), model.agent,
-        ),
+        access: accessFor(model.agent, (besideConversation.permission as AccessLevel) ?? "read"),
         effort: besideConversation.effort ? effortFor(model.agent, besideConversation.effort as Effort) : undefined,
       };
     }
     holdConversation(besideConversation);
     flushChats();
-  }, [besideConversation, holdConversation, flushChats, startLevel]);
+  }, [besideConversation, holdConversation, flushChats]);
 
   // The half that opens a chat a banner asked for lives further down, with the
   // panel closers it needs — see `showConversation`.
@@ -3558,12 +3572,6 @@ export default function App() {
       { safetyBlock }: { safetyBlock?: string } = {},
     ): Promise<boolean> => {
       if (workerChat) return false;
-      // The level this send starts the chat at, when it starts one: asked
-      // here, with the roster as it is now, because the chat may have been
-      // opened before the roster was read (`startLevel`). It is saved with
-      // the chat below, so it is not worked out again.
-      const sendAccess = conversationId ? startLevel(conversationId, access, choice.agent) : access;
-      if (sendAccess !== access) setAccess(sendAccess);
       // Agents mode: the first message of a new conversation goes to the agent
       // it is with, with the brief behind it. What the person typed still
       // names the chat.
@@ -3719,7 +3727,7 @@ export default function App() {
       meta.current[id] = {
         projectId: targetProject.id,
         modelId: choice.id,
-        access: sendAccess,
+        access,
         effort,
       };
       // The same files the agent is given, kept on the bubble so the message
@@ -3826,7 +3834,7 @@ export default function App() {
           cwd: preparationError ? held?.cwd : launchCwd,
           messages: chatsRef.current[id]?.messages ?? held?.messages ?? [],
           modelId: choice.id,
-          permission: sendAccess,
+          permission: access,
           effort,
           createdAt: held?.createdAt ?? startedAt,
           updatedAt: startedAt,
@@ -3844,7 +3852,7 @@ export default function App() {
           saveConversations(next);
           return next;
         });
-        const indexed = {
+        if (!deskChat) saveIndexEntry({
           id: activity.id,
           projectId: activity.projectId,
           title: activity.title,
@@ -3859,8 +3867,7 @@ export default function App() {
           pinned: activity.pinned ?? false,
           generation: activity.generation,
           launch: activity.launch,
-        };
-        if (!deskChat) saveIndexEntry(indexed);
+        });
 
         if (preparationError) {
           fail(preparationError);
@@ -3904,27 +3911,6 @@ export default function App() {
           else catchUp.current.own(keyFor(id));
         }
 
-        // A start, whatever this page believed was running when the send
-        // began: a process that exited under the send above is started
-        // again here, at the level a start takes.
-        const startAt = startAccess(sendAccess, agentOfChat(id), choice.agent);
-        if (startAt !== sendAccess) {
-          setAccess(startAt);
-          meta.current[id].access = startAt;
-          // The level saved with the chat is the one its process is started
-          // at, not the one this send began with: the entry above was
-          // written before anything said a start was coming.
-          if (!deskChat) {
-            setConversations((current) => {
-              const next = current.map((conversation) => (
-                conversation.id === id ? { ...conversation, permission: startAt } : conversation
-              ));
-              saveConversations(next);
-              return next;
-            });
-            saveIndexEntry({ ...indexed, access: startAt });
-          }
-        }
         setRunning((prev) => new Set(prev).add(id));
         try {
           await bridge.invoke("chat_start", {
@@ -3941,7 +3927,7 @@ export default function App() {
             env: targetProject.env ?? {},
             agent: choice.agent,
             model: choice.flag || null,
-            access: startAt,
+            access,
             effort,
             lite,
             images,
@@ -4010,8 +3996,6 @@ export default function App() {
       workerChat,
       executionPlan,
       branches,
-      startLevel,
-      agentOfChat,
     ],
   );
 
@@ -4167,9 +4151,7 @@ export default function App() {
       env: home?.env ?? {},
       agent: choice.agent,
       model: choice.flag || null,
-      // Used only for a chat with no process, so it is the level a start
-      // takes whatever this page believes is running.
-      access: startAccess(access, agentOfChat(id), choice.agent),
+      access,
       effort,
       lite,
       resume: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
@@ -4178,7 +4160,7 @@ export default function App() {
     // time the host answers, and its end already took the chat out of the
     // running set: putting it back lit the live dot on a finished chat.
     if (outcome === "completing") setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
-  }, [completions.complete, workspaces, project, choice, access, effort, lite, agentOfChat]);
+  }, [completions.complete, workspaces, project, choice, access, effort, lite]);
   const confirmAction = useConfirm();
   /** Close a mission the completed chat coordinated. The person's own action,
    *  asked in the words the run panel asks it in. */
@@ -4914,8 +4896,7 @@ export default function App() {
     const handoff = switchingProvider ? modelHandoff(chatsRef.current[id]?.messages ?? []) ?? "[]" : undefined;
     await bridge.invoke("orchestration_master_start", {
       actorChatKey: run.coordinatorChatKey, runId: run.id,
-      agent: choice.agent, model: choice.flag || null, access: startLevel(id, access, choice.agent), effort, lite,
-      handoff: handoff ?? null,
+      agent: choice.agent, model: choice.flag || null, access, effort, lite, handoff: handoff ?? null,
     });
     if (switchingProvider) pendingModelHandoffs.current.delete(id);
     setRunning((previous) => new Set(previous).add(id));

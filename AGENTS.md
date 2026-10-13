@@ -517,17 +517,28 @@ to the level the chat still runs at instead of restarting the agent, which is
 what it does for every other refusal. A lowering takes hold at once and is
 written when it can be (see **Conventions**, rule C).
 
-**The level a registered agent's chat is started at is
-`agentsMode.startAccess`**, asked at the start itself (`send`, the
-`chat_start` it makes, `chat_complete`'s start, a coordinator's start) and
-never only where the chat is opened, because the roster can load after the
-chat is on screen. It only ever raises a saved level to the agent's
-registered one and never lowers it; a running process keeps the level it
-has, and the chat is saved at the level its process was started at. The page
-offers no control and runs no logic that opens or switches a chat to
-read-only on its own: a discussion is how a route's card is worded.
-`lib/startAccess.wiring.test.ts` scans for both and, being a text scan, is
-an alarm and not a proof.
+**The page sends the level it has saved for a chat and decides none.** A
+start the page makes (`send`'s `chat_start`, `chat_complete`'s `start`, a
+coordinator's start) carries the level the page holds for that chat, and no
+rule on the page raises or lowers it. The host starts a registered agent's
+own conversation at no less than the agent's registered access
+(`agent_chat::start_session`) and says the level a process really runs at
+with `chat-access-changed { chatKey, access }`. The page mirrors that event
+(`lib/chatAccess.mirrorAccess`): the level kept with the loaded chat, its row
+in the page's list and, for the chat on screen, the composer's. It sends no
+command for it, and a chat the page does not hold is left to the index. A
+level the page saves for a chat is one the person picked, one the host said
+(that event, or the chat's row of the chat list), or the one the page sent
+on a start: never one it worked out. On a row of the chat list the host's
+level wins over the one the page cached (`levelFromRow`), except while the
+page's own word may be newer than the answer (`aheadOfRow`: a send in
+flight, a save of the chat unconfirmed or made since the list was asked for)
+or holds a level the person picked that is not saved yet. The page offers no
+control and runs no logic that opens or switches a chat to read-only on its
+own: a discussion is how a route's card is worded. Not covered: a `send`
+already under way when the host's level arrives goes on with the level it
+began with.
+<!-- host half: OCTIQ BE's paragraph is merged here by the lead -->
 
 ### An auto-mode refusal the agent carries on past is a notice, not a card
 

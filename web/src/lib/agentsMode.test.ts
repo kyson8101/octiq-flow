@@ -5,11 +5,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { readTaskBrief } from "./taskBrief";
 import {
-  conversationAgent, conversationRecipient, conversationRecipients, headConversation, leadOnly, leadSettings, startAccess,
-  teamModelLabel, teamModels,
+  conversationRecipient, conversationRecipients, headConversation, leadOnly, leadSettings, teamModelLabel, teamModels,
   type TeamAgent,
 } from "./agentsMode";
-import type { AccessLevel } from "./agentProviders";
 import { titleFrom } from "./store";
 import { RecipientPicker } from "../components/AgentsSettings";
 import type { Message } from "./chat";
@@ -130,52 +128,5 @@ describe("agents mode", () => {
     expect(two).toContain('role="radiogroup" aria-label="Talk to"');
     expect(two).toMatch(/aria-checked="false" tabindex="-1"[^>]*>.*Ada/);
     expect(two).toMatch(/aria-checked="true" tabindex="0"[^>]*>.*Vesper.*Website/);
-  });
-});
-
-// A registered agent's chat runs on that agent's registered access. The page
-// once opened discussions read-only and saved that level on the chat; such a
-// chat is started at its agent's level again, and nothing is ever lowered.
-describe("the level a conversation starts at", () => {
-  const leads = [{ chatKey: "chat:c1", leadId: "agent_1" }];
-  const registered = (access: AccessLevel, agent: TeamAgent["agent"] = "claude") => ({ ...ada, agent, access });
-  const levelOf = (saved: AccessLevel, roster: TeamAgent[], chatKey = "chat:c1") =>
-    startAccess(saved, conversationAgent(chatKey, leads, roster));
-
-  it.each<[string, AccessLevel, TeamAgent[], AccessLevel]>([
-    ["saved read, registered auto", "read", [registered("auto")], "auto"],
-    ["saved manual, registered edits", "manual", [registered("edits")], "edits"],
-    ["saved full, registered auto: a raise the person approved is kept", "full", [registered("auto")], "full"],
-    ["saved read, registered read", "read", [registered("read")], "read"],
-    ["saved auto, registered auto", "auto", [registered("auto")], "auto"],
-    ["the agent was removed", "read", [{ ...ada, id: "someone_else" }], "read"],
-    ["the roster has not been read yet", "read", [], "read"],
-  ])("%s", (_name, saved, roster, level) => {
-    expect(levelOf(saved, roster)).toBe(level);
-  });
-
-  it("leaves a chat with no registered agent at its saved level", () => {
-    expect(levelOf("read", [registered("full")], "chat:ordinary")).toBe("read");
-    expect(startAccess("read", null)).toBe("read");
-    expect(startAccess("read", undefined)).toBe("read");
-    expect(conversationAgent("chat:orch-worker", leads, [ada])).toBeNull();
-  });
-
-  it("answers a level the provider the chat starts with offers", () => {
-    // Antigravity has no Manual: the registered level is read as that
-    // provider reads it, and a saved level is never lowered to it.
-    expect(startAccess("read", registered("manual", "antigravity"))).toBe("read");
-    expect(startAccess("edits", registered("manual", "antigravity"))).toBe("edits");
-    expect(startAccess("read", registered("auto", "antigravity"))).toBe("auto");
-    // The chat is started with its own provider, whatever the agent is now.
-    expect(startAccess("read", registered("manual", "claude"), "antigravity")).toBe("read");
-    expect(startAccess("read", registered("auto", "codex"), "claude")).toBe("auto");
-  });
-
-  it("is the roster's word once the roster arrives", () => {
-    // Opened before the roster was read: the saved level. Asked again when a
-    // message is sent, by which time the roster is there.
-    expect(levelOf("read", [])).toBe("read");
-    expect(levelOf("read", [registered("auto")])).toBe("auto");
   });
 });
