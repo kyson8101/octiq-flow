@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { knownSettings, receiptLines, runsAtLine } from "./chatSettings";
+import { knownSettings, receiptLines, runsAtLine, runsAtParts, runsAtRows } from "./chatSettings";
 
 const opus = { agent: "claude" as const, model: "Opus" };
 const held = { choice: opus, effort: "high" as const, access: "auto" as const };
@@ -44,6 +44,47 @@ describe("what a chat runs at, beside the agent's name", () => {
     });
     expect(known.effort).toBeUndefined();
     expect(runsAtLine(known)).toMatch(/^sol · /);
+  });
+});
+
+describe("the line in the two parts the composer draws", () => {
+  const all = { model: "Opus latest", effort: "High", access: "Plan" };
+
+  it("puts the access last, with its own separator, so it is the part a narrow composer keeps", () => {
+    expect(runsAtParts(all)).toEqual({ rest: "opus latest · high", access: " · Plan" });
+    // Joined, the two are the line.
+    const { rest, access } = runsAtParts(all);
+    expect(rest + access).toBe(runsAtLine(all));
+  });
+
+  it("leaves out what the page does not know, and never a stray separator", () => {
+    expect(runsAtParts({ access: "Plan" })).toEqual({ rest: "", access: "Plan" });
+    expect(runsAtParts({ model: "Opus", effort: "High" })).toEqual({ rest: "opus · high", access: "" });
+    expect(runsAtParts({ effort: "High", access: "Auto" })).toEqual({ rest: "high", access: " · Auto" });
+    expect(runsAtParts({})).toEqual({ rest: "", access: "" });
+    for (const known of [{ access: "Plan" }, { model: "Opus" }, { effort: "High", access: "Auto" }, {}]) {
+      const { rest, access } = runsAtParts(known);
+      expect(rest + access).toBe(runsAtLine(known));
+    }
+  });
+
+  it("is said whole in the disclosure, a row each, as the pickers name the values", () => {
+    expect(runsAtRows(all)).toEqual([
+      { label: "Model", value: "Opus latest" }, { label: "Effort", value: "High" }, { label: "Access", value: "Plan" },
+    ]);
+    expect(runsAtRows({ model: "Sonnet" })).toEqual([{ label: "Model", value: "Sonnet" }]);
+    expect(runsAtRows({})).toEqual([]);
+  });
+
+  it("is this session's, from the page's own values and never the registration's", () => {
+    // A saved chat whose record says Plan, under a registration that says
+    // Auto: the page holds the chat's own level, and that is what is said.
+    const known = knownSettings({
+      record: { modelId: "claude:opus", effort: "high", permission: "read" },
+      choice: { agent: "claude", model: "Opus latest" }, effort: "high", access: "read",
+    });
+    expect(runsAtRows(known).find((row) => row.label === "Access")?.value).toBe(runsAtParts(known).access.replace(" · ", ""));
+    expect(runsAtLine(known)).toMatch(/^opus latest · high · /);
   });
 });
 

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
-import { Composer, MODELS } from "./Composer";
+import { AgentIdentityChip, Composer, MODELS } from "./Composer";
 import { agentIdentity, type TeamAgent } from "../lib/agentsMode";
 import styles from "../styles.css?raw";
 
@@ -91,27 +91,70 @@ describe("the composer in agents mode", () => {
     expect(html).toContain("perm-auto");
   });
 
-  it("says what this chat runs at beside the name, as text and not as a control", () => {
-    const html = composer(agentIdentity(ryan, "Ryan", opus), { session: "chat_1", runsAt: "opus · high · Auto" });
+  const RUNS = { model: "Opus", effort: "High", access: "Auto" };
+
+  it("says what this chat runs at beside the name, in two parts, as a disclosure and not a picker", () => {
+    const html = composer(agentIdentity(ryan, "Ryan", opus), { session: "chat_1", runsAt: RUNS });
     // After the name, which stays the name alone: it is what a confirmed
     // route's name lands on (`identityTravel.composerLanding`, `cutShort`).
-    expect(html).toContain('<span class="composer-identity-name">Ryan</span><span class="composer-identity-runs">opus · high · Auto</span>');
-    // Read-only: nothing in the chip is a button, a link or a menu.
-    const chip = html.slice(html.indexOf('<div class="composer-identity"'), html.indexOf("composer-identity-runs") + 60);
-    expect(chip).not.toMatch(/<button|<a |role="button"|aria-haspopup|tabindex/);
+    expect(html).toMatch(/<span class="composer-identity-name">Ryan<\/span><button type="button" class="composer-identity-runs" aria-expanded="false" aria-controls="[^"]+" aria-label="What this chat runs at: opus · high · Auto">/);
+    // The model and the effort, then the access with its separator: the
+    // first part is what a narrow composer cuts, the access what it keeps.
+    expect(html).toContain('<span class="composer-identity-rest">opus · high</span><span class="composer-identity-access"> · Auto</span></button>');
+    // Folded, it draws no sheet; and nothing in the chip is a picker.
+    const chip = html.slice(html.indexOf('<div class="composer-identity"'), html.indexOf("</button>", html.indexOf("composer-identity-runs")));
+    expect(chip).not.toMatch(/<a |aria-haspopup|role="menu"|picker-menu|<select|<input/);
+    expect(chip.match(/<button/g)).toHaveLength(1);
     expect(html).not.toContain("model-trigger");
   });
 
+  it("shows the three values whole when it is opened, read-only, with the receipt", () => {
+    const identity = agentIdentity(ryan, "Ryan", opus);
+    const html = renderToStaticMarkup(<AgentIdentityChip identity={identity} chat="chat_1" runsAt={{ model: "Opus latest", effort: "High", access: "Plan" }}
+      receipt={["Last turn · 178.1s", "Cost · $9.526"]} initiallyOpen />);
+    expect(html).toContain('aria-expanded="true"');
+    const sheet = html.slice(html.indexOf('class="picker-menu composer-identity-sheet"'));
+    expect(/aria-controls="([^"]+)"/.exec(html)![1]).toBe(/id="([^"]+)"/.exec(sheet)![1]);
+    expect(sheet).toContain("<dt>Model</dt><dd>Opus latest</dd>");
+    expect(sheet).toContain("<dt>Effort</dt><dd>High</dd>");
+    expect(sheet).toContain("<dt>Access</dt><dd>Plan</dd>");
+    expect(sheet).toContain("<p>Last turn · 178.1s</p><p>Cost · $9.526</p>");
+    // Nothing in it changes anything: no button, no input, no link.
+    expect(sheet).not.toMatch(/<button|<input|<select|<a |role="menu(item)?"/);
+    // A press outside it shuts it.
+    expect(html).toContain('<div class="picker-scrim"></div>');
+    // The tooltip does not stand over the open sheet.
+    expect(html).not.toMatch(/<div class="composer-identity" title=/);
+  });
+
+  it("shows only what the page knows of this chat, and never the registration's in its place", () => {
+    const identity = agentIdentity(ryan, "Ryan", opus);
+    // A saved chat whose record has no effort and no access: the model alone.
+    const partial = renderToStaticMarkup(<AgentIdentityChip identity={identity} runsAt={{ model: "Sonnet" }} initiallyOpen />);
+    expect(partial).toContain('<span class="composer-identity-rest">sonnet</span></button>');
+    expect(partial).not.toContain("composer-identity-access");
+    expect(partial).toContain("<dt>Model</dt><dd>Sonnet</dd>");
+    expect(partial).not.toMatch(/<dt>(Effort|Access)<\/dt>/);
+    // The registration's model is on its own line of the tooltip, named as
+    // the registration's; the session's line is the session's.
+    const folded = renderToStaticMarkup(<AgentIdentityChip identity={identity} runsAt={{ model: "Sonnet", access: "Plan" }} />);
+    expect(folded).toMatch(new RegExp(`title="Ryan\\nCTO\\nClaude ${opus.model} · set in Settings, Agents\\nThis chat runs at sonnet · Plan"`));
+    // The access alone carries no separator.
+    expect(renderToStaticMarkup(<AgentIdentityChip identity={identity} runsAt={{ access: "Plan" }} />)).toContain('<span class="composer-identity-access">Plan</span>');
+  });
+
   it("leaves the settings text out when the page knows none of it", () => {
-    for (const runsAt of [undefined, ""]) {
-      expect(composer(agentIdentity(ryan, "Ryan", opus), { runsAt })).not.toContain("composer-identity-runs");
+    for (const runsAt of [undefined, {}]) {
+      const html = composer(agentIdentity(ryan, "Ryan", opus), { runsAt });
+      expect(html).not.toContain("composer-identity-runs");
+      expect(html).not.toContain("This chat runs at");
     }
   });
 
-  it("keeps the chip's tooltip and adds the last turn's receipt to it", () => {
-    const html = composer(agentIdentity(ryan, "Ryan", opus), { runsAt: "opus · high · Auto", lastDurationMs: 178_100, lastCostUsd: 9.526 });
-    expect(html).toMatch(new RegExp(`title="Ryan\\nCTO\\nClaude ${opus.model} · set in Settings, Agents\\nLast turn · 178.1s\\nCost · \\$9.526"`));
-    // With no turn finished yet the tooltip is what it was.
+  it("keeps the chip's tooltip, with what this chat runs at and the last turn's receipt", () => {
+    const html = composer(agentIdentity(ryan, "Ryan", opus), { runsAt: RUNS, lastDurationMs: 178_100, lastCostUsd: 9.526 });
+    expect(html).toMatch(new RegExp(`title="Ryan\\nCTO\\nClaude ${opus.model} · set in Settings, Agents\\nThis chat runs at opus · high · Auto\\nLast turn · 178.1s\\nCost · \\$9.526"`));
+    // With no turn finished yet and nothing known the tooltip is what it was.
     expect(composer(agentIdentity(ryan, "Ryan", opus))).toMatch(new RegExp(`title="Ryan\\nCTO\\nClaude ${opus.model} · set in Settings, Agents"`));
   });
 
@@ -191,18 +234,33 @@ describe("a chat that waits on the person does not look like it is running", () 
 
 describe("the settings text gives way before the name does", () => {
   const body = (selector: string) => new RegExp(`\\n${selector.replace(/[.[\]]/g, "\\$&")} \\{([^}]*)\\}`).exec(styles)?.[1] ?? "";
+  const shrink = (rule: string) => Number(/flex: 0 (\d+) auto;/.exec(rule)?.[1]);
 
   it("is cut short, and then gone, before the name loses a letter", () => {
     const runs = body(".composer-identity-runs");
     const name = body(".composer-identity-name");
-    const shrink = (rule: string) => Number(/flex: 0 (\d+) auto;/.exec(rule)?.[1]);
     expect(shrink(runs)).toBeGreaterThan(shrink(name) * 1000);
-    for (const rule of [runs, name]) {
+    expect(runs).toMatch(/min-width: 0;/);
+    for (const rule of [name, body(".composer-identity-rest, .composer-identity-access")]) {
       expect(rule).toMatch(/min-width: 0;/);
       expect(rule).toMatch(/overflow: hidden;/);
-      expect(rule).toMatch(/white-space: nowrap;/);
       expect(rule).toMatch(/text-overflow: ellipsis;/);
     }
+  });
+
+  it("loses the access last of its parts", () => {
+    // The model and the effort give way a hundred thousand times sooner.
+    expect(shrink(body(".composer-identity-rest"))).toBeGreaterThan(shrink(body(".composer-identity-access")) * 1000);
+    // The separator the access carries is kept at its start.
+    expect(body(".composer-identity-rest, .composer-identity-access")).toMatch(/white-space: pre;/);
+  });
+
+  it("can be pressed at any width: its target is the whole chip", () => {
+    expect(body(".composer-identity")).toMatch(/position: relative;/);
+    expect(body(".composer-identity-runs::before")).toMatch(/position: absolute;\s*inset: 0;/);
+    // The button itself is not positioned and does not clip, or its target
+    // would be cut with its text.
+    expect(body(".composer-identity-runs")).not.toMatch(/position:|overflow:/);
   });
 });
 

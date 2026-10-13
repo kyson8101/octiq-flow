@@ -1254,8 +1254,14 @@ An agent's chat has no pickers: the registration owns its settings. So the
 composer says what THIS chat runs at beside the agent's name, as small quiet
 text, `opus · high · Auto` (`AgentIdentityChip`, `lib/chatSettings`).
 
-- **It is read-only.** No picker, no click target: the person changes them
-  in Settings, Agents.
+- **It is read-only, and it is a disclosure.** No picker: the person
+  changes them in Settings, Agents. A press, a tap or Enter on it shows the
+  three values whole (`Model`, `Effort`, `Access`, as the pickers name
+  them) with the last turn's receipt, in a sheet that holds no control;
+  Escape or a press outside shuts it. A narrow composer cuts the text, so
+  what it says is never behind a hover alone. The button's target is the
+  whole chip (its `::before`, placed by the chip and so not cut with the
+  text): there is something to press when the text has no room left.
 - **Only what the page knows of this chat** (`knownSettings`). The values
   are the page's own for the session (`choice`, `effort`, `access`). A
   conversation not saved yet runs at exactly those, which the page copied
@@ -1263,15 +1269,24 @@ text, `opus · high · Auto` (`AgentIdentityChip`, `lib/chatSettings`).
   known when its index entry names one or the agent reported one, and its
   effort and access when the entry has them; otherwise that part is left
   out. Never filled in from the roster: a chat can differ from its agent.
-- **The settings text gives way before the name.** On a narrow composer, or
-  in a wider font, it is cut short and then gone before the name loses a
-  letter. `.composer-identity-name` stays the name alone: it is what a
+- **The settings text gives way before the name, and its access last.** On
+  a narrow composer, or in a wider font, it is cut short and then gone
+  before the name loses a letter. It is drawn in two parts
+  (`chatSettings.runsAtParts`): the model and the effort give way first,
+  and the access, which says what the agent may do, is cut only once they
+  are gone (`opus la… · Plan`, then `· Plan`; at 390px it read `opus · high
+  · …`). `.composer-identity-name` stays the name alone: it is what a
   confirmed route's name lands on (`identityTravel.composerLanding`,
   `cutShort`).
-- **The last turn's receipt is a tooltip.** `Last turn · 178.1s` and `Cost ·
-  $9.526` (`receiptLines`) are two lines of the chip's tooltip, and of the
-  model picker's in an ordinary chat. The eyebrow carries no receipt and no
-  model name.
+- **The chip's tooltip names both, apart.** `Claude Opus latest · set in
+  Settings, Agents` is the registration's; `This chat runs at opus latest ·
+  high · Plan` is the session's. The session's values are never filled in
+  from the registration's, in the text, the sheet or the tooltip.
+- **The last turn's receipt is a tooltip, and two lines of the chip's
+  sheet.** `Last turn · 178.1s` and `Cost · $9.526` (`receiptLines`) are in
+  the chip's tooltip and its opened sheet, and in the model picker's
+  tooltip in an ordinary chat. The eyebrow carries no receipt and no model
+  name.
 
 ### A chat that waits on the person is not drawn as running
 

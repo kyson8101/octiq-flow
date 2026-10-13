@@ -225,7 +225,7 @@ import type { Continue } from "./components/SafetyBlock";
 import { splitSafety, useSafetyToast } from "./lib/safetyToast";
 import { foldedSafetyKeys, waitingChats, workingChats } from "./lib/chatWait";
 import { withWait } from "./lib/turnClock";
-import { knownSettings, runsAtLine } from "./lib/chatSettings";
+import { knownSettings } from "./lib/chatSettings";
 import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
 import { requestConversation } from "./lib/pendingRequests";
@@ -2286,11 +2286,11 @@ export default function App() {
   // saved yet starts with exactly what the page holds.
   const runsAt = useMemo(
     () => (composerIdentity
-      ? runsAtLine(knownSettings({
+      ? knownSettings({
         record: conversationId ? openRecord : null,
         reported: chat.model, choice, effort, access,
-      }))
-      : ""),
+      })
+      : undefined),
     [composerIdentity, conversationId, openRecord, chat.model, choice, effort, access],
   );
   // The chat on screen counts as read, and stays that way for as long as it

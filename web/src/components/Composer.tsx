@@ -11,7 +11,7 @@
 //
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
 // still has a real keyboard and should still send on Enter.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { transitionZen } from "../lib/zenMotion";
 import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
@@ -35,7 +35,7 @@ import type { BackgroundTask } from "../lib/background";
 import { BackgroundNote } from "./Background";
 import { RollingText } from "./RollingNumber";
 import { useLate } from "../lib/useArrival";
-import { receiptLines } from "../lib/chatSettings";
+import { receiptLines, runsAtLine, runsAtParts, runsAtRows, type KnownSettings } from "../lib/chatSettings";
 import { WAIT_WORDS, type ChatWait } from "../lib/chatWait";
 import { turnElapsed, type TurnWaits } from "../lib/turnClock";
 import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/commandMenu";
@@ -521,7 +521,7 @@ export function Composer({
   /** An agent's chat: what this chat runs at, `opus · high · Auto`, said
    *  beside the agent's name. Read-only. Absent or shorter where the page
    *  does not know (`lib/chatSettings.knownSettings`). */
-  runsAt?: string;
+  runsAt?: KnownSettings;
   /** The chat waits on the person (`lib/chatWait`): the agent is parked on a
    *  card, so the running line says so in the decision colour, its clock
    *  stops and nothing on it moves. Only read while `busy`. */
@@ -1631,36 +1631,65 @@ export function Composer({
  *  `chat` is the saved chat this composer is the composer of: a confirmed
  *  route's face and name land on the chip of the chat it opened and on no
  *  other (`lib/identityTravel.composerLanding`), whoever the chip names. */
-export function AgentIdentityChip({ identity, chat, runsAt, receipt = [] }: {
+export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initiallyOpen = false }: {
   identity: AgentIdentity;
   chat?: string;
-  /** What THIS chat runs at, `opus · high · Auto` (`lib/chatSettings`):
-   *  only what the page knows of it, so it may be shorter or absent. */
-  runsAt?: string;
-  /** The last turn's receipt, a line each, for the tooltip. */
+  /** What THIS chat runs at (`lib/chatSettings.knownSettings`): only what
+   *  the page knows of it, so a part may be absent, or all of it. */
+  runsAt?: KnownSettings;
+  /** The last turn's receipt, a line each. */
   receipt?: readonly string[];
+  /** Static-render seam for the chip's test: there is no press to make. */
+  initiallyOpen?: boolean;
 }) {
   // The face and the name are the chip, with what the chat runs at beside
-  // them in small quiet text. That text is not a control: there is no picker
-  // behind it and nothing to click, because the agent's registration owns
-  // those settings and Settings, Agents is where they are changed. The role
-  // and the provider stay in the tooltip, and so does the last turn's
-  // receipt.
+  // them in small quiet text. That text is not a picker: the agent's
+  // registration owns those settings and Settings, Agents is where they are
+  // changed. It is a disclosure, because a narrow composer cuts it short:
+  // a press, a tap or Enter shows the three values whole, read-only, with
+  // the last turn's receipt, so none of it is behind a hover alone.
+  const [open, setOpen] = useState(initiallyOpen);
+  const sheetId = useId();
+  // A sheet opened in one chat is not another chat's.
+  useEffect(() => setOpen(initiallyOpen), [chat, initiallyOpen]);
   const provider = AGENT_NAME[identity.provider];
+  const line = runsAt ? runsAtLine(runsAt) : "";
+  const { rest, access } = runsAtParts(runsAt ?? {});
   const tip = [
     identity.name,
     identity.role,
     `${provider} ${identity.model} · set in Settings, Agents`,
+    // This session's own values, never the registration's in their place.
+    line ? `This chat runs at ${line}` : "",
     identity.removed ? "No longer registered: this conversation keeps its last settings" : "",
     ...receipt,
   ].filter(Boolean).join("\n");
   return (
-    <div className="composer-identity" title={tip} data-removed={identity.removed || undefined} data-chat={chat || undefined}>
+    <div className="composer-identity" title={open ? undefined : tip} data-removed={identity.removed || undefined} data-chat={chat || undefined}>
       <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={22} removed={identity.removed} decorative />
       {/* What a confirmed route's name lands on (`identityTravel`): it stays
           the name alone, and it is the last thing here to be cut short. */}
       <span className="composer-identity-name">{identity.name}</span>
-      {runsAt && <span className="composer-identity-runs">{runsAt}</span>}
+      {/* The first part gives way before the access does, and both before
+          the name. The button's target is the whole chip (the sheet's
+          `::before`), so there is something to press at any width. */}
+      {line && <button type="button" className="composer-identity-runs" aria-expanded={open} aria-controls={sheetId}
+        aria-label={`What this chat runs at: ${line}`}
+        onKeyDown={(event) => { if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); } }}
+        onClick={() => setOpen((shown) => !shown)}>
+        {rest && <span className="composer-identity-rest">{rest}</span>}
+        {access && <span className="composer-identity-access">{access}</span>}
+      </button>}
+      {line && open && <>
+        <div className="picker-scrim" onClick={() => setOpen(false)} />
+        <div className="picker-menu composer-identity-sheet" id={sheetId} role="group" aria-label="What this chat runs at">
+          <dl>
+            {runsAtRows(runsAt ?? {}).map((row) => <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}
+          </dl>
+          {receipt.map((item) => <p key={item}>{item}</p>)}
+          <p className="composer-identity-sheet-note">Read-only here. An agent's settings are changed in Settings, Agents.</p>
+        </div>
+      </>}
     </div>
   );
 }

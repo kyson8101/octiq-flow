@@ -61,6 +61,29 @@ export function runsAtLine(known: KnownSettings): string {
     .join(" · ");
 }
 
+/** The same line in the two parts the composer draws: what gives way first
+ *  on a narrow composer (the model and the effort) and what is cut last (the
+ *  access, which is the part that says what the agent may do). The access
+ *  carries the separator, so a line whose first part is cut short, or gone,
+ *  still reads: `opus la… · Plan`, `· Plan`. Joined, the two are
+ *  `runsAtLine`. */
+export function runsAtParts(known: KnownSettings): { rest: string; access: string } {
+  const rest = [known.model?.toLowerCase(), known.effort?.toLowerCase()].filter((part): part is string => !!part).join(" · ");
+  return { rest, access: known.access ? `${rest ? " · " : ""}${known.access}` : "" };
+}
+
+/** What this chat runs at, a row each and whole, for the composer's
+ *  disclosure: the values as their pickers name them. A value the page does
+ *  not know of this chat has no row. */
+export function runsAtRows(known: KnownSettings): { label: "Model" | "Effort" | "Access"; value: string }[] {
+  const rows: { label: "Model" | "Effort" | "Access"; value: string | undefined }[] = [
+    { label: "Model", value: known.model },
+    { label: "Effort", value: known.effort },
+    { label: "Access", value: known.access },
+  ];
+  return rows.filter((row): row is { label: "Model" | "Effort" | "Access"; value: string } => !!row.value);
+}
+
 /** The last turn's receipt, a line each, for a tooltip: how long it took and
  *  what it cost. Both arrive with the agent's `result`; a figure that has
  *  not arrived has no line. */
