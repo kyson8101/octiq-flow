@@ -60,6 +60,17 @@ describe("which chats wait on the person", () => {
     });
     expect([...waitingChats(actions)].sort()).toEqual([["a", "approval"], ["b", "answer"], ["c", "approval"], ["d", "answer"]]);
   });
+
+  it("is not parked on a question the person has answered, which the host goes on listing", () => {
+    // `saved`: answered and on disk, on its way to the agent. The list still
+    // holds it, so its length says one question; nobody is waited on. A
+    // surface that counted the list said `Needs you` here.
+    const listed = { b: [{ id: "q1", status: "saved" as const }], c: [{ id: "q2", status: "delivered" as const }] };
+    expect(listed.b).toHaveLength(1);
+    const actions = pendingActions({ orchestration: NO_LEDGER, parents: new Map(), questions: listed });
+    expect(waitingChats(actions).size).toBe(0);
+    expect([...workingChats(new Set(["b", "c"]), waitingChats(actions))].sort()).toEqual(["b", "c"]);
+  });
 });
 
 describe("which safety cards are a folded line", () => {

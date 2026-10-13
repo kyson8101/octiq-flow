@@ -26,9 +26,36 @@ const SITES: { name: string; has: RegExp }[] = [
   { name: "the chat list", has: /<Sidebar\b[\s\S]*?\bwaiting=\{chatWaits\}/ },
   { name: "the working set", has: /const workingSet = useMemo\(\(\) => workingChats\(busySet, chatWaits\), / },
   { name: "the projects page", has: /<ProjectsPage\b[\s\S]*?\bbusy=\{workingSet\}/ },
-  // The top bar's status line.
-  { name: "the task bar", has: /<ChatTaskBar\b[\s\S]*?\bwaiting=\{[\s\S]*?!!waitingHere\s*\}/ },
+  // The action bar's status, and its panel.
+  { name: "the task bar", has: /<ChatTaskBar\b(?:(?!\/>)[\s\S])*?\bwaiting=\{!!waitingHere\}/ },
+  // The task chat beside the main one, whose own status line it draws.
+  { name: "the task chat beside", has: /<TaskChatPane\b(?:(?!\/>)[\s\S])*?\bwaiting=\{chatWaits\.has\(besideId\)\}/ },
 ];
+
+/** The card lists the page holds. Their length says how many cards the host
+ *  lists, which is not who is waited on: a question the person has answered
+ *  stays listed, `saved`, until its agent has it. */
+const CARD_LISTS = /\b(?:questions|asks|accessRequests|safetyBlocks|safetySplit|safetyHere|accessHere|handovers|pendingList|pendingHeld)\b/;
+
+/** Every value the app hands a `waiting` prop, as written. */
+function waitingProps(source: string): string[] {
+  const found: string[] = [];
+  for (let at = source.indexOf("waiting={"); at >= 0; at = source.indexOf("waiting={", at + 1)) {
+    let depth = 0;
+    let end = at + "waiting=".length;
+    do {
+      if (source[end] === "{") depth++;
+      if (source[end] === "}") depth--;
+      end++;
+    } while (depth > 0 && end < source.length);
+    found.push(source.slice(at + "waiting={".length, end - 1).trim());
+  }
+  return found;
+}
+
+/** The `waiting` props that are not the one answer: read off a card list,
+ *  or counted. */
+const rawReaders = (source: string) => waitingProps(source).filter((value) => CARD_LISTS.test(value) || /\.length\b/.test(value));
 
 const missing = (source: string) => SITES.filter((site) => !site.has.test(source)).map((site) => site.name);
 
@@ -44,8 +71,47 @@ describe("the app's hand-off of which chats wait on the person", () => {
     expect(missing(app.replace("waiting={chatWaits}", ""))).toEqual(["the chat list"]);
     expect(missing(app.replace("busy={workingSet}", "busy={busySet}"))).toEqual(["the projects page"]);
     expect(missing(app.replace("waitingChats(pendingList, ", "waitingChats(heldCards(cards), "))).toEqual(["one reading"]);
-    expect(missing(app.replace(/\|\|\s*\/\/ A plan to approve[^\n]*\n\s*!!waitingHere/, ""))).toEqual(["the task bar"]);
+    expect(missing(app.replace("waiting={!!waitingHere}", "waiting={false}"))).toEqual(["the task bar"]);
+    expect(missing(app.replace("waiting={chatWaits.has(besideId)}", "waiting={false}"))).toEqual(["the task chat beside"]);
     expect(missing(app.replace("before, chatWaits, (id)", "before, new Map(), (id)"))).toEqual(["the clock's waits"]);
+  });
+});
+
+describe("a surface that says a chat waits", () => {
+  it("is handed the one answer, never a card list or its length", () => {
+    // Every `waiting` the app hands on is one of the two readings of
+    // `chatWaits`: what the chat on screen waits for, or whether a chat is
+    // in it.
+    expect(waitingProps(app).sort()).toEqual(["!!waitingHere", "chatWaits", "chatWaits.has(besideId)", "waitingHere"]);
+    expect(rawReaders(app)).toEqual([]);
+  });
+
+  it("fails for a reader of a raw list, as the task bar's was", () => {
+    // What the task bar was handed: the lists' lengths, OR the one answer.
+    // A question the host still lists as `saved` then read `Needs you`
+    // under a composer that said the agent was working.
+    const was = `waiting={
+        (questions[conversationId]?.length ?? 0) +
+          (asks[conversationId]?.length ?? 0) +
+          (accessRequests[conversationId]?.length ?? 0) +
+          safetySplit.cards.length >
+        0 ||
+        !!waitingHere
+      }`;
+    const taskBar = app.replace("waiting={!!waitingHere}", was);
+    expect(taskBar).not.toBe(app);
+    expect(rawReaders(taskBar)).toHaveLength(1);
+    expect(missing(taskBar)).toEqual(["the task bar"]);
+    // And the task chat beside it, which never asked the one answer at all.
+    const beside = app.replace(
+      "waiting={chatWaits.has(besideId)}",
+      "waiting={(asks[besideId]?.length ?? 0) + (questions[besideId]?.length ?? 0) + (safetyBlocks[besideId]?.length ?? 0) > 0}",
+    );
+    expect(beside).not.toBe(app);
+    expect(rawReaders(beside)).toHaveLength(1);
+    expect(missing(beside)).toEqual(["the task chat beside"]);
+    // A count of the page's own list is a second reading too.
+    expect(rawReaders(app.replace("waiting={!!waitingHere}", "waiting={pendingList.some((action) => action.chatId === conversationId)}"))).toHaveLength(1);
   });
 });
 

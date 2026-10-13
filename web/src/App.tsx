@@ -5281,16 +5281,10 @@ export default function App() {
       connected={conn === "open"}
       context={panelContext}
       busy={chat.busy && !cutOff}
-      waiting={
-        (questions[conversationId]?.length ?? 0) +
-          (asks[conversationId]?.length ?? 0) +
-          (accessRequests[conversationId]?.length ?? 0) +
-          // A refusal the agent carried on past waits on nobody.
-          safetySplit.cards.length >
-        0 ||
-        // A plan to approve for a run this chat coordinates, too.
-        !!waitingHere
-      }
+      // The page's one reading of a wait (`lib/chatWait`), as the composer
+      // and the chat list have it. Never the length of a card list: the
+      // host goes on listing a question the person has answered.
+      waiting={!!waitingHere}
     />),
     onChat && chat.agents.length > 0 && act("agents", 66, <RailButton count={chat.agents.length} open={!railShut && !previewVisible}
       onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }} />),
@@ -6178,7 +6172,7 @@ export default function App() {
             onLoadEarlier={loadEarlierBeside}
             connected={conn === "open"}
             context={besideContext}
-            waiting={(asks[besideId]?.length ?? 0) + (questions[besideId]?.length ?? 0) + (safetyBlocks[besideId]?.length ?? 0) > 0}
+            waiting={chatWaits.has(besideId)}
             split={besideSplit}
             hidden={!besideShown}
             onExpand={expandBeside}

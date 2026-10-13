@@ -1268,9 +1268,19 @@ person is drawn waiting, not working (`lib/chatWait`).
 
 - **One answer, from the page's one list.** `waitingChats(pendingList, …)`
   reads `lib/pendingActions`' list and nothing else: not the cards, not the
-  ledger. A new surface that draws a turn in flight asks it.
-  `chatWait.wiring.test.ts` reads `App.tsx` as text for each hand-off; it is
-  an alarm on spelling, not a proof.
+  ledger. A new surface that draws a turn in flight, or says a chat needs
+  the person, asks it: the composer and its clock, the chat list, the
+  projects page, `ChatTaskBar` (the action bar's status and its panel) and
+  the task chat beside the main one (`TaskChatPane`).
+- **Never the length of a card list.** The host goes on listing a question
+  the person has answered (`status: "saved"`, then `delivered`) until its
+  agent has it, so `questions[chat].length` is one while nobody is waited
+  on. `ChatTaskBar` was handed the lists' lengths OR the one answer, and
+  said `Needs you` under a composer that said the agent was working.
+  `chatWait.wiring.test.ts` reads `App.tsx` as text: it names each
+  hand-off, and fails for any `waiting` prop that reads a card list or a
+  `.length`. It is an alarm on spelling, not a proof: no test renders the
+  app.
 - **What parks a chat:** its own permission card or access request
   (`Waiting for your approval`), its own question or full safety card
   (`Waiting for your answer`), and a plan awaiting approval for a run it
@@ -1293,7 +1303,8 @@ person is drawn waiting, not working (`lib/chatWait`).
   (`Sidebar`'s `waiting`); its pending badge is unchanged. `busy` still
   means a turn is on record there, which is what holds Archive.
   `ChatTaskBar` says `Needs you` in `--decide`, never the accent and never
-  amber.
+  amber, and only for what parks the chat: an outage card or an answer that
+  could not be delivered is badged and does not say it.
 
 ### Both agents' full stops carry their closing words
 
