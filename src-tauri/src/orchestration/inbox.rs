@@ -217,6 +217,47 @@ impl OrchestrationStore {
             Ok(())
         })
     }
+    /// The one-time lift of a chat an earlier build opened as a read-only
+    /// discussion (`handover::lift`): its saved start settings, when the
+    /// ledger holds some and they are at exactly read, move to `to`. Saved
+    /// or refused, like any raise. Answers whether anything was written; a
+    /// ledger that could not be loaded is an error, never "holds none".
+    pub(crate) fn lift_resume_context(
+        &self,
+        key: &str,
+        to: crate::agent_provider::Access,
+    ) -> Result<bool, String> {
+        use crate::agent_provider::Access;
+        let at_read = |data: &Stored| {
+            data.resume_contexts
+                .get(key)
+                .is_some_and(|saved| saved.access_level() == Some(Access::Read))
+        };
+        {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(error) = &inner.load_error {
+                return Err(error.clone());
+            }
+            // Nothing to move is nothing to save.
+            if !at_read(&inner.data) {
+                return Ok(false);
+            }
+        }
+        self.mutate(|data| {
+            if !at_read(data) {
+                return Ok(false);
+            }
+            // The settings' fields are `agent_chat`'s own: the level is
+            // set in the form they are stored in, which is the form a
+            // restart reads them back from.
+            let mut saved =
+                serde_json::to_value(&data.resume_contexts[key]).map_err(|e| e.to_string())?;
+            saved["access"] = serde_json::to_value(to).map_err(|e| e.to_string())?;
+            let lifted = serde_json::from_value(saved).map_err(|e| e.to_string())?;
+            data.resume_contexts.insert(key.into(), lifted);
+            Ok(true)
+        })
+    }
     /// Called once a chat's process has been ended for another provider:
     /// forgotten here whether or not that could be saved, so the old
     /// settings cannot resume the chat.

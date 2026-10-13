@@ -22,10 +22,10 @@
 //!   shows what the agent will receive. Attachments are copied into a folder
 //!   of their own that the new chat may read, and a file that cannot be is
 //!   named on the card, never dropped silently.
-//! - **Discussion.** A route with `purpose: discuss` opens at read-only
-//!   access in the same place, so it needs no writer and a worker writing in
-//!   the project does not keep it from opening. A work route a writer kept
-//!   from starting may be opened that way instead (`confirm_discussion`).
+//! - **Discussion.** A route with `purpose: discuss` is worded as one: the
+//!   card asks to discuss, and the first message says the person wants to
+//!   talk it through (`DISCUSSION_NOTE`). Nothing else differs. It opens in
+//!   the same place and on the agent's registered settings, like any route.
 //! - **What is left.** The front-desk chat is hidden, so a route asks nothing
 //!   back, tells it nothing after, and leaves no record when cancelled: a
 //!   declined, superseded or abandoned route is deleted, with its folder. A
@@ -76,9 +76,8 @@ pub struct RouteDetail {
     /// A route to the head: its conversation spans every project, from home.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cross_project: bool,
-    /// A discussion: the chat opens at read-only access, whatever the
-    /// agent's registered level, so it takes no checkout from anyone and a
-    /// writer elsewhere in the project does not keep it from opening.
+    /// A discussion: the card and the first message say so. Wording only;
+    /// the chat's settings are the agent's registered ones either way.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub discuss: bool,
     /// The folder the attachments were copied to, removed with the record.
@@ -101,9 +100,10 @@ pub struct RouteAsk {
     pub request_id: String,
 }
 
-/// What the person wants from a routed chat. `work` (the default) opens it
-/// on the agent's registered settings; `discuss` opens it read-only, for
-/// talking an idea through without taking a checkout from anyone.
+/// What the person wants from a routed chat: `work` (the default) to have
+/// something done, `discuss` to talk it through first. Both open on the
+/// agent's registered settings; `discuss` changes only what the card and the
+/// first message say.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Purpose {
@@ -373,17 +373,8 @@ fn carry(
 }
 
 /// What a discussion's first message says it is, for the agent and the person.
-pub const DISCUSSION_NOTE: &str = "This chat is a discussion, not a task: it is read-only, so read whatever helps the conversation and change nothing. If the person wants the work done, say so; they can start a task for it, or switch this chat's access once nothing else is writing in the project.";
-
-/// The settings a routed chat opens on: the agent's registered ones, at
-/// read-only access for a discussion. Only ever narrower than registered.
-pub(super) fn opening_settings(agent: &TeamAgent, discuss: bool) -> Settings {
-    let mut settings = settings_of(agent);
-    if discuss {
-        settings.access = Access::Read;
-    }
-    settings
-}
+/// It makes no claim about access: the chat runs at its agent's own level.
+pub const DISCUSSION_NOTE: &str = "This chat is a discussion, not a task: the person wants to talk it through first. Read whatever helps the conversation, and change nothing unless they ask you to.";
 
 /// The visible part of the routed chat's first message.
 pub fn render(desk: &str, brief: &str, files: &[RouteFile], discuss: bool) -> String {
@@ -566,7 +557,7 @@ pub fn request(
             agent_id: Some(agent.id.clone()),
             name: agent.name.clone(),
         },
-        settings: opening_settings(&agent, discuss),
+        settings: settings_of(&agent),
         destination: placed.destination,
         workspace: placed.workspace,
         brief: Brief {
@@ -586,6 +577,9 @@ pub fn request(
         asks: Vec::new(),
         outcomes: Vec::new(),
         outcome_receipts: Vec::new(),
+        // Made by this build, on the agent's registered settings: never
+        // one the lift looks at (`lift.rs`).
+        lift_settled: true,
         kind: Kind::Route,
         route: Some(RouteDetail {
             message,
@@ -812,111 +806,183 @@ mod tests {
         list(&w.store).unwrap()
     }
 
+    /// What a discussion's first message said before the note changed.
+    const OLD_NOTE: &str = "This chat is a discussion, not a task: it is read-only, so read whatever helps the conversation and change nothing. If the person wants the work done, say so; they can start a task for it, or switch this chat's access once nothing else is writing in the project.";
+
+    /// Put a stored route back to what a host before this rule wrote for a
+    /// discussion: read-only settings, and a first message that said so.
+    fn as_recorded_before(w: &Desk, id: &str) {
+        let _guard = LOCK.lock().unwrap();
+        let mut stored = read(&w.store).unwrap();
+        let record = stored.handovers.get_mut(id).unwrap();
+        record.settings.access = Access::Read;
+        // That host's records did not say whether the lift had looked.
+        record.lift_settled = false;
+        let route = record.route.as_mut().unwrap();
+        route.discuss = true;
+        route.message = route.message.replace(DISCUSSION_NOTE, OLD_NOTE);
+        assert!(route.message.contains(OLD_NOTE), "{}", route.message);
+        write(&w.store, &stored).unwrap();
+    }
+
     #[test]
-    fn a_discussion_opens_read_only_while_a_writer_holds_the_project() {
+    fn a_discussion_opens_on_the_agents_registered_access() {
         let w = desk_world();
         let host = host(&w);
-        *host.writer_busy.lock().unwrap() = true;
-        // Work on the agent's registered settings is refused, as before.
-        let work = request(
-            &w.store,
-            &host,
-            source(&w, "chat:desk1"),
-            ask("Mango", "r1"),
-        )
-        .unwrap();
-        assert_eq!(work.settings.access, Access::Edits);
-        assert!(confirm(&w.store, &work.id, &host)
-            .unwrap_err()
-            .contains("active writer"));
-        assert!(host.starts.lock().unwrap().is_empty());
-        // A discussion asks for no writer, so it opens.
         let talk = request(
             &w.store,
             &host,
-            source(&w, "chat:desk2"),
-            discuss("Mango", "r2"),
+            source(&w, "chat:desk1"),
+            discuss("Mango", "r1"),
         )
         .unwrap();
         let route = talk.route.clone().unwrap();
+        // Still a discussion on the record, and in its first message.
         assert!(route.discuss);
         assert!(route.message.contains(DISCUSSION_NOTE), "{}", route.message);
-        // The card already shows what it opens on.
-        assert_eq!(talk.settings.access, Access::Read);
+        // Which says nothing about access: the chat is not narrowed.
+        let said = route.message.to_lowercase();
+        assert!(
+            !said.contains("read-only") && !said.contains("access"),
+            "{}",
+            route.message
+        );
+        // The card already shows what it opens on: Mango as registered.
+        assert_eq!(talk.settings, settings_of(&w.scoped));
+        assert_eq!(talk.settings.access, Access::Edits);
         assert_eq!(talk.settings.model.as_deref(), Some("sonnet"));
+        // Placed like any route to a project agent.
+        assert_eq!(talk.destination.project_id, "p-app");
+        assert_eq!(talk.workspace.mode, "worktree");
+
+        // A writer in the project refuses it exactly as it refuses work: a
+        // discussion runs at the level a task would.
+        *host.writer_busy.lock().unwrap() = true;
+        assert!(confirm(&w.store, &talk.id, &host)
+            .unwrap_err()
+            .contains("active writer"));
+        assert!(host.starts.lock().unwrap().is_empty());
+        // What is left of a refused route is Try again and Give up.
+        let failed = records(&w).remove(0);
+        assert_eq!(failed.status, Status::Starting);
+        assert!(failed.abandonable);
+        assert_eq!(failed.settings.access, Access::Edits);
+
+        *host.writer_busy.lock().unwrap() = false;
         let opened = confirm(&w.store, &talk.id, &host).unwrap();
         assert_eq!(opened.status, Status::Confirmed);
+        assert_eq!(opened.target_chat_key, failed.target_chat_key);
+        assert_eq!(opened.settings, settings_of(&w.scoped));
         let starts = host.starts.lock().unwrap().clone();
         assert_eq!(starts.len(), 1);
-        assert_eq!(starts[0].access, Access::Read);
+        assert_eq!(starts[0].access, Access::Edits);
         assert!(
             starts[0].prompt.starts_with(&route.message),
             "{}",
             starts[0].prompt
         );
         let saved = host.saved.lock().unwrap().clone();
-        assert_eq!(saved.last().unwrap().access.as_deref(), Some("read"));
+        assert_eq!(saved.last().unwrap().access.as_deref(), Some("edits"));
     }
 
     #[test]
-    fn a_route_that_could_not_start_can_be_opened_as_a_discussion_instead() {
+    fn a_discussion_follows_the_registry_at_confirm_like_any_route() {
         let w = desk_world();
         let host = host(&w);
-        *host.writer_busy.lock().unwrap() = true;
-        let record = request(
+        let talk = request(
             &w.store,
             &host,
             source(&w, "chat:desk1"),
-            ask("Mango", "r1"),
+            discuss("Mango", "r1"),
         )
         .unwrap();
-        assert!(confirm(&w.store, &record.id, &host).is_err());
-        let failed = records(&w).remove(0);
-        assert_eq!(failed.status, Status::Starting);
-        assert!(failed.abandonable);
-        // Trying again as it is still meets the writer.
-        assert!(confirm(&w.store, &record.id, &host)
-            .unwrap_err()
-            .contains("active writer"));
-        let opened = confirm_discussion(&w.store, &record.id, &host).unwrap();
+        assert_eq!(talk.settings.access, Access::Edits);
+        // The person raises Mango after the card was drawn.
+        team::save(
+            &w.team,
+            crate::team::TeamDraft {
+                access: Some(Access::Auto),
+                ..redraft(&w.scoped)
+            },
+        )
+        .unwrap();
+        let opened = confirm(&w.store, &talk.id, &host).unwrap();
+        assert_eq!(opened.settings.access, Access::Auto);
+        assert_eq!(host.starts.lock().unwrap()[0].access, Access::Auto);
+    }
+
+    #[test]
+    fn a_pending_discussion_recorded_at_read_only_confirms_on_the_registered_settings() {
+        let w = desk_world();
+        let host = host(&w);
+        let talk = request(
+            &w.store,
+            &host,
+            source(&w, "chat:desk1"),
+            discuss("Mango", "r1"),
+        )
+        .unwrap();
+        as_recorded_before(&w, &talk.id);
+        let before = records(&w).remove(0);
+        assert_eq!(before.status, Status::Pending);
+        assert_eq!(before.settings.access, Access::Read);
+
+        let opened = confirm(&w.store, &talk.id, &host).unwrap();
         assert_eq!(opened.status, Status::Confirmed);
-        assert_eq!(opened.target_chat_key, failed.target_chat_key);
-        assert_eq!(opened.settings.access, Access::Read);
+        assert_eq!(opened.settings, settings_of(&w.scoped));
+        // Still a discussion, now in today's words.
         let route = opened.route.clone().unwrap();
         assert!(route.discuss);
         assert!(route.message.contains(DISCUSSION_NOTE), "{}", route.message);
+        assert!(!route.message.contains("read-only"), "{}", route.message);
+        assert_eq!(Some(route.message.clone()), talk.route.map(|r| r.message));
         let starts = host.starts.lock().unwrap().clone();
         assert_eq!(starts.len(), 1);
-        assert_eq!(starts[0].access, Access::Read);
-        assert!(starts[0].prompt.contains(DISCUSSION_NOTE));
-        // Once opened, asking again starts nothing more.
-        confirm_discussion(&w.store, &record.id, &host).unwrap();
-        assert_eq!(host.starts.lock().unwrap().len(), 1);
+        assert_eq!(starts[0].access, Access::Edits);
+        assert!(
+            starts[0].prompt.starts_with(&route.message),
+            "{}",
+            starts[0].prompt
+        );
+        assert!(!starts[0].prompt.contains(OLD_NOTE));
+        let saved = host.saved.lock().unwrap().clone();
+        assert_eq!(saved.last().unwrap().access.as_deref(), Some("edits"));
+        // And the record on disk says what it started on.
+        let kept = records(&w).remove(0);
+        assert_eq!(kept.settings.access, Access::Edits);
     }
 
     #[test]
-    fn a_chat_that_may_have_started_is_never_reopened_as_a_discussion() {
+    fn a_starting_discussion_recorded_at_read_only_is_finished_on_the_registered_settings() {
         let w = desk_world();
         let host = host(&w);
-        *host.writer_busy.lock().unwrap() = true;
-        let record = request(
+        let talk = request(
             &w.store,
             &host,
             source(&w, "chat:desk1"),
-            ask("Mango", "r1"),
+            discuss("Mango", "r1"),
         )
         .unwrap();
-        assert!(confirm(&w.store, &record.id, &host).is_err());
-        let key = records(&w)[0].target_chat_key.clone().unwrap();
-        // A process under its id: that chat runs on the settings it has.
-        host.live.lock().unwrap().push(key);
-        assert!(confirm_discussion(&w.store, &record.id, &host)
-            .unwrap_err()
-            .contains("may already have started"));
-        assert!(host.starts.lock().unwrap().is_empty());
+        // Confirmed, and its start failed: it is left starting.
+        *host.fail_start.lock().unwrap() = true;
+        assert!(confirm(&w.store, &talk.id, &host).is_err());
+        as_recorded_before(&w, &talk.id);
+        let before = records(&w).remove(0);
+        assert_eq!(before.status, Status::Starting);
+        assert_eq!(before.settings.access, Access::Read);
+
+        // The next start of the server finishes it (`finish_route`).
+        *host.fail_start.lock().unwrap() = false;
+        let finished = recover(&w.store, &host).unwrap();
+        assert_eq!(finished, vec![talk.id.clone()]);
         let kept = records(&w).remove(0);
-        assert!(!kept.route.unwrap().discuss);
+        assert_eq!(kept.status, Status::Confirmed);
         assert_eq!(kept.settings.access, Access::Edits);
+        let starts = host.starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].access, Access::Edits);
+        assert!(starts[0].prompt.contains(DISCUSSION_NOTE));
+        assert!(!starts[0].prompt.contains(OLD_NOTE));
     }
 
     #[test]
