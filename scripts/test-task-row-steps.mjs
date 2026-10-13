@@ -414,7 +414,12 @@ async function opened(page, label, out, phone) {
     await page.waitForFunction(() => true);
     await page.waitForTimeout(200);
     assert.equal(started.length, 1, `${label}: the start still starts when it is pressed`);
-    assert.equal(started[0].taskId ?? started[0].retryOf ?? "t5", started[0].taskId ?? started[0].retryOf ?? "t5");
+    // What it starts is the fixture's failed task, as its last attempt ran.
+    assert.deepEqual(
+      { taskId: started[0].taskId, retryOf: started[0].retryOf, agent: started[0].agent, model: started[0].model, effort: started[0].effort, access: started[0].access },
+      { taskId: "t5", retryOf: "a5", agent: "claude", model: "opus", effort: "high", access: "auto" },
+      `${label}: and starts the failed task's own attempt again`,
+    );
     started.length = 0;
   }
 
