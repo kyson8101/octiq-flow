@@ -1035,6 +1035,15 @@ pub struct ChatManager {
     /// chat key — see `Leaving`. A leaf: held for one lookup or one change
     /// and never across another lock.
     leaving: Mutex<HashMap<String, Arc<Leaving>>>,
+    /// The access level each process was started at, or has been moved to
+    /// since (`chat_set_access`), keyed like `sessions`. Read only for a
+    /// process that is in the table (`running_level`), so an entry a
+    /// process left behind says nothing. A leaf.
+    levels: Mutex<HashMap<String, Access>>,
+    /// A test's launches spawn a stand-in instead of the provider's command
+    /// (`ChatManager::test_stand_in_launches`).
+    #[cfg(test)]
+    stand_in_launches: std::sync::atomic::AtomicBool,
 }
 
 /// One start's hold on a chat that has no process yet
@@ -1349,6 +1358,89 @@ impl ChatManager {
         }
         if let Err(error) = self.orchestrations.save_resume_context(session_key, start) {
             eprintln!("orchestration: could not save resume settings: {error}");
+        }
+    }
+
+    /// The access level a NEW process for the chat `key` is started at:
+    /// never below the access its agent is registered with.
+    ///
+    /// A registered agent's chat runs on that agent's registered settings,
+    /// and the host is the one that can say so: it reads the roster as it is
+    /// at this moment, and every start goes through `start_session`. A page
+    /// asked instead, and did not always know the roster or whether a
+    /// process was running when it had to decide (review of ca81617, H1 and
+    /// M1). It only ever RAISES: a level asked at or above the registered
+    /// one is kept as asked, so a raise the person approved is not lost.
+    ///
+    /// Asked as it was for every chat that is not a registered agent's own
+    /// conversation, each decided by what lasts:
+    /// - a room seat (`session_key != key`): not the chat's own voice;
+    /// - a worker's chat, by its key or an attempt on record
+    ///   (`is_worker_chat`, never `active_task`): its level comes with its
+    ///   task;
+    /// - a chat no lead record names, or whose agent is no longer on the
+    ///   roster (`team::registered_access_of_chat`), which also answers
+    ///   nothing for a front desk's chat;
+    /// - a roster or a ledger that cannot be read: what is unknown is not
+    ///   read as registered, nor as not a worker.
+    ///
+    /// The roster's lock and then the ledger's, each let go before the next
+    /// is taken, and both before the session table is locked.
+    fn level_to_start_at(
+        &self,
+        session_key: &str,
+        key: &str,
+        asked: Option<Access>,
+    ) -> Option<Access> {
+        use crate::access_request::rank;
+        if session_key != key || !key.starts_with("chat:") {
+            return asked;
+        }
+        let Ok(Some(registered)) =
+            crate::team::registered_access_of_chat(&crate::team::default_path(), key)
+        else {
+            return asked;
+        };
+        if self.orchestrations.is_worker_chat(key) != Ok(false) {
+            return asked;
+        }
+        match asked {
+            Some(level) if rank(level) >= rank(registered) => asked,
+            _ => Some(registered),
+        }
+    }
+
+    /// The level `start_session` raised a start to, kept the way a start's
+    /// level is kept (`remember_start`): in memory, and in the ledger for a
+    /// chat a run knows. Every later host resume starts from it. Nothing for
+    /// a chat no start was remembered for: its caller remembers the start
+    /// once it worked (`run_scheduled_resume`).
+    fn keep_start_level(&self, session_key: &str, access: Option<Access>) {
+        let Some(mut start) = self.start_context(session_key) else {
+            return;
+        };
+        if start.access != access {
+            start.access = access;
+            self.remember_start(session_key, start);
+        }
+    }
+
+    /// The level the process under `session_key` runs at, while it is in
+    /// the session table. `None` with no process, and for one nothing
+    /// recorded a level for.
+    pub(crate) fn running_level(&self, session_key: &str) -> Option<Access> {
+        let sessions = self.sessions.lock().ok()?;
+        if !sessions.contains_key(session_key) {
+            return None;
+        }
+        self.levels.lock().ok()?.get(session_key).copied()
+    }
+
+    /// See `levels`. A caller holding the session table may call this: the
+    /// map is a leaf.
+    fn record_level(&self, session_key: &str, access: Option<Access>) {
+        if let Ok(mut levels) = self.levels.lock() {
+            levels.insert(session_key.to_string(), access.unwrap_or(Access::Read));
         }
     }
 
@@ -3468,6 +3560,41 @@ fn codex_user_mcp_servers(
     crate::agent_provider::codex_front_desk_mcp_servers(&out).map_err(|e| format!("{WHY}: {e}"))
 }
 
+/// Say the level a chat runs at to every page: `chat-access-changed` with
+/// exactly `{ chatKey, access }`. The one way a page learns the level a
+/// process really runs at, when that is not the level it holds.
+fn announce_level(key: &str, access: Access) {
+    crate::bus::emit(
+        "chat-access-changed",
+        json!({ "chatKey": key, "access": access.as_env() }),
+    );
+}
+
+/// A chat's own process was just started at `access`: the chat index says
+/// that level, and every page is told when it is not the one the index
+/// held or not the one that was asked for.
+///
+/// The index is written here, by the host, because the page that would
+/// save it holds the level it asked for: left to the page, the entry named
+/// a level the process did not run at (review of ca81617, M2), and a host
+/// resume after a restart is refused while the index and the ledger
+/// disagree (`deliver_orchestration_notification`). Nothing is written or
+/// said when the entry already names the level and it was the one asked.
+/// A seat is not the chat's own voice and changes neither.
+fn tell_started_level(session_key: &str, key: &str, asked: Option<Access>, access: Option<Access>) {
+    let Some(id) = key.strip_prefix("chat:").filter(|_| session_key == key) else {
+        return;
+    };
+    let level = access.unwrap_or(Access::Read);
+    let written = crate::chat_index::set_access(id, level.as_env()) == Ok(true);
+    if written {
+        announce_index_change(id, false);
+    }
+    if written || asked.unwrap_or(Access::Read) != level {
+        announce_level(key, level);
+    }
+}
+
 /// A chat's own agent was just put in the session table (`start_session`).
 ///
 /// A completed chat has no process, so whatever happens in it next starts
@@ -3541,11 +3668,19 @@ pub(crate) fn start_session(
     // says, on every start, resume and relaunch alike.
     let front_desk =
         session_key == key && crate::team::is_front_desk_chat(&crate::team::default_path(), &key);
+    // Every other chat of a registered agent starts no lower than that
+    // agent's registered access (`level_to_start_at`). This is the one door
+    // every process start goes through, so it is decided here and nowhere
+    // else, and a process that is already running never gets this far.
+    let asked = access;
     let access = if front_desk {
         Some(Access::Read)
     } else {
-        access
+        manager.level_to_start_at(&session_key, &key, access)
     };
+    if !front_desk && access != asked {
+        manager.keep_start_level(&session_key, access);
+    }
     if front_desk {
         if let Ok(mut desks) = manager.front_desks.lock() {
             desks.insert(session_key.clone(), agent);
@@ -3777,17 +3912,33 @@ pub(crate) fn start_session(
     // Login shell, for PATH — see the module docs. Windows has no login shell,
     // so the resolution finds the bash that Git for Windows ships; the command
     // itself is POSIX-quoted either way and does not change.
-    let shell = crate::proc::resolve_agent_shell(
-        std::env::var("SHELL").ok(),
-        std::env::var("LOCALAPPDATA").ok(),
-        cfg!(windows),
-        &crate::proc::find_executable,
-    )
-    .map_err(|e| format!("could not start {}: {e}", provider.bin()))?;
+    let agent_command = || {
+        crate::proc::resolve_agent_shell(
+            std::env::var("SHELL").ok(),
+            std::env::var("LOCALAPPDATA").ok(),
+            cfg!(windows),
+            &crate::proc::find_executable,
+        )
+        .map(|shell| shell.command(&format!("exec {line}")))
+        .map_err(|e| format!("could not start {}: {e}", provider.bin()))
+    };
+    // A test's launch is a stand-in process: everything this function
+    // decides and records is the real thing, and no agent is run.
+    #[cfg(test)]
+    let stand_in = manager
+        .stand_in_launches
+        .load(std::sync::atomic::Ordering::SeqCst);
+    #[cfg(test)]
+    let mut command = if stand_in {
+        stand_in::still()
+    } else {
+        agent_command()?
+    };
+    #[cfg(not(test))]
+    let mut command = agent_command()?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     let capability = manager.grant_capability(&sessions, &session_key, &key, &launch_id);
-    let mut child = shell
-        .command(&format!("exec {line}"))
+    let mut child = command
         .current_dir(&process_cwd)
         // The project's own environment, so a chat agent picks up the same
         // variables a terminal in this project would (e.g. `starfall`'s
@@ -3938,6 +4089,7 @@ pub(crate) fn start_session(
     // The level the hook will be answered with, from here until it changes.
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
     record_access_for(&key, access);
+    manager.record_level(&session_key, access);
 
     // All providers share a durable prompt identity. Write it before the
     // reader can forward an acknowledgement or a following enqueue can land.
@@ -3953,6 +4105,15 @@ pub(crate) fn start_session(
 
     drop(sessions);
     reopen_started_chat(&session_key, &key);
+    tell_started_level(&session_key, &key, asked, access);
+    // A stand-in says nothing and is written nothing: its pipes are read to
+    // their end so it never meets a closed one, and the test ends it.
+    #[cfg(test)]
+    if stand_in {
+        thread::spawn(move || stdout.lines().for_each(drop));
+        thread::spawn(move || BufReader::new(stderr).lines().for_each(drop));
+        return Ok(());
+    }
 
     // Providers that use a control channel initialize it before the first turn.
     // The handshake is not transcript content; its response is recognized by
@@ -6320,6 +6481,7 @@ pub fn chat_set_access_impl(
             }
         }
         record_access_for(&key, Some(access));
+        manager.record_level(&key, Some(access));
         manager.keep_access_for_resume(&key);
         return Ok(());
     }
@@ -6345,6 +6507,7 @@ pub fn chat_set_access_impl(
         start.access = Some(access);
         manager.remember_start(&key, start);
     }
+    manager.record_level(&key, Some(access));
     manager.keep_access_for_resume(&key);
     if relaunch {
         drop(guard);
@@ -6927,6 +7090,17 @@ impl ChatManager {
         );
     }
 
+    /// From here on this manager's launches spawn a stand-in process in
+    /// place of the provider's command (`start_session`). What a launch
+    /// decides and records is the real thing: the level it starts at, the
+    /// table, the start settings, the index and what is said on the bus.
+    /// The stand-in is written nothing and read by nobody; `test_end` ends
+    /// it.
+    pub(crate) fn test_stand_in_launches(&self) {
+        self.stand_in_launches
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// The session table, held until the guard drops: what a look that
     /// waits for no lock meets while another thread is in the table.
     pub(crate) fn test_hold_table(&self) -> impl Drop + '_ {
@@ -7359,6 +7533,14 @@ fn run_scheduled_resume(
             None,
         );
         if result.is_ok() {
+            // At the level the process was started at, which the door may
+            // have raised to the agent's registered access.
+            let mut saved = saved;
+            if let Some(level) = manager.running_level(&key) {
+                if saved.access.unwrap_or(Access::Read) != level {
+                    saved.access = Some(level);
+                }
+            }
             manager.remember_start(&key, saved);
         }
         result
@@ -7554,6 +7736,10 @@ mod ending_tests;
 mod reach_tests;
 
 #[cfg(test)]
+#[path = "level_tests.rs"]
+mod level_tests;
+
+#[cfg(test)]
 mod upload_tests {
     use super::{attachment_name, decode_attachment};
     use base64::Engine;
@@ -7644,6 +7830,55 @@ pub(crate) fn announce_index_change(id: &str, gone: bool) {
         "chat-index-changed",
         serde_json::json!({ "id": id, "gone": gone }),
     );
+}
+
+/// `chat_index_save` as a page asks for it: the access level of a chat with
+/// a live process is that process's, whatever the save says.
+///
+/// A page saves the level it holds, and that is not always the level the
+/// process runs at: the host may have started the chat at its agent's
+/// registered access a moment ago (`level_to_start_at`), with this save
+/// already on its way, or the page decided before it knew a process was
+/// running. So for a running chat the level saved is the process's
+/// (`running_level`), and a page that named another is told
+/// (`chat-access-changed`). A level changes under a live process only
+/// through `chat_set_access`, which records it first. With no process the
+/// save stands: it is the person's choice for the next start.
+///
+/// The look and the save are not one step, and the session table's lock
+/// cannot be held across the index's (`close_completed` takes them the
+/// other way round). So the level is asked again after the save: a process
+/// that went into the table in between has its level written over what
+/// this save left.
+pub(crate) fn chat_index_save_from_page(
+    manager: &ChatManager,
+    mut meta: crate::chat_index::ChatMeta,
+) -> Result<(), String> {
+    let id = meta.id.clone();
+    let key = format!("chat:{id}");
+    let named = meta.access.clone();
+    if let Some(level) = manager.running_level(&key) {
+        meta.access = Some(level.as_env().to_string());
+    }
+    chat_index_save(meta)?;
+    settle_index_level(manager, &id, named.as_deref());
+    Ok(())
+}
+
+/// After a page's save of the chat `id`, which named the level `named`:
+/// the index says the level of the process that is running now, and a page
+/// that named another level is told the one it runs at.
+fn settle_index_level(manager: &ChatManager, id: &str, named: Option<&str>) {
+    let key = format!("chat:{id}");
+    let Some(level) = manager.running_level(&key) else {
+        return;
+    };
+    if crate::chat_index::set_access(id, level.as_env()) == Ok(true) {
+        announce_index_change(id, false);
+    }
+    if named.unwrap_or("read") != level.as_env() {
+        announce_level(&key, level);
+    }
 }
 
 /// Record a chat, or update what is known about it.
