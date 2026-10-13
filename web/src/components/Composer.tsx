@@ -541,22 +541,28 @@ export function Composer({
   // Whether the row has room for its pickers side by side, by its own
   // width and never the window's (`lib/composerFit`): a chat column beside
   // the run panel and a side column is narrower than a phone. Read when the
-  // row's size changes, and when what it holds does.
+  // row's size changes, when what it holds does, and once its fonts are in;
+  // never on every render. A folded row that is tried side by side again is
+  // looked at before the paint (the effect on `fit.tight`), so a try that
+  // does not fit is never seen.
   const rowRef = useRef<HTMLDivElement>(null);
   const [fit, setFit] = useState<RowFit>(ROW_FITS);
-  const measureRow = useCallback(() => {
+  const measureRow = useCallback((again = false) => {
     const row = rowRef.current;
-    if (row) setFit((before) => rowFit(before, row));
+    if (row) setFit((before) => rowFit(before, row, again));
   }, []);
   useLayoutEffect(() => {
     const row = rowRef.current;
     if (!row || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measureRow);
+    const observer = new ResizeObserver(() => measureRow());
     observer.observe(row);
-    return () => observer.disconnect();
+    let live = true;
+    void document.fonts?.ready.then(() => { if (live) measureRow(true); });
+    return () => { live = false; observer.disconnect(); };
   }, [measureRow]);
-  const rowHolds = [choice.agent, choice.model, access, effort, identity?.name, !!advanced, !!onTerminal, focusMode, fit.tight].join("|");
-  useLayoutEffect(measureRow, [measureRow, rowHolds]);
+  const rowHolds = [choice.agent, choice.model, access, effort, identity?.name, !!advanced, !!onTerminal, focusMode].join("|");
+  useLayoutEffect(() => measureRow(true), [measureRow, rowHolds]);
+  useLayoutEffect(() => measureRow(), [measureRow, fit.tight]);
   const [permMenu, setPermMenu] = useState(false);
   const [pick, setPick] = useState(0);
   // Every option list depends on which provider is chosen: the agents do

@@ -70,7 +70,7 @@ function resultFor(request) {
     case "chat_index_deleted": return [];
     case "chat_page": return { events: [], context: [], before: null };
     case "chat_list": case "chat_activity": case "permission_pending": case "question_pending":
-    case "safety_block_pending": case "pr_repositories": case "codex_skills":
+    case "safety_block_pending": case "pr_repositories": case "codex_skills": case "image_preview_list":
       return [];
     case "team_list": return [head];
     case "team_head": return head;
@@ -231,13 +231,17 @@ async function ordinary(browser, out) {
   // The column put away: the pickers come back, by the same measure.
   await page.setViewportSize({ width: 1280, height: 860 });
   await page.getByRole("button", { name: /git/i }).first().click();
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(700);
   const closed = await composer(page);
-  out.gitClosed = { chat: closed.chat, tight: closed.row.tight, pickers: closed.pickers };
-  if (closed.row.client >= first.row.scroll) {
+  out.gitClosed = { chat: closed.chat, row: closed.row.client, holds: closed.row.scroll, tight: closed.row.tight, pickers: closed.pickers };
+  assert(closed.chat > first.chat + 100, `${label}: the chat has its room back (${closed.chat})`);
+  // A wider font may still not fit them in this column: then they stay
+  // folded, and what is asserted is that nothing is outside either way.
+  if (!wideFont) {
     assert.equal(closed.row.tight, false, `${label}: with room again the pickers come back`);
     assert.equal(closed.pickers, true);
   }
+  assert.equal(closed.pickers, !closed.row.tight);
   assert.deepEqual(closed.outside, []);
   await context.close();
 }

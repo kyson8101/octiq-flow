@@ -14,20 +14,25 @@
 export type RowFit = {
   /** The pickers are folded behind one button. */
   tight: boolean;
-  /** What the row needed with its pickers side by side, when they left. */
-  needed: number;
+  /** How wide the row was when the pickers were last found not to fit. */
+  at: number;
 };
 
-export const ROW_FITS: RowFit = { tight: false, needed: 0 };
+export const ROW_FITS: RowFit = { tight: false, at: 0 };
 
 /** The row as it is now, folded into what it was found to be before. The
  *  same object when nothing changed.
  *
  *  Side by side, the row is too narrow when what it holds is wider than it
- *  is. Folded, that can no longer be asked of it (it fits), so the pickers
- *  come back only when the row is as wide as they needed when they left:
- *  it does not flip back and forth at one width. */
-export function rowFit(before: RowFit, row: { scrollWidth: number; clientWidth: number }): RowFit {
-  if (!before.tight) return row.scrollWidth > row.clientWidth ? { tight: true, needed: row.scrollWidth } : before;
-  return row.clientWidth >= before.needed ? ROW_FITS : before;
+ *  is. Folded, that can no longer be asked of it (it fits), and what the
+ *  pickers need is not remembered: a number taken once goes stale with the
+ *  font that loaded after it and the model that was chosen since. So a
+ *  folded row is tried side by side again when it has grown past the width
+ *  it last failed at, or when what it holds changed (`again`), and the next
+ *  look folds it once more if it still does not fit. Both looks are made
+ *  before a paint, so the try is never seen, and at one width with the same
+ *  contents the answer does not flip. */
+export function rowFit(before: RowFit, row: { scrollWidth: number; clientWidth: number }, again = false): RowFit {
+  if (!before.tight) return row.scrollWidth > row.clientWidth ? { tight: true, at: row.clientWidth } : before;
+  return again || row.clientWidth > before.at ? ROW_FITS : before;
 }

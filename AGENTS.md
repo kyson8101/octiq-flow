@@ -1299,10 +1299,16 @@ window the chat is about 340px, the window still said "desktop", and the
 row's overflow landed on Send, drawn past the composer's right edge. (That
 is older than the Plan column: the git and files columns did the same.)
 
-- **Side by side while what the row holds is no wider than the row; folded,
-  it comes back only when the row is as wide as the pickers needed when
-  they left**, so it does not flip at one width. Nothing is assumed from a
-  font: a wider fallback font folds sooner.
+- **Side by side while what the row holds is no wider than the row. Folded,
+  it is tried side by side again when the row has grown past the width it
+  last failed at, or when what it holds changed** (another model, another
+  agent, its fonts arriving), and the next look folds it once more if it
+  still does not fit. Both looks are made before a paint, so a try that
+  fails is never seen, and at one width with the same contents the answer
+  does not flip. What the pickers need is not remembered: a width taken
+  once went stale with the font that loaded after it, and kept them folded
+  in a row with room. Nothing is assumed from a font: a wider fallback font
+  folds sooner.
 - **The fold is the phone's** (`.composer-row.is-tight`, beside the 700px
   rule): the same button, opening the same sheet. On a wide window that
   sheet is a card at the foot of the window, not a band across it.
