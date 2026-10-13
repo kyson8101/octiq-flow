@@ -36,6 +36,15 @@ Recorded at the commit that added `orchestration/retry.rs`, from
 | `failure_replaced.json` | `a_replaced_failure_is_history_and_its_replacement_carries_the_count` | a replaced failure: `awaits: "nobody"`, `because: "replaced"`; its replacement with `retriesUsed: 2` |
 | `failure_in_completed_run.json` | `a_failed_check_is_a_failure_and_checking_again_uses_the_retries` | a review with `verdict: "fail"` in a run whose `status` is `completed`: `kind: "check_failed"`, `awaits: "coordinator"`. That run has not ended |
 | `failure_in_stopped_run.json` | `a_failure_in_a_run_that_was_stopped_or_archived_is_history` | a failed task in a stopped run: `awaits: "nobody"`, `because: "run_ended"` |
+| `failure_check_retries_used.json` | `a_failed_check_is_a_failure_and_checking_again_uses_the_retries` | the same review after two reopens that failed again: `completed`, `verdict: "fail"`, `retriesUsed: 2`, `kind: "check_failed"`, `awaits: "person"`, `because: "retries_used"`; its two `reopens` are the coordinator's (no `byPerson`) |
+| `failure_coordinator_gone.json` | `a_failure_whose_coordinator_is_gone_is_the_persons_at_once` | a task that failed once in a run whose coordinator chat is not in the chat list: `awaits: "person"`, `because: "coordinator_gone"`, `retriesUsed: 0`; the run's `status` is `failed` |
+| `failure_check_coordinator_gone.json` | `with_its_coordinator_gone_the_persons_reopen_is_the_door_and_owes_no_notice` | a review that failed its check once in such a run: `completed`, `verdict: "fail"`, `kind: "check_failed"`, `because: "coordinator_gone"`, before the person reopens it |
+| `failure_time_limit.json` | `a_peer_requests_failure_waits_on_its_runs_coordinator_then_the_person` | a peer request (`peerRequest`, `maxMinutes: 1`) that failed with its minute of working time used: `awaits: "person"`, `because: "time_limit"`; the answer to `orchestration_snapshot { runId }` for its run |
+
+The last four were recorded at the commit that separated what a failure is
+shown as from what is counted and gave the person their own reopen (fix
+round 1 of the review of 16e4188), with the command below. The seven above
+them were not recorded again: nothing they hold changed.
 
 These tests print what they assert on when asked to, so nothing is added to
 a scratch copy:

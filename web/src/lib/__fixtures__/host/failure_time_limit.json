@@ -1,0 +1,183 @@
+{
+  "attempts": [
+    {
+      "access": "edits",
+      "agent": "codex",
+      "assignee": {
+        "id": "bo",
+        "name": "BO"
+      },
+      "branch": "peer",
+      "createdAt": 1791923070372,
+      "cwd": "/tmp",
+      "effort": "medium",
+      "execution": {
+        "currentOperation": null,
+        "lastActivityAt": 1791923070372,
+        "lastProgress": "The volume is missing",
+        "lastProgressAt": 1791923070372,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "failed"
+      },
+      "filesModified": [],
+      "finishedAt": 1791923070372,
+      "id": "attempt_e63cacfe46184a5d8e774fb0a0d6a18e",
+      "isWorktree": true,
+      "model": "gpt-5.6-terra",
+      "number": 1,
+      "peerClock": {
+        "carriedMs": 0,
+        "usedMs": 60000
+      },
+      "runId": "run_fb69748c44b24f1a9d05eb4c20b6b9ff",
+      "status": "failed",
+      "summary": "The volume is missing",
+      "taskId": "task_9d94e72f9a1041cf97c1ed9fe6f30b6d",
+      "updatedAt": 1791923070372,
+      "workerChatKey": "chat:orch-f874f26cb2d3491faa617ed7d6d2e02e"
+    }
+  ],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [
+    {
+      "attempts": 0,
+      "body": "This task is the peer request ADA made to BO. Worker reported Failed for task task_9d94e72f9a1041cf97c1ed9fe6f30b6d (Report volume usage).\n\nThe volume is missing\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.\n\nThis failure is yours to fix. The person is not asked yet: they are asked after 2 automatic retries, and 0 of 2 are used (retriesUsed in orchestration_snapshot). Read attempt.execution and its latestError there, then retry it in the same workspace now (orchestration_worker_start with newWorktree=false and no baseBranch), which uses one retry. That is the only repair: a peer request is not reopened, takes no message, and is replaced only by a new request the person approves. Never leave it as it is. If only the person can decide, open a decision for them with orchestration_gate_create (runId and taskId task_9d94e72f9a1041cf97c1ed9fe6f30b6d) saying what failed, what was tried and what the choices are.",
+      "coalesced": 0,
+      "createdAt": 1791923070372,
+      "fromChatKey": "chat:orch-f874f26cb2d3491faa617ed7d6d2e02e",
+      "id": "octiq-notification-0e457ba2b08b47feb8ea4b5b6efb7b74",
+      "kind": "report",
+      "lastError": null,
+      "nextAttemptAt": 1791923070372,
+      "runId": "run_fb69748c44b24f1a9d05eb4c20b6b9ff",
+      "source": "report:attempt_e63cacfe46184a5d8e774fb0a0d6a18e",
+      "state": "pending",
+      "targetChatKey": "chat:lead",
+      "updatedAt": 1791923070372
+    }
+  ],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:lead",
+      "createdAt": 1791923070330,
+      "id": "run_fb69748c44b24f1a9d05eb4c20b6b9ff",
+      "maxConcurrent": 4,
+      "objective": "Peer requests from ADA",
+      "planApproval": {
+        "consent": {
+          "at": 1791923070371,
+          "revision": 1,
+          "via": "button"
+        },
+        "decidedAt": 1791923070371,
+        "requestedAt": 1791923070330,
+        "revisedAt": 1791923070371,
+        "revision": 1,
+        "scope": "ca8a788795117645964b72d8fa5212ee440232c083de29eaadb2226a105052d5",
+        "status": "approved"
+      },
+      "rootPath": "/tmp",
+      "status": "failed",
+      "updatedAt": 1791923070372,
+      "workerDefaults": {
+        "access": "auto",
+        "effort": null,
+        "model": null,
+        "recovery": null
+      },
+      "workspaceId": "workspace",
+      "workspaceMode": "mission"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_e63cacfe46184a5d8e774fb0a0d6a18e",
+      "approved": {
+        "assignee": {
+          "id": "bo",
+          "name": "BO"
+        },
+        "at": 1791923070371,
+        "by": "plan",
+        "worker": {
+          "access": "edits",
+          "agent": "codex",
+          "effort": "medium",
+          "model": "gpt-5.6-terra",
+          "recovery": null
+        }
+      },
+      "approvedAt": 1791923070371,
+      "assignee": {
+        "id": "bo",
+        "name": "BO"
+      },
+      "createdAt": 1791923070370,
+      "dependsOn": [],
+      "failure": {
+        "awaits": "person",
+        "because": "time_limit",
+        "kind": "failed"
+      },
+      "heldByPlan": false,
+      "id": "task_9d94e72f9a1041cf97c1ed9fe6f30b6d",
+      "peerRequest": {
+        "maxMinutes": 1,
+        "output": "One line per volume: name, used, total.",
+        "requestedAt": 1791923070370,
+        "requestedBy": {
+          "id": "ada",
+          "name": "ADA"
+        },
+        "requesterChatKey": "chat:lead"
+      },
+      "result": "The volume is missing",
+      "retriesUsed": 0,
+      "retryLimit": 2,
+      "runId": "run_fb69748c44b24f1a9d05eb4c20b6b9ff",
+      "size": "medium",
+      "spec": "Inspect the NAS and read each volume's usage.\n\nExpected output\nOne line per volume: name, used, total.",
+      "status": "failed",
+      "title": "Report volume usage",
+      "updatedAt": 1791923070372,
+      "worker": {
+        "access": "edits",
+        "agent": "codex",
+        "effort": "medium",
+        "model": "gpt-5.6-terra",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/tmp",
+          "cwd": "/private/tmp",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/tmp",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791923070331
+      }
+    }
+  ]
+}

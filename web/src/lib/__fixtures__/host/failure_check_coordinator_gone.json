@@ -1,0 +1,151 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "test",
+      "createdAt": 1791923072756,
+      "cwd": "work",
+      "execution": {
+        "currentOperation": null,
+        "lastActivityAt": 1791923072756,
+        "lastProgress": "The build does not link",
+        "lastProgressAt": 1791923072756,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "completed"
+      },
+      "filesModified": [],
+      "finishedAt": 1791923072756,
+      "id": "attempt_32d77c92d56d4ae58c23918578286b2f",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_b5b80bccbb0148fe9d044bc916448e7b",
+      "status": "completed",
+      "summary": "The build does not link",
+      "taskId": "task_af7390cba07a4bfb98345072d04687b6",
+      "updatedAt": 1791923072756,
+      "workerChatKey": "chat:orch-fdc3137eea9542d6b21c9224f3cc0494"
+    }
+  ],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [
+    {
+      "attempts": 0,
+      "body": "Worker reported Completed for task task_af7390cba07a4bfb98345072d04687b6 (Implement).\n\nThe build does not link\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.\n\nThis failure is yours to fix. The person is not asked yet: they are asked after 2 automatic retries, and 0 of 2 are used (retriesUsed in orchestration_snapshot). Read attempt.execution and its latestError there, then put it right now: fix what it found (orchestration_task_reopen on the task whose work it judged), then reopen this task (orchestration_task_reopen, with corrected instructions if the check itself was wrong) so it checks again, which uses one retry. Never leave it as it is, and never route around it with a new check. If only the person can decide, open a decision for them with orchestration_gate_create (runId and taskId task_af7390cba07a4bfb98345072d04687b6) saying what failed, what was tried and what the choices are.",
+      "coalesced": 0,
+      "createdAt": 1791923072756,
+      "fromChatKey": "chat:orch-fdc3137eea9542d6b21c9224f3cc0494",
+      "id": "octiq-notification-ea026b9a9ce549359d4061ba974d11a9",
+      "kind": "report",
+      "lastError": null,
+      "nextAttemptAt": 1791923072756,
+      "runId": "run_b5b80bccbb0148fe9d044bc916448e7b",
+      "source": "report:attempt_32d77c92d56d4ae58c23918578286b2f",
+      "state": "pending",
+      "targetChatKey": "chat:retry-gone-c3c8028a51914c58bc1df2b854e641f9",
+      "updatedAt": 1791923072756
+    }
+  ],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:retry-gone-c3c8028a51914c58bc1df2b854e641f9",
+      "createdAt": 1791923072643,
+      "id": "run_b5b80bccbb0148fe9d044bc916448e7b",
+      "maxConcurrent": 4,
+      "objective": "Ship the feature",
+      "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9dafebf5e98b491490441a26be0a9a66",
+      "status": "completed",
+      "updatedAt": 1791923072756,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_32d77c92d56d4ae58c23918578286b2f",
+      "createdAt": 1791923072719,
+      "dependsOn": [],
+      "failure": {
+        "awaits": "person",
+        "because": "coordinator_gone",
+        "kind": "check_failed"
+      },
+      "id": "task_af7390cba07a4bfb98345072d04687b6",
+      "kind": "review",
+      "result": "The build does not link",
+      "retriesUsed": 0,
+      "retryLimit": 2,
+      "runId": "run_b5b80bccbb0148fe9d044bc916448e7b",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "completed",
+      "title": "Implement",
+      "updatedAt": 1791923072756,
+      "verdict": "fail",
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspace": {
+        "abandoned": false,
+        "cleanupIntent": null,
+        "delivery": null,
+        "leaseAttemptId": null,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9dafebf5e98b491490441a26be0a9a66",
+          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9dafebf5e98b491490441a26be0a9a66",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9dafebf5e98b491490441a26be0a9a66",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "state": "retained",
+        "validationPaths": []
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9dafebf5e98b491490441a26be0a9a66",
+          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9dafebf5e98b491490441a26be0a9a66",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9dafebf5e98b491490441a26be0a9a66",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791923072682,
+        "provisional": true
+      }
+    }
+  ]
+}

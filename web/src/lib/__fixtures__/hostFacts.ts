@@ -18,10 +18,14 @@ import claudeRefusal from "./host/claude_refusal.json?raw";
 import coordinatesRun from "./host/coordinates_run.json?raw";
 import failureAwaitsCoordinator from "./host/failure_awaits_coordinator.json?raw";
 import failureAwaitsPerson from "./host/failure_awaits_person.json?raw";
+import failureCheckCoordinatorGone from "./host/failure_check_coordinator_gone.json?raw";
+import failureCheckRetriesUsed from "./host/failure_check_retries_used.json?raw";
+import failureCoordinatorGone from "./host/failure_coordinator_gone.json?raw";
 import failureEscalated from "./host/failure_escalated.json?raw";
 import failureInCompletedRun from "./host/failure_in_completed_run.json?raw";
 import failureInStoppedRun from "./host/failure_in_stopped_run.json?raw";
 import failureReplaced from "./host/failure_replaced.json?raw";
+import failureTimeLimit from "./host/failure_time_limit.json?raw";
 import gatesOpen from "./host/gates_open.json?raw";
 import heldByPlan from "./host/held_by_plan.json?raw";
 import heldByReopen from "./host/held_by_reopen.json?raw";
@@ -101,6 +105,25 @@ export const hostFacts = {
   /** A failed task in a run that was stopped: `failure.awaits: "nobody"`,
    *  `because: "run_ended"`. */
   failureInStoppedRun: ledger(failureInStoppedRun),
+  /** A review that failed its check three times: `completed`, `verdict:
+   *  "fail"`, `retriesUsed: 2`, `failure.kind: "check_failed"`, `awaits:
+   *  "person"`, `because: "retries_used"`, in a run the host calls
+   *  `completed`. The host takes the person's own reopen of it from the
+   *  page (`orchestration_task_reopen`), and no start. */
+  failureCheckRetriesUsed: ledger(failureCheckRetriesUsed),
+  /** A failed task whose coordinator chat the chat list does not have:
+   *  `failed`, `retriesUsed: 0`, `failure.awaits: "person"`, `because:
+   *  "coordinator_gone"`. The host takes the person's Start. */
+  failureCoordinatorGone: ledger(failureCoordinatorGone),
+  /** The same for a review that failed its check once: `completed`,
+   *  `verdict: "fail"`, `retriesUsed: 0`, `failure.kind: "check_failed"`,
+   *  `because: "coordinator_gone"`. The host takes the person's own reopen,
+   *  which owes no notice there. */
+  failureCheckCoordinatorGone: ledger(failureCheckCoordinatorGone),
+  /** A peer request that failed with its working time used: `failed`,
+   *  `peerRequest`, `failure.awaits: "person"`, `because: "time_limit"`.
+   *  Only the person's Start gives it more. */
+  failureTimeLimit: ledger(failureTimeLimit),
   /** Two running attempts: one with `usage` and `context`, one with neither
    *  key (its chat reported a token count and no window). */
   usageContext: ledger(usageContext),
