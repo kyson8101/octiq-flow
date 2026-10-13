@@ -22,13 +22,19 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
-const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || new URL("../web", import.meta.url).pathname);
+// `fileURLToPath`, not `.pathname`: on Windows that is `/C:/…`, which
+// `resolve` turns into `C:\C:\…`. OCTIQ_WEB_ROOT points at another copy of web/.
+const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || fileURLToPath(new URL("../web", import.meta.url)));
 const require = createRequire(join(webRoot, "package.json"));
-const { createServer } = await import(require.resolve("vite"));
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright");
+/** A module named by a path is imported by its file URL: Node's loader
+ *  refuses `C:\…` as a specifier. A bare name or a URL is left as it is. */
+const moduleUrl = (spec) => (isAbsolute(spec) || spec.startsWith(".") ? pathToFileURL(resolve(spec)).href : spec);
+const { createServer } = await import(moduleUrl(require.resolve("vite")));
+const { chromium } = await import(moduleUrl(process.env.PLAYWRIGHT_MODULE || "playwright"));
 const shotsOnly = process.env.SHOTS_ONLY === "1";
 const wideFont = process.env.WIDE_FONT === "1";
 const classic = process.env.CLASSIC_SCROLLBARS === "1";

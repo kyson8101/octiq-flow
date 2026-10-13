@@ -12,12 +12,19 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
-const require = createRequire(new URL("../web/package.json", import.meta.url));
-const { createServer } = await import(require.resolve("vite"));
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright");
+// `fileURLToPath`, not `.pathname`: on Windows that is `/C:/…`, which
+// `resolve` turns into `C:\C:\…`. OCTIQ_WEB_ROOT points at another copy of web/.
+const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || fileURLToPath(new URL("../web", import.meta.url)));
+const require = createRequire(join(webRoot, "package.json"));
+/** A module named by a path is imported by its file URL: Node's loader
+ *  refuses `C:\…` as a specifier. A bare name or a URL is left as it is. */
+const moduleUrl = (spec) => (isAbsolute(spec) || spec.startsWith(".") ? pathToFileURL(resolve(spec)).href : spec);
+const { createServer } = await import(moduleUrl(require.resolve("vite")));
+const { chromium } = await import(moduleUrl(process.env.PLAYWRIGHT_MODULE || "playwright"));
 const artifacts = process.env.OCTIQ_EVIDENCE_DIR
   || await mkdtemp(join(tmpdir(), "octiq-pending-actions-"));
 await mkdir(artifacts, { recursive: true });
@@ -101,8 +108,8 @@ const calls = [];
 const errors = [];
 let appSocket;
 const server = await createServer({
-  root: new URL("../web", import.meta.url).pathname,
-  configFile: new URL("../web/vite.config.ts", import.meta.url).pathname,
+  root: webRoot,
+  configFile: join(webRoot, "vite.config.ts"),
   server: { host: "127.0.0.1", port: 0, strictPort: false },
 });
 

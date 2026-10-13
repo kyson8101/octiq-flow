@@ -29,13 +29,19 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
-const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || new URL("../web", import.meta.url).pathname);
+// `fileURLToPath`, not `.pathname`: on Windows that is `/C:/…`, which
+// `resolve` turns into `C:\C:\…`. OCTIQ_WEB_ROOT points at another copy of web/.
+const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || fileURLToPath(new URL("../web", import.meta.url)));
 const require = createRequire(join(webRoot, "package.json"));
-const { createServer } = await import(require.resolve("vite"));
-const playwright = await import(process.env.PLAYWRIGHT_MODULE || "playwright");
+/** A module named by a path is imported by its file URL: Node's loader
+ *  refuses `C:\…` as a specifier. A bare name or a URL is left as it is. */
+const moduleUrl = (spec) => (isAbsolute(spec) || spec.startsWith(".") ? pathToFileURL(resolve(spec)).href : spec);
+const { createServer } = await import(moduleUrl(require.resolve("vite")));
+const playwright = await import(moduleUrl(process.env.PLAYWRIGHT_MODULE || "playwright"));
 const engines = (process.env.BROWSERS || "chromium").split(",").map((name) => name.trim()).filter(Boolean);
 const shotsOnly = process.env.SHOTS_ONLY === "1";
 const wideFont = process.env.WIDE_FONT === "1";
@@ -310,8 +316,16 @@ async function desktop(browser, name, out) {
   await page.keyboard.press("Enter");
   const pop = page.getByRole("dialog", { name: "Plan usage", exact: true });
   await pop.waitFor();
-  // Its numbers roll into place a digit at a time: read it once they have.
-  await page.waitForFunction(() => /resets in 2h/.test(document.querySelector(".usage-strip .usage-pop")?.innerText.replace(/\s+/g, " ") ?? ""));
+  // Its numbers roll into place a digit at a time, so the popover's own
+  // text is not something to wait on: a wheel holds every digit it turns
+  // through, and `resets in 2h` was true of the first frame only (it timed
+  // out in Edge and Chrome on Windows). What is stable is that the wheels
+  // are mounted and the words round them are there; the figures themselves
+  // are read from the button's name, which is plain text.
+  await page.waitForFunction(() => {
+    const pop = document.querySelector(".usage-strip .usage-pop");
+    return !!pop?.querySelector(".roll-text") && /resets in/.test(pop.textContent ?? "");
+  });
   assert.match(await page.locator(".usage-strip-btn").getAttribute("aria-label"), /Claude 5-hour window: 53% used · resets in 2h/);
   const popBox = await box(page, ".usage-strip .usage-pop");
   assert(popBox.x >= 0 && popBox.x + popBox.w <= 1280, "the breakdown is inside the window");
