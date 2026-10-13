@@ -520,25 +520,77 @@ written when it can be (see **Conventions**, rule C).
 **The page sends the level it has saved for a chat and decides none.** A
 start the page makes (`send`'s `chat_start`, `chat_complete`'s `start`, a
 coordinator's start) carries the level the page holds for that chat, and no
-rule on the page raises or lowers it. The host starts a registered agent's
-own conversation at no less than the agent's registered access
-(`agent_chat::start_session`) and says the level a process really runs at
-with `chat-access-changed { chatKey, access }`. The page mirrors that event
-(`lib/chatAccess.mirrorAccess`): the level kept with the loaded chat, its row
-in the page's list and, for the chat on screen, the composer's. It sends no
-command for it, and a chat the page does not hold is left to the index. A
-level the page saves for a chat is one the person picked, one the host said
-(that event, or the chat's row of the chat list), or the one the page sent
-on a start: never one it worked out. On a row of the chat list the host's
-level wins over the one the page cached (`levelFromRow`), except while the
-page's own word may be newer than the answer (`aheadOfRow`: a send in
+rule on the page raises or lowers it. What level the process then runs at is
+the host's to decide and to say, with `chat-access-changed` (the next
+paragraph). The page mirrors that event (`lib/chatAccess.mirrorAccess`): the
+level kept with the loaded chat, its row in the page's list and, for the chat
+on screen, the composer's. It sends no command for it, and a chat the page
+does not hold is left to the index. A level the page saves for a chat is one
+the person picked, one the host said (that event, or the chat's row of the
+chat list, which is the index entry the host keeps to it), or the one the
+page sent on a start: never one it worked out. On a row of the chat list the
+host's level wins over the one the page cached (`levelFromRow`), except while
+the page's own word may be newer than the answer (`aheadOfRow`: a send in
 flight, a save of the chat unconfirmed or made since the list was asked for)
 or holds a level the person picked that is not saved yet. The page offers no
 control and runs no logic that opens or switches a chat to read-only on its
 own: a discussion is how a route's card is worded. Not covered: a `send`
 already under way when the host's level arrives goes on with the level it
 began with.
-<!-- host half: OCTIQ BE's paragraph is merged here by the lead -->
+
+**A registered agent's chat never starts below its registered access, and the
+host is the one that says so.** A new process for a registered agent's own
+conversation is started at the higher of the level asked and the access the
+agent is registered with, as the roster stands at that moment
+(`agent_chat::start_session`, `ChatManager::level_to_start_at`; ranked by
+`access_request::rank`, and no level asked ranks lowest). It is decided at
+the one door every process start goes through, so the page's `chat_start`,
+`chat_complete` with `start`, the run panel's Continue, a queued carry, a
+host continuation, the resume after a usage limit, a run's notification and
+`continue_origin` all get it, and a new way to start a process gets it by
+going through that door. A page asked instead, and could not hold it: it does
+not always know the roster, or whether a process is running, when it has to
+decide.
+
+- **It only raises.** A level asked at or above the registered one is kept as
+  asked, so a raise the person approved is not lost, and moving an agent's
+  registration down lowers no chat. A process that is already running is
+  never touched: a chat the person lowers keeps that level while its process
+  runs.
+- **Started exactly as asked, each told by what lasts:** a room seat
+  (`session_key != key`); a worker's chat (`is_worker_chat`, its key or an
+  attempt on record, never `active_task`: its level comes with its task); the
+  front desk, whose read-only override comes first; a chat no lead record
+  names (an ordinary chat, a PR dashboard's Study or Review chat); a chat
+  whose agent was removed; and any chat while the roster or the ledger cannot
+  be read. What is unknown is never read as a level. The roster's lock is let
+  go before the ledger's is taken, and both before the session table's.
+- **The raised level is kept as any start's is** (`keep_start_level` →
+  `remember_start`): in memory and in the ledger's resume settings, so every
+  later host resume starts from it.
+- **The page mirrors, and the host keeps the chat index true.** When a chat's
+  own process is started at a level that is not the one on its index entry,
+  the host writes the entry (`chat_index::set_access`) and says
+  `chat-access-changed` with exactly `{ chatKey, access }`; it says the same
+  when the level is not the one asked. That is for any start, raised or not,
+  and it is the one thing that tells a page the level a process really runs
+  at; a page that missed it reads the chat's index entry (its row of the chat
+  list, above). Nothing is said when nothing differs. An entry with no level
+  means read.
+- **A page's `chat_index_save` does not change the level of a chat with a
+  live process** (`chat_index_save_from_page`). A page saves the level it
+  holds, which may be the one it asked for a moment before the host raised
+  it. The process's level is written instead (`ChatManager::levels`, which a
+  start and `chat_set_access` both record), asked again after the save for a
+  process that started in between, and a page that named another level is
+  told. With no process the save stands: it is the person's choice for the
+  next start.
+- **Not covered.** `continue_origin` after a restart starts from the settings
+  saved with the question. For a chat the person had since lowered those are
+  stale the other way, and a level at or above the registered one is kept as
+  asked. And a page that never took the event and saves its older level once
+  the process has ended puts the entry back until the next start. The page's
+  own gap, a `send` already under way, is in the paragraph above.
 
 ### An auto-mode refusal the agent carries on past is a notice, not a card
 
@@ -2019,6 +2071,12 @@ time limit).
   and the target are intact and byte-identical to the original after 24
   carries at once, the other pauses a last-resort copy and asserts that a
   second carry does not answer until the file is whole.
+- **A mutation check of a script section switches off the one thing the
+  section claims to prove, and sees that section fail.** A mock that sends
+  two signals for one fact proves neither: section D of
+  `scripts/test-front-desk-discussion.mjs` went on passing with the page's
+  `chat-access-changed` handler off, because the mocked host also said
+  `chat-index-changed` and the chat list's row did the work.
 - **The `src-tauri/` folder name is historical.** There is no Tauri in it. It
   was left alone so paths, the service plist and muscle memory keep working;
   renaming it is a separate job.
