@@ -6,6 +6,8 @@ import type { OrchestrationSnapshot } from "../lib/orchestration";
 import { pendingByTask, type PendingAction } from "../lib/pendingActions";
 import { NO_PENDING_ACTIONS, PendingActionsContext, type PendingActionsView } from "./PendingActionBadge";
 import { Sidebar, type Project } from "./Sidebar";
+import stylesCss from "../styles.css?raw";
+import mobileSidebarCss from "./MobileSidebar.css?raw";
 
 const projects: Project[] = [
   { id: "p1", name: "octiq-flow", initial: "OF", color: "#12ab34" },
@@ -227,7 +229,7 @@ describe("task-oriented Sidebar", () => {
     expect(out).not.toContain("Start your first chat");
   });
 
-  it("puts mobile navigation in the chat list scroller so it can leave and return without moving the list", () => {
+  it("puts the places menu first in the chat list's scroller, where a phone scrolls it away with the list", () => {
     const out = html({ conversations: [chat("a")], onSearch: () => {} });
     const scroller = out.indexOf('class="task-chat-scroll"');
     const navigation = out.indexOf('id="chats-navigation"');
@@ -235,6 +237,18 @@ describe("task-oriented Sidebar", () => {
     expect(scroller).toBeGreaterThan(0);
     expect(navigation).toBeGreaterThan(scroller);
     expect(content).toBeGreaterThan(navigation);
+    // Nothing between the scroller and the menu, and no state on the menu:
+    // it is not brought back over the rows by the direction of a scroll.
+    expect(out).toContain('<div class="task-chat-scroll"><div id="chats-navigation" class="sidebar-toolbar">');
+  });
+
+  it("never floats the places menu over the rows: no sheet pins it or hides it by scroll direction", () => {
+    for (const sheet of [stylesCss, mobileSidebarCss]) {
+      expect(sheet).not.toMatch(/sidebar-toolbar[^{]*\.is-(floating|hidden)/);
+      for (const rule of sheet.match(/[^{}]*sidebar-toolbar[^{}]*\{[^}]*\}/g) ?? []) {
+        expect(rule).not.toMatch(/position:\s*(sticky|fixed)/);
+      }
+    }
   });
 
   it("has no search field, no Chats menu and no footer: they moved to pages", () => {

@@ -292,6 +292,8 @@ body {
 .topbar-context:empty,
 .topbar-page-actions:empty { display: none; }
 .topbar-page-actions { flex: 0 0 auto; }
+/* What is left at the end of the top bar: a phone's way back from its chat
+   list, and a phone's usage number on a page that has no action bar. */
 
 .topbar-chat {
   display: inline-flex;
@@ -307,22 +309,15 @@ body {
 
 .topbar-context { flex: 1 1 auto; }
 
-/* Until the project list has answered, the bar does not know which project
-   this is or which of its buttons apply. What it would have drawn stays out of
-   sight in its place, and comes in once, where it belongs — instead of two
-   buttons that jump aside for three more. The usage number has its own gate
-   (components/Usage): it is answered later, and separately. */
-.topbar-actions.gate-held > :not(.usage) { visibility: hidden; }
-.topbar-actions.gate-entering > :not(.usage) { animation: enter-fade var(--enter-duration) var(--enter-ease); }
-
-/* The same gate in the chat list: whose project a row is. */
+/* Until the project list has answered, a row of the chat list does not know
+   whose project it is: that part stays out of sight in its place and comes in
+   once. The action bar keeps the same gate (components/ActionBar.css). */
 .sidebar.gate-held :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) { visibility: hidden; }
 .sidebar.gate-entering :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) {
   animation: enter-fade var(--enter-duration) var(--enter-ease);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .topbar-actions.gate-entering > :not(.usage),
   .sidebar.gate-entering :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) { animation: none; }
 }
 .topbar-workflow {
@@ -502,9 +497,8 @@ body {
   }
 }
 
-/* The phone bar carries where you are and one door to the action list. View
-   navigation and usage already live in the drawer; putting every remaining
-   control in this dropdown leaves the project name readable at narrow widths. */
+/* The phone bar carries where you are; what can be done about it is the
+   action bar under it (components/ActionBar). */
 @media (max-width: 700px) {
   .topbar {
     gap: 3px;
@@ -577,10 +571,10 @@ body {
   box-shadow: var(--shadow);
 }
 
-.topbar .mobile-actions-panel > .icon-btn,
-.topbar .mobile-actions-panel > .gitp-toggle,
-.topbar .mobile-actions-panel > .orch-toggle,
-.topbar .mobile-actions-panel > .attention-inbox .attention-trigger {
+.actionbar .mobile-actions-panel > .icon-btn,
+.actionbar .mobile-actions-panel > .gitp-toggle,
+.actionbar .mobile-actions-panel > .orch-toggle,
+.actionbar .mobile-actions-panel > .attention-inbox .attention-trigger {
   width: 100%;
   min-height: 40px;
   height: auto;
@@ -595,11 +589,11 @@ body {
   font-size: 13px;
 }
 
-.topbar .mobile-actions-panel > .icon-btn:hover,
-.topbar .mobile-actions-panel > .gitp-toggle:hover,
-.topbar .mobile-actions-panel > .orch-toggle:hover,
-.topbar .mobile-actions-panel > .attention-inbox .attention-trigger:hover,
-.topbar .mobile-actions-panel > .attention-inbox .attention-trigger[aria-expanded="true"] {
+.actionbar .mobile-actions-panel > .icon-btn:hover,
+.actionbar .mobile-actions-panel > .gitp-toggle:hover,
+.actionbar .mobile-actions-panel > .orch-toggle:hover,
+.actionbar .mobile-actions-panel > .attention-inbox .attention-trigger:hover,
+.actionbar .mobile-actions-panel > .attention-inbox .attention-trigger[aria-expanded="true"] {
   background: var(--bg-2);
   color: var(--fg-0);
 }
@@ -670,6 +664,9 @@ body {
   .app > .sidebar { order: 1; }
   .shell-main > .topbar { order: 0; }
   .shell-main > .body { order: 2; }
+  /* A desktop's row. The page stops drawing it below this width; this keeps
+     it out of the frame in which the window crossed it. */
+  .shell-main > .usage-strip { display: none; }
 }
 
 /* ---- Body: drawer + main --------------------------------------------- */
@@ -1299,32 +1296,9 @@ body {
   .task-sidebar .task-chat-scroll { overflow-y: auto; }
   .task-sidebar .task-chat-content { flex: 0 0 auto; overflow-y: visible; }
 
-  /* The places menu first leaves in ordinary scroll flow. Once it is wholly
-     above the list, upward intent brings it back over the rows: sticky keeps
-     its original box above the viewport, so neither list height nor scrollTop
-     changes when it appears. */
-  .task-sidebar .sidebar-toolbar.is-floating {
-    position: sticky;
-    z-index: 8;
-    top: 0;
-    background: color-mix(in srgb, var(--bg-sunken) 96%, transparent);
-    backdrop-filter: blur(8px);
-    transition: transform 140ms ease-out, opacity 140ms ease-out;
-  }
-  .task-sidebar .sidebar-toolbar.is-floating.is-hidden {
-    transform: translateY(-100%);
-    opacity: 0;
-    pointer-events: none;
-  }
-  .task-sidebar .sidebar-toolbar:focus-within {
-    transform: none;
-    opacity: 1;
-    pointer-events: auto;
-  }
-}
-
-@media (max-width: 859.98px) and (prefers-reduced-motion: reduce) {
-  .task-sidebar .sidebar-toolbar.is-floating { transition: none; }
+  /* The places menu is the first thing in the scroller and nothing more: it
+     leaves with the list and is reached again at the top. It used to come
+     back over the rows on every upward scroll. */
 }
 
 @keyframes projects-enter {
@@ -9163,11 +9137,12 @@ body.is-ultra .eff {
   color: var(--fg-2);
 }
 
-/* ---- Plan usage (top right) -------------------------------------------
-   One small entry at every width: a gauge and the fullest window across both
-   agents, coloured by how close it is. Hovering opens the full breakdown —
-   every window each agent reports, with when it resets — and a tap does the
-   same where there is no pointer to hover with. */
+/* ---- Plan usage -------------------------------------------------------
+   A phone: one small entry at the end of the action bar, a gauge and the
+   fullest window across both agents, coloured by how close it is. Hovering
+   opens the full breakdown — every window each agent reports, with when it
+   resets — and a tap does the same where there is no pointer to hover with.
+   A desktop: a row of its own (`.usage-strip`, below). */
 .usage {
   position: relative;
   flex: 0 0 auto;
@@ -9205,7 +9180,7 @@ body.is-ultra .eff {
 
 .usage-icon { flex: 0 0 auto; }
 
-/* Only the popup draws bars; the top bar is one number. */
+/* The popup and the desktop row draw bars; a phone's entry is one number. */
 .usage-track {
   position: relative;
   display: block;
@@ -9250,6 +9225,103 @@ body.is-ultra .eff {
 @media (max-width: 560px) {
   .usage-btn { padding: 0 6px; }
   .usage-val { font-size: 11px; }
+}
+
+/* ---- Plan usage, a desktop's row --------------------------------------
+   Every window the host reports, under the action bar: a short label, a
+   small bar and the percent each. One fixed height whatever is in it, so a
+   reading that arrives never moves the page. A window too narrow for them
+   scrolls the row sideways; it never wraps, and it draws no scrollbar that
+   would add to its height (a browser with classic scrollbars, on Windows).
+
+   Calm is grey here, not the popup's green: five green bars across the top
+   of every page would be a statement, and nothing is being said until a
+   window passes the warning mark. */
+.usage-strip {
+  position: relative;
+  z-index: 28;
+  display: flex;
+  flex: 0 0 auto;
+  height: 26px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.usage-strip-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.usage-strip-scroll::-webkit-scrollbar { display: none; }
+
+/* The end that is cut fades into the row, as the action bar's does. */
+.usage-strip::before,
+.usage-strip::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease-out;
+}
+.usage-strip::before { left: 0; background: linear-gradient(to right, var(--bg-sunken), transparent); }
+.usage-strip::after { right: 0; background: linear-gradient(to left, var(--bg-sunken), transparent); }
+.usage-strip[data-cut~="start"]::before,
+.usage-strip[data-cut~="end"]::after { opacity: 1; }
+
+/* The whole row is one button: it opens the breakdown the phone's entry
+   opens, so a reset time is a press away and never behind a hover alone.
+   It keeps to the end of the row while there is room, and starts at the
+   start when there is not, so the scroll begins at the first window. */
+.usage-strip-btn {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 18px;
+  height: 100%;
+  margin-left: auto;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 140ms ease-out;
+}
+.usage-strip-btn:hover,
+.usage-strip-btn[aria-expanded="true"] { background: var(--bg-1); }
+.usage-strip-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+.usage-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 140ms ease-out;
+}
+/* Faded when it could not be refreshed, as the phone's number is. */
+.usage-cell.is-stale { opacity: 0.55; }
+.usage-cell-label,
+.usage-cell-none { color: var(--fg-3); }
+.usage-cell .usage-track { flex: 0 0 44px; width: 44px; height: 4px; }
+.usage-cell .usage-fill { background: var(--fg-3); }
+.usage-cell .usage-val { font-size: 11px; }
+.usage-strip .usage-pop { top: calc(100% + 4px); right: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-strip::before,
+  .usage-strip::after,
+  .usage-strip-btn,
+  .usage-cell,
+  .usage-fill { transition: none; }
 }
 
 .usage-scrim {

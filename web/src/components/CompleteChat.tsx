@@ -26,8 +26,8 @@ import { StatusDismiss } from "./ChatStatus";
 import { useCarefulAnswer } from "./Confirm";
 import "./CompleteChat.css";
 
-/** The action in the chat's menu. Icon and tooltip; the label shows in the
- *  menu, where every action is a row. */
+/** The action in the chat's action bar. The short word is drawn; the whole
+ *  sentence, and why it is off when it is, is its name and tooltip. */
 export function CompleteChatButton({ action, onClick }: { action: CompleteAction; onClick: () => void }) {
   if (!action.shown) return null;
   return (
@@ -40,7 +40,7 @@ export function CompleteChatButton({ action, onClick }: { action: CompleteAction
       onClick={onClick}
     >
       <CompleteIcon />
-      <span className="topbar-action-label">{action.label}</span>
+      <span className="topbar-action-label">Complete</span>
     </button>
   );
 }

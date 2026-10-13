@@ -70,7 +70,7 @@ assert(missing.url().includes('missing'));
 assert.equal(await missing.locator('textarea').count(),0);
 await missing.close();
 await page.setViewportSize({width:390,height:844});
-await page.getByRole('button',{name:'Chat actions',exact:true}).click();
+// A phone's actions are the buttons of the action bar now: there is no menu to open.
 assert.equal(await page.getByRole('button', {name: /Open.*beside|Return to split/}).count(), 0);
 assert.equal(page.frames().length, 1);
 await page.screenshot({path:join(artifacts,'mobile.png')});

@@ -28,7 +28,9 @@ export function CopyChatIdButton({ chatId }: { chatId: string }) {
       }}
     >
       {result === "done" ? <TickIcon /> : <CopyIcon />}
-      <span className="topbar-action-label">{label}</span>
+      {/* The words stay put: what happened is the icon, its colour and the
+          button's name, so a copy never changes the bar's widths. */}
+      <span className="topbar-action-label">Copy ID</span>
     </button>
   );
 }

@@ -50,12 +50,12 @@ describe("the Complete action", () => {
   );
   const main = { key: "chat:c1", worker: false, frontDesk: false };
 
-  it("is an icon button with a tooltip, and a label for the menu row", () => {
+  it("is a button with a short word, and the whole sentence as its name and tooltip", () => {
     const html = draw(main);
     expect(html).toContain('class="icon-btn complete-chat"');
     expect(html).toContain('title="Complete this chat"');
     expect(html).toContain('aria-label="Complete this chat"');
-    expect(html).toContain('<span class="topbar-action-label">Complete this chat</span>');
+    expect(html).toContain('<span class="topbar-action-label">Complete</span>');
     expect(html).not.toContain("disabled");
   });
 

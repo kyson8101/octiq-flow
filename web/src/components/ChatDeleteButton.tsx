@@ -1,4 +1,4 @@
-// The delete action shown in the chat's top bar. It uses the same two-second
+// The delete action shown in the chat's action bar. It uses the same two-second
 // undo window as the sidebar row: the first press starts deleting, and the
 // second press cancels while the ring is still draining.
 export function ChatDeleteButton({
@@ -24,7 +24,7 @@ export function ChatDeleteButton({
       onClick={onDelete}
     >
       {deleting ? <DeleteCountdownIcon ms={deleteMs} /> : <TrashIcon />}
-      <span className="topbar-action-label">{label}</span>
+      <span className="topbar-action-label">{deleting ? "Undo" : "Delete"}</span>
     </button>
   );
 }

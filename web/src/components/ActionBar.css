@@ -1,0 +1,221 @@
+/* ---- The action bar: one row of actions under the top bar ---------------
+   One height from the first paint, at every width. What is in it arrives
+   later (which project, which chat, their counts), and none of it may move
+   the page under the bar. */
+.actionbar {
+  --actionbar-h: 36px;
+  --actionbar-bg: var(--bg-sunken);
+  position: relative;
+  /* Under the top bar (30) and over the page and the sidebar (20), so what
+     opens from a button here is over the chat and under every sheet (40+). */
+  z-index: 29;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+  height: var(--actionbar-h);
+  padding: 0 max(6px, env(safe-area-inset-right)) 0 max(6px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--border);
+  background: var(--actionbar-bg);
+  white-space: nowrap;
+}
+
+/* A page with no actions draws no empty bar. A chat's page is held: its
+   buttons are on their way and the bar is already there for them. */
+.actionbar:not(.is-held):not(:has(button, a[href], select, input)) { display: none; }
+
+.actionbar-scroll {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+}
+
+.actionbar-row {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+  height: 100%;
+}
+
+.actionbar-item {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+/* A button that draws nothing takes no place and no gap. */
+.actionbar-item:empty { display: none; }
+
+/* What follows is of another kind: the destructive end of the row. */
+.actionbar-item.is-separated::before {
+  content: "";
+  flex: 0 0 1px;
+  width: 1px;
+  height: 16px;
+  margin: 0 6px 0 4px;
+  background: var(--border);
+}
+.actionbar-item.is-separated:first-child::before { display: none; }
+
+/* Every button of the row is one shape: an icon, a short word, and at most a
+   count. Each kept the look of the place it came from (a square icon in the
+   top bar, a bordered pill beside it); here they are one family. */
+.actionbar .actionbar-item > :is(.icon-btn, .gitp-toggle, .orch-toggle),
+.actionbar .actionbar-item > .chat-task > .chat-task-action,
+.actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  width: auto;
+  min-width: 0;
+  height: 28px;
+  min-height: 0;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 140ms ease-out, color 140ms ease-out, border-color 140ms ease-out, opacity 140ms ease-out;
+}
+
+.actionbar .actionbar-item > :is(.icon-btn, .gitp-toggle, .orch-toggle):hover,
+.actionbar .actionbar-item > .chat-task > .chat-task-action:hover,
+.actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* On: the panel this button opens is on screen. A border as well as a fill,
+   because the fill alone is what hovering looks like. */
+.actionbar .actionbar-item > :is(.icon-btn, .gitp-toggle, .orch-toggle).is-on,
+.actionbar .actionbar-item > .chat-task > .chat-task-action[aria-expanded="true"],
+.actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger[aria-expanded="true"] {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.actionbar .actionbar-item > :is(.icon-btn, .gitp-toggle, .orch-toggle):focus-visible,
+.actionbar .actionbar-item > .chat-task > .chat-task-action:focus-visible,
+.actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.actionbar .actionbar-item > .icon-btn:disabled { opacity: 0.45; cursor: default; }
+.actionbar .actionbar-item > .icon-btn:disabled:hover { background: transparent; color: var(--fg-2); }
+.actionbar .actionbar-item > .topbar-delete:is(:hover, .is-going) { color: var(--danger); }
+
+.actionbar .actionbar-row > .actionbar-item svg,
+.actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger > svg {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+}
+
+.actionbar .actionbar-row > .actionbar-item .topbar-action-label,
+.actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger > .topbar-action-label { display: inline; }
+
+/* More carries the count of what waits on the person behind it, in the
+   colour of a decision: it is asking, nothing is wrong. */
+.actionbar .mobile-actions-attention {
+  position: static;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--decide) 50%, var(--border));
+  border-radius: var(--r-pill, 999px);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--decide);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A page's own buttons (WorkspaceHeader), ahead of the rest. */
+.actionbar > .topbar-page-actions { gap: 6px; }
+
+/* Until the project list has answered, the bar does not know which project
+   this is or which of its buttons apply. What it would have drawn stays out
+   of sight in its place and comes in once, where it belongs. The usage
+   number has its own gate (components/Usage): it is answered separately. */
+.actionbar.gate-held > :not(.usage) { visibility: hidden; }
+.actionbar.gate-entering > :not(.usage) { animation: enter-fade var(--enter-duration) var(--enter-ease); }
+
+/* ---- A phone: the row scrolls sideways ---------------------------------
+   Nothing wraps and nothing is put away. Every target is 44px, the size
+   below which a thumb lands on the neighbour. No scrollbar is drawn, and
+   none takes room where a browser draws classic ones (Windows): a bar that
+   grew by a scrollbar's height would move the page under it. */
+.actionbar.is-scrolling {
+  --actionbar-h: 45px;
+  gap: 0;
+  padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+.actionbar.is-scrolling .actionbar-row {
+  gap: 0;
+  padding: 0 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.actionbar.is-scrolling .actionbar-row::-webkit-scrollbar { display: none; }
+
+.actionbar.is-scrolling .actionbar-item > :is(.icon-btn, .gitp-toggle, .orch-toggle),
+.actionbar.is-scrolling .actionbar-item > .chat-task > .chat-task-action {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 10px;
+}
+
+.actionbar.is-scrolling > .usage { display: flex; align-self: stretch; }
+.actionbar.is-scrolling > .usage > .usage-btn { height: 44px; min-width: 44px; padding: 0 10px; }
+
+/* The edge that is cut fades into the bar, so a button sliced by it reads
+   as "there is more this way", not as a broken button. Drawn over the row,
+   never as a mask on it: a mask would also cut the panel a button opens. */
+.actionbar-scroll::before,
+.actionbar-scroll::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease-out;
+}
+.actionbar-scroll::before { left: 0; background: linear-gradient(to right, var(--actionbar-bg), transparent); }
+.actionbar-scroll::after { right: 0; background: linear-gradient(to left, var(--actionbar-bg), transparent); }
+.actionbar-scroll[data-cut~="start"]::before,
+.actionbar-scroll[data-cut~="end"]::after { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .actionbar.gate-entering > :not(.usage) { animation: none; }
+  .actionbar-scroll::before,
+  .actionbar-scroll::after,
+  .actionbar .actionbar-item > :is(.icon-btn, .gitp-toggle, .orch-toggle),
+  .actionbar .actionbar-item > .chat-task > .chat-task-action,
+  .actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger { transition: none; }
+}
+
+/* On a phone the workspace column dissolves and the chat list is ordered
+   between the bars and the body (styles.css, `.shell-main`). */
+@media (max-width: 859.98px) {
+  .shell-main > .actionbar { order: 0; }
+}

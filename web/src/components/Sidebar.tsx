@@ -13,7 +13,6 @@ import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
 } from "../lib/chatFilter";
 import { workerArchiveChatList, workerArchiveDisabledReason } from "../lib/workerArchive";
-import { INITIAL_MOBILE_MENU_SCROLL, nextMobileMenuScroll } from "../lib/mobileMenuScroll";
 import "./ChatWorkflowBar.css";
 import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
@@ -154,10 +153,8 @@ export function Sidebar({
   const [showArchived, setShowArchived] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
-  const [menuScroll, setMenuScroll] = useState(INITIAL_MOBILE_MENU_SCROLL);
   const personaOf = useContext(ChatPersonaContext);
   const pendingView = usePendingActions();
-  const toolbar = useRef<HTMLDivElement | null>(null);
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdStart = useRef({ x: 0, y: 0 });
   const held = useRef(false);
@@ -530,23 +527,11 @@ export function Sidebar({
 
   return (
     <nav className={`sidebar task-sidebar${identity === "settled" ? "" : ` ${entryClass(identity)}`}`} aria-label="Chats">
-      <div className="task-chat-scroll" onScroll={(event) => {
-        const scroller = event.currentTarget;
-        const preserve = !!toolbar.current?.contains(document.activeElement);
-        const reading = {
-          top: scroller.scrollTop,
-          range: scroller.scrollHeight - scroller.clientHeight,
-          menuHeight: toolbar.current?.offsetHeight ?? 0,
-          preserve,
-        };
-        setMenuScroll((state) => nextMobileMenuScroll(state, reading));
-      }}>
-        <div
-          ref={toolbar}
-          id="chats-navigation"
-          className={`sidebar-toolbar${menuScroll.floating ? " is-floating" : ""}${menuScroll.hidden ? " is-hidden" : ""}`}
-          onFocusCapture={() => setMenuScroll((state) => ({ ...state, hidden: false, direction: null, travel: 0 }))}
-        >
+      {/* On a phone this scrolls and the places menu is the first thing in it:
+          it leaves with the list and is back only at the top. On a desktop the
+          menu stays put and the list under it scrolls. */}
+      <div className="task-chat-scroll">
+        <div id="chats-navigation" className="sidebar-toolbar">
           {/* The column is the full height of the window, so its first row sits
               level with the top bar beside it and carries the name of the app —
               the one place it does. The top bar beside it names the page. */}

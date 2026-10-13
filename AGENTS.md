@@ -859,6 +859,86 @@ handover-cards-namecard.html` is the mock they were built from.
   (`awayFromWarm`). Green and teal are not avoided: too few colours would be
   left to tell agents apart.
 
+### The chrome above a page is three rows
+
+The top bar names the page and nothing else. What can be done about the
+page is a row of its own under it, and on a desktop plan usage is a third
+(`App.tsx`, after `<header className="topbar">`). 860px decides phone
+against desktop (`lib/media` `MOBILE`), never the operating system: a
+narrow Windows window gets the phone's layout.
+
+- **The top bar** (48px): the project, the title and the status. A run's
+  title may wrap to two lines there. No action is in it. Two things are
+  still at its end, both on a phone only: the way back from the chat list
+  (`Return to chat`), and the usage number on a page that has no action bar.
+- **The action bar** (`components/ActionBar`, 36px; 45px on a phone): every
+  action for what is on screen, each a button with an icon and a short word
+  (`Tasks`, `Preview`, `Git`, `Focus`, `New task`, `Details`, `Agents`,
+  `Pinned`, `Full width`, `Run`, `Reload`, `Copy ID`, `Complete`, `Delete`),
+  in that order. The word is short and stays the same; the sentence is the
+  button's name and tooltip (`Complete this chat`), and a button's result is
+  its icon and name, never a longer word (`Copy ID` does not become `Chat ID
+  copied` in the row). A page's own buttons (`WorkspaceHeader`'s `actions`)
+  are drawn at its start on a desktop.
+  - **Adding a button is one line** in `App.tsx`'s `barActions`:
+    `act(id, keep, node)`. `keep` is how long it stays as a desktop narrows.
+  - **A desktop measures; a phone scrolls.** On a desktop what does not fit
+    goes behind More, the lowest `keep` first (`lib/actionBar.overflowing`),
+    and what waits on the person behind More is counted on More
+    (`attention`, which is how a plan waiting in a put-away Tasks column is
+    never hidden twice). A button behind More is mounted only while More is
+    open, so a control that polls exists once; what it measured when it
+    left decides whether it has room to come back. On a phone nothing is
+    put away: the row scrolls sideways (`overscroll-behavior-x: contain`),
+    every target is 44px, and the edge that is cut fades
+    (`actionBar.cutEdges`). The fade is drawn over the row, never as a mask
+    on it: a mask would also cut the panel a button opens.
+  - **Its height never changes.** One line, `white-space: nowrap`, and no
+    scrollbar that takes room (`scrollbar-width: none` and the WebKit rule:
+    a Windows browser draws classic ones). Widths are measured, never
+    assumed from a font: a wider fallback font moves buttons behind More.
+    The bar reads layout when a size changes (`ResizeObserver`), never on
+    every render.
+  - **It is there before its buttons are.** On a chat's page the bar is
+    drawn from the first paint (`reserved`), its buttons out of sight until
+    the project list answers (the same gate the top bar's actions had), so
+    a button or a count that arrives moves nothing under the bar. A page
+    with no actions draws no bar (the sheet's `:has`). What is left of a
+    cold open's layout shift inside the bar is a button sliding along its
+    row when Tasks or a count arrives beside it (0.006 of 0.013 at 1280,
+    0.0015 at 390; `scripts/test-top-chrome.mjs` prints it).
+  - **A panel a button opens is placed by the window, not by the row.** The
+    row clips on a phone and More's list clips on a desktop, so `Details`
+    opens a panel fixed to the window, under its button and inside the
+    window's width (`ChatTaskBar.panelPlace`), placed at the press: placed
+    after it is drawn, it is seen for a frame where it is not.
+- **The usage row** (`UsageRow`, 26px, desktop only): every window the
+  host's `usage_summary` reports, each a short label, a small bar and the
+  percent (`lib/usageWindows.usageCells`: `Claude 5h`, `Claude week`, `Opus
+  week`, `Codex week`, a Codex five-hour window when it is reported). Calm
+  is grey, the warning colour from 60%, hot from 85%. An agent the host
+  cannot read is its name, a dash and the host's note in the tooltip; a
+  last good reading shown after a failed ask is faded and says `last
+  known`. Antigravity has no limits and is nowhere on a desktop. The reset
+  time is in each window's tooltip, and the whole row is one button that
+  opens the full breakdown, so it is never behind a hover alone. Too narrow
+  for its windows, the row scrolls sideways and fades its cut end; it never
+  wraps. A phone keeps the one number (`Usage`), at the end of its action
+  bar.
+- **One reader of usage, whichever surface draws it** (`lib/usageFeed`):
+  one timer and one clock for the rate limit, outside any component,
+  because the Claude endpoint 429s per account. The first surface asks
+  outright; one that takes another's place (the window crossed 860px) asks
+  under the limit. A failed ask keeps the last good reading.
+
+**A phone's chat list has its places menu at the top and nowhere else.**
+The menu (New conversation … Settings) is the first thing in the list's
+scroller: it leaves with the list and is reached again by scrolling to the
+top, or by the keyboard, whose focus scrolls it into view the native way.
+It used to come back over the rows on every upward scroll
+(`lib/mobileMenuScroll`, removed). On a desktop the menu stays put above
+the list and only the list scrolls, as before.
+
 ### The rows above the composer are one group
 
 Four things report above the composer and ask nothing: the chat's folder is
@@ -1233,8 +1313,9 @@ message starts it again and takes the tick away.
   the wrap-up turn is in the transcript, the chat is simply not ticked, and
   the person ticks it by hand or completes it again.
 - **The page mirrors, and decides nothing** (`lib/chatComplete`,
-  `lib/useChatCompletions`). The action is in the chat's own menu beside Copy
-  and Delete, and is not drawn for a worker's chat, a front desk or a seat.
+  `lib/useChatCompletions`). The action is a button of the chat's action bar
+  (`Complete`, between `Copy ID` and `Delete`), and is not drawn for a
+  worker's chat, a front desk or a seat.
   The confirm (`CompleteChatConfirm`) is a decision surface: the decision
   colour, one line of what will happen, the host's preview as label and
   value, and the steps behind the one disclosure every decision card has
@@ -1581,7 +1662,7 @@ time it was listed (CLS 0.004).
 chat has a run by its first paint (a coordinating chat opened cold for the
 first time in a browser, on a host that does not send `coordinatesRun`, or
 one that sends it only with the chat list's answer), the column the ledger
-then brings starts put away, the state the top bar's Tasks button already
+then brings starts put away, the state the action bar's Tasks button already
 has: the button arrives with its counts and what waits on the person, the
 line above the composer says what the run is doing, and the person opens
 the column (CLS 0.003, from 0.26). Only that one paint is held to: leaving

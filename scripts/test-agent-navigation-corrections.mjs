@@ -203,9 +203,8 @@ try {
   await page.goto(`${base}#/p/octiqflow/c/worker-current`, { waitUntil: "domcontentloaded" });
   await page.locator(".main").getByText("Navigation correction is ready for review.", { exact: true }).waitFor();
 
-  // The real top-bar overflow owns Task details; no Running/Unverified chip is
-  // restored to the navbar itself.
-  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  // The action bar owns Task details; no Running/Unverified chip is restored
+  // to the navbar itself.
   await page.getByRole("button", { name: "Task details", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Task and workspace", exact: true });
   await details.waitFor();

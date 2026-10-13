@@ -44,6 +44,7 @@ export function FullscreenButton({
           <path d="M3 16h3a2 2 0 0 1 2 2v3" />
         </g>
       </svg>
+      <span className="topbar-action-label">Full width</span>
     </button>
   );
 }

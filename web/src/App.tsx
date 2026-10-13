@@ -25,6 +25,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
@@ -164,7 +165,7 @@ import { AgentRosterContext, ChatPersonaContext } from "./lib/agentRoster";
 /** Outside agents mode nothing is drawn as a registered agent. */
 const NO_ROSTER: readonly TeamAgent[] = [];
 import { savedThemeId } from "./lib/themeStore";
-import { Usage } from "./components/Usage";
+import { Usage, UsageRow } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { OrchestrationPanel } from "./components/OrchestrationPanel";
 import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
@@ -204,7 +205,7 @@ import { chatKindOf, completeAction, completingIds, completionLine, isWrapUpTurn
 import { useChatCompletions } from "./lib/useChatCompletions";
 import { useConfirm } from "./components/Confirm";
 import { CopyChatIdButton } from "./components/CopyChatIdButton";
-import { TopbarActionLayout } from "./components/TopbarActionsMenu";
+import { ActionBar, type BarAction } from "./components/ActionBar";
 import { ChatTaskBar } from "./components/ChatTaskBar";
 import { BesideBar, BesideMainHead, TaskChatPane } from "./components/TaskChatPane";
 import { besideFor, besideTask, readBeside, roomBeside, type Beside } from "./lib/chatBeside";
@@ -5108,88 +5109,95 @@ export default function App() {
     setAgentsDashboard(page === "agents");
   };
 
-  // The bar keeps only the live workspace instruments visible. Everything
-  // else has one stable home in the overflow at every width.
-  const topbarDirectActions = !mainPage ? (
-    <>
-      {/* Here, not in the overflow: a plan waiting in the hidden column rides
-          on this button, and a closed menu would hide it again. */}
-      {workflowSplit && <TasksButton tasks={taskCounts.tasks} decisions={taskCounts.decisions}
-        open={!columnShut} onToggle={() => {
-          // Opening it is the person's word, for a column that was only
-          // held shut for this paint as for one they put away themselves.
-          if (columnShut) setLateOpened(conversationId);
-          if (!columnShut || tasksShut) showTasks(columnShut);
-        }} />}
-      {conversationId && <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />}
-      {sessionProject && <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />}
-      {project && !unavailableChat && <FocusModeButton onClick={enterFocus} />}
-    </>
-  ) : null;
-
-  const topbarOverflowActions = (
-    <>
-      {!agentsMode && <button
-        className="icon-btn new-chat"
-        type="button"
-        aria-label="Start new task"
-        title="Start new task"
-        onClick={newChat}
-      >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-        <span className="topbar-action-label">New task</span>
-      </button>}
-
-      {!mainPage && <>
-        {conversationId && <ChatTaskBar
-          action
-          chatId={conversationId}
-          connected={conn === "open"}
-          context={panelContext}
-          busy={chat.busy && !cutOff}
-          waiting={
-            (questions[conversationId]?.length ?? 0) +
-              (asks[conversationId]?.length ?? 0) +
-              (accessRequests[conversationId]?.length ?? 0) +
-              // A refusal the agent carried on past waits on nobody.
-              safetySplit.cards.length >
-            0 ||
-            // A plan to approve for a run this chat coordinates, too.
-            !!waitingHere
-          }
-        />}
-        <RailButton count={chat.agents.length} open={!railShut && !previewVisible}
-          onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }} />
-        <FilesButton count={sessionFiles.length} open={filesOpen && !previewVisible}
-          onToggle={() => { previews.setOpen(false); showFiles(previewVisible || !filesOpen); }} />
-        {wide && isMobile && <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />}
-        {!agentsMode && !workerChat && <button className={`orch-toggle${workflowView === "run" && workflowVisible ? " is-on" : ""}`} type="button"
-          title={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"}
-          aria-label={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"} onClick={() => {
-          setRunOpened((before) => ({ ...before, [workflowKey]: true }));
-          showWorkflowView("run");
-          showTasks(true);
-        }}><span className="topbar-action-label">Run</span></button>}
-      </>}
-      {/* Only drawn for a home-screen app, which has no browser chrome. */}
-      <InstalledReload />
-      {!mainPage && conversationId && <CopyChatIdButton chatId={conversationId} />}
-      {!mainPage && conversationId && <CompleteChatButton
-        action={completeAction({
-          kind: chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) }),
-          completing: completingChats.has(conversationId),
-          connected: conn === "open",
-        })}
-        onClick={() => setCompleteAsk(conversationId)} />}
-      {!mainPage && conversationId && !workerChat && <>
-        <span className="topbar-actions-separator" role="separator" />
-        <ChatDeleteButton deleting={deleting.has(conversationId)} disabled={leaving.has(conversationId)}
-          deleteMs={UNDO_MS} onDelete={() => deleteConversation(conversationId)} />
-      </>}
-    </>
-  );
+  // Every action for what is on screen, in the bar's order (components/
+  // ActionBar). A new button is one more line here: `keep` is how long it
+  // stays in the row as a desktop window narrows, the lowest behind More first.
+  const act = (id: string, keep: number, node: ReactNode, more: Partial<BarAction> = {}): BarAction => ({ id, keep, node, ...more });
+  const onChat = !mainPage && !showingProjects;
+  const completeChatAction = completeAction({
+    kind: conversationId
+      ? chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) })
+      : "worker",
+    completing: !!conversationId && completingChats.has(conversationId),
+    connected: conn === "open",
+  });
+  const barActions: BarAction[] = showingProjects ? [] : [
+    // A plan waiting in the column that was put away rides on this button,
+    // and on More when the button is behind it.
+    onChat && workflowSplit && act("tasks", 100, <TasksButton tasks={taskCounts.tasks} decisions={taskCounts.decisions}
+      open={!columnShut} onToggle={() => {
+        // Opening it is the person's word, for a column that was only
+        // held shut for this paint as for one they put away themselves.
+        if (columnShut) setLateOpened(conversationId);
+        if (!columnShut || tasksShut) showTasks(columnShut);
+      }} />, { attention: columnShut ? taskCounts.decisions : 0 }),
+    onChat && conversationId && act("preview", 90, <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />),
+    onChat && sessionProject && act("git", 85, <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />),
+    onChat && project && !unavailableChat && act("focus", 80, <FocusModeButton onClick={enterFocus} />),
+    !agentsMode && act("new", 70, <button
+      className="icon-btn new-chat"
+      type="button"
+      aria-label="Start new task"
+      title="Start new task"
+      onClick={newChat}
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      <span className="topbar-action-label">New task</span>
+    </button>),
+    onChat && conversationId && act("details", 60, <ChatTaskBar
+      action
+      chatId={conversationId}
+      connected={conn === "open"}
+      context={panelContext}
+      busy={chat.busy && !cutOff}
+      waiting={
+        (questions[conversationId]?.length ?? 0) +
+          (asks[conversationId]?.length ?? 0) +
+          (accessRequests[conversationId]?.length ?? 0) +
+          // A refusal the agent carried on past waits on nobody.
+          safetySplit.cards.length >
+        0 ||
+        // A plan to approve for a run this chat coordinates, too.
+        !!waitingHere
+      }
+    />),
+    onChat && chat.agents.length > 0 && act("agents", 66, <RailButton count={chat.agents.length} open={!railShut && !previewVisible}
+      onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }} />),
+    onChat && sessionFiles.length > 0 && act("pinned", 64, <FilesButton count={sessionFiles.length} open={filesOpen && !previewVisible}
+      onToggle={() => { previews.setOpen(false); showFiles(previewVisible || !filesOpen); }} />),
+    onChat && wide && isMobile && act("width", 30, <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />),
+    onChat && !agentsMode && !workerChat && act("run", 68, <button className={`orch-toggle${workflowView === "run" && workflowVisible ? " is-on" : ""}`} type="button"
+      title={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"}
+      aria-label={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"} onClick={() => {
+      setRunOpened((before) => ({ ...before, [workflowKey]: true }));
+      showWorkflowView("run");
+      showTasks(true);
+    }}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="5.5" cy="12" r="2.2" /><circle cx="18.5" cy="6" r="2.2" /><circle cx="18.5" cy="18" r="2.2" />
+        <path d="M7.7 12h3.1a2.2 2.2 0 0 0 2.2-2.2V8.2A2.2 2.2 0 0 1 15.2 6h1.1M7.7 12h3.1a2.2 2.2 0 0 1 2.2 2.2v1.6a2.2 2.2 0 0 0 2.2 2.2h1.1" />
+      </svg>
+      <span className="topbar-action-label">Run</span>
+    </button>),
+    // Only drawn for a home-screen app, which has no browser chrome.
+    push.installed() && act("reload", 40, <InstalledReload />),
+    onChat && conversationId && act("copy-id", 20, <CopyChatIdButton chatId={conversationId} />),
+    onChat && conversationId && completeChatAction.shown && act("complete", 50, <CompleteChatButton
+      action={completeChatAction}
+      onClick={() => setCompleteAsk(conversationId)} />),
+    onChat && conversationId && !workerChat && act("delete", 10, <ChatDeleteButton deleting={deleting.has(conversationId)} disabled={leaving.has(conversationId)}
+      deleteMs={UNDO_MS} onDelete={() => deleteConversation(conversationId)} />, { separated: true }),
+  ].filter((action): action is BarAction => !!action);
+  // A chat's page has actions once its facts are in (which project, which
+  // chat), so its bar is there before them and nothing moves when they
+  // come. Any other page draws a bar only for buttons it has.
+  const barHeld = onChat && (barActions.length > 0 || !workspacesLoaded || !!arrivingChat);
+  // A phone's one usage number ends the bar; a phone page with no bar keeps
+  // it at the end of the top bar, where it was.
+  const usageInBar = isMobile && (barHeld || barActions.length > 0);
+  const usageEntry = <Usage antigravity={installed?.includes("antigravity") ?? false} />;
 
   // What waits on the person in this chat's own transcript: its cards and
   // its workers', as the one reading has them.
@@ -5339,8 +5347,7 @@ export default function App() {
           <ConnectionStatus state={conn} />
         </div>
 
-        <div className={`topbar-actions ${entryClass(identity)}`}>
-          {!isMobile && <div className="topbar-page-actions" ref={setActionsSlot} hidden={!mainPage} />}
+        {(showingProjects || (isMobile && !usageInBar)) && <div className="topbar-actions">
           {showingProjects ? (
             <button className="projects-return" type="button"
               aria-label="Return to chat"
@@ -5351,13 +5358,23 @@ export default function App() {
                 <path d="M5 12h14m-6-6 6 6-6 6" />
               </svg>
             </button>
-          ) : <TopbarActionLayout directActions={topbarDirectActions} overflowActions={topbarOverflowActions} />}
-          {/* Plan usage, at every width: one small number that opens the full
-              breakdown. Mounted once, outside the actions menu, because it
-              polls a rate-limited endpoint and a second copy would double it. */}
-          {!showingProjects && <Usage antigravity={installed?.includes("antigravity") ?? false} />}
-        </div>
+          ) : usageEntry}
+        </div>}
       </header>
+
+      {/* The top bar names the page; its actions are a row of their own under
+          it, and on a desktop plan usage is a third. Both keep one height
+          from the first paint. Usage is mounted once whichever row draws it:
+          it polls a rate-limited endpoint (`lib/usageFeed`). */}
+      {!showingProjects && <ActionBar
+        className={entryClass(identity)}
+        actions={barActions}
+        scrolls={isMobile}
+        reserved={barHeld}
+        lead={!isMobile && <div className="topbar-page-actions" ref={setActionsSlot} hidden={!mainPage} />}
+        end={usageInBar ? usageEntry : null}
+      />}
+      {!isMobile && <UsageRow />}
 
       {/* `id` so the file panel can render INTO this row from where its state
           lives, which is above the whole app — see components/OpenFile. It has

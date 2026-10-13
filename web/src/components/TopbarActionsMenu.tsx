@@ -1,15 +1,15 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
-/** One top-bar disclosure owns every secondary action at every width. The
- * actual controls stay mounted only while the menu is open, so polling
- * controls still exist once. */
+/** More: the one disclosure for the actions a desktop's action bar has no
+ * room for (components/ActionBar decides which). The controls in it stay
+ * mounted only while it is open, so a control that polls exists once. */
 export function TopbarActionsMenu({
   children,
   attentionCount = 0,
   initiallyOpen = false,
 }: {
   children: ReactNode;
-  /** Actionable events stay visible even while the phone menu is closed. */
+  /** What waits on the person behind it stays counted while it is shut. */
   attentionCount?: number;
   /** Static-render seam for the menu's structure test. */
   initiallyOpen?: boolean;
@@ -44,11 +44,11 @@ export function TopbarActionsMenu({
         className="icon-btn mobile-actions-trigger"
         type="button"
         aria-label={attentionCount > 0
-          ? `Chat actions, ${attentionCount} ${attentionCount === 1 ? "item needs" : "items need"} attention`
-          : "Chat actions"}
+          ? `More actions, ${attentionCount} ${attentionCount === 1 ? "item needs" : "items need"} attention`
+          : "More actions"}
         aria-expanded={open}
         aria-controls={panelId}
-        title="Chat actions"
+        title="More actions"
         onClick={() => setOpen((value) => !value)}
       >
         <svg
@@ -62,6 +62,7 @@ export function TopbarActionsMenu({
           <circle cx="12" cy="12" r="1.7" />
           <circle cx="19" cy="12" r="1.7" />
         </svg>
+        <span className="topbar-action-label">More</span>
         {attentionCount > 0 && <span className="mobile-actions-attention" aria-hidden="true">{attentionCount}</span>}
       </button>
 
@@ -70,7 +71,7 @@ export function TopbarActionsMenu({
           id={panelId}
           className="mobile-actions-panel"
           role="group"
-          aria-label="Chat actions"
+          aria-label="More actions"
           onClick={(event) => {
             const target = event.target instanceof Element ? event.target : null;
             // Attention owns a second disclosure. Let its trigger open that;
@@ -84,20 +85,4 @@ export function TopbarActionsMenu({
       )}
     </div>
   );
-}
-
-/** Keep the small set of live workspace instruments visible, followed by one
- * disclosure for everything else. This seam also makes the hierarchy testable
- * without mounting the application shell. */
-export function TopbarActionLayout({
-  directActions,
-  overflowActions,
-  initiallyOpen = false,
-}: {
-  directActions: ReactNode;
-  overflowActions: ReactNode;
-  /** Static-render seam for the layout test. */
-  initiallyOpen?: boolean;
-}) {
-  return <>{directActions}<TopbarActionsMenu initiallyOpen={initiallyOpen}>{overflowActions}</TopbarActionsMenu></>;
 }

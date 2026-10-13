@@ -9,7 +9,7 @@
 // and caches for a few seconds, so several open tabs asking at once cost one
 // `git status`. Refreshes are tied to things that actually change the answer:
 // the chat opening, a turn ending, git moving under it, and the panel opening.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { singleFlight, withTrailingRun } from "../lib/singleFlight";
 import {
@@ -186,6 +186,19 @@ export function ChatTaskBar({
   );
 }
 
+const PANEL_WIDTH = 380;
+const PANEL_EDGE = 12;
+
+/** Where the action's panel goes: under its button, and wholly inside a
+ *  window `viewport` wide. Its width is the sheet's `min(380px, 100vw - 24px)`. */
+export function panelPlace(button: { left: number; bottom: number }, viewport: number): { top: number; left: number } {
+  const width = Math.min(PANEL_WIDTH, viewport - 2 * PANEL_EDGE);
+  return {
+    top: Math.round(button.bottom + 6),
+    left: Math.round(Math.max(PANEL_EDGE, Math.min(button.left, viewport - width - PANEL_EDGE))),
+  };
+}
+
 /** Pure view, so every state it can be in is a render and a string — there is
  *  no live chat, repository or release to arrange in a test. */
 export function ChatTaskBarView({
@@ -222,15 +235,37 @@ export function ChatTaskBarView({
   const branch = status?.workspace?.branch ?? "";
   // The action button says nothing that is waited for: only the line does.
   const gate = entryClass(useEntry(action || ready, scope));
+  // The action's panel is fixed to the window, because its button can sit
+  // inside something that clips (More's list, a phone's scrolling row): it
+  // opens just under the button and is kept inside the window's width.
+  const root = useRef<HTMLDivElement>(null);
+  const place = useCallback(() => {
+    const element = root.current;
+    if (!element) return;
+    const at = panelPlace(element.getBoundingClientRect(), window.innerWidth);
+    element.style.setProperty("--chat-task-top", `${at.top}px`);
+    element.style.setProperty("--chat-task-left", `${at.left}px`);
+  }, []);
+  useLayoutEffect(() => {
+    if (!open || !action) return;
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open, action, place]);
   return (
-    <div className={`chat-task${action ? " is-action" : ""}`}>
+    <div ref={root} className={`chat-task${action ? " is-action" : ""}`}>
       <button
         type="button"
         className={`chat-task-trigger enter-gated${action ? " chat-task-action" : ""}${gate ? ` ${gate}` : ""}`}
         aria-expanded={open}
         aria-label={action ? "Task details" : `Task and workspace — ${phase.label}${branch ? ` on ${branch}` : ""}`}
         title={action ? "Task details" : `${phase.label}${branch ? ` · ${branch}` : ""} — ${locationOf(status?.workspace)}`}
-        onClick={onToggle}
+        onClick={() => {
+          // Placed at the press, before the panel exists: placed after it
+          // is drawn, it would be seen for a frame where it is not.
+          if (action && !open) place();
+          onToggle();
+        }}
       >
         {action ? (
           <>
@@ -238,7 +273,7 @@ export function ChatTaskBarView({
               <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z" />
               <path d="M8 9h8M8 13h8M8 17h5" />
             </svg>
-            <span>Task details</span>
+            <span className="topbar-action-label">Details</span>
           </>
         ) : (
           <>

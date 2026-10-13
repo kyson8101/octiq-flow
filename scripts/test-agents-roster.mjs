@@ -163,10 +163,8 @@ try {
   const places = page.locator(".sidebar-places");
   const labels = (await places.locator(".sidebar-place span").allInnerTexts()).map((text) => text.trim());
   assert.deepEqual(labels.slice(-3), ["Agents", "Pull requests", "Settings"], `sidebar order: ${labels}`);
-  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   assert.equal(await page.getByRole("button", { name: "Pull requests", exact: true }).count(), 1,
-    "no Pull requests item left in the top bar's menu");
-  await page.keyboard.press("Escape");
+    "no Pull requests item left among the page's actions");
   await places.getByRole("button", { name: "Pull requests", exact: true }).click();
   await page.getByRole("region", { name: "Pull requests dashboard" }).waitFor();
   assert.equal(await places.getByRole("button", { name: "Pull requests", exact: true }).getAttribute("aria-current"), "page");

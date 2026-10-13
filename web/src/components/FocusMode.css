@@ -13,6 +13,8 @@
 
 .app.focus-mode > .sidebar,
 .app.focus-mode .shell-main > .topbar,
+.app.focus-mode .shell-main > .actionbar,
+.app.focus-mode .shell-main > .usage-strip,
 .app.focus-mode .shell-main > .body > :not(.main),
 .app.focus-mode .main .drawer,
 .app.focus-mode .chat-main > .focus,

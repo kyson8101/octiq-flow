@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 // backend, and the socket opens itself the moment it is imported.
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn(), on: vi.fn(() => () => {}) } }));
 
-import { ChatTaskBarView, SETTLED_AFTER_MS } from "./ChatTaskBar";
+import { ChatTaskBarView, SETTLED_AFTER_MS, panelPlace } from "./ChatTaskBar";
 import type { TaskStatus } from "../lib/chatTask";
 import { singleFlight, withTrailingRun } from "../lib/singleFlight";
 import sheet from "./ChatTaskBar.css?raw";
@@ -69,14 +69,26 @@ describe("the status line above the chat", () => {
     expect(html).not.toContain("/repos/octiq-flow");
   });
 
-  it("offers the same panel behind a stable Task details overflow action", () => {
+  it("offers the same panel behind a stable Details action of the action bar", () => {
     const closed = bar({ status: status(), open: false, now: NOW, action: true, onToggle: () => {} });
     expect(closed).toContain('aria-label="Task details"');
+    expect(closed).toContain('<span class="topbar-action-label">Details</span>');
     expect(closed).not.toContain("To commit");
     expect(closed).not.toContain("feature/chat-context");
     const open = bar({ status: status(), open: true, now: NOW, action: true, onToggle: () => {} });
     expect(open).toContain("Task &amp; workspace");
     expect(open).toContain("/trees/octiq-flow/feature/chat-context");
+  });
+
+  it("opens the action's panel under its button and wholly inside the window", () => {
+    // Room to the right: under the button, at its left edge.
+    expect(panelPlace({ left: 600, bottom: 84 }, 1280)).toEqual({ top: 90, left: 600 });
+    // Near the right edge the panel is pulled back in, 12px from the edge.
+    expect(panelPlace({ left: 800, bottom: 84 }, 900)).toEqual({ top: 90, left: 508 });
+    // A phone: the panel is the window's width less its margins.
+    expect(panelPlace({ left: 210, bottom: 93 }, 390)).toEqual({ top: 99, left: 12 });
+    // A button scrolled off the start never takes the panel with it.
+    expect(panelPlace({ left: -80, bottom: 93 }, 390).left).toBe(12);
   });
 
   it("marks a live turn, and only a live turn, with the accent", () => {

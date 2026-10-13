@@ -1,44 +1,24 @@
-// How much of your plan is gone, for both agents, in the top right.
+// How much of your plan is gone, for both agents.
 //
-// One small entry in the top bar at every width: a gauge and the single
-// fullest window across both agents. It used to be two labelled meters that
-// only fitted the bar above 1500px and otherwise lived in the sidebar's foot,
-// costing the chat list a row. The full breakdown is one hover or tap away.
+// Two surfaces over one reading (`lib/usageFeed`, which owns the polling and
+// its rate limit, so mounting either costs no second call):
 //
-// The backend (usage_limits.rs, `usage_summary`) does all the real work and both
-// the desktop app and this share it: Claude's numbers come from its OAuth usage
-// endpoint, Codex's from the last rate-limit snapshot written into its session
-// rollout file. Both arrive already normalised to
-// `{ available, fiveHour: {percent, resetsAt}, weekly: {…}, plan, note }`.
-//
-// Two rules carried over from the desktop bar, both learned the hard way:
-//
-//   * Refreshes are RATE LIMITED. The Claude endpoint 429s per account, so a
-//     burst of focus events has to collapse into one call.
-//   * A failed refresh falls back to the LAST GOOD value, marked stale, rather
-//     than blanking the meters. A number from four minutes ago is worth more
-//     than a dash, and a 429 is the moment you most want to see where you are.
-import { useCallback, useEffect, useRef, useState } from "react";
-import { bridge } from "../lib/bridge";
+//   * `Usage`, a phone's one small entry at the end of the action bar: a gauge
+//     and the single fullest window across both agents. A hover or a tap
+//     opens the full breakdown.
+//   * `UsageRow`, a desktop's own row under the action bar: every window the
+//     host reports, each a label, a small bar and the percent. Its reset
+//     time is in the tooltip, and the row is one button that opens the same
+//     breakdown, so nothing is reached by hover alone.
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { cutEdges } from "../lib/actionBar";
 import { RollingText } from "./RollingNumber";
 import { entryClass, useEntry } from "../lib/useArrival";
-
-type Window = { percent: number; resetsAt?: number | null };
-type Provider = {
-  available: boolean;
-  fiveHour?: Window | null;
-  weekly?: Window | null;
-  models?: { name: string; percent: number; resetsAt?: number | null }[];
-  plan?: string;
-  note?: string;
-};
-type Summary = { claude: Provider; codex: Provider };
-
-const REFRESH_MS = 60_000;
-/** No event-driven refresh within this of the last one. The timer and an
- *  explicit tap bypass it — those are deliberate, spaced calls. */
-const MIN_INTERVAL_MS = 15_000;
-const CACHE_KEY = "octiq.v2.usage";
+import { refreshUsage, useUsageFeed, type UsageFeed } from "../lib/usageFeed";
+import {
+  cellTitle, percentText, resetIn, severity, usageCells, usageLabel, usageRowLabel, usageSummary,
+  type UsageProvider, type UsageWindow,
+} from "../lib/usageWindows";
 
 /** How long the popup waits before closing after the pointer leaves. The gap
  *  between the button and the popup belongs to neither of them, so crossing it
@@ -46,59 +26,15 @@ const CACHE_KEY = "octiq.v2.usage";
  *  read. Coming back inside this cancels the close. */
 const CLOSE_MS = 180;
 
-/** Percent used at which the meter stops being calm, and at which it is hot. */
-const WARN_AT = 60;
-const DANGER_AT = 85;
-
-type Cache = { claude: Provider | null; codex: Provider | null };
-
-function loadCache(): Cache {
-  try {
-    const v = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-    if (!v || typeof v !== "object") return { claude: null, codex: null };
-    // Only good readings are worth restoring. A failure written by an older
-    // build would otherwise come back as a permanent excuse.
-    const good = (p: Provider | null) => (p?.available ? p : null);
-    return { claude: good(v.claude), codex: good(v.codex) };
-  } catch {
-    return { claude: null, codex: null };
-  }
-}
-
-function severity(percent: number): string {
-  if (percent >= DANGER_AT) return "is-danger";
-  if (percent >= WARN_AT) return "is-warn";
-  return "";
-}
-
-/** "resets in 2h 40m" — the useful half of a reset time. Past its moment it
- *  reads as "resetting", since the next poll will say so properly. */
-function resetIn(resetsAt?: number | null): string {
-  if (!resetsAt) return "";
-  const seconds = resetsAt - Date.now() / 1000;
-  if (seconds <= 0) return "resetting";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  if (hours >= 24) return `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
-  if (hours) return `resets in ${hours}h ${minutes}m`;
-  return `resets in ${minutes}m`;
-}
-
 export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
-  const [data, setData] = useState<Cache>(loadCache);
-  const [stale, setStale] = useState<{ claude: boolean; codex: boolean }>({
-    claude: true,
-    codex: true,
-  });
+  const feed = useUsageFeed();
+  const { data, stale, asked } = feed;
   // Shut, showing because the pointer is over it, or held open by a click.
   // The difference matters on the way out: a hover closes itself when the
   // pointer leaves, a pinned one waits to be dismissed, which is the only
   // behaviour a touch screen — where there is no hover at all — can use.
   const [open, setOpen] = useState<null | "hover" | "pin">(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastAt = useRef(0);
-  // Whether the first reading has come back at all, with or without numbers.
-  const [asked, setAsked] = useState(false);
   const has = !!(data.claude || data.codex);
   const entry = useEntry(has);
 
@@ -107,65 +43,6 @@ export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
     closeTimer.current = null;
   }, []);
   useEffect(() => cancelClose, [cancelClose]);
-
-  const refresh = useCallback(async (force: boolean) => {
-    if (!force && Date.now() - lastAt.current < MIN_INTERVAL_MS) return;
-    lastAt.current = Date.now();
-    try {
-      const fresh = await bridge.invoke<Summary>("usage_summary");
-      // What to show for one provider, in order of usefulness:
-      //   1. a fresh reading that worked
-      //   2. the last reading that worked — "83%, an hour ago" beats a dash,
-      //      and a 429 is exactly when you want to know where you stand
-      //   3. the fresh failure, which at least carries the reason why
-      //
-      // Only (1) is ever CACHED. Caching a failure was a bug: the stale reason
-      // then outranked every later answer and the readout froze on it.
-      const show = (a: Provider | undefined, cached: Provider | null) =>
-        a?.available ? a : cached?.available ? cached : a ?? cached ?? null;
-
-      setData((prev) => {
-        const next = {
-          claude: show(fresh?.claude, prev.claude),
-          codex: show(fresh?.codex, prev.codex),
-        };
-        try {
-          localStorage.setItem(
-            CACHE_KEY,
-            JSON.stringify({
-              claude: next.claude?.available ? next.claude : prev.claude,
-              codex: next.codex?.available ? next.codex : prev.codex,
-            }),
-          );
-        } catch {
-          /* storage blocked: the cache is best-effort */
-        }
-        return next;
-      });
-      setStale({
-        claude: !fresh?.claude?.available,
-        codex: !fresh?.codex?.available,
-      });
-    } catch {
-      setStale({ claude: true, codex: true });
-    } finally {
-      setAsked(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh(true);
-    const timer = setInterval(() => void refresh(true), REFRESH_MS);
-    // Coming back to the tab is exactly when the number on screen is oldest.
-    const onWake = () => document.visibilityState === "visible" && void refresh(false);
-    document.addEventListener("visibilitychange", onWake);
-    window.addEventListener("focus", onWake);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onWake);
-      window.removeEventListener("focus", onWake);
-    };
-  }, [refresh]);
 
   // A browser with no reading cached has nothing to show until the first one
   // lands, about a second in. Its place in the bar is held from the start, so
@@ -190,7 +67,7 @@ export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
         if (e.pointerType !== "mouse") return;
         cancelClose();
         setOpen((v) => v ?? "hover");
-        void refresh(false);
+        void refreshUsage(false);
       }}
       onPointerLeave={(e) => {
         if (e.pointerType !== "mouse") return;
@@ -211,7 +88,7 @@ export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
         onClick={() => {
           cancelClose();
           setOpen((v) => (v === "pin" ? null : "pin"));
-          void refresh(true);
+          void refreshUsage(true);
         }}
       >
         <GaugeIcon />
@@ -225,72 +102,131 @@ export function Usage({ antigravity = false }: { antigravity?: boolean } = {}) {
           {/* Only a pinned popup takes the page: a scrim under a hovering one
               would sit between the pointer and everything it is hovering. */}
           {open === "pin" && <div className="usage-scrim" onClick={() => setOpen(null)} />}
-          <div className="usage-pop" role="dialog" aria-label="Plan usage">
-            <Detail name="Claude" provider={data.claude} stale={stale.claude} />
-            <Detail name="Codex" provider={data.codex} stale={stale.codex} />
-            {/* Antigravity publishes no plan window OctiqFlow can read. Saying
-                so beats a bar that would have to be made up; its tokens per
-                turn still count wherever a chat's usage is shown. */}
-            {antigravity && (
-              <section className="usage-block">
-                <header className="usage-block-head">
-                  <span className="usage-block-name">Antigravity</span>
-                </header>
-                <div className="usage-empty">Antigravity does not report plan usage.</div>
-              </section>
-            )}
-          </div>
+          <UsagePopup feed={feed} antigravity={antigravity} />
         </>
       )}
     </div>
   );
 }
 
-/** One agent's fullest reported usage window.
- *
- *  A provider can report five-hour, weekly, and model-specific windows. Only
- *  one number fits at a glance, so show whichever percentage is highest and
- *  label its window. This is especially important for Claude, whose five-hour
- *  limit can be closer to exhausted than its weekly limit.
- *
- *  A number, not a bar. A bar has to be wide enough to read, and the colour
- *  carries "how bad is it" on its own. */
-export function barWindow(p: Provider | null): { label: string; window: Window } | null {
-  const windows: { label: string; window: Window }[] = [];
-  if (p?.fiveHour) windows.push({ label: "5h", window: p.fiveHour });
-  if (p?.weekly) windows.push({ label: "7d", window: p.weekly });
-  for (const m of p?.models ?? []) windows.push({ label: m.name, window: m });
-  if (windows.length === 0) return null;
-  return windows.reduce((highest, candidate) =>
-    candidate.window.percent > highest.window.percent ? candidate : highest,
+/** A desktop's row: every window the host reports, at a fixed height from the
+ *  first paint, so a reading that arrives or a window that appears never
+ *  moves the page. Too narrow to hold them, it scrolls sideways. */
+export function UsageRow() {
+  const feed = useUsageFeed();
+  return <UsageRowView feed={feed} onAsk={refreshUsage} />;
+}
+
+/** Pure view of the row, so every state it can be in is a render. */
+export function UsageRowView({ feed, onAsk, now = Date.now(), initiallyOpen = false }: {
+  feed: UsageFeed;
+  onAsk?: (force: boolean) => void;
+  now?: number;
+  /** Static-render seam for the row's test. */
+  initiallyOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(initiallyOpen);
+  const root = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const { data, stale, asked } = feed;
+  // Which end of the row is cut, for the fade over it: asked when the row
+  // scrolls or changes size, never on a render.
+  const edges = useCallback(() => {
+    const element = scroller.current;
+    if (!element || !root.current) return;
+    const cut = cutEdges(element.scrollLeft, element.scrollWidth, element.clientWidth);
+    if (root.current.dataset.cut !== cut) root.current.dataset.cut = cut;
+  }, []);
+  useLayoutEffect(() => {
+    edges();
+    const element = scroller.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(edges);
+    observer.observe(element);
+    if (element.firstElementChild) observer.observe(element.firstElementChild);
+    return () => observer.disconnect();
+  }, [edges, asked]);
+  // Before the first answer, with nothing cached, the row is its own height
+  // and nothing else: an agent is not called unread before it was asked.
+  const known = asked || !!(data.claude || data.codex);
+  const entry = useEntry(known);
+  const cells = known ? usageCells(data, stale) : [];
+
+  return (
+    <div
+      className={`usage-strip ${entryClass(entry)}`}
+      ref={root}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !open) return;
+        event.preventDefault();
+        setOpen(false);
+        trigger.current?.focus();
+      }}
+    >
+      <div className="usage-strip-scroll" ref={scroller} onScroll={edges}>
+        {known && <button
+          ref={trigger}
+          className="usage-strip-btn enter-gated"
+          type="button"
+          aria-label={usageRowLabel(cells, now)}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => {
+            setOpen((value) => !value);
+            onAsk?.(true);
+          }}
+        >
+          {cells.map((cell) => {
+            const level = cell.percent === null ? "" : severity(cell.percent);
+            return (
+              <span key={cell.key} className={`usage-cell${cell.stale ? " is-stale" : ""}`}
+                data-provider={cell.provider} title={cellTitle(cell, now)}>
+                <span className="usage-cell-label">{cell.label}</span>
+                {cell.percent === null ? <span className="usage-cell-none">—</span> : <>
+                  <span className={`usage-track ${level}`}>
+                    <span className="usage-fill" style={{ width: `${cell.percent}%` }} />
+                  </span>
+                  <span className={`usage-val ${level}`}>
+                    <RollingText>{`${Math.round(cell.percent)}%`}</RollingText>
+                  </span>
+                </>}
+              </span>
+            );
+          })}
+        </button>}
+      </div>
+      {open && (
+        <>
+          <div className="usage-scrim" onClick={() => setOpen(false)} />
+          {/* Antigravity has no limits to read, and is nowhere on a desktop:
+              not in the row, and not in what the row opens. */}
+          <UsagePopup feed={feed} antigravity={false} />
+        </>
+      )}
+    </div>
   );
 }
 
-const PROVIDER_NAMES = { claude: "Claude", codex: "Codex" } as const;
-
-/** The fullest window across both agents: the one number the top bar shows. */
-export function usageSummary(data: {
-  claude: Provider | null;
-  codex: Provider | null;
-}): { provider: "claude" | "codex"; label: string; percent: number } | null {
-  let best: { provider: "claude" | "codex"; label: string; percent: number } | null = null;
-  for (const provider of ["claude", "codex"] as const) {
-    const shown = barWindow(data[provider]);
-    if (!shown) continue;
-    const percent = Math.min(100, Math.max(0, shown.window.percent));
-    if (!best || percent > best.percent) best = { provider, label: shown.label, percent };
-  }
-  return best;
-}
-
-/** What the entry says to a screen reader: every agent's fullest window, not
- *  only the one number drawn. */
-export function usageLabel(data: { claude: Provider | null; codex: Provider | null }): string {
-  const parts = (["claude", "codex"] as const).flatMap((provider) => {
-    const shown = barWindow(data[provider]);
-    return shown ? [`${PROVIDER_NAMES[provider]} ${shown.label} ${Math.round(Math.min(100, Math.max(0, shown.window.percent)))}%`] : [];
-  });
-  return parts.length ? `Plan usage: ${parts.join(", ")}` : "Plan usage: no reading yet";
+/** The full breakdown: every window each agent reports, with when it resets. */
+function UsagePopup({ feed, antigravity }: { feed: UsageFeed; antigravity: boolean }) {
+  return (
+    <div className="usage-pop" role="dialog" aria-label="Plan usage">
+      <Detail name="Claude" provider={feed.data.claude} stale={feed.stale.claude} />
+      <Detail name="Codex" provider={feed.data.codex} stale={feed.stale.codex} />
+      {/* Antigravity publishes no plan window OctiqFlow can read. Saying
+          so beats a bar that would have to be made up; its tokens per
+          turn still count wherever a chat's usage is shown. */}
+      {antigravity && (
+        <section className="usage-block">
+          <header className="usage-block-head">
+            <span className="usage-block-name">Antigravity</span>
+          </header>
+          <div className="usage-empty">Antigravity does not report plan usage.</div>
+        </section>
+      )}
+    </div>
+  );
 }
 
 function GaugeIcon() {
@@ -307,7 +243,7 @@ function Detail({
   stale,
 }: {
   name: string;
-  provider: Provider | null;
+  provider: UsageProvider | null;
   stale: boolean;
 }) {
   return (
@@ -334,7 +270,7 @@ function Detail({
   );
 }
 
-function Row({ label, window }: { label: string; window?: Window | null }) {
+function Row({ label, window }: { label: string; window?: UsageWindow | null }) {
   if (!window) return null;
   const percent = Math.min(100, Math.max(0, window.percent));
   return (
@@ -344,7 +280,7 @@ function Row({ label, window }: { label: string; window?: Window | null }) {
         <span className="usage-fill" style={{ width: `${percent}%` }} />
       </span>
       <span className="usage-val">
-        <RollingText>{`${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`}</RollingText>
+        <RollingText>{percentText(percent)}</RollingText>
       </span>
       <span className="usage-reset">
         <RollingText>{resetIn(window.resetsAt)}</RollingText>
