@@ -10,9 +10,15 @@
 //! **Which chats.** Only the chat a route's own record names: a `Route`
 //! that is `Confirmed`, was a discussion, whose settings say read, and that
 //! an earlier build left and this pass has not looked at yet
-//! (`lift_settled` is not set). That record is the proof the product put
-//! the chat at read, not the person. A chat with no such record is never
+//! (`lift_settled` is not set). A chat with no such record is never
 //! touched.
+//!
+//! **What that record proves, and what it does not.** It proves the chat
+//! was opened at read by a discussion route. With the mark absent it was
+//! left by an earlier build, and that build opened every discussion at
+//! read whatever the agent was registered at. It cannot say whether the
+//! agent was itself registered at read then, and it does not say who put
+//! the chat at read since: only that it was opened there.
 //!
 //! **A record this build makes, confirms or finishes is born looked at.**
 //! Both constructors store `lift_settled`, and `prepare` sets it with the
@@ -24,11 +30,18 @@
 //! `Starting` is only flipped to `Confirmed` by `recover`, with the field
 //! as it was, and is looked at by the next start's pass.
 //!
-//! **What an earlier build's record cannot say.** That build forced read
-//! on every discussion, so a record of an agent who was registered at read
-//! then looks the same as one of an agent registered higher. If that
-//! registration was raised before this build's first start, the chat is
-//! lifted to the level registered then.
+//! **Two limits, both accepted.** Each is a chat at read that the pass
+//! cannot tell from one an earlier build narrowed:
+//!
+//! - An earlier build's record whose agent was registered at read then, so
+//!   nothing was narrowed. If that registration was raised before the start
+//!   of this build that looks at the record, the chat is lifted to the
+//!   level registered at that look.
+//! - An earlier build's discussion chat the person raised and then set back
+//!   to Plan on the access picker (drawn for an agent's chat only where
+//!   agents mode is off, or while the roster is still loading). The index
+//!   says read and the record says read, so it reads as untouched and is
+//!   lifted.
 //!
 //! **When it is lifted.** Only when all of this holds; otherwise the chat is
 //! left as it is:
@@ -51,11 +64,30 @@
 //! registration that changes later lifts nothing. The record's settings
 //! are not written: they stay what it was confirmed with.
 //!
-//! **What cannot be read or written is tried again at the next start.** The
-//! record stays unmarked, and every step is safe to repeat: a ledger entry
-//! or an index entry already lifted is no longer at read. A record whose
-//! own write failed after its chat was lifted finds the chat changed at
-//! the next start, and is marked then.
+//! **What cannot be read, or a ledger or index that cannot be saved, is
+//! tried again at the next start.** The record is not marked, here or in
+//! what the pass holds, and every step is safe to repeat: a ledger entry or
+//! an index entry already lifted is no longer at read.
+//!
+//! **A mark whose own write fails is not always left for the next start.**
+//! By then the chat is decided: the mark is set in what the pass holds only
+//! after the record's ledger and index writes answered, or after it was
+//! left with nothing to write. The pass keeps that `true` and goes on, and
+//! every later write of the store in the same pass writes all of it. So:
+//!
+//! - a later record's write that succeeds carries the mark to disk, and the
+//!   record is not looked at again (the log still counts it under "to try
+//!   again at the next start", and not under lifted or left);
+//! - with no such write, the record is unmarked on disk and the next start
+//!   decides it afresh. A chat that was lifted is no longer at read, so it
+//!   is left and its record marked. A chat that was left is decided as it
+//!   stands then.
+//!
+//! Either way a chat the pass lifted, and nothing lowered since, is not
+//! raised by it a second time. Only something that puts the index entry
+//! back at read between those two starts (the picker, or a page left open
+//! across the restart) makes the unmarked record read as untouched, and it
+//! is lifted again.
 //!
 //! It says nothing on the bus, writes no line in a transcript and keeps
 //! nothing in memory. It never raises above the registered access and never
@@ -99,8 +131,11 @@ impl Left {
     }
 }
 
-/// What could not be read or written. The record stays unmarked and the
-/// next start tries again.
+/// What could not be read or written. For the first three the record is
+/// not marked and the next start tries again. For `Record` the mark is
+/// set in what the pass holds and only its write failed: it is left for
+/// the next start unless a later write of the store in this pass carries
+/// it (the module's doc).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Again {
     Roster,
@@ -216,9 +251,11 @@ pub(crate) fn run(
             .expect("read above")
             .lift_settled = true;
         if write(store, &stored).is_err() {
-            // Its chat is decided all the same, so the mark is true and a
-            // later record's write may carry it; else the next start finds
-            // nothing left to lift and marks it then.
+            // Its chat is decided all the same (lifted, with both of its
+            // writes answered, or left), so the mark stays true in `stored`
+            // and a later record's write in this pass carries it to disk.
+            // With no such write the next start finds a lifted chat no
+            // longer at read and marks the record then, raising nothing.
             *tally.again.entry(Again::Record).or_default() += 1;
             continue;
         }
