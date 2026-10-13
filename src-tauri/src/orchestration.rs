@@ -2734,19 +2734,6 @@ impl OrchestrationStore {
         })
     }
 
-    /// An attempt on record whose worker ran in `chat`: a worker's chat by
-    /// its record alone, whatever its key looks like.
-    #[cfg(test)]
-    pub(crate) fn test_set_worker_chat(&self, attempt_id: &str, chat: &str) -> Result<(), String> {
-        self.mutate(|data| {
-            data.attempts
-                .get_mut(attempt_id)
-                .ok_or("The attempt does not exist.")?
-                .worker_chat_key = chat.into();
-            Ok(())
-        })
-    }
-
     #[cfg(test)]
     pub(crate) fn reserve_attempt(
         &self,

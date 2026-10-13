@@ -426,30 +426,6 @@ pub fn set_cwd(id: &str, cwd: &str) -> Result<bool, String> {
     write(&index).map(|()| true)
 }
 
-/// Say the access level a chat's process runs at, and nothing else. The
-/// host's own write (`agent_chat::start_session`, and a page's save that
-/// named another level for a running chat): a page only ever saves the level
-/// it holds, which is not always the one the process was started at.
-///
-/// Answers whether the row changed. An entry with no level reads as `read`,
-/// the level a process with none asked is started at, so nothing is written
-/// to say what the entry already means. `false` for a chat the index does
-/// not list.
-pub fn set_access(id: &str, access: &str) -> Result<bool, String> {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(mut index) = read_checked() else {
-        return Ok(false);
-    };
-    let Some(chat) = index.chats.iter_mut().find(|chat| chat.id == id) else {
-        return Ok(false);
-    };
-    if chat.access.as_deref().unwrap_or("read") == access {
-        return Ok(false);
-    }
-    chat.access = Some(access.to_string());
-    write(&index).map(|()| true)
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatTitleUpdate {

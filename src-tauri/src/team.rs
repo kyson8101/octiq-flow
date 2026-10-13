@@ -1717,34 +1717,6 @@ pub fn lead_for_chat(path: &Path, chat_key: &str) -> Result<Option<LeadRecord>, 
         .find(|record| record.chat_key == chat_key))
 }
 
-/// The access the agent behind `chat_key` is registered with, as the roster
-/// stands now: the level a new process for that conversation is never
-/// started below (`agent_chat::start_session`).
-///
-/// `None` for a chat no lead record names (an ordinary chat), for one whose
-/// agent is no longer registered, and for a front desk's chat, which is
-/// launched read-only whatever its registration says. A roster that cannot
-/// be read is an error, never "nobody is registered".
-pub fn registered_access_of_chat(path: &Path, chat_key: &str) -> Result<Option<Access>, String> {
-    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
-    let stored = read(path)?;
-    if stored
-        .front_desk_chats
-        .iter()
-        .any(|chat| chat.chat_key == chat_key)
-    {
-        return Ok(None);
-    }
-    let Some(record) = stored.leads.iter().find(|r| r.chat_key == chat_key) else {
-        return Ok(None);
-    };
-    Ok(stored
-        .agents
-        .iter()
-        .find(|agent| agent.id == record.lead_id)
-        .map(|agent| agent.access))
-}
-
 /// The registered agent named as a task's assignee, by id or by exact
 /// (case-insensitive) name, among those the destination project can see. With
 /// a `manager`, the assignee must report directly to it.

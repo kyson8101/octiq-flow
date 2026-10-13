@@ -1119,10 +1119,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "agent")?,
             arg(&args, "sessionId")?,
         )),
-        "chat_index_save" => unit(crate::agent_chat::chat_index_save_from_page(
-            &svc.chats,
-            arg(&args, "meta")?,
-        )),
+        "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
         "chat_set_agent_title" => to_value(crate::agent_chat::chat_set_agent_title(
             arg(&args, "chatId")?,
             arg(&args, "title")?,
