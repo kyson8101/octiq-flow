@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { Message } from "../lib/chat";
 import { WRAP_UP_LABEL, isWrapUpTurn } from "../lib/chatComplete";
+import { PLAN_START_LABEL, isPlanStartTurn } from "../lib/planTurn";
 import { isAnswerTurn } from "../lib/questionBlock";
 
 import "./ConversationMap.css";
@@ -51,7 +52,8 @@ export function conversationMapTurns(turns: Message[][]): ConversationMapTurn[] 
       {
         id: turn[0].id,
         // The host's wrap-up turn is named, not quoted: the person did not say it.
-        prompt: isWrapUpTurn(turn[0].turnId) ? WRAP_UP_LABEL : previewText(turn) || "Message",
+        prompt: isWrapUpTurn(turn[0].turnId) ? WRAP_UP_LABEL
+          : isPlanStartTurn(turn[0].turnId) ? PLAN_START_LABEL : previewText(turn) || "Message",
         reply: answer ? previewText(answer) : "",
       },
     ];

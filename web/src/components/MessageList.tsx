@@ -55,6 +55,7 @@ import { RollingText } from "./RollingNumber";
 import { MessageBubble } from "./MessageBubble";
 import { WrapUpNote } from "./CompleteChat";
 import { wrapUpBubble } from "../lib/chatComplete";
+import { planStartBubble } from "../lib/planTurn";
 import { canDiscussUnsent } from "../lib/writerConflict";
 import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
@@ -906,7 +907,11 @@ function TurnView({
   const cancel = onCancelQueued && waitingId ? () => onCancelQueued(waitingId) : undefined;
   const start = onStartQueued && waitingId ? () => onStartQueued(waitingId) : undefined;
   // The host's wrap-up turn of a completion is not something the person said.
-  const wrapUp = role === "user" ? wrapUpBubble(message) : null;
+  const completion = role === "user" ? wrapUpBubble(message) : null;
+  // Nor is the turn that tells the agent its plan was started (`lib/planTurn`).
+  const planStart = role === "user" && !completion ? planStartBubble(message) : null;
+  /** Either of the host's own turns: named, with its words behind a disclosure. */
+  const wrapUp = completion ?? planStart;
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
@@ -1008,7 +1013,7 @@ function TurnView({
           <span className="msg-reply-preview">{replyTo.preview}</span>
         </div>
       )}
-      <MessageBubble user={role === "user"} message={message} wrapUp={!!wrapUp} onStart={start} onCancel={cancel}
+      <MessageBubble user={role === "user"} message={message} wrapUp={!!completion} planStart={!!planStart} onStart={start} onCancel={cancel}
         onRestore={!wrapUp && (unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
         onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
         onDiscuss={role === "user" && onDiscussUnsent && canDiscussUnsent(message) ? () => onDiscussUnsent(message.turnId!) : undefined}

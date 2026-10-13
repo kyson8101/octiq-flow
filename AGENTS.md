@@ -488,6 +488,77 @@ Claude chat. What belongs to one tool goes in that tool's description.
 A plan follows the chat's task status when the chat goes: kept through the
 trash window, removed when the chat is purged, kept by `/clear`.
 
+### The Plan panel is where the person reads a plan and starts it
+
+`components/PlanPanel` draws the chat's plan; `lib/planView` says what each
+part says, and `lib/useChatPlan` keeps it in step with the host. The panel is
+read-only but for Start: no edit, reorder or delete. The person changes a
+plan by saying so in the chat.
+
+- **It is hosted like the git and files columns**: a column beside the chat
+  on a desktop (`octiq.v2.planColumn`, written through `lib/remember`), an
+  alternative to those two and never a third beside them, giving way to the
+  preview panel as they do. On a phone it is a page drawn in the chat's
+  place (`planInPlace`, part of `chatShown`), for the one chat it was opened
+  in and never remembered. Its button is one line of `barActions` (`Plan`,
+  after `Tasks`) and carries the open questions in `--decide`, and nothing
+  when there are none.
+- **Offered to a chat's own agent only** (`planView.planOffered`, asked of
+  `chatKindOf`): not a worker's chat, a front desk or a seat. The button,
+  the panel and every read hang on `App`'s one `planFor`.
+- **Nothing polls.** `chat_plan_get` when the chat opens, when the panel
+  opens and on each connect, then the `chat-plan` event. That event does not
+  fire when the ledger moves, so a plan that links tasks is read again when
+  what the ledger says of those tasks changes (`planView.ledgerSignature`),
+  and at no other tick. A read that was in the air when an event arrived
+  cannot put the older plan back (`reducePlans`, by `rev`), and a Start's
+  answer that arrives after the events that followed it changes nothing.
+- **Three owners, each drawn as what it is.** The item's status word is the
+  agent's. `progress` and `linked` are the host's: absent draws nothing,
+  never a zero. Where they disagree both are shown and the agent's word
+  colours nothing: `Done` beside `1/2 · 1 failed` is grey
+  (`planView.countAgrees`).
+- **Colour is state.** The accent is an item with a linked task whose
+  attempt is executing, asked of the run panel's own reader
+  (`tasksInFlight` → `runProgress.progressRow`'s `flight`), never of the
+  host's `running`, which also counts an attempt being prepared. `--ok` is
+  done, `--decide` a question still open and Start, `--warn` a plan that
+  could not be read. A linked task that failed is said in grey words: whose
+  move a failure is, is the run panel's to show, and the task's row there
+  is one press away (`showTaskRow`, the run panel's `focusTaskId`).
+- **What the agent wrote is text**: a title, a decision, a question and a
+  note are never markdown, a link or markup. Three decisions are shown and
+  the rest are behind a line that says how many; a note is behind its own
+  disclosure; dropped items are last, muted.
+- **Start is the host's to offer** (`planView.planStart`): drawn while
+  `awaitsStart` is true and never worked out from the items. It sends
+  `chat_plan_start` with the revision on screen and the settings a
+  completion would start the chat with (`startSettingsOf`), from the one
+  place that names the command (`useChatPlan`). Open questions are said
+  beside it and do not block. A refusal recorded nothing: the host's words
+  go under the button, which stays. `delivered: false` is a Start that IS
+  recorded with an agent that was not told: both halves are said apart
+  (`Started 18:06 · the agent has not been told yet`), the reason is behind
+  a disclosure, and the one control is `Tell the agent`, the same command
+  again. A plan whose items were all dropped says `Nothing to start`. There
+  is no un-start.
+- **Start is never fired by the press or key that brought it on screen**,
+  and has no confirm in front of it, like the page's other Starts. The
+  bar's button and every disclosure of the panel are remembered by the
+  cards' guard (`notePress`), Start drops a held key (`dropHeld`) and a
+  press that repeats the one the panel was opened with (`strayAnswer`), and
+  it is off from the press until its answer, so two Start turns are never
+  sent. It sits outside the panel's scroller, so nothing an item opens
+  moves it.
+- **The host's turn is named, not quoted** (`lib/planTurn`): a turn whose id
+  starts `octiq-plan-start-` is drawn as `Plan started` with the host's text
+  behind a disclosure, like a completion's wrap-up. Its take-back says
+  Cancel, takes the turn back and never the Start, and returns nothing to
+  the composer (`reclaim` skips it).
+- `scripts/test-plan-panel.mjs` draws the host's four plans in the real App
+  at 1280 and 390 and presses Start. `lib/decideColour.test.ts` names the
+  panel's parts (`PLAN_PARTS`): a part added to the sheet is added there.
+
 ### A chat whose folder was removed is recovered before it starts
 
 A chat remembers the exact folder it ran in, and a task chat's is a linked
@@ -992,10 +1063,10 @@ handover-cards-namecard.html` is the mock they were built from.
     again, as for any other chat (the composer is one element the page
     reuses, so a travel left standing hid the returning chat's own face and
     name). The open chat's id does not say the chat is on screen: `App`'s
-    `chatShown` does, the one value for the four things drawn in a chat's
+    `chatShown` does, the one value for the five things drawn in a chat's
     place (the phone's project list, a main-area page such as Settings or
-    Agents, the run panel and the task chat where there is no room beside
-    them). Off screen calls the travel off, waiting or in flight, and
+    Agents, the phone's Plan page, the run panel and the task chat where
+    there is no room beside them). Off screen calls the travel off, waiting or in flight, and
     nothing brings it back. The rule hangs on that value and the open chat
     in one effect, never on the callers that change them; a new thing drawn
     in the chat's place joins `chatShown`. A panel laid over the chat is
@@ -1052,8 +1123,9 @@ narrow Windows window gets the phone's layout.
   (`Return to chat`), and the usage number on a page that has no action bar.
 - **The action bar** (`components/ActionBar`, 36px; 45px on a phone): every
   action for what is on screen, each a button with an icon and a short word
-  (`Tasks`, `Preview`, `Git`, `Focus`, `New task`, `Details`, `Agents`,
-  `Pinned`, `Full width`, `Run`, `Reload`, `Copy ID`, `Complete`, `Delete`),
+  (`Tasks`, `Plan`, `Preview`, `Git`, `Focus`, `New task`, `Details`,
+  `Agents`, `Pinned`, `Full width`, `Run`, `Reload`, `Copy ID`, `Complete`,
+  `Delete`),
   in that order. The word is short and stays the same; the sentence is the
   button's name and tooltip (`Complete this chat`), and a button's result is
   its icon and name, never a longer word (`Copy ID` does not become `Chat ID

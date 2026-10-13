@@ -7,6 +7,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import panelSource from "../components/OrchestrationPanel.tsx?raw";
+import planPanelSource from "../components/PlanPanel.tsx?raw";
+import planViewSource from "./planView.ts?raw";
 
 vi.mock("./bridge", () => ({
   bridge: { invoke: async () => null, on: () => () => {}, onState: () => () => {} },
@@ -288,5 +290,19 @@ describe("every control that starts an attempt", () => {
     // No label of a start is written anywhere but the reader.
     expect(panelSource).not.toMatch(/>Start (retry|next attempt|it again)</);
     expect(panelSource).not.toMatch(/"Start (retry|next attempt|it again)"/);
+  });
+
+  it("is not the Plan panel's Start, which starts a plan and no attempt", () => {
+    // The person's Start on a chat's plan (`chat_plan_start`) hands the
+    // agent a turn; the tasks it then creates are started through the run
+    // panel's door like any other. The panel sends no worker start, offers
+    // no start of an attempt, and its one label comes from its own reader
+    // (`planView.planStart`), which asks the host's `awaitsStart`.
+    expect(planPanelSource).not.toMatch(/orchestration_worker_start|onRetry|startControl\(|task-start/);
+    expect(planPanelSource).not.toMatch(/>Start(?: [a-z ]+)?<|"Start(?: [a-z ]+)?"|>Tell the agent<|"Tell the agent"/);
+    expect(planPanelSource.match(/className="cplan-start"/g)).toHaveLength(1);
+    expect(planPanelSource).toMatch(/className="cplan-start"[\s\S]{0,160}?>\{start\.label\}<\/button>/);
+    expect(planViewSource).toMatch(/if \(!plan\.awaitsStart\) return /);
+    expect(planViewSource.match(/label: "Start"/g)).toHaveLength(2); // the type, and the one place it is made
   });
 });

@@ -88,7 +88,9 @@ export function OrchestrationPanel({
   project: ProjectRef | null;
   /** Show this run, open, on its Tasks tab: a badge in the chat list asked
    *  for something it holds. A new nonce asks again for the same run. */
-  focusRun?: { runId: string; nonce: number } | null;
+  /** The run to open, and with `taskId` the row of it to bring out from
+   *  behind a fold (the Plan panel's way to a task). */
+  focusRun?: { runId: string; taskId?: string; nonce: number } | null;
   coordinatorKey: string | null;
   /** The chat on screen. When it is one of this run's workers, its task is
    *  the one marked as open. */
@@ -444,6 +446,7 @@ export function OrchestrationPanel({
       onBridge={(command, args) => void bridgeAction(run, command, args)}
       onOpenChat={onOpenChat}
       currentChatKey={currentChatKey}
+      focusTaskId={focusRun?.runId === run.id ? focusRun.taskId ?? null : null}
       onOpenBeside={onOpenBeside ? (chatKey) => {
         try { onOpenBeside(chatKey); } catch (problem) { setError(messageOf(problem)); }
       } : undefined}
@@ -739,6 +742,7 @@ function RunDetail({
   onBridge,
   onOpenChat,
   currentChatKey,
+  focusTaskId = null,
   onOpenBeside,
   besideChatKey,
   onAskStop,
@@ -778,6 +782,9 @@ function RunDetail({
   onBridge: (command: string, args: Record<string, unknown>) => void;
   onOpenChat: (chatKey: string) => void;
   currentChatKey: string | null;
+  /** A task of this run that was asked for by name: its row is not left
+   *  behind a fold or a "more" line. */
+  focusTaskId?: string | null;
   onOpenBeside?: (chatKey: string) => void;
   besideChatKey?: string | null;
   onAskStop: () => void;
@@ -1103,8 +1110,9 @@ function RunDetail({
           const chatOf = (row: ProgressRow, chatKey: string | null | undefined) =>
             !!chatKey && attempts.some((attempt) => attempt.taskId === row.task.id && attempt.workerChatKey === chatKey);
           return <RunGroup key={group.key} group={group}
-            // The task on screen is never behind a fold or a "more" line.
-            holds={group.rows.findIndex((row) => chatOf(row, currentChatKey) || chatOf(row, besideChatKey))}>
+            // The task on screen is never behind a fold or a "more" line,
+            // and neither is one that was asked for by name.
+            holds={group.rows.findIndex((row) => chatOf(row, currentChatKey) || chatOf(row, besideChatKey) || row.task.id === focusTaskId)}>
             {(row) => <RunTask key={row.task.id} run={run} snapshot={snapshot} row={row} attempts={attempts} sandboxes={sandboxes}
               taskGate={open.find((item) => item.taskId === row.task.id)}
               taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
@@ -1274,6 +1282,18 @@ function RunTiles({ tiles }: { tiles: RunTilesData }) {
 /** Where the keyboard is put on a row: its summary when that opens a chat,
  *  else its details disclosure, which every row has and is never disabled. */
 export const ROW_FOCUS = ".orch-task-summary:not(:disabled), .orch-task-expand";
+
+/** Bring one task's row into view and put the keyboard on it, once it is
+ *  drawn. Answers whether it was: a row behind a fold that has not opened
+ *  yet, or in a panel that is not on screen yet, is not there to show. It
+ *  presses nothing. */
+export function showTaskRow(taskId: string, root: ParentNode = document): boolean {
+  const row = [...root.querySelectorAll<HTMLElement>("[data-task-id]")].find((item) => item.dataset.taskId === taskId);
+  if (!row || row.getClientRects().length === 0) return false;
+  row.scrollIntoView({ block: "nearest" });
+  row.querySelector<HTMLElement>(ROW_FOCUS)?.focus({ preventScroll: true });
+  return true;
+}
 
 /** One group of rows under its count. Finished is the only one that folds,
  *  and starts folded; a long quiet group shows its first rows and a line for
@@ -1463,7 +1483,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   const decision = task.activeAttemptId === attempt?.id ? pendingDecision(attempt, parkedOn) : undefined;
 
   return (
-    <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""} run-row`} data-status={task.status} data-state={row.state}
+    <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""} run-row`} data-task-id={task.id} data-status={task.status} data-state={row.state}
       data-flight={row.flight || undefined} data-tone={row.tone ?? undefined} data-hold={row.hold?.kind}
       data-failure={failure?.move}
       {...(failure?.move === "person" ? { "data-pending-keys": `failure:${task.id}`, tabIndex: -1 } : {})}>

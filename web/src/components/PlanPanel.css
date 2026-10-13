@@ -1,0 +1,187 @@
+/* The Plan panel (components/PlanPanel).
+ *
+ * Colour is state, and there is little of it here:
+ *   --accent  an item with a linked task whose worker has a turn in flight,
+ *             as a tint, and nothing else;
+ *   --ok      an item the agent calls done;
+ *   --decide  what waits on the person: a question still open, and Start;
+ *   --warn    a plan that could not be read.
+ * Everything else is the panel's own grey. No rule of the panel sets a
+ * colour of its own: tokens only, in every mode.
+ *
+ * The scan in lib/decideColour.test.ts names the panel's parts (PLAN_PARTS).
+ * A part added here is added there, or the scan does not see it. */
+
+/* ---- The bar's button -------------------------------------------------- */
+
+/* The same shape as Tasks beside it. Doubled up with `.icon-btn` because
+   styles.css, which sizes that to a square, loads after this sheet. */
+.icon-btn.cplan-toggle { width: auto; gap: 5px; padding: 0 9px; border: 1px solid transparent; color: var(--fg-1); }
+.icon-btn.cplan-toggle.is-on { border-color: var(--border); background: var(--bg-2); color: var(--fg-0); }
+.cplan-toggle-open {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-pill, 999px);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1)); color: var(--decide);
+  border: 1px solid color-mix(in srgb, var(--decide) 50%, var(--border));
+  font-size: 10.5px; font-weight: 600; line-height: 14px; text-align: center; font-variant-numeric: tabular-nums;
+}
+
+/* ---- The panel --------------------------------------------------------- */
+
+.cplan-panel {
+  display: flex; flex-direction: column; flex: 0 0 var(--plan-width, 380px); width: var(--plan-width, 380px);
+  min-width: 0; min-height: 0; background: var(--bg-0); border-left: 1px solid var(--border);
+  color: var(--fg-1); font-size: 13px; line-height: 1.45;
+  animation: enter-fade var(--enter-duration) var(--enter-ease);
+}
+/* In the chat's place: the page, not a column of it. */
+.cplan-panel.is-page { flex: 1 1 auto; width: auto; border-left: 0; padding-bottom: env(safe-area-inset-bottom); }
+
+.cplan-panel button { font: inherit; }
+.cplan-panel button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.cplan-head {
+  display: flex; align-items: center; gap: var(--space-3); flex: 0 0 auto;
+  padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border);
+}
+.cplan-head strong { color: var(--fg-0); font-size: 14px; }
+.cplan-head-state { flex: 1; min-width: 0; color: var(--fg-2); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cplan-close {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 32px;
+  border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--fg-2); cursor: pointer;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
+}
+.cplan-close:hover { background: var(--bg-2); color: var(--fg-0); }
+
+.cplan-meta {
+  display: flex; flex-wrap: wrap; gap: 2px 10px; flex: 0 0 auto; margin: 0;
+  padding: var(--space-3) var(--space-4) 0; color: var(--fg-2); font-size: 12px;
+}
+.cplan-meta-open { color: var(--decide); }
+
+.cplan-error { flex: 0 0 auto; margin: 0; padding: var(--space-3) var(--space-4) 0; color: var(--warn); font-size: 12px; overflow-wrap: anywhere; }
+
+.cplan-none { margin: auto; padding: var(--space-8) var(--space-6); color: var(--fg-2); text-align: center; }
+.cplan-none p { margin: 0; }
+.cplan-none > p:first-child { color: var(--fg-0); font-size: 14px; }
+.cplan-none-hint { margin-top: var(--space-2) !important; font-size: 12px; }
+
+/* ---- The items --------------------------------------------------------- */
+
+/* The one scroller. Room is kept for a scrollbar that takes room (Windows),
+   so opening a note does not make every row narrower. */
+.cplan-items {
+  flex: 1 1 auto; min-height: 0; margin: 0; padding: var(--space-2) var(--space-4) var(--space-4); list-style: none;
+  overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior: contain;
+}
+.cplan-item { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+.cplan-item:first-child { border-top: 0; }
+.cplan-item-main { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
+
+/* The status mark. The word beside the title says the same thing in words,
+   so the mark is never the only signal. */
+.cplan-mark {
+  flex: 0 0 auto; width: 12px; height: 12px; margin-top: 3px; box-sizing: border-box; border-radius: 50%;
+  border: 1.5px solid var(--fg-3); background: transparent; color: var(--fg-2);
+  transition: background-color 180ms ease-out, border-color 180ms ease-out;
+}
+.cplan-mark[data-status="decided"], .cplan-mark[data-status="done"] { border-color: var(--fg-2); background: var(--fg-2); }
+.cplan-mark[data-status="in_progress"] { border-color: var(--fg-2); background: linear-gradient(90deg, var(--fg-2) 50%, transparent 50%); }
+.cplan-mark[data-mark="done"] { border-color: var(--ok); background: var(--ok); }
+.cplan-mark[data-mark="dropped"] { border-style: dashed; border-color: var(--fg-3); background: transparent; }
+/* A turn in flight on one of its tasks: the accent, as a tint. */
+.cplan-mark[data-mark="live"] { border-color: var(--accent); background: var(--accent-tint); }
+
+.cplan-item-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.cplan-item-title { flex: 1 1 auto; min-width: 0; color: var(--fg-0); font-weight: 600; overflow-wrap: anywhere; }
+.cplan-item-word { flex: 0 0 auto; color: var(--fg-2); font-size: 11.5px; white-space: nowrap; transition: color 180ms ease-out; }
+.cplan-item-word[data-mark="done"] { color: var(--ok); }
+
+.cplan-item[data-status="dropped"] .cplan-item-title { color: var(--fg-2); font-weight: 400; text-decoration: line-through; }
+.cplan-item[data-status="dropped"] :is(.cplan-decisions, .cplan-questions, .cplan-note) { color: var(--fg-3); }
+
+.cplan-decisions, .cplan-questions, .cplan-tasks { margin: 0; padding: 0; list-style: none; }
+.cplan-decisions li { position: relative; padding-left: 12px; color: var(--fg-1); overflow-wrap: anywhere; }
+.cplan-decisions li::before { content: ""; position: absolute; left: 2px; top: 0.62em; width: 4px; height: 4px; border-radius: 50%; background: var(--fg-3); }
+
+/* A question still open waits on the person: the decision colour marks it,
+   and its words stay the reading colour. */
+.cplan-questions li { display: flex; gap: 6px; align-items: baseline; color: var(--fg-0); overflow-wrap: anywhere; }
+.cplan-question-mark {
+  flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%; box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--decide) 50%, var(--border));
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1)); color: var(--decide);
+  font-size: 10px; font-weight: 700; line-height: 12px; text-align: center; transform: translateY(1px);
+}
+.cplan-item[data-status="dropped"] .cplan-question-mark { border-color: var(--border); background: transparent; color: var(--fg-3); }
+
+/* A disclosure of the item: more decisions, its note. */
+.cplan-more, .cplan-progress {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; max-width: 100%; min-height: 24px;
+  padding: 0 6px 0 2px; margin-left: -2px; border: 0; border-radius: var(--r-sm); background: transparent;
+  color: var(--fg-2); font-size: 12px; cursor: pointer; text-align: left;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
+}
+.cplan-more:hover, .cplan-progress:hover { background: var(--bg-2); color: var(--fg-0); }
+.cplan-chevron { flex: 0 0 auto; transition: transform 160ms ease-out; }
+.cplan-chevron[data-open] { transform: rotate(90deg); }
+
+.cplan-note { margin: 0; padding: 6px 8px; border-radius: var(--r-sm); background: var(--bg-1); color: var(--fg-1); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cplan-decisions[id]:not([hidden]), .cplan-note:not([hidden]), .cplan-tasks:not([hidden]) { animation: enter-fade 160ms var(--enter-ease); }
+
+/* How the item's tasks stand: the host's count, and nothing of the agent's. */
+.cplan-progress-count { color: var(--fg-0); font-variant-numeric: tabular-nums; font-weight: 600; }
+/* The track is the border tone, so an empty bar is still there on the row's
+   own hover fill. */
+.cplan-bar { flex: 0 0 auto; width: 56px; height: 4px; border-radius: var(--r-pill); background: var(--border-strong); overflow: hidden; }
+.cplan-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--fg-2); transition: width 200ms ease-out, background-color 200ms ease-out; }
+.cplan-bar[data-full] > span { background: var(--ok); }
+.cplan-progress-parts { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cplan-tasks { display: flex; flex-direction: column; gap: 2px; }
+.cplan-tasks[hidden] { display: none; }
+.cplan-task {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; min-height: 28px; padding: 3px 6px; box-sizing: border-box;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-1); font-size: 12.5px; text-align: left;
+}
+button.cplan-task { cursor: pointer; transition: background-color 140ms ease-out; }
+button.cplan-task:hover { background: var(--bg-2); }
+.cplan-task-word { flex: 0 0 56px; color: var(--fg-2); font-size: 11.5px; transition: color 180ms ease-out; }
+.cplan-task-word[data-state="done"] { color: var(--ok); }
+.cplan-task-word[data-live] { color: var(--accent); }
+.cplan-task-title { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.cplan-task-go { flex: 0 0 auto; align-self: center; color: var(--fg-3); }
+
+/* ---- Start ------------------------------------------------------------- */
+
+/* Outside the scroller, so nothing an item opens moves it. */
+.cplan-foot { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border); }
+.cplan-foot-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cplan-start {
+  flex: 0 0 auto; min-width: 96px; min-height: 36px; padding: 0 18px;
+  border: 1px solid var(--decide); border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1)); color: var(--fg-0);
+  font-size: 13.5px; font-weight: 600; cursor: pointer;
+  transition: background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
+}
+.cplan-start:hover:not([aria-disabled="true"]) { background: color-mix(in srgb, var(--decide) 28%, var(--bg-1)); }
+.cplan-start[aria-disabled="true"] { border-color: var(--border-strong); background: transparent; color: var(--fg-2); cursor: default; }
+.cplan-foot-side { flex: 1 1 auto; min-width: 0; color: var(--fg-2); font-size: 12px; overflow-wrap: anywhere; }
+.cplan-started { margin: 0; color: var(--fg-1); font-size: 12.5px; animation: enter-fade var(--enter-duration) var(--enter-ease); }
+.cplan-started-note { color: var(--fg-2); }
+/* The host's own words for why not. It asks nothing new: quiet, under the button. */
+.cplan-refusal[hidden] { display: none; }
+.cplan-refusal { margin: 0; color: var(--fg-1); font-size: 12px; overflow-wrap: anywhere; animation: enter-fade 160ms var(--enter-ease); }
+
+@media (max-width: 859px) {
+  .cplan-panel:not(.is-page) { display: none; }
+  .cplan-start { min-height: 44px; }
+  .cplan-close { width: 44px; height: 44px; }
+  .cplan-more, .cplan-progress { min-height: 36px; }
+  .cplan-task { min-height: 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cplan-panel, .cplan-started, .cplan-refusal,
+  .cplan-decisions[id]:not([hidden]), .cplan-note:not([hidden]), .cplan-tasks:not([hidden]) { animation: none; }
+  .cplan-chevron, .cplan-bar > span, .cplan-mark, .cplan-item-word, .cplan-task-word, .cplan-start, .cplan-close, .cplan-more, .cplan-progress, button.cplan-task { transition: none; }
+}

@@ -1017,7 +1017,7 @@ describe("who a run waits on", () => {
     expect(groups(html)).toEqual(["Running, 1 task"]);
     expect(html).not.toContain("Needs you");
     expect(html).not.toContain("decision waiting");
-    expect(html).toMatch(/<article class="orch-task[^"]*run-row" data-status="blocked" data-state="running" data-tone="warn">/);
+    expect(html).toMatch(/<article class="orch-task[^"]*run-row" data-task-id="task_1" data-status="blocked" data-state="running" data-tone="warn">/);
     expect(html).toMatch(/<span class="run-row-note" data-tone="warn"[^>]*>Waiting on the coordinator<\/span>/);
     // The gate is still shown, saying whose it is, outside the decision box.
     expect(html).toMatch(/<section class="orch-decisions is-others" aria-labelledby="[^"]+" tabindex="-1"><h3 id="[^"]+">Open decisions<\/h3>/);
@@ -1031,7 +1031,7 @@ describe("who a run waits on", () => {
     expect(html).not.toContain("Needs you");
     expect(html).not.toContain("decision waiting");
     // No colour of a decision, a warning or a failure: it is open, no more.
-    expect(html).toMatch(/<article class="orch-task[^"]*run-row" data-status="blocked" data-state="running">/);
+    expect(html).toMatch(/<article class="orch-task[^"]*run-row" data-task-id="task_1" data-status="blocked" data-state="running">/);
     expect(html).toMatch(/<span class="run-row-note" title="Blocked\nThe host does not say who this waits on\.">Asks a decision<\/span>/);
     expect(html).toContain('<p class="orch-gate-waits" data-on="unsaid" title="The host does not say who this waits on.">Open</p>');
     expect(html).toContain('aria-description="The host does not say who this waits on."');
