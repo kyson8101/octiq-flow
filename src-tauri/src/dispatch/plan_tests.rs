@@ -49,6 +49,17 @@ impl Chat {
         dispatch(svc, "chat_plan_start", args)
     }
 
+    /// The turn ids waiting in the host's queue for this chat's agent.
+    fn queued(&self, svc: &Services) -> Vec<String> {
+        let state = dispatch(svc, "chat_queue_state", json!({ "key": self.key })).unwrap();
+        state["queuedTurnIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap().to_string())
+            .collect()
+    }
+
     /// The host's turns in this chat's record, as `(turn id, words)`.
     fn turns(&self) -> Vec<(String, String)> {
         crate::transcript::since(&self.key, 0)
@@ -228,7 +239,9 @@ fn a_change_is_refused_in_words_and_changes_nothing() {
 
 /// Start is recorded first. When the turn that tells the agent cannot be
 /// handed over, the Start stands and the answer says so beside it; the
-/// page asks again and nothing is recorded twice.
+/// page asks again, under the Start's own turn id, and the Start itself
+/// (when, on which revision) is recorded once. A turn the person takes
+/// back is told again under the next id.
 #[test]
 fn start_is_recorded_first_and_a_turn_that_was_not_handed_over_is_asked_again() {
     let svc = Services::load();
@@ -307,8 +320,10 @@ fn start_is_recorded_first_and_a_turn_that_was_not_handed_over_is_asked_again() 
     assert_eq!(again["delivered"], true);
     assert_eq!(again["state"], "queued");
     let second_turn = again["turnId"].as_str().unwrap().to_string();
-    assert!(second_turn.starts_with(START_TURN_PREFIX));
-    assert_ne!(second_turn, first_turn, "a try has a turn id of its own");
+    assert_eq!(
+        second_turn, first_turn,
+        "a try that left nothing in the record is made again under the Start's own id"
+    );
     let told = again["plan"]["started"].clone();
     assert_eq!(told["told"], true);
     assert_eq!(told["turnId"], second_turn.as_str());
@@ -335,7 +350,9 @@ fn start_is_recorded_first_and_a_turn_that_was_not_handed_over_is_asked_again() 
     assert_eq!(chat.turns().len(), 1);
     assert_eq!(plans_heard(&tap).len(), heard);
 
-    // The ✕ on the queued turn takes the turn back, not the Start.
+    // The ✕ on the queued turn takes the turn back, not the Start: when
+    // and on which revision it was started stands, the gate stays open,
+    // and the plan stops saying its agent was told, which every page hears.
     assert_eq!(
         dispatch(
             &svc,
@@ -344,9 +361,356 @@ fn start_is_recorded_first_and_a_turn_that_was_not_handed_over_is_asked_again() 
         ),
         Ok(json!(true))
     );
-    assert_eq!(chat.get(&svc)["started"], told);
+    let taken_back = chat.get(&svc)["started"].clone();
+    assert_eq!(taken_back["told"], false);
+    assert_eq!(
+        (
+            &taken_back["at"],
+            &taken_back["revision"],
+            &taken_back["turnId"]
+        ),
+        (&told["at"], &told["revision"], &told["turnId"])
+    );
     assert_eq!(gate(), Ok(()));
+    let said = plans_heard(&tap);
+    assert_eq!(said.len(), heard + 1);
+    assert_eq!(said.last().unwrap()["plan"]["started"]["told"], false);
+
+    // So the page can ask again, and that is a new try: the turn that was
+    // taken back keeps its id with the line that says so, and the next one
+    // has the next id. One turn is in the queue.
+    let retried = chat.start(&svc, json!({ "revision": 2 })).unwrap();
+    assert_eq!(retried["delivered"], true);
+    assert_eq!(retried["state"], "queued");
+    let third_turn = format!("{second_turn}-try2");
+    assert_eq!(retried["turnId"], third_turn.as_str());
+    assert_eq!(retried["plan"]["started"]["told"], true);
+    assert_eq!(retried["plan"]["started"]["turnId"], third_turn.as_str());
+    assert_eq!(retried["plan"]["started"]["at"], told["at"]);
+    let ids: Vec<String> = chat.turns().into_iter().map(|(id, _)| id).collect();
+    assert_eq!(ids, [second_turn.clone(), third_turn.clone()]);
+    assert_eq!(chat.queued(&svc), [third_turn.clone()]);
+    // Taking back a turn that is not the one the plan names changes nothing.
+    assert_eq!(
+        crate::chat_plan::untold(&chat.id, &second_turn),
+        Ok(None),
+        "the first try is long over"
+    );
+    assert_eq!(chat.get(&svc)["started"]["told"], true);
     svc.chats.test_end(&chat.key);
+}
+
+/// A plan that was started and whose agent has not been told, in a chat
+/// whose agent is in the middle of a turn: what an ask that follows meets.
+/// Answers the chat and the Start's turn id.
+fn started_and_untold(svc: &Services) -> (Chat, String) {
+    let chat = Chat::new();
+    chat.change(
+        svc,
+        json!({ "baseRevision": 0, "add": [{ "title": "A", "status": "decided" }] }),
+    )
+    .unwrap();
+    let first = chat
+        .start(
+            svc,
+            json!({ "revision": 1, "start": { "agent": "claude" } }),
+        )
+        .unwrap();
+    assert_eq!(first["delivered"], false);
+    assert!(chat.turns().is_empty());
+    svc.chats.test_launch(&chat.key);
+    svc.chats.test_busy(&chat.key, true);
+    let turn = first["turnId"].as_str().unwrap().to_string();
+    (chat, turn)
+}
+
+/// Two asks at once, each of which has read that the agent was not told
+/// before either hands anything over (the reviewer's probe: both are held
+/// at the session table, then let go together). One turn is queued and
+/// recorded, under the Start's own id, and both answers name it. There
+/// used to be two, under two fresh ids.
+#[test]
+fn two_asks_at_once_tell_the_agent_once() {
+    let svc = Arc::new(Services::load());
+    let (chat, turn) = started_and_untold(&svc);
+    let table = svc.chats.test_hold_table();
+    let asks: Vec<_> = (0..2)
+        .map(|_| {
+            let (svc, id) = (svc.clone(), chat.id.clone());
+            std::thread::spawn(move || {
+                dispatch(
+                    &svc,
+                    "chat_plan_start",
+                    json!({ "chatId": id, "revision": 1 }),
+                )
+                .unwrap()
+            })
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    drop(table);
+    let answers: Vec<Value> = asks.into_iter().map(|ask| ask.join().unwrap()).collect();
+
+    let ids: Vec<String> = chat.turns().into_iter().map(|(id, _)| id).collect();
+    assert_eq!(ids, [turn.clone()], "one Start, one turn: {answers:?}");
+    assert_eq!(chat.queued(&svc), [turn.clone()]);
+    let mut states = Vec::new();
+    for answer in &answers {
+        assert_eq!(answer["delivered"], true, "{answer}");
+        assert_eq!(answer["turnId"], turn.as_str(), "{answer}");
+        assert_eq!(answer["plan"]["started"]["told"], true, "{answer}");
+        states.push(answer["state"].as_str().unwrap().to_string());
+    }
+    states.sort();
+    assert_eq!(
+        states,
+        ["queued", "told"],
+        "one handed it over, one found it"
+    );
+    svc.chats.test_end(&chat.key);
+}
+
+/// The same under load, for a claim that has to hold every time: many
+/// rounds, six asks let go together in each. Half the rounds are asks of a
+/// started plan whose agent was not told, half are the first Start itself
+/// pressed in six tabs at once; in half the agent is in a turn (the turn is
+/// queued) and in half it is between turns (the turn is written to it).
+/// Every round ends with one Start on record and one turn.
+#[test]
+fn a_start_is_told_once_however_many_ask_at_once() {
+    const ROUNDS: usize = 40;
+    const ASKS: usize = 6;
+    let svc = Arc::new(Services::load());
+    for round in 0..ROUNDS {
+        let (again, busy) = (round % 2 == 0, round % 4 < 2);
+        let chat = Chat::new();
+        chat.change(
+            &svc,
+            json!({ "baseRevision": 0, "add": [{ "title": "A", "status": "decided" }] }),
+        )
+        .unwrap();
+        if again {
+            let first = chat
+                .start(
+                    &svc,
+                    json!({ "revision": 1, "start": { "agent": "claude" } }),
+                )
+                .unwrap();
+            assert_eq!(first["delivered"], false);
+        }
+        let _agent = svc
+            .chats
+            .test_hold(&chat.key, crate::agent_chat::ChatAgent::Claude, busy);
+        let together = Arc::new(std::sync::Barrier::new(ASKS));
+        let asks: Vec<_> = (0..ASKS)
+            .map(|_| {
+                let (svc, id, together) = (svc.clone(), chat.id.clone(), together.clone());
+                std::thread::spawn(move || {
+                    together.wait();
+                    dispatch(
+                        &svc,
+                        "chat_plan_start",
+                        json!({ "chatId": id, "revision": 1 }),
+                    )
+                })
+            })
+            .collect();
+        let answers: Vec<Value> = asks
+            .into_iter()
+            .map(|ask| ask.join().unwrap().unwrap())
+            .collect();
+        let said = format!("round {round} (again {again}, busy {busy}): {answers:?}");
+        let turns = chat.turns();
+        assert_eq!(turns.len(), 1, "{said}");
+        let handed = answers
+            .iter()
+            .filter(|answer| answer["state"] != "told")
+            .count();
+        assert_eq!(handed, 1, "one ask hands it over: {said}");
+        for answer in &answers {
+            assert_eq!(answer["delivered"], true, "{said}");
+            assert_eq!(answer["turnId"], turns[0].0.as_str(), "{said}");
+            assert_eq!(answer["plan"]["started"]["told"], true, "{said}");
+        }
+        let kept = chat.get(&svc)["started"].clone();
+        assert_eq!(kept["turnId"], turns[0].0.as_str(), "{said}");
+        assert_eq!(kept["told"], true, "{said}");
+        svc.chats.test_end(&chat.key);
+    }
+}
+
+/// The turn is handed over and the note that it was cannot be saved. The
+/// answer says both, and the Start is still told once: the next ask finds
+/// the turn in the chat's record, saves the note and sends nothing. It
+/// used to read `told: false` and hand over a second turn under a new id.
+#[test]
+fn a_delivery_whose_note_could_not_be_saved_is_not_made_again() {
+    let svc = Services::load();
+    let (chat, turn) = started_and_untold(&svc);
+    let one_turn = || {
+        let ids: Vec<String> = chat.turns().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, [turn.clone()]);
+        assert_eq!(chat.queued(&svc), [turn.clone()]);
+    };
+
+    let first =
+        crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 }))).unwrap();
+    assert_eq!(first["delivered"], true, "{first}");
+    assert_eq!(first["state"], "queued", "{first}");
+    assert_eq!(first["turnId"], turn.as_str());
+    assert_eq!(
+        first["plan"]["started"]["told"], false,
+        "the note was not kept"
+    );
+    assert_eq!(chat.get(&svc)["started"]["told"], false);
+    one_turn();
+
+    // Asked again while the note still cannot be saved: nothing is sent,
+    // and the answer says the agent has it.
+    let (still, said) = crate::unsaved::told(|| {
+        crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 })))
+    });
+    let still = still.unwrap();
+    assert_eq!(still["delivered"], true, "{still}");
+    assert_eq!(still["state"], "told", "{still}");
+    assert_eq!(still["turnId"], turn.as_str());
+    assert_eq!(still["plan"]["started"]["told"], false);
+    assert_eq!(said.len(), 1, "{said:?}");
+    one_turn();
+
+    // And once it can be: the note is saved, and still nothing is sent.
+    let tap = crate::bus::tap::Tap::on(&chat.id);
+    let second = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+    assert_eq!(second["delivered"], true, "{second}");
+    assert_eq!(second["state"], "told", "{second}");
+    assert_eq!(second["turnId"], turn.as_str());
+    assert_eq!(second["plan"]["started"]["told"], true);
+    assert_eq!(chat.get(&svc)["started"]["told"], true);
+    assert_eq!(plans_heard(&tap).len(), 1, "the pages hear the note");
+    one_turn();
+    svc.chats.test_end(&chat.key);
+}
+
+/// A turn that will not reach the agent is told again, once, and a turn
+/// that will is never told twice, across a server that stopped. The
+/// host's queue is in memory: a Start turn a server had only queued is
+/// lost with it, the record says `queued` and no queue holds it, and the
+/// next ask hands over the next try. A turn dropped when its chat's
+/// process was ended on purpose is marked not sent, and is told again the
+/// same way.
+#[test]
+fn a_start_turn_that_was_lost_or_not_sent_is_told_again_once() {
+    let svc = Services::load();
+    let (chat, turn) = started_and_untold(&svc);
+    let queued = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+    assert_eq!(queued["state"], "queued");
+    assert_eq!(queued["plan"]["started"]["told"], true);
+    let fates = |svc: &Services| {
+        crate::agent_chat::host_turns(&svc.chats, &chat.key, &turn)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    use crate::agent_chat::HostTurn::{Gone, Handed};
+    assert_eq!(fates(&svc), [(turn.clone(), Handed)]);
+
+    // The server stops, and another starts: its queue is empty.
+    let restarted = Services::load();
+    assert_eq!(
+        fates(&restarted),
+        [(turn.clone(), Gone)],
+        "queued by a server that is gone"
+    );
+    restarted.chats.test_launch(&chat.key);
+    restarted.chats.test_busy(&chat.key, true);
+    let again = chat.start(&restarted, json!({ "revision": 1 })).unwrap();
+    let second = format!("{turn}-try2");
+    assert_eq!(again["delivered"], true, "{again}");
+    assert_eq!(again["state"], "queued", "{again}");
+    assert_eq!(again["turnId"], second.as_str());
+    assert_eq!(again["plan"]["started"]["turnId"], second.as_str());
+    assert_eq!(
+        again["plan"]["started"]["at"],
+        queued["plan"]["started"]["at"]
+    );
+    assert_eq!(
+        fates(&restarted),
+        [(turn.clone(), Gone), (second.clone(), Handed)]
+    );
+    // Asked again: it has it.
+    let told = chat.start(&restarted, json!({ "revision": 1 })).unwrap();
+    assert_eq!(
+        (&told["state"], &told["turnId"]),
+        (&json!("told"), &json!(second))
+    );
+    assert_eq!(chat.turns().len(), 2);
+
+    // Its chat's process is ended on purpose with the turn still queued:
+    // the turn is marked not sent, and the plan still says told.
+    restarted.chats.test_end(&chat.key);
+    assert_eq!(
+        fates(&restarted),
+        [(turn.clone(), Gone), (second.clone(), Gone)]
+    );
+    assert_eq!(chat.get(&restarted)["started"]["told"], true);
+
+    // The next try cannot be written to the agent (a stand-in that takes
+    // no input). The answer says so, the plan no longer says its agent was
+    // told, and that try has left its "not sent" line: it is over too.
+    restarted.chats.test_launch(&chat.key);
+    let third = format!("{turn}-try3");
+    let failed = chat.start(&restarted, json!({ "revision": 1 })).unwrap();
+    assert_eq!(failed["delivered"], false, "{failed}");
+    assert_eq!(failed["turnId"], third.as_str());
+    assert!(failed["notDelivered"].is_string(), "{failed}");
+    assert_eq!(failed["plan"]["started"]["told"], false, "{failed}");
+    assert_eq!(chat.get(&restarted)["started"]["told"], false);
+    assert_eq!(
+        fates(&restarted),
+        [
+            (turn.clone(), Gone),
+            (second.clone(), Gone),
+            (third.clone(), Gone)
+        ]
+    );
+
+    // And the one after it is handed over, under the id after that.
+    restarted.chats.test_busy(&chat.key, true);
+    let fourth = format!("{turn}-try4");
+    let handed = chat.start(&restarted, json!({ "revision": 1 })).unwrap();
+    assert_eq!(handed["delivered"], true, "{handed}");
+    assert_eq!(handed["state"], "queued", "{handed}");
+    assert_eq!(handed["turnId"], fourth.as_str());
+    let kept = chat.get(&restarted)["started"].clone();
+    assert_eq!(
+        (&kept["told"], &kept["turnId"]),
+        (&json!(true), &json!(fourth))
+    );
+    assert_eq!(kept["at"], queued["plan"]["started"]["at"], "one Start");
+    assert_eq!(chat.queued(&restarted), [fourth.clone()]);
+    restarted.chats.test_end(&chat.key);
+    svc.chats.test_end(&chat.key);
+}
+
+/// The ids of a Start's tries are counted on from its own, and the first
+/// is found again from any of them.
+#[test]
+fn every_try_at_telling_of_a_start_has_an_id_counted_on_from_the_starts_own() {
+    use crate::chat_plan::{first_turn_id, next_turn_id};
+    let first = crate::chat_plan::start_turn_id();
+    assert!(first.starts_with(START_TURN_PREFIX));
+    let second = next_turn_id(&first);
+    let third = next_turn_id(&second);
+    assert_eq!(second, format!("{first}-try2"));
+    assert_eq!(third, format!("{first}-try3"));
+    for id in [&first, &second, &third] {
+        assert_eq!(first_turn_id(id), first);
+        assert!(id.starts_with(&first));
+    }
+    // An id that only looks like a later try is its own first.
+    let odd = format!("{START_TURN_PREFIX}one-try");
+    assert_eq!(first_turn_id(&odd), odd);
+    assert_eq!(next_turn_id(&odd), format!("{odd}-try2"));
 }
 
 /// The Start turn waits behind a turn in flight like any message, and is

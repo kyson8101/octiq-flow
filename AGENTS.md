@@ -463,8 +463,40 @@ Four rules hold:
   the agent nothing. A turn that cannot be handed over leaves the Start
   standing: the answer says `delivered: false` with the reason, never an
   error, `started.told` stays false, and the page asks again with the same
-  command, which tries the turn under a new id and records nothing twice.
-  The host does not retry by itself.
+  command. The host does not retry by itself.
+- **One Start, one turn, however often and from however many tabs it is
+  asked.** When and on which revision a plan was started is recorded once
+  and never touched again. The turn is handed over once, and two things
+  hold that (review of 16e4188, H2: every ask made a fresh turn id, so two
+  asks at once queued two turns, and so did an ask after a `told` that
+  failed to save):
+  - *a claim* (`chat_plan::telling`, one per chat): held from reading
+    whether the agent was told to noting that it was, so two asks are one
+    after the other and the second finds what the first did. Taking the
+    Start's turn back from the queue holds it too. It is taken before any
+    lock of the chats', and nothing that holds one of those asks for it.
+  - *a receipt that is not the note.* `started.told` is a note, and a note
+    can fail to save. The receipt is the turn's own line in the chat's
+    record, under an id that is the Start's: `started.turn_id` is made with
+    the Start, and every try is under it or one counted on from it
+    (`next_turn_id`: `…`, `…-try2`). Each ask of a started plan reads what
+    became of those turns (`agent_chat::host_turns`) before it sends: no
+    line, and the turn is handed over under the same id; handed over, and
+    nothing is sent and a missing note is saved; gone, and the next try has
+    the next id.
+  - **A turn that is gone is told again, and that is how it differs from
+    one that was delivered**: the person took it back (✕), it was marked not
+    sent, or its last word is `queued` and no queue holds it (the queue is
+    in memory: a server queued it and stopped). Each is a line the host
+    already wrote. A turn written to the agent has `dispatched` after
+    `queued` and is never gone; `unknown` (its process ended before saying
+    it had the prompt) counts as handed over, so the host never sends it a
+    second time. The ✕ sets `told` back to false so the page offers `Tell
+    the agent`; the other two leave it true until the next ask, which reads
+    the record whatever the note says.
+  - A new thing the host tells an agent ONCE asks `host_turns` under an id
+    that is a function of what it tells of, the same way. A fresh id for
+    each try, and a flag for "was it told", is the shape that failed.
 - **Only the chat's own agent writes.** `/hook/plan` keeps the `HookCaller`
   and refuses a front desk, a room seat (`session_key != chat_key`; a seat
   may read) and a worker by `is_worker_chat`, which still holds after its

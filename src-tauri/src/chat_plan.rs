@@ -113,12 +113,19 @@ pub struct Started {
     /// The revision the person was looking at when they pressed it.
     pub revision: u64,
     /// The turn that tells the agent (`START_TURN_PREFIX`): the one made
-    /// with the Start, or the last one that was handed over.
+    /// with the Start, or the try of it that was last handed over
+    /// (`next_turn_id`).
     pub turn_id: String,
     /// Whether that turn was handed to the agent: written to it, or put in
-    /// its queue. False from the Start until then. The Start stands either
-    /// way; while this is false the page can ask again and nothing is
-    /// recorded twice (`chat_plan_start`).
+    /// its queue. False from the Start until then, and false again when the
+    /// person takes the turn back from the queue (`untold`). The Start
+    /// stands either way; while this is false the page can ask again.
+    ///
+    /// **It is a note of a delivery, not the receipt of one.** The receipt
+    /// is the turn's own line in the chat's record, under an id that is a
+    /// function of this Start (`agent_chat::host_turns`): a delivery whose
+    /// note could not be saved is found there by the next ask, which then
+    /// saves the note and sends nothing (`chat_plan_start`).
     #[serde(default)]
     pub told: bool,
 }
@@ -677,9 +684,56 @@ pub fn startable(chat_id: &str, revision: u64) -> Result<Plan, String> {
     startable_in(get(chat_id)?, revision)
 }
 
-/// A fresh id for the turn that tells the agent.
+/// A fresh id for the turn that tells the agent, made once for a Start and
+/// saved with it. Every try at telling the agent of that Start is under
+/// this id or one counted on from it (`next_turn_id`), never a fresh one:
+/// a fresh id for each ask is what let one Start be told twice (review of
+/// 16e4188, H2), because nothing in the chat's record tied two asks to the
+/// one Start.
 pub(crate) fn start_turn_id() -> String {
     format!("{START_TURN_PREFIX}{}", uuid::Uuid::new_v4())
+}
+
+/// What a later try's id ends in, before its number.
+const TRY_MARK: &str = "-try";
+
+/// The id of the try after `turn_id`, for a Start whose turn will not reach
+/// the agent (`agent_chat::HostTurn::Gone`): `…`, `…-try2`, `…-try3`. A
+/// turn that is gone keeps its id for good, with the line that says so, and
+/// the page drops a bubble by its id, so the next try cannot reuse it.
+pub(crate) fn next_turn_id(turn_id: &str) -> String {
+    match tried(turn_id) {
+        Some((first, number)) => format!("{first}{TRY_MARK}{}", number.saturating_add(1)),
+        None => format!("{turn_id}{TRY_MARK}2"),
+    }
+}
+
+/// The id a Start's first try was made under, which every later try's id
+/// begins with.
+pub(crate) fn first_turn_id(turn_id: &str) -> &str {
+    tried(turn_id).map_or(turn_id, |(first, _)| first)
+}
+
+fn tried(turn_id: &str) -> Option<(&str, u32)> {
+    let (first, number) = turn_id.rsplit_once(TRY_MARK)?;
+    Some((first, number.parse().ok()?))
+}
+
+/// The claim on telling one chat's agent of its plan's Start. Whoever holds
+/// it is the only one reading whether the agent was told, handing the turn
+/// over and noting that it was, so two asks at once are one after the
+/// other: the second finds what the first did. Taking the Start's turn back
+/// from the queue holds it too, so the note cannot be written over a
+/// taking back. One per chat, for as long as the server runs; taken before
+/// any lock of the chats', and nothing that holds one of those asks for it.
+pub(crate) fn telling(chat_id: &str) -> std::sync::Arc<Mutex<()>> {
+    static CLAIMS: Mutex<BTreeMap<String, std::sync::Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
+    CLAIMS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(chat_id.to_string())
+        .or_default()
+        .clone()
 }
 
 /// Record the person's Start on `revision`. Save-first: the plan is started
@@ -715,6 +769,24 @@ pub fn told(chat_id: &str, turn_id: &str) -> Result<Plan, String> {
     started.turn_id = turn_id.to_string();
     write(chat_id, &plan)?;
     Ok(plan)
+}
+
+/// Record that the turn `turn_id` will not reach the agent after all: the
+/// person took it back from the queue. The Start stands, as it was
+/// recorded; its agent has not been told, and the page can ask again.
+/// `None` when the plan does not say that turn was handed over, which
+/// changes nothing.
+pub fn untold(chat_id: &str, turn_id: &str) -> Result<Option<Plan>, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut plan) = read(chat_id)? else {
+        return Ok(None);
+    };
+    match plan.started.as_mut() {
+        Some(started) if started.told && started.turn_id == turn_id => started.told = false,
+        _ => return Ok(None),
+    }
+    write(chat_id, &plan)?;
+    Ok(Some(plan))
 }
 
 /// What the host tells an agent when the person starts its chat's plan. The

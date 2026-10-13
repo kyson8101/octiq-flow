@@ -187,19 +187,71 @@ it is save-first.
 
 **When the turn cannot be handed over the Start stands.** The answer is not
 an error: `delivered: false` with the reason in `notDelivered`, and
-`started.told` stays false. **The page asks again with the same command.**
-On a plan that is already started:
+`started.told` stays false. **The page asks again with the same command**
+(`revision` is not checked then), and the host does not retry by itself.
 
-- `told` is false: the turn is tried again under a new turn id. When and on
-  which revision the plan was started is not touched, so nothing is recorded
-  twice. `revision` is not checked.
-- `told` is true: nothing is sent. The answer is `delivered: true`,
-  `state: "told"`.
+### One Start, one turn
 
-The host does not retry by itself.
+However often the command is asked, and from however many tabs at once, the
+agent is handed the Start's turn once. When and on which revision the plan
+was started is recorded once, by the first ask, and never touched again.
+Two things hold it:
 
-The ✕ on a queued Start turn (`chat_cancel_queued`) takes the turn back, not
-the Start. There is no un-start.
+- **A claim.** From reading whether the agent was told to noting that it
+  was, one ask at a time has the chat's plan. Two asks at once are one after
+  the other, and the second finds what the first did: its answer is
+  `delivered: true`, `state: "told"`, with the same `turnId`.
+- **A receipt that is not the note.** `started.told` is a note, and a note
+  can fail to be saved. The receipt is the turn itself, in the chat's
+  record, under an id that belongs to the Start: `started.turnId` is made
+  with the Start and saved with it, and every try at telling the agent is
+  under that id or one counted on from it (`…`, `…-try2`, `…-try3`). Each ask
+  of a started plan first reads what became of those turns
+  (`agent_chat::host_turns`):
+
+| What the record says of the Start's turn | The ask |
+| --- | --- |
+| nothing: no try left a line | hands the turn over, under the same id |
+| handed over (written to the agent, in the host's queue or being carried into the next process, acknowledged, or its process ended before saying so) | sends nothing. If `told` was false it saves it. `state: "told"` |
+| gone (below) | hands over the next try, under the next id |
+
+So a turn that was handed over and whose note could not be saved
+(`delivered: true` with `started.told: false`, and the failure in `unsaved`
+beside the answer) is not handed over again: the next ask finds it, saves
+the note and answers `state: "told"`. Before the fix of 2026-10-14 every ask
+made a fresh turn id, so nothing tied two asks to the one Start: two asks at
+once queued two turns, and so did an ask after a note that failed to save.
+
+**A turn that is gone can be told again, and that is how it is told apart
+from one that was delivered.** A Start's turn is gone when its line in the
+record says so, and each of these is a line the host already wrote:
+
+- the person took it back from the queue (✕, `chat_cancel_queued`:
+  `octiq_user_turn_cancelled`), or dismissed it;
+- it was marked not sent (`octiq_user_turn_delivery`, `state: "failed"`):
+  the write to the agent failed, or its chat's process was ended on purpose
+  with the turn still queued;
+- its last word is `queued` and no queue holds it: the host's queue is in
+  memory, so that is a turn a server queued and did not live to hand over.
+
+A turn that was written to the agent has `dispatched` (or `starting`, or the
+provider's acknowledgement) after `queued`, and is never gone. One whose
+process ended before it said it had the prompt (`unknown`) counts as handed
+over: the words may have reached the agent, so the host does not send them a
+second time.
+
+The ✕ on a queued Start turn takes the turn back, not the Start: there is no
+un-start. It sets `started.told` back to false (the `chat-plan` event says
+so), so the page offers `Tell the agent` again; that ask hands over the next
+try. The other two ways a turn goes leave `told` true until the next ask,
+which reads the record whatever the note says, sets `told` to false and
+hands over the next try. The page does not offer that ask today (it offers
+`Tell the agent` only while `told` is false): it can, for a Start turn its
+transcript shows as not sent.
+
+Not covered: `/clear` removes the chat's record and keeps the plan. A plan
+whose note is false with its turn's lines cleared reads as never told, and
+an ask then hands the turn over again.
 
 The turn is not the person's own message: its id is not a person's turn id,
 so the queue never folds a message into it, and it is no evidence for
@@ -250,8 +302,9 @@ Left out when there is nothing to say: `note`, `progress`, `linked`,
 
 `chat-plan { chatId, plan }`, with `plan` as `chat_plan_get` answers it.
 One on every change to the list, one when a Start is recorded, one when
-`told` is saved. None for a change that changed nothing, and none when the
-ledger moves.
+`told` is saved, and one when it is set back to false (the Start's turn was
+taken back, or found gone by an ask). None for a change that changed
+nothing, and none when the ledger moves.
 
 ### Tools (the agent)
 

@@ -1049,23 +1049,86 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             if let Some(refusal) = plan_chat_refusal(svc, &key)? {
                 return Err(refusal.into());
             }
+            // One Start, one turn, however often and from however many tabs
+            // this is asked (review of 16e4188, H2). Two things hold it:
+            //
+            // - the claim: from here to the answer nobody else reads
+            //   whether this chat's agent was told, hands the turn over or
+            //   notes that it was, so two asks at once are one after the
+            //   other and the second finds what the first did;
+            // - the receipt: the turn's id is the Start's own, saved with
+            //   it, and what became of that turn is read from the chat's
+            //   record (`host_turns`), not from the note `told`. A turn
+            //   that was handed over and whose note could not be saved is
+            //   found there, and this ask saves the note and sends nothing.
+            let claim = crate::chat_plan::telling(&chat_id);
+            let _telling = claim.lock().unwrap_or_else(|e| e.into_inner());
             // A plan that is started is never started again. Asked of one
             // whose agent has its turn, this answers that and sends nothing.
-            // Asked of one whose turn could not be handed over, it is the
-            // page asking again: the turn is tried once more and the Start
-            // as it was recorded (when, on which revision) is not touched.
-            let before = crate::chat_plan::get(&chat_id)?;
+            // Asked of one whose turn was not handed over, or was taken
+            // back or lost, it is the page asking again: the turn is tried
+            // once more and the Start as it was recorded (when, on which
+            // revision) is not touched.
+            let mut before = crate::chat_plan::get(&chat_id)?;
             let again = before.as_ref().is_some_and(|plan| plan.started.is_some());
-            if let Some(started) = before.as_ref().and_then(|plan| plan.started.as_ref()) {
-                if started.told {
+            let mut retried = None;
+            // The plan says its agent was told, and that turn is gone.
+            let mut stale = None;
+            if let Some((plan, started)) = before
+                .as_ref()
+                .and_then(|plan| Some((plan, plan.started.as_ref()?)))
+            {
+                use crate::agent_chat::HostTurn;
+                let first = crate::chat_plan::first_turn_id(&started.turn_id).to_string();
+                let turns = crate::agent_chat::host_turns(&svc.chats, &key, &first)?;
+                if started.told && turns.get(&started.turn_id) != Some(&HostTurn::Gone) {
                     let turn_id = started.turn_id.clone();
                     return Ok(json!({
                         "plan": plan_view(svc, &chat_id, before),
                         "turnId": turn_id, "delivered": true, "state": "told",
                     }));
                 }
+                // The first try of this Start that is not gone. A turn the
+                // person took back, one marked not sent and one a server
+                // that is gone had only queued are each a try that is over;
+                // the next has the next id.
+                let mut turn_id = first;
+                while turns.get(&turn_id) == Some(&HostTurn::Gone) {
+                    turn_id = crate::chat_plan::next_turn_id(&turn_id);
+                }
+                if turns.get(&turn_id) == Some(&HostTurn::Handed) {
+                    // The agent has it, or it waits in the queue for it:
+                    // what is missing is the note. Nothing is sent.
+                    let plan = crate::chat_plan::told(&chat_id, &turn_id).unwrap_or_else(|why| {
+                        crate::unsaved::say("that the agent was told its plan was started", why);
+                        plan.clone()
+                    });
+                    let view = plan_view(svc, &chat_id, Some(plan));
+                    announce_plan(&view);
+                    return Ok(json!({
+                        "plan": view, "turnId": turn_id, "delivered": true, "state": "told",
+                    }));
+                }
+                retried = Some(turn_id);
+                stale = started.told.then(|| started.turn_id.clone());
             } else {
                 crate::chat_plan::startable(&chat_id, revision)?;
+            }
+            // Before the next try, which may fail: the plan stops saying
+            // what is no longer so, as it does when the person takes the
+            // turn back themselves.
+            if let Some(gone) = stale {
+                match crate::chat_plan::untold(&chat_id, &gone) {
+                    Ok(Some(plan)) => {
+                        announce_plan(&plan_view(svc, &chat_id, Some(plan.clone())));
+                        before = Some(plan);
+                    }
+                    Ok(None) => {}
+                    Err(why) => crate::unsaved::say(
+                        "that the agent no longer has the turn for its plan's Start",
+                        why,
+                    ),
+                }
             }
             // As for a completion: a chat with no process is started with
             // the host's turn as its first message, from the settings the
@@ -1078,10 +1141,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     svc.chats.require_user_resume(&resume)?;
                 }
             }
-            // A turn id of its own for every try: one that failed may have
-            // left its line in the record, and a send under the same id
-            // would be taken for a retry of a send that got through.
-            let turn_id = crate::chat_plan::start_turn_id();
+            // The Start's own turn id, made once and saved with it. A try
+            // that left nothing in the record is tried again under the
+            // same id, so a send that did get through is never sent twice
+            // (`send_turn` knows the id). A try that is over has left its
+            // line, and the next one's id is counted on from it above.
+            let turn_id = retried.unwrap_or_else(crate::chat_plan::start_turn_id);
             let plan = match before {
                 Some(plan) if again => plan,
                 _ => {
@@ -1112,9 +1177,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 };
             Ok(match handed {
                 Ok(state) => {
-                    // The agent has the turn. That it was told is a record
+                    // The agent has the turn. That it was told is a note
                     // of something that happened: when it cannot be kept it
-                    // is said beside the answer, and the page may ask again.
+                    // is said beside the answer. The page may ask again,
+                    // and that ask finds the turn in the record, saves the
+                    // note and sends nothing.
                     let plan = crate::chat_plan::told(&chat_id, &turn_id).unwrap_or_else(|why| {
                         crate::unsaved::say("that the agent was told its plan was started", why);
                         plan
@@ -1167,11 +1234,42 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // Take back a message the agent has not been given yet. Answers
         // `false` when it was already handed over, which the page needs: the
         // bubble stays, because an answer to it is on its way.
-        "chat_cancel_queued" => to_value(crate::agent_chat::chat_cancel_queued_impl(
-            &svc.chats,
-            arg(&args, "key")?,
-            arg(&args, "turnId")?,
-        )),
+        "chat_cancel_queued" => {
+            let key: String = arg(&args, "key")?;
+            let turn_id: String = arg(&args, "turnId")?;
+            // The turn that tells an agent its plan was started: taking it
+            // back takes the turn and never the Start. The plan stops
+            // saying its agent was told, so the page can ask again, and the
+            // two change under the claim a Start is told under, so a note
+            // that the agent was told is never written over a taking back.
+            let plan_chat = turn_id
+                .starts_with(crate::chat_plan::START_TURN_PREFIX)
+                .then(|| key.strip_prefix("chat:"))
+                .flatten();
+            let claim = plan_chat.map(crate::chat_plan::telling);
+            let _telling = claim
+                .as_ref()
+                .map(|claim| claim.lock().unwrap_or_else(|e| e.into_inner()));
+            let cancelled = crate::agent_chat::chat_cancel_queued_impl(
+                &svc.chats,
+                key.clone(),
+                turn_id.clone(),
+            )?;
+            if let Some(chat_id) = plan_chat.filter(|_| cancelled) {
+                match crate::chat_plan::untold(chat_id, &turn_id) {
+                    Ok(Some(plan)) => announce_plan(&plan_view(svc, chat_id, Some(plan))),
+                    Ok(None) => {}
+                    // The turn is taken back all the same. The next ask
+                    // reads that from the chat's record, whatever the plan
+                    // still says (`chat_plan_start`).
+                    Err(why) => crate::unsaved::say(
+                        "that the agent no longer has the turn for its plan's Start",
+                        why,
+                    ),
+                }
+            }
+            Ok(json!(cancelled))
+        }
         // Permanently hide a prompt that queue reconciliation established was
         // lost. This is distinct from taking back a live queued message: its
         // words stay out of the composer and the dismissal survives replay.

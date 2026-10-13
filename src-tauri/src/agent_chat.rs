@@ -5300,6 +5300,120 @@ pub(crate) fn chat_host_turn_impl(
     Ok(Some(state))
 }
 
+/// What became of a turn the host handed, or tried to hand, a chat's agent
+/// under an id of its own (`chat_host_turn_impl`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum HostTurn {
+    /// The agent has it, or it waits in the host's queue for it.
+    Handed,
+    /// It will not reach the agent: the person took it back from the
+    /// queue, it was marked not sent, or the queue it waited in was a
+    /// server's that is gone.
+    Gone,
+}
+
+/// What became of every host turn of the chat `key` whose id starts with
+/// `prefix`, by id, read from what the chat's record and the host's queue
+/// hold now. An id that is not in the answer left no trace: that turn was
+/// never handed over.
+///
+/// This is the receipt a caller that must tell an agent something ONCE
+/// asks before it sends, and it holds across a restart: nothing here is
+/// kept in memory but the queue itself. A turn's lines in the record are
+/// the ones every send writes, in the order they happen: the turn itself
+/// (`octiq_user_turn`), how it was delivered (`queued`, `dispatched`,
+/// `starting`, `failed`, `unknown`), and its taking back (`cancelled`,
+/// `dismissed`).
+///
+/// - Taken back, or `failed` last: **gone**.
+/// - `queued` last: **handed** while it is still in the host's queue or
+///   being carried into the next process, **gone** otherwise. The queue is
+///   in memory, so that is a turn a server queued and did not live to hand
+///   over.
+/// - Anything else: **handed**. That includes `unknown`, a process that
+///   ended before it said it had the turn: the words may have reached the
+///   agent, so they are never sent a second time for the host.
+///
+/// Read under the locks every hand-over of a queued turn is made under
+/// (the session table for a one-shot agent's, the session for a persistent
+/// one's). Under them a turn is in the queue, or being carried
+/// (`handoffs`), or its `dispatched` or `failed` line is in the record:
+/// never between two of those, where it would read as lost and be sent
+/// again.
+pub(crate) fn host_turns(
+    manager: &ChatManager,
+    key: &str,
+    prefix: &str,
+) -> Result<std::collections::BTreeMap<String, HostTurn>, String> {
+    #[derive(Default)]
+    struct Seen {
+        received: bool,
+        taken_back: bool,
+        delivery: Option<String>,
+    }
+    let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions.get(key).cloned();
+    let _session = match &session {
+        Some(session) => Some(session.lock().map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let mut seen: std::collections::BTreeMap<String, Seen> = Default::default();
+    for item in crate::transcript::since(key, 0) {
+        let event = item.event;
+        let ours = |id: &&str| id.starts_with(prefix);
+        // The provider's own acknowledgement of the prompt.
+        if let Some(id) = event["octiq_user_turn_id"].as_str().filter(ours) {
+            seen.entry(id.to_string()).or_default().received = true;
+        }
+        let Some(id) = event["uuid"].as_str().filter(ours) else {
+            continue;
+        };
+        match event["type"].as_str() {
+            Some("user") if event["octiq_user_turn"] == true => {
+                seen.entry(id.to_string()).or_default();
+            }
+            Some("octiq_user_turn_delivery") => {
+                seen.entry(id.to_string()).or_default().delivery =
+                    event["state"].as_str().map(str::to_string);
+            }
+            Some("octiq_user_turn_cancelled" | "octiq_user_turn_dismissed") => {
+                seen.entry(id.to_string()).or_default().taken_back = true;
+            }
+            _ => {}
+        }
+    }
+    let carried = manager
+        .handoffs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains(key);
+    let queued = manager.queued_turns.lock().map_err(|e| e.to_string())?;
+    let waits = |id: &str| {
+        carried
+            || queued
+                .get(key)
+                .is_some_and(|queue| queue.iter().any(|turn| turn.owns_turn_id(id)))
+    };
+    Ok(seen
+        .into_iter()
+        .map(|(id, turn)| {
+            let gone = turn.taken_back
+                || (!turn.received
+                    && match turn.delivery.as_deref() {
+                        Some("failed") => true,
+                        Some("queued") => !waits(&id),
+                        _ => false,
+                    });
+            let fate = if gone {
+                HostTurn::Gone
+            } else {
+                HostTurn::Handed
+            };
+            (id, fate)
+        })
+        .collect())
+}
+
 fn send_turn(
     manager: Arc<ChatManager>,
     key: String,
@@ -7626,6 +7740,10 @@ mod ending_tests;
 #[cfg(test)]
 #[path = "reach_tests.rs"]
 mod reach_tests;
+
+#[cfg(test)]
+#[path = "host_turn_tests.rs"]
+mod host_turn_tests;
 
 #[cfg(test)]
 mod upload_tests {
