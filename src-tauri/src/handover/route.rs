@@ -577,6 +577,7 @@ pub fn request(
         asks: Vec::new(),
         outcomes: Vec::new(),
         outcome_receipts: Vec::new(),
+        lift_settled: false,
         kind: Kind::Route,
         route: Some(RouteDetail {
             message,

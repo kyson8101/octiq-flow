@@ -387,10 +387,15 @@ pub struct Handover {
     /// pruned; records written before it existed start from `outcomes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outcome_receipts: Vec<OutcomeReceipt>,
+    /// The one-time lift (`lift.rs`) has looked at this record, whether it
+    /// lifted the chat or left it: it is never looked at again. Private,
+    /// like `origin`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lift_settled: bool,
 }
 
-/// A handover as the browser sees it: everything but the private origin
-/// and the outcome receipts.
+/// A handover as the browser sees it: everything but the private origin,
+/// the outcome receipts and the lift's mark.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Public {
@@ -1048,6 +1053,7 @@ pub fn request(path: &Path, host: &dyn Host, source: Source, ask: Ask) -> Result
         asks: Vec::new(),
         outcomes: Vec::new(),
         outcome_receipts: Vec::new(),
+        lift_settled: false,
         kind: Kind::Handover,
         route: None,
     };
@@ -2420,6 +2426,7 @@ pub fn live_recover(svc: &crate::dispatch::Services) {
 }
 
 pub mod back;
+pub(crate) mod lift;
 pub mod route;
 
 #[cfg(test)]

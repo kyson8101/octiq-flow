@@ -68,6 +68,10 @@ impl Services {
         let mut chats = ChatManager::with_saved_questions(question_path);
         chats.orchestrations = orchestrations.clone();
         let chats = Arc::new(chats);
+        // Once, before anything below can start a chat: the chats an
+        // earlier build opened as read-only discussions go back to their
+        // agent's registered access (`handover::lift`).
+        crate::handover::lift::at_startup(&orchestrations, &|key| chats.has_process(key));
         // A chat nobody has touched for a quarter of an hour is ended and
         // resumed on its next message. This is where it matters most: the
         // service runs for days, and every chat left open holds an agent and
