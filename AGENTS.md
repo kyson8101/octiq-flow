@@ -517,6 +517,18 @@ to the level the chat still runs at instead of restarting the agent, which is
 what it does for every other refusal. A lowering takes hold at once and is
 written when it can be (see **Conventions**, rule C).
 
+**The level a registered agent's chat is started at is
+`agentsMode.startAccess`**, asked at the start itself (`send`, the
+`chat_start` it makes, `chat_complete`'s start, a coordinator's start) and
+never only where the chat is opened, because the roster can load after the
+chat is on screen. It only ever raises a saved level to the agent's
+registered one and never lowers it; a running process keeps the level it
+has, and the chat is saved at the level its process was started at. The page
+offers no control and runs no logic that opens or switches a chat to
+read-only on its own: a discussion is how a route's card is worded.
+`lib/startAccess.wiring.test.ts` scans for both and, being a text scan, is
+an alarm and not a proof.
+
 ### An auto-mode refusal the agent carries on past is a notice, not a card
 
 Claude's auto mode refuses a call mid-turn and the agent usually goes on

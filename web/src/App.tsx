@@ -3844,7 +3844,7 @@ export default function App() {
           saveConversations(next);
           return next;
         });
-        if (!deskChat) saveIndexEntry({
+        const indexed = {
           id: activity.id,
           projectId: activity.projectId,
           title: activity.title,
@@ -3859,7 +3859,8 @@ export default function App() {
           pinned: activity.pinned ?? false,
           generation: activity.generation,
           launch: activity.launch,
-        });
+        };
+        if (!deskChat) saveIndexEntry(indexed);
 
         if (preparationError) {
           fail(preparationError);
@@ -3910,6 +3911,19 @@ export default function App() {
         if (startAt !== sendAccess) {
           setAccess(startAt);
           meta.current[id].access = startAt;
+          // The level saved with the chat is the one its process is started
+          // at, not the one this send began with: the entry above was
+          // written before anything said a start was coming.
+          if (!deskChat) {
+            setConversations((current) => {
+              const next = current.map((conversation) => (
+                conversation.id === id ? { ...conversation, permission: startAt } : conversation
+              ));
+              saveConversations(next);
+              return next;
+            });
+            saveIndexEntry({ ...indexed, access: startAt });
+          }
         }
         setRunning((prev) => new Set(prev).add(id));
         try {

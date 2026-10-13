@@ -29,6 +29,12 @@ const SITES: { name: string; has: RegExp }[] = [
   // A send: asked at the send, and again at the start itself.
   { name: "the send", has: /const sendAccess = conversationId \? startLevel\(conversationId, access, choice\.agent\) : access;/ },
   { name: "the start a send makes", has: /const startAt = startAccess\(sendAccess, agentOfChat\(id\), choice\.agent\);[\s\S]*?bridge\.invoke\("chat_start", \{[\s\S]*?\baccess: startAt,/ },
+  // What is saved with the chat is the level its process was started at:
+  // the entry written earlier in the send is written again when they differ.
+  {
+    name: "the level saved with the chat it starts",
+    has: /if \(startAt !== sendAccess\) \{[\s\S]*?\? \{ \.\.\.conversation, permission: startAt \}[\s\S]*?saveIndexEntry\(\{ \.\.\.indexed, access: startAt \}\);\s*\}\s*\}\s*setRunning\(/,
+  },
   // Complete, for a chat with no process, and a run's coordinator.
   { name: "completing a chat", has: /completions\.complete\(id, \{[\s\S]*?\baccess: startAccess\(access, agentOfChat\(id\), choice\.agent\),/ },
   { name: "a run's coordinator", has: /"orchestration_master_start", \{[\s\S]*?\baccess: startLevel\(id, access, choice\.agent\),/ },
@@ -51,6 +57,13 @@ describe("the level a chat is started at, in the app", () => {
       .toEqual(["completing a chat"]);
     expect(missing(app.replace("runningRef.current.has(id) ? saved : startAccess(saved, agentOfChat(id), provider)", "saved")))
       .toEqual(["a running process is left alone"]);
+  });
+
+  it("fails when the chat is saved at a level it was not started at", () => {
+    expect(missing(app.replace("saveIndexEntry({ ...indexed, access: startAt });", "")))
+      .toEqual(["the level saved with the chat it starts"]);
+    expect(missing(app.replace("{ ...conversation, permission: startAt }", "conversation")))
+      .toEqual(["the level saved with the chat it starts"]);
   });
 
   it("is passed to every chat_start in the app, never the composer's own", () => {
