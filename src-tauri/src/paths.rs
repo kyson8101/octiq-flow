@@ -32,7 +32,32 @@ use std::path::{Component, Path, PathBuf};
 /// An empty value is treated as unset: an exported-but-blank `HOME` would
 /// otherwise resolve to the relative path `""`, which joins into nonsense and
 /// canonicalizes to the process's current directory.
+///
+/// **Under test this is a scratch folder, never this machine's home.** One
+/// `TestDir` for the test binary, made the first time it is asked for and
+/// removed at exit, like the scratch profile (`profile::started_in`). The
+/// suite used to rewrite `~/.octiqflow/mcp/*.cjs` and append to
+/// `~/.octiqflow/logs/agent-diagnostics.jsonl` under the real home on every
+/// run, on every platform: the files a live server on the same machine
+/// hands its agents. Everything in this crate that is kept under the home
+/// folder asks here, so it is answered in one place. What a test needs of
+/// the machine's own home it asks of `machines_home_dir`, and says why.
 pub fn home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        static SCRATCH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        Some(
+            SCRATCH
+                .get_or_init(|| crate::test_dir::TestDir::new("home").remove_at_exit())
+                .clone(),
+        )
+    }
+    #[cfg(not(test))]
+    machines_home_dir()
+}
+
+/// The home folder the environment names: `home_dir`, outside tests.
+pub(crate) fn machines_home_dir() -> Option<PathBuf> {
     for var in ["HOME", "USERPROFILE"] {
         if let Ok(value) = std::env::var(var) {
             if !value.is_empty() {
@@ -566,7 +591,104 @@ mod tests {
     #[test]
     fn home_dir_reads_the_environment() {
         // HOME is set in every environment these tests run in.
-        assert!(home_dir().is_some());
+        assert!(machines_home_dir().is_some());
+    }
+
+    /// The suite wrote under this machine's real home on every run: the MCP
+    /// scripts in `~/.octiqflow/mcp`, which a live server on the same
+    /// machine hands its agents, and the diagnostics journal. Under test
+    /// the home folder is a scratch one, and both land there.
+    #[test]
+    fn under_test_the_home_folder_is_a_scratch_one() {
+        let home = home_dir().expect("a scratch home");
+        let real = machines_home_dir().expect("this machine's home");
+        assert_ne!(home, real);
+        assert!(home.starts_with(std::env::temp_dir()), "{home:?}");
+        assert_eq!(home_dir().as_ref(), Some(&home), "one for the whole run");
+
+        // The two writers the suite reaches, by where they would write.
+        let journal = crate::diagnostics::log_path().expect("a journal path");
+        assert!(journal.starts_with(&home), "{journal:?}");
+        let mcp = crate::agent_provider::ask_mcp_config().expect("the MCP files are written");
+        assert!(mcp.starts_with(&home), "{mcp:?}");
+        assert!(mcp.with_file_name("octiq-ask.cjs").is_file());
+    }
+
+    /// Nothing else decides where "home" is. A module that read `HOME` or
+    /// `USERPROFILE` itself to place a file would write under the real home
+    /// from a test again, where the scratch one above cannot reach it.
+    #[test]
+    fn only_this_module_says_where_the_home_folder_is() {
+        /// Who else names the variables, how often, and why that is not a
+        /// place a file is kept.
+        const ALLOWED: &[(&str, usize, &str)] = &[
+            (
+                "paths.rs",
+                1,
+                "the one definition (`machines_home_dir`)",
+            ),
+            (
+                "workspaces.rs",
+                2,
+                "expands a leading ~ in a project's environment variables for a spawned process; makes and writes nothing",
+            ),
+            (
+                "pty.rs",
+                2,
+                "the folder a terminal with no folder opens in; makes and writes nothing",
+            ),
+            (
+                "bin/octiq.rs",
+                2,
+                "a binary of its own that cannot link this crate; ~/.octiqflow/bus, or OCTIQ_BUS_DIR",
+            ),
+        ];
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src.clone()];
+        let mut found = std::collections::BTreeMap::<String, usize>::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(&src)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !name.ends_with(".rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                // Lines that read the variables from the process: a pure
+                // function handed a home folder as an argument is not one.
+                let reads = text
+                    .lines()
+                    .filter(|line| {
+                        let asks = line.contains("env::var(") || line.contains("env::var_os(");
+                        asks && (line.contains(concat!("\"HO", "ME\""))
+                            || line.contains(concat!("\"USERPRO", "FILE\"")))
+                    })
+                    .count()
+                    + usize::from(
+                        name == "paths.rs"
+                            && text.contains(concat!("[\"HO", "ME\", \"USERPRO", "FILE\"]")),
+                    );
+                if reads > 0 {
+                    found.insert(name, reads);
+                }
+            }
+        }
+        let allowed: std::collections::BTreeMap<String, usize> = ALLOWED
+            .iter()
+            .map(|(name, count, _)| (name.to_string(), *count))
+            .collect();
+        assert_eq!(
+            found, allowed,
+            "a module reads HOME or USERPROFILE itself: ask paths::home_dir, which is a scratch folder under test"
+        );
     }
 
     // ---- plain_windows_path ------------------------------------------------

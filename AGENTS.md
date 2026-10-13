@@ -122,7 +122,18 @@ and never again from inside an agent chat:
   the guard removes the folder on drop, panics included. Hand-made temp
   folders left tens of thousands of `octiq-*` entries in `$TMPDIR`. The
   profile folder is a scratch one under test too (`profile::started_in` for
-  a test that needs its own; see **Persistence locations**). To run
+  a test that needs its own; see **Persistence locations**). **So is the
+  home folder**: under test `paths::home_dir()` answers one scratch folder
+  for the test binary, never this machine's home. The suite used to rewrite
+  `~/.octiqflow/mcp/*.cjs` (the scripts a live server on the same machine
+  hands its agents) and append to `~/.octiqflow/logs/agent-diagnostics.jsonl`
+  on every run, on every platform. Anything kept under the home folder asks
+  `paths::home_dir()`; no module reads `HOME` or `USERPROFILE` to place a
+  file (`paths::tests::only_this_module_says_where_the_home_folder_is`, with
+  its allow-list and reasons), and a test that needs the machine's own home
+  asks `paths::machines_home_dir` and says why. What this does not reach: a
+  program a test starts reads the environment itself (`gh` writes its own
+  `~/.local/state/gh/device-id`). To run
   several modules, put the filters after `--`:
   `cargo test --manifest-path src-tauri/Cargo.toml --lib -- feedback:: agent_provider:: permission::`.
   Before `--` cargo takes one positional filter and errors instead of testing.

@@ -241,7 +241,8 @@ impl Drop for Started {
 /// (`push::tests::send_a_real_push`); every other test reads `profile_dir`.
 #[cfg(test)]
 pub(crate) fn this_machines_profile() -> Option<PathBuf> {
-    let root = crate::paths::home_dir()?.join(".octiqflow");
+    // The real home, on purpose: the manual test names a real chat.
+    let root = crate::paths::machines_home_dir()?.join(".octiqflow");
     let raw = fs::read_to_string(root.join("config.json")).ok()?;
     let cfg: ProfileConfig = serde_json::from_str(&raw).ok()?;
     Some(PathBuf::from(cfg.base).join(cfg.active))
