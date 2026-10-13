@@ -22,6 +22,12 @@ const ASKED: ListsRead = {
   permission_pending: "asked", access_request_pending: "asked", question_pending: "asked", safety_block_pending: "asked",
 };
 
+/** Whether a request failed because the host has no such command: an older
+ *  backend under a newer page (`'<cmd>' is not available on this backend`). */
+export function lacksCommand(problem: unknown): boolean {
+  return String((problem as Error)?.message ?? problem).includes("not available on this backend");
+}
+
 /** Keep the public setters compatible with useState, while applying local
  * answers to the same journal as live events before React schedules a render. */
 function usePendingRequests<T extends PendingRequest>() {
@@ -49,6 +55,8 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
   const [read, setRead] = useState<ListsRead>(ASKED);
   // A list that has said nothing for `SILENT_MS` since it was asked.
   const [late, setLate] = useState(false);
+  // Asked again by the person (`reread`), on the connection that is open.
+  const [round, setRound] = useState(0);
   const mark = useCallback((source: ListSource, state: SourceRead) => {
     setRead((before) => (before[source] === state ? before : { ...before, [source]: state }));
   }, []);
@@ -89,6 +97,9 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
           return !!reconciled;
         } catch (problem) {
           collection.store.cancel(mine);
+          // A host that has no such list holds no card of that kind: that
+          // is an answer, and an empty one. Any other failure says nothing.
+          if (lacksCommand(problem)) return true;
           throw problem;
         }
       }, (answered) => mark(command, answered ? "answered" : "failed"));
@@ -109,7 +120,7 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       clearTimeout(silent);
       cancel.forEach((stop) => stop());
     };
-  }, [conn]);
+  }, [conn, round]);
 
   useEffect(() => {
     const offAsk = bridge.on<Ask>("permission-ask", (ask) => {
@@ -200,8 +211,13 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
     });
   }, [safetyStore, publishSafety, mark]);
 
+  /** Ask every list again on this connection: what the person presses when
+   *  the page could not check what waits on a chat. Each list goes back to
+   *  asked, with its one retry and its own five minutes. */
+  const reread = useCallback(() => setRound((n) => n + 1), []);
+
   return {
-    asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks,
+    asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks, reread,
     /** Whether each list has answered for this connection, and whether one
      *  has been silent too long: what `pendingActions.wholeOf` reads. */
     read, late,

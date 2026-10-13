@@ -13,6 +13,7 @@ import chatWait from "./chatWait.ts?raw";
 import pendingActions from "./pendingActions.ts?raw";
 import requests from "./useChatRequests.ts?raw";
 import chatState from "./chat.ts?raw";
+import turnClock from "./turnClock.ts?raw";
 
 const SITES: { name: string; has: RegExp }[] = [
   // The answer is read off the page's one list of who is waited on.
@@ -131,15 +132,41 @@ describe("a list that has not been read yet", () => {
   it("is one of the reader's own answers, drawn by every surface that follows it", () => {
     // `unknown` is a value of the one map, so a surface handed the map or a
     // value of it has the third answer: no surface is told by a flag beside.
-    expect(chatWait).toMatch(/export type ChatHold = ChatWait \| "unknown";/);
+    expect(chatWait).toMatch(/export type ChatHold = ChatWait \| "unknown" \| "unchecked";/);
     expect(chatWait).toMatch(/\): ReadonlyMap<string, ChatHold> \{/);
-    expect(chatWait).toMatch(/if \(unsettled\.whole === "unread"\) \{\s*for \(const chat of unsettled\.restored\) if \(!waits\.has\(chat\)\) waits\.set\(chat, "unknown"\);/);
+    // Held until the reading is whole, under one of two words: still
+    // checking, or could not check. Never let go while a list is unread.
+    expect(chatWait).toMatch(/if \(unsettled\.whole !== "read"\) \{\s*const held = unsettled\.whole === "unread" \? "unknown" : "unchecked";\s*for \(const chat of unsettled\.restored\) if \(!waits\.has\(chat\)\) waits\.set\(chat, held\);/);
     // Nothing in the app asks how whole the reading is but the reading's
     // own two consumers: no side reader of `whole` for one surface.
     expect(app.match(/pendingRead\.whole/g)).toHaveLength(3);
     // Where each request stands is handed to the reading and nowhere else.
     expect(app.match(/\blistsRead\b/g)).toHaveLength(3);
     expect(app.match(/\bwaitSources\b/g)).toHaveLength(3);
+  });
+
+  it("ends a restored wait on a read and on nothing else: no give-up, no guess", () => {
+    // A list that failed twice, or said nothing for five minutes, proves
+    // nothing. The clock used to let the wait go there and count on a guess.
+    expect(turnClock).toMatch(/if \(before\.restored && read !== "read"\) return before;/);
+    const code = turnClock.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+    // Nothing in the clock makes a guess or reads one, but the one line that
+    // leaves out a guess an older checkpoint still holds.
+    expect(code.match(/guessed/g)).toHaveLength(4);
+    expect(code).toMatch(/const old = \(mine as \{ guessed\?: number \} \| undefined\)\?\.guessed;/);
+    expect(code).not.toMatch(/"gaveUp"\)|=== "gaveUp"/);
+    // The mutation: the wait let go when the page gives up, as it was.
+    const guessing = turnClock.replace('if (before.restored && read !== "read") return before;', 'if (before.restored && read === "unread") return before;');
+    expect(guessing).not.toBe(turnClock);
+    expect(guessing).not.toMatch(/if \(before\.restored && read !== "read"\) return before;/);
+    // The person's way to ask again is the composer's, and asks every source.
+    expect(app).toMatch(/const recheckWaits = useCallback\(\(\) => \{\s*rereadLists\(\);\s*void orchestrationFeed\.refresh\(\)\.catch\(\(\) => \{\}\);\s*\}, \[rereadLists\]\);/);
+    expect(app).toMatch(/waiting=\{waitingHere\}\s*onRecheckWaits=\{recheckWaits\}/);
+    expect(requests).toMatch(/const reread = useCallback\(\(\) => setRound\(\(n\) => n \+ 1\), \[\]\);/);
+    expect(requests).toMatch(/\}, \[conn, round\]\);/);
+    // A host with no such list has answered, and emptily; any other failure
+    // says nothing.
+    expect(requests).toMatch(/if \(lacksCommand\(problem\)\) return true;\s*throw problem;/);
   });
 
   it("names every request that must answer", () => {

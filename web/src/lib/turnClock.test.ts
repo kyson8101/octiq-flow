@@ -226,79 +226,68 @@ describe("a look made before the page knows whether the chat waits", () => {
   });
 });
 
-describe("a restored wait the page never comes to know about", () => {
+describe("a restored wait the page could not check", () => {
   type Timed = { busy: boolean; turnStartedAt?: number; turnWaits?: TurnWaits };
   const saved = T + s(90);
   const back = T + s(271);
   const gaveUp = back + s(300);
-  const guessing = () => withWait(restoredTurn<Timed>({ busy: true, turnStartedAt: T }, saved), false, gaveUp, "gaveUp");
+  const restored = () => restoredTurn<Timed>({ busy: true, turnStartedAt: T }, saved);
 
-  it("is let go on a guess: the time held is left out, and the moment is kept", () => {
-    const state = guessing();
-    expect(state.turnWaits).toEqual({ turn: T, waited: gaveUp - saved, since: null, guessed: gaveUp });
-    expect(turnElapsed(T, state.turnWaits, gaveUp)).toBe(s(90));
-    // The clock goes on from the work the checkpoint saw.
-    expect(turnElapsed(T, state.turnWaits, gaveUp + s(40))).toBe(s(130));
-    // Still guessing while nothing new is read.
-    expect(withWait(state, false, gaveUp + s(40), "gaveUp")).toBe(state);
-    expect(withWait(state, false, gaveUp + s(40), "unread")).toBe(state);
-    expect(withWait(state, "unknown", gaveUp + s(40), "unread")).toBe(state);
+  it("is not let go: a list that failed or was given up on says nothing of what waits", () => {
+    // The page used to end the wait here on a guess, and count from there.
+    const state = restored();
+    for (const seen of [false, "unknown"] as const) {
+      expect(withWait(state, seen, gaveUp, "gaveUp")).toBe(state);
+      expect(withWait(state, seen, gaveUp + s(600), "gaveUp")).toBe(state);
+    }
+    expect(parkRestored(state)).toBe(true);
+    // The clock stands at the work the checkpoint saw, however long it is.
+    for (const later of [0, s(40), s(720), s(86_400)]) expect(turnElapsed(T, state.turnWaits, gaveUp + later)).toBe(s(90));
   });
 
-  it("takes the guessed time back when the lists answer after all and the chat waits", () => {
-    const answered = gaveUp + s(100);
-    const state = withWait(guessing(), true, answered, "read");
-    expect(state.turnWaits).toEqual({ turn: T, waited: answered - saved, since: answered });
-    // Back to the work the checkpoint saw, and stopped there.
-    expect(turnElapsed(T, state.turnWaits, answered + s(500))).toBe(s(90));
-    const after = withWait(state, false, answered + s(500), "read");
-    expect(turnElapsed(T, after.turnWaits, answered + s(505))).toBe(s(95));
+  it("is confirmed by a card that a later read finds, with nothing to take back", () => {
+    // The reviewer's order: given up, then the question's list answers while
+    // another is still silent (the reading is still `gaveUp`).
+    const found = gaveUp + s(40);
+    const state = withWait(withWait(restored(), false, gaveUp, "gaveUp"), true, found, "gaveUp");
+    expect(state.turnWaits).toEqual({ turn: T, waited: 0, since: saved });
+    expect(turnElapsed(T, state.turnWaits, found + s(60))).toBe(s(90));
+    // Every list read at last, the card still up; then answered, and 5 s of work.
+    const all = withWait(state, true, found + s(60), "read");
+    expect(all).toBe(state);
+    const answered = withWait(all, false, found + s(100), "read");
+    expect(turnElapsed(T, answered.turnWaits, found + s(100))).toBe(s(90));
+    expect(turnElapsed(T, answered.turnWaits, found + s(105))).toBe(s(95));
   });
 
-  it("takes it back on a new connection too, whichever list says so first", () => {
-    // Every list is asked again (`unread`), and the question list answers
-    // before the rest: the card was there all along.
-    const reconnected = gaveUp + s(100);
-    const asked = withWait(guessing(), false, reconnected, "unread");
-    expect(asked).toEqual(guessing());
-    const state = withWait(asked, true, reconnected + s(2), "unread");
-    expect(turnElapsed(T, state.turnWaits, reconnected + s(500))).toBe(s(90));
-    expect(state.turnWaits?.guessed).toBeUndefined();
+  it("is ended only by a read that says nothing waits, with all the time held left out", () => {
+    const state = withWait(restored(), false, gaveUp, "gaveUp");
+    const read = withWait(state, false, gaveUp + s(700), "read");
+    expect(read.turnWaits).toEqual({ turn: T, waited: gaveUp + s(700) - saved, since: null });
+    expect(turnElapsed(T, read.turnWaits, gaveUp + s(700))).toBe(s(90));
+    expect(turnElapsed(T, read.turnWaits, gaveUp + s(705))).toBe(s(95));
   });
 
-  it("lets the guess stand when the lists answer and nothing waits", () => {
-    const answered = gaveUp + s(100);
-    const state = withWait(guessing(), false, answered, "read");
-    expect(state.turnWaits).toEqual({ turn: T, waited: gaveUp - saved, since: null });
-    expect(turnElapsed(T, state.turnWaits, answered)).toBe(s(190));
-    // A card that comes later is a wait that begins then.
-    const later = withWait(state, true, answered + s(50), "read");
-    expect(turnElapsed(T, later.turnWaits, answered + s(900))).toBe(s(240));
+  it("never reads more than the work the checkpoint saw, whatever is said and however it is read", () => {
+    const words = [true, false, "unknown"] as const;
+    const reads = ["read", "unread", "gaveUp"] as const;
+    // Every pair of looks, ten minutes apart, and the clock read at once.
+    for (const first of words) for (const how of reads) for (const second of words) for (const then of reads) {
+      // A whole read that says nothing waits ends the wait, and what follows
+      // is work the page saw: that one is not a restore's to bound.
+      if (first === false && how === "read") continue;
+      let state = withWait(restored(), first, gaveUp, how);
+      state = withWait(state, second, gaveUp + s(600), then);
+      expect(turnElapsed(T, state.turnWaits, gaveUp + s(600)), `${first}/${how} then ${second}/${then}`).toBeLessThanOrEqual(s(90));
+    }
   });
 
-  it("takes nothing back for a card that arrives while it is still guessing", () => {
-    // A live card (the list it gave up on has still not answered): a wait
-    // that begins now, as any does. The work since the guess stands.
-    const arrived = gaveUp + s(600);
-    const state = withWait(guessing(), true, arrived, "gaveUp");
-    expect(state.turnWaits).toEqual({ turn: T, waited: gaveUp - saved, since: arrived, guessed: gaveUp });
-    expect(turnElapsed(T, state.turnWaits, arrived + s(60))).toBe(s(690));
-  });
-
-  it("does not carry an unanswered guess through a second reload", () => {
-    // Saved 40 s into the guess: that time was never known to be work.
-    const state = guessing();
-    const again = restoredTurn(state, gaveUp + s(40));
+  it("leaves out a guess an earlier build's checkpoint still holds", () => {
+    // Written by a page that guessed at `gaveUp` and was saved 40 s later:
+    // that time was never known to be work.
+    const old = { busy: true, turnStartedAt: T, turnWaits: { turn: T, waited: gaveUp - saved, since: null, guessed: gaveUp } } as Timed;
+    const again = restoredTurn(old, gaveUp + s(40));
     expect(again.turnWaits).toEqual({ turn: T, waited: gaveUp + s(40) - saved, since: gaveUp + s(40), restored: true });
     expect(turnElapsed(T, again.turnWaits, gaveUp + s(900))).toBe(s(90));
-  });
-
-  it("never reads more than the work the checkpoint saw plus what was seen after the guess", () => {
-    for (const read of ["read", "unread", "gaveUp"] as const) {
-      for (const seen of [true, false, "unknown"] as const) {
-        const state = withWait(guessing(), seen, gaveUp + s(100), read);
-        expect(turnElapsed(T, state.turnWaits, gaveUp + s(100))).toBeLessThanOrEqual(s(190));
-      }
-    }
   });
 });

@@ -4296,6 +4296,28 @@ body {
   animation-fill-mode: backwards;
 }
 
+/* Beside "Could not check what waits on you": asks the lists again. A text
+   button in reading ink, since it is no decision and no problem of the
+   turn's. Its target is taller than its words, for a finger. */
+.working-recheck {
+  position: relative;
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-1);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 140ms ease-out;
+}
+.working-recheck::before { content: ""; position: absolute; inset: -10px -6px; }
+.working-recheck:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--r-sm); }
+@media (hover: hover) { .working-recheck:hover { color: var(--fg-0); } }
+@media (prefers-reduced-motion: reduce) { .working-recheck { transition: none; } }
+
 /* Holds the place the status line used to take in the row, so Send stays at
    the right end of it. */
 .composer-gap {

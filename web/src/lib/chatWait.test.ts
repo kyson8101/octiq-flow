@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WAIT_WORDS, asksPerson, foldedSafetyKeys, seenWait, waitingChats, workingChats } from "./chatWait";
+import { WAIT_WORDS, asksPerson, foldedSafetyKeys, notKnown, seenWait, waitingChats, workingChats } from "./chatWait";
 import { pendingActions, type PendingAction } from "./pendingActions";
 import type { OrchestrationSnapshot } from "./orchestration";
 
@@ -123,10 +123,19 @@ describe("a chat the page cannot yet say waits", () => {
     expect(seenWait(waits, "main")).toBe(true);
   });
 
-  it("does not wait once every source has answered and no card names it", () => {
+  it("does not wait once every source has been read and no card names it, and is held until then", () => {
     expect(waitingChats([], new Set(), { whole: "read", restored: ["main"] }).has("main")).toBe(false);
-    // Nor once no more are coming: the page goes on with what it has.
-    expect(waitingChats([], new Set(), { whole: "gaveUp", restored: ["main"] }).has("main")).toBe(false);
+    // No more is coming without asking again: the page could not check. It
+    // is still held, under the word that says so, and is not let go.
+    const gaveUp = waitingChats([], new Set(), { whole: "gaveUp", restored: ["main"] });
+    expect(gaveUp.get("main")).toBe("unchecked");
+    expect(WAIT_WORDS.unchecked).toBe("Could not check what waits on you");
+    expect(asksPerson(gaveUp.get("main"))).toBe(false);
+    expect(notKnown(gaveUp.get("main"))).toBe(true);
+    expect(seenWait(gaveUp, "main")).toBe("unknown");
+    expect(workingChats(new Set(["main"]), gaveUp).has("main")).toBe(false);
+    // A chat with no restored wait is not held by it.
+    expect(waitingChats([], new Set(), { whole: "gaveUp", restored: [] }).has("main")).toBe(false);
     // A caller that says nothing of its sources has read them.
     expect(waitingChats([]).has("main")).toBe(false);
   });

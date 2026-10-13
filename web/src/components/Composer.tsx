@@ -37,7 +37,7 @@ import { RollingText } from "./RollingNumber";
 import { useLate } from "../lib/useArrival";
 import { receiptLines, runsAtLine, runsAtParts, runsAtRows, type KnownSettings } from "../lib/chatSettings";
 import { ROW_FITS, rowFit, type RowFit } from "../lib/composerFit";
-import { asksPerson, WAIT_WORDS, type ChatHold } from "../lib/chatWait";
+import { asksPerson, RECHECK_LABEL, WAIT_WORDS, type ChatHold } from "../lib/chatWait";
 import { turnElapsed, type TurnWaits } from "../lib/turnClock";
 import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/commandMenu";
 import {
@@ -394,6 +394,7 @@ export function Composer({
   lastCostUsd,
   runsAt,
   waiting,
+  onRecheckWaits,
   turnWaits,
   identity,
   advanced,
@@ -527,6 +528,9 @@ export function Composer({
    *  card, so the running line says so in the decision colour, its clock
    *  stops and nothing on it moves. Only read while `busy`. */
   waiting?: ChatHold | null;
+  /** Ask the page's lists of what waits again: offered on the running line
+   *  when it could not check them (`chatWait`'s `unchecked`). */
+  onRecheckWaits?: () => void;
   /** The waits of the turn in flight, so its clock leaves them out
    *  (`lib/turnClock`). */
   turnWaits?: TurnWaits;
@@ -1046,6 +1050,7 @@ export function Composer({
             since={turnStartedAt}
             waits={turnWaits}
             waiting={waiting ?? undefined}
+            onRecheck={onRecheckWaits}
             tokens={turnTokens}
             approx={turnApprox}
             activity={activity}
@@ -2638,6 +2643,7 @@ function Working({
   persona,
   waits,
   waiting,
+  onRecheck,
 }: {
   /** A registered agent works under its own face, not a model's robot. */
   persona?: AgentIdentity | null;
@@ -2665,8 +2671,11 @@ function Working({
    *  `unknown` is the page not knowing yet whether it waits (a reload, with
    *  the lists of what waits still to be read): the clock and the companion
    *  stand as still, and the line says so in grey. It asks nothing, so it
-   *  is not the decision colour, and it is not "thinking". */
+   *  is not the decision colour, and it is not "thinking". `unchecked` is
+   *  the same once the page could not read them: it says that, and
+   *  `onRecheck` asks them again. */
   waiting?: ChatHold;
+  onRecheck?: () => void;
 }) {
   const [, tick] = useState(0);
   // The second hand runs only while there is work to count: a clock that is
@@ -2702,7 +2711,16 @@ function Working({
         // The stopped clock and the words, and nothing between them: how
         // much was written is not news while nothing is being written, and
         // on a phone it pushed the one thing to read off the line.
-        <span className={`working-waits enter-fade${asksPerson(waiting) ? "" : " is-unknown"}`}>{WAIT_WORDS[waiting]}</span>
+        <>
+          <span className={`working-waits enter-fade${asksPerson(waiting) ? "" : " is-unknown"}`}>{WAIT_WORDS[waiting]}</span>
+          {/* The page could not read its lists of what waits, so it cannot
+              say whether this chat does. It does not guess: the clock
+              stands, and this asks the lists again. A button with its words
+              on it, never a tooltip alone. */}
+          {waiting === "unchecked" && onRecheck && (
+            <button type="button" className="working-recheck" onClick={onRecheck}>{RECHECK_LABEL}</button>
+          )}
+        </>
       ) : (
         <RollingText>
           {workingLine({

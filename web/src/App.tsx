@@ -801,7 +801,7 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks, read: listsRead, late: listsLate } =
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks, reread: rereadLists, read: listsRead, late: listsLate } =
     useChatRequests(conn, (...args) => announceOnce(...args));
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
@@ -5030,6 +5030,14 @@ export default function App() {
     for (const id of Object.keys(chats)) patch(id, (state) => withWait(state, seenWait(chatWaits, id), now, waitsWhole));
   }, [chats, chatWaits, waitsWhole, patch]);
   const waitingHere = (conversationId && chatWaits.get(conversationId)) || null;
+  // The page could not read its lists of what waits (one failed twice, or
+  // said nothing for five minutes), so a chat its checkpoint brought back
+  // parked is held, and says so. It is not let go on a guess: this asks
+  // every list again, and the ledger, and only what they answer ends it.
+  const recheckWaits = useCallback(() => {
+    rereadLists();
+    void orchestrationFeed.refresh().catch(() => {});
+  }, [rereadLists]);
   // The host says a decision waits on the person and the page has no card
   // for it: the list it comes in was not read, or its request failed. Ask
   // for the list again, once for each such set, so the card can be drawn
@@ -6140,6 +6148,7 @@ export default function App() {
             /* Parked on a card: the running line says so, and its clock
                leaves the wait out. */
             waiting={waitingHere}
+            onRecheckWaits={recheckWaits}
             turnWaits={chat.turnWaits}
             terminalOpen={termOpen}
             onTerminal={

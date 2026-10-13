@@ -51,13 +51,19 @@
 // - it does not: the wait ends there, and the time it was held is waited.
 //
 // The page may never come to know (`pendingActions.wholeOf`: a list that
-// failed twice, or one that said nothing for five minutes). The restored
-// wait is then let go on a guess, as for "it does not", and the moment is
-// kept (`guessed`). If a list read after that says the chat waits (the one
-// it gave up on answers after all, or a new connection asks them all
-// again), the time since the guess is taken back off the clock: nobody knew
-// it was work. If every list answers and nothing waits, the guess was right
-// and stands.
+// failed twice, or one that said nothing for five minutes). A list that
+// failed or was given up on proves nothing, so it ends no restored wait:
+// the clock stands where the checkpoint left it, the chat is drawn as held
+// with words that say the page could not check (`chatWait`'s `unchecked`),
+// and the person can ask the lists again. Only a read ends it: a card found
+// keeps the wait, and every list read with no card ends it there.
+//
+// There is no guess. The page used to let a restored wait go when it gave
+// up, and count from there; a card that came back later took the guessed
+// time off again only when it was the last list to answer (24 of the 120
+// orders five lists can answer in), and a list that failed twice let the
+// clock run for good. A clock that only ever counts what a read confirmed
+// has nothing to take back.
 
 /** The waits of one turn. */
 export type TurnWaits = {
@@ -70,9 +76,6 @@ export type TurnWaits = {
   /** The wait that is on came back from a checkpoint, and no look of this
    *  page has yet said whether the chat waits. */
   restored?: true;
-  /** When a restored wait was let go without the page knowing whether the
-   *  chat waits. Gone once the page knows. */
-  guessed?: number;
 };
 
 /** What a look says of one chat: it waits on the person, it does not, or the
@@ -81,11 +84,11 @@ export type Seen = boolean | "unknown";
 
 /** How much of what can say a chat waits the page has read
  *  (`pendingActions.wholeOf`): all of it, not all of it yet, or as much as
- *  it is going to get. Only `read` makes "it does not wait" a fact. */
+ *  it is going to get without being asked again. Only `read` makes "it does
+ *  not wait" a fact. */
 export type Read = "read" | "unread" | "gaveUp";
 
-const plain = (turn: number, waited: number, since: number | null, guessed?: number): TurnWaits =>
-  guessed === undefined ? { turn, waited, since } : { turn, waited, since, guessed };
+const plain = (turn: number, waited: number, since: number | null): TurnWaits => ({ turn, waited, since });
 
 /** What the page sees now, folded into what it had: a wait beginning, a wait
  *  ending, or a new turn. Returns the same object when nothing changed, and
@@ -105,27 +108,15 @@ export function noteWait(
   if (waiting === "unknown") return before;
   if (waiting) {
     // A wait that is on is confirmed, and keeps the moment it began.
-    if (before.since !== null) return before.restored ? plain(turn, before.waited, before.since, before.guessed) : before;
-    // The page let this turn go on a guess, and a list it has read since
-    // says the chat waits (the one it gave up on answered after all, or a
-    // new connection asked them all again): the time since the guess was
-    // never known to be work. While it is still giving up nothing was read
-    // again, so the card is one that arrived, and its wait begins now.
-    if (before.guessed !== undefined && read !== "gaveUp") {
-      return plain(turn, before.waited + Math.max(0, now - before.guessed), now);
-    }
-    return { ...before, since: now };
+    if (before.since !== null) return before.restored ? plain(turn, before.waited, before.since) : before;
+    return plain(turn, before.waited, now);
   }
-  if (before.since === null) {
-    // Everything has answered and nothing waits: the guess was right.
-    return before.guessed !== undefined && read === "read" ? plain(turn, before.waited, null) : before;
-  }
-  // A restored wait is ended by what the page knows, or by its giving up:
-  // never by a look made before the lists were read.
-  if (before.restored && read === "unread") return before;
-  const waited = before.waited + Math.max(0, now - before.since);
-  if (before.restored && read === "gaveUp") return plain(turn, waited, null, now);
-  return plain(turn, waited, null, before.guessed);
+  if (before.since === null) return before;
+  // A restored wait is ended only by a read that says nothing waits: never
+  // by a look made before the lists were read, and never by a list that
+  // failed or was given up on, which says nothing.
+  if (before.restored && read !== "read") return before;
+  return plain(turn, before.waited + Math.max(0, now - before.since), null);
 }
 
 /** The turn's elapsed time: its start plus the waited intervals gives how
@@ -167,15 +158,16 @@ export function parkRestored(state: Turn | undefined): boolean {
  *  card ends the wait there, so the clock goes on having left the time away
  *  out; and a look made before the lists were read changes nothing.
  *
- *  A guess the last page made and never had answered is not carried over:
- *  the time from it to the save was never known to be work, and is left
- *  out. */
+ *  A checkpoint an earlier build wrote may hold a guess that build made and
+ *  never had answered (`guessed`): the time from it to the save was never
+ *  known to be work, and is left out. */
 export function restoredTurn<T extends Turn>(state: T, savedAt: number): T {
   const turn = state.busy ? state.turnStartedAt : undefined;
   if (turn === undefined) return state;
   const mine = state.turnWaits?.turn === turn ? state.turnWaits : undefined;
   if (mine && mine.since !== null) return mine.restored ? state : { ...state, turnWaits: { ...mine, restored: true } };
   const since = Math.max(savedAt, turn);
-  const guessed = mine?.guessed === undefined ? 0 : Math.max(0, since - mine.guessed);
+  const old = (mine as { guessed?: number } | undefined)?.guessed;
+  const guessed = typeof old === "number" ? Math.max(0, since - old) : 0;
   return { ...state, turnWaits: { turn, waited: (mine?.waited ?? 0) + guessed, since, restored: true } };
 }

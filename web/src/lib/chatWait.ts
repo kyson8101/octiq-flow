@@ -13,12 +13,19 @@
 //
 // There are three answers, not two. That list starts empty on a page that
 // has just loaded, and "not read yet" is not "nothing waits": a chat whose
-// checkpoint brought it back parked (`turnClock.restoredTurn`) is `unknown`
-// until every source of the list has answered (`pendingActions.wholeOf`).
+// checkpoint brought it back parked (`turnClock.restoredTurn`) is held
+// until every source of the list has been READ (`pendingActions.wholeOf`).
 // It is then drawn as neither: no "thinking", no working mark, no "Needs
 // you", and its clock stays where the checkpoint left it. A chat with no
-// restored wait is never unknown: a turn that starts after the reload is
+// restored wait is never held: a turn that starts after the reload is
 // drawn working at once.
+//
+// Held has two words, because the person can do something about one of
+// them. `unknown`: a list is still out, and the page is checking.
+// `unchecked`: no more is coming (a list failed twice, or said nothing for
+// five minutes), so the page could not check, says so, and offers to ask
+// again. Neither ends by itself on a guess: a list that failed says nothing
+// of what waits, and only a read lets the chat go.
 import type { PendingAction, Whole } from "./pendingActions";
 
 /** What the chat is parked on: a card it must be answered on, or one that
@@ -26,18 +33,26 @@ import type { PendingAction, Whole } from "./pendingActions";
 export type ChatWait = "answer" | "approval";
 
 /** A chat's answer when it is not "works": what it waits for, or that the
- *  page cannot say yet whether it waits. */
-export type ChatHold = ChatWait | "unknown";
+ *  page cannot say whether it waits, because it is still checking
+ *  (`unknown`) or because it could not (`unchecked`). */
+export type ChatHold = ChatWait | "unknown" | "unchecked";
 
 export const WAIT_WORDS: Record<ChatHold, string> = {
   answer: "Waiting for your answer",
   approval: "Waiting for your approval",
   unknown: "Checking what waits on you",
+  unchecked: "Could not check what waits on you",
 };
 
-/** Whether the answer is that the chat waits on the person. `unknown` is
- *  not: nothing is asked of them that the page can name. */
+/** What the control beside `unchecked` says: it asks the lists again. */
+export const RECHECK_LABEL = "Check again";
+
+/** Whether the answer is that the chat waits on the person. The two held
+ *  answers are not: nothing is asked of them that the page can name. */
 export const asksPerson = (hold: ChatHold | null | undefined): hold is ChatWait => hold === "answer" || hold === "approval";
+
+/** Whether the page cannot say if the chat waits: held, by either word. */
+export const notKnown = (hold: ChatHold | null | undefined): hold is "unknown" | "unchecked" => hold === "unknown" || hold === "unchecked";
 
 /** The chat a pending action parks, and how, or nothing.
  *
@@ -72,9 +87,10 @@ export type Unsettled = { whole: Whole; restored: Iterable<string> };
  *  chat with a permission card and a question says the approval.
  *
  *  A card is a card however little has been read, so a chat a card parks
- *  waits. `unknown` is only a restored chat no card names while a source is
- *  still to answer: once all have (`read`), or no more are coming
- *  (`gaveUp`), a chat no card names does not wait. */
+ *  waits. Held is only a restored chat no card names while the list is not
+ *  wholly read: `unknown` while a source is still to answer, `unchecked`
+ *  once no more are coming without asking again. Only when every source
+ *  has been read (`read`) does a chat no card names not wait. */
 export function waitingChats(
   actions: readonly PendingAction[],
   folded: ReadonlySet<string> = NONE,
@@ -85,8 +101,9 @@ export function waitingChats(
     const parked = parks(action, folded);
     if (parked && !waits.has(parked.chat)) waits.set(parked.chat, parked.wait);
   }
-  if (unsettled.whole === "unread") {
-    for (const chat of unsettled.restored) if (!waits.has(chat)) waits.set(chat, "unknown");
+  if (unsettled.whole !== "read") {
+    const held = unsettled.whole === "unread" ? "unknown" : "unchecked";
+    for (const chat of unsettled.restored) if (!waits.has(chat)) waits.set(chat, held);
   }
   return waits;
 }
@@ -97,7 +114,7 @@ const SETTLED: Unsettled = { whole: "read", restored: [] };
  *  does not, or the page does not know. */
 export function seenWait(waits: ReadonlyMap<string, ChatHold>, chat: string): boolean | "unknown" {
   const hold = waits.get(chat);
-  return hold === "unknown" ? hold : hold !== undefined;
+  return notKnown(hold) ? "unknown" : hold !== undefined;
 }
 
 const NONE: ReadonlySet<string> = new Set();

@@ -90,21 +90,24 @@ export type WaitSource = (typeof WAIT_SOURCES)[number];
 export type SourceRead = "asked" | "answered" | "failed";
 export type SourcesRead = Readonly<Record<WaitSource, SourceRead>>;
 
-/** How long a source that says nothing is waited for before the page stops
- *  holding a restored clock for it. A request on an open socket has no
- *  timeout of its own, and a socket that closes fails it at once and asks
- *  again on the next, so this is a host that took the request and never
- *  answered. Long, because the cost of waiting is a stopped clock and the
- *  cost of not waiting is a wait counted as work. */
+/** How long a source that says nothing is waited for before the page says
+ *  it could not check, and offers to ask again. A request on an open socket
+ *  has no timeout of its own, and a socket that closes fails it at once and
+ *  asks again on the next, so this is a host that took the request and
+ *  never answered. The clock it holds is held either way: a silent list
+ *  ends no wait. */
 export const SILENT_MS = 5 * 60_000;
 
 /** How much of what can say a chat waits has been read.
  *
  *  - `read`: every source has answered. "Nothing waits" is a fact.
  *  - `unread`: one is still asked. Nothing is known of a chat no card names.
- *  - `gaveUp`: there is nothing more to come for this connection: every
- *    source has answered or failed for good, or one has said nothing for
- *    `SILENT_MS` (`late`). The page goes on with what it has, on a guess.
+ *  - `gaveUp`: there is nothing more to come unless the lists are asked
+ *    again: every source has answered or failed for good, or one has said
+ *    nothing for `SILENT_MS` (`late`). Nothing is known of a chat no card
+ *    names here either: a list that failed says nothing of what waits. The
+ *    page says it could not check, and the person can ask again
+ *    (`chatWait`'s `unchecked`).
  *
  *  A caller that says nothing of its sources has read them. */
 export type Whole = "read" | "unread" | "gaveUp";

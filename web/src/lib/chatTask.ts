@@ -180,10 +180,11 @@ export function phaseOf(
   live: { busy?: boolean; waiting?: ChatHold | boolean | null } = {},
 ): { label: string; tone: Tone; stage: DeliveryStage } {
   const stage = deliveryStage(status?.delivery);
-  // `unknown`: the page cannot say yet whether the chat waits (a reload,
-  // before the lists of what waits have answered). It is then neither
-  // `Needs you` nor `Working`, and the line says where the work stands.
-  if (live.waiting === "unknown") return { label: DELIVERY_LABELS[stage], tone: deliveryTone(stage), stage };
+  // Held: the page cannot say whether the chat waits (a reload, before the
+  // lists of what waits have been read, or after it could not read them).
+  // It is then neither `Needs you` nor `Working`, and the line says where
+  // the work stands.
+  if (live.waiting === "unknown" || live.waiting === "unchecked") return { label: DELIVERY_LABELS[stage], tone: deliveryTone(stage), stage };
   if (live.waiting) return { label: "Needs you", tone: "decide", stage };
   if (live.busy) return { label: "Working", tone: "accent", stage };
   return { label: DELIVERY_LABELS[stage], tone: deliveryTone(stage), stage };
