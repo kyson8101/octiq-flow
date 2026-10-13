@@ -21,6 +21,38 @@ loads them; a test that needs another moment changes a copy and says so.
 | `reopen_notice_delivered.json` | same test | the snapshot after the notice is confirmed |
 | `plan_after_failed.json`, `plan_after_blocked.json`, `plan_after_check_failed.json`, `plan_after_stopped.json` | not a test in the tree: the probe below, run in `approval_tests` | the snapshot with A approved, started and then failed / blocked / completed with a failed check / stopped by the person, and B added afterwards so the plan is pending again |
 
+## The failure and retry ledgers
+
+Recorded at the commit that added `orchestration/retry.rs`, from
+`src-tauri/src/orchestration/retry_tests.rs`. Each is the answer to
+`orchestration_snapshot { runId }` at the moment the test asserts on it.
+
+| File | Host test (`retry_tests::…`) | What is printed |
+| --- | --- | --- |
+| `failure_awaits_coordinator.json` | `a_read_says_whose_move_a_failure_is_and_when_a_retry_is_at_work` | a task failed once: `failure.awaits: "coordinator"`, `retriesUsed: 0` |
+| `retry_executing.json` | same test | the coordinator's retry at work: `retrying: true`, `retriesUsed: 1`, no `failure`, the second attempt's `retry` |
+| `failure_awaits_person.json` | same test | both retries used: `failure.awaits: "person"`, `because: "retries_used"` |
+| `failure_escalated.json` | `the_coordinator_puts_a_failure_to_the_person_and_only_their_answer_gives_more` | the coordinator's open gate about a failed task (`aboutTaskId`, no `taskId`): `because: "escalated"`, `gateId` |
+| `failure_replaced.json` | `a_replaced_failure_is_history_and_its_replacement_carries_the_count` | a replaced failure: `awaits: "nobody"`, `because: "replaced"`; its replacement with `retriesUsed: 2` |
+| `failure_in_completed_run.json` | `a_failed_check_is_a_failure_and_checking_again_uses_the_retries` | a review with `verdict: "fail"` in a run whose `status` is `completed`: `kind: "check_failed"`, `awaits: "coordinator"`. That run has not ended |
+| `failure_in_stopped_run.json` | `a_failure_in_a_run_that_was_stopped_or_archived_is_history` | a failed task in a stopped run: `awaits: "nobody"`, `because: "run_ended"` |
+
+These tests print what they assert on when asked to, so nothing is added to
+a scratch copy:
+
+```bash
+cd src-tauri
+OCTIQ_RECORD_FACTS=1 cargo test --lib -- --nocapture --test-threads=1 retry_tests::
+```
+
+Write each `FACT <name> {…}` to `<name>.json`, indented by two spaces and
+otherwise unchanged. With `--nocapture` the first `FACT` of a test follows
+that test's name on the same line.
+
+The ledgers above this section were recorded before the host counted
+retries, so their tasks carry no `retriesUsed`, `retryLimit` or `failure`:
+they are what a host that does not say looks like.
+
 ## Recording them again
 
 The tests assert on these values and do not print them. To record, in a

@@ -11,6 +11,12 @@ import cardOnGateBlocked from "./host/card_on_gate_blocked.json?raw";
 import cardPending from "./host/card_pending.json?raw";
 import claudeRefusal from "./host/claude_refusal.json?raw";
 import coordinatesRun from "./host/coordinates_run.json?raw";
+import failureAwaitsCoordinator from "./host/failure_awaits_coordinator.json?raw";
+import failureAwaitsPerson from "./host/failure_awaits_person.json?raw";
+import failureEscalated from "./host/failure_escalated.json?raw";
+import failureInCompletedRun from "./host/failure_in_completed_run.json?raw";
+import failureInStoppedRun from "./host/failure_in_stopped_run.json?raw";
+import failureReplaced from "./host/failure_replaced.json?raw";
 import gatesOpen from "./host/gates_open.json?raw";
 import heldByPlan from "./host/held_by_plan.json?raw";
 import heldByReopen from "./host/held_by_reopen.json?raw";
@@ -20,6 +26,7 @@ import planAfterCheckFailed from "./host/plan_after_check_failed.json?raw";
 import planAfterFailed from "./host/plan_after_failed.json?raw";
 import planAfterStopped from "./host/plan_after_stopped.json?raw";
 import reopenNoticeDelivered from "./host/reopen_notice_delivered.json?raw";
+import retryExecuting from "./host/retry_executing.json?raw";
 import taskStopped from "./host/task_stopped.json?raw";
 import usageContext from "./host/usage_context.json?raw";
 
@@ -62,6 +69,30 @@ export const hostFacts = {
   cardOnGateBlocked: ledger(cardOnGateBlocked),
   /** A Claude auto-mode refusal: pending, `awaits: "nobody"`. */
   claudeRefusal: ledger(claudeRefusal),
+  /** A task that failed once: `failed`, `retriesUsed: 0`, `failure.awaits:
+   *  "coordinator"`. Nothing is asked of the person. `retry_tests`. */
+  failureAwaitsCoordinator: ledger(failureAwaitsCoordinator),
+  /** The same task with the coordinator's retry at work: `running`,
+   *  `retrying: true`, `retriesUsed: 1`, no `failure`, and its second
+   *  attempt carries `retry`. */
+  retryExecuting: ledger(retryExecuting),
+  /** The same task with both retries used: `failed`, `retriesUsed: 2`,
+   *  `failure.awaits: "person"`, `because: "retries_used"`. */
+  failureAwaitsPerson: ledger(failureAwaitsPerson),
+  /** A failed task the coordinator put to the person with a retry left:
+   *  `failure.awaits: "person"`, `because: "escalated"`, `gateId`; the gate
+   *  has `aboutTaskId` and no `taskId`. */
+  failureEscalated: ledger(failureEscalated),
+  /** A failed task another task replaced: `failure.awaits: "nobody"`,
+   *  `because: "replaced"`; the replacement carries `retriesUsed: 2`. */
+  failureReplaced: ledger(failureReplaced),
+  /** A review that completed with `verdict: "fail"` in a run the host calls
+   *  `completed`: `failure.kind: "check_failed"`, `awaits: "coordinator"`.
+   *  Such a run has not ended. */
+  failureInCompletedRun: ledger(failureInCompletedRun),
+  /** A failed task in a run that was stopped: `failure.awaits: "nobody"`,
+   *  `because: "run_ended"`. */
+  failureInStoppedRun: ledger(failureInStoppedRun),
   /** Two running attempts: one with `usage` and `context`, one with neither
    *  key (its chat reported a token count and no window). */
   usageContext: ledger(usageContext),

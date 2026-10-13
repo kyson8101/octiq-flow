@@ -215,7 +215,7 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
     if snapshot
         .gates
         .iter()
-        .any(|g| g.status == GateStatus::Open && g.task_id.is_none())
+        .any(|g| g.status == GateStatus::Open && g.holds_run())
     {
         return Vec::new();
     }

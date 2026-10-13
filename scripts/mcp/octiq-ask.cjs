@@ -1918,7 +1918,10 @@ const ORCHESTRATION_WORKER_START = {
     "passes too). A start that asks for anything else is refused before an attempt is made, and " +
     "names what differs; a change goes back to the person on the plan card, through " +
     "orchestration_task_reassign or a new task. A task that was replaced does not start again, " +
-    "and one whose worker the person stopped is started again only by them.",
+    "and one whose worker the person stopped is started again only by them. A task has 2 " +
+    "automatic retries after a failure (retriesUsed and retryLimit on the task; the host's own " +
+    "recoveries and a replacement count). After that a start is refused and the person decides: " +
+    "put it to them with orchestration_gate_create naming the taskId.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1958,12 +1961,16 @@ const ORCHESTRATION_GATE_CREATE = {
   description:
     "Record a decision gate that must be resolved before coordinated work continues. A " +
     "worker may create one only for its own task. After creating a blocking gate, end the " +
-    "turn; OctiqFlow will resume the worker with the resolution.",
+    "turn; OctiqFlow will resume the worker with the resolution. A run's master puts a failed " +
+    "task to the person by naming its taskId: say what failed, what was tried and what the " +
+    "choices are. That gate is about the task (aboutTaskId) and holds nothing else; until it is " +
+    "answered no agent starts, reopens or replaces the task, and the person's own answer on the " +
+    "page gives the task its 2 automatic retries back.",
   inputSchema: {
     type: "object",
     properties: {
       runId: { type: "string" },
-      taskId: { type: "string", description: "Worker task ID. A master may omit it for a run-level gate." },
+      taskId: { type: "string", description: "Worker task ID. A master may omit it for a run-level gate, or name a task that failed to ask the person about that failure." },
       question: { type: "string" },
       options: { type: "array", items: { type: "string" }, description: "Optional known choices." },
     },

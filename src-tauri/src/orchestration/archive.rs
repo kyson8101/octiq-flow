@@ -340,6 +340,7 @@ mod tests {
                                     updated_at: 1,
                                     closed_at: None,
                                     awaits: None,
+                                    about_task_id: None,
                                 },
                             );
                         }

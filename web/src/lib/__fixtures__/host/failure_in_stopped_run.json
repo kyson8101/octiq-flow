@@ -1,0 +1,110 @@
+{
+  "attempts": [
+    {
+      "access": "auto",
+      "agent": "codex",
+      "branch": "test",
+      "createdAt": 1791878827058,
+      "cwd": "work",
+      "execution": {
+        "currentOperation": null,
+        "lastActivityAt": 1791878827058,
+        "lastProgress": "The build does not link",
+        "lastProgressAt": 1791878827058,
+        "latestError": null,
+        "nextRetryAt": null,
+        "pendingTools": {},
+        "providerRetryStartedAt": null,
+        "retryCount": 0,
+        "retryModel": null,
+        "stalledAt": null,
+        "state": "failed"
+      },
+      "filesModified": [],
+      "finishedAt": 1791878827058,
+      "id": "attempt_5ffef0bed11d433c843aacc96659a301",
+      "isWorktree": true,
+      "model": "gpt-5.6-sol",
+      "number": 1,
+      "runId": "run_d291d1016a5e4d0b99c29eadeea5069c",
+      "status": "failed",
+      "summary": "The build does not link",
+      "taskId": "task_594ec000a41d415985d47743ed698f4e",
+      "updatedAt": 1791878827058,
+      "workerChatKey": "chat:orch-46d1f744a0d4428fa37dfadb02633bf5"
+    }
+  ],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "coordinatorChatKey": "chat:retry-2edbe476563c408a892376d48b6b3330",
+      "createdAt": 1791878826953,
+      "id": "run_d291d1016a5e4d0b99c29eadeea5069c",
+      "maxConcurrent": 4,
+      "objective": "Ship the feature",
+      "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-65201adda75f4fd791b0256a94acd97b",
+      "status": "stopped",
+      "stoppedReason": "Not needed",
+      "updatedAt": 1791878827058,
+      "workerDefaults": null,
+      "workspaceId": "workspace",
+      "workspaceMode": "auto"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "activeAttemptId": "attempt_5ffef0bed11d433c843aacc96659a301",
+      "createdAt": 1791878827058,
+      "dependsOn": [],
+      "failure": {
+        "awaits": "nobody",
+        "because": "run_ended",
+        "kind": "failed"
+      },
+      "id": "task_594ec000a41d415985d47743ed698f4e",
+      "result": "The build does not link",
+      "retriesUsed": 0,
+      "retryLimit": 2,
+      "runId": "run_d291d1016a5e4d0b99c29eadeea5069c",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "failed",
+      "title": "Implement",
+      "updatedAt": 1791878827058,
+      "worker": {
+        "access": "auto",
+        "agent": "codex",
+        "effort": null,
+        "model": "gpt-5.6-sol",
+        "recovery": null
+      },
+      "workspaceProposal": {
+        "newBranch": false,
+        "plan": {
+          "baseBranch": "",
+          "baseSha": "",
+          "branch": "",
+          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-65201adda75f4fd791b0256a94acd97b",
+          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-65201adda75f4fd791b0256a94acd97b",
+          "initialStatus": "",
+          "isRepo": false,
+          "managed": false,
+          "mode": "direct",
+          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-65201adda75f4fd791b0256a94acd97b",
+          "warnings": [
+            "This folder has no Git history. Changes are made directly."
+          ]
+        },
+        "proposedAt": 1791878827007,
+        "provisional": true
+      }
+    }
+  ]
+}

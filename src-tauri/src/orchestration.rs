@@ -51,6 +51,9 @@ mod raise_tests;
 #[cfg(test)]
 mod reporting_tests;
 mod retention;
+pub mod retry;
+#[cfg(test)]
+mod retry_tests;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
@@ -485,6 +488,33 @@ pub struct Task {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub held_by_reopen: bool,
+    /// How many of its automatic retries after a failure the task has used
+    /// (`retry.rs`): every start an agent or the host made of it while it
+    /// was failed, and a replacement carries the count on. Written by the
+    /// one door and nowhere else; the person's own Start, their answer to a
+    /// decision about the task and the task finishing well set it to zero.
+    #[serde(default)]
+    pub retries_used: u32,
+    /// How many it has (`retry::RETRY_LIMIT`). Derived for each read, and
+    /// said on every task, so a reader can tell this host counts retries.
+    #[serde(default, skip_deserializing)]
+    pub retry_limit: u32,
+    /// A retry of this task is at work, or the host has scheduled one.
+    /// Derived for each read in `snapshot`; present only while it holds.
+    #[serde(
+        default,
+        skip_deserializing,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub retrying: bool,
+    /// The task's failure and whose move it is: the coordinator's while
+    /// retries remain, the person's once they have to decide, nobody's for
+    /// a failure that is history (`retry::Failure`). Derived for each read
+    /// in `snapshot`, like `held_by_plan`: never stored, never an agent's
+    /// to set, and said of every task that failed, was reported blocked
+    /// with no decision open, or completed with a failing verdict.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<retry::Failure>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -766,6 +796,10 @@ pub struct Attempt {
     /// the provider has reported both, never estimated.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub context: Option<AttemptContext>,
+    /// Set on an attempt that started on a failed task: which failure it
+    /// retries and who started it (`retry.rs`). Written once, by the door.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<retry::AttemptRetry>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -879,6 +913,13 @@ pub struct Gate {
     /// never stored, so it cannot go stale, and never an agent's to set.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub awaits: Option<Awaits>,
+    /// The failed task this gate asks the person about, on a gate the run's
+    /// coordinator opened for a task that is in failure (`create_gate`). It
+    /// has no `task_id`: nothing of the task or its attempt waits on it, no
+    /// worker is resumed by its answer, and the answer reaches no worker's
+    /// brief. The host writes it from an id it checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about_task_id: Option<String>,
 }
 
 /// Whose move a wait is, as far as the host can know.
@@ -918,6 +959,13 @@ fn gate_awaits(data: &Stored, gate: &Gate) -> Awaits {
 }
 
 impl Gate {
+    /// A question about the run as a whole: while it is open the host
+    /// starts no next wave and no recovery in the run. A decision about one
+    /// failed task (`about_task_id`) holds only that task.
+    pub(super) fn holds_run(&self) -> bool {
+        self.task_id.is_none() && self.about_task_id.is_none()
+    }
+
     /// Settle an open gate, once.
     fn close(&mut self, status: GateStatus, now: i64) {
         self.status = status;
@@ -1055,6 +1103,9 @@ pub struct OrchestrationStore {
     /// notice: how often in a row, and when it is next worth asking
     /// (`workspaces::notice_wait`). In memory only; a restart asks at once.
     reopen_waits: Mutex<BTreeMap<String, (u32, i64)>>,
+    /// The chats the person can open, as last read for a failure's
+    /// `awaits`, and when (`retry::Reach`). In memory only.
+    listed_chats: Mutex<retry::Listed>,
 }
 
 #[derive(Clone, Debug)]
@@ -1142,6 +1193,7 @@ impl Default for OrchestrationStore {
             inner: Mutex::new(Inner::default()),
             workspace_ops: Mutex::new(()),
             reopen_waits: Mutex::default(),
+            listed_chats: Mutex::default(),
         }
     }
 }
@@ -1194,6 +1246,7 @@ impl OrchestrationStore {
             inner: Mutex::new(inner),
             workspace_ops: Mutex::new(()),
             reopen_waits: Mutex::default(),
+            listed_chats: Mutex::default(),
         };
         if recovered {
             let result = store
@@ -1333,6 +1386,7 @@ impl OrchestrationStore {
             .cloned()
             .collect();
         tasks.sort_by_key(|task| (task.created_at, task.id.clone()));
+        let (mut reach, now) = (retry::Reach::over(&self.listed_chats), now_ms());
         // Why a task nobody is working on is not starting, for the page and
         // the coordinator: the plan card, not its dependencies or a slot.
         for task in &mut tasks {
@@ -1352,6 +1406,8 @@ impl OrchestrationStore {
                 });
             // And the other thing that holds a task whatever asks for it.
             task.held_by_reopen = workspaces::untold_reopen(task).is_some();
+            // Its retries, and whose move its failure is.
+            retry::derive(&inner.data, task, &mut reach, now);
         }
         let mut attempts: Vec<_> = inner
             .data
@@ -2140,6 +2196,7 @@ impl OrchestrationStore {
             let run_id = replacement.run_id.clone();
             supersedable(data, actor_chat_key, &run_id, old)?;
             let now = now_ms();
+            retry::replaced(data, old, new);
             let task = data.tasks.get_mut(old).expect("checked above");
             task.superseded_by = Some(new.to_string());
             task.updated_at = now;
@@ -2314,6 +2371,10 @@ impl OrchestrationStore {
                 peer_request: None,
                 held_by_plan: None,
                 held_by_reopen: false,
+                retries_used: 0,
+                retry_limit: 0,
+                retrying: false,
+                failure: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -2804,6 +2865,20 @@ impl OrchestrationStore {
             if let Some(replacement) = &task.superseded_by {
                 return Err(superseded_reason(data, replacement));
             }
+            // A failed task has two automatic retries, whoever makes them:
+            // the coordinator, the host's dispatch of a check it reopened,
+            // the host's own recovery. After that, and while a decision the
+            // coordinator opened about it is with the person, only the
+            // person starts it (`retry.rs`). Their Start asks nothing here.
+            let retried = retry::retried(data, &task);
+            let retry_by = match by {
+                StartedBy::Page { .. } => retry::RetryBy::Person,
+                StartedBy::Recovery(_) => retry::RetryBy::Host,
+                StartedBy::Coordinator => retry::RetryBy::Coordinator,
+            };
+            if retry_by != retry::RetryBy::Person {
+                retry::allows(data, &task, retried)?;
+            }
             // Checked here, under the lock that writes `task.worker` below, so
             // a start the handoff overtook can neither run nor record the
             // replaced owner's settings as the new owner's.
@@ -3005,12 +3080,17 @@ impl OrchestrationStore {
                 peer_clock,
                 usage: None,
                 context: None,
+                retry: None,
                 created_at: now,
                 updated_at: now,
             };
             if let Some(previous) = previous.as_ref().and_then(|a| data.attempts.get_mut(&a.id)) {
                 previous.execution.next_retry_at = None;
             }
+            // Counted here, with the reservation, so a start that was
+            // refused above used nothing.
+            let mut attempt = attempt;
+            attempt.retry = retry::started(data, &task.id, retried, retry_by, now);
             data.attempts.insert(id.clone(), attempt.clone());
             let reserved_task = data
                 .tasks
@@ -3858,6 +3938,11 @@ impl OrchestrationStore {
                     .filter(|task| task.run_id == run_id)
                     .map(|task| task.id.clone())
             });
+            // The coordinator asking the person about a task that is in
+            // failure. Nothing of that task waits on a gate, so this one is
+            // not the task's (`Gate::about_task_id`): it changes no status,
+            // resumes no worker, and reaches no worker's brief.
+            let mut about = None;
             if let Some(requested) = task_id.as_deref() {
                 let task = data
                     .tasks
@@ -3866,6 +3951,22 @@ impl OrchestrationStore {
                 if task.run_id != run_id {
                     return Err("The gate's task belongs to another run.".into());
                 }
+                if actor_chat_key == run.coordinator_chat_key
+                    && task.superseded_by.is_none()
+                    && retry::failed_as(data, task).is_some()
+                {
+                    if let Some(open) = retry::escalation(data, requested) {
+                        return Err(format!("Decision gate {} about this task is already open. The person answers it on the page.", open.id));
+                    }
+                    about = Some(requested.to_string());
+                }
+            }
+            let task_id = if about.is_some() { None } else { task_id };
+            if let Some(requested) = task_id.as_deref() {
+                let task = data
+                    .tasks
+                    .get(requested)
+                    .ok_or("The task does not exist.")?;
                 if let Some(attempt) = task.active_attempt_id.as_ref().and_then(|id| data.attempts.get(id)) {
                     if !attempt_is_unsettled(data, attempt) {
                         return Err("This attempt has settled. Retry or reopen the task instead of creating a gate.".into());
@@ -3902,6 +4003,7 @@ impl OrchestrationStore {
                 updated_at: now,
                 closed_at: None,
                 awaits: None,
+                about_task_id: about,
             };
             if let Some(task) = gate.task_id.as_ref().and_then(|id| data.tasks.get_mut(id)) {
                 task.status = TaskStatus::Blocked;
@@ -4000,6 +4102,16 @@ impl OrchestrationStore {
             gate_mut.close(GateStatus::Resolved, now);
             gate_mut.resolution = Some(resolution);
             let resolved = gate_mut.clone();
+            // The person decided about a failed task: its automatic retries
+            // are whole again, for the coordinator to carry the decision
+            // out. An agent's own answer to its own question gives none.
+            let given = resolved
+                .about_task_id
+                .as_deref()
+                .filter(|_| by == ResolvedBy::Person);
+            if let Some(task_id) = given {
+                retry::given_more(data, task_id);
+            }
             if let Some(task) = resolved
                 .task_id
                 .as_ref()
@@ -4043,8 +4155,13 @@ impl OrchestrationStore {
                     ResolvedBy::Person => format!("The person answered gate {} on the page.", resolved.id),
                     ResolvedBy::Coordinator => format!("Gate {} was resolved.", resolved.id),
                 };
+                let then = match (&resolved.about_task_id, given) {
+                    (Some(task), Some(_)) => format!("This was your question about failed task {task}. Carry out their decision: the task has its {} automatic retries again.", retry::RETRY_LIMIT),
+                    (Some(task), None) => format!("This was your question about failed task {task}. Carry out the decision. It gives the task no more automatic retries: only the person's own answer on the page, or their Start on the task's row, does."),
+                    (None, _) => "Continue the assigned task using this decision. Report the exact attempt when it settles.".into(),
+                };
                 inbox::enqueue(data, &run_id, actor_chat_key, &resolved.created_by_chat_key, format!("resolved:{}", resolved.id), "resolution",
-                    format!("{said}\n\nQuestion: {}\nDecision: {}\n\nContinue the assigned task using this decision. Report the exact attempt when it settles.", resolved.question, resolved.resolution.as_deref().unwrap_or_default()));
+                    format!("{said}\n\nQuestion: {}\nDecision: {}\n\n{then}", resolved.question, resolved.resolution.as_deref().unwrap_or_default()));
             }
             Ok(resolved)
         });
@@ -4599,6 +4716,8 @@ fn supersedable(
     if !matches!(task.status, TaskStatus::Blocked | TaskStatus::Failed) {
         return Err("Only a blocked or failed task can be replaced.".into());
     }
+    // A replacement is one of a failed task's automatic retries.
+    retry::allows(data, task, retry::failed_as(data, task))?;
     if task
         .active_attempt_id
         .as_ref()
@@ -4936,6 +5055,8 @@ fn decide_plan_in(
                 if waiting.contains(&task.id) {
                     task.approved_at = Some(now);
                     task.stopped = None;
+                    // The person decided about it again.
+                    task.retries_used = 0;
                     task.approved = Some(approval::Approved::of(
                         defaults.as_ref(),
                         task,
@@ -5337,6 +5458,10 @@ fn settle_attempt(
     task_mut.result = Some(summary);
     task_mut.verdict = verdict;
     task_mut.updated_at = now;
+    // Finished well: whatever failed before is over, and so is its count.
+    if releases_dependants(task_mut) {
+        task_mut.retries_used = 0;
+    }
     let settled = task_mut.clone();
     make_ready(data, &attempt.run_id);
     recompute_run(data, &attempt.run_id);
@@ -5368,7 +5493,7 @@ fn settle_attempt(
         }
     }
     inbox::enqueue(data, &attempt.run_id, actor_chat_key, &target, format!("report:{}", attempt.id), "report",
-        format!("{}Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.", peer_request::report_note(&settled), settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default()));
+        format!("{}Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.{}", peer_request::report_note(&settled), settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default(), retry::expectation(data, &settled.id, now)));
     settled
 }
 
@@ -5522,9 +5647,6 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
         let attempt = &data.attempts[&attempt_id];
         let target = data.runs[&run_id].coordinator_chat_key.clone();
         let worker = attempt.worker_chat_key.clone();
-        inbox::enqueue(data, &run_id, &worker, &target, format!("execution-failed:{attempt_id}"), "disconnected",
-            format!("Worker for task {task_id} (attempt {attempt_id}) disconnected when the host restarted. The attempt is failed. Workspace and completed work are preserved. Read orchestration_snapshot before retrying."));
-        run_ids.insert(run_id);
         if let Some(task) = data.tasks.get_mut(&task_id) {
             if task.active_attempt_id.as_deref() == Some(attempt_id.as_str())
                 && !matches!(task.status, TaskStatus::Completed | TaskStatus::Cancelled)
@@ -5536,6 +5658,10 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
                 task.updated_at = now;
             }
         }
+        let expected = retry::expectation(data, &task_id, now);
+        inbox::enqueue(data, &run_id, &worker, &target, format!("execution-failed:{attempt_id}"), "disconnected",
+            format!("Worker for task {task_id} (attempt {attempt_id}) disconnected when the host restarted. The attempt is failed. Workspace and completed work are preserved. Read orchestration_snapshot before retrying.{expected}"));
+        run_ids.insert(run_id);
     }
     for run_id in run_ids {
         recompute_run(data, &run_id);
@@ -5630,7 +5756,7 @@ pub fn master_prompt(run: &Run) -> String {
         run.id, run.objective, run.max_concurrent
     );
     let brief = format!("{brief}\n\nChoose the provider, model, and reasoning effort suitable for EACH task and include them in orchestration_task_create's worker settings (agent, model, access, effort). You may mix Claude and Codex workers in one run. Use Sol (codex, gpt-5.6-sol) or Opus (claude, opus) for demanding implementation or review, Terra (codex, gpt-5.6-terra) or Sonnet (claude, sonnet) for everyday execution, and Luna (codex, gpt-5.6-luna) or Haiku (claude, haiku) for small, well-bounded tasks. Match effort to complexity. Use access=auto unless the task needs another boundary, such as read for investigation. Fable and Astra are reserved for main agents orchestrating other agents; NEVER choose either for an execution worker, including retries or review tasks. Do not inherit the main agent's model or leave worker selection to a CLI default. Explain the assignment briefly in the task spec. For manual dispatch and retries, pass the chosen settings to orchestration_worker_start.");
-    let brief = format!("{brief}\n\nUse attempt.execution as host evidence of activity: state, lastActivityAt, lastProgressAt, lastProgress, currentOperation, and latestError. Task status running alone does not mean a worker is executing. Capacity-blocked, retrying, stalled, and disconnected workers need attention. The host records provider failures and durable notifications even when the worker cannot respond. Before a manual retry, inspect nextRetryAt and retryCount; an automatic recovery may already be scheduled. Recovery preserves the workspace and creates a new attempt. Do not replay a tool merely because it is quiet.");
+    let brief = format!("{brief}\n\nUse attempt.execution as host evidence of activity: state, lastActivityAt, lastProgressAt, lastProgress, currentOperation, and latestError. Task status running alone does not mean a worker is executing. Capacity-blocked, retrying, stalled, and disconnected workers need attention. The host records provider failures and durable notifications even when the worker cannot respond. Before a manual retry, inspect nextRetryAt and retryCount; an automatic recovery may already be scheduled. Recovery preserves the workspace and creates a new attempt. Do not replay a tool merely because it is quiet.\n\n{}", retry::BRIEF);
     let brief = if run.awaiting_plan_approval() {
         format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses to start a task they have not approved. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval. Later, a task you add puts the plan back in front of them: that task, and whatever depends on it, waits (heldByPlan in orchestration_snapshot), while the tasks they already approved keep starting. The plan card (plan {}) shows in this chat. When the person's own message is just an approval of it, such as \"approve this plan\", call orchestration_plan_approve with the runId and the plan revision from orchestration_snapshot. The host reads their message itself and refuses anything else, so never call it for a message that asks for a change, is conditional or a question, or is a notification. The person can also reject the card; the host then gives you one continuation naming the rejected revision, tasks and optional reason. It records their decision, not an instruction to re-plan, so decide what to do next. When they ask for changes, apply them with orchestration_task_revise (or withdraw a task there) and orchestration_task_create. Then end your turn so they see and approve the new revision. Plan approval never covers deploying, restarting, gates or permission prompts.\n\nGive each task a size on orchestration_task_create: small, medium (the default) or large, by scope and risk. It sets the XP its assignee earns when the result is accepted, and it is fixed once the task starts. A worker reporting completed is not acceptance: check each completed task's result against its acceptance criteria, then accept it with orchestration_task_accept (taskId and the completed attemptId) only if it meets them. Otherwise reopen or retry it. Never accept a task you did not review.", consent::plan_handle(&run.id))
     } else {

@@ -303,6 +303,18 @@ pub fn listed(id: &str) -> Result<bool, String> {
         .any(|chat| chat.id == id && chat.deleted_at.is_none()))
 }
 
+/// The ids `listed` would answer yes for, read once: for a caller that asks
+/// about several chats. Unreadable is an error here too.
+pub fn listed_ids() -> Result<std::collections::BTreeSet<String>, String> {
+    let index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    Ok(index
+        .chats
+        .into_iter()
+        .filter(|chat| chat.deleted_at.is_none())
+        .map(|chat| chat.id)
+        .collect())
+}
+
 /// Every chat, pinned ones first and then most recently active — the order the
 /// task-oriented sidebar shows them in.
 pub fn list() -> Vec<ChatMeta> {

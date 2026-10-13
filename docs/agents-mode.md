@@ -1388,10 +1388,11 @@ nothing else, and you are shown each reopen
 
 ## What the run panel reads from the host
 
-Three facts the page needs and cannot work out. Each is derived from what the
+Four facts the page needs and cannot work out. Each is derived from what the
 host already holds when it answers, like `heldByPlan`: none is stored, so none
 goes stale, and none is an agent's to set (a value sent in for one is not
-read).
+read). The fourth, whose move a failure is, has its own section below (**A
+failure, and whose move it is**).
 
 **Who a wait is for.** Every open gate and every pending native decision in
 `orchestration_snapshot` carries `awaits`: `"person"`, `"coordinator"` or
@@ -1518,6 +1519,148 @@ fire when a run is created or archived.
   "coordinatesRun": true
 }
 ```
+
+### A failure, and whose move it is
+
+The person's decision of 2026-10-13: a failed task is its coordinator's to
+fix, twice, before the person is asked. Most failures need nothing from them,
+so the page stays quiet until one does (`orchestration/retry.rs`).
+
+**What a failure is.** A task that failed (`status: "failed"`), a task its
+worker reported blocked with no decision open (`status: "blocked"`, no open
+gate on it, no host retry scheduled), and a task that completed with
+`verdict: "fail"`. A task the person stopped (`stopped`) did not fail and
+carries none of what follows; nor does a worker waiting on its own open gate.
+
+**The budget.** A task has 2 automatic retries after a failure
+(`retryLimit`), and `retriesUsed` counts them. One is used by every start of
+the task that an agent or the host makes while it is in failure, whoever
+makes it: the coordinator's `orchestration_worker_start`, the start of a
+failed check the coordinator reopened (its own or the host's automatic
+dispatch), and the host's own recovery after a provider failure. A
+replacement (`supersedes`) uses one too and the new task carries the count
+on, so a chain of replacements ends at the person like a chain of retries.
+
+With both used, the one door (`reserve_attempt_for`) refuses the next start
+by the coordinator or the host, `orchestration_task_reopen` refuses to make a
+failed check ready again, and a replacement is refused, all in the same
+words: the retries are used up and the person decides. The host schedules no
+recovery the door would refuse.
+
+Only the person gives more. Each of these sets `retriesUsed` to 0, and no
+agent's call reaches any of them:
+
+- their Start on the task's row (`orchestration_worker_start` on the socket,
+  never counted and never refused for the budget);
+- their answer on the page to a decision the coordinator opened about the
+  task (below);
+- their approval of a plan the task was put back on.
+
+The task finishing well (completed, and not with a failing verdict) also
+sets it to 0: that failure is over.
+
+**How this combines with the host's provider recovery.** The recovery policy
+(`maxRetries`, 0 to 5, default 2) still decides whether a provider failure is
+worth another attempt and how long to wait. It no longer has a count of its
+own: each recovery is one of the task's 2. So the most a task is started
+again without the person is 2, whoever starts it, and `retriesUsed` is the
+one number that says how far along that is. `attempt.execution.retryCount`
+is still there and still says how many host recoveries led to that attempt.
+
+**Putting a failure to the person.** The coordinator calls
+`orchestration_gate_create` with the failed task's `taskId`. On a task that
+is in failure the host records that gate as a question ABOUT the task, not
+the task's own: `aboutTaskId` is the task, `taskId` is absent. Nothing of the
+task or its attempt waits on it: no status changes, no worker is resumed by
+its answer, the answer is in no worker's brief, and it holds no other task
+of the run (a gate with neither id still holds the run's next wave). While
+it is open no agent starts, reopens or replaces the task. Its `awaits` is
+`person`, like every gate a coordinator opens. The coordinator resolving it
+itself gives the task no retries; the person's own answer on the page does,
+and so does their Start, which closes the question (`cancelled`).
+
+**What a read says.** Every task in `orchestration_snapshot`, in the page's
+read and the coordinator's:
+
+| Field | On | Values |
+| --- | --- | --- |
+| `retriesUsed` | every task | `0`, `1`, `2`. Stored; written by the door. |
+| `retryLimit` | every task | `2`. Derived; its presence says this host counts retries. |
+| `retrying` | a task whose retry is at work, or scheduled | `true`, absent otherwise. Its latest attempt started on a failed task and is preparing or running, or the host has scheduled its recovery (`execution.nextRetryAt`). |
+| `failure` | a task that is in failure | `{ kind, awaits, because?, gateId? }`, absent otherwise |
+| `attempt.retry` | an attempt that started on a failed task | `{ after, by, number? }`. Stored; written once by the door. |
+| `gate.aboutTaskId` | a gate the coordinator opened about a failed task | the task's id |
+
+`failure.kind` is `failed`, `blocked` or `check_failed`. `failure.awaits`
+uses the words a gate does:
+
+| `awaits` | `because` | When |
+| --- | --- | --- |
+| `coordinator` | absent | Retries remain and its coordinator can be reached. The coordinator was told what to do. Nothing is asked of you. |
+| `person` | `retries_used` | Both retries are used. |
+| `person` | `escalated` | The coordinator opened a decision about it; `gateId` is that gate. |
+| `person` | `coordinator_gone` | The coordinator's chat is not in the chat list, or is in the trash: nobody is there to retry it. A chat index that cannot be read is not such a chat. |
+| `person` | `time_limit` | A peer request whose working time is used up: only your Start gives it more. |
+| `nobody` | `replaced` | Another task replaced it (`supersededBy`). |
+| `nobody` | `run_ended` | Its run was stopped or closed (`run.status` is `stopped` or `closed`), or archived (`run.archivedAt`). |
+
+Asked in this order, and the first that holds is the one said: replaced, run
+ended, escalated, retries used, time limit, coordinator gone, coordinator.
+
+**A run the host calls `failed` or `completed` has not ended.** The host
+sets `failed` when a task failed and nothing else is left to run, and
+`completed` when every task settled, failed checks included
+(`recompute_run`). Those are what an unanswered failure leaves a run in, so
+a failure there is still somebody's move. The page reads `failure.awaits`
+to know whether a failure is history and does not read `run.status` for it.
+A run that settled long ago whose coordinator chat was since deleted reads
+`person`, `coordinator_gone`: archive the run to put it away.
+
+`attempt.retry.after` is the failure it retries (`failed`, `blocked`,
+`check_failed`), `by` is `coordinator`, `host` or `person`, and `number` is
+which of the task's automatic retries it used (1 or 2), absent on the
+person's start.
+
+```json
+{
+  "id": "task_1b8ece4b05a04885b70e5fc9cf394e2b",
+  "status": "failed",
+  "retriesUsed": 2,
+  "retryLimit": 2,
+  "failure": { "kind": "failed", "awaits": "person", "because": "retries_used" }
+}
+```
+
+**Who is told.** The coordinator, in the notice of the failure it already
+gets (a worker's report, a host-detected failure, a recovery that could not
+start, a worker lost to a restart). The notice ends with what is expected:
+read `attempt.execution` and `latestError`, then retry in the same
+workspace or replace the task with `supersedes` (a failed or blocked task),
+or reopen it to check again (a failed check, which is completed and so is
+not replaced); never leave it, never route around it. With the
+retries used it says instead to open a decision for the person, stating what
+failed, what was tried and the choices. The master brief states the rule.
+Both travel as a turn's prompt, and the brief in a tool result too. That is
+stdin for Claude, Codex's app-server and Antigravity. For Pi, and for Codex
+started as `codex exec`, a turn's prompt is the last argument of a command
+line, as every notice and the brief already were: there the rule adds 876
+characters to a brief of about 7,400 and at most 824 to a notice.
+
+**A peer request** follows the same budget and its failure waits on the
+coordinator of the run it is in, never on the teammate that asked, who is
+told and decides nothing. The one repair is the same job again: it is not
+reopened, takes no message, and is replaced only by a new request the person
+approves. Its working time is still its own limit and carries across
+retries; once that is used the failure is the person's (`time_limit`).
+
+**Not done, and why.** The host does not itself restart a task whose worker
+merely disconnected. The host cannot tell a dropped process from a launch
+that can never work, and a process that died leaves tool side effects
+nobody has looked at, which is the case the recovery already leaves to the
+coordinator. The coordinator is told, with the process's last words, and
+its retry is counted like any other. Because recoveries share the budget,
+turning this on later is one condition in `execution::fail` and cannot make
+the total larger.
 
 ### Completed is not finished well
 

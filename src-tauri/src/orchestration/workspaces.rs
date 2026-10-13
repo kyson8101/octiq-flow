@@ -1034,6 +1034,11 @@ impl OrchestrationStore {
             if run.status == RunStatus::Stopped { return Err("A stopped run cannot be reopened.".into()); }
             if run.archived_at.is_some() { return Err("This run is archived. Restore it before reopening a task.".into()); }
             if task.status != TaskStatus::Completed { return Err("Only a completed task can be reopened for review fixes. Use retry for failed or blocked tasks.".into()); }
+            // A failed check that used its automatic retries, or that the
+            // coordinator put to the person, is not made ready to fail again:
+            // its start would be refused, and it would wait where nobody
+            // is told of it (`retry.rs`).
+            super::retry::allows(data, &task, super::retry::failed_as(data, &task))?;
             let ws = task.workspace.as_ref().ok_or("This task has no retained workspace.")?;
             if ws.state == WorkspaceState::Cleaned || ws.abandoned || ws.delivery.as_ref().is_some_and(|d| d.merged) {
                 return Err("This workspace is closed. Create a new task for new work.".into());

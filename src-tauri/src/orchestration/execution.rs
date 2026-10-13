@@ -428,10 +428,18 @@ pub(super) fn fail(data: &mut Stored, id: &str, error: ExecutionError, now: i64)
     }
     let retry_policy = policy(data, &before);
     // Decisions and unknown tool side effects need coordinator review, not a replay.
+    // And the host's recovery is one of the task's automatic retries
+    // (`retry.rs`): none is scheduled that the door would refuse.
+    let used = data
+        .tasks
+        .get(&before.task_id)
+        .map_or(0, |task| task.retries_used);
     let retry = error.retryable
         && before.execution.retry_count < retry_policy.max_retries
         && before.execution.pending_tools.is_empty()
-        && !attempt_has_open_gate(data, &before);
+        && !attempt_has_open_gate(data, &before)
+        && used < retry::RETRY_LIMIT
+        && retry::escalation(data, &before.task_id).is_none();
     let target = data.runs[&before.run_id].coordinator_chat_key.clone();
     let attempt = data.attempts.get_mut(id).unwrap();
     attempt.status = AttemptStatus::Failed;
@@ -451,8 +459,8 @@ pub(super) fn fail(data: &mut Stored, id: &str, error: ExecutionError, now: i64)
     execution.retry_model = retry
         .then(|| retry_policy.fallback_model.clone().or(before.model.clone()))
         .flatten();
-    let recovery = execution.next_retry_at.map(|at| format!("Host retry {} of {} scheduled at {at} using {}. The same workspace will be reused.", execution.retry_count + 1, retry_policy.max_retries, execution.retry_model.as_deref().unwrap_or("the assigned model")))
-        .unwrap_or_else(|| "No automatic retry is scheduled. Coordinator review is required; the workspace is preserved.".into());
+    let recovery = execution.next_retry_at.map(|at| format!("Host retry scheduled at {at} using {}: automatic retry {} of {} for this task. The same workspace will be reused. Nothing is needed from you for it.", execution.retry_model.as_deref().unwrap_or("the assigned model"), used + 1, retry::RETRY_LIMIT))
+        .unwrap_or_else(|| "No host retry is scheduled. The workspace is preserved.".into());
     let task = data.tasks.get_mut(&before.task_id).unwrap();
     task.status = if retry {
         TaskStatus::Blocked
@@ -473,8 +481,9 @@ pub(super) fn fail(data: &mut Stored, id: &str, error: ExecutionError, now: i64)
     {
         gate.close(GateStatus::Cancelled, now);
     }
+    let expected = retry::expectation(data, &before.task_id, now);
     inbox::enqueue(data, &before.run_id, &before.worker_chat_key, &target, format!("execution-failed:{id}"), &error.kind,
-        format!("Host detected {} for task {} (attempt {}).\n\n{}\n\n{}\nRead orchestration_snapshot. This attempt is failed and is not active work.", error.kind, before.task_id, id, error.message, recovery));
+        format!("Host detected {} for task {} (attempt {}).\n\n{}\n\n{}\nRead orchestration_snapshot. This attempt is failed and is not active work.{expected}", error.kind, before.task_id, id, error.message, recovery));
     // A peer request that failed for good: the worker that asked hears it.
     if !retry {
         if let Some(task) = data.tasks.get(&before.task_id).cloned() {
@@ -929,7 +938,7 @@ impl OrchestrationStore {
             if snapshot
                 .gates
                 .iter()
-                .any(|g| g.run_id == run.id && g.task_id.is_none() && g.status == GateStatus::Open)
+                .any(|g| g.run_id == run.id && g.holds_run() && g.status == GateStatus::Open)
                 || snapshot
                     .attempts
                     .iter()
@@ -989,7 +998,8 @@ impl OrchestrationStore {
                     let task = data.tasks.get_mut(&attempt.task_id).unwrap();
                     task.status = TaskStatus::Failed;
                     let task = task.clone();
-                    inbox::enqueue(data, &run.id, &attempt.worker_chat_key, &run.coordinator_chat_key, format!("recovery-failed:{}", attempt.id), "provider", format!("Automatic recovery for task {} could not start: {}. The workspace is preserved. Inspect orchestration_snapshot before retrying.", attempt.task_id, bounded(&error)));
+                    let expected = retry::expectation(data, &attempt.task_id, now);
+                    inbox::enqueue(data, &run.id, &attempt.worker_chat_key, &run.coordinator_chat_key, format!("recovery-failed:{}", attempt.id), "provider", format!("Automatic recovery for task {} could not start: {}. The workspace is preserved. Inspect orchestration_snapshot before retrying.{expected}", attempt.task_id, bounded(&error)));
                     // A peer request that has now failed for good: the worker
                     // that asked hears it here, with what stopped the retry.
                     // `fail` said nothing to it while a retry was scheduled.

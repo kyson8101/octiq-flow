@@ -214,6 +214,23 @@ export type OrchestrationTask = {
    *  of that is not confirmed on disk in the coordinator's chat. The host
    *  sends the key only while it holds, and only as `true`. */
   heldByReopen?: boolean;
+  /** How many of its automatic retries after a failure the task has used
+   *  (orchestration/retry.rs): every start an agent or the host made of it
+   *  while it was in failure, and a replacement carries the count on. Absent
+   *  on a host that does not count them. */
+  retriesUsed?: number;
+  /** How many it has. The host says it of every task, so its presence is how
+   *  a reader knows this host counts retries. */
+  retryLimit?: number;
+  /** A retry of the task is at work (its latest attempt started on a failed
+   *  task and is preparing or running), or the host has scheduled one. The
+   *  host sends the key only while it holds, and only as `true`. */
+  retrying?: boolean;
+  /** The task's failure and whose move it is, as the host says: on every
+   *  task that failed, was reported blocked with no decision open, or
+   *  completed with a failing verdict, and on no other (never on a task the
+   *  person stopped). Absent on a host that does not say. */
+  failure?: TaskFailure;
   /** Every reopen of the task, oldest first (the newest twelve). Absent on a
    *  task that never was reopened. */
   reopens?: TaskReopenRecord[];
@@ -369,6 +386,10 @@ export type OrchestrationAttempt = {
    *  without a window is not sent, so an Antigravity attempt never has it.
    *  It describes a live session and is gone after a server restart. */
   context?: { tokens: number; window: number } | null;
+  /** Set on an attempt that started on a failed task: the failure it
+   *  retries, who started it, and which of the task's automatic retries it
+   *  used (absent on the person's start, which uses none). */
+  retry?: { after: FailureKind; by: "coordinator" | "host" | "person"; number?: number };
   createdAt: number;
   updatedAt: number;
 };
@@ -421,11 +442,31 @@ export type OrchestrationGate = {
   /** Who an open gate waits on, as the host says. Absent on a host that does
    *  not say, and then the page does not guess (`lib/runWaits`). */
   awaits?: Awaits;
+  /** The failed task this gate asks the person about, on a gate the run's
+   *  coordinator opened for a task in failure. Such a gate has no `taskId`:
+   *  nothing of the task waits on it. */
+  aboutTaskId?: string;
 };
 
 /** Who a decision waits on: the person, the run's coordinator, or nobody at
  *  all (a refusal no one can approve). */
 export type Awaits = "person" | "coordinator" | "nobody";
+
+/** What a task failed as. */
+export type FailureKind = "failed" | "blocked" | "check_failed";
+
+/** A task's failure and whose move it is (`OrchestrationTask.failure`).
+ *  `awaits` is the coordinator's while retries remain, the person's once
+ *  they have to decide, and nobody's for a failure that is history; whether
+ *  a failure is history is read here and never from the run's status.
+ *  `because` says why whenever it is not the coordinator's, and `gateId` is
+ *  the open decision the coordinator put to the person about it. */
+export type TaskFailure = {
+  kind: FailureKind;
+  awaits: Awaits;
+  because?: "retries_used" | "escalated" | "coordinator_gone" | "time_limit" | "replaced" | "run_ended";
+  gateId?: string;
+};
 
 export type OrchestrationMessage = {
   id: string;

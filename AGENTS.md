@@ -1934,6 +1934,63 @@ page's. Nothing but an approval writes it. So:
 - A review of an approval boundary checks the shape that actually runs
   against a durable source of authority.
 
+**A failed task is its coordinator's to fix, twice, before the person is
+asked** (`orchestration/retry.rs`; the person's decision of 2026-10-13). A
+failure is a task that failed, one its worker reported blocked with no
+decision open, or one that completed with a failing verdict; a task the
+person stopped did not fail. So:
+
+- **The budget is counted at the one door and nowhere else.**
+  `Task::retries_used` goes up in `reserve_attempt_for`, with the
+  reservation, for every start of a task in failure that is not the person's
+  (`retry::retried`, `retry::started`): the coordinator's, the host's
+  dispatch of a check that was reopened, the host's own recovery. At
+  `retry::RETRY_LIMIT` (2) the door refuses in `retry::RETRIES_USED`'s words.
+  A new way to start a task goes through that door, so it is counted; a new
+  way to get a failed task going again that is not a start (as
+  `reopen_task` and `supersede` are) asks `retry::allows` first, and a
+  replacement carries the count on (`retry::replaced`).
+- **The host's provider recovery has no count of its own any more.**
+  `execution::fail` schedules none the door would refuse, so the most a task
+  is started again without the person is 2 whoever starts it. Anything new
+  that restarts a task for the host is a `StartedBy::Recovery`.
+- **Only the person gives more**, and each way is one no agent's call
+  reaches: their Start (`StartedBy::Page`), their answer on the page to a
+  decision about the task (`ResolvedBy::Person` on a gate with
+  `about_task_id`), their approval of a plan the task is put back on. A task
+  that finishes well is also at zero again. A new reset is one of the
+  person's own doors, never an argument an agent can send.
+- **A gate about a failed task is not that task's gate.** The coordinator
+  names the task in `orchestration_gate_create`; on a task in failure the
+  host records `Gate::about_task_id` and leaves `task_id` empty
+  (`create_gate`). Everything that reads a task's gates by `task_id` (is
+  the attempt live, resume its worker, the next attempt's brief, a peer
+  request's own snapshot) therefore does not see it, which is the point:
+  nothing of the task waits on it. A reader that means "a question about
+  the whole run" asks `Gate::holds_run`, never `task_id.is_none()`.
+- **Whose move a failure is, is derived** (`Task::failure`, `retry::derive`
+  in `snapshot`): the coordinator's while retries remain, the person's once
+  they are used, the coordinator escalated, its chat is gone
+  (`chat_index::listed_ids`, read once a snapshot and only when a failure
+  asks; an index that cannot be read is not "gone") or a peer request's
+  time is used, and nobody's for a replaced task or a run that was stopped,
+  closed or archived. **A run the host calls `failed` or `completed` has
+  not ended**: `recompute_run` sets those when nothing else is left to run,
+  which is what an unanswered failure leaves behind.
+- **The coordinator is told what is expected in the notice of the failure**
+  (`retry::expectation`, appended where a failure is told: a worker's
+  report, `execution::fail`, a recovery that could not start, a worker lost
+  to a restart) and in the master brief (`retry::BRIEF`). A new place that
+  tells a coordinator of a failure appends it too. Both travel as a turn's
+  prompt (and the brief in a tool result): stdin for Claude, Codex's
+  app-server and Antigravity, but the last argument of a command line for Pi
+  and for Codex started as `codex exec`, where Windows' 32,767 characters
+  count. `retry_tests` holds what the rule adds to a paragraph (876
+  characters in the brief, at most 824 in a notice).
+- A peer request follows the same budget and waits on its run's
+  coordinator, whose one repair is the same job again; with its working
+  time used it is the person's.
+
 **Removing an agent and starting its work take two locks in one order: the
 roster's (`team.rs` `LOCK`), then the ledger's (`OrchestrationStore::inner`).**
 `team::delete_checked` hands its write to a guard (`team::Leave`); the host's
@@ -1978,9 +2035,10 @@ desk is removed.
   is let go.
 
 **Facts the page reads that are derived for the answer are never stored and
-never taken from an agent**: `heldByPlan` and `heldByReopen` on a task,
-`awaits` on an open gate and a pending native decision, `usage` and `context`
-on an attempt, `coordinatesRun` on a chat's index entry. Each is
+never taken from an agent**: `heldByPlan`, `heldByReopen`, `failure`,
+`retrying` and `retryLimit` on a task, `awaits` on an open gate and a pending
+native decision, `usage` and `context` on an attempt, `coordinatesRun` on a
+chat's index entry. Each is
 `skip_deserializing` or added at the dispatch arm, and absent rather than
 zero or guessed when the host does not know (`docs/agents-mode.md`, What the
 run panel reads from the host). A fact the host does know is said outright:
@@ -1988,7 +2046,12 @@ run panel reads from the host). A fact the host does know is said outright:
 approval, because a page sent nothing for "not held" could not tell it from
 a host that does not say, and read an approved task as held. `awaits` says
 who must decide and nothing else; whether the attempt can go on right now is
-`continuation`'s to say.
+`continuation`'s to say. `failure` is on every task that is in failure and
+on no other, and its `awaits` is the one word for whether a failure is the
+coordinator's, the person's or history: a reader does not work that out from
+`run.status`. What the host counts is stored and said beside it:
+`retriesUsed` on the task, `retry` on an attempt that started on a failed
+task, `aboutTaskId` on a gate.
 
 **A mid-turn instruction that loosens a permission or safety rule goes through
 a decision gate.** When a coordinator's `orchestration_message_send` would add

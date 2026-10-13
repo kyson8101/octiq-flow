@@ -406,7 +406,7 @@ const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^
  *  more use in any of them fails this test, and so does a use anywhere else. */
 const ALLOWED: Record<string, { uses: number; why: string }> = {
   "./runWaits.ts": { uses: -1, why: "the one reader" },
-  "./orchestration.ts": { uses: 5, why: "the ledger's type (gates, nativeDecisions, awaits on a gate and on a decision) and the empty ledger" },
+  "./orchestration.ts": { uses: 6, why: "the ledger's type (gates, nativeDecisions, awaits on a gate, on a decision and on a task's failure) and the empty ledger" },
   "./chatWorkflow.ts": { uses: 5, why: "chatSnapshot copies both lists into a chat's own ledger, unread, so runWaits sees the same facts in it" },
 };
 

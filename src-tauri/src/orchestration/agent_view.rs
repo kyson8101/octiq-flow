@@ -357,6 +357,11 @@ fn compact(
                             // `false` here, said all the same: a reader
                             // tells "not held" from "not said" by it.
                             "heldByPlan",
+                            // A completed check that failed is still
+                            // somebody's move (`retry.rs`).
+                            "failure",
+                            "retriesUsed",
+                            "retryLimit",
                         ]
                     } else {
                         &[
@@ -380,6 +385,12 @@ fn compact(
                             "approved",
                             "supersededBy",
                             "stopped",
+                            // Whose move a failure is, and how many of the
+                            // task's automatic retries are left (`retry.rs`).
+                            "failure",
+                            "retriesUsed",
+                            "retryLimit",
+                            "retrying",
                         ]
                     };
                     let mut item = pick(&full, keys);
