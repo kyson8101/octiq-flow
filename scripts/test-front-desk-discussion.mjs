@@ -2,9 +2,10 @@
 // start a writer refuses: nothing on the page opens, re-sends or switches a
 // chat to read-only. A discussion is how a route's card is worded and nothing
 // else. The page sends the level it holds for a chat and works none out: it
-// has no rule, effect or event for the level a process runs at. Raising a
-// registered agent's own conversation to the agent's registered access is the
-// host's (`agent_chat::start_session`), and is not this script's to show.
+// has no rule, effect or event for the level a process runs at. Nothing
+// raises a chat's level at a start either: the chats an earlier build opened
+// as read-only discussions are lifted once, on the host, at startup, before
+// any page is served.
 //
 // At 375 and 1440 wide it checks that:
 //   A. a route proposed as a discussion is called "Discuss with STAR LEAD?",
@@ -28,8 +29,10 @@
 //      `chat-access-changed` naming Auto (during the request and after it)
 //      and a chat-list answer naming Auto change nothing: the picker still
 //      says Plan, and once the process has ended the next message's
-//      `chat_start` carries read. The page has no listener for that event;
-//      this fails if one is put back (review 25fa12, R1).
+//      `chat_start` carries read. No host sends that event: there is no
+//      level event, and the frame is sent here on purpose. This section
+//      guards against one being listened to again, and fails if a listener
+//      is put back (review 25fa12, R1).
 // Over the whole run: `handover_discuss` is never sent, the only
 // `chat_set_access` is the person's own pick in G, and the only chats the page
 // starts at read are the front desk's own (registered at read), the one saved
@@ -429,10 +432,11 @@ try {
   ].forEach((event) => emit("chat-event", { key, seq: (seq += 1), event }));
 
   // D. A chat saved at read whose agent is STAR LEAD. The page sends the
-  //    level it has saved, switches nothing and works nothing out. The raise
-  //    to the agent's registered level is the host's, in `start_session`, and
-  //    is not this script's to show: the mocked host raises nothing and says
-  //    nothing, so every level seen here is the page's own doing.
+  //    level saved for the chat, switches nothing and works nothing out, and
+  //    nothing raises it at a start. (The one-time lift of chats an earlier
+  //    build opened as read-only discussions happens on the host at startup,
+  //    before any page.) The mocked host raises nothing and says nothing, so
+  //    every level seen here is the page's own doing.
   for (const [width, height, touch] of sizes) {
     seq = 3;
     const section = calls.length;
@@ -510,8 +514,10 @@ try {
     if (!bar) await shutSheet(page);
   };
 
-  // G. The person's pick is not overwritten by an older level (review
-  //    25fa12, R1). An ordinary chat runs at Auto; the person picks Plan; an
+  // G. Guards against a level event being listened to again: the person's
+  //    pick is not overwritten by an older level (review 25fa12, R1). No host
+  //    sends `chat-access-changed`; the frames below are strays sent on
+  //    purpose. An ordinary chat runs at Auto; the person picks Plan; an
   //    older `chat-access-changed` naming Auto arrives while that request is
   //    in the air and again after it, and so does a chat-list answer naming
   //    Auto; the process ends; the person sends. The page listens for no such
