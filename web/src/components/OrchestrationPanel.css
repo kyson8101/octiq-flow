@@ -1154,6 +1154,11 @@
   width: min(100%, 880px);
   margin: 0 auto;
   display: grid;
+  /* One column that is never wider than the panel. An implicit `auto`
+     track is as wide as the widest thing a run holds wants to be, so in a
+     narrow column (300px beside the chat and a side column) every run was
+     wider than the panel and the panel scrolled sideways. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 

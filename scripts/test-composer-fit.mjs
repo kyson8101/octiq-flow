@@ -21,13 +21,19 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
-const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || new URL("../web", import.meta.url).pathname);
+// `fileURLToPath`, not `.pathname`: on Windows that is `/C:/…`, which
+// `resolve` turns into `C:\C:\…`. OCTIQ_WEB_ROOT points at another copy of web/.
+const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || fileURLToPath(new URL("../web", import.meta.url)));
 const require = createRequire(join(webRoot, "package.json"));
-const { createServer } = await import(require.resolve("vite"));
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright");
+/** A module named by a path is imported by its file URL: Node's loader
+ *  refuses `C:\…` as a specifier. A bare name or a URL is left as it is. */
+const moduleUrl = (spec) => (isAbsolute(spec) || spec.startsWith(".") ? pathToFileURL(resolve(spec)).href : spec);
+const { createServer } = await import(moduleUrl(require.resolve("vite")));
+const { chromium } = await import(moduleUrl(process.env.PLAYWRIGHT_MODULE || "playwright"));
 const shotsOnly = process.env.SHOTS_ONLY === "1";
 const wideFont = process.env.WIDE_FONT === "1";
 const classic = process.env.CLASSIC_SCROLLBARS === "1";
@@ -258,6 +264,31 @@ async function agent(browser, out, size) {
   await page.screenshot({ path: join(artifacts, `${label}.png`) });
   if (shotsOnly) { await context.close(); return; }
   assert.deepEqual(fit.outside, [], `${label}: no control is drawn outside the composer`);
+  // The run column beside the chat (300px here, with the side column open)
+  // does not scroll sideways, and nothing of a run is cut off at its edge:
+  // a run's accordion was as wide as its widest content wanted, which put a
+  // horizontal scrollbar on the panel (seen on Windows, where it takes room).
+  if (!size.phone) {
+    const run = await page.evaluate(() => {
+      const scroller = document.querySelector(".orch-content");
+      if (!scroller) return null;
+      const cut = [];
+      for (const accordion of scroller.querySelectorAll(".orch-run-accordion")) {
+        const edge = accordion.getBoundingClientRect().right;
+        for (const el of accordion.querySelectorAll("*")) {
+          // The tab row scrolls sideways by design, with no scrollbar.
+          if (el.closest(".orch-tabs")) continue;
+          const box = el.getBoundingClientRect();
+          if (box.width && box.right > edge + 0.5) cut.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]}`);
+        }
+      }
+      return { client: scroller.clientWidth, scroll: scroller.scrollWidth, cut };
+    });
+    out.runColumn = run;
+    assert(run, `${label}: the run column is drawn`);
+    assert(run.scroll <= run.client, `${label}: the run column does not scroll sideways (${run.scroll} in ${run.client})`);
+    assert.deepEqual(run.cut, [], `${label}: nothing of a run is cut at the column's edge`);
+  }
   assert.equal(drawn.name, "Potato Juice");
   assert.equal(drawn.nameWhole, true, `${label}: the name is whole`);
   assert.equal(`${drawn.rest}${drawn.access}`, "opus latest · high · Plan", `${label}: the session's three values are the text`);
