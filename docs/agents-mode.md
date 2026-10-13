@@ -94,27 +94,38 @@ designated, the page is the plain picker above.
   folder of the route's own, which the new chat may read. A file that could
   not be given is named on the card. A newer proposal replaces a pending one.
   Cancel leaves no record and no file.
-- **A discussion is not work.** When the person wants to talk something
-  through rather than have it done, the front desk passes `purpose:
-  "discuss"`. The route then opens at **read-only** access, whatever the
-  agent's registered level, in the same place, and its first message says it
-  is a discussion. A chat the person drives is no longer refused for
-  writing beside an orchestration worker either (`chat_workspace_access`):
-  the person often runs several chats in one direction, so the chat is let
+- **A discussion is worded as one, and nothing else.** When the person wants
+  to talk something through rather than have it done, the front desk passes
+  `purpose: "discuss"`. The route keeps that on its record (`route.discuss`),
+  the card asks to discuss, and the first message ends with a line saying the
+  person wants to talk it through first (`route::DISCUSSION_NOTE`). It opens
+  in the same place and on the agent's registered provider, model, effort and
+  access, like any route: `purpose` never changes a chat's settings, at the
+  proposal or at confirm, where they are read from the registry again. A
+  discussion recorded by an earlier build at read-only access confirms on the
+  agent's registered settings too, with today's line in its first message.
+- **The host never narrows a chat because of what it is for.** Nothing in
+  the host, its MCP server or the text they give an agent opens a registered
+  agent's own conversation below that agent's registered level, or tells the
+  agent or the person that a discussion is read-only. The level of such a
+  chat changes only when the person changes it (the access picker, or an
+  agent's `request_access` card). What this does not touch: a worker's level
+  comes with its task, and the front desk's own launch is read-only, which is
+  the desk and not a chat it opens (see **It only routes** below).
+- **Writing beside a worker.** A chat the person drives is not refused for
+  writing beside an orchestration worker (`chat_workspace_access`): the
+  person often runs several chats in one direction, so the chat is let
   through and a line in it names the task writing there, once per task
   (`octiq_writer_beside`). Only an orchestration worker's own chat is still
   refused, so a Mission keeps one writer at a time, and the Git panel keeps
   the strict check (`require_workspace_access`). A worker's managed worktree
   is shared only by a chat working inside it, the same rule dispatch keeps
-  (`shares_checkout`). The read-only ways out below remain for a refusal
-  from an older backend or a workspace being cleaned up. A work route
-  whose start a writer refused offers **Discuss only (read-only)** beside Try
-  again and Give up (`handover_discuss`, socket-only), but only while the
-  host has made sure no chat started (`abandonable`), since a started chat
-  keeps the settings it started with. A conversation started straight with
-  an agent, or any other chat, gets the same way out: a message the writer
-  refused offers **Discuss read-only** on its bubble (`lib/writerConflict`),
-  which sends it again at read-only access in the same conversation.
+  (`shares_checkout`). A route whose start is refused all the same (a
+  workspace being cleaned up, the agent's CLI failing) offers Try again and
+  Give up, the second only while the host has made sure no chat started
+  (`abandonable`). There is no read-only way out of a refusal: the command
+  `handover_discuss` was removed, and a page that still sends it gets the
+  ordinary answer for a command the backend does not have.
 - The host checks scope at the proposal and again at confirm, and refuses a
   route to the front desk itself, to an agent who does not report to the
   person (naming the manager at the top of its chain,

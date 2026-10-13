@@ -127,7 +127,12 @@ test("route_chat passes a discussion on, and nothing else under purpose", async 
   try {
     const env = { OCTIQ_CHAT_KEY: "chat:desk", OCTIQ_FRONT_DESK: "1", OCTIQ_HOOK_PORT: String(fake.port), OCTIQ_CHAT_CAPABILITY: "cap" };
     const tools = await mcp(env, "tools/list", {});
-    assert.deepEqual(tools.result.tools[0].inputSchema.properties.purpose.enum, ["work", "discuss"]);
+    const purpose = tools.result.tools[0].inputSchema.properties.purpose;
+    assert.deepEqual(purpose.enum, ["work", "discuss"]);
+    // A discussion is worded as one. It never narrows the chat's settings.
+    assert.match(purpose.description, /first message says it is a discussion/);
+    assert.match(purpose.description, /opens on the agent's own settings, like any chat/);
+    assert.doesNotMatch(purpose.description, /read-only/);
     const call = (purpose, requestId) => mcp(env, "tools/call", {
       name: "route_chat",
       arguments: { agent: "agent_star", brief: "Brainstorm the next short series.", purpose, requestId },

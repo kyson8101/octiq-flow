@@ -1354,18 +1354,6 @@ fn save_record(path: &Path, record: &Handover) -> Result<(), String> {
 /// Re-reads the registry, the project store and the checkout first: what
 /// the card showed is not trusted to still be true.
 pub fn confirm(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, String> {
-    confirm_with(path, id, host, false)
-}
-
-/// The person chose to open a route as a discussion instead: read-only, so
-/// a writer elsewhere in the project cannot keep it from opening. Offered
-/// on a card whose chat could not start; never once its chat may exist,
-/// since that chat already runs on the settings it started with.
-pub fn confirm_discussion(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, String> {
-    confirm_with(path, id, host, true)
-}
-
-fn confirm_with(path: &Path, id: &str, host: &dyn Host, discuss: bool) -> Result<Handover, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut record = read(path)?
         .handovers
@@ -1380,25 +1368,6 @@ fn confirm_with(path: &Path, id: &str, host: &dyn Host, discuss: bool) -> Result
             return Err("This handover was given up on. Ask the agent for a new one.".into())
         }
         Status::Pending | Status::Starting => {}
-    }
-    if discuss && !record.route.as_ref().is_some_and(|r| r.discuss) {
-        if record.status == Status::Starting && may_have_started(&record, host) {
-            return Err(
-                "Its chat may already have started, so it can only be tried again as it is.".into(),
-            );
-        }
-        let Some(route) = record.route.as_mut() else {
-            return Err(
-                "Only a chat the front desk opens can be opened for discussion instead.".into(),
-            );
-        };
-        route.discuss = true;
-        route.message = route::render(
-            &record.from.name,
-            &record.brief.objective,
-            &route.attachments,
-            true,
-        );
     }
     // Started before the record could say so (a failed save, a restart):
     // finish the record, never start a second time.
@@ -1507,13 +1476,24 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
                     agent.name
                 ));
             }
-            let discuss = record.route.as_ref().is_some_and(|r| r.discuss);
-            let settings = route::opening_settings(&agent, discuss);
+            // A discussion too: what a chat is for never narrows its access.
+            let settings = settings_of(&agent);
             (Some(agent), settings)
         }
         None => (None, record.settings.clone()),
     };
     record.settings = settings;
+    // A discussion recorded before its note changed says the chat is
+    // read-only, which it is not: its first message is written again from
+    // the record, so the agent is told what is true now.
+    if let Some(route) = record.route.as_mut().filter(|route| route.discuss) {
+        route.message = route::render(
+            &record.from.name,
+            &record.brief.objective,
+            &route.attachments,
+            true,
+        );
+    }
 
     if record.workspace.mode == "continue" {
         recheck_checkout(&record.destination, &mut record.workspace)?;
@@ -2398,8 +2378,6 @@ pub enum Decision {
     Decline,
     /// Give up on a confirmed handover whose chat could not be started.
     Abandon,
-    /// Open a route as a read-only discussion instead (`confirm_discussion`).
-    Discuss,
 }
 
 /// The person's decision, from their socket. Then the calling agent is told:
@@ -2415,7 +2393,6 @@ pub fn decide(
             Decision::Confirm => confirm(path, id, host)?,
             Decision::Decline => decline(path, id)?,
             Decision::Abandon => abandon(path, id, host)?,
-            Decision::Discuss => confirm_discussion(path, id, host)?,
         };
         // A route tells nobody, and a cancelled one is already gone.
         if record.kind == Kind::Route {

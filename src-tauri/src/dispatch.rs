@@ -1833,11 +1833,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "id")?,
             crate::handover::Decision::Abandon,
         )),
-        "handover_discuss" => to_value(crate::handover::decide(
-            svc,
-            &arg::<String>(&args, "id")?,
-            crate::handover::Decision::Discuss,
-        )),
         // Front-desk chats the person left before they routed anywhere, for
         // the way back on the new-chat screen. No list shows them otherwise.
         "front_desk_unfinished" => to_value(crate::handover::route::unfinished_desks(
@@ -2537,6 +2532,11 @@ mod tests {
         // has to name the command, or "something failed" is the whole report.
         let err = dispatch(&svc, "no_such_command", json!({})).unwrap_err();
         assert!(err.contains("no_such_command"), "{err}");
+        assert!(err.contains("not available on this backend"), "{err}");
+        // The read-only way out of a refused route is gone with its command:
+        // a page that still sends it is told so, and nothing is opened.
+        let err = dispatch(&svc, "handover_discuss", json!({ "id": "handover_1" })).unwrap_err();
+        assert!(err.contains("'handover_discuss'"), "{err}");
         assert!(err.contains("not available on this backend"), "{err}");
     }
 
