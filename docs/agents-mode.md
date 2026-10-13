@@ -107,14 +107,12 @@ designated, the page is the plain picker above.
 - **A new process for a registered agent's own conversation is never
   started below that agent's registered access.** The host decides it, at
   the one door every process start goes through (`agent_chat::start_session`,
-  `raised_to`), from the roster as it is at that moment. So a chat an
+  `level_to_start_at`), from the roster as it is at that moment. So a chat an
   earlier read-only discussion left at read starts at its agent's level
   again whoever starts it: the page (`chat_start`, `chat_complete` with
   `start`, the run panel's Continue), or the host (a queued message carried
   into the next process, a continuation, the resume after a usage limit, a
-  run's notification, a late answer told to the chat that asked). The page
-  decides nothing here: it asks for the level it holds, and the host starts
-  the process at that level or at the registered one, whichever is higher.
+  run's notification, a late answer told to the chat that asked).
   - **It only raises.** The level asked is compared with the registered one
     by the host's own ranking (`access_request::rank`), and no level asked
     counts as the lowest. A level asked at or above the registered one is
@@ -124,110 +122,49 @@ designated, the page is the plain picker above.
     about a start. A chat the person lowers with the access picker keeps
     that level for as long as its process runs, and is at its agent's
     registered level again in its next process.
-  - **Which chats: one question, asked in one function**
-    (`ChatManager::registered_level`). A registered agent's own conversation
-    is the chat's own voice, named by a lead record whose agent is on the
-    roster now, with a scope that covers the chat's project now, and not a
-    worker's chat. Every chat it answers no for is started exactly as asked:
-    - a room seat: not the chat's own voice;
-    - a worker's chat, told by its key or an attempt on record
-      (`is_worker_chat`, so a settled worker too): its level comes with its
-      task;
-    - a chat no lead record names, such as an ordinary chat or a PR
-      dashboard's Study or Review chat;
-    - a chat whose agent was removed from the roster;
-    - **a chat whose agent was moved to another project.** Only a global
-      agent, or an agent whose one project is the chat's project, is an
-      authority for the chat's level (`team::registered_access_of_chat`,
-      the question `lead_brief` asks before a first message). The chat's
-      project is the one its lead record names; for a project-scoped agent
-      the chat index has to list the chat under that same project when it
-      lists it at all, and two sources that disagree raise nothing. A
-      global agent's scope covers every project, so neither is asked. Only
-      the raise is scoped: the chat is still that agent's conversation for
-      `team::identity`, the turn brief and the wrap-up;
-    - any chat while the roster or the ledger cannot be read, or the chat
-      index for a project-scoped agent: what is unknown is not read as a
-      level, as not a worker, or as the right project. (With a ledger that
-      cannot be read no process is started at all: the start is refused
-      further on, as it was.)
-  - **The front desk's own chat is not on that list: it is always started
-    read-only**, whatever was asked and whatever its registration says (see
-    **It only routes** below). Its override comes first at the door and the
-    rule adds nothing to it.
+  - **Which chats.** Only the chat's own voice, and only while the agent its
+    lead record names (`team::registered_access_of_chat`) is on the roster.
+    Started exactly as asked: a room seat; a worker's chat, told by its key
+    or an attempt on record (`is_worker_chat`), whose level comes with its
+    task; the front desk's own chat, whose launch is read-only (see **It
+    only routes** below); a chat no lead record names, such as an ordinary
+    chat or a PR dashboard's Study or Review chat; a chat whose agent was
+    removed; and any chat while the roster or the ledger cannot be read,
+    because what is unknown is not read as a level.
   - **The level is recorded as any start's is**: in the start settings the
-    host resumes from in memory, and in the ledger for a chat a run knows,
-    when that save works. A later host resume starts from what was saved,
-    and is raised again at the door if that is lower.
-  - **Who writes the chat index entry's `access`.**
-    - *A registered agent's own conversation* (the same question,
-      `registered_level`): the host, and nobody else. It writes the entry
-      when a process is started at a level the entry does not say
-      (`start_session`), and when `chat_set_access` took hold under a live
-      process (`chat_set_access_impl`), without waiting for any page's
-      save. A page's `chat_index_save` never changes it
-      (`chat_index_save_from_page`, `chat_index::upsert_keeping_access`):
-      the entry keeps the level it has, which is the process's while one
-      runs and the last process's after it ended. So a tab that still holds
-      an older level cannot put the entry back, with a process or without
-      one, and a run's notification after a restart is not refused for an
-      index and a ledger that disagree. A save that makes the entry takes
-      the level it carries, because there is nothing to keep; and a save
-      made while a process runs writes that process's level where the entry
-      says another (the entry was made after the start, or the host's own
-      write failed). Everything else a save carries is saved as before.
-      The host's writes are not made under the session's lock, so each
-      looks at the process again after it wrote and writes the level it
-      finds when that has moved (`index_follows_level`): the entry ends at
-      the level the process runs at whichever write lands last.
-    - *Every other chat* (an ordinary chat, a PR dashboard's, a seat's, a
-      worker's, a chat whose agent was removed or moved to another
-      project): the page, exactly as before there was a rule about levels.
-      `chat_index_save` writes what the page sends, with a process or
-      without one, and the host writes nothing into the entry at a start or
-      after `chat_set_access`. The person's picker is the authority there
-      and the page orders its own writes.
-    - An entry with no level means read.
-  - **There is no event for a level, and the page mirrors none.** A page
-    learns the level a chat runs at from the chat index (`chat-index-changed`
-    is said for every change of it, the host's writes included) and from the
-    answers to its own commands. A bus event that carried a chat's level
-    was tried and taken out: nothing ordered it against a level the person
-    had just picked, so an old frame put a fresh Plan back to Auto in an
-    ordinary chat, and the next process asked for Auto (review of a4d072b,
-    R1). `level_tests.rs` asserts it is not said.
-  - **Open.**
-    - *The raised level's record failing to save still starts the process*
-      (`keep_start_level` → `remember_start`): the save's failure is a line
-      on the log, the process runs at the registered level, and the ledger
-      keeps the older one. The roster holds the person's approval of that
-      level, so nothing runs higher than they allowed, but the resume
-      record is not the one a raise is owed (AGENTS.md, Conventions, rule
-      C), and after a restart the index and the ledger disagree for that
-      chat.
-    - *A late answer told to a chat after a server restart*
-      (`continue_origin`) starts from the settings saved with the question
-      when nothing is in memory. For a chat the person had since LOWERED
-      those are stale in the other direction: it is resumed at the older,
-      higher level, which is at or above the registered one and so kept as
-      asked.
-    - *A `chat_start` refused because the chat is already running* still
-      replaces the remembered start with the level it asked for. The
-      process and the index entry are not touched; a later host resume
-      would start from that level.
-    - *A level the chat's provider does not offer is handed to it as
-      registered* (a Claude agent registered at Accept edits whose chat runs
-      on Codex): each provider maps the level itself, as it did before, and
-      the page's own mapping for the picker is not the host's.
-    - *A level picked for an agent's own chat while it has no process* is
-      held by that page alone until its next `chat_start`, which carries
-      it: `chat_set_access` needs a process, and the page's save no longer
-      writes the entry. A reload or another device reads the entry instead,
-      so a level lowered from above the registered one (Full to Auto) with
-      no process is forgotten there and the chat next starts at the
-      entry's.
-    - *The page still shows `Delivery unconfirmed` for a send the host
-      refused outright* (review of ca81617, M3): page work, unchanged.
+    host resumes from, and in the ledger for a chat a run knows.
+  - **The page is told, and the host keeps the chat index true.** When a
+    chat's own process is started at a level that is not the one on its
+    index entry, the host writes the entry (`chat_index::set_access`) and
+    says `chat-access-changed` on the bus, with exactly `{ "chatKey":
+    "chat:…", "access": "read" | "manual" | "edits" | "auto" | "full" }`.
+    It says the same when the level started at is not the one that was
+    asked. That is for any start, raised or not, and it is the one way a
+    page learns the level a process really runs at. Nothing is said when
+    nothing differs. An entry with no level means read.
+  - **A page's save does not change the level of a running chat.** A page
+    saves the level it holds, which may be the one it asked for a moment
+    before the host raised it. For a chat with a live process
+    `chat_index_save` writes the process's level instead (the session
+    table and `ChatManager::levels`, which a start and `chat_set_access`
+    both record), looks again after the save for a process that started in
+    between, and tells the page with `chat-access-changed` when it named
+    another level. With no process the save stands: it is the person's
+    choice for the next start, which the rule above may raise.
+  - **Not covered.** A late answer told to a chat after a server restart
+    (`continue_origin`) starts from the settings saved with the question
+    when nothing is in memory. For a chat the person had since LOWERED
+    those are stale in the other direction: it is resumed at the older,
+    higher level, which is at or above the registered one and so kept as
+    asked. That is open. A page that never took `chat-access-changed` (a
+    tab on an older build) and saves the level it holds once the process
+    has ended puts the entry back to that level: the next start is raised
+    again, and until then a run's notification to that chat after a server
+    restart is refused, as for any chat whose index entry and ledger
+    settings disagree (`The chat's saved settings changed. Continue it in
+    Chat…`). And a level the chat's provider does not offer is handed to
+    it as registered (a Claude agent registered at Accept edits whose chat
+    runs on Codex): each provider maps the level itself, as it did before.
 - **Nothing tells an agent or the person that a discussion is read-only**:
   not the host, its MCP server or the text they give an agent.
 - **Writing beside a worker.** A chat the person drives is not refused for
