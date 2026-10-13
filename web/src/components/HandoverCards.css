@@ -353,6 +353,3 @@
   color: var(--fg-2); font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
-/* Three answers (give up, discuss, try again) keep one row: what happened
-   goes above them rather than leaving the primary alone on a second line. */
-.route-card .handover-actions:has(> button:nth-of-type(3)) .handover-hint { flex-basis: 100%; }

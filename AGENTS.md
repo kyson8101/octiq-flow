@@ -721,8 +721,8 @@ undecided its primary answer names the action and the agent. `docs/mocks/
 handover-cards-namecard.html` is the mock they were built from.
 
 - **Facts are sentences, not rows.** What kind of chat and where is one line
-  (`handover.routeFact`: `Read-only discussion · starfall`, `New chat ·
-  starfall · new worktree`), a handover's is two (`Takes over this task ·
+  (`handover.routeFact`: `Discussion · starfall`, `New chat · starfall · new
+  worktree`), a handover's is two (`Takes over this task ·
   <project>`, then `handover.handoverWhere`), the files a route carries are
   `With 3 files: a, b, c`, and the chat's settings are one line of small
   print (`settingsLine`), never chips.
