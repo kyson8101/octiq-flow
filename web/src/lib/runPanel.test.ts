@@ -78,7 +78,7 @@ describe("run attention", () => {
     const a = run("a", "chat:main", { planApproval: { status: "pending", requestedAt: 1 } });
     const tasks = [task("gated", "blocked"), task("stuck", "failed"), task("fine", "running")];
     const attention = runAttention(a, tasks, [], [gate("g", "gated")]);
-    expect(attention).toEqual({ decisions: 2, planOnly: false, blocked: 1, failed: 1, total: 3 });
+    expect(attention).toEqual({ decisions: 2, planOnly: false, failures: 0, blocked: 1, failed: 1, total: 3 });
     expect(attentionLabel(attention)).toBe("2 to decide");
     // The plan alone is an approval, said as one.
     const alone = runAttention(a, tasks.slice(1), [], []);
@@ -92,7 +92,7 @@ describe("run attention", () => {
     for (const awaits of ["coordinator", "nobody", null] as const) {
       // Not a decision of the person's, and not a stuck task either: it is
       // waiting on a gate that is open.
-      expect(runAttention(a, tasks, [], [gate("g", "gated", awaits)]), String(awaits)).toEqual({ decisions: 0, planOnly: false, blocked: 0, failed: 0, total: 0 });
+      expect(runAttention(a, tasks, [], [gate("g", "gated", awaits)]), String(awaits)).toEqual({ decisions: 0, planOnly: false, failures: 0, blocked: 0, failed: 0, total: 0 });
     }
     expect(runAttention(a, tasks, [], [gate("g", "gated", "person"), gate("h", undefined, "coordinator")]).decisions).toBe(1);
   });
@@ -100,7 +100,7 @@ describe("run attention", () => {
   it("owes nothing for a blocked task the coordinator replaced (feedback 6b0870f9)", () => {
     const a = run("a", "chat:main");
     const tasks = [task("old-review", "blocked", { supersededBy: "new-review" }), task("new-review", "pending")];
-    expect(runAttention(a, tasks, [], [])).toEqual({ decisions: 0, planOnly: false, blocked: 0, failed: 0, total: 0 });
+    expect(runAttention(a, tasks, [], [])).toEqual({ decisions: 0, planOnly: false, failures: 0, blocked: 0, failed: 0, total: 0 });
     expect(attentionLabel(runAttention(a, tasks, [], []))).toBeNull();
     expect(runAttention(a, [task("old-review", "blocked")], [], []).blocked).toBe(1);
   });

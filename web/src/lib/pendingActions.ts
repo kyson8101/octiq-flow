@@ -46,7 +46,7 @@ import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
 import { ledgerWaits, type LedgerWaits, type Waiting } from "./runWaits";
 import type { Question } from "./question";
 
-export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "plan" | "handover";
+export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "failure" | "plan" | "handover";
 
 export type PendingAction = {
   /** The host's own identity for it, prefixed by kind: stable across reloads
@@ -119,7 +119,7 @@ export type PendingActionInput = {
   handovers?: readonly { id: string; sourceChatKey: string; status: string; error?: string; kind?: string }[];
 };
 
-const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, outage: 2, question: 3, delivery: 4, gate: 5, plan: 6, handover: 7 };
+const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, outage: 2, question: 3, delivery: 4, gate: 5, failure: 6, plan: 7, handover: 8 };
 
 const chatId = (chatKey: string | undefined) => chatKey?.startsWith("chat:") ? chatKey.slice(5) || null : null;
 
@@ -214,6 +214,10 @@ export function pendingReading(input: PendingActionInput): PendingReading {
       found.set(wait.key, { key: wait.key, kind: "plan", rowId: row, openChatId: coordinator, surface: "chat", runId: wait.runId });
     } else if (wait.kind === "gate") {
       found.set(wait.key, { key: wait.key, kind: "gate", rowId: row, openChatId: coordinator, surface: "run", runId: wait.runId, taskId: wait.taskId });
+    } else if (wait.kind === "failure") {
+      // A failure the host says is the person's to decide, with no gate that
+      // asks it: the failure is the decision, and its row is where it is.
+      found.set(wait.key, { key: wait.key, kind: "failure", rowId: row, openChatId: coordinator, surface: "run", runId: wait.runId, taskId: wait.taskId });
     } else if (wait.kind === "native") {
       // Its card is drawn in the main chat when the page has it. Until then
       // the badge still says so, and leads to where the card will be.
@@ -261,6 +265,7 @@ const LABEL: Record<PendingActionKind, string> = {
   question: "Answer needed",
   delivery: "Delivery failed",
   gate: "Decision needed",
+  failure: "Failed · your decision",
   plan: "Plan approval",
   handover: "Handover to confirm",
 };
@@ -272,6 +277,7 @@ const NOUN: Record<PendingActionKind, [string, string]> = {
   question: ["question to answer", "questions to answer"],
   delivery: ["failed answer delivery", "failed answer deliveries"],
   gate: ["decision", "decisions"],
+  failure: ["failed task to decide", "failed tasks to decide"],
   plan: ["plan to approve", "plans to approve"],
   handover: ["handover to confirm", "handovers to confirm"],
 };

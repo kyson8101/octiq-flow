@@ -120,6 +120,12 @@ type Shape = {
   cards?: Cards;
   /** Decisions waiting on the person. Written by hand, never computed. */
   person: number;
+  /** Every one of them is a failure's own decision, so the surfaces say it
+   *  as what failed and not as "Needs you": the strip's state is `failed`
+   *  and its word "N failed", the attention button says "N failed" in the
+   *  danger colour, the chat list's line leads with it, and the Agents page
+   *  lists the task as failed. The count is the same count. */
+  said?: "failed";
 };
 
 /** The three states of the page's card list for one decision. `failed` is
@@ -216,6 +222,26 @@ const SHAPES: Shape[] = [
   { name: "the host's own ledger: a reopened task held for its notice", host: "new", person: 0, ledger: real(hostFacts.heldByReopen()) },
   { name: "the host's own ledger: a task the person stopped", host: "new", person: 0, ledger: real(hostFacts.taskStopped().snapshot) },
   { name: "the host's own ledger: two workers, one with usage and context", host: "new", person: 0, ledger: real(hostFacts.usageContext()) },
+
+  // Whose move a failure is (`retry_tests`). One the coordinator is fixing,
+  // a retry at work and a failure that is history ask nothing of the
+  // person. One the host says is theirs is one decision: the failure
+  // itself, or the gate the coordinator opened about it, never both.
+  { name: "the host's own ledger: a failure the coordinator is fixing", host: "new", person: 0, ledger: real(hostFacts.failureAwaitsCoordinator()) },
+  { name: "the host's own ledger: the coordinator's retry at work", host: "new", person: 0, ledger: real(hostFacts.retryExecuting()) },
+  { name: "the host's own ledger: a failure with both retries used", host: "new", person: 1, said: "failed", ledger: real(hostFacts.failureAwaitsPerson()) },
+  { name: "the host's own ledger: a failure the coordinator put to the person", host: "new", person: 1, said: "failed", ledger: real(hostFacts.failureEscalated()) },
+  { name: "the host's own ledger: a replaced failure", host: "new", person: 0, ledger: real(hostFacts.failureReplaced()) },
+  { name: "the host's own ledger: a failed check in a run the host calls completed", host: "new", person: 0, ledger: real(hostFacts.failureInCompletedRun()) },
+  { name: "the host's own ledger: a failure in a stopped run", host: "new", person: 0, ledger: real(hostFacts.failureInStoppedRun()) },
+  // Beside a card of another kind the failure is one of two decisions, and
+  // the surfaces say "Needs you". The ledger is the host's; the card is the
+  // page's own, for the worker whose attempt failed.
+  ...(() => {
+    const shape = real(hostFacts.failureAwaitsPerson());
+    const worker = shape.attempts[shape.attempts.length - 1].workerChatKey.replace(/^chat:/, "");
+    return [{ name: "the host's own ledger: that failure, and a permission card of its worker", host: "new" as const, person: 2, ledger: shape, cards: { asks: { [worker]: [{ id: "p1" }] } } }];
+  })(),
 ];
 
 /* ---- The surfaces ------------------------------------------------------ */
@@ -230,7 +256,9 @@ const count = (text: string | undefined) => text ? Number(text) : 0;
 type Read = { count: number | null; asked: boolean };
 
 /** Every surface's answer for one ledger and one state of the card lists. */
-function surfaces(orchestration: OrchestrationSnapshot, cards: Cards = {}): Record<string, Read> {
+function surfaces(orchestration: OrchestrationSnapshot, cards: Cards = {}, said: Shape["said"] = undefined): Record<string, Read> {
+  // The state and the words a surface draws for what waits on the person.
+  const state = said === "failed" ? "failed" : "needs";
   const { actions, held } = pendingReading({ orchestration, parents: workerChatParents(orchestration), ...cards });
   const rows = pendingByRow(actions);
   const tasks = pendingByTask(actions);
@@ -242,8 +270,9 @@ function surfaces(orchestration: OrchestrationSnapshot, cards: Cards = {}): Reco
   // The strip, as drawn.
   const picked = chatStrip(scoped, NOW, held);
   const stripHtml = picked ? renderToStaticMarkup(<RunProgressStrip strip={picked.strip} onOpen={() => {}} onHide={() => {}} />) : "";
-  const stripAsked = stripHtml.includes('data-state="needs"');
+  const stripAsked = stripHtml.includes(`data-state="${state}"`);
   const stripCount = !stripAsked ? 0
+    : said === "failed" ? count(/<span class="run-strip-word">(\d+) failed<\/span>/.exec(stripHtml)?.[1])
     : stripHtml.includes(">Plan to approve<") ? 1
       : count(/<b class="run-strip-reason">(\d+) decisions?<\/b>/.exec(stripHtml)?.[1]);
 
@@ -253,7 +282,7 @@ function surfaces(orchestration: OrchestrationSnapshot, cards: Cards = {}): Reco
       <OrchestrationPanel embedded allowManualRun={false} project={{ id: "p1", name: "octiq-flow" }} coordinatorKey={MAIN}
         initialSnapshot={orchestration} onOpenChat={() => {}} onClose={() => {}} />
     </PendingActionsContext.Provider>);
-  const toDecide = [...panelHtml.matchAll(/class="orch-attention" data-tone="decision" aria-label="(\d+) decisions? waiting/g)]
+  const toDecide = [...panelHtml.matchAll(new RegExp(`class="orch-attention" data-tone="${said === "failed" ? "failed" : "decision"}" aria-label="(\\d+) decisions? waiting`, "g"))]
     .reduce((sum, match) => sum + Number(match[1]), 0);
 
   // The panel's rows, and the boxes above them for what is no row.
@@ -306,16 +335,18 @@ function surfaces(orchestration: OrchestrationSnapshot, cards: Cards = {}): Reco
 
   return {
     strip: { count: stripCount, asked: stripAsked },
-    stripValue: { count: picked?.strip.needs ?? 0, asked: picked?.strip.state === "needs" },
+    stripValue: { count: picked?.strip.needs ?? 0, asked: picked?.strip.state === state && (picked?.strip.needs ?? 0) > 0 },
     rows: { count: rowDecisions + boxes, asked: rowDecisions + boxes > 0 },
     rowHeadings: { count: headings + boxes, asked: headings + boxes > 0 },
     toDecide: { count: toDecide, asked: toDecide > 0 },
     tasksButton: { count: tasksCount, asked: tasksHtml.includes("waiting for you") },
-    sidebarLine: { count: null, asked: line.startsWith("Needs you") },
+    sidebarLine: { count: said === "failed" ? count(/^(\d+) failed/.exec(line)?.[1]) : null, asked: said === "failed" ? /^\d+ failed/.test(line) : line.startsWith("Needs you") },
     sidebarBadge: { count: badgeCount, asked: main.includes("has-pending") },
     pendingActions: { count: actions.length, asked: actions.length > 0 },
     ledgerWaits: { count: ledgerWaits(orchestration, held).person.length, asked: ledgerWaits(orchestration, held).person.length > 0 },
-    agentsPage: { count: null, asked: roster.some((row) => row.state === "needs_you" || !!row.counts.needs_you) },
+    agentsPage: said === "failed"
+      ? { count: roster.reduce((sum, row) => sum + ((row.counts as Record<string, number>).failed ?? 0), 0), asked: roster.some((row) => (row.state as string) === "failed") }
+      : { count: null, asked: roster.some((row) => row.state === "needs_you" || !!row.counts.needs_you) },
   };
 }
 
@@ -331,8 +362,8 @@ describe("every surface says the same of who is waited on", () => {
     expect(new Set(SHAPES.map((shape) => shape.name)).size).toBe(SHAPES.length);
   });
 
-  it.each(SHAPES)("$host host: $name → $person", ({ ledger: shape, cards, person }) => {
-    const read = surfaces(shape, cards);
+  it.each(SHAPES)("$host host: $name → $person", ({ ledger: shape, cards, person, said }) => {
+    const read = surfaces(shape, cards, said);
     expect(Object.keys(read)).toEqual(SURFACES);
     for (const [name, answer] of Object.entries(read)) {
       if (answer.count !== null) expect(answer.count, `${name} count`).toBe(person);
@@ -406,7 +437,14 @@ const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^
  *  more use in any of them fails this test, and so does a use anywhere else. */
 const ALLOWED: Record<string, { uses: number; why: string }> = {
   "./runWaits.ts": { uses: -1, why: "the one reader" },
-  "./orchestration.ts": { uses: 6, why: "the ledger's type (gates, nativeDecisions, awaits on a gate, on a decision and on a task's failure) and the empty ledger" },
+  // The exception, stated: whose move a task's FAILURE is is read in
+  // `orchestration.failureMove`, beside the other readers of how a task
+  // ended, because surfaces that are handed tasks and no waits ask it (a
+  // mission's stage, who a run is with, the acceptance line). `lib/runWaits`
+  // asks that reader to count a failure that waits on the person, and never
+  // names the field. `finishedWell.surfaces.test` scans for a second reader
+  // of a task's `failure`, and asks every surface the same counts.
+  "./orchestration.ts": { uses: 7, why: "the ledger's type (gates, nativeDecisions, awaits on a gate, on a decision and on a task's failure), the empty ledger, and failureMove: the one read of a failure's awaits" },
   "./chatWorkflow.ts": { uses: 5, why: "chatSnapshot copies both lists into a chat's own ledger, unread, so runWaits sees the same facts in it" },
 };
 

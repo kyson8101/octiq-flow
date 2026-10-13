@@ -1557,7 +1557,9 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   A wait is the person's when the plan has a revision to approve, when the
   page itself holds a card for the worker (permission, safety, question, an
   undelivered answer, a handover), or when the host says so: an open gate
-  or a pending native decision whose `awaits` is `"person"`. A gate on a
+  or a pending native decision whose `awaits` is `"person"`, and a task's
+  failure the host says is theirs to decide (below, **A failure is quiet
+  until the person must decide**). A gate on a
   peer request is the person's on any host, because only their page can
   answer it. `awaits: "coordinator"` stays under Running in the warning
   colour as `Waiting on the coordinator`. `awaits: "nobody"` (a refusal no
@@ -1570,7 +1572,11 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   the ledger's waits.** `lib/runWaits` is the only module that names the
   ledger's `gates`, its `nativeDecisions` or a record's `awaits`; anything
   else asks it (`runWaits`, `ledgerWaits`, `openGates`, `taskDecisions`,
-  `pendingDecisions`). The page's own cards are read once
+  `pendingDecisions`). One exception, stated in the scan itself: whose move
+  a task's FAILURE is (`task.failure.awaits`) is read once, in
+  `orchestration.failureMove`, because surfaces that are handed tasks and no
+  waits ask it; `lib/runWaits` asks that reader and never names the field.
+  The page's own cards are read once
   (`pendingActions.heldCards`) and handed to it as `held`
   (`PendingActionsView.held`), and from what it returns come: the strip
   (`chatStrip`), the panel's rows, its decision boxes, its `N to decide`
@@ -1613,9 +1619,17 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   task. An archived run that still holds one is not put behind Archived
   (`runPanel.splitArchived`): it stays with the runs on screen, and its
   heading keeps the decision's count beside Restore.
-- **Four states, in this order:** Needs you, Failed (a failed task, a block
-  with no decision open, a check whose verdict is fail, none of them
-  replaced, and only while nothing waits on the person), Done, Running. A
+- **Four states, in this order:** Needs you, Failed, Done, Running. Failed
+  is a failure that waits on the person with nothing else waiting on them:
+  every decision of the line is a failure's own (`RunStrip.failures`), the
+  dot is the danger colour and the line's word is `1 failed`. Beside a card
+  or a plan it is Needs you, and what failed is still said (`2 decisions ·
+  1 failed`). A failure its coordinator is fixing is neither: the line is
+  Running, in grey, and says so only in its tooltip (`1 failure with the
+  coordinator, which is fixing it: nothing is asked of you.`). On a host
+  that does not say whose move a failure is, Failed is what it was: a failed
+  task, a block with no decision open, a check whose verdict is fail, none
+  of them replaced, and only while nothing waits on the person. A
   cancelled or replaced task is counted nowhere, so a run can reach its
   whole count. A stopped, closed or archived run, and a run with no task,
   draws no strip, unless something in it waits on the person: then the
@@ -1703,40 +1717,105 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   result does not lift a failed check, because the host goes on holding its
   dependants; a replaced one is history; a check with no verdict (old
   records) did not fail.
-  - **A failed check is a failure wherever a failure is shown:** present,
-    named `Check failed` (`CHECK_FAILED_LABEL`, never "Done · check
-    failed"), in the danger colour, counted failed and not done. The row
-    (`runProgress.taskReading`), the strip, the tile, the run picker and the
-    chat list's line (all `runProgress.runTally` / `runCounts`), the run's
-    attention button (`N failed` in the danger colour; `N blocked`, in the
-    warning colour, is only a worker in trouble), who a run is with and a
-    mission's crew (`failed`, apart from `blocked`, which is a wait), the
-    Agents page, a mission's stage
-    (never Ready to merge, or a draft, while an approved check has failed:
-    `In review`, waiting) and the acceptance line.
+  - **A failed check is never done, and it is a failure like any other.**
+    It is named `Check failed` (`CHECK_FAILED_LABEL`, never "Done · check
+    failed") and never counted done, on every surface. Whether it is shown
+    AS a failure, in the danger colour and counted failed, is the next
+    rule's to say, as for a task that failed or is blocked.
+  - **A failure is quiet until the person must decide** (the person's
+    decision of 2026-10-13; `orchestration/retry.rs`). The host says whose
+    move each failure is (`task.failure.awaits`), and it is read in ONE
+    place, `lib/orchestration`, beside the readers above: `failureMove`
+    (`coordinator`, `person`, `history`, `none`, or `unsaid` for a host that
+    says nothing), `failureOf` for what it failed as and why, `failureShown`
+    (`red`, `quiet`, `history`) for a surface that is handed tasks alone,
+    `isRetrying`, and `shownRunStatus`. Every surface asks one of them and
+    none works a failure out again:
+    - *The coordinator's* (retries remain): no danger colour, no warning
+      colour, counted failed nowhere. Its row is under Running with the grey
+      word `Waiting on the coordinator` (`COORDINATOR_WORD`), or `Retrying`
+      (`RETRYING_WORD`) while the host says a retry is at work
+      (`task.retrying`); a retry's worker that is stalled or disconnected
+      keeps the host's word for that, in the warning colour, as any worker
+      does. The opened row and the tooltip say it in a sentence (`Its
+      coordinator is fixing it: 1 of 2 automatic retries used. Nothing is
+      asked of you.`). It is not in the chat list at all: no `N failed`, no
+      tint. Its fail pill is the row's ink, and the acceptance line still
+      says `Failing`, in no colour.
+    - *The person's* (retries used, the coordinator asked or is gone, a peer
+      request's time is used): the one failure that is red. Its row is
+      under Needs you, in the danger colour, under the word of what it
+      failed as (`FAILURE_WORD`), and it is ONE decision in
+      `lib/runWaits`: the gate the coordinator opened about it
+      (`gate.aboutTaskId`, tied to the task's row) when there is one, else
+      the failure itself (`failure:<task>`). Never both. It is counted
+      wherever decisions are (the badge, `N to decide`, the Tasks button),
+      and where every decision is a failure's own the surface says it as
+      what failed: the strip's state and word (`1 failed`), the run's
+      attention button and the run picker (`1 failed`, danger), the chat
+      list's line (`1 failed · 0/1 done`, danger), the Agents page (state
+      `failed`), who a run is with and a mission's crew (`failed`). `N
+      failed` in red means exactly this on a host that says.
+    - **A red row never only says it failed** (`runProgress.failureNote`).
+      One sentence, in words on the row itself (`.orch-task-ask`: folded or
+      open, wrapped, never cut, never a tooltip alone): why it is theirs, in
+      the host's terms (`because`), and what moves it. The row's one start
+      where the host takes one (`taskHold.startControl`; no second start
+      control), the decision above the rows for one the coordinator put to
+      them, or, for a settled check that takes no worker, `ask the
+      coordinator in its chat, or stop or archive the run` with a button to
+      that chat. With the coordinator's chat gone it says so and offers no
+      way there.
+    - **A gate about a failed task is answered on the page.** It is drawn
+      in the Needs you box named for its task, and its button is `Answer`:
+      the socket's `orchestration_gate_resolve`, like a peer request's
+      gate, never a message through the main chat. Only the person's own
+      answer gives the task its retries back.
+    - *History* (`awaits: "nobody"`: replaced, or its run was stopped,
+      closed or archived): not red, counted nowhere. A replaced one reads
+      `Replaced`, as before; the other is listed in the panel's Finished
+      group under a muted `Failed` with its details, and offers no start.
+    - **Whether a failure is history is the host's word, never the run's
+      status.** The host calls a run `failed` or `completed` when nothing
+      else is left to run, which is what an unanswered failure leaves
+      behind: such a run has not ended. So a run's status is drawn through
+      `shownRunStatus` (failed only when a failure waits on the person,
+      running while its coordinator is on one), and a task of it the
+      coordinator is fixing is current work on the Agents page.
+    - **A host that does not say reads as it did** (`saysFailures`: no
+      `retryLimit` on the task). A task that failed, one blocked with no
+      decision open and a check whose verdict is fail are failures in the
+      danger colour, listed first under Running, counted failed; the chat
+      list's line is `Needs you · 1 failed · 0/2 done` or `1 failed · 0/1
+      done`; a run the host calls completed, failed or stopped is history
+      on the Agents page.
   - **The Agents page asks the panel's reading** (`taskReading`) and does
     not work a failure out again: what the row calls failed is the agent
     state `failed` there (chip `Failed`, danger dot and word, `1 failed` in
     the summary, ranked after Needs you), under the row's own word:
-    `Failed`, `Blocked` with no decision open, `Check failed`. `Blocked`
-    stays the warning colour and is only ever a wait (the coordinator's, an
-    open decision, no capacity). What finished well is folded away there.
-    A run the host calls completed, failed or stopped is history on that
-    page for every kind of failure alike, and the host calls a run
-    completed once every task has settled, failed checks included
-    (`recompute_run`); the strip, the panel and the chat list go on saying
-    the failure until the run is archived, stopped or closed.
-  - **The chat list's line** is `Needs you · 1 failed · 0/2 done`: the
-    strip's own word, what failed, then done of the tasks that count. A
-    wait on the person is the decision colour and a failure the danger
-    colour (`data-tone`); nothing to count is left out, never "0/0".
+    `Failed`, `Blocked`, `Check failed`. `Blocked` stays the warning colour
+    and is only ever a wait (an open decision, no capacity). A failure the
+    coordinator is fixing is `Queued` there under the row's own grey word,
+    and a retry at work is `Queued` or `Working`. What finished well is
+    folded away there.
+  - **The chat list's line** is the strip's own word, what failed, then
+    done of the tasks that count: `Needs you · 1 failed · 0/2 done` beside
+    another decision, `1 failed · 0/1 done` when the failure is the only
+    one. A wait on the person is the decision colour and a failure the
+    danger colour (`data-tone`); nothing to count is left out, never "0/0".
   - `finishedWell.surfaces.test.tsx` asks every surface the same done and
     failed counts over ten ledgers (the host's four `plan_after_*` and one
-    that finished well, each beside a pending plan and with no plan) and
-    scans the source: the string `"completed"` and a task's `.verdict` are
-    allowed per file, with an exact count and a reason. A new filter or
-    count that compares a task's status with the word fails it; ask one of
-    the three readers instead.
+    that finished well, each beside a pending plan and with no plan), then
+    over the host's seven failure ledgers (`failure_*`, `retry_executing`):
+    the counts, the row and the row as drawn, the strip, the chat list's
+    line, the attention button, the run's status, who the run is with and
+    the Agents page. It scans the source: the string `"completed"`, a
+    task's `.verdict`, and what the host says of a failure (`task.failure`,
+    `retryLimit`, `.retrying`, `aboutTaskId`) are allowed per file, with an
+    exact count and a reason. A new filter or count that compares a task's
+    status with the word, or reads a failure's move itself, fails it; ask
+    one of the readers instead. `scripts/test-quiet-failures.mjs` draws the
+    same seven ledgers in the real App at 1280 and 390.
 - **A chat that coordinates several runs has one line** (`chatStrip`): a
   run that waits on the person outranks a newer one that runs, a failure
   outranks plain progress, the decisions of every run of the chat are
@@ -1753,11 +1832,14 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   Planned show three rows and a line for the rest, which is a disclosure
   (`aria-expanded`, `aria-controls`); pressing it puts the keyboard on the
   first row it showed, on the row's summary or, for a task with no worker
-  chat, its details disclosure (`ROW_FOCUS`). What failed is listed first under
-  Running, in the danger colour with the host's word, then a stalled,
-  disconnected or retrying worker with the host's label in the warning
-  colour. An empty group is not drawn, and the task on screen is never
-  behind a fold.
+  chat, its details disclosure (`ROW_FOCUS`). A failure that waits on the
+  person is a row of Needs you, in the danger colour. Under Running, a
+  stalled or disconnected worker leads with the host's label in the warning
+  colour; a failure the coordinator is fixing and a retry at work are in
+  grey, in the plan's order. (On a host that does not say whose move a
+  failure is, what failed is listed first under Running, in the danger
+  colour, as before.) An empty group is not drawn, and the task on screen
+  is never behind a fold.
 - **A row's words are the task's title and the host's own label, with one
   exception that is exact.** While an attempt of the task is executing (the
   row's `flight`) and its worker's report marks a step active, the folded
@@ -1779,7 +1861,8 @@ are read by `lib/runProgress` off the ledger this tab already holds.
 - **An opened row is its status line, what starts or decides, then two
   tabs.** The status line (state word, last step, branch) stays on top.
   Under it, above the tabs and so on screen whichever is open: a hold's
-  sentence, the decision the task waits on, and the task's one start
+  sentence, whose a failure is when nobody here has to act on it, the
+  decision the task waits on, and the task's one start
   (`Start it again`, `Start next attempt`, `Start retry`, with the reason
   when it is switched off). Nothing a person must act on is drawn only
   inside a tab: a new control that starts or decides goes above the
@@ -1828,8 +1911,9 @@ are read by `lib/runProgress` off the ledger this tab already holds.
     completed with a failed check, was stopped by the person, is running,
     waits on anybody, or is approved and waiting its turn is a row, and the
     plan is then drawn beside the rows and the run's totals: what failed
-    first under Running in the danger colour, a stopped task with `Stopped
-    by you` and its `Start it again`. A mission draws its rows always, and
+    by whose move it is (under Needs you in the danger colour when it is
+    the person's), a stopped task with `Stopped by you` and its `Start it
+    again`. A mission draws its rows always, and
     its totals by this rule too. `planHoldsRun` counted failed,
     completed-with-a-failed-check and stopped as finished, and hid all
     three behind the card.

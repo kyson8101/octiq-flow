@@ -1,9 +1,14 @@
 // One question, every surface: did this task finish well?
 //
 // A task finished well when it completed and its check did not fail. A
-// completed task whose check failed is a failure everywhere a failure is
-// shown: present, named as a failed check, in the danger colour, counted as
-// failed and never as done. This file is the proof. Five ledgers, each with
+// completed task whose check failed is never done, and is a failure like a
+// task that failed or is blocked. Whether a failure is SHOWN as one, in the
+// danger colour and counted failed, is whose move it is, and the host says
+// (the second half of this file, "A failure, and whose move it is"). On a
+// host that does not say, which is what the first half's ledgers are (they
+// were recorded before it did, and carry no `retryLimit`), every failure is
+// shown as one: present, named, in the danger colour, counted as failed.
+// This file is the proof of both. Five ledgers, each with
 // an unapproved task on a pending plan and with no plan at all, and for each
 // one EVERY surface that says anything of a task or of a run's tasks is
 // asked the same things:
@@ -45,10 +50,13 @@ import { chatRunLine, chatRunStatus, chatSnapshot, rowRun, workerLine } from "./
 import { hostFacts } from "./__fixtures__/hostFacts";
 import { missionState } from "./mission";
 import { missionCrew } from "./missionPage";
-import { checkFailed, finishedWell, isSettled, type OrchestrationSnapshot, type OrchestrationTask } from "./orchestration";
+import {
+  checkFailed, failureMove, failureOf, failureShown, finishedWell, isRetrying, isSettled, saysFailures, shownRunStatus,
+  type OrchestrationSnapshot, type OrchestrationTask,
+} from "./orchestration";
 import { runStages } from "./runAcceptance";
 import { attentionLabel, attentionSpoken, attentionTone, runAttention, runPeople } from "./runPanel";
-import { chatStrip, planStandsIn, runCounts, runProgress, runTally } from "./runProgress";
+import { chatStrip, COORDINATOR_WORD, failureNote, planStandsIn, RETRYING_WORD, runCounts, runProgress, runTally, stripLine } from "./runProgress";
 import { runWaits } from "./runWaits";
 import { STOPPED_LABEL } from "./taskHold";
 import { OrchestrationPanel } from "../components/OrchestrationPanel";
@@ -58,6 +66,7 @@ import agentsCss from "../components/AgentsDashboard.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
 import missionCss from "../components/MissionPage.css?raw";
 import runPanelCss from "../components/OrchestrationPanel.css?raw";
+import runProgressCss from "../components/RunProgress.css?raw";
 
 afterEach(() => vi.useRealTimers());
 
@@ -477,8 +486,9 @@ describe("a failure's colour is the danger colour on every sheet that draws one"
 });
 
 describe("a run that is over", () => {
-  // The Agents page lists current work, and a run the host calls completed,
-  // failed or stopped is history there for every kind of failure alike. The
+  // On a host that does not say whose move a failure is. The Agents page
+  // lists current work, and a run the host calls completed, failed or
+  // stopped is history there for every kind of failure alike. The
   // host calls a run completed once every task has settled, failed checks
   // included, and failed once nothing is left but a failed task
   // (`recompute_run`). The strip and the panel go on saying the failure
@@ -501,6 +511,382 @@ describe("a run that is over", () => {
   });
 });
 
+/* ---- A failure, and whose move it is ------------------------------------ */
+
+// The host says whose move each failure is (`task.failure.awaits`), and the
+// page is quiet until one is the person's. Seven ledgers, each the host's
+// own (`__fixtures__/host`, recorded from `retry_tests`), and every surface
+// is asked the same things of each: how many tasks failed, how many are
+// done, and what it says of A. Written by hand, never computed.
+//
+//   coordinator   failed once, retries remain          quiet: grey, counted nowhere
+//   retrying      the coordinator's retry at work      grey "Retrying"
+//   person        both retries used                    red, under Needs you, one decision
+//   escalated     the coordinator asks the person      red; the gate is the decision, once
+//   replaced      another task replaced it             history: "Replaced", counted nowhere
+//   completedRun  a failed check, run "completed"      quiet: the run has not ended
+//   stoppedRun    its run was stopped                  history: muted "Failed", counted nowhere
+
+type Told = {
+  ledger: () => OrchestrationSnapshot;
+  /** The tasks that count as work, of the run's tasks. */
+  total: number;
+  failed: number;
+  decisions: number;
+  row: { state: string; group: string; why: string | null; tone: string | null };
+  /** The strip's state and the word it draws, or null for no strip. */
+  strip: [string, string] | null;
+  line: [string, "danger" | "decide" | null];
+  /** The run's attention button: its label and colour, or null for none. */
+  attention: [string, string] | null;
+  people: string[];
+  /** A on the Agents page: its state and label, or null when not listed. */
+  agent: [string, string] | null;
+  status: string;
+};
+
+const TOLD: Record<string, Told> = {
+  coordinator: {
+    ledger: hostFacts.failureAwaitsCoordinator, total: 1, failed: 0, decisions: 0,
+    row: { state: "running", group: "running", why: COORDINATOR_WORD, tone: null },
+    // The host calls this run failed. It has not ended: its coordinator is on it.
+    strip: ["running", "Running"], line: ["Running · 0/1 done", null], attention: null,
+    people: ["assigned"], agent: ["queued", COORDINATOR_WORD], status: "running",
+  },
+  retrying: {
+    ledger: hostFacts.retryExecuting, total: 1, failed: 0, decisions: 0,
+    row: { state: "running", group: "running", why: RETRYING_WORD, tone: null },
+    strip: ["running", "Running"], line: ["Running · 0/1 done", null], attention: null,
+    people: ["assigned"], agent: ["queued", RETRYING_WORD], status: "running",
+  },
+  person: {
+    ledger: hostFacts.failureAwaitsPerson, total: 1, failed: 1, decisions: 1,
+    row: { state: "failed", group: "needs", why: "Failed", tone: "danger" },
+    strip: ["failed", "1 failed"], line: ["1 failed · 0/1 done", "danger"], attention: ["1 failed", "failed"],
+    people: ["failed"], agent: ["failed", "Failed"], status: "failed",
+  },
+  escalated: {
+    ledger: hostFacts.failureEscalated, total: 2, failed: 1, decisions: 1,
+    row: { state: "failed", group: "needs", why: "Failed", tone: "danger" },
+    strip: ["failed", "1 failed"], line: ["1 failed · 0/2 done", "danger"], attention: ["1 failed", "failed"],
+    people: ["failed"], agent: ["failed", "Failed"], status: "waiting",
+  },
+  replaced: {
+    ledger: hostFacts.failureReplaced, total: 1, failed: 0, decisions: 0,
+    row: { state: "closed", group: "finished", why: "Replaced", tone: null },
+    strip: ["running", "Running"], line: ["Running · 0/1 done", null], attention: null,
+    people: ["assigned"], agent: null, status: "running",
+  },
+  completedRun: {
+    ledger: hostFacts.failureInCompletedRun, total: 1, failed: 0, decisions: 0,
+    row: { state: "running", group: "running", why: COORDINATOR_WORD, tone: null },
+    strip: ["running", "Running"], line: ["Running · 0/1 done", null], attention: null,
+    people: ["assigned"], agent: ["queued", COORDINATOR_WORD], status: "running",
+  },
+  stoppedRun: {
+    ledger: hostFacts.failureInStoppedRun, total: 0, failed: 0, decisions: 0,
+    row: { state: "closed", group: "finished", why: "Failed", tone: null },
+    strip: null, line: ["Stopped", null], attention: null,
+    people: ["stopped"], agent: null, status: "stopped",
+  },
+};
+const MOVES = Object.entries(TOLD).map(([name, told]) => ({ name, ...told }));
+
+describe("the failure ledgers", () => {
+  it("are the host's, and say whose move each failure is", () => {
+    const first = (name: string) => TOLD[name].ledger().tasks[0];
+    expect(first("coordinator")).toMatchObject({ status: "failed", retriesUsed: 0, retryLimit: 2, failure: { kind: "failed", awaits: "coordinator" } });
+    expect(first("retrying")).toMatchObject({ status: "running", retrying: true, retriesUsed: 1 });
+    expect(first("retrying").failure).toBeUndefined();
+    expect(first("person")).toMatchObject({ status: "failed", retriesUsed: 2, failure: { awaits: "person", because: "retries_used" } });
+    expect(first("escalated")).toMatchObject({ failure: { awaits: "person", because: "escalated" } });
+    const [gate] = hostFacts.failureEscalated().gates;
+    expect(gate).toMatchObject({ status: "open", awaits: "person", aboutTaskId: first("escalated").id, id: first("escalated").failure!.gateId });
+    expect(gate.taskId).toBeUndefined();
+    expect(first("replaced")).toMatchObject({ supersededBy: expect.any(String), failure: { awaits: "nobody", because: "replaced" } });
+    expect(first("completedRun")).toMatchObject({ status: "completed", verdict: "fail", failure: { kind: "check_failed", awaits: "coordinator" } });
+    expect(first("stoppedRun")).toMatchObject({ status: "failed", failure: { awaits: "nobody", because: "run_ended" } });
+    // What the host calls the run is not whether a failure in it is history.
+    expect(MOVES.map((move) => move.ledger().runs[0].status)).toEqual(["failed", "running", "failed", "waiting", "running", "completed", "stopped"]);
+  });
+});
+
+describe("every surface says the same of a failure, by whose move it is", () => {
+  it.each(MOVES)("$name: the counts", (told) => {
+    const { counts } = surfaces(placed(told.ledger()));
+    // What failed, wherever a surface says or draws a count of it.
+    for (const [surface, said] of Object.entries(counts) as [string, Counts][]) {
+      if (said.failed !== null) expect(said.failed, `${surface}: failed`).toBe(told.failed);
+      if (said.done !== null) expect(said.done, `${surface}: done`).toBe(0);
+    }
+    // Done of the tasks that count: the strip, the tile, the picker and the
+    // chat list's line are one function's (`runTally`). A stopped run has
+    // nothing to count and draws neither a strip nor "0/0".
+    for (const surface of ["strip", "stripDrawn", "sidebar"] as const) {
+      expect(counts[surface].total, `${surface}: of`).toBe(told.total || null);
+    }
+    for (const surface of ["tiles", "tileDrawn", "runList"] as const) expect(counts[surface].total, `${surface}: of`).toBe(told.total);
+  });
+
+  it.each(MOVES)("$name: the row, and the row as drawn", (told) => {
+    const { a, drawnRows } = surfaces(placed(told.ledger()));
+    expect(a).toMatchObject(told.row);
+    expect(a.decisions).toBe(told.decisions);
+    const drawn = drawnRows[0];
+    expect(drawn).toContain(`data-state="${told.row.state}"`);
+    expect(drawn.includes('data-tone="danger"'), "the danger colour").toBe(told.row.tone === "danger");
+    // Never the warning colour: a failure somebody is fixing is no warning.
+    expect(drawn).not.toContain('data-tone="warn"');
+    if (told.row.why) expect(drawn).toContain(`>${told.row.why}</span>`);
+  });
+
+  it.each(MOVES)("$name: the strip, the chat list's line, the attention button and the run's status", (told) => {
+    const ledger = placed(told.ledger());
+    const { line, attention, stripHtml, panelHtml } = surfaces(ledger);
+    const scoped = chatSnapshot(ledger, MAIN);
+    const picked = chatStrip(scoped, after(ledger));
+    expect(picked ? [picked.strip.state, stripLine(picked.strip).word] : null).toEqual(told.strip);
+    if (told.strip) expect(stripHtml).toContain(`data-state="${told.strip[0]}"`);
+    expect(picked?.strip.needs ?? 0).toBe(told.decisions);
+    expect([line, chatRunLine(scoped, rowRun(scoped)!).tone]).toEqual(told.line);
+    expect(attention.decisions).toBe(told.decisions);
+    expect(attentionLabel(attention) ? [attentionLabel(attention), attentionTone(attention)] : null).toEqual(told.attention);
+    expect(shownRunStatus(ledger.runs[0], ledger.tasks)).toBe(told.status);
+    // As drawn: a run its coordinator is fixing has no red mark and no
+    // attention button, whatever the host calls the run.
+    expect(panelHtml.includes("orch-status is-failed"), "a red run mark").toBe(told.status === "failed");
+    expect(panelHtml.includes('class="orch-attention"'), "an attention button").toBe(!!told.attention);
+  });
+
+  it.each(MOVES)("$name: who the run is with, a mission's crew and the Agents page", (told) => {
+    const { people, crew, mine, dev, summary } = surfaces(placed(told.ledger()));
+    expect(people.map((person) => person.state as string)).toEqual(told.people);
+    expect(crew.map((member) => member.state as string)).toEqual(told.people);
+    expect(mine ? [mine.state as string, mine.label] : null).toEqual(told.agent);
+    // Red on the Agents page only for a failure that waits on the person.
+    expect(mine?.tone as string | undefined).toBe(told.failed ? "danger" : undefined);
+    expect(summary.failed ?? 0).toBe(told.failed);
+    expect((dev.state as string) === "failed").toBe(told.failed > 0);
+  });
+});
+
+describe("a failure that waits on the person is one decision, with what moves it in words on the row", () => {
+  it("retries used: counted once, and the row says to start it or put the run away", () => {
+    const ledger = placed(hostFacts.failureAwaitsPerson());
+    const { a, panelHtml, drawnRows } = surfaces(ledger);
+    const waits = runWaits(ledger, ledger.runs[0]);
+    expect(waits.person).toEqual([{ key: `failure:${a.task.id}`, kind: "failure", on: "person", runId: ledger.runs[0].id, taskId: a.task.id, failure: true }]);
+    expect(a.failure).toMatchObject({ move: "person", kind: "failed", because: "retries_used", askCoordinator: false });
+    expect(a.failure!.note).toBe("Its 2 automatic retries are used. Open this row for Start retry, or stop or archive the run.");
+    // On the row itself, folded: not a tooltip, and not behind the disclosure.
+    const row = drawnRows[0];
+    const sentence = `<p class="orch-task-ask"><span>${a.failure!.note}</span></p>`;
+    expect(row).toContain(sentence);
+    expect(row.indexOf(sentence)).toBeLessThan(row.indexOf('class="orch-task-detail"'));
+    expect(row).toContain(`data-pending-keys="failure:${a.task.id}"`);
+    // The one start, where the row's other starts are, and offered once.
+    expect(row.split(">Start retry<").length - 1).toBe(1);
+    expect(panelHtml).toContain('aria-label="1 decision waiting, 1 task failed. Show"');
+    expect(panelHtml).toContain("Needs you · 1 decision");
+  });
+
+  it("escalated: the gate is the decision, tied to the task's row and never counted beside the failure", () => {
+    const ledger = placed(hostFacts.failureEscalated());
+    const { a, panelHtml } = surfaces(ledger);
+    const [gate] = ledger.gates;
+    const waits = runWaits(ledger, ledger.runs[0]);
+    expect(waits.person.map((wait) => [wait.key, wait.kind, wait.taskId, wait.failure])).toEqual([[`gate:${gate.id}`, "gate", a.task.id, true]]);
+    expect(waits.tasks.get(a.task.id)!.person).toHaveLength(1);
+    // Nothing of the task waits on it: it is not parked, and still starts.
+    expect(waits.gated.has(a.task.id)).toBe(false);
+    expect(a.failure!.note).toBe(`Its coordinator asks you: ${gate.question} Answer it under Needs you above, open this row for Start retry, or stop or archive the run.`);
+    // Drawn as the decision it is, named for its task, and answered on the
+    // page: the person's own answer is what gives the task its retries back.
+    const box = panelHtml.slice(panelHtml.indexOf('class="orch-gate"'), panelHtml.indexOf("</article>", panelHtml.indexOf('class="orch-gate"')));
+    expect(box).toContain(`data-pending-keys="gate:${gate.id}"`);
+    expect(box).toContain(`>${a.task.title}</p>`);
+    expect(box).not.toContain("This mission");
+    expect(box).toContain(">Answer</button>");
+    expect(box).not.toContain("Send to main chat");
+  });
+
+  it("a failed check with nothing to start says where to go, with the way there", () => {
+    // Changed in a copy of the host's ledger: the same failed check with
+    // both retries used, as `retry_tests` leaves a failed task
+    // (`failure_awaits_person`). The host records no such ledger for a check.
+    const ledger = placed(hostFacts.failureInCompletedRun());
+    Object.assign(ledger.tasks[0], { retriesUsed: 2, failure: { kind: "check_failed", awaits: "person", because: "retries_used" } });
+    const { a, drawnRows, line, attention, stage } = surfaces(ledger);
+    expect(a).toMatchObject({ state: "failed", group: "needs", why: "Check failed", tone: "danger", decisions: 1 });
+    expect(a.failure).toMatchObject({ askCoordinator: true });
+    expect(a.failure!.note).toBe("Its 2 automatic retries are used. It cannot be started from here: ask the coordinator in its chat, or stop or archive the run.");
+    expect(drawnRows[0]).toContain(`<span>${a.failure!.note}</span><button type="button" class="orch-task-ask-go">Open the coordinator&#x27;s chat</button>`);
+    expect(drawnRows[0]).not.toContain(">Start retry<");
+    expect(line).toBe("1 failed · 0/1 done");
+    expect(attentionLabel(attention)).toBe("1 failed");
+    expect(shownRunStatus(ledger.runs[0], ledger.tasks)).toBe("failed");
+    expect(stage).toMatchObject({ stage: "review", blocked: true });
+    const stages = runStages(ledger.tasks, ledger.attempts, null);
+    expect(stages.find((item) => item.key === "acceptance")).toMatchObject({ value: "Failing", tone: "danger" });
+  });
+
+  it("beside a card of another kind the line says Needs you, and the failure is still said", () => {
+    const ledger = placed(hostFacts.failureAwaitsPerson());
+    const task = ledger.tasks[0];
+    const held = new Map([[task.id, [{ key: "permission:p1", kind: "permission" }]]]);
+    const scoped = chatSnapshot(ledger, MAIN);
+    const picked = chatStrip(scoped, after(ledger), held)!;
+    expect(picked.strip).toMatchObject({ state: "needs", needs: 2, failures: 1, failed: 1 });
+    expect(picked.strip.side.map((item) => item.text)).toEqual(["2 decisions", "1 failed"]);
+    expect(chatRunLine(scoped, rowRun(scoped, held)!, held)).toEqual({ text: "Needs you · 1 failed · 0/1 done", tone: "decide" });
+    const waits = runWaits(ledger, ledger.runs[0], held);
+    const attention = runAttention(ledger.runs[0], ledger.tasks, ledger.attempts, waits);
+    expect([attentionLabel(attention), attentionTone(attention), attention.total]).toEqual(["2 to decide", "decision", 2]);
+    // The card leads the row, where it is answered; the failure's sentence
+    // is still on it, and both are counted.
+    const row = runProgress(ledger, ledger.runs[0], after(ledger), held).rows[0];
+    expect(row).toMatchObject({ state: "needs", group: "needs", why: "Awaiting approval", tone: "decide", decisions: 2 });
+    expect(row.failure?.move).toBe("person");
+  });
+});
+
+describe("a failure the coordinator is fixing, and one that is history, is no colour", () => {
+  it("the coordinator's: its row says whose it is, in a sentence, and nothing asks", () => {
+    const ledger = placed(hostFacts.failureAwaitsCoordinator());
+    const { a, drawnRows, panelHtml, stage } = surfaces(ledger);
+    expect(a.failure).toMatchObject({ move: "coordinator", askCoordinator: false, note: "Its coordinator is fixing it: 0 of 2 automatic retries used. Nothing is asked of you." });
+    expect(a.flight).toBe(false);
+    expect(drawnRows[0]).toContain('data-failure="coordinator"');
+    expect(drawnRows[0]).not.toContain("orch-task-ask");
+    expect(drawnRows[0]).toContain(`<p class="orch-task-hold" data-failure="coordinator">${a.failure!.note}</p>`);
+    expect(panelHtml).not.toContain("Needs you");
+    expect(panelHtml).not.toMatch(/\d+ failed/);
+    expect(stage.blocked).toBe(false);
+    // The strip says it in its tooltip only.
+    const strip = chatStrip(chatSnapshot(ledger, MAIN), after(ledger))!.strip;
+    expect(strip.notes).toEqual(["1 failure with the coordinator, which is fixing it: nothing is asked of you."]);
+    expect(strip.live).toBe(false);
+  });
+
+  it("a failed check in a run the host calls completed is not history, and is not a failing colour", () => {
+    const ledger = placed(hostFacts.failureInCompletedRun());
+    const { drawnRows, stage } = surfaces(ledger);
+    // The fail pill is still said, in the row's ink.
+    expect(drawnRows[0]).toMatch(/class="run-row-pill" data-verdict="fail" data-quiet="true"/);
+    expect(stage).toMatchObject({ stage: "review", blocked: false });
+    const stages = runStages(ledger.tasks, ledger.attempts, null);
+    expect(stages.find((item) => item.key === "acceptance")).toMatchObject({ value: "Failing", tone: "quiet" });
+    expect(stages.find((item) => item.key === "checks")).toMatchObject({ value: "1 failed", tone: "quiet" });
+    expect(workerLine(ledger.tasks[0], ledger.attempts[0])).toEqual({ text: `${ledger.tasks[0].title} · check failed`, tone: null });
+    expect(boardCounts(ledger.tasks, ledger)).toMatchObject({ done: 0, blocked: 0 });
+  });
+
+  it("history: listed with what finished, muted, with its details", () => {
+    const ledger = placed(hostFacts.failureInStoppedRun());
+    const { a, drawnRows } = surfaces(ledger);
+    expect(a.failure).toMatchObject({ move: "history", note: "Its run was stopped, closed or archived. Nothing is owed for it." });
+    expect(drawnRows[0]).toContain('data-failure="history"');
+    expect(drawnRows[0]).toContain('data-state="closed"');
+    // Its run is over: no start is offered.
+    expect(drawnRows[0]).not.toContain("Start retry");
+  });
+
+  it("the sheets take the status colour off both, after the status rules", () => {
+    const rules = (sheet: string) => sheet.replace(/\/\*[\s\S]*?\*\//g, "");
+    const panel = rules(runPanelCss);
+    expect(panel).toMatch(/\.orch-task\[data-failure="coordinator"\],\s*\.orch-task\[data-failure="history"\]\s*\{\s*--task-color:\s*var\(--fg-3\);/);
+    expect(panel.indexOf('.orch-task[data-failure="coordinator"]')).toBeGreaterThan(panel.indexOf('.orch-task[data-status="failed"]'));
+    expect(panel.indexOf('.orch-task[data-failure="coordinator"]')).toBeGreaterThan(panel.indexOf('.orch-task[data-status="blocked"]'));
+    expect(panel).toMatch(/\.orch-task\[data-failure="person"\]\s*\{\s*--task-color:\s*var\(--danger\);/);
+    const rows = rules(runProgressCss);
+    expect(rows).toMatch(/\.run-row-pill\[data-verdict="fail"\]\[data-quiet\]\s*\{[^}]*color:\s*var\(--fg-2\);/);
+    // The sentence on the row is reading ink: no state colour, and it wraps.
+    const ask = /\.orch-task-ask\s*\{([^}]*)\}/.exec(panel)![1];
+    expect(ask).toMatch(/color:\s*var\(--fg-1\)/);
+    expect(ask).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(ask).not.toMatch(/nowrap|--danger|--warn|--accent/);
+  });
+});
+
+describe("whose move a failure is has one reader", () => {
+  const task = (over: Partial<OrchestrationTask>) => ({ status: "failed", ...over }) as OrchestrationTask;
+
+  it("says it of a host that says, and nothing of one that does not", () => {
+    // [task, says, move, shown]. Written by hand.
+    const table: [Partial<OrchestrationTask>, boolean, string, string | null][] = [
+      // A host that does not say: read as before.
+      [{ status: "failed" }, false, "unsaid", "red"],
+      [{ status: "blocked" }, false, "unsaid", "red"],
+      [{ status: "completed", verdict: "fail" }, false, "unsaid", "red"],
+      [{ status: "failed", supersededBy: "t2" }, false, "unsaid", null],
+      [{ status: "failed", stopped: { at: 1 } as OrchestrationTask["stopped"] }, false, "unsaid", null],
+      [{ status: "running" }, false, "unsaid", null],
+      // A failure sent with no `retryLimit` is not this host's contract.
+      [{ status: "failed", failure: { kind: "failed", awaits: "coordinator" } }, false, "unsaid", "red"],
+      // A host that says.
+      [{ status: "failed", retryLimit: 2, failure: { kind: "failed", awaits: "coordinator" } }, true, "coordinator", "quiet"],
+      [{ status: "failed", retryLimit: 2, failure: { kind: "failed", awaits: "person", because: "retries_used" } }, true, "person", "red"],
+      [{ status: "failed", retryLimit: 2, failure: { kind: "failed", awaits: "nobody", because: "run_ended" } }, true, "history", "history"],
+      [{ status: "completed", verdict: "fail", retryLimit: 2, failure: { kind: "check_failed", awaits: "coordinator" } }, true, "coordinator", "quiet"],
+      // The person stopped it: the host sends no failure, and nothing failed.
+      [{ status: "failed", retryLimit: 2, stopped: { at: 1 } as OrchestrationTask["stopped"] }, true, "none", null],
+      [{ status: "running", retryLimit: 2, retrying: true }, true, "none", null],
+      // A word this page does not know is not guessed at.
+      [{ status: "failed", retryLimit: 2, failure: { kind: "failed", awaits: "somebody" as "person" } }, true, "unsaid", "red"],
+    ];
+    for (const [over, says, move, shown] of table) {
+      const name = JSON.stringify(over);
+      expect(saysFailures(task(over)), name).toBe(says);
+      expect(failureMove(task(over)), name).toBe(move);
+      expect(failureShown(task(over)), name).toBe(shown);
+      expect(failureOf(task(over))?.move ?? null, name).toBe(["coordinator", "person", "history"].includes(move) ? move : null);
+    }
+    expect(isRetrying(task({ retrying: true }))).toBe(true);
+    expect(isRetrying(task({}))).toBe(false);
+  });
+
+  it("never reads the run's status to call a failure history", () => {
+    // The host's own: a failure that waits on the person in a run it calls
+    // failed, and one its coordinator is fixing in a run it calls completed.
+    for (const [ledger, move] of [[hostFacts.failureAwaitsPerson(), "person"], [hostFacts.failureInCompletedRun(), "coordinator"]] as const) {
+      for (const status of ["planning", "running", "waiting", "completed", "failed"] as const) {
+        const copy = placed(ledger);
+        copy.runs[0].status = status;
+        expect(runProgress(copy, copy.runs[0], after(copy)).rows[0].failure?.move, `${move} in a ${status} run`).toBe(move);
+      }
+    }
+  });
+
+  it("says in a sentence what moves a failure that waits on the person, for every reason the host gives", () => {
+    const failed = (because: string | undefined, kind = "failed") =>
+      ({ retryLimit: 2, retriesUsed: 2, failure: { kind, awaits: "person", ...(because ? { because } : {}) } }) as OrchestrationTask;
+    const start = { label: "Start retry", blocked: null };
+    const put = "stop or archive the run";
+    expect(failureNote(failed("retries_used"), start, null)!.note).toBe(`Its 2 automatic retries are used. Open this row for Start retry, or ${put}.`);
+    expect(failureNote(failed("coordinator_gone"), start, null)!.note).toBe(`The chat that coordinated this run is gone, so nobody retries it. Open this row for Start retry, or ${put}.`);
+    // Its chat is gone: there is nobody to ask, and no way there is offered.
+    expect(failureNote(failed("coordinator_gone", "check_failed"), null, null)).toMatchObject({
+      askCoordinator: false, note: "The chat that coordinated this run is gone, so nobody retries it. Stop or archive the run to put it away.",
+    });
+    expect(failureNote(failed("time_limit"), start, null)!.note).toBe(`This peer request used up its working time. Open this row for Start retry, or ${put}.`);
+    expect(failureNote(failed("escalated"), null, "Replace it?")!.note).toBe(`Its coordinator asks you: Replace it? Answer it under Needs you above, or ${put}.`);
+    // A start the host would refuse says why, and that is what moves it.
+    expect(failureNote(failed("retries_used"), { label: "Start retry", blocked: "The plan is with you." }, null)!.note).toBe("Its 2 automatic retries are used. The plan is with you.");
+    // A reason this page does not know still ends in what moves it.
+    expect(failureNote(failed(undefined), start, null)!.note).toBe(`This failure waits on you. Open this row for Start retry, or ${put}.`);
+    // Every one of them is a whole sentence that ends in something to do.
+    for (const because of ["retries_used", "escalated", "coordinator_gone", "time_limit", undefined]) {
+      for (const offered of [start, null]) {
+        const said = failureNote(failed(because), offered, null)!;
+        expect(said.note, String(because)).toMatch(/(stop or archive the run|to put it away)\.$/i);
+      }
+    }
+    // Not in failure, or a host that does not say: nothing to say.
+    expect(failureNote({ retryLimit: 2 } as OrchestrationTask, start, null)).toBeNull();
+    expect(failureNote({ failure: { kind: "failed", awaits: "person" } } as OrchestrationTask, start, null)).toBeNull();
+  });
+});
+
 /* ---- Nobody else reads how a task ended --------------------------------- */
 
 const SOURCES = import.meta.glob<string>("../**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true });
@@ -517,7 +903,7 @@ type Allowed = Record<string, { uses: number; why: string }>;
  *  The counts are exact: one more use in any of them fails this test, and
  *  so does a use anywhere else. */
 const COMPLETED: Allowed = {
-  "./orchestration.ts": { uses: 5, why: "the status types of a run, a task, an attempt and an execution, and isSettled: the one comparison of a task's status with the word" },
+  "./orchestration.ts": { uses: 6, why: "the status types of a run, a task, an attempt and an execution; isSettled, the one comparison of a task's status with the word; and shownRunStatus, of a RUN the host calls completed while a failure in it is still somebody's move" },
   "./taskHold.ts": { uses: 2, why: "a RUN that completed offers no start, and an ATTEMPT that completed leaves a ready task its next attempt" },
   "./agentsDashboard.ts": { uses: 1, why: "a RUN that is over has no plan waiting" },
   "./missionPage.ts": { uses: 1, why: "a RUN that has ended hands no task on" },
@@ -540,13 +926,31 @@ const VERDICT: Allowed = {
   "./runProgress.ts": { uses: 1, why: "a settled row carries its verdict for the pill" },
   "./agentTaskBoard.ts": { uses: 1, why: "a check that finished well says passed, or that it has no verdict" },
   "./runAcceptance.ts": { uses: 4, why: "check coverage: verdicts counted as they were reported, a replaced check's included" },
-  "../components/OrchestrationPanel.tsx": { uses: 6, why: "the row's pass / fail pill (4), the chip of a REPLACED failed check, and a check's kind chip" },
+  "../components/OrchestrationPanel.tsx": { uses: 7, why: "the row's pass / fail pill (4) and whether a fail pill is quiet (asked of failureShown), the chip of a REPLACED failed check, and a check's kind chip" },
+};
+
+/** Every file that may name what the host says of a task's failure: the
+ *  task's `failure`, `retryLimit` and `retrying`, and a gate's
+ *  `aboutTaskId`. Whose move a failure is is `orchestration.failureMove` and
+ *  nobody else's to work out (its `awaits` is in the other scan, in
+ *  `runWaits.surfaces.test`); the rest count retries for a sentence, hand a
+ *  task on by type, or name the task a decision is about. */
+const FAILURE: Allowed = {
+  "./orchestration.ts": { uses: 12, why: "the types, and the readers: saysFailures, failureMove, failureOf, isRetrying, isFailureGate" },
+  "./runWaits.ts": { uses: 3, why: "a gate about a failed task is that task's decision: tied to its row, counted once" },
+  "./runProgress.ts": { uses: 2, why: "failureNote says how many automatic retries a task has, in its sentence" },
+  "./chatWorkflow.ts": { uses: 1, why: "a type: what workerLine hands failureShown" },
+  "../components/OrchestrationPanel.tsx": { uses: 1, why: "a decision's box names the task it is about" },
+  "./codexEvents.ts": { uses: 2, why: "a Codex stream item's own failure message, which is no task" },
 };
 
 describe("how a task ended has one reader", () => {
   // A source scan is the only practical proof here: nothing at run time can
   // tell that a second function compared a status, only that the text does.
-  const READS = { completed: /["'`]completed["'`]/g, verdict: /\.verdict\b/g };
+  const READS = {
+    completed: /["'`]completed["'`]/g, verdict: /\.verdict\b/g,
+    failure: /\b(?:task|item|other|candidate)\.failure\b|\bretryLimit\b|\.retrying\b|\baboutTaskId\b/g,
+  };
 
   const found = (pattern: RegExp) => {
     const uses: Record<string, number> = {};
@@ -568,6 +972,10 @@ describe("how a task ended has one reader", () => {
     expect(found(READS.verdict)).toEqual(exact(VERDICT));
   });
 
+  it("reads what the host says of a failure only through the readers", () => {
+    expect(found(READS.failure)).toEqual(exact(FAILURE));
+  });
+
   it("catches a reader written the usual ways", () => {
     for (const line of [
       "const done = tasks.filter((task) => task.status === \"completed\").length;",
@@ -579,6 +987,15 @@ describe("how a task ended has one reader", () => {
       "if (task.verdict === \"fail\") return \"failed\";",
       "const bad = tasks.filter((item) => item.verdict !== 'pass');",
     ]) expect(code(line).match(READS.verdict), line).not.toBeNull();
+    for (const line of [
+      "if (task.failure?.awaits === \"person\") return \"failed\";",
+      "const quiet = tasks.filter((item) => item.failure && item.retriesUsed < 2);",
+      "const old = typeof task.retryLimit !== 'number';",
+      "if (row.task.retrying) return \"Retrying\";",
+      "const about = gates.find((gate) => gate.aboutTaskId === id);",
+    ]) expect(code(line).match(READS.failure), line).not.toBeNull();
+    // A row's own reading and a wait's flag are not the host's fact.
+    expect(code("const mine = row.failure?.move; const own = waits.person.filter((wait) => wait.failure);").match(READS.failure)).toBeNull();
     // A comment, a record's key and a type's field are not readers.
     expect(code("// status === \"completed\" is not done\nconst LABELS = { completed: \"Done\" };").match(READS.completed)).toBeNull();
     expect(code("type Row = { verdict: \"pass\" | \"fail\" | null }; /* task.verdict */").match(READS.verdict)).toBeNull();

@@ -7,7 +7,7 @@ import statusCss from "./ChatStatus.css?raw";
 
 const strip = (over: Partial<RunStrip> = {}): RunStrip => ({
   state: "running", word: "Running", done: 13, total: 22, percent: 59, label: "13/22",
-  side: [{ text: "4 working", strong: false }], live: true, needs: 0, planOnly: false, failed: 0, stopped: 0, working: 4, runs: 1,
+  side: [{ text: "4 working", strong: false }], live: true, needs: 0, failures: 0, planOnly: false, failed: 0, stopped: 0, working: 4, runs: 1,
   notes: [], signature: "run_1:running:13/22:0:0", ...over,
 });
 

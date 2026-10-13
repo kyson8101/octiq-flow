@@ -51,7 +51,7 @@ import { useHoldClock } from "../lib/useHoldClock";
 import "./RunProgress.css";
 
 import {
-  CHECK_FAILED_LABEL, checkFailed, deliveryTone, EMPTY_ORCHESTRATION as EMPTY, isPeerRequestGate, isSettled, isStuck, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
+  CHECK_FAILED_LABEL, checkFailed, deliveryTone, EMPTY_ORCHESTRATION as EMPTY, failureShown, isFailureGate, isPeerRequestGate, isSettled, shownRunStatus, WORKSPACE_MODES, workspaceDeliveryLabel, taskPeerAsks,
   type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -255,8 +255,11 @@ export function OrchestrationPanel({
     setError(null);
     try {
       // A peer request's gate is answered by the person and by no agent, so
-      // the answer goes to the host, not through the main chat.
-      if (isPeerRequestGate(gate, snapshot.tasks)) {
+      // the answer goes to the host, not through the main chat. So does the
+      // answer to a decision the coordinator opened about a failed task: the
+      // person's own answer on the page is what gives the task its retries
+      // back, and the host tells the coordinator to carry it out.
+      if (isPeerRequestGate(gate, snapshot.tasks) || isFailureGate(gate)) {
         await bridge.invoke("orchestration_gate_resolve", {
           actorChatKey: run.coordinatorChatKey,
           gateId: gate.id,
@@ -496,6 +499,9 @@ export function OrchestrationPanel({
                 // whose check failed is not done here either.
                 const waits = runWaits(snapshot, run, pendingView.held);
                 const toDecide = waits.person.length;
+                // Said as what failed when every decision is a failure's own
+                // (`runAttention`, the strip): the one failure that is said.
+                const failures = waits.person.filter((wait) => wait.failure).length;
                 const { done, total } = runCounts(snapshot, run, pendingView.held, waits);
                 return (
                   <button
@@ -505,12 +511,12 @@ export function OrchestrationPanel({
                     // A different run starts on its Tasks tab.
                     onClick={() => { setSelectedId(run.id); setCreating(false); setConfirmStop(null); setRunError(null); setRunTabs({}); }}
                   >
-                    <StatusMark status={run.status} />
+                    <StatusMark status={shownRunStatus(run, snapshot.tasks)} />
                     <span className="orch-run-copy">
                       <span>{run.objective}</span>
                       <small>
                         {done}/{total} tasks
-                        {toDecide > 0 ? ` · ${toDecide} to decide` : ""}
+                        {toDecide > 0 ? (failures === toDecide ? ` · ${failures} failed` : ` · ${toDecide} to decide`) : ""}
                       </small>
                     </span>
                   </button>
@@ -546,7 +552,7 @@ export function OrchestrationPanel({
                           setDisclosures((before) => toggleRunDisclosure(before, run.id));
                         }}>
                         <ChevronIcon open={expanded} />
-                        <StatusMark status={run.status} />
+                        <StatusMark status={shownRunStatus(run, snapshot.tasks)} />
                         <span className="orch-run-accordion-copy">
                           <strong>{run.objective}</strong>
                           {/* Open, its tiles are right under this line. */}
@@ -693,6 +699,10 @@ const TAB_LABELS: Record<RunTab, string> = { tasks: "Tasks", notifications: "Not
  *  (`lib/taskHold.planHoldsEveryStart`). */
 export const PLAN_HOLDS_ALL = "The tasks start once the plan above is approved.";
 export const PLAN_HOLDS_SOME = "The tasks you have not approved start once the plan above is approved. The ones you approved before go on.";
+
+/** The task a gate is about: its own, or the failed task its coordinator
+ *  asks the person about. */
+const gateTask = (gate: OrchestrationGate): string | undefined => gate.taskId ?? gate.aboutTaskId;
 
 /** Whose an open gate is, when it is not the person's. */
 const GATE_WAITS: Record<WaitsOn, string> = {
@@ -899,7 +909,7 @@ function RunDetail({
   return (
     <section ref={detailRef} className="orch-run-detail" aria-label={sharedHeading ? run.objective : undefined} aria-labelledby={sharedHeading ? undefined : "orch-run-title"}>
       {!sharedHeading && <header className="orch-run-head">
-        <div className="orch-status-line"><StatusMark status={run.status} />{statusLabel(run.status)}</div>
+        <div className="orch-status-line"><StatusMark status={shownRunStatus(run, tasks)} />{statusLabel(shownRunStatus(run, tasks))}</div>
         <h2 id="orch-run-title">{run.objective}</h2>
       </header>}
 
@@ -957,7 +967,9 @@ function RunDetail({
           <h3 id={headId}>{mine ? "Needs you" : "Open decisions"}</h3>
           {listed.map((gate) => (
             <article className="orch-gate" key={gate.id} data-pending-keys={`gate:${gate.id}`} tabIndex={-1}>
-              <p className="orch-gate-task" title={gate.taskId ? taskNames.get(gate.taskId) : undefined}>{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This mission"}</p>
+              {/* A decision about a failed task names that task: it is no
+                  task's own gate, and it is not a question about the run. */}
+              <p className="orch-gate-task" title={gateTask(gate) ? taskNames.get(gateTask(gate)!) : undefined}>{gateTask(gate) ? taskNames.get(gateTask(gate)!) ?? "This task" : "This mission"}</p>
               {!mine && (waits.ended
                 ? <p className="orch-gate-waits" data-on="ended">Left open when the mission ended</p>
                 : <p className="orch-gate-waits" data-on={gateWaitsOn(gate, tasks)}
@@ -977,7 +989,7 @@ function RunDetail({
                   aria-label={`Decision for ${gate.question}`}
                   onChange={(event) => onAnswer(gate.id, event.target.value)}
                 />
-                <button type="button" disabled={busy || !(answers[gate.id] ?? "").trim()} onClick={() => onResolve(gate, answers[gate.id] ?? "")}>{isPeerRequestGate(gate, tasks) ? "Answer" : "Send to main chat"}</button>
+                <button type="button" disabled={busy || !(answers[gate.id] ?? "").trim()} onClick={() => onResolve(gate, answers[gate.id] ?? "")}>{isPeerRequestGate(gate, tasks) || isFailureGate(gate) ? "Answer" : "Send to main chat"}</button>
               </div>}
             </article>
           ))}
@@ -1151,12 +1163,16 @@ function RunLine({ snapshot, run, tasks, attempts, tiled = false }: {
   const settled = counts.total > 0 && counts.done === counts.total;
   // Settled is not finished well: a check that failed is said out loud, and
   // is not one of the tasks done (`boardCounts`).
-  const failedChecks = tasks.filter(checkFailed).length;
+  // Only a failed check that is said as a failure
+  // (`orchestration.failureShown`): one the coordinator is having fixed is
+  // not on this line.
+  const failedChecks = tasks.filter((task) => checkFailed(task) && failureShown(task) === "red").length;
+  const status = shownRunStatus(run, tasks);
   const planned = checkCoverage(tasks).total > 0;
   const acceptance = acceptanceLine(runStages(tasks, attempts, null));
   const parts = [
     tiled ? null : `${counts.done}/${counts.total} tasks`,
-    run.archivedAt != null ? `${statusLabel(run.status)} · archived` : statusLabel(run.status),
+    run.archivedAt != null ? `${statusLabel(status)} · archived` : statusLabel(status),
     working > 0 ? `${working} of ${run.maxConcurrent} working` : null,
     counts.todo > 0 ? `${counts.todo} queued` : null,
     counts.cancelled > 0 ? `${counts.cancelled} cancelled` : null,
@@ -1417,7 +1433,11 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   // A task something holds says that, and never "Ready" or "Failed": a
   // start of it would be refused (`lib/taskHold`).
   const stateWord = row.hold?.label ?? taskStateLabel(task, attempt, row.state === "needs" ? parkedOn : []);
-  const hint = [row.hold?.detail, row.hint].filter(Boolean).join("\n") || null;
+  // What the row says of its task's failure, where the host says whose
+  // move it is. One that waits on the person is words on the row itself;
+  // the coordinator's and history are the opened row's and the tooltip's.
+  const failure = row.failure;
+  const hint = [row.hold?.detail, failure?.note, row.hint].filter(Boolean).join("\n") || null;
   // The one control of this task that starts an attempt, and whether the
   // host would take it (`lib/taskHold.startControl`): the person's Start of
   // a task they stopped, the next attempt of one that is ready again, or a
@@ -1428,11 +1448,15 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   const who = assigneeFace?.name ?? task.assignee?.name ?? (provider ? AGENT_NAME[provider] : null);
   const branch = task.workspace?.plan.branch || attempt?.branch;
   // What the run's attention count pointed at; a decision names its own task.
+  // A failure that is said as one, or a worker in trouble on a task that is
+  // no failure of any kind (`orchestration.failureShown`).
+  const shown = failureShown(task);
   const owed = !gateBlockedTasks.has(task.id)
-    && !task.supersededBy && (isStuck(task) || checkFailed(task) || executionNeedsAttention(attempt));
+    && !task.supersededBy && (shown === "red" || (shown === null && executionNeedsAttention(attempt)));
   // Cards this task is holding for the person; answered in the main chat or
-  // in this panel, never on the row.
-  const pending = usePendingActions().forTask(task.id);
+  // in this panel, never on the row. A failure that waits on the person is
+  // the row itself, and is not badged on it a second time.
+  const pending = usePendingActions().forTask(task.id).filter((action) => action.kind !== "failure");
   // Its test environment has a state of its own: a done task's services may
   // be stopped, and a running task's may have gone stale.
   const environment = taskEnvironment(task, attempts, sandboxes, (at) => agoLabel(at, now));
@@ -1440,7 +1464,9 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
 
   return (
     <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""} run-row`} data-status={task.status} data-state={row.state}
-      data-flight={row.flight || undefined} data-tone={row.tone ?? undefined} data-hold={row.hold?.kind}>
+      data-flight={row.flight || undefined} data-tone={row.tone ?? undefined} data-hold={row.hold?.kind}
+      data-failure={failure?.move}
+      {...(failure?.move === "person" ? { "data-pending-keys": `failure:${task.id}`, tabIndex: -1 } : {})}>
       <div className="orch-task-heading">
         <button type="button" className="orch-task-summary" disabled={!attempt} data-attention={owed || undefined}
           aria-current={open || beside ? "page" : undefined}
@@ -1465,7 +1491,10 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             {row.after.length > 0 && <span className="run-row-after" title={`After ${row.after.join(", ")}`}>
               after {row.after[0]}{row.after.length > 1 ? ` +${row.after.length - 1}` : ""}
             </span>}
-            {row.verdict && <span className="run-row-pill" data-verdict={row.verdict}
+            {/* A failed check's pill is red where the failure is said as
+                one, and the row's own ink where its coordinator is fixing
+                it or it is history. */}
+            {row.verdict && <span className="run-row-pill" data-verdict={row.verdict} data-quiet={row.verdict === "fail" && (shown === "quiet" || shown === "history") || undefined}
               title={row.verdict === "pass" ? "What it checked passed." : "It finished, and what it checked did not pass. Tasks that depend on it wait."}>{row.verdict}</span>}
             {/* With nothing to say under it, the figures end this line
                 rather than taking one of their own. */}
@@ -1500,6 +1529,14 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
         </span>
       </div>
       {pending.length > 0 && <PendingActionBadge className="orch-task-pending" actions={pending} subject={task.title} />}
+      {/* A failure that waits on the person never only says it failed: why
+          it is theirs and what moves it, in words on the row, folded or
+          open. Where nothing on the row moves it, the way to the chat that
+          can is beside the sentence. */}
+      {failure?.move === "person" && <p className="orch-task-ask">
+        <span>{failure.note}</span>
+        {failure.askCoordinator && <button type="button" className="orch-task-ask-go" onClick={() => onOpenChat(run.coordinatorChatKey)}>Open the coordinator's chat</button>}
+      </p>}
       {mission && reassigning && !readOnly && <ReassignForm run={run} task={task} crew={mission} onDone={() => setReassigning(false)} />}
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
         {/* What the row leaves out: the host's state word, the task's kind
@@ -1528,6 +1565,8 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             not, the decision it waits on, and its one start. */}
         {/* Why a task that could start does not, in the host's own words. */}
         {row.hold && <p className="orch-task-hold" data-hold={row.hold.kind} data-tone={row.hold.tone ?? undefined}>{row.hold.detail}</p>}
+        {/* A failure nobody here has to act on, in a sentence: whose it is. */}
+        {failure && failure.move !== "person" && <p className="orch-task-hold" data-failure={failure.move}>{failure.note}</p>}
         {gate && <p className="orch-task-blocker orch-task-gate">Waiting on a decision: {gate.question}</p>}
         {/* The one start of a task the person stopped: theirs, and of the
             attempt they stopped, as that attempt ran (`retryOf`). */}

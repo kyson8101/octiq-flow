@@ -243,6 +243,8 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
 .orch-task.run-row[data-state="done"] { --row-color: var(--ok); }
 .orch-task.run-row[data-state="planned"],
 .orch-task.run-row[data-state="closed"] { --row-color: var(--fg-3); }
+/* A failure its coordinator is fixing is a row that waits, in no colour. */
+.orch-task.run-row[data-failure="coordinator"] { --row-color: var(--fg-3); }
 
 /* The tab row's rule, or the group's head, already sits over the first. */
 .run-group-rows > .orch-task.run-row:first-child { border-top: 1px solid var(--border); }
@@ -370,6 +372,9 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
 
 .run-row-who > .run-row-pill::before { content: none; }
 .run-row-pill[data-verdict="fail"] { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); color: var(--danger); }
+/* A failed check its coordinator is having fixed, or one that is history:
+   the verdict is still said, in the row's own ink. */
+.run-row-pill[data-verdict="fail"][data-quiet] { border-color: var(--border); color: var(--fg-2); }
 
 .run-row-nums {
   justify-content: space-between;
@@ -382,6 +387,8 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* A row that turns red, or goes quiet again, eases there. */
+  transition: color 160ms ease-out;
 }
 
 /* The step a running row's worker says it is on, after its count: the one
@@ -424,6 +431,8 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
 }
 
 .run-row .orch-task-pending { margin: 0 12px 6px 44px; }
+/* Under the title, in line with it. */
+.run-row .orch-task-ask { padding: 0 12px 8px 44px; }
 
 /* Under the title: the row's 6px inset + the 28px face + its 10px gap. */
 .run-row .orch-task-detail { padding: 2px 12px 14px 44px; }

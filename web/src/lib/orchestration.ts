@@ -347,6 +347,103 @@ export function finishedWell(task: Ended): boolean {
   return isSettled(task) && !checkFailed(task);
 }
 
+/* ---- A failure, and whose move it is ------------------------------------
+ *
+ * A failed task is its coordinator's to fix before the person is asked
+ * (`orchestration/retry.rs`), so most failures need nothing from them, and
+ * the page is quiet until one does. The host says whose move each failure
+ * is (`task.failure.awaits`), and it is read here and nowhere else, as one
+ * question every surface that shows, colours or counts a failure asks:
+ *
+ *   failureMove   "coordinator"  retries remain: nothing is asked of the
+ *                                person. No danger colour, no warning
+ *                                colour, counted as failed nowhere.
+ *                 "person"       they have to decide: the one failure that
+ *                                is red, and counted, once, with what waits
+ *                                on them (`lib/runWaits`).
+ *                 "history"      replaced, or its run was stopped, closed or
+ *                                archived: listed with what finished, muted,
+ *                                counted nowhere.
+ *                 "none"         the host says the task is not in failure.
+ *                 "unsaid"       an older host, which says none of this:
+ *                                the surface reads the task as it did
+ *                                before (`isStuck`, `checkFailed`).
+ *
+ * Whether a failure is history is the host's to say and is never read from
+ * the run's status: the host calls a run `failed` or `completed` when
+ * nothing else is left to run, which is exactly what an unanswered failure
+ * leaves behind (`shownRunStatus`). */
+
+export type FailureMove = "coordinator" | "person" | "history";
+
+type Failing = Pick<OrchestrationTask, "failure" | "retryLimit">;
+
+const MOVE: Record<Awaits, FailureMove> = { coordinator: "coordinator", person: "person", nobody: "history" };
+
+/** Whether this host says whose move a failure is. It sends `retryLimit`
+ *  on every task, so a task without one came from a host that does not. */
+export function saysFailures(task: Pick<OrchestrationTask, "retryLimit">): boolean {
+  return typeof task.retryLimit === "number";
+}
+
+/** Whose move the task's failure is, as the host says. */
+export function failureMove(task: Failing): FailureMove | "none" | "unsaid" {
+  if (!saysFailures(task)) return "unsaid";
+  if (!task.failure) return "none";
+  // A word this page does not know is not guessed at: read as before.
+  return MOVE[task.failure.awaits] ?? "unsaid";
+}
+
+/** The task's failure as the host sent it, when the host says whose move it
+ *  is: what it failed as, why it is not the coordinator's, and the decision
+ *  the coordinator put to the person about it. */
+export function failureOf(task: Failing): (TaskFailure & { move: FailureMove }) | null {
+  const move = failureMove(task);
+  return task.failure && move !== "none" && move !== "unsaid" ? { ...task.failure, move } : null;
+}
+
+/** How a surface that shows failures draws this task: `red` is a failure
+ *  that is counted and coloured as one, `quiet` one its coordinator is
+ *  fixing, `history` one nothing is owed for, `null` no failure at all. On
+ *  a host that does not say, a task that failed, is blocked or completed
+ *  with a failed check is red, as it was (a caller that knows an open
+ *  decision holds the task asks that first, as before). */
+export function failureShown(
+  task: Failing & Pick<OrchestrationTask, "status" | "verdict" | "supersededBy" | "stopped">,
+): "red" | "quiet" | "history" | null {
+  const move = failureMove(task);
+  if (move === "unsaid") return isStuck(task) || checkFailed(task) ? "red" : null;
+  return move === "person" ? "red" : move === "coordinator" ? "quiet" : move === "history" ? "history" : null;
+}
+
+/** A retry of the task is at work or scheduled, as the host says. */
+export function isRetrying(task: Pick<OrchestrationTask, "retrying">): boolean {
+  return task.retrying === true;
+}
+
+/** The word a failure is named with, by what the task failed as. */
+export const FAILURE_WORD: Record<FailureKind, string> = { failed: "Failed", blocked: "Blocked", check_failed: CHECK_FAILED_LABEL };
+
+/** A gate the run's coordinator opened about a failed task. The person's
+ *  own answer on the page is what gives the task its retries back, so the
+ *  page sends it to the host and not through the main chat. */
+export function isFailureGate(gate: Pick<OrchestrationGate, "aboutTaskId">): boolean {
+  return !!gate.aboutTaskId;
+}
+
+/** A run's status as a surface draws it. The host calls a run `failed` when
+ *  a task failed and nothing else is left to run, and `completed` when every
+ *  task settled, failed checks included: such a run has not ended while a
+ *  failure in it is somebody's move. It is drawn failed only when a failure
+ *  waits on the person, and running while its coordinator is on one. A host
+ *  that does not say whose move a failure is leaves the status as it is. */
+export function shownRunStatus(run: Pick<OrchestrationRun, "id" | "status">, tasks: readonly (Failing & Pick<OrchestrationTask, "runId">)[]): RunStatus {
+  if (run.status !== "failed" && run.status !== "completed") return run.status;
+  const moves = tasks.filter((task) => task.runId === run.id).map(failureMove);
+  if (moves.includes("person")) return "failed";
+  return moves.includes("coordinator") ? "running" : run.status;
+}
+
 export type OrchestrationAttempt = {
   id: string;
   runId: string;

@@ -17,22 +17,28 @@ import {
   taskElapsed, taskStepSummary, type TaskStepSummary,
 } from "./agentTaskBoard";
 import {
-  CHECK_FAILED_LABEL, checkFailed, finishedWell, isSettled,
-  type AttemptUsage, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
+  CHECK_FAILED_LABEL, checkFailed, FAILURE_WORD, failureMove, failureOf, finishedWell, isRetrying, isSettled, saysFailures,
+  type AttemptUsage, type FailureKind, type FailureMove, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot,
+  type OrchestrationTask, type TaskFailure,
 } from "./orchestration";
-import { ledgerWaits, NO_WAITS, runWaits, UNSAID_NOTE, type RunWaits, type WaitKind, type Waiting, type Waits } from "./runWaits";
-import { taskHold, type TaskHold } from "./taskHold";
+import { ledgerWaits, NO_WAITS, openGates, runWaits, UNSAID_NOTE, type RunWaits, type WaitKind, type Waiting, type Waits } from "./runWaits";
+import { startControl, taskHold, type TaskHold } from "./taskHold";
 
 export type { Waiting } from "./runWaits";
 
 /** The four things the strip can say. */
 export type StripState = "running" | "needs" | "done" | "failed";
 
-/** Where one task is. `needs` is a wait that is the person's and nothing
- *  else (`lib/runWaits`). `failed` is a task that failed, one that is blocked
- *  with no decision open, or a check whose verdict is fail. `closed` is a
- *  task nothing is owed for and that did not finish: cancelled, replaced, or
- *  left behind by a stopped run. */
+/** Where one task is. `needs` is a card or a decision that waits on the
+ *  person (`lib/runWaits`). `failed` is a failure that is red: one the host
+ *  says waits on the person, which is listed under Needs you; on a host that
+ *  does not say whose move a failure is, a task that failed, one that is
+ *  blocked with no decision open, or a check whose verdict is fail, listed
+ *  under Running as before. A failure its coordinator is fixing is
+ *  `running`, and one that is history is `closed`
+ *  (`orchestration.failureMove`). `closed` is a task nothing is owed for and
+ *  that did not finish: cancelled, replaced, or left behind by a run that
+ *  was stopped, closed or archived. */
 export type RowState = "needs" | "failed" | "running" | "done" | "planned" | "closed";
 
 export type GroupKey = "needs" | "running" | "finished" | "planned";
@@ -70,6 +76,10 @@ export type ProgressRow = {
   decisions: number;
   /** What the row's tooltip adds: a wait the host put no name to. */
   hint: string | null;
+  /** The task's failure, when the host says whose move it is: what the row
+   *  says of it in whole sentences. `null` on a host that does not say, and
+   *  for a task that is not in failure. */
+  failure: RowFailure | null;
   /** What holds a task that has not started, when the host would refuse a
    *  start of it (`lib/taskHold`): the person's stop, the plan, a reopen
    *  whose notice is not confirmed yet. Its label is the row's `why`. */
@@ -118,6 +128,10 @@ export type RunStrip = {
   live: boolean;
   /** Decisions waiting on the person, once each (`lib/runWaits`). */
   needs: number;
+  /** How many of those are a failure's own decision: the failure the host
+   *  says is the person's, or the gate its coordinator opened about it. When
+   *  every decision is one, the line's state is `failed`. */
+  failures: number;
   /** The only thing waiting on the person is the plan. */
   planOnly: boolean;
   failed: number;
@@ -266,16 +280,78 @@ export function tasksLabel(tasks: { done: number; total: number }): string {
 
 /** What a row under Needs you says, by what is waiting. */
 const PERSON_WORD: Record<WaitKind, string> = {
-  plan: "Plan to approve", gate: "Asks a decision", question: "Asks a question", delivery: "Answer not delivered",
+  plan: "Plan to approve", gate: "Asks a decision", failure: "Failed", question: "Asks a question", delivery: "Answer not delivered",
   permission: "Awaiting approval", safety: "Awaiting review", native: "Awaiting review", outage: "Safety check was down",
   handover: "Asks a handover",
 };
 
 /** The host's word for a gate or decision the run's own agent is dealing
- *  with. */
+ *  with, and for a failure it is fixing. */
 export const COORDINATOR_WORD = "Waiting on the coordinator";
 
+/** What a row says while a retry of its task is at work. */
+export const RETRYING_WORD = "Retrying";
+
 export type Reading = Pick<ProgressRow, "state" | "why" | "tone">;
+
+/** A failure on a row, in words. */
+export type RowFailure = {
+  move: FailureMove;
+  kind: FailureKind;
+  because: TaskFailure["because"] | null;
+  /** One sentence, drawn on the row itself for a failure that waits on the
+   *  person: why it is theirs, and what moves it. For the coordinator's and
+   *  for history it is the opened row's and the tooltip's. */
+  note: string;
+  /** The coordinator's chat is where to go: nothing on the row moves a
+   *  failure that waits on the person. */
+  askCoordinator: boolean;
+};
+
+const retries = (count: number) => `${count} automatic ${count === 1 ? "retry" : "retries"}`;
+
+/** What a row says of its task's failure. `start` is the task's one start
+ *  control when the page has one to offer (`lib/taskHold.startControl`) and
+ *  `question` the open decision its coordinator put to the person about it.
+ *  A failure that waits on the person never says only that it failed: the
+ *  sentence ends in what moves it. */
+export function failureNote(
+  task: Pick<OrchestrationTask, "failure" | "retryLimit" | "retriesUsed">,
+  start: { label: string; blocked: string | null } | null,
+  question: string | null,
+): RowFailure | null {
+  const failure = failureOf(task);
+  if (!failure) return null;
+  const { move, kind } = failure;
+  const because = failure.because ?? null;
+  const limit = task.retryLimit ?? 0;
+  const base = { move, kind, because };
+  if (move === "coordinator") {
+    const used = task.retriesUsed ?? 0;
+    return { ...base, askCoordinator: false, note: `Its coordinator is fixing it: ${used} of ${retries(limit)} used. Nothing is asked of you.` };
+  }
+  if (move === "history") {
+    return { ...base, askCoordinator: false, note: because === "replaced" ? "Another task replaced it. Nothing is owed for it." : "Its run was stopped, closed or archived. Nothing is owed for it." };
+  }
+  const gone = because === "coordinator_gone";
+  const why = because === "retries_used" ? `Its ${retries(limit)} are used.`
+    : because === "escalated" ? (question ? `Its coordinator asks you: ${question}` : "Its coordinator asks you to decide.")
+    : gone ? "The chat that coordinated this run is gone, so nobody retries it."
+    : because === "time_limit" ? "This peer request used up its working time."
+    : "This failure waits on you.";
+  const put = "stop or archive the run";
+  // The decision is drawn above the rows, where it is answered.
+  const answer = because === "escalated" ? "Answer it under Needs you above" : null;
+  const begin = start && !start.blocked ? `open this row for ${start.label}` : null;
+  const ways = [answer, begin].filter(Boolean) as string[];
+  const cap = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+  if (ways.length) return { ...base, askCoordinator: false, note: `${why} ${cap(ways.join(", "))}, or ${put}.` };
+  // A start the host would refuse says why, and that is what moves it.
+  if (start?.blocked) return { ...base, askCoordinator: false, note: `${why} ${start.blocked}` };
+  // Nothing on the row moves it: a settled check takes no worker.
+  return gone ? { ...base, askCoordinator: false, note: `${why} ${cap(put)} to put it away.` }
+    : { ...base, askCoordinator: true, note: `${why} It cannot be started from here: ask the coordinator in its chat, or ${put}.` };
+}
 
 /** Where one task is, the word for it and its colour: the row's reading,
  *  and the one every other surface asks before it calls a task failed or
@@ -292,11 +368,23 @@ export function taskReading(
   // `lib/runWaits` says waits on them is counted on the strip, so the row
   // that holds it says so too, whatever became of the task. For a task that
   // is settled or a run that is over that is only ever a card still on
-  // their screen.
-  if (waits.person.length) return { state: "needs", why: PERSON_WORD[waits.person[0].kind], tone: "decide" };
+  // their screen. A card leads: it is answered where it is. The decision of
+  // the task's own failure follows, and is the row's reading below.
+  const card = waits.person.find((wait) => !wait.failure);
+  if (card) return { state: "needs", why: PERSON_WORD[card.kind], tone: "decide" };
+  // The task's failure, where the host says whose move it is
+  // (`orchestration.failureMove`). The person's is the one that is red. The
+  // coordinator's is quiet: no danger colour and no warning colour, with
+  // what is running. History is muted, with what finished.
+  const failure = failureOf(task);
+  if (failure?.move === "person") return { state: "failed", why: FAILURE_WORD[failure.kind], tone: "danger" };
+  if (failure?.move === "coordinator") return { state: "running", why: COORDINATOR_WORD, tone: null };
+  if (failure?.move === "history" && !task.supersededBy) return { state: "closed", why: FAILURE_WORD[failure.kind], tone: null };
+  // From here a task whose failure the host said nothing of: a host that
+  // does not say, and it is read as before.
   // Settled is not finished well: a check that failed still holds what
   // depends on it, until it is replaced or run again.
-  if (checkFailed(task)) return { state: "failed", why: CHECK_FAILED_LABEL, tone: "danger" };
+  if (!failure && checkFailed(task)) return { state: "failed", why: CHECK_FAILED_LABEL, tone: "danger" };
   if (finishedWell(task)) return { state: "done", why: null, tone: null };
   if (task.status === "cancelled") return { state: "closed", why: "Cancelled", tone: null };
   if (task.supersededBy) return { state: "closed", why: "Replaced", tone: null };
@@ -309,6 +397,14 @@ export function taskReading(
   // nothing failed: it is held until they start it, and waits with what has
   // not started.
   if (hold?.kind === "stopped") return { state: "planned", why: hold.label, tone: hold.tone };
+  const live = !!attempt && task.activeAttemptId === attempt.id;
+  // A retry is at work, or the host has scheduled one: grey, and the word
+  // says so. A worker of it that is in trouble keeps the host's own word
+  // for that, as any worker does.
+  if (isRetrying(task)) {
+    if (live && executionNeedsAttention(attempt)) return { state: "running", why: EXECUTION_LABELS[attempt.execution!.state], tone: "warn" };
+    return { state: "running", why: RETRYING_WORD, tone: null };
+  }
   if (task.status === "failed") return { state: "failed", why: "Failed", tone: "danger" };
   // A decision is open and the host does not say whose it is. It is said as
   // what the ledger holds, in no colour, and counted as nobody's.
@@ -321,7 +417,6 @@ export function taskReading(
   }
   // A refusal nobody can approve (`waits.nobody`) changes nothing here: the
   // worker was told and goes on, so the row says what the worker is doing.
-  const live = !!attempt && task.activeAttemptId === attempt.id;
   if (task.status === "running") {
     if (live && attempt.execution) {
       const environment = attempt.execution.pendingTools?.["octiq:environment"];
@@ -343,12 +438,26 @@ export function taskReading(
   return { state: "planned", why: hold?.label ?? null, tone: hold?.tone ?? null };
 }
 
-/** What failed is listed with what is running, first: the person asked for
- *  it there, in the danger colour, and "Needs you" holds only what waits on
- *  them. There is no fifth group. */
+/** "Needs you" holds what waits on the person, and that includes a failure
+ *  the host says is theirs to decide (`groupOf`). On a host that does not
+ *  say whose move a failure is, what failed is listed with what is running,
+ *  first, as before. There is no fifth group. */
 const GROUP_OF: Record<RowState, GroupKey> = {
   needs: "needs", failed: "running", running: "running", done: "finished", closed: "finished", planned: "planned",
 };
+
+/** The group a row is listed in. */
+function groupOf(task: OrchestrationTask, state: RowState): GroupKey {
+  return state === "failed" && failureMove(task) === "person" ? "needs" : GROUP_OF[state];
+}
+
+/** Whether a reading is counted as a failure: what "N failed" counts on the
+ *  strip, the chat list's line and the run picker. Only a failure that
+ *  waits on the person is, where the host says whose move it is; on a host
+ *  that does not, what the row reads as failed, as before. */
+function countsFailed(item: { task: OrchestrationTask; state: RowState }): boolean {
+  return saysFailures(item.task) ? failureMove(item.task) === "person" : item.state === "failed";
+}
 
 /** Whether the row's worker has a turn in flight: the task is running on
  *  this very attempt and the host says it is executing. Parked, preparing,
@@ -371,6 +480,13 @@ export function progressRow(
   const mineWaits = waits.tasks.get(task.id) ?? NO_WAITS;
   const hold = taskHold(task, run, snapshot.tasks, now);
   const reading = taskReading(run, task, attempt, mineWaits, hold);
+  const group = groupOf(task, reading.state);
+  // What the row says of its failure, with the start the page would offer
+  // and the decision its coordinator put to the person, when there is one.
+  const moved = failureOf(task);
+  const begin = moved?.move === "person" ? startControl(task, run, snapshot.tasks, snapshot.attempts, waits.gated.has(task.id)) : null;
+  const asked = moved?.gateId ? openGates(snapshot, run.id).find((gate) => gate.id === moved.gateId)?.question ?? null : null;
+  const failure = failureNote(task, begin, asked);
   const summary = taskStepSummary(task, attempt, attempt ? snapshot.reports?.[attempt.workerChatKey] : undefined);
   const steps = summary ? { done: summary.done, total: summary.total } : null;
   const mine = snapshot.attempts.filter((item) => item.taskId === task.id);
@@ -379,10 +495,13 @@ export function progressRow(
   const flight = inFlight(task, attempt, reading);
   return {
     task, attempt, ...reading,
-    group: GROUP_OF[reading.state],
+    group,
     flight,
     step: rowStep(flight, summary, now),
-    decisions: reading.state === "needs" ? mineWaits.person.length : 0,
+    decisions: group === "needs" ? mineWaits.person.length : 0,
+    // Said of the reading it explains: a row that leads with a card says
+    // the card, and a replaced task that it was replaced.
+    failure: failure && (failure.move === "person" || reading.why === (failure.move === "coordinator" ? COORDINATOR_WORD : FAILURE_WORD[failure.kind])) ? failure : null,
     // Said only of a row that is still owed something: a finished or closed
     // one waits for nothing, whatever the ledger kept.
     hint: mineWaits.unsaid.length && (reading.state === "running" || reading.state === "failed" || reading.state === "planned") ? UNSAID_NOTE : null,
@@ -478,6 +597,8 @@ export function groupHeading(group: ProgressGroup): { label: string; spoken: str
  *  then one more. A zero is left out. */
 function stripSide(strip: Pick<RunStrip, "state" | "needs" | "planOnly" | "failed" | "stopped" | "working" | "runs">, elapsedMs: number | null): StripSide[] {
   const workers: StripSide | null = strip.working ? { text: `${strip.working} working`, strong: false } : null;
+  // Beside decisions of other kinds, what failed is still said: it is one
+  // of them, and the only one that is a failure.
   const failed: StripSide | null = strip.failed ? { text: `${strip.failed} failed`, strong: false } : null;
   // A chat that coordinates several live runs says so: the bar is one of
   // them, and the count is what keeps the others from being forgotten.
@@ -537,11 +658,14 @@ export function runTally(
   readings: readonly { task: OrchestrationTask; state: RowState; hold?: TaskHold | null }[],
 ): { done: number; total: number; failed: number } {
   const counted = readings.filter((item) => countsAsWork(run, item.task));
-  const failed = readings.filter((item) => item.state === "failed").length;
+  const failed = readings.filter(countsFailed).length;
+  // Only of a host that does not say whose move a failure is: one that does
+  // calls a run failed while its coordinator is still fixing what failed.
+  const unsaid = !readings.some((item) => saysFailures(item.task));
   return {
     done: counted.filter((item) => finishedWell(item.task)).length,
     total: counted.length,
-    failed: failed + (run.status === "failed" && !failed && !readings.some((item) => item.hold?.kind === "stopped") ? 1 : 0),
+    failed: failed + (unsaid && run.status === "failed" && !failed && !readings.some((item) => item.hold?.kind === "stopped") ? 1 : 0),
   };
 }
 
@@ -609,15 +733,22 @@ export function runProgress(
   // Unless something in it waits on the person: that is said wherever it is
   // counted, and the badge and the panel count it.
   if (needs > 0 || (total > 0 && run.archivedAt == null && run.status !== "closed" && run.status !== "stopped")) {
-    // Failed only while a failed row exists and nothing waits on the person.
-    const state: StripState = needs ? "needs" : failed ? "failed" : done === total ? "done" : "running";
+    // Needs you outranks everything. Failed is a failure that waits on the
+    // person with nothing else waiting on them: every decision is a
+    // failure's own. On a host that does not say whose move a failure is, it
+    // is a failed row while nothing waits on the person, as before. A
+    // failure the coordinator is fixing is neither: the run is running.
+    const failures = waits.person.filter((wait) => wait.failure).length;
+    const state: StripState = needs ? (failures === needs ? "failed" : "needs") : failed ? "failed" : done === total ? "done" : "running";
+    const fixing = rows.filter((row) => row.failure?.move === "coordinator").length;
     const notes = [
       waits.coordinator.length ? `${waits.coordinator.length} waiting on the coordinator.` : null,
+      fixing ? `${plural(fixing, "failure", "failures")} with the coordinator, which is fixing ${fixing === 1 ? "it" : "them"}: nothing is asked of you.` : null,
       waits.unsaid.length ? `${plural(waits.unsaid.length, "open decision", "open decisions")}: the host does not say who ${waits.unsaid.length === 1 ? "it waits" : "they wait"} on.` : null,
       ...holdNotes(rows),
     ].filter((note): note is string => !!note);
     const stopped = rows.filter((row) => row.hold?.kind === "stopped").length;
-    const counts = { state, needs, planOnly: needs === 1 && waits.person[0].kind === "plan", failed, stopped, working, runs: 1 };
+    const counts = { state, needs, failures, planOnly: needs === 1 && waits.person[0].kind === "plan", failed, stopped, working, runs: 1 };
     strip = {
       ...counts,
       word: STRIP_WORD[state],
@@ -677,15 +808,23 @@ export function chatStrip(
     return fallback ? read(fallback)[0] ?? null : null;
   }
   const picked = live.find((item) => item.strip.state === "needs")
+    ?? live.find((item) => item.strip.needs > 0)
     ?? live.find((item) => item.strip.state === "failed")
     ?? live.find((item) => item.strip.live)
     ?? live[0];
   const needs = live.reduce((sum, item) => sum + item.strip.needs, 0);
+  const failures = live.reduce((sum, item) => sum + item.strip.failures, 0);
   const asking = live.filter((item) => item.strip.needs > 0);
+  // Asked of every run's decisions, like the count: a failure in one run
+  // and a card in another is "Needs you", and two failures are both said.
+  const state: StripState = needs ? (failures === needs ? "failed" : "needs") : picked.strip.state;
   const counts = {
-    state: picked.strip.state, needs,
+    state, needs, failures,
     planOnly: needs === 1 && asking[0].strip.planOnly,
-    failed: picked.strip.failed, stopped: picked.strip.stopped, working: picked.strip.working, runs: live.length,
+    // What failed and waits on the person is counted across the runs, like
+    // the decisions it is among. Anything else is the drawn run's own.
+    failed: failures ? live.reduce((sum, item) => sum + (item.strip.failures ? item.strip.failed : 0), 0) : picked.strip.failed,
+    stopped: picked.strip.stopped, working: picked.strip.working, runs: live.length,
   };
   const others = live.length - 1;
   const allLive = live.every((item) => ACTIVE_RUN.has(item.run.status) && item.run.archivedAt == null);
@@ -693,13 +832,14 @@ export function chatStrip(
     run: picked.run,
     strip: {
       ...picked.strip, ...counts,
+      word: STRIP_WORD[state],
       side: stripSide(counts, null),
       notes: [
-        `The bar is one of ${live.length} ${allLive ? "live runs" : "runs"} of this chat${picked.strip.state === "needs" ? ", the one that waits on you" : ""}.`,
+        `The bar is one of ${live.length} ${allLive ? "live runs" : "runs"} of this chat${picked.strip.needs ? ", the one that waits on you" : ""}.`,
         ...(needs > picked.strip.needs ? [`${plural(needs - picked.strip.needs, "decision", "decisions")} in ${others === 1 ? "the other run" : "the other runs"}.`] : []),
         ...live.flatMap((item) => item.strip.notes),
       ],
-      signature: [picked.run.id, picked.strip.state, `${picked.strip.done}/${picked.strip.total}`, needs, picked.strip.failed, live.length].join(":"),
+      signature: [picked.run.id, state, `${picked.strip.done}/${picked.strip.total}`, needs, counts.failed, live.length].join(":"),
     },
   };
 }

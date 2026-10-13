@@ -5,7 +5,7 @@
 // git's: Merged and Released come from `missionDelivery`, which the host fills
 // when someone asks it to check (`orchestration_mission_refresh`). An agent
 // saying "merged" moves nothing here.
-import { checkFailed, isSettled, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
+import { checkFailed, failureShown, isSettled, type OrchestrationRun, type OrchestrationTask } from "./orchestration";
 import { planHoldsEveryStart } from "./taskHold";
 
 export type MissionStage =
@@ -25,7 +25,9 @@ export const MISSION_STAGES: { key: MissionStage; label: string }[] = [
 
 export type MissionState = {
   stage: MissionStage;
-  /** Waiting on someone: a decision, a blocked task, a failing check. */
+  /** Waiting on someone: a decision, a blocked task, a failing check. Not
+   *  for a failure its coordinator is fixing, or one that is history
+   *  (`orchestration.failureShown`): nothing waits on anyone there. */
   blocked: boolean;
   /** Closed without the merge. */
   abandoned: boolean;
@@ -44,7 +46,11 @@ export function missionState(run: OrchestrationRun, tasks: readonly Orchestratio
   // Settled is not finished well: a check that completed and did not pass
   // holds what depends on it, and is somebody's to deal with.
   const failedCheck = live.some(checkFailed);
-  const blocked = run.status === "waiting" || failedCheck || tasks.some((task) => task.status === "blocked" && !task.supersededBy);
+  // Whether a failure is said as one is one reader's: where the host says
+  // whose move it is, only a failure that waits on the person is.
+  const said = (task: OrchestrationTask) => { const shown = failureShown(task); return shown !== "quiet" && shown !== "history"; };
+  const blocked = run.status === "waiting" || live.some((task) => checkFailed(task) && said(task))
+    || tasks.some((task) => task.status === "blocked" && !task.supersededBy && said(task));
   const state = (stage: MissionStage): MissionState => ({ stage, blocked: blocked && stage !== "closed", abandoned });
   if (run.status === "closed") return state("closed");
 

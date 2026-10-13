@@ -15,7 +15,7 @@
 // - deployed runtime   — not tracked per run, and said so;
 // - acceptance         — never inferred from counts. Checks that all passed
 //                        are reported as that, not as product acceptance.
-import { isSettled, type OrchestrationAttempt, type OrchestrationTask } from "./orchestration";
+import { failureShown, isSettled, type OrchestrationAttempt, type OrchestrationTask } from "./orchestration";
 import type { SandboxEnvironment, SandboxSnapshot } from "./sandbox";
 
 export type CheckKind = NonNullable<OrchestrationTask["kind"]>;
@@ -33,6 +33,10 @@ export type CheckCoverage = {
   total: number;
   passed: number;
   failed: number;
+  /** How many of the failed ones are said as a failure
+   *  (`orchestration.failureShown`): not one the coordinator is fixing, and
+   *  not one that is history. Only these colour a line. */
+  failedRed: number;
   /** Not settled with a verdict yet: still to run, running, or ended
    *  without judging (failed or blocked). */
   awaiting: number;
@@ -45,7 +49,7 @@ export type CheckCoverage = {
 };
 
 export function checkCoverage(tasks: readonly OrchestrationTask[]): CheckCoverage {
-  const coverage: CheckCoverage = { total: 0, passed: 0, failed: 0, awaiting: 0, noVerdict: 0, observed: { passed: 0, failed: 0 } };
+  const coverage: CheckCoverage = { total: 0, passed: 0, failed: 0, failedRed: 0, awaiting: 0, noVerdict: 0, observed: { passed: 0, failed: 0 } };
   for (const task of tasks) {
     if (task.status === "cancelled") continue;
     if (!requiresVerdict(task)) {
@@ -55,7 +59,13 @@ export function checkCoverage(tasks: readonly OrchestrationTask[]): CheckCoverag
     coverage.total += 1;
     if (!isSettled(task)) coverage.awaiting += 1;
     else if (task.verdict === "pass") coverage.passed += 1;
-    else if (task.verdict === "fail") coverage.failed += 1;
+    else if (task.verdict === "fail") {
+      coverage.failed += 1;
+      const shown = failureShown(task);
+      // A replaced check is counted as it was reported, and coloured as it
+      // was on a host that does not say whose move a failure is.
+      if (shown === "red" || (shown === null && !!task.supersededBy)) coverage.failedRed += 1;
+    }
     else coverage.noVerdict += 1;
   }
   return coverage;
@@ -175,8 +185,13 @@ export function runStages(
     .map((state) => `${envCounts.get(state)} ${ENV_LABEL[state].replace(/^Env /, "")}`)
     .join(" · ");
 
+  // The danger colour is a failure that is said as one. A failed check the
+  // coordinator is having fixed is still a failing check, in the line's ink.
+  const failing: Stage["tone"] = checks.failedRed ? "danger" : "quiet";
   const acceptance: Stage = checks.failed
-    ? { key: "acceptance", label: "Acceptance", value: "Failing", tone: "danger", note: "A check, review or acceptance task found problems; its dependants wait." }
+    ? { key: "acceptance", label: "Acceptance", value: "Failing", tone: failing, note: checks.failedRed
+      ? "A check, review or acceptance task found problems; its dependants wait."
+      : "A check, review or acceptance task found problems; its dependants wait. Its coordinator is dealing with it, or it is history: nothing is asked of you." }
     : checks.total && !checks.awaiting && !checks.noVerdict
       ? { key: "acceptance", label: "Acceptance", value: "Every planned check passed", tone: "ok", note: "What the planned checks covered passed. It is not a record that the product was accepted." }
       : { key: "acceptance", label: "Acceptance", value: "Unverified", tone: "quiet", note: checks.total ? "Checks are still outstanding." : "No check, review or acceptance task in this mission. Task completion is not acceptance." };
@@ -186,7 +201,7 @@ export function runStages(
     {
       key: "checks", label: "Checks",
       value: checks.total ? checkParts.join(" · ") : "None planned",
-      tone: checks.failed ? "danger" : checks.total && checks.passed === checks.total ? "ok" : "quiet",
+      tone: checks.failed ? failing : checks.total && checks.passed === checks.total ? "ok" : "quiet",
       note: observed ? `${observed} other ${observed === 1 ? "task" : "tasks"} also reported a verdict (${checks.observed.passed} pass, ${checks.observed.failed} fail).` : undefined,
     },
     {

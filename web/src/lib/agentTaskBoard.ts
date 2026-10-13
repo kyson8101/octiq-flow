@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  CHECK_FAILED_LABEL, checkFailed, finishedWell, isSettled, isStuck,
+  CHECK_FAILED_LABEL, checkFailed, failureShown, finishedWell, isSettled,
   type ExecutionState, type OrchestrationAttempt, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
 import type { TaskReport } from "./chatTask";
@@ -191,7 +191,12 @@ export function boardCounts(tasks: OrchestrationTask[], snapshot?: Orchestration
     done, total: tasks.length, percent: tasks.length ? Math.round(done / tasks.length * 100) : 0,
     todo: tasks.filter((task) => task.status === "pending" || task.status === "ready").length,
     running: tasks.filter((task) => task.status === "running" && (!attemptFor(task)?.execution || attemptIsExecuting(attemptFor(task)!))).length,
-    blocked: tasks.filter((task) => isStuck(task) || checkFailed(task) || (!task.supersededBy && executionNeedsAttention(attemptFor(task)))).length,
+    // A failure that is said as one (`orchestration.failureShown`), or a
+    // worker in trouble on a task that is not a failure of any kind.
+    blocked: tasks.filter((task) => {
+      const shown = failureShown(task);
+      return shown === "red" || (shown === null && !task.supersededBy && executionNeedsAttention(attemptFor(task)));
+    }).length,
     cancelled: tasks.filter((task) => task.status === "cancelled").length,
   };
 }

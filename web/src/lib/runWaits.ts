@@ -1,9 +1,13 @@
 // Who a run is waiting on.
 //
 // "Needs you" is a fact or it is not said. A wait is the person's in exactly
-// three cases:
+// four cases:
 //
 // - the run's plan has a revision to approve;
+// - a task's failure is theirs to decide, as the host says
+//   (`orchestration.failureMove`): its retries are used, its coordinator put
+//   it to them or is gone. It is one decision: the gate the coordinator
+//   opened about it when there is one, else the failure itself;
 // - the page itself holds a card for the worker (a permission, safety or
 //   question card, an answer that could not be delivered, a handover): the
 //   buttons that answer it are on the person's screen;
@@ -29,7 +33,7 @@
 // who is waited on cannot be written beside this one without a test failing
 // (`runWaits.surfaces.test.tsx`).
 import {
-  isPeerRequestGate, type Awaits, type NativeDecision, type OrchestrationGate, type OrchestrationRun,
+  failureMove, isPeerRequestGate, type Awaits, type NativeDecision, type OrchestrationGate, type OrchestrationRun,
   type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
 import { planTasks } from "./planReview";
@@ -75,12 +79,17 @@ export type Held = { key: string; kind: string };
 /** The cards the page holds, per task. */
 export type Waiting = ReadonlyMap<string, readonly Held[]>;
 
-export type WaitKind = "plan" | "gate" | "permission" | "safety" | "outage" | "question" | "delivery" | "handover" | "native";
+export type WaitKind = "plan" | "gate" | "failure" | "permission" | "safety" | "outage" | "question" | "delivery" | "handover" | "native";
 
 /** One thing a run waits for. `key` is the host's identity for it, the one a
  *  badge and a card carry, so the same decision is never counted twice.
  *  `card` is the kind of card a native decision is answered on. */
-export type Wait = { key: string; kind: WaitKind; on: WaitsOn; runId: string; taskId?: string; card?: "safety" | "outage" };
+export type Wait = {
+  key: string; kind: WaitKind; on: WaitsOn; runId: string; taskId?: string; card?: "safety" | "outage";
+  /** The decision of a task's failure: the failure itself, or the gate its
+   *  coordinator opened about it. A task in failure has exactly one. */
+  failure?: true;
+};
 
 export type Waits = { person: Wait[]; coordinator: Wait[]; nobody: Wait[]; unsaid: Wait[] };
 
@@ -115,6 +124,8 @@ const CARDS: ReadonlySet<string> = new Set(["permission", "safety", "outage", "q
  *  | open gate, `awaits: "coordinator"`           | coordinator |
  *  | open gate, `awaits: "nobody"`                | nobody      |
  *  | open gate, no `awaits`                       | unsaid      |
+ *  | open gate about a failed task (`aboutTaskId`) | as above, for that task's row |
+ *  | a failure the host says is the person's, no such gate | person (the failure, once) |
  *  | pending native decision the page has a card for | person (the card, once) |
  *  | pending native decision, `awaits: "person"`  | person      |
  *  | pending native decision, `awaits: "coordinator"` | coordinator |
@@ -159,7 +170,23 @@ export function runWaits(snapshot: OrchestrationSnapshot, run: OrchestrationRun,
 
   const plan = planWaits(run, own);
   if (plan) add({ key: plan, kind: "plan", on: "person", runId: run.id });
-  for (const gate of open) add({ key: `gate:${gate.id}`, kind: "gate", on: gateWaitsOn(gate, own), runId: run.id, taskId: gate.taskId });
+  // A gate the coordinator opened about a failed task is no task's own
+  // (nothing of the task waits on it, so it is not in `gated`), and it is
+  // that task's decision: said on its row, and counted once, as the gate.
+  const asked = new Set<string>();
+  for (const gate of open) {
+    const about = !gate.taskId && gate.aboutTaskId && own.some((task) => task.id === gate.aboutTaskId) ? gate.aboutTaskId : undefined;
+    const on = gateWaitsOn(gate, own);
+    if (about && on === "person") asked.add(about);
+    add({ key: `gate:${gate.id}`, kind: "gate", on, runId: run.id, taskId: gate.taskId ?? about, ...(about ? { failure: true as const } : {}) });
+  }
+  // A failure the host says waits on the person is a decision of theirs.
+  // With no gate that asks it, the failure is the decision itself.
+  for (const task of own) {
+    if (failureMove(task) === "person" && !asked.has(task.id)) {
+      add({ key: `failure:${task.id}`, kind: "failure", on: "person", runId: run.id, taskId: task.id, failure: true });
+    }
+  }
   cards();
 
   const live = new Set(own.flatMap((task) => task.activeAttemptId ? [task.activeAttemptId] : []));

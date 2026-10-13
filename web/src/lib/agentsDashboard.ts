@@ -20,8 +20,8 @@
 //
 // Everything is keyed on the agent's stable id, so a rename, or a change of
 // provider or model, keeps its work where it was.
-import type { OrchestrationAttempt, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
-import { taskReading } from "./runProgress";
+import { failureShown, isRetrying, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask } from "./orchestration";
+import { RETRYING_WORD, taskReading } from "./runProgress";
 import { ledgerWaits, NO_WAITS, planWaits, type LedgerWaits, type Waiting, type Waits } from "./runWaits";
 import { taskHold, type TaskHold } from "./taskHold";
 // Types only: agentsMode opens the socket bridge on import, and this module
@@ -204,9 +204,19 @@ export function taskState(
   // "Needs you" for exactly what `lib/runWaits` says is the person's, and
   // first: a card still on their screen is theirs whatever became of the
   // task or its run.
-  const mine = waits.person[0];
+  // A card or a decision of another kind leads. The task's own failure,
+  // when the host says it waits on the person, follows, and is read below:
+  // it is asked before the run's status, which is `failed` for exactly the
+  // run whose one failure nobody has answered.
+  const mine = waits.person.find((wait) => !wait.failure);
   if (mine) return { state: "needs_you", label: mine.kind === "gate" ? "Waiting on a decision" : "Needs your approval" };
-  if (run.archivedAt || !LIVE_RUN.includes(run.status)) return null;
+  if (waits.person.length) {
+    const asked = taskReading(run, task, attempt, waits, hold);
+    return { state: "failed", label: asked.why ?? AGENT_STATE_LABELS.failed, tone: "danger" };
+  }
+  // A run the host calls failed or completed has not ended while its
+  // coordinator is fixing a failure in it: that task is still current work.
+  if (run.archivedAt || !(LIVE_RUN.includes(run.status) || failureShown(task) === "quiet")) return null;
   // Whether it failed, finished well or is history is the run panel's
   // reading (`lib/runProgress.taskReading`), asked and not worked out again,
   // so this page and the panel cannot say different things of one task. A
@@ -217,6 +227,14 @@ export function taskState(
   const reading = taskReading(run, task, attempt, waits, hold);
   if (reading.state === "failed") return { state: "failed", label: reading.why ?? AGENT_STATE_LABELS.failed, tone: "danger" };
   if (reading.state === "done" || reading.state === "closed") return null;
+  // A failure its coordinator is fixing, and a retry at work, are quiet
+  // here as on the row: the row's own word, and no colour. Between attempts
+  // the task waits for its next one; a retry is working once it executes.
+  const quiet = failureShown(task) === "quiet";
+  if (quiet || isRetrying(task)) {
+    const executing = !quiet && !!attempt && (attempt.execution?.state === "executing" || attempt.execution?.state === "waiting_tool");
+    if (reading.tone !== "warn") return { state: executing ? "working" : "queued", label: reading.why ?? RETRYING_WORD };
+  }
   // The coordinator's, or an open gate the host put no name to, parks the
   // task without asking the person.
   if (waits.coordinator.length) return { state: "blocked", label: "Waiting on the coordinator" };

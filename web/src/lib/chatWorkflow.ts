@@ -1,7 +1,7 @@
 import type { Conversation } from "./store";
 import { workerArchiveChatList } from "./workerArchive";
 import {
-  CHECK_FAILED_LABEL, checkFailed, EMPTY_ORCHESTRATION,
+  CHECK_FAILED_LABEL, checkFailed, EMPTY_ORCHESTRATION, failureShown, shownRunStatus,
   type OrchestrationAttempt, type OrchestrationSnapshot, type OrchestrationRun, type OrchestrationTask,
 } from "./orchestration";
 import { runCounts, STRIP_WORD } from "./runProgress";
@@ -44,7 +44,9 @@ export type RunLine = { text: string; tone: "decide" | "danger" | null };
  *  of the tasks that count. The three counts are the strip's own
  *  (`runProgress.runCounts`), so the line and the strip above the composer
  *  cannot give different numbers: a task whose check failed is not done
- *  here either, and is counted failed. */
+ *  here either. "N failed" is said only of a failure that waits on the
+ *  person (`orchestration.failureMove`): one the coordinator is fixing is
+ *  not on this line at all, in no word and no colour. */
 export function runSummaryLine(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): RunLine {
   const waits = runWaits(snapshot, run, held);
   const { done, total, failed } = runCounts(snapshot, run, held, waits);
@@ -59,12 +61,23 @@ export function runSummaryLine(snapshot: OrchestrationSnapshot, run: Orchestrati
   // it. The strip's word is also the one that leaves room: with "Needs
   // decision" the row cut the done count off a line that said a failure too
   // (162px of a 182px line, in every theme).
-  if (waits.person.length) return { text: line(STRIP_WORD.needs, wrong, progress), tone: "decide" };
-  // What failed, counted as the strip counts it: a task that failed, one
-  // that is blocked with no decision open, one that completed with a failed
-  // check. A task parked on an open decision of anybody's is waiting.
+  //
+  // When every decision is a failure's own, the failure is the line: what
+  // the strip says then too ("1 failed"), in the danger colour.
+  if (waits.person.length) {
+    return waits.person.every((wait) => wait.failure)
+      ? { text: line(wrong, progress), tone: "danger" }
+      : { text: line(STRIP_WORD.needs, wrong, progress), tone: "decide" };
+  }
+  // What failed, counted as the strip counts it, on a host that does not
+  // say whose move a failure is: a task that failed, one that is blocked
+  // with no decision open, one that completed with a failed check. A task
+  // parked on an open decision of anybody's is waiting.
   if (failed) return { text: line(wrong, progress), tone: "danger" };
-  return { text: line(run.status.charAt(0).toUpperCase() + run.status.slice(1), progress), tone: null };
+  // The run's status as it is drawn: a run the host calls failed while its
+  // coordinator is fixing what failed is running.
+  const status = shownRunStatus(run, snapshot.tasks);
+  return { text: line(status.charAt(0).toUpperCase() + status.slice(1), progress), tone: null };
 }
 
 export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRun, held?: Waiting): string {
@@ -92,14 +105,18 @@ export function chatRunStatus(snapshot: OrchestrationSnapshot, run: Orchestratio
 
 /** A worker chat's own line in the chat list: its task, and where the
  *  attempt behind this chat is. A chat whose attempt settled a task with a
- *  failed check says that, in the danger colour, and never "completed": the
- *  attempt's own word is how its worker's process ended. */
+ *  failed check says that and never "completed": the attempt's own word is
+ *  how its worker's process ended. It is the danger colour only where that
+ *  failure is red (`orchestration.failureShown`): not while the coordinator
+ *  is fixing it, and not once it is history. */
 export function workerLine(
-  task: Pick<OrchestrationTask, "title" | "status" | "verdict" | "supersededBy" | "activeAttemptId">,
+  task: Pick<OrchestrationTask, "title" | "status" | "verdict" | "supersededBy" | "activeAttemptId" | "stopped" | "failure" | "retryLimit">,
   attempt: Pick<OrchestrationAttempt, "id" | "status" | "archivedAt">,
 ): RunLine {
   if (attempt.archivedAt != null) return { text: `${task.title} · archived`, tone: null };
-  if (checkFailed(task) && task.activeAttemptId === attempt.id) return { text: `${task.title} · ${CHECK_FAILED_LABEL.toLowerCase()}`, tone: "danger" };
+  if (checkFailed(task) && task.activeAttemptId === attempt.id) {
+    return { text: `${task.title} · ${CHECK_FAILED_LABEL.toLowerCase()}`, tone: failureShown(task) === "red" ? "danger" : null };
+  }
   return { text: `${task.title} · ${attempt.status}`, tone: null };
 }
 

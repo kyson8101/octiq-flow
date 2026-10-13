@@ -1,7 +1,7 @@
 import { executionNeedsAttention } from "./agentTaskBoard";
 import { ledgerWaits, type RunWaits, type Waiting } from "./runWaits";
 import {
-  checkFailed, finishedWell, isSettled, isStuck,
+  failureShown, finishedWell, isSettled,
   type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask,
 } from "./orchestration";
 
@@ -54,13 +54,19 @@ export type RunAttention = {
   decisions: number;
   /** The one decision is the plan's approval. */
   planOnly: boolean;
-  /** Blocked or failing tasks not already named by a decision: a task that
-   *  failed or is blocked, one that completed with a failed check, and one
-   *  whose worker is in trouble. */
+  /** How many of the decisions are a failure's own: the failure the host
+   *  says waits on the person, or the gate its coordinator opened about it.
+   *  When every decision is one, the button says "N failed", in the danger
+   *  colour. */
+  failures: number;
+  /** Failing tasks not already named by a decision, and tasks whose worker
+   *  is in trouble. */
   blocked: number;
-  /** How many of those are failures and not a worker in trouble: a task
-   *  that failed, one blocked with no decision open, one that completed with
-   *  a failed check. Said as "N failed", in the danger colour. */
+  /** How many of those are failures and not a worker in trouble. Only on a
+   *  host that does not say whose move a failure is: a task that failed, one
+   *  blocked with no decision open, one that completed with a failed check.
+   *  Where the host says, a failure that waits on the person is a decision
+   *  above, and one its coordinator is fixing is counted nowhere. */
   failed: number;
   total: number;
 };
@@ -78,12 +84,17 @@ export function runAttention(
   // A stopped run cannot retry anything, so its failures are history, not owed.
   const owed = run.status === "stopped" ? [] : tasks.filter((task) => task.runId === run.id && !waits.gated.has(task.id)
     && !waits.tasks.get(task.id)?.person.length);
-  const failed = owed.filter((task) => isStuck(task) || checkFailed(task)).length;
-  const troubled = owed.filter((task) => !isStuck(task) && !checkFailed(task)
+  // Whether a task is a failure, and whether that is said, is one reader's
+  // (`orchestration.failureShown`). A failure its coordinator is fixing, or
+  // one that is history, is not a worker in trouble either: the last
+  // attempt of a failed task is a failed one.
+  const failed = owed.filter((task) => failureShown(task) === "red").length;
+  const troubled = owed.filter((task) => failureShown(task) === null
     && executionNeedsAttention(attempts.find((attempt) => attempt.id === task.activeAttemptId))).length;
   const blocked = failed + troubled;
   const decisions = waits.person.length;
-  return { decisions, planOnly: decisions === 1 && waits.person[0].kind === "plan", blocked, failed, total: decisions + blocked };
+  const failures = waits.person.filter((wait) => wait.failure).length;
+  return { decisions, planOnly: decisions === 1 && waits.person[0].kind === "plan", failures, blocked, failed, total: decisions + blocked };
 }
 
 /** What the top bar's Tasks button carries for one chat's runs: how many
@@ -99,12 +110,15 @@ export function taskColumnCounts(snapshot: OrchestrationSnapshot, held?: Waiting
 }
 
 /** Short enough for a collapsed row. Decisions lead: they wait on the
- *  person. Then what failed, said as that; "blocked" is only ever a worker
- *  in trouble (stalled, disconnected, out of capacity). */
+ *  person, and when every one of them is a failure's they are said as that.
+ *  Then what failed, on a host that does not say whose move a failure is;
+ *  "blocked" is only ever a worker in trouble (stalled, disconnected, out of
+ *  capacity). */
 export function attentionLabel(attention: RunAttention): string | null {
   if (!attention.total) return null;
   if (attention.decisions) {
     if (attention.planOnly) return "Approval needed";
+    if (attention.failures === attention.decisions) return `${attention.failures} failed`;
     return `${attention.decisions} to decide`;
   }
   if (attention.failed) return `${attention.failed} failed`;
@@ -115,25 +129,31 @@ export function attentionLabel(attention: RunAttention): string | null {
  *  the danger colour for a failure, the warning colour for a worker in
  *  trouble. */
 export function attentionTone(attention: RunAttention): "decision" | "failed" | "blocked" {
-  return attention.decisions ? "decision" : attention.failed ? "failed" : "blocked";
+  if (attention.decisions) return attention.failures === attention.decisions ? "failed" : "decision";
+  return attention.failed ? "failed" : "blocked";
 }
 
 /** The button's sentence: every count it stands for, whole. */
 export function attentionSpoken(attention: RunAttention): string {
   const troubled = attention.blocked - attention.failed;
+  // A failure that waits on the person is among the decisions, and said.
+  const failed = attention.failed + attention.failures;
   return [
     attention.decisions ? `${attention.decisions} ${attention.decisions === 1 ? "decision" : "decisions"} waiting` : null,
-    attention.failed ? `${attention.failed} ${attention.failed === 1 ? "task" : "tasks"} failed` : null,
+    failed ? `${failed} ${failed === 1 ? "task" : "tasks"} failed` : null,
     troubled ? `${troubled} ${troubled === 1 ? "task needs" : "tasks need"} attention` : null,
   ].filter(Boolean).join(", ");
 }
 
 /** Where one person is on a run, most urgent first. "working" is only ever a
  *  worker actually executing — handed a task is "assigned", however recently.
- *  "failed" is a task of theirs that went wrong with nothing open to wait
- *  for: it failed, is blocked, or completed with a failed check. "blocked"
- *  is a wait: a decision is open on it, or its worker is in trouble. "done"
- *  is only ever work that finished well. */
+ *  "failed" is a failure of theirs that is red (`orchestration.failureShown`):
+ *  one the host says waits on the person; on a host that does not say, a
+ *  task that failed, is blocked with nothing open, or completed with a
+ *  failed check. A failure the coordinator is fixing is "assigned": the task
+ *  is theirs and nobody is on it right now. "blocked" is a wait: a decision
+ *  is open on it, or its worker is in trouble. "done" is only ever work that
+ *  finished well. */
 export type PersonState = "working" | "failed" | "blocked" | "assigned" | "done" | "stopped";
 const PERSON_ORDER: PersonState[] = ["working", "failed", "blocked", "assigned", "done", "stopped"];
 
@@ -161,7 +181,12 @@ function personState(
   if (task.supersededBy) return "done";
   // A decision open on it is a wait, whatever the task's own status.
   if (gated) return "blocked";
-  if (isStuck(task) || checkFailed(task)) return "failed";
+  const failure = failureShown(task);
+  if (failure === "red") return "failed";
+  // The coordinator has it: nothing failed that anyone here must see, and
+  // its last attempt, a failed one, is not a worker in trouble.
+  if (failure === "quiet") return "assigned";
+  if (failure === "history") return "stopped";
   if (executionNeedsAttention(attempt)) return "blocked";
   const executing = !!attempt && (attempt.execution
     ? ["executing", "waiting_tool"].includes(attempt.execution.state)

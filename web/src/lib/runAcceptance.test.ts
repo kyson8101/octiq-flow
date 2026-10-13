@@ -33,7 +33,7 @@ describe("acceptance coverage comes from planned checks and reported verdicts (f
       task("dropped", { kind: "check", status: "cancelled" }),
     ];
     expect(checkCoverage(tasks)).toEqual({
-      total: 4, passed: 1, failed: 1, awaiting: 1, noVerdict: 1, observed: { passed: 0, failed: 1 },
+      total: 4, passed: 1, failed: 1, failedRed: 1, awaiting: 1, noVerdict: 1, observed: { passed: 0, failed: 1 },
     });
   });
 
