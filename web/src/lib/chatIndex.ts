@@ -128,8 +128,6 @@ type Pending =
   | { kind: "remove"; id: string; key: string; generation: number; entry?: IndexEntry };
 
 const unconfirmed = new Map<string, Pending>();
-/** How many saves of each chat this page has queued since it loaded. */
-const saves = new Map<string, number>();
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryDelay = 0;
 let watchingConnection = false;
@@ -152,7 +150,6 @@ export function saveIndexEntries(entries: readonly IndexEntry[]): void {
     // and a save that slips past it is a chat back in the sidebar.
     if (unconfirmed.get(entry.id)?.kind === "remove") continue;
     unconfirmed.set(entry.id, { kind: "save", entry });
-    saves.set(entry.id, (saves.get(entry.id) ?? 0) + 1);
     queued = true;
   }
   if (!queued) return;
@@ -293,7 +290,6 @@ function scheduleReadRetry(): void {
  *  removes, and both of those are answers rather than silence. */
 export function resetIndexQueue(): void {
   unconfirmed.clear();
-  saves.clear();
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   retryDelay = 0;
@@ -301,15 +297,6 @@ export function resetIndexQueue(): void {
   if (readRetryTimer) clearTimeout(readRetryTimer);
   readRetryTimer = null;
   readRetryDelay = 0;
-}
-
-/** Where this page's own saves of one chat stand: how many it has queued, and
- *  whether the host has yet to confirm the newest. Taken when `chat_index_list`
- *  is asked and again when it answers, two marks that are equal and not owed
- *  say the answer was made after every save of the chat this page sent
- *  (`chatAccess.aheadOfRow`). */
-export function saveMark(id: string): { saves: number; owed: boolean } {
-  return { saves: saves.get(id) ?? 0, owed: unconfirmed.get(id)?.kind === "save" };
 }
 
 /** True while at least one entry is still unacknowledged. Exposed for tests

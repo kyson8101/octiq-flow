@@ -1,10 +1,10 @@
 // App-shell regression for a discussion the front desk routes, and for a
 // start a writer refuses: nothing on the page opens, re-sends or switches a
 // chat to read-only. A discussion is how a route's card is worded and nothing
-// else. The page sends the level it has saved for a chat and works none out:
-// the host starts a registered agent's own conversation at no less than the
-// agent's registered access and says the level the process runs at
-// (`chat-access-changed`), which the page mirrors.
+// else. The page sends the level it holds for a chat and works none out: it
+// has no rule, effect or event for the level a process runs at. Raising a
+// registered agent's own conversation to the agent's registered access is the
+// host's (`agent_chat::start_session`), and is not this script's to show.
 //
 // At 375 and 1440 wide it checks that:
 //   A. a route proposed as a discussion is called "Discuss with STAR LEAD?",
@@ -17,25 +17,29 @@
 //   C. a message a writer refused is an ordinary message that was not sent:
 //      no read-only retry on its bubble, and sent again it starts at the
 //      agent's level;
-//   D. a chat an earlier discussion left saved at read, opened by link and
-//      sent to: the page's `chat_start` carries the saved level (read); the
-//      mocked host starts it at the agent's level and says so; from then on
-//      the page saves the chat at that level, and a second message goes by
-//      `chat_send`;
+//   D. a chat saved at read whose agent is STAR LEAD, opened by link and sent
+//      to: the page's `chat_start` carries the saved level (read), the page
+//      sends no `chat_set_access`, and it saves the chat at no other level,
+//      then or on the next message (which goes by `chat_send`);
 //   E. the same chat only opened, with the roster read: nothing above read
 //      is saved for it (the page works no level out);
-//   F. the same chat open while the host's index moves to another level, with
-//      no event heard: the row wins, and the next start carries it.
-// Over the whole run: `handover_discuss` and `chat_set_access` are never
-// sent, and the only chats the page starts at read are the front desk's own
-// (registered at read) and the one saved at read (D).
+//   G. an ordinary chat running at Auto, where the person picks Plan on the
+//      access picker: the page sends that one `chat_set_access`. A stray
+//      `chat-access-changed` naming Auto (during the request and after it)
+//      and a chat-list answer naming Auto change nothing: the picker still
+//      says Plan, and once the process has ended the next message's
+//      `chat_start` carries read. The page has no listener for that event;
+//      this fails if one is put back (review 25fa12, R1).
+// Over the whole run: `handover_discuss` is never sent, the only
+// `chat_set_access` is the person's own pick in G, and the only chats the page
+// starts at read are the front desk's own (registered at read), the one saved
+// at read (D) and the one the person put on Plan (G).
 //
 // The socket is mocked: no message reaches a live agent, and the host's
-// answers are stand-ins. In particular the raise in D is this script's
-// stand-in for `agent_chat::start_session`, not the host's own code: this is
-// the page's half of the contract only. Every interaction goes through App.tsx, the
-// Composer and the card. It serves this checkout's `web/` with Vite's own
-// dev server on a free loopback port: no build, no `web/dist`, no service.
+// answers are stand-ins that raise nothing. This is the page alone. Every
+// interaction goes through App.tsx, the Composer and the card. It serves this
+// checkout's `web/` with Vite's own dev server on a free loopback port: no
+// build, no `web/dist`, no service.
 //
 // Run:
 //   PLAYWRIGHT_MODULE=<playwright/index.mjs> [PLAYWRIGHT_CHANNEL=chrome] \
@@ -78,6 +82,9 @@ assert.equal(SETTINGS.access, "auto", "the fixture's route runs at the agent's r
 const routed = { id: "routed-1", projectId: "starfall", title: "Discuss the Starfall 小剧场 series", modelId: "claude:opus", access: SETTINGS.access, createdAt: now, updatedAt: now };
 // A chat with the same agent that an earlier discussion left saved at read.
 const left = { id: "left-1", projectId: "starfall", title: "Talked through the 小剧场 pilot", modelId: "claude:opus", access: "read", createdAt: now - 50_000, updatedAt: now - 50_000 };
+// An ordinary chat: no agent is registered for it, so its composer has the
+// access picker, and its level is the person's own pick.
+const plain = { id: "plain-1", projectId: "starfall", title: "Tidy the build script", modelId: "claude:opus", access: "auto", createdAt: now - 40_000, updatedAt: now - 40_000 };
 const leadOf = (chat) => ({ chatKey: `chat:${chat.id}`, leadId: lead.id, leadName: lead.name, projectId: "starfall", createdAt: chat.createdAt });
 const routeRecord = (sourceChatKey, extra = {}, route = {}) => ({
   kind: "route",
@@ -107,7 +114,9 @@ const frames = (key) => key === `chat:${routed.id}`
   ? said(routed.id, `${BRIEF}\n${NOTE}\n\n=== OctiqFlow agents mode ===\nLead: STAR LEAD`, "Happy to brainstorm. Which episode should we start from?")
   : key === `chat:${left.id}`
     ? said(left.id, "Let's talk the 小剧场 pilot through before anyone writes it.", "The pilot needs a colder open. Shall I draft one?")
-    : [];
+    : key === `chat:${plain.id}`
+      ? said(plain.id, "Tidy the build script.", "Tidied: the two dead targets are gone.")
+      : [];
 
 const calls = [];
 const errors = [];
@@ -140,10 +149,12 @@ function resultFor(request) {
     case "git_local_branches": return { is_repo: false, current: "", branches: [], is_worktree: false };
     case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }];
     case "agent_history_list": return [];
+    // Asked when a picker opens (G): the page's own list, nothing discovered.
+    case "agent_models": return { source: "bundled", models: [] };
     case "team_list": return args.all ? roster : roster.filter((a) => !a.projectId || a.projectId === args.projectId);
     case "team_head": return roster[0];
     case "team_front_desk": return desk;
-    case "team_leads": return host.index.map(leadOf);
+    case "team_leads": return host.index.filter((chat) => chat.id !== plain.id).map(leadOf);
     case "team_home": return "general";
     case "agent_team_list": return [];
     case "team_brief": return `${args.task}\n\n=== OctiqFlow agents mode ===\nFront desk: Front desk`;
@@ -162,17 +173,12 @@ function resultFor(request) {
     // The front desk is not in the checkout; any other chat meets the writer.
     case "chat_start":
       if (host.writer && !deskKeys.has(args.key)) throw new Error(WRITER);
-      // The host's half, stood in for: a registered agent's own conversation
-      // is started at no less than the agent's registered access. The host
-      // writes that level to the chat's index entry and says it to every page.
-      // `chat-access-changed` is the only thing it says here: nothing asks
-      // the page to read the chat list again, so what the page holds after
-      // this is the event's doing and not a row's (F is the row alone).
-      if (host.raises && args.key === `chat:${left.id}` && args.access !== lead.access) {
-        host.index = host.index.map((chat) => (chat.id === left.id ? { ...chat, access: lead.access } : chat));
-        emit("chat-access-changed", { chatKey: args.key, access: lead.access });
-        host.raisedAt = calls.length;
-      }
+      return null;
+    // The person's pick is made, and (G) an older frame naming another level
+    // goes out ahead of the answer: the page gets it while its own request is
+    // still in the air.
+    case "chat_set_access":
+      if (host.stray) emit("chat-access-changed", { chatKey: args.key, access: host.stray });
       return null;
     case "chat_task": return { chatId: args.chatId, projectId: "starfall" };
     case "codex_skills": return [];
@@ -213,9 +219,9 @@ try {
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
   });
   const base = `http://127.0.0.1:${server.httpServer.address().port}/`;
-  const open = async (width, height, touch, { hash = "#/p/starfall", index = [], writer = false, raises = false } = {}) => {
+  const open = async (width, height, touch, { hash = "#/p/starfall", index = [], writer = false, stray = "" } = {}) => {
     sockets.clear();
-    host = { index, writer, raises, raisedAt: null, deskKey: "" };
+    host = { index, writer, stray, deskKey: "" };
     const context = await browser.newContext({
       viewport: { width, height }, reducedMotion: "reduce", colorScheme: "dark",
       ...(touch ? { hasTouch: true, isMobile: true, deviceScaleFactor: 2 } : {}),
@@ -416,50 +422,45 @@ try {
   /** The agent's answer to a turn the page started or sent, as the host
    *  streams it: the chat's record goes on from where the replay ended. */
   let seq = 3;
-  const answer = (turn, reply) => [
+  const answer = (key, turn, reply) => [
     { type: "user", isReplay: true, uuid: `echo-${turn.turnId}`, octiq_user_turn_id: turn.turnId, message: { role: "user", content: [{ type: "text", text: turn.prompt ?? turn.text }] } },
     { type: "assistant", message: { id: `m-${turn.turnId}`, role: "assistant", content: [{ type: "text", text: reply }] } },
     { type: "result", subtype: "success", result: reply },
-  ].forEach((event) => emit("chat-event", { key: `chat:${left.id}`, seq: (seq += 1), event }));
+  ].forEach((event) => emit("chat-event", { key, seq: (seq += 1), event }));
 
-  // D. A chat an earlier discussion left saved at read. The page sends the
-  //    level it has saved; the host starts the process at the agent's level
-  //    and says so; the page holds, and saves, that level from then on.
+  // D. A chat saved at read whose agent is STAR LEAD. The page sends the
+  //    level it has saved, switches nothing and works nothing out. The raise
+  //    to the agent's registered level is the host's, in `start_session`, and
+  //    is not this script's to show: the mocked host raises nothing and says
+  //    nothing, so every level seen here is the page's own doing.
   for (const [width, height, touch] of sizes) {
     seq = 3;
     const section = calls.length;
-    const { page, context } = await openLeft(width, height, touch, { raises: true });
+    const { page, context } = await openLeft(width, height, touch);
     let mark = calls.length;
     await page.locator("textarea").fill("Yes, draft the colder open");
     await page.locator("button.send").click();
     const [start] = await waitFor(page, () => since(mark, "chat_start").length && since(mark, "chat_start"), "chat_start");
     assert.equal(start.key, `chat:${left.id}`);
     assert.equal(start.access, "read", "the page sends the level it has saved, and raises nothing itself");
-    assert.deepEqual([...new Set(savedLevels(mark, left.id).slice(0, 1))], ["read"], "saved, before the start, at the level it sends");
-    assert.notEqual(host.raisedAt, null, "the mocked host started it at the agent's level and said so");
-    // What the page saves once the host has said the level the process runs at.
-    const raised = host.raisedAt;
-    answer(start, "Here is a colder open: the hangar, lights off.");
+    answer(start.key, start, "Here is a colder open: the hangar, lights off.");
     await page.locator(".msg").filter({ hasText: "the hangar, lights off" }).first().waitFor();
-    await waitFor(page, () => savedLevels(raised, left.id).length, "the chat's index entry after the host said its level");
-    assert.deepEqual([...new Set(savedLevels(raised, left.id))], [lead.access], "the page saves the level the host said");
     await page.screenshot({ path: join(artifacts, `left-at-read-${width}.png`) });
 
-    // A second message is the next turn of the same process: `chat_send`,
-    // and the entry the send writes carries the level the host said.
+    // A second message is the next turn of the same process: `chat_send`.
     mark = calls.length;
     await page.locator("textarea").fill("Shorter, please");
     await page.locator("button.send").click();
     const [next] = await waitFor(page, () => since(mark, "chat_send").length && since(mark, "chat_send"), "chat_send");
     assert.equal(next.key, `chat:${left.id}`);
     assert.deepEqual(since(mark, "chat_start"), [], "no second start");
-    answer(next, "The hangar. Dark.");
+    answer(next.key, next, "The hangar. Dark.");
     await page.locator(".msg").filter({ hasText: "The hangar. Dark." }).first().waitFor();
-    await waitFor(page, () => savedLevels(mark, left.id).length, "the entry the second send writes");
     await page.waitForTimeout(1200);
-    assert.deepEqual([...new Set(savedLevels(mark, left.id))], [lead.access], "still saved at the level the host said");
+    const saved = savedLevels(section, left.id);
+    assert(saved.length > 0 && saved.every((access) => access === "read"), `the page saves the chat at the level it holds, and no other: ${saved}`);
     assert.deepEqual(since(section, "chat_start").length, 1, "one start in all");
-    assert.deepEqual(since(section, "chat_set_access"), [], "the event causes no command");
+    assert.deepEqual(since(section, "chat_set_access"), [], "the page switches no level");
     await context.close();
   }
 
@@ -480,33 +481,103 @@ try {
     await context.close();
   }
 
-  // F. The same chat open while the host's index moves to another level and
-  //    this page hears no event of it (it was not connected when the process
-  //    was started): the host's row wins over the level the page cached.
+  /** The access picker of an ordinary chat: in the composer's bar where it
+   *  fits, behind the settings sheet where it does not. */
+  const inBar = (page) => page.locator('.picker-btn[class*="perm-"]').isVisible();
+  const openAccessSheet = async (page) => {
+    await page.locator(".settings-toggle").click();
+    await page.locator(".sheet-link", { hasText: "Access" }).waitFor();
+  };
+  const shutSheet = async (page) => {
+    await page.locator(".sheet-scrim").click({ position: { x: 8, y: 8 } });
+    await page.locator(".sheet-scrim").waitFor({ state: "detached" });
+  };
+  const levelShown = async (page) => {
+    if (await inBar(page)) return (await page.locator('.picker-btn[class*="perm-"]').innerText()).replace(/[▾\s]+$/, "").trim();
+    await openAccessSheet(page);
+    const shown = (await page.locator(".sheet-link", { hasText: "Access" }).locator(".sheet-link-value").innerText()).trim();
+    await shutSheet(page);
+    return shown;
+  };
+  const pickLevel = async (page, label) => {
+    const bar = await inBar(page);
+    if (bar) await page.locator('.picker-btn[class*="perm-"]').click();
+    else {
+      await openAccessSheet(page);
+      await page.locator(".sheet-link", { hasText: "Access" }).click();
+    }
+    await page.getByRole("menuitem", { name: new RegExp(`^${label}\\b`) }).click();
+    if (!bar) await shutSheet(page);
+  };
+
+  // G. The person's pick is not overwritten by an older level (review
+  //    25fa12, R1). An ordinary chat runs at Auto; the person picks Plan; an
+  //    older `chat-access-changed` naming Auto arrives while that request is
+  //    in the air and again after it, and so does a chat-list answer naming
+  //    Auto; the process ends; the person sends. The page listens for no such
+  //    event, so the picker stays on Plan and the next process is asked read.
   for (const [width, height, touch] of sizes) {
-    const { page, context } = await openLeft(width, height, touch);
-    await page.waitForTimeout(1000);
-    host.index = [{ ...left, access: lead.access }];
-    emit("chat-index-changed", { id: left.id, gone: false });
-    await page.waitForTimeout(1200);
-    const mark = calls.length;
-    await page.locator("textarea").fill("Pick this up again");
+    seq = 3;
+    const section = calls.length;
+    const key = `chat:${plain.id}`;
+    const { page, context } = await open(width, height, touch, { hash: `#/p/starfall/c/${plain.id}`, index: [plain], stray: "auto" });
+    await page.locator(".msg").filter({ hasText: "two dead targets" }).first().waitFor();
+    assert.equal(await page.locator(".composer-identity-name").count(), 0, "an ordinary chat: no agent's name on the composer");
+    assert.equal(await levelShown(page), "Auto", "the chat opens at the level it was saved at");
+
+    // Running at Auto.
+    let mark = calls.length;
+    await page.locator("textarea").fill("Run the build");
     await page.locator("button.send").click();
-    const [start] = await waitFor(page, () => since(mark, "chat_start").length && since(mark, "chat_start"), "chat_start");
-    assert.equal(start.access, lead.access, "the start carries the level on the host's row");
-    assert.deepEqual([...new Set(savedLevels(mark, left.id))], [lead.access], "and the page saves that level");
+    const [first] = await waitFor(page, () => since(mark, "chat_start").length && since(mark, "chat_start"), "chat_start");
+    assert.equal(first.key, key);
+    assert.equal(first.access, "auto");
+    answer(key, first, "The build passes.");
+    await page.locator(".msg").filter({ hasText: "The build passes." }).first().waitFor();
+
+    // The person picks Plan. The mocked host sends the older frame ahead of
+    // its answer (`resultFor`), then again, then a chat list still at Auto.
+    mark = calls.length;
+    await pickLevel(page, "Plan");
+    const [picked] = await waitFor(page, () => since(mark, "chat_set_access").length && since(mark, "chat_set_access"), "the person's chat_set_access");
+    assert.deepEqual(picked, { key, access: "read" });
+    emit("chat-access-changed", { chatKey: key, access: "auto" });
+    emit("chat-index-changed", { id: plain.id, gone: false });
+    await waitFor(page, () => since(mark, "chat_index_list").length, "the chat list read again");
+    await page.waitForTimeout(1200);
+    assert.equal(await levelShown(page), "Plan", "the picker keeps the level the person picked");
+    await noSidewaysScroll(page, width);
+    await page.screenshot({ path: join(artifacts, `picked-plan-${width}.png`) });
+
+    // The process ends, and the person sends: the next one is asked read.
+    emit("chat-status", { key, kind: "exit", text: "", code: 0 });
+    await page.waitForTimeout(500);
+    mark = calls.length;
+    await page.locator("textarea").fill("Now plan the release");
+    await page.locator("button.send").click();
+    const [next] = await waitFor(page, () => since(mark, "chat_start").length && since(mark, "chat_start"), "the next chat_start");
+    assert.equal(next.key, key);
+    assert.equal(next.access, "read", "the next process is asked the level the person picked");
+    assert.equal(await levelShown(page), "Plan", "and the picker still says Plan");
+    assert.deepEqual(since(section, "chat_set_access"), [{ key, access: "read" }], "one switch: the person's");
     await context.close();
   }
 
   // Over the whole run.
   assert.deepEqual(calls.filter((call) => call.cmd === "handover_discuss"), [], "handover_discuss is never sent");
-  assert.deepEqual(calls.filter((call) => call.cmd === "chat_set_access"), [], "no chat's level is switched");
+  assert.deepEqual(
+    calls.filter((call) => call.cmd === "chat_set_access").map((call) => call.args),
+    sizes.map(() => ({ key: `chat:${plain.id}`, access: "read" })),
+    "the only level switched is the one the person picked (G)",
+  );
   const readStarts = calls.filter((call) => call.cmd === "chat_start" && call.args.access === "read");
-  const savedAtRead = readStarts.filter((call) => call.args.key === `chat:${left.id}`);
-  assert.equal(savedAtRead.length, sizes.length, "the chat saved at read is started at read once per width (D)");
-  assert(readStarts.length > savedAtRead.length
-    && readStarts.every((call) => deskKeys.has(call.args.key) || call.args.key === `chat:${left.id}`),
-    `only the front desk's own chat and the chat saved at read start at read: ${readStarts.map((call) => call.args.key)}`);
+  const own = [`chat:${left.id}`, `chat:${plain.id}`];
+  for (const key of own) {
+    assert.equal(readStarts.filter((call) => call.args.key === key).length, sizes.length, `${key} is started at read once per width`);
+  }
+  assert(readStarts.some((call) => deskKeys.has(call.args.key))
+    && readStarts.every((call) => deskKeys.has(call.args.key) || own.includes(call.args.key)),
+    `only the front desk's own chat, the chat saved at read (D) and the chat the person put on Plan (G) start at read: ${readStarts.map((call) => call.args.key)}`);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, widths: sizes.map(([width]) => width), artifacts }));
 } catch (error) {

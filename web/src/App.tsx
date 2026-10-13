@@ -59,7 +59,6 @@ import {
   removeIndexEntry,
   saveIndexEntry,
   saveIndexEntries,
-  saveMark,
   setChatDone,
   type DeletedIndexEntry,
   type IndexEntry,
@@ -226,7 +225,6 @@ import {
   type ChatQueueState,
 } from "./lib/recovery";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage, unconfirmedSend } from "./lib/messageQueue";
-import { ACCESS_CHANGED, accessWord, aheadOfRow, levelFromRow, mirrorAccess } from "./lib/chatAccess";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
 import {
@@ -1339,11 +1337,6 @@ export default function App() {
   // The browser's own chats are now kept, and the next save re-offers them to
   // the index.
   const refreshIndex = useCallback(() => {
-    // What this page holds of each loaded chat's level as it asks, so an
-    // answer older than the page's own word is not taken for news of it.
-    const asked = new Map(
-      Object.entries(meta.current).map(([id, held]) => [id, { held: held.access, ...saveMark(id) }]),
-    );
     // Trash is a second view of the same server-side index. Read both views as
     // one refresh so a row found in Trash can never be folded back in from an
     // active-list reply that raced the delete.
@@ -1453,28 +1446,6 @@ export default function App() {
           ) {
             forgetLocally(c.id);
           }
-        }
-        // The level kept with a loaded chat follows its row (`levelFromRow`).
-        // The host writes the level a process was started at to the index;
-        // a page that did not hear it say so (it was not connected) would
-        // otherwise send its older level, and save it back over the host's.
-        for (const row of remote) {
-          const held = meta.current[row.id];
-          if (!held) continue;
-          const agent = (modelFromId(held.modelId) ?? MODELS[0]).agent;
-          const said = accessWord(row.access);
-          const cached = conversationsRef.current.find((c) => c.id === row.id);
-          const sending = sendingTurns.current.size > 0
-            && (chatsRef.current[row.id]?.messages ?? []).some((m) => !!m.turnId && sendingTurns.current.has(m.turnId));
-          const level = levelFromRow(
-            said && accessFor(agent, said),
-            held.access,
-            cached && accessFor(agent, (cached.permission as AccessLevel) ?? "read"),
-            aheadOfRow(asked.get(row.id), { held: held.access, ...saveMark(row.id) }, sending),
-          );
-          if (!level) continue;
-          held.access = level;
-          if (row.id === visibleRef.current) setAccess(level);
         }
         setConversations((local) => {
           const byId = new Map(local.map((c) => [c.id, c]));
@@ -1816,30 +1787,6 @@ export default function App() {
         },
       ),
     [patch],
-  );
-
-  // The level a chat's process really runs at is the host's to say, on
-  // `chat-access-changed` (`lib/chatAccess`). A mirror: what this page holds
-  // of the chat is brought to it, and nothing is sent. The index entry is the
-  // host's own write; the page's ordinary save then carries the same level.
-  useEffect(
-    () =>
-      bridge.on(ACCESS_CHANGED, (payload) => {
-        const change = mirrorAccess(payload, (id) => {
-          const row = conversationsRef.current.find((c) => c.id === id);
-          return { held: meta.current[id]?.access, listed: !!row, row: row?.permission };
-        }, visibleRef.current);
-        if (!change) return;
-        if (change.held) meta.current[change.id].access = change.access;
-        if (change.composer) setAccess(change.access);
-        if (change.listed) setConversations((current) => {
-          if (!current.some((c) => c.id === change.id && c.permission !== change.access)) return current;
-          const list = current.map((c) => (c.id === change.id ? { ...c, permission: change.access } : c));
-          saveConversations(list);
-          return list;
-        });
-      }),
-    [],
   );
 
   // The commands a session reports at startup, kept per PROJECT AND PROVIDER.

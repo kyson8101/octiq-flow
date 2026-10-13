@@ -12,7 +12,6 @@ import {
   resetIndexQueue,
   saveIndexEntry,
   saveIndexEntries,
-  saveMark,
   setChatDone,
 } from "./chatIndex";
 import type { Conversation } from "./store";
@@ -317,31 +316,5 @@ describe("backfilling browser-only chats", () => {
       { meta: entry("c2") },
       { meta: entry("c3") },
     ]);
-  });
-});
-
-// What `chatAccess.aheadOfRow` compares either side of a `chat_index_list`.
-describe("where this page's saves of a chat stand", () => {
-  it("counts each save and says whether the newest is unconfirmed", async () => {
-    expect(saveMark("c1")).toEqual({ saves: 0, owed: false });
-
-    invoke.mockReturnValue(unanswered());
-    saveIndexEntry(entry("c1"));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(saveMark("c1")).toEqual({ saves: 1, owed: true });
-    expect(saveMark("c2")).toEqual({ saves: 0, owed: false });
-
-    invoke.mockResolvedValue(undefined);
-    saveIndexEntry(entry("c1"));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(saveMark("c1")).toEqual({ saves: 2, owed: false });
-  });
-
-  it("does not call a removal a save that is owed, or count a save the removal kept out", async () => {
-    invoke.mockReturnValue(unanswered());
-    removeIndexEntry("c1", "chat:c1");
-    saveIndexEntry(entry("c1"));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(saveMark("c1")).toEqual({ saves: 0, owed: false });
   });
 });
