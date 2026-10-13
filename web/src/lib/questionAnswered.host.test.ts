@@ -4,13 +4,13 @@
 // waits, the host writes one `octiq_question_answered` event into the chat's
 // record (docs/question-delivery.md, The answered line). These are the two
 // lines the host's own tests wrote (`__fixtures__/host`, never hand-edited),
-// read as the type the page has for them. Nothing draws the line yet: the
-// last test holds that a page built before it does is unchanged by it.
+// read as the type the page has for them, and reduced into the transcript
+// item the page draws the answered question from.
 import { describe, expect, it } from "vitest";
 
 import { emptyChat, reduceChat } from "./chat";
 import { hostFacts } from "./__fixtures__/hostFacts";
-import { QUESTION_ANSWERED, type QuestionAnswered } from "./question";
+import { answeredMessageId, QUESTION_ANSWERED, type QuestionAnswered } from "./question";
 import { ANSWER_TURN_PREFIX, isAnswerTurn } from "./questionBlock";
 
 const both = (): [string, QuestionAnswered][] => [
@@ -62,10 +62,13 @@ describe("octiq_question_answered, as the host serialises it", () => {
     }
   });
 
-  it("changes nothing on a page that does not draw it yet", () => {
+  it("is one item of the transcript, which the page draws the answered question from", () => {
+    // What is drawn from it is `components/InlineQuestions.answered.test.tsx`.
     for (const [, line] of both()) {
-      const before = emptyChat();
-      expect(reduceChat(before, line)).toBe(before);
+      const after = reduceChat(emptyChat(), line);
+      expect(after.messages).toEqual([{ id: answeredMessageId(line.id), role: "assistant", streaming: false, blocks: [{ kind: "answered", answered: line }] }]);
+      // Heard again (a write that failed is tried and said again): one item.
+      expect(reduceChat(after, line)).toBe(after);
     }
   });
 });

@@ -17,33 +17,76 @@
 //   anything this page remembers, so a reload and a second tab draw the same.
 import { askAnswer, readOne, type AskItem } from "./askAnswer";
 import type { Message } from "./chat";
-import type { Question } from "./question";
+import type { Question, QuestionAnswered } from "./question";
 import { choicesOf, composeAnswer } from "./questionAnswer";
 
 /* ---- Batches ------------------------------------------------------------ */
 
 /** The questions of one `ask_user` call: one block, one button. */
-export type Batch = { key: string; questions: Question[] };
+export type Batch = {
+  key: string;
+  questions: Question[];
+  /** How many questions of the call have not reached this page yet. The
+   *  host says how many a call carried (`batchSize`) and sends them one
+   *  event each, so a block can be on screen before its last question is.
+   *  It is not whole, and not to be sent, until this is zero. */
+  missing: number;
+};
+
+/** The questions of each call that this page has ever been told of, by the
+ *  call. A question the page dropped itself (an older host keeps no record
+ *  of an answer, so the page takes it off its own list) has still arrived:
+ *  what is left of its call is whole, and must stay answerable. In memory;
+ *  a reload starts from what the host lists. */
+const arrived = new Map<string, Set<string>>();
 
 /** A chat's pending questions as the calls that asked them, oldest first. A
  *  question with no `batch` was asked alone. */
 export function batchesOf(questions: readonly Question[]): Batch[] {
-  const out = new Map<string, Batch>();
+  const out = new Map<string, Batch & { size: number }>();
   for (const question of questions) {
     if (!question?.id) continue;
     const key = question.batch || question.id;
+    const size = question.batch && typeof question.batchSize === "number" ? question.batchSize : 1;
+    let seen = arrived.get(key);
+    if (!seen) arrived.set(key, seen = new Set());
+    seen.add(question.id);
     const batch = out.get(key);
-    if (batch) batch.questions.push(question);
-    else out.set(key, { key, questions: [question] });
+    if (batch) {
+      batch.questions.push(question);
+      batch.size = Math.max(batch.size, size);
+    } else out.set(key, { key, questions: [question], missing: 0, size });
   }
-  return [...out.values()];
+  return [...out.values()].map(({ size, ...batch }) => ({ ...batch, missing: Math.max(0, size - (arrived.get(batch.key)?.size ?? 0)) }));
 }
 
-/** Whether a batch still asks: any of its questions has no answer yet. A
- *  status-less question comes from a host older than the durable store,
- *  which only ever lists unanswered ones. */
+/** Whether one question still has no answer. A status-less question comes
+ *  from a host older than the durable store, which only ever lists
+ *  unanswered ones. */
+export function unanswered(question: Question): boolean {
+  return question.answer === undefined && (question.status === undefined || question.status === "pending");
+}
+
+/** Whether a batch still asks: any of its questions has no answer yet. */
 export function asks(batch: Batch): boolean {
-  return batch.questions.some((q) => q.answer === undefined && (q.status === undefined || q.status === "pending"));
+  return batch.questions.some(unanswered);
+}
+
+/** A batch as its block draws it, part by part. The host takes the answers
+ *  of a call one question at a time and wakes the agent only when every one
+ *  is in, so a call can be half answered: by another tab, by a page that
+ *  sent before the last question arrived, by a record read back after a
+ *  reload. Whatever was answered is said, and whatever was not is asked:
+ *  nothing this page sent earlier stands in for a question with no answer.
+ *
+ *  - `said`: the questions that have an answer, the host's or the one this
+ *    page just sent (`sentIds`) and has not heard back about.
+ *  - `open`: the questions still to answer here. */
+export function batchParts(batch: Batch, sentIds: readonly string[] = []): { said: Question[]; open: Question[] } {
+  const said: Question[] = [];
+  const open: Question[] = [];
+  for (const question of batch.questions) (unanswered(question) && !sentIds.includes(question.id) ? open : said).push(question);
+  return { said, open };
 }
 
 /* ---- Where a batch is drawn --------------------------------------------- */
@@ -231,7 +274,10 @@ export function pickAnswer(question: Question, pick: Picked): string {
 
 /** Why the button is off, in words, or `null` when every question has an
  *  answer. */
-export function submitReason(questions: readonly Question[], picks: Readonly<Record<string, Picked>>): string | null {
+export function submitReason(questions: readonly Question[], picks: Readonly<Record<string, Picked>>, missing = 0): string | null {
+  // Before anything about the answers: a call whose questions have not all
+  // arrived is not to be sent, whatever is already selected.
+  if (missing > 0) return readingReason(questions.length, questions.length + missing);
   const open = questions.filter((q) => !pickAnswer(q, picks[q.id] ?? startPick(q)));
   if (!open.length) return null;
   if (questions.length === 1) {
@@ -242,6 +288,11 @@ export function submitReason(questions: readonly Question[], picks: Readonly<Rec
   return open.length === questions.length
     ? `Answer all ${questions.length} questions to send them.`
     : `${open.length} of ${questions.length} questions still ${open.length === 1 ? "needs" : "need"} an answer.`;
+}
+
+/** Why a block whose call has not wholly arrived cannot be sent. */
+export function readingReason(here: number, of: number): string {
+  return `Still reading the questions: ${here} of ${of} ${here === 1 ? "has" : "have"} arrived.`;
 }
 
 /* ---- What the answer bubble says ----------------------------------------- */
@@ -276,11 +327,88 @@ export function waitingLabel(count: number): string {
 
 /** What became of answers the host still lists: never "saved" for what is
  *  not on disk. `null` while the batch still asks. */
-export function answeredNote(batch: Batch): { title: string; tone: "quiet" | "warn"; why?: string } | null {
-  if (asks(batch)) return null;
+export function answeredNote(batch: Pick<Batch, "questions">): { title: string; tone: "quiet" | "warn"; why?: string } | null {
+  if (batch.questions.some(unanswered)) return null;
   const failed = batch.questions.find((q) => q.error || q.status === "failed");
   if (failed) return { title: "Answers need attention", tone: "warn", why: failed.error };
   const unsaved = batch.questions.find((q) => q.status === "delivered" || q.unsaved !== undefined);
   if (unsaved) return { title: "Answers sent · not saved", tone: "warn", why: unsaved.unsaved || undefined };
   return { title: "Answers saved · waiting for the agent", tone: "quiet" };
+}
+
+/** What is said of the answered part of a call that still asks: the agent
+ *  has nothing yet, because the host hands a call's answers over together.
+ *  Never "saved": the host calls a record saved only when it is whole. */
+export function partNote(said: number, open: number): { title: string; tone: "quiet" } {
+  const rest = open === 1 ? "1 more question" : `${open} more questions`;
+  return { title: `${said === 1 ? "Answered" : `${said} answered`} · the agent waits for ${rest}`, tone: "quiet" };
+}
+
+/* ---- A delivered question, from the chat's record ------------------------ */
+
+/** Where each delivered question of these messages is drawn.
+ *
+ *  When an answer is handed to the agent while its call waits, the host
+ *  writes one `octiq_question_answered` line into the chat's record
+ *  (docs/question-delivery.md, The answered line), and `question-expired`
+ *  then takes the question off every page. That line is what the page draws
+ *  the answered question and the person's bubble from, so they are the same
+ *  after delivery, after a reload and in a second tab.
+ *
+ *  One rule for every line, whichever way the answer went: it is attached
+ *  to the `ask_user` call these messages hold for it, and otherwise drawn
+ *  where the line stands. Attached, the call draws the answer and the line
+ *  draws nothing, so a question answered through the tool is drawn once
+ *  (its result carries the same answers). The host's turn for the same
+ *  record (`octiq-question-<id>`, the rare record that has both) wins too. */
+export type AnsweredPlacement = {
+  /** The answers of the line attached to each call, by the call's id. */
+  byTool: ReadonlyMap<string, AskItem[]>;
+  /** The lines drawn where they stand, by the record's id. */
+  atLine: ReadonlySet<string>;
+  /** Every listed question these lines answer (`Question.id`): the record
+   *  is the line now, and a pending copy of it is not drawn beside it. */
+  ids: ReadonlySet<string>;
+};
+
+/** A line's questions as the bubble reads them. */
+export function answeredItems(line: QuestionAnswered): AskItem[] {
+  return line.questions.map((q) => ({ question: q.question, answer: q.answer }));
+}
+
+export function placeAnswered(messages: readonly Message[]): AnsweredPlacement {
+  const byTool = new Map<string, AskItem[]>();
+  const atLine = new Set<string>();
+  const ids = new Set<string>();
+  let turns: Set<string> | null = null;
+  /** The main agent's `ask_user` calls so far, by the words they asked. */
+  const calls = new Map<string, string[]>();
+  for (const message of messages) {
+    if (message.role !== "assistant" || message.parent) continue;
+    for (const block of message.blocks) {
+      if (block.kind === "tool") {
+        if (block.state === "error") continue;
+        const read = askAnswer(block.name, block.args, block.result);
+        if (!read?.length) continue;
+        const key = wordsKey(read.map((item) => item.question));
+        const list = calls.get(key);
+        if (list) list.push(block.id);
+        else calls.set(key, [block.id]);
+        continue;
+      }
+      if (block.kind !== "answered") continue;
+      const line = block.answered;
+      for (const question of line.questions) ids.add(question.id);
+      // The same record's late answer, as the host's turn, is the bubble.
+      turns ??= new Set(messages.flatMap((m) => (m.role === "user" && isAnswerTurn(m.turnId) ? [m.turnId!] : [])));
+      if (turns.has(`${ANSWER_TURN_PREFIX}${line.id}`)) continue;
+      // The newest call before the line that asked these words and has no
+      // line yet: the line is written between a call and its result.
+      const open = calls.get(wordsKey(line.questions.map((q) => q.question)));
+      const toolId = open?.pop();
+      if (toolId) byTool.set(toolId, answeredItems(line));
+      else atLine.add(line.id);
+    }
+  }
+  return { byTool, atLine, ids };
 }

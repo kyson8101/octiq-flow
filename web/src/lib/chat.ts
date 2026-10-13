@@ -54,6 +54,7 @@ import { readChatServiceResumed } from "./carryOn";
 import { readRelay } from "./relay";
 import { mergeMemoryActivity, readMemoryActivity, type MemoryActivity } from "./memoryActivity";
 import { readTaskReopened, type TaskReopened } from "./taskReopened";
+import { answeredMessageId, QUESTION_ANSWERED, readQuestionAnswered, type QuestionAnswered } from "./question";
 import { taskLabel, type BackgroundTask } from "./background";
 import { outcomeOfResult, readOutcome, type ToolOutcome } from "./toolOutcome";
 
@@ -118,6 +119,12 @@ export type Block =
    *  new instructions and no new approval. One folded line; the instructions
    *  are behind it (`components/ReopenedNote`). */
   | { kind: "reopened"; reopened: TaskReopened }
+  /** The host's record of a question whose answer was handed to the agent
+   *  while its call waited (`octiq_question_answered`). What was asked and
+   *  what the person said, drawn where the line stands unless an `ask_user`
+   *  call of the transcript is this question's
+   *  (`lib/questionBlock.placeAnswered`). Not a message of anybody's. */
+  | { kind: "answered"; answered: QuestionAnswered }
   | { kind: "thinking"; text: string }
   | {
       kind: "tool";
@@ -1185,6 +1192,22 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
         ...state.messages,
         { id: reopened.id, role: "assistant", blocks: [{ kind: "reopened", reopened }], streaming: false },
       ],
+    };
+  }
+
+  // An answer was handed to the agent while its question's call waited. The
+  // host keeps what was asked and answered in the chat's record, because
+  // nothing else a transcript holds does (a provider's own question has no
+  // tool call here, and `question-expired` takes it off every page). One
+  // item for a record: the same line can be heard twice.
+  if (type === QUESTION_ANSWERED) {
+    const answered = readQuestionAnswered(e);
+    if (!answered) return state;
+    const id = answeredMessageId(answered.id);
+    if (state.messages.some((m) => m.id === id)) return state;
+    return {
+      ...state,
+      messages: [...state.messages, { id, role: "assistant", blocks: [{ kind: "answered", answered }], streaming: false }],
     };
   }
 

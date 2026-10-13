@@ -22,19 +22,26 @@
 //   that repeats the one made before the block was there (`lib/pressGuard`).
 // - Answered, the questions become a quiet line and the answer is the
 //   person's bubble under it. The bubble is drawn from what the host holds
-//   (the question's record, the call's result, the host's own answer turn):
-//   it is the same after a reload and in a second tab. It is not a message:
-//   it has no edit, no retry, no take-back, and never goes to the composer.
+//   (the question's record while it is listed, the call's result, the
+//   host's `octiq_question_answered` line in the chat's record, the host's
+//   own answer turn): it is the same after delivery, after a reload and in
+//   a second tab. What this page remembers of an answer it just sent is
+//   shown only until the host's word arrives, and never stands in for a
+//   question that has no answer. It is not a message: it has no edit, no
+//   retry, no take-back, and never goes to the composer.
+// - A block is whole before it can be sent. The host says how many
+//   questions a call carried and sends them one event each; until the last
+//   has arrived the button is off and says it is still reading them.
 import { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import type { AskItem } from "../lib/askAnswer";
 import { bridge } from "../lib/bridge";
 import { questionActions } from "../lib/pendingActions";
 import { dropHeld, lastPointerPress, strayAnswer } from "../lib/pressGuard";
-import type { Question } from "../lib/question";
+import type { Question, QuestionAnswered } from "../lib/question";
 import { choicesOf, togglePick } from "../lib/questionAnswer";
 import {
-  answeredNote, asks, pickAnswer, saidLines, startPick, submitReason, waitingLabel,
-  type Batch, type Picked, type Placement, type Said,
+  answeredItems, answeredNote, asks, batchParts, partNote, pickAnswer, saidLines, startPick, submitReason, waitingLabel,
+  type AnsweredPlacement, type Batch, type Picked, type Placement, type Said,
 } from "../lib/questionBlock";
 import { hiddenNow, revealWaiting, subscribeSight, watchBlock } from "../lib/questionSight";
 import {
@@ -68,16 +75,32 @@ export type AskPlaces = {
 };
 export const AskPlacesContext = createContext<AskPlaces | null>(null);
 
+/** Where each delivered question of the transcript is drawn
+ *  (`lib/questionBlock.placeAnswered`). Provided for every transcript, the
+ *  ones nobody can answer in too: a record is read, not answered. */
+export const AnsweredPlacesContext = createContext<AnsweredPlacement | null>(null);
+
 /* ---- The block that asks -------------------------------------------------- */
 
-type Sent = { items: AskItem[]; receipt: QuestionReceipt };
+/** What this page just sent, until the host's own word for it arrives:
+ *  which questions, what was said, and what the host answered. */
+type Sent = { ids: string[]; items: AskItem[]; receipt: QuestionReceipt };
 
-function QuestionForm({ batch, onDone, onSent }: {
+/** One more send of the same block, beside what it sent before: a call
+ *  answered in two parts is still one call. */
+function alsoSent(before: Sent | null, next: Sent): Sent {
+  if (!before) return next;
+  const kept = before.ids.map((id, index) => ({ id, item: before.items[index] })).filter((each) => !next.ids.includes(each.id));
+  return { ids: [...kept.map((each) => each.id), ...next.ids], items: [...kept.map((each) => each.item), ...next.items], receipt: next.receipt };
+}
+
+function QuestionForm({ batch, questions, onDone, onSent }: {
   batch: Batch;
+  /** The questions of the batch still to answer here. */
+  questions: readonly Question[];
   onDone: (ids: string[]) => void;
   onSent: (sent: Sent) => void;
 }) {
-  const { questions } = batch;
   const [picks, setPicks] = useState<Record<string, Picked>>({});
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +119,10 @@ function QuestionForm({ batch, onDone, onSent }: {
   const change = (q: Question, next: (pick: Picked) => Picked) =>
     setPicks((prev) => ({ ...prev, [q.id]: next(prev[q.id] ?? startPick(q)) }));
 
-  const reason = submitReason(questions, picks);
+  // Not to be sent until every question of the call has arrived
+  // (`Batch.missing`): the host takes a part of a call's answers and goes on
+  // waiting for the rest, which this block would then have no way to ask.
+  const reason = submitReason(questions, picks, batch.missing);
   const total = questions.length;
 
   // Out of view, the row above the composer says this block is waiting.
@@ -112,7 +138,7 @@ function QuestionForm({ batch, onDone, onSent }: {
     const answers = questions.map((q) => ({ id: q.id, answer: pickAnswer(q, pickOf(q)) }));
     try {
       const receipt = await submitQuestionAnswers((command, args) => bridge.invoke(command, args), answers);
-      onSent({ items: questions.map((q, i) => ({ question: q.question, answer: answers[i].answer })), receipt });
+      onSent({ ids: answers.map((a) => a.id), items: questions.map((q, i) => ({ question: q.question, answer: answers[i].answer })), receipt });
       // An older host keeps no record: its answers are gone from the list now.
       if (receipt === "delivered") onDone(answers.map((a) => a.id));
     } catch (failure) {
@@ -383,7 +409,14 @@ function pendingKeys(batch: Batch | undefined): string | undefined {
   return [...questionActions(batch.questions)].map(([identity, kind]) => `${kind}:${identity}`).join(" ") || undefined;
 }
 
-/** One batch, by what the host says of it: asking, or answered and waiting. */
+/** One batch, by what the host says of it: asking, or answered and waiting.
+ *
+ *  Drawn part by part (`batchParts`). What has an answer is a quiet line
+ *  and the person's bubble; what has none is asked, whatever this page sent
+ *  before. `sent` is this page's own memory of an answer it just sent: it
+ *  is read only for the questions it was sent for, so a question that
+ *  arrives afterwards, or one a saved record still holds open, is drawn and
+ *  can be answered. */
 function BatchView({ batch, onDone, sent, onSent }: {
   batch: Batch;
   onDone: (ids: string[]) => void;
@@ -391,9 +424,47 @@ function BatchView({ batch, onDone, sent, onSent }: {
   onSent: (sent: Sent) => void;
 }) {
   if (!asks(batch)) return <Recorded batch={batch} onDone={onDone} />;
-  // Sent from here, and the host's own word for it has not arrived yet.
-  if (sent) return <><Asked items={sent.items} note={receiptNote(sent.receipt)} /><AnswerBubble lines={saidLines(sent.items)} /></>;
-  return <QuestionForm batch={batch} onDone={onDone} onSent={onSent} />;
+  const { said, open } = batchParts(batch, sent?.ids);
+  // What is answered so far, in the order asked: the host's answer when it
+  // holds one, else what this page sent and has not heard back about.
+  const items = said.map((q) => {
+    const mine = sent ? sent.ids.indexOf(q.id) : -1;
+    return { question: q.question, answer: q.answer ?? (mine >= 0 ? sent!.items[mine]?.answer ?? "" : "") };
+  });
+  const heard = said.every((q) => q.answer !== undefined);
+  // Sent from here, all of it, and the host's own word has not arrived yet.
+  if (!open.length) return <><Asked items={items} note={sent ? receiptNote(sent.receipt) : null} /><AnswerBubble lines={saidLines(items)} /></>;
+  return (
+    <>
+      {items.length > 0 && <>
+        <Asked items={items} note={!heard && sent && sent.receipt !== "saved" ? receiptNote(sent.receipt) : partNote(items.length, open.length)} />
+        <AnswerBubble lines={answeredLines(items)} />
+      </>}
+      <QuestionForm batch={batch} questions={open} onDone={onDone} onSent={onSent} />
+    </>
+  );
+}
+
+/** The bubble of a part of a call: each answer with its question, one
+ *  answer too, because the block under it asks the others. */
+function answeredLines(items: readonly AskItem[]): Said[] {
+  return items.filter((item) => item.answer).map((item) => ({ label: item.question, answer: item.answer }));
+}
+
+/** A delivered question, from the line the host wrote into the chat's
+ *  record: what was asked, quietly, and the person's bubble. Drawn where
+ *  the line stands unless a call of the transcript is this question's, and
+ *  then the call draws it and this draws nothing. Read-only: a record. */
+export function AnsweredInline({ answered }: { answered: QuestionAnswered }) {
+  const places = useContext(AnsweredPlacesContext);
+  if (places && !places.atLine.has(answered.id)) return null;
+  const items = answeredItems(answered);
+  return (
+    <div className="qa-turn is-answered" data-answered={answered.id}>
+      <Asked items={items} />
+      <AnswerBubble lines={saidLines(items)} />
+    </div>
+  );
 }
 
 /* ---- At the call that asked ----------------------------------------------- */
@@ -409,18 +480,24 @@ export function AskInline({ toolId, asked, late }: {
 }) {
   const places = useContext(AskPlacesContext);
   const batch = places?.placement.byTool.get(toolId);
+  // The host's own line for this call's answers, when the record holds one.
+  const recorded = useContext(AnsweredPlacesContext)?.byTool.get(toolId) ?? null;
   const [sent, setSent] = useState<Sent | null>(null);
   const entry = useLiveEntry("enter-fade");
   const onDone = places?.onDone ?? (() => {});
 
   let body: React.ReactNode;
   if (batch) {
-    body = <BatchView batch={batch} onDone={onDone} sent={sent} onSent={setSent} />;
+    body = <BatchView batch={batch} onDone={onDone} sent={sent} onSent={(next) => setSent((before) => alsoSent(before, next))} />;
   } else if (!asked) {
     body = <p className={`qa-asking ${entry}`}>Asking a question…</p>;
   } else if (asked.some((item) => item.answer)) {
     // What the person said, from the call's own result.
     body = <><Asked items={asked} /><AnswerBubble lines={saidLines(asked)} /></>;
+  } else if (recorded) {
+    // Handed over while the call waited: the host's line says what, before
+    // the call's result does and in every tab.
+    body = <><Asked items={recorded} /><AnswerBubble lines={saidLines(recorded)} /></>;
   } else if (sent && !asked.some((item) => item.unanswered)) {
     // Answered from this page a moment ago; the call's result is on its way.
     body = <><Asked items={sent.items} note={receiptNote(sent.receipt)} /><AnswerBubble lines={saidLines(sent.items)} /></>;
@@ -454,7 +531,7 @@ function LooseBatch({ batch, onDone }: { batch: Batch; onDone: (ids: string[]) =
   return (
     <div className="pending-target" data-pending-keys={pendingKeys(batch)}>
       <div className="qa-turn is-loose">
-        <BatchView batch={batch} onDone={onDone} sent={sent} onSent={setSent} />
+        <BatchView batch={batch} onDone={onDone} sent={sent} onSent={(next) => setSent((before) => alsoSent(before, next))} />
       </div>
     </div>
   );

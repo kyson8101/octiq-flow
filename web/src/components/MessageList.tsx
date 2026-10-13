@@ -24,9 +24,9 @@ import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
 import { ReopenedChatContext, ReopenedNote } from "./ReopenedNote";
-import { AnswerBubble, AskInline, AskPlacesContext, ChatQuestionsContext, LooseQuestions, type AskPlaces } from "./InlineQuestions";
+import { AnswerBubble, AnsweredInline, AnsweredPlacesContext, AskInline, AskPlacesContext, ChatQuestionsContext, LooseQuestions, type AskPlaces } from "./InlineQuestions";
 import { askAnswer, isAskTool } from "../lib/askAnswer";
-import { answerTurnOf, isAnswerTurn, lateAnswerTo, lateAnswers, placeQuestions, saidLines } from "../lib/questionBlock";
+import { answerTurnOf, isAnswerTurn, lateAnswerTo, lateAnswers, placeAnswered, placeQuestions, saidLines } from "../lib/questionBlock";
 import { setRevealer } from "../lib/questionSight";
 import { CardDiagram, DiagramPending } from "./CardDiagram";
 import { DIAGRAM_LANG, diagramBlock, parseDiagram } from "../lib/cardDiagram";
@@ -319,6 +319,9 @@ function BlockView({
   if (block.kind === "peer") return <PeerNote block={block} />;
   if (block.kind === "memory") return <MemoryNote activity={block.activity} />;
   if (block.kind === "reopened") return <ReopenedNote reopened={block.reopened} />;
+  // A question whose answer was handed over while its call waited, from the
+  // host's line in the record: drawn here unless a call above is its own.
+  if (block.kind === "answered") return <AnsweredInline answered={block.answered} />;
   // Thinking is watched live above the composer and left out of the transcript;
   // `groupRows` drops it, so this is only ever the belt to that braces.
   if (block.kind === "thinking") return null;
@@ -921,7 +924,7 @@ function TurnView({
   // the top of that names the one participant who did not.
   const allEvent =
     blocks.length > 0 &&
-    blocks.every((b) => b.kind === "compacted" || b.kind === "notice" || b.kind === "peer" || b.kind === "memory" || b.kind === "reopened");
+    blocks.every((b) => b.kind === "compacted" || b.kind === "notice" || b.kind === "peer" || b.kind === "memory" || b.kind === "reopened" || b.kind === "answered");
 
   // What was attached to this turn. Taken across the messages the turn is made
   // of, and de-duplicated by path: the agent echoes a user turn back, so the
@@ -1828,15 +1831,22 @@ const MessageListBody = function MessageList({
   // the end when these turns do not hold that call. Asked of the turns
   // actually drawn, so a call behind "Load earlier messages" is not a place.
   const chatQuestions = useContext(ChatQuestionsContext);
+  // Where each delivered question is drawn, from the host's own lines in
+  // the record: at the call these turns hold for it, else where its line
+  // stands. Worked out for every transcript, answerable or not.
+  const answered = useMemo(() => placeAnswered(visibleTurns.flat()), [visibleTurns]);
   const places = useMemo<AskPlaces | null>(() => {
     if (!chatQuestions) return null;
     const drawn = visibleTurns.flat();
+    // A question the record already holds the answer of is drawn from the
+    // record: the host lists it a moment longer, and it is not drawn twice.
+    const pending = answered.ids.size ? chatQuestions.questions.filter((q) => !answered.ids.has(q.id)) : chatQuestions.questions;
     return {
-      placement: placeQuestions(drawn, chatQuestions.questions),
+      placement: placeQuestions(drawn, pending),
       late: lateAnswers(drawn),
       onDone: chatQuestions.onDone,
     };
-  }, [chatQuestions, visibleTurns]);
+  }, [chatQuestions, visibleTurns, answered]);
 
   // A map point is another way of deliberately reading back. Its programmatic
   // scroll does not carry a wheel/touch gesture, so tell the transcript's own
@@ -1912,6 +1922,7 @@ const MessageListBody = function MessageList({
           Stop only in the chat that coordinates its run. */}
       <ReopenedChatContext.Provider value={conversationId ? `chat:${conversationId}` : null}>
       <AskPlacesContext.Provider value={places}>
+      <AnsweredPlacesContext.Provider value={answered}>
       <div className="msgs-inner" ref={innerRef}>
         {hasMore && (
           <div className="history-more">
@@ -1968,6 +1979,7 @@ const MessageListBody = function MessageList({
             was streaming. */}
         <div ref={endRef} />
       </div>
+      </AnsweredPlacesContext.Provider>
       </AskPlacesContext.Provider>
       </ReopenedChatContext.Provider>
       </LiveArrivals.Provider>

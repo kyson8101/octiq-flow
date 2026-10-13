@@ -132,6 +132,9 @@ const chats = Object.keys(SCENES).map(chatOf);
 const localChats = chats.map((chat) => ({ ...chat, messages: SCENES[chat.id].messages }));
 let pending = Object.entries(SCENES).flatMap(([id, scene]) => scene.questions.map((q) => ({ chatKey: `chat:${id}`, ...q })));
 
+/** What the host holds of a chat's record, by chat key: the scenes that
+ *  write a line into it fill this. */
+const record = {};
 const calls = [];
 let answerWith = () => ({ saved: true });
 function resultFor(request) {
@@ -140,7 +143,9 @@ function resultFor(request) {
     case "list_workspaces": return [{ id: "octiq", name: "octiq-flow", primary_path: root }];
     case "chat_index_list": return chats;
     case "chat_index_deleted": return [];
-    case "chat_page": return { events: [], context: [], before: null };
+    // The tail of a chat's record, as the host serves it (`record`).
+    case "chat_page": return { events: record[request.args?.key] ?? [], context: [], before: null };
+    case "chat_since": return (record[request.args?.key] ?? []).filter((frame) => frame.seq > (request.args?.after ?? 0));
     case "question_pending": return pending;
     case "question_answer_batch": return answerWith(request.args);
     case "chat_list": case "chat_activity": case "permission_pending": case "access_request_pending":
@@ -683,6 +688,128 @@ async function streamScene(browser, size, label, out) {
   await context.close();
 }
 
+/** A call whose questions arrive one event at a time (review 3, H4), split
+ *  the way the reviewer split them: the block is not to be sent before the
+ *  last has arrived, and a question that arrives after another was answered
+ *  is drawn and can be answered. */
+async function partialScene(browser, size, label, out) {
+  const mine = out.partial = {};
+  const a = { id: `race-1-${size.name}`, chatKey: "chat:loose", batch: `race-${size.name}`, batchSize: 2, question: "Which branch?", options: ["develop", "main"], recommended: 0 };
+  const b = { ...a, id: `race-2-${size.name}`, question: "Which target?", options: ["staging", "production"] };
+  const kept = pending;
+  pending = [...pending.filter((item) => item.chatKey !== "chat:loose"), a];
+  const { context, page, send } = await open(browser, "loose", size);
+  await page.locator(".qa-block").waitFor();
+  const before = sent("question_answer_batch").length;
+  mine.first = {
+    titles: await page.locator(".qa-q-title").allTextContents(),
+    off: await page.locator(".qa-submit").getAttribute("aria-disabled"),
+    why: (await page.locator(".qa-why").textContent())?.trim(),
+  };
+  assert.deepEqual(mine.first, { titles: ["Which branch?"], off: "true", why: "Still reading the questions: 1 of 2 has arrived." }, `${label}: one of two arrived is not to be sent, and says so`);
+  // A press on it, by the pointer and by the keyboard, sends nothing.
+  await page.waitForTimeout(800);
+  const box = await page.locator(".qa-submit").boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.locator(".qa-submit").focus();
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  assert.equal(sent("question_answer_batch").length, before, `${label}: and a press sends nothing`);
+  assert.equal(await page.locator(".qa-said").count(), 0, `${label}: nothing is drawn as answered`);
+  await shot(page, `${label}-partial-reading`);
+
+  // The first answered somewhere else (another tab, a page that sent it
+  // before this rule), then the second arrives: what their probe saw hidden.
+  pending = [...pending.filter((item) => item.id !== a.id), { ...a, status: "saved", answer: "develop" }, b];
+  send("question-updated", { ...a, status: "saved", answer: "develop" });
+  send("user-question", b);
+  await page.waitForFunction(() => document.querySelector(".qa-q-title")?.textContent === "Which target?");
+  mine.after = {
+    titles: await page.locator(".qa-q-title").allTextContents(),
+    forms: await page.locator(".qa-block").count(),
+    off: await page.locator(".qa-submit").getAttribute("aria-disabled"),
+    bubbles: await page.locator(".qa-said").allTextContents(),
+    note: (await page.locator(".qa-turn.is-loose .qa-note").first().textContent())?.trim(),
+  };
+  assert.deepEqual(mine.after, {
+    titles: ["Which target?"], forms: 1, off: "false", bubbles: ["Which branch? develop"], note: "Answered · the agent waits for 1 more question",
+  }, `${label}: what was answered is said, and what was not is asked`);
+  await fits(page, `${label} partial`);
+  await shot(page, `${label}-partial-rest`);
+  await page.waitForTimeout(800);
+  await page.locator(".qa-submit").click();
+  await page.waitForTimeout(300);
+  mine.answers = sent("question_answer_batch").slice(before).map((each) => each.args.answers);
+  assert.deepEqual(mine.answers, [[{ id: b.id, answer: "staging" }]], `${label}: the second is answered, and only it`);
+  pending = kept;
+  await context.close();
+}
+
+/** A question the page holds no call for, answered and handed over (review
+ *  3, H3). The host writes one `octiq_question_answered` line into the
+ *  chat's record before it says `question-expired`; the answered question
+ *  and the person's bubble are drawn from that line, so they are the same
+ *  after delivery, after a reload and in a tab that never saw the question. */
+async function answeredScene(browser, size, label, out) {
+  const mine = out.answered = {};
+  const { context, page, send } = await open(browser, "loose", size);
+  await page.locator(".qa-block").waitFor();
+  await page.locator(".qa-row").first().click();
+  await page.waitForTimeout(800);
+  answerWith = () => ({ saved: true });
+  await page.locator(".qa-submit").click();
+  await page.locator(".qa-said").waitFor();
+  mine.sent = await page.locator(".qa-said").allTextContents();
+  // As the host writes it (`__fixtures__/host/question_answered_native.json`
+  // is the shape), for this scene's question.
+  const line = {
+    type: "octiq_question_answered", id: `record-q9-${size.name}`, via: "native", at: Date.now(),
+    questions: [{ id: "q9", question: "Rebase onto develop first?", options: [{ label: "Rebase" }, { label: "Merge" }, { label: "Leave it" }], multiple: false, answer: "Rebase" }],
+  };
+  record["chat:loose"] = [
+    { seq: 1, event: { type: "assistant", message: { id: "msg_a1", type: "message", role: "assistant", content: [{ type: "text", text: "Picking it up." }] } } },
+    { seq: 2, event: line },
+  ];
+  const read = async (from) => ({
+    bubbles: await from.locator(".qa-said").allTextContents(),
+    asked: await from.locator(".qa-asked-q").allTextContents(),
+    forms: await from.locator(".qa-block").count(),
+    controls: await from.locator(".qa-turn.is-answered button, .qa-turn.is-answered input").count(),
+    atLine: await from.locator(".qa-turn.is-answered").count(),
+  });
+  const drawn = { bubbles: ["Rebase"], asked: ["Rebase onto develop first?"], forms: 0, controls: 0, atLine: 1 };
+  // Heard before the question leaves the list: one bubble, not two.
+  send("chat-event", { key: "chat:loose", seq: 2, event: line });
+  await page.locator(".qa-turn.is-answered").waitFor();
+  mine.heard = await read(page);
+  assert.deepEqual(mine.heard, drawn, `${label}: the line is drawn once while the host still lists the question`);
+  const kept = pending;
+  pending = pending.filter((item) => item.id !== "q9");
+  send("question-expired", { id: "q9" });
+  await page.waitForTimeout(300);
+  mine.delivered = await read(page);
+  assert.deepEqual(mine.delivered, drawn, `${label}: the answer stays once the question is delivered`);
+  // The same line said again (a write that failed is tried again).
+  send("chat-event", { key: "chat:loose", seq: 2, event: line });
+  await page.waitForTimeout(200);
+  assert.deepEqual(await read(page), drawn, `${label}: heard twice, drawn once`);
+  await fits(page, `${label} answered`);
+  await shot(page, `${label}-answered-delivered`);
+  await page.reload();
+  await page.locator(".qa-turn.is-answered").waitFor();
+  mine.reload = await read(page);
+  assert.deepEqual(mine.reload, drawn, `${label}: and after a reload`);
+  await shot(page, `${label}-answered-reload`);
+  const tab = await context.newPage();
+  await tab.goto(page.url());
+  await tab.locator(".qa-turn.is-answered").waitFor();
+  mine.secondTab = await read(tab);
+  assert.deepEqual(mine.secondTab, drawn, `${label}: and in a tab that never saw the question`);
+  pending = kept;
+  delete record["chat:loose"];
+  await context.close();
+}
+
 let browser;
 try {
   await server.listen();
@@ -691,15 +818,21 @@ try {
     ...(classic ? { ignoreDefaultArgs: ["--hide-scrollbars"], args: ["--disable-features=OverlayScrollbar"] } : {}),
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
   });
+  // SCENE=partial or SCENE=answered runs one of the two record scenes alone.
+  const only = process.env.SCENE;
   for (const size of [{ name: "1280", width: 1280, height: 900, phone: false }, { name: "390", width: 390, height: 844, phone: true }]) {
     const label = `${tag}-${size.name}`;
     const out = report.sizes[size.name] = {};
-    await askScene(browser, size, label, out);
-    await batchScene(browser, size, label, out);
-    await waitingScene(browser, size, label, out);
-    await arrivalScene(browser, size, label, out);
-    await diagramScene(browser, size, label, out);
-    await streamScene(browser, size, label, out);
+    if (!only) {
+      await askScene(browser, size, label, out);
+      await batchScene(browser, size, label, out);
+      await waitingScene(browser, size, label, out);
+      await arrivalScene(browser, size, label, out);
+      await diagramScene(browser, size, label, out);
+      await streamScene(browser, size, label, out);
+    }
+    if (!only || only === "partial") await partialScene(browser, size, label, out);
+    if (!only || only === "answered") await answeredScene(browser, size, label, out);
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, ...report }, null, 1));
