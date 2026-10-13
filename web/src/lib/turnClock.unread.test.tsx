@@ -341,6 +341,12 @@ function orders(): WaitSource[][] {
   return out;
 }
 
+/** Each of these draws the composer some thousand times. Alone that is two
+ *  or three seconds; in the whole suite, beside every other file, more than
+ *  the default five. A test that runs out of time goes on running into the
+ *  next one's storage, so the room is given outright. */
+const LONG = 120_000;
+
 describe("the 120 orders the five lists can answer in", () => {
   // The turn worked 90 s before the reload, and 5 s after its question was
   // answered: the clock must read 1m 30s at every step until then, and
@@ -382,16 +388,16 @@ describe("the 120 orders the five lists can answer in", () => {
   const pending = (next: ReturnType<typeof page>, source: WaitSource) =>
     next.answers(source, source === "question_pending" ? [question("pending")] : undefined);
 
-  it("before the page gives up", steps(pending, () => {}));
+  it("before the page gives up", steps(pending, () => {}), LONG);
 
-  it("after the five minutes of silence: 96 of these kept the guessed time for good", steps(pending, (next) => next.waitedTooLong()));
+  it("after the five minutes of silence: 96 of these kept the guessed time for good", steps(pending, (next) => next.waitedTooLong()), LONG);
 
   it("after every list failed twice, each then read on the person's asking again", steps(pending, (next) => {
     for (const source of WAIT_SOURCES) next.fails(source);
     next.at(RELOAD + s(4));
     // `Check again`.
     next.reconnects();
-  }));
+  }), LONG);
 
   it("with one list failed twice throughout, and the rest read in every order", async () => {
     // The chat is held for as long as that list is unread, whatever the
@@ -413,7 +419,7 @@ describe("the 120 orders the five lists can answer in", () => {
         expect(next.at(now)).toEqual(WAITING);
       }
     }
-  });
+  }, LONG);
 });
 
 describe("the page as it was: a list not read yet taken for an empty one", () => {
