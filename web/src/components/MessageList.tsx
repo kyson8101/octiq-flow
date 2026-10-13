@@ -1030,7 +1030,7 @@ function TurnView({
             Anything else in a user turn (there is nothing today) still goes the
             ordinary way. */}
         {wrapUp ? (
-          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} />
+          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark={planStart ? "start" : "complete"} />
         ) : role === "user" && blocks.every((b) => b.kind === "text") ? (
           blocks.map((b, i) => <UserText key={i} text={shown((b as { text: string }).text)} />)
         ) : (

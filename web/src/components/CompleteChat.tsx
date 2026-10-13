@@ -57,6 +57,18 @@ function CompleteIcon({ size = 17 }: { size?: number }) {
   );
 }
 
+/** Work set going: the mark of the host's turn that tells an agent its plan
+ *  was started. Not the flag, which is the end of the course. */
+function StartedIcon({ size = 17 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M10 8.5v7l5.5-3.5z" />
+    </svg>
+  );
+}
+
 /** Asks the host what it knows, then asks the person. Nothing is sent to the
  *  agent until the person confirms. */
 export function CompleteChatDialog({
@@ -243,12 +255,17 @@ export function ChatCompletionLine({
 /** What a wrap-up bubble shows in place of the host's text. The text is the
  *  agent's instructions, not something the person said, so it stays behind a
  *  disclosure that says how much is there. */
-export function WrapUpNote({ label, detail, text }: { label: string; detail: string; text: string }) {
+export function WrapUpNote({ label, detail, text, mark = "complete" }: {
+  label: string; detail: string; text: string;
+  /** Which of the host's turns this is. A plan's Start is not a completion,
+   *  and does not wear its flag: the mark is a start's. */
+  mark?: "complete" | "start";
+}) {
   const lines = text.split("\n").filter((line) => line.trim()).length;
   return (
-    <div className="wrap-up-note">
+    <div className="wrap-up-note" data-mark={mark}>
       <span className="wrap-up-note-head">
-        <span className="wrap-up-note-mark" aria-hidden="true"><CompleteIcon size={13} /></span>
+        <span className="wrap-up-note-mark" aria-hidden="true">{mark === "start" ? <StartedIcon size={13} /> : <CompleteIcon size={13} />}</span>
         <span className="wrap-up-note-label">{label}</span>
         <span className="wrap-up-note-detail">{detail}</span>
       </span>

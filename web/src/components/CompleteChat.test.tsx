@@ -20,6 +20,7 @@ import {
 } from "../lib/chatComplete";
 import type { Message } from "../lib/chat";
 import sheet from "./CompleteChat.css?raw";
+import listSource from "./MessageList.tsx?raw";
 
 const preview: CompletePreview = {
   chatKey: "chat:c1",
@@ -281,6 +282,21 @@ describe("the wrap-up's bubble", () => {
 
   it("is named on the conversation map, not quoted", () => {
     expect(conversationMapTurns([[wrapUp()]])[0].prompt).toBe("Wrap-up");
+  });
+
+  it("keeps the flag for a completion, and gives a plan's Start a mark of its own", () => {
+    // A plan's Start is drawn through this note too (`lib/planTurn`). It is
+    // work set going, not a chat finished: it does not wear the flag.
+    const flag = /<path d="M5 21V4"><\/path>/;
+    const done = renderToStaticMarkup(<WrapUpNote label="Wrap-up" detail="Completing this chat" text="Wrap up." />);
+    expect(done).toContain('data-mark="complete"');
+    expect(done).toMatch(flag);
+    const started = renderToStaticMarkup(<WrapUpNote label="Plan started" detail="The agent was told to begin" text="Begin." mark="start" />);
+    expect(started).toContain('data-mark="start"');
+    expect(started).not.toMatch(flag);
+    expect(started).toContain('<circle cx="12" cy="12" r="8.5"></circle>');
+    // The transcript says which of the two a turn is.
+    expect(listSource).toMatch(/<WrapUpNote label=\{wrapUp\.label\} detail=\{wrapUp\.detail\} text=\{answer\} mark=\{planStart \? "start" : "complete"\} \/>/);
   });
 
   it("draws the note without a disclosure when there is no text to open", () => {
