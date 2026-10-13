@@ -539,6 +539,92 @@ fn a_start_is_told_once_however_many_ask_at_once() {
     }
 }
 
+/// Review 3 of the UI batch, H2, on the host's side: the page can send the
+/// FIRST `chat_plan_start` twice (the Plan panel shut and opened again
+/// while the first is unanswered), so two arrive for a plan nothing has
+/// started, with the same chat and revision. Over 300 rounds, two let go
+/// together each time, with the agent in a turn in half of them and
+/// between turns in the other half:
+///
+/// - one Start is on record: when, on which revision and under which turn
+///   id are the same in both answers and in the plan that is read back;
+/// - one turn is in the chat's record, and one ask handed it over (`queued`
+///   behind a running turn, `started` when it was written to an idle agent);
+/// - the other answers with the Start that stands, `told`, never an error
+///   and never a second turn.
+///
+/// What holds it is the claim `chat_plan::telling`, taken before the plan
+/// is read: the second ask reads a plan the first has already started and
+/// told. Without the claim both read "not started", and the loser of
+/// `chat_plan::start` was refused with "already started".
+#[test]
+fn two_first_starts_at_once_record_one_start_and_hand_over_one_turn() {
+    const ROUNDS: usize = 300;
+    let svc = Arc::new(Services::load());
+    for round in 0..ROUNDS {
+        let busy = round % 2 == 0;
+        let chat = Chat::new();
+        chat.change(
+            &svc,
+            json!({ "baseRevision": 0, "add": [{ "title": "A", "status": "decided" }] }),
+        )
+        .unwrap();
+        assert_eq!(chat.get(&svc)["started"], Value::Null);
+        let _agent = svc
+            .chats
+            .test_hold(&chat.key, crate::agent_chat::ChatAgent::Claude, busy);
+        let together = Arc::new(std::sync::Barrier::new(2));
+        let asks: Vec<_> = (0..2)
+            .map(|_| {
+                let (svc, id, together) = (svc.clone(), chat.id.clone(), together.clone());
+                std::thread::spawn(move || {
+                    together.wait();
+                    dispatch(
+                        &svc,
+                        "chat_plan_start",
+                        json!({ "chatId": id, "revision": 1 }),
+                    )
+                })
+            })
+            .collect();
+        let answers: Vec<Result<Value, String>> =
+            asks.into_iter().map(|ask| ask.join().unwrap()).collect();
+        let said = format!("round {round} (busy {busy}): {answers:?}");
+        let answers: Vec<Value> = answers
+            .into_iter()
+            .map(|answer| answer.unwrap_or_else(|why| panic!("refused with {why}: {said}")))
+            .collect();
+
+        let turns = chat.turns();
+        assert_eq!(turns.len(), 1, "one turn in the record: {said}");
+        assert!(turns[0].0.starts_with(START_TURN_PREFIX), "{said}");
+        let mut states: Vec<&str> = answers
+            .iter()
+            .map(|answer| answer["state"].as_str().unwrap())
+            .collect();
+        states.sort_unstable();
+        let handed = if busy { "queued" } else { "started" };
+        let mut expected = [handed, "told"];
+        expected.sort_unstable();
+        assert_eq!(states, expected, "{said}");
+        if busy {
+            assert_eq!(chat.queued(&svc), [turns[0].0.clone()], "{said}");
+        }
+        let kept = chat.get(&svc)["started"].clone();
+        assert_eq!(kept["turnId"], turns[0].0.as_str(), "{said}");
+        assert_eq!(kept["revision"], 1, "{said}");
+        assert_eq!(kept["told"], true, "{said}");
+        for answer in &answers {
+            assert_eq!(answer["delivered"], true, "{said}");
+            assert_eq!(answer["turnId"], kept["turnId"], "{said}");
+            // The Start as it was recorded, once: both answers carry it.
+            assert_eq!(answer["plan"]["started"]["at"], kept["at"], "{said}");
+            assert_eq!(answer["plan"]["started"]["revision"], 1, "{said}");
+        }
+        svc.chats.test_end(&chat.key);
+    }
+}
+
 /// The turn is handed over and the note that it was cannot be saved. The
 /// answer says both, and the Start is still told once: the next ask finds
 /// the turn in the chat's record, saves the note and sends nothing. It
