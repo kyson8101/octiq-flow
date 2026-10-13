@@ -10,7 +10,11 @@
 // section), which presses.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import panelSource from "../components/OrchestrationPanel.tsx?raw";
+import panelSourceRaw from "../components/OrchestrationPanel.tsx?raw";
+import { lf } from "./sourceText";
+
+// Read with one kind of line end, so a pattern may name `\n` on a CRLF checkout too.
+const panelSource = lf(panelSourceRaw);
 
 vi.mock("./bridge", () => ({
   bridge: { invoke: async () => null, on: () => () => {}, onState: () => () => {} },

@@ -14,8 +14,13 @@
 // compiler's half: `held` is required there, so a caller without it does not
 // build.
 import { describe, expect, it } from "vitest";
-import app from "../App.tsx?raw";
-import agentsPage from "../components/AgentsDashboard.tsx?raw";
+import appRaw from "../App.tsx?raw";
+import agentsPageRaw from "../components/AgentsDashboard.tsx?raw";
+import { lf } from "./sourceText";
+
+// Read with one kind of line end, so a pattern may name `\n` on a CRLF checkout too.
+const app = lf(appRaw);
+const agentsPage = lf(agentsPageRaw);
 
 /** One hand-off: what it is, and the text that makes it. */
 const SITES: { name: string; has: RegExp }[] = [

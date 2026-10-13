@@ -6,13 +6,21 @@
 // ledgers are the host's own (`__fixtures__/host`).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import panelSource from "../components/OrchestrationPanel.tsx?raw";
-import planPanelSource from "../components/PlanPanel.tsx?raw";
-import planViewSource from "./planView.ts?raw";
+import panelSourceRaw from "../components/OrchestrationPanel.tsx?raw";
+import planPanelSourceRaw from "../components/PlanPanel.tsx?raw";
+import planViewSourceRaw from "./planView.ts?raw";
+import { lf } from "./sourceText";
+
+// Read with one kind of line end, so a pattern may name `\n` on a CRLF checkout too.
+const panelSource = lf(panelSourceRaw);
+const planPanelSource = lf(planPanelSourceRaw);
+const planViewSource = lf(planViewSourceRaw);
 
 /** Every component file, as text: what a row draws inside its tabs is
  *  followed into the helpers that draw it. */
-const componentSources = import.meta.glob("../components/*.tsx", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+const componentSources = Object.fromEntries(Object.entries(
+  import.meta.glob("../components/*.tsx", { query: "?raw", import: "default", eager: true }) as Record<string, string>,
+).map(([path, text]) => [path, lf(text)]));
 
 vi.mock("./bridge", () => ({
   bridge: { invoke: async () => null, on: () => () => {}, onState: () => () => {} },
