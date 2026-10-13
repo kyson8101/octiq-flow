@@ -73,6 +73,22 @@ describe("what an ask_user call decided", () => {
     ).toBe("nobody was there to ask");
   });
 
+  it("knows the host's own sentences for a question that was not answered in its call", () => {
+    // Each is the host's wording today (`question.rs`, `question_store.rs`,
+    // `agent_chat::route_worker_questions`). Read as an answer, the first one
+    // would be drawn as the person's bubble: "The questions are saved and…".
+    const saved = askAnswer(ASK, args, "The questions are saved and still waiting for the user. End this turn without assuming an answer or repeating the questions. OctiqFlow will continue this conversation when the answers arrive.")![0];
+    expect(saved).toEqual({ question: QUESTION, answer: "", unanswered: "not answered in this turn", later: true });
+    const cancelled = askAnswer(ASK, args, "The user cancelled this question or stopped the task. Do not assume an answer or resume the cancelled work.")![0];
+    expect(cancelled).toEqual({ question: QUESTION, answer: "", unanswered: "closed without answering" });
+    const undelivered = askAnswer(ASK, args, "The question could not be delivered: The question has no conversation. Do not assume an answer.")![0];
+    expect(undelivered.unanswered).toBe("could not be asked");
+    const routed = askAnswer(ASK, args, "Your questions were routed to main-chat gate gate_1. No answer has been given. End this turn and wait for the coordinator to resolve the gate; do not ask the user directly.")![0];
+    expect(routed).toEqual({ question: QUESTION, answer: "", unanswered: "sent to the coordinator as a decision" });
+    // Only the wait running out leaves an answer to come later.
+    expect([cancelled, undelivered, routed].some((item) => item.later)).toBe(false);
+  });
+
   it("keeps an answer that merely mentions one of those phrases", () => {
     // The excuses are recognised by how they OPEN, not by appearing anywhere.
     // Someone answering "the question timed out last time, so try again" has

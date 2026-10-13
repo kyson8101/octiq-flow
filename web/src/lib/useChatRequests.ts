@@ -4,7 +4,7 @@ import { bridge, type ConnectionState } from "./bridge";
 import type { NoticeKind } from "./notify";
 import { askSummary, type Ask } from "../components/PermissionAsk";
 import type { SafetyBlockNotice } from "../components/SafetyBlock";
-import type { Question } from "../components/UserQuestion";
+import type { Question } from "./question";
 import { accessRequestTitle, type AccessRequest } from "./accessRequest";
 import { keepArrivals, stampArrival } from "./askClock";
 

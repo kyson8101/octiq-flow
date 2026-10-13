@@ -99,6 +99,8 @@ import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
 import { ChatStatus } from "./components/ChatStatus";
+import { ChatQuestionsContext, QuestionWaitingRow, type ChatQuestions } from "./components/InlineQuestions";
+import { isAnswerTurn } from "./lib/questionBlock";
 import { Arrive } from "./components/Arrive";
 import { useEntry, entryClass, useLateKeys } from "./lib/useArrival";
 import { backgroundCalls } from "./lib/background";
@@ -1623,7 +1625,8 @@ export default function App() {
   /** Hold one cancelled message's words for the box. */
   const reclaim = useCallback((id: string, turnId: string, message: Message | undefined) => {
     // The host's wrap-up turn was never typed; taking it back returns nothing.
-    if (!message || isWrapUpTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
+    // Nor was an answer to the agent's question: it is never the composer's.
+    if (!message || isWrapUpTurn(turnId) || isAnswerTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
     const words = reclaimedMessage(message);
     reclaimedIds.current = [...reclaimedIds.current.slice(-199), turnId];
     setReclaimed((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), words] }));
@@ -4702,6 +4705,19 @@ export default function App() {
     ...handoverTailHere.map((handover) => `handover:${handover.id}`),
     ...(workerChat ? [] : safetySplit.folded.map((block) => `safety:${block.id}`)),
   ]);
+  // The open chat's questions, for the transcript to draw where they were
+  // asked. None for a worker's chat: a worker asks through a gate, and the
+  // person answers nothing there.
+  const questionsHere = conversationId && !workerChat ? questions[conversationId] : undefined;
+  const chatQuestions = useMemo<ChatQuestions | null>(() => {
+    if (!conversationId || workerChat) return null;
+    return {
+      questions: questionsHere ?? [],
+      onDone: (ids) => setQuestions((prev) => ({
+        ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => !ids.includes(item.id)),
+      })),
+    };
+  }, [conversationId, workerChat, questionsHere, setQuestions]);
   const planTail = useMemo(
     () => {
       const plans = plansHere.some((plan) => plan.pending)
@@ -5702,6 +5718,9 @@ export default function App() {
                     rows — see components/Background. */}
                 <BackgroundProvider value={runningCalls}>
                   <div className="chat-main">
+                    {/* The agent's questions are drawn in the transcript, where
+                        they were asked, in a chat the person can answer in. */}
+                    <ChatQuestionsContext.Provider value={chatQuestions}>
                     <MessageList
                       messages={chat.messages}
                       tail={planTail}
@@ -5744,6 +5763,7 @@ export default function App() {
                       agentByTool={agentByTool}
                       onOpenAgent={setFocusedAgent}
                     />
+                    </ChatQuestionsContext.Provider>
                     {!workerChat && (
                       <SafetyToast toast={safetyToast} onDetails={showSafetyLine} onDone={clearSafetyNotice} />
                     )}
@@ -5831,14 +5851,10 @@ export default function App() {
               scope={conversationId}
               asks={asks[conversationId] ?? []}
               safetyBlocks={safetySplit.cards}
-              questions={questions[conversationId] ?? []}
               onPermissionAnswered={(id) => setAsks((prev) => ({
                 ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => item.id !== id),
               }))}
               onSafetyAnswered={answeredSafety}
-              onQuestionsAnswered={(ids) => setQuestions((prev) => ({
-                ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => !ids.includes(item.id)),
-              }))}
               onContinue={(message, options) => send(message, [], options)}
               accessRequests={accessHere}
               onAccessAnswer={answerAccess}
@@ -5873,10 +5889,9 @@ export default function App() {
             if ((asks[id]?.length ?? 0) + cards.length === 0) return null;
             const title = conversations.find((chat) => chat.id === id)?.title ?? "agent";
             const requests = (safety: typeof cards) => (
-              <ChatRequests asks={safety === quiet ? [] : asks[id] ?? []} safetyBlocks={safety} questions={[]}
+              <ChatRequests asks={safety === quiet ? [] : asks[id] ?? []} safetyBlocks={safety}
                 onPermissionAnswered={(requestId) => setAsks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
                 onSafetyAnswered={(requestId) => setSafetyBlocks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
-                onQuestionsAnswered={() => {}}
                 onContinue={(message, options) => send(`For your worker chat ${id}:\n\n${message}\n\nCoordinate any follow-up through the orchestration tools.`, [], options)} />
             );
             return (
@@ -5903,6 +5918,8 @@ export default function App() {
               arriving never moves the composer. */}
           {conversationId && (
             <ChatStatus>
+              {/* A question that still asks, out of view in the transcript. */}
+              {!workerChat && <QuestionWaitingRow />}
               {!workerChat && (
                 <RemovedFolderBanner
                   chatId={conversationId}

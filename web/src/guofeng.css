@@ -208,8 +208,9 @@
 
 /* ---- Messages ------------------------------------------------------------ */
 
-/* Your message: a slip of paper, as wide as what it says. */
-:root[data-theme="guofeng"] .msg-user .msg-body {
+/* Your message: a slip of paper, as wide as what it says. An answer to the
+   agent's question is the same slip. */
+:root[data-theme="guofeng"] :is(.msg-user .msg-body, .qa-said-body) {
   width: fit-content;
   max-width: 100%;
   min-width: 80px;

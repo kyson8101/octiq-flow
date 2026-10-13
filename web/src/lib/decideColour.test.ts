@@ -16,6 +16,7 @@ import stylesCss from "../styles.css?raw";
 import mangaSheet from "../manga.css?raw";
 import chatPlanCss from "../components/ChatPlanCards.css?raw";
 import handoverCss from "../components/HandoverCards.css?raw";
+import questionCss from "../components/InlineQuestions.css?raw";
 import planReviewCss from "../components/PlanReview.css?raw";
 import runPanelCss from "../components/OrchestrationPanel.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
@@ -176,6 +177,7 @@ function rules(css: string, file: string): Rule[] {
 const RULES = [
   ...rules(stylesCss, "styles.css"),
   ...rules(handoverCss, "HandoverCards.css"),
+  ...rules(questionCss, "InlineQuestions.css"),
   ...rules(planReviewCss, "PlanReview.css"),
   ...rules(chatPlanCss, "ChatPlanCards.css"),
   ...rules(mangaSheet, "manga.css"),
@@ -208,12 +210,13 @@ const DECISION_RULES = [
   ".ask-card",
   ".ask-card-dot",
   // The safety card's leading answer is one of them (see below).
-  ":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary",
-  ":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary:hover",
-  // A question from the agent.
-  ".qa-card",
-  ".qa-dot",
-  ".qa-option.is-on",
+  ":is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary",
+  ":is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary:hover",
+  // A question from the agent, drawn in the transcript with no card round
+  // it: what the person does about it is the decision colour.
+  ".qa-submit",
+  ".qa-row input:checked + .qa-mark",
+  ".qa-waiting .status-row-label",
   // Handover and route, as name cards (a route card is a handover card).
   // `is-waiting` is the card that waits on the person: undecided, or a
   // start that failed. It has no dot any more: the face is not a signal.
@@ -235,10 +238,21 @@ describe("the cards that wait on a decision", () => {
     for (const rule of found) expect(rule.body, `${rule.file}: ${selector}`).not.toMatch(NOT_A_DECISION);
   });
 
-  it("has no rule of the question card left on the accent or on amber", () => {
-    const question = RULES.filter((rule) => rule.file === "styles.css" && /(^|[\s,(>+~])\.qa-/.test(rule.selector));
+  it("has no rule of the question block on the accent or on amber, two named ones apart", () => {
+    // The old card's rules are gone from the main sheet with the card.
+    expect(RULES.filter((rule) => rule.file === "styles.css" && /\.qa-/.test(rule.selector))).toEqual([]);
+    const question = RULES.filter((rule) => rule.file === "InlineQuestions.css" && /(^|[\s,(>+~])\.qa-/.test(rule.selector));
     expect(question.length).toBeGreaterThan(40);
-    for (const rule of question) expect(rule.body, rule.selector).not.toMatch(NOT_A_DECISION);
+    // The answer bubble is the person's own, in the wash their messages wear;
+    // answers that were not saved or not delivered are a problem, so amber.
+    const apart = new Set([".qa-said-body", '.qa-note[data-tone="warn"]']);
+    for (const rule of question) {
+      if (apart.has(rule.selector)) continue;
+      const drawn = rule.body.split(";").filter((line) => !/^\s*outline/.test(line)).join(";");
+      expect(drawn, rule.selector).not.toMatch(NOT_A_DECISION);
+    }
+    expect(named(".qa-said-body")[0].body).toMatch(/var\(--accent\)/);
+    expect(named('.qa-note[data-tone="warn"]')[0].body).toMatch(/color:\s*var\(--warn\)/);
   });
 
   it("has no rule of the permission, handover, route or pending-plan card on amber or on the accent, focus rings apart", () => {
@@ -305,7 +319,8 @@ describe("the cards that wait on a decision", () => {
 
   it("puts the label on a fill in --decide-fg, never a colour written out", () => {
     const fills = RULES.filter((rule) => /background:\s*var\(--decide\)\s*(;|$)/m.test(rule.body) && /(^|;)\s*color:/m.test(rule.body));
-    expect(fills.map((rule) => rule.selector)).toContain(".qa-option.is-on");
+    // Manga draws the question's button as a fill, like every answer a card leads with.
+    expect(fills.some((rule) => rule.selector.includes(".qa-submit"))).toBe(true);
     for (const rule of fills) expect(rule.body, rule.selector).toMatch(/(^|;)\s*color:\s*var\(--decide-fg\)/m);
   });
 
@@ -327,8 +342,8 @@ describe("the cards that wait on a decision", () => {
     // card stays a warning; the answer it leads with is a decision.
     const lead = RULES.filter((rule) => /\.safety-card\b[^,{]*\)? \.ask-btn\.is-primary/.test(rule.selector) || /:is\([^)]*\.safety-card[^)]*\) \.ask-btn\.is-primary/.test(rule.selector));
     expect(lead.map((rule) => rule.selector)).toEqual(expect.arrayContaining([
-      ":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary",
-      ":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary:hover",
+      ":is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary",
+      ":is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary:hover",
     ]));
     for (const rule of lead) {
       expect(rule.body, rule.selector).toMatch(/var\(--decide(-fg)?\)/);
@@ -337,7 +352,7 @@ describe("the cards that wait on a decision", () => {
     // It wins over the plain primary button, which is the accent: it names a
     // card as well as the button, and it comes later in the sheet.
     const plain = stylesCss.indexOf("\n.ask-btn.is-primary {");
-    const mine = stylesCss.indexOf("\n:is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn.is-primary {");
+    const mine = stylesCss.indexOf("\n:is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary {");
     expect(plain).toBeGreaterThan(-1);
     expect(mine).toBeGreaterThan(plain);
     expect(named(".ask-btn.is-primary")[0].body).toMatch(/var\(--accent\)/);
@@ -346,7 +361,7 @@ describe("the cards that wait on a decision", () => {
       expect(rule.body, rule.selector).not.toMatch(/--(accent|composer-accent|composer-ink|warn)\b/);
     }
     // The keyboard's ring on it is the decision colour too.
-    expect(named(":is(.permission-card, .access-card, .qa-card, .safety-card) .ask-btn:focus-visible")[0].body).toMatch(/outline-color:\s*var\(--decide\)/);
+    expect(named(":is(.permission-card, .access-card, .safety-card) .ask-btn:focus-visible")[0].body).toMatch(/outline-color:\s*var\(--decide\)/);
     // Monochrome: solid ink with its own label, like every card that asks.
     const manga = RULES.filter((rule) => rule.file === "manga.css" && rule.selector.includes(".safety-card") && rule.selector.includes(".ask-btn.is-primary"));
     expect(manga).toHaveLength(1);
@@ -357,7 +372,7 @@ describe("the cards that wait on a decision", () => {
   it("raises the quietest text one step on a tinted card", () => {
     const raised = RULES.filter((rule) => /--fg-3:\s*var\(--fg-2\)/.test(rule.body));
     expect(raised).toHaveLength(1);
-    for (const card of [".ask-card:not(.safety-card)", ".qa-card", ".handover-card.is-waiting", ".chat-plan[data-pending]"]) {
+    for (const card of [".ask-card:not(.safety-card)", ".handover-card.is-waiting", ".chat-plan[data-pending]"]) {
       expect(raised[0].selector).toContain(card);
     }
   });

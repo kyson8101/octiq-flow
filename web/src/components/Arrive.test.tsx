@@ -137,24 +137,24 @@ describe("a block inside the conversation", () => {
 describe("the cards above the message box", () => {
   const callbacks = {
     onPermissionAnswered: () => {}, onSafetyAnswered: () => {},
-    onQuestionsAnswered: () => {}, onContinue: async () => {},
+    onContinue: async () => {},
   };
   const ask = { id: "perm-1", toolName: "Bash", toolInput: { command: "pnpm test" } };
 
   it("draws a card that was waiting when the chat opened in place", () => {
-    const html = renderToStaticMarkup(<ChatRequests scope="chat-1" asks={[ask]} safetyBlocks={[]} questions={[]} {...callbacks} />);
+    const html = renderToStaticMarkup(<ChatRequests scope="chat-1" asks={[ask]} safetyBlocks={[]} {...callbacks} />);
     expect(html).toContain('<div class="arrive"><div class="arrive-body"><div class="pending-target" data-pending-keys="permission:perm-1">');
     expect(html).not.toContain("is-late");
   });
 
   it("keeps the card the first thing inside its pending target", () => {
     // `PendingActionBadge` rings `pending-target`'s first child: the card.
-    const html = renderToStaticMarkup(<ChatRequests scope="chat-1" asks={[ask]} safetyBlocks={[]} questions={[]} {...callbacks} />);
+    const html = renderToStaticMarkup(<ChatRequests scope="chat-1" asks={[ask]} safetyBlocks={[]} {...callbacks} />);
     expect(html).toMatch(/data-pending-keys="permission:perm-1"><div class="[^"]*ask-card/);
   });
 
   it("still adds nothing at all when nothing is asked", () => {
-    expect(renderToStaticMarkup(<ChatRequests scope="chat-1" asks={[]} safetyBlocks={[]} questions={[]} {...callbacks} />)).toBe("");
+    expect(renderToStaticMarkup(<ChatRequests scope="chat-1" asks={[]} safetyBlocks={[]} {...callbacks} />)).toBe("");
   });
 
   it("marks a refusal line late only when told it is", () => {

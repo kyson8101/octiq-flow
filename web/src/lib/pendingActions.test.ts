@@ -8,7 +8,7 @@ import {
   type PendingActionInput,
 } from "./pendingActions";
 import { PendingRequests, type RequestState } from "./pendingRequests";
-import type { Question } from "../components/UserQuestion";
+import type { Question } from "./question";
 
 const run = (id: string, over: Partial<OrchestrationRun> = {}): OrchestrationRun => ({
   id, objective: id, coordinatorChatKey: "chat:main", workspaceId: "p", rootPath: "/r",

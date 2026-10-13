@@ -1,0 +1,130 @@
+/* A card diagram in a reply (`components/CardDiagram`).
+
+   Thin frames in the border token on the card background, the words centred,
+   a small quiet arrow between rows. No colour of its own: a diagram is part
+   of what the agent said, and no state. Nothing is drawn behind the words
+   and nothing casts a shadow, so Manga and 中国风 need no rule of their own
+   beyond the frame's weight. */
+
+.dgm {
+  /* The nodes of a row stack when THIS is narrow, wherever it is drawn: a
+     transcript beside a run panel is narrower than its window. */
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0 0 10px;
+  animation: enter-fade var(--enter-duration) var(--enter-ease);
+}
+
+.dgm-row {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dgm-arrow {
+  display: grid;
+  place-items: center;
+  height: 28px;
+  color: var(--fg-3);
+}
+
+/* Side by side, at equal widths. */
+.dgm-nodes {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.dgm-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  text-align: center;
+}
+
+/* A conclusion: the words alone. */
+.dgm-node.is-plain {
+  border-color: transparent;
+  background: transparent;
+}
+
+.dgm-icon {
+  display: grid;
+  place-items: center;
+  height: 20px;
+  margin-bottom: 2px;
+  color: var(--fg-1);
+}
+
+.dgm-title {
+  max-width: 100%;
+  color: var(--fg-0);
+  font-size: 14.5px;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.dgm-note {
+  max-width: 100%;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* One column under about 480px of its own width. The arrows stay. */
+@container (max-width: 480px) {
+  .dgm-nodes {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- Still being written --------------------------------------------------
+   One quiet line. The rows that are whole so far are laid out under it,
+   unseen, so the block is already as tall as the diagram will be. */
+
+.dgm-pending {
+  position: relative;
+  min-height: 22px;
+  margin: 0 0 10px;
+}
+
+.dgm-pending .dgm {
+  margin: 0;
+  animation: none;
+}
+
+.dgm-wait {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: var(--fg-3);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.dgm-ghost { visibility: hidden; }
+
+/* Manga draws its frames by hand: 1.5px of ink, like every panel. */
+:root[data-theme="manga"] .dgm-node:not(.is-plain) {
+  border: 1.5px solid var(--ink);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dgm { animation: none; }
+}

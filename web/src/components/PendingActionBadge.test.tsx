@@ -14,6 +14,8 @@ import { Sidebar } from "./Sidebar";
 import { ProjectsPage } from "./ProjectsPage";
 import { ChatSearchPage } from "./ChatSearchPage";
 import { ChatRequests } from "./ChatRequests";
+import { AskPlacesContext, LooseQuestions } from "./InlineQuestions";
+import { placeQuestions } from "../lib/questionBlock";
 import { ChatPlanCards } from "./ChatPlanCards";
 import { OrchestrationPanel } from "./OrchestrationPanel";
 
@@ -140,24 +142,29 @@ describe("pending action badge", () => {
 
 describe("cards carry the identity a badge looks for", () => {
   const callbacks = {
-    onPermissionAnswered: () => {}, onSafetyAnswered: () => {}, onQuestionsAnswered: () => {}, onContinue: async () => {},
+    onPermissionAnswered: () => {}, onSafetyAnswered: () => {}, onContinue: async () => {},
   };
-  it("labels each request card, and one question card with every batch", () => {
+  /** Questions as the transcript draws the ones it holds no call for. */
+  const blocks = (questions: object[]) => renderToStaticMarkup(
+    <AskPlacesContext.Provider value={{ placement: placeQuestions([], questions as never), late: new Map(), onDone: () => {} }}>
+      <LooseQuestions />
+    </AskPlacesContext.Provider>);
+  it("labels each request card, and each question block with its own batch", () => {
     const html = renderToStaticMarkup(<ChatRequests asks={[{ id: "p1" }]} safetyBlocks={[{ id: "s1", title: "Blocked", reason: "r" } as never]}
-      questions={[{ id: "q1", batch: "b1", question: "One?" }, { id: "q2", batch: "b1", question: "Two?" }, { id: "q3", question: "Three?" }]}
       {...callbacks} />);
     expect(html).toContain('data-pending-keys="permission:p1"');
     expect(html).toContain('data-pending-keys="safety:s1"');
-    expect(html).toContain('data-pending-keys="question:b1 question:q3"');
+    const asked = blocks([{ id: "q1", batch: "b1", question: "One?" }, { id: "q2", batch: "b1", question: "Two?" }, { id: "q3", question: "Three?" }]);
+    expect(asked).toContain('data-pending-keys="question:b1"');
+    expect(asked).toContain('data-pending-keys="question:q3"');
   });
 
-  it("keys a question card by what it still needs: nothing once saved, the delivery once that fails", () => {
-    const card = (questions: object[]) => renderToStaticMarkup(<ChatRequests asks={[]} safetyBlocks={[]}
-      questions={questions as never} {...callbacks} />);
+  it("keys a question block by what it still needs: nothing once saved, the delivery once that fails", () => {
+    const card = blocks;
     const saved = { id: "q1", batch: "b1", question: "One?", answer: "Yes", status: "saved" };
-    // The saved card is still drawn (its Cancel is still there) but is no badge's target.
+    // The saved block is still drawn (its Cancel is still there) but is no badge's target.
     const quiet = card([saved, { ...saved, id: "q2" }]);
-    expect(quiet).toContain("Answers saved · waiting for agent");
+    expect(quiet).toContain("Answers saved · waiting for the agent");
     expect(quiet).not.toContain("data-pending-keys");
     expect(card([{ ...saved, status: "failed", error: "gone", retryable: true }])).toContain('data-pending-keys="delivery:b1"');
     expect(card([saved, { id: "q3", question: "Three?", status: "pending" }])).toContain('data-pending-keys="question:q3"');

@@ -75,6 +75,7 @@
 
 .status-row-icon[data-tone="warn"] { color: var(--warn); }
 .status-row-icon[data-tone="ok"] { color: var(--ok); }
+.status-row-icon[data-tone="decide"] { color: var(--decide); }
 
 /* The words give way before the label does, and neither is ever drawn
    outside the row: one line, cut with an ellipsis, whole behind the row's

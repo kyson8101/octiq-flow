@@ -2,25 +2,24 @@ import { PermissionAsk, type Ask } from "./PermissionAsk";
 import { AccessRequestCard, type AnswerAccess } from "./AccessRequestCard";
 import type { AccessRequest } from "../lib/accessRequest";
 import { SafetyBlock, type Continue, type SafetyBlockNotice } from "./SafetyBlock";
-import { UserQuestion, type Question } from "./UserQuestion";
-import { questionActions } from "../lib/pendingActions";
 import { useLateKeys } from "../lib/useArrival";
 import { Arrive } from "./Arrive";
 import "./PendingActionBadge.css";
 
 /** Keep each request mounted under its own identity while new requests arrive.
  *  Each card carries the pending-action keys (lib/pendingActions) it answers,
- *  so a badge in the chat list can find it; the wrapper draws no box. */
+ *  so a badge in the chat list can find it; the wrapper draws no box.
+ *
+ *  A question is not among them: it is drawn in the transcript, where it was
+ *  asked (`components/InlineQuestions`). */
 export function ChatRequests({
-  asks, safetyBlocks, questions, onPermissionAnswered, onSafetyAnswered,
-  onQuestionsAnswered, onContinue, accessRequests = [], onAccessAnswer, scope = "",
+  asks, safetyBlocks, onPermissionAnswered, onSafetyAnswered,
+  onContinue, accessRequests = [], onAccessAnswer, scope = "",
 }: {
   asks: Ask[];
   safetyBlocks: SafetyBlockNotice[];
-  questions: Question[];
   onPermissionAnswered: (id: string) => void;
   onSafetyAnswered: (id: string) => void;
-  onQuestionsAnswered: (ids: string[]) => void;
   onContinue: Continue;
   /** Asks for a higher access level: the agent's own, and the one an
    *  Antigravity refusal makes. Drawn only with a way to answer them. */
@@ -36,12 +35,7 @@ export function ChatRequests({
     ...asks.map((ask) => `permission:${ask.id}`),
     ...shownAccess.map((request) => `access:${request.id}`),
     ...safetyBlocks.map((block) => `safety:${block.id}`),
-    ...(questions.length > 0 ? [`question:${questions[0].id}`] : []),
   ]);
-  // One card answers every batch of this chat's questions, and is the target
-  // only of what they still need: a saved batch waiting for delivery, still
-  // drawn with its Cancel, is no badge's.
-  const questionKeys = [...questionActions(questions)].map(([identity, kind]) => `${kind}:${identity}`).join(" ") || undefined;
   return (
     <>
       {asks.map((ask) => (
@@ -66,13 +60,6 @@ export function ChatRequests({
           </div>
         </Arrive>
       ))}
-      {questions.length > 0 && (
-        <Arrive key={questions[0].id} late={late.has(`question:${questions[0].id}`)}>
-          <div className="pending-target" data-pending-keys={questionKeys}>
-            <UserQuestion questions={questions} onDone={onQuestionsAnswered} />
-          </div>
-        </Arrive>
-      )}
     </>
   );
 }

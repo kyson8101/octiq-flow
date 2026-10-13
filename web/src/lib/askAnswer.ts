@@ -20,6 +20,11 @@
  *  ever arrive through our own MCP server — one name, not a family. */
 const ASK_TOOL = "mcp__octiq__ask_user";
 
+/** Whether a call is the question tool, whatever its arguments hold yet. */
+export function isAskTool(name: string): boolean {
+  return name === ASK_TOOL;
+}
+
 /** The things that come back when nobody typed anything.
  *
  *  Every one of them is written by a machine, and each is quoted here by how it
@@ -29,12 +34,22 @@ const ASK_TOOL = "mcp__octiq__ask_user";
  *  person telling the agent something.
  *
  *  Sources, so a change to any of them is findable from here:
- *  - `UserQuestion.tsx` — closing the card without answering.
+ *  - the question card of older builds — closing it without answering.
  *  - `src-tauri/src/question.rs` — the wait running out, and (both sentences
  *    open the same way) nobody being there to ask in the first place.
+ *  - `src-tauri/src/question_store.rs` — the question cancelled, or the task
+ *    stopped.
  *  - `scripts/mcp/octiq-ask.cjs` — the browser not being there to ask. */
-const EXCUSES: { opens: string; means: string }[] = [
+const EXCUSES: { opens: string; means: string; later?: true }[] = [
   { opens: "The user closed this question", means: "closed without answering" },
+  { opens: "The user cancelled this question", means: "closed without answering" },
+  // The wait ran out with the questions still open (`NOT_IN_TIME`). They stay
+  // pending, and their answers come back later as a turn of the host's.
+  { opens: "The questions are saved and still waiting", means: "not answered in this turn", later: true },
+  { opens: "The question could not be delivered", means: "could not be asked" },
+  // A worker's questions go to its coordinator as a decision, never to the
+  // person (`agent_chat::route_worker_questions`).
+  { opens: "Your questions were routed to main-chat gate", means: "sent to the coordinator as a decision" },
   { opens: "The user did not answer in time", means: "not answered in time" },
   { opens: "The question timed out", means: "not answered in time" },
   { opens: "OctiqFlow is not reachable", means: "could not be asked" },
@@ -53,15 +68,22 @@ export type AskItem = {
   /** Why there is no answer, in words a reader can act on. Absent while the
    *  question is still open, because "still waiting" is not a failure. */
   unanswered?: string;
+  /** The call ended with the question still open, so an answer may have come
+   *  later, as a turn of the host's (`lib/questionBlock.answerTurn`). */
+  later?: true;
 };
 
 /** One item, read for a whole-result string that already belongs to it alone —
  *  the single-question case, whichever shape the call arrived in. */
-function readOne(question: string, said: string): AskItem {
+export function readOne(question: string, said: string): AskItem {
   if (!said) return { question, answer: "" };
   const excuse = EXCUSES.find((e) => said.startsWith(e.opens));
-  if (excuse) return { question, answer: "", unanswered: excuse.means };
+  if (excuse) return excused(question, excuse);
   return { question, answer: said };
+}
+
+function excused(question: string, excuse: (typeof EXCUSES)[number]): AskItem {
+  return { question, answer: "", unanswered: excuse.means, ...(excuse.later ? { later: true as const } : {}) };
 }
 
 /** Several questions, one result string shaped:
@@ -87,7 +109,7 @@ function readBatch(questions: string[], said: string): AskItem[] {
   if (!/(^|\n)A1:/.test(said)) {
     const excuse = EXCUSES.find((e) => said.startsWith(e.opens));
     return excuse
-      ? questions.map((question) => ({ question, answer: "", unanswered: excuse.means }))
+      ? questions.map((question) => excused(question, excuse))
       : questions.map((question) => ({ question, answer: said }));
   }
 
@@ -101,7 +123,7 @@ function readBatch(questions: string[], said: string): AskItem[] {
     const raw = (next ? rest.slice(0, next.index) : rest).trim();
 
     const excuse = EXCUSES.find((e) => raw.startsWith(e.opens));
-    return excuse ? { question, answer: "", unanswered: excuse.means } : { question, answer: raw };
+    return excuse ? excused(question, excuse) : { question, answer: raw };
   });
 }
 

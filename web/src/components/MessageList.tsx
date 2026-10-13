@@ -12,7 +12,7 @@
 // alternative is a reply where a subagent's thinking, tool calls and prose all
 // read as the main agent's own.
 import { readTaskBrief } from "../lib/taskBrief";
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -24,6 +24,12 @@ import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
 import { ReopenedChatContext, ReopenedNote } from "./ReopenedNote";
+import { AnswerBubble, AskInline, AskPlacesContext, ChatQuestionsContext, LooseQuestions, type AskPlaces } from "./InlineQuestions";
+import { askAnswer, isAskTool } from "../lib/askAnswer";
+import { answerTurnOf, isAnswerTurn, lateAnswerTo, lateAnswers, placeQuestions, saidLines } from "../lib/questionBlock";
+import { setRevealer } from "../lib/questionSight";
+import { CardDiagram, DiagramPending } from "./CardDiagram";
+import { DIAGRAM_LANG, diagramBlock, parseDiagram } from "../lib/cardDiagram";
 import { LiveArrivals, useLiveEntry } from "./Arrive";
 import { useLiveAppend } from "../lib/useArrival";
 import { useRunningCalls } from "./Background";
@@ -62,14 +68,28 @@ import {
   type ChatPlace,
 } from "../lib/chatPlace";
 
+/** Whether every fence of the markdown block being drawn was closed by the
+ *  reply itself. `closeFence` closes a half-arrived one so it draws as code,
+ *  and a code block cannot tell that from one the agent closed. */
+const FencesClosed = createContext(true);
+
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
  *  language ("language-rust"). */
 function CodeBlock({ children }: { children?: React.ReactNode }) {
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLPreElement>(null);
-  const child = children as { props?: { className?: string } } | undefined;
-  const lang = /language-(\w+)/.exec(child?.props?.className ?? "")?.[1] ?? "";
+  const child = children as { props?: { className?: string; children?: unknown } } | undefined;
+  const lang = /language-([\w-]+)/.exec(child?.props?.className ?? "")?.[1] ?? "";
+
+  // A card diagram that is not a block of its own (inside a list, a quote):
+  // `MarkdownBlock` never saw its fence, so it is read here. Anything that is
+  // not a closed, whole, valid diagram stays the code block it also is.
+  const closed = useContext(FencesClosed);
+  if (closed && lang === DIAGRAM_LANG && typeof child?.props?.children === "string") {
+    const diagram = parseDiagram(child.props.children);
+    if (diagram) return <CardDiagram diagram={diagram} />;
+  }
 
   return (
     <div className="code">
@@ -131,6 +151,9 @@ function Prose({ text, animate }: { text: string; animate: boolean }) {
           // Only the block currently arriving fades its words in; doing it to
           // settled blocks would replay the whole reply on every tick.
           animate={animate && i === blocks.length - 1}
+          // Still being written: arriving, or arrived and not typed out yet.
+          // A fence left open is then a block in progress, not a broken one.
+          writing={(animate || shown.length < text.length) && i === blocks.length - 1}
         />
       ))}
     </div>
@@ -223,23 +246,36 @@ const PROSE_COMPONENTS = {
 const MarkdownBlock = memo(function MarkdownBlock({
   text,
   animate,
+  writing,
 }: {
   text: string;
   animate: boolean;
+  writing: boolean;
 }) {
   const visualization = parseVisualizationReference(text);
   if (visualization) return <VisualizationLink reference={visualization} />;
 
+  // A card diagram (`lib/cardDiagram`). Only a block that is closed, parses
+  // and validates is drawn. While it is still being written it is one quiet
+  // line holding the height of the rows written so far; anything else falls
+  // through to the code block below.
+  const drawn = diagramBlock(text, writing);
+  if (drawn?.kind === "diagram") return <CardDiagram diagram={drawn.diagram} />;
+  if (drawn) return <DiagramPending rows={drawn.rows} />;
+
+  const whole = closeFence(text);
   return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      // Paths first: the word fade cuts text into one span per word, and a
-      // path cut up that way is no longer there to find.
-      rehypePlugins={animate ? [rehypeFilePaths, rehypeWordFade] : [rehypeFilePaths]}
-      components={PROSE_COMPONENTS}
-    >
-      {closeFence(text)}
-    </Markdown>
+    <FencesClosed.Provider value={whole === text}>
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        // Paths first: the word fade cuts text into one span per word, and a
+        // path cut up that way is no longer there to find.
+        rehypePlugins={animate ? [rehypeFilePaths, rehypeWordFade] : [rehypeFilePaths]}
+        components={PROSE_COMPONENTS}
+      >
+        {whole}
+      </Markdown>
+    </FencesClosed.Provider>
   );
 });
 
@@ -270,6 +306,9 @@ function BlockView({
    *  its file's name alone. Empty where no header applies. */
   folder?: string;
 }) {
+  // Absent wherever the person cannot answer (a worker's chat, a subagent's
+  // view): an `ask_user` call there keeps its tool row.
+  const places = useContext(AskPlacesContext);
   // The CLI's own settings list, drawn as settings rather than as the thirty
   // lines of `key=a|b|c` it arrives as. It is the whole of the message when it
   // is there, so nothing else on the turn is lost by replacing it.
@@ -283,6 +322,13 @@ function BlockView({
   // Thinking is watched live above the composer and left out of the transcript;
   // `groupRows` drops it, so this is only ever the belt to that braces.
   if (block.kind === "thinking") return null;
+  // A question put to the person is drawn where it was asked: its options
+  // while it waits, the answer once there is one. A call that FAILED keeps its
+  // tool row, which is where the failure can be read.
+  if (places && block.state !== "error" && isAskTool(block.name)) {
+    const asked = askAnswer(block.name, block.args, block.result);
+    return <AskInline toolId={block.id} asked={asked} late={asked ? lateAnswerTo(places.late, asked) : null} />;
+  }
   const agentId = agentByTool?.get(block.id);
   const own = kids.get(block.id);
   return (
@@ -883,6 +929,21 @@ function TurnView({
     for (const m of messages) for (const a of m.attachments ?? []) seen.set(a.path, a);
     return [...seen.values()];
   }, [messages]);
+
+  // Answers that came back after their `ask_user` call had ended arrive as a
+  // turn of the host's. It is the person's answer and not a message of
+  // theirs: the bubble alone, with nothing on it that acts.
+  const lateAnswer = role === "user" ? answerTurnOf(message) : null;
+  const lateLines = lateAnswer ? saidLines(lateAnswer) : [];
+  if (lateLines.length) {
+    const waits = !message.echo && !message.takenUp;
+    return (
+      <article className={`msg msg-answer ${fresh ? "is-new" : ""}`}>
+        <AnswerBubble lines={lateLines}
+          status={waits && message.queueLost ? "Not delivered" : waits && message.delivery === "queued" ? "Sent when the current reply ends" : undefined} />
+      </article>
+    );
+  }
 
   if (relay && !wrapUp) {
     return (
@@ -1766,6 +1827,20 @@ const MessageListBody = function MessageList({
   const live = useMemo(() => ({ current: liveNow }), [liveNow]);
   const mapTurns = useMemo(() => conversationMapTurns(visibleTurns), [visibleTurns]);
 
+  // Where each pending question is drawn: at the call that asked it, or at
+  // the end when these turns do not hold that call. Asked of the turns
+  // actually drawn, so a call behind "Load earlier messages" is not a place.
+  const chatQuestions = useContext(ChatQuestionsContext);
+  const places = useMemo<AskPlaces | null>(() => {
+    if (!chatQuestions) return null;
+    const drawn = visibleTurns.flat();
+    return {
+      placement: placeQuestions(drawn, chatQuestions.questions),
+      late: lateAnswers(drawn),
+      onDone: chatQuestions.onDone,
+    };
+  }, [chatQuestions, visibleTurns]);
+
   // A map point is another way of deliberately reading back. Its programmatic
   // scroll does not carry a wheel/touch gesture, so tell the transcript's own
   // follow logic about the intent before the first scroll event arrives.
@@ -1776,6 +1851,19 @@ const MessageListBody = function MessageList({
     stick.current = false;
     setAway(true);
   };
+
+  // The row above the composer goes to a question out of view through here:
+  // the same deliberate reading back as a map point, so the transcript stops
+  // following the stream before it moves.
+  const jumped = useRef(mapJumped);
+  jumped.current = mapJumped;
+  useEffect(() => {
+    if (!chatQuestions) return;
+    return setRevealer((el) => {
+      jumped.current();
+      el.scrollIntoView({ block: "center", behavior: reducedMotion() ? "auto" : "smooth" });
+    });
+  }, [!!chatQuestions]);
 
   // A turn has arrived: take the conversation up to meet it.
   //
@@ -1826,6 +1914,7 @@ const MessageListBody = function MessageList({
       {/* Which chat this transcript is: a reopened task's line offers its
           Stop only in the chat that coordinates its run. */}
       <ReopenedChatContext.Provider value={conversationId ? `chat:${conversationId}` : null}>
+      <AskPlacesContext.Provider value={places}>
       <div className="msgs-inner" ref={innerRef}>
         {hasMore && (
           <div className="history-more">
@@ -1848,7 +1937,7 @@ const MessageListBody = function MessageList({
               busy={busy}
               tints={tints}
               fresh={fresh.has(turn[0].id)}
-              mapTurnId={turn[0].role === "user" ? turn[0].id : undefined}
+              mapTurnId={turn[0].role === "user" && !isAnswerTurn(turn[0].turnId) ? turn[0].id : undefined}
               hostName={hostName}
               hostPersona={hostPersona}
               onCancelQueued={onCancelQueued}
@@ -1865,6 +1954,8 @@ const MessageListBody = function MessageList({
           </Fragment>
         ))}
         {compactingSince !== undefined && <Compacting since={compactingSince} />}
+        {/* A pending question whose call these turns do not hold. */}
+        <LooseQuestions />
         {tail}
         {/* There were working dots here, in a slot held open so the transcript
             did not step up and down as they came and went several times a
@@ -1881,6 +1972,7 @@ const MessageListBody = function MessageList({
             was streaming. */}
         <div ref={endRef} />
       </div>
+      </AskPlacesContext.Provider>
       </ReopenedChatContext.Provider>
       </LiveArrivals.Provider>
       {/* Outside `.msgs-inner` and after it: it takes no height and must not

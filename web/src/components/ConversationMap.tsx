@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { Message } from "../lib/chat";
 import { WRAP_UP_LABEL, isWrapUpTurn } from "../lib/chatComplete";
+import { isAnswerTurn } from "../lib/questionBlock";
 
 import "./ConversationMap.css";
 
@@ -41,6 +42,9 @@ function previewText(messages: Message[]): string {
 export function conversationMapTurns(turns: Message[][]): ConversationMapTurn[] {
   return turns.flatMap((turn, index) => {
     if (turn[0]?.role !== "user") return [];
+    // An answer to the agent's question is not a message the person sent, and
+    // is no point on the map.
+    if (isAnswerTurn(turn[0].turnId)) return [];
 
     const answer = turns.slice(index + 1).find((next) => next[0]?.role === "assistant");
     return [

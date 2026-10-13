@@ -20,6 +20,14 @@
  *  optional language after it. */
 const FENCE = /^\s{0,3}(`{3,}|~{3,})(.*)$/;
 
+/** Match a line against `FENCE`, whatever it ends with. A reply written with
+ *  Windows line endings leaves a `\r` on every line once it is split on
+ *  `\n`, and `.` does not match one: such a fence was not seen as a fence at
+ *  all, so a blank line inside it cut its block in two. */
+function fenceOf(line: string): RegExpExecArray | null {
+  return FENCE.exec(line.endsWith("\r") ? line.slice(0, -1) : line);
+}
+
 /** Splits `text` into top-level markdown blocks, in order.
  *
  *  Joining the result with "\n\n" is NOT guaranteed to reproduce the input
@@ -45,7 +53,7 @@ export function splitBlocks(text: string): string[] {
   };
 
   for (const line of lines) {
-    const match = FENCE.exec(line);
+    const match = fenceOf(line);
 
     if (fence) {
       current.push(line);
@@ -95,7 +103,7 @@ export function closeFence(block: string): string {
   const lines = block.split("\n");
   let fence: { marker: string; length: number } | null = null;
   for (const line of lines) {
-    const match = FENCE.exec(line);
+    const match = fenceOf(line);
     if (!match) continue;
     if (!fence) {
       fence = { marker: match[1][0], length: match[1].length };

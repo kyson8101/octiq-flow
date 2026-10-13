@@ -552,6 +552,111 @@ pending key and what the buttons send are the card's.
   the model's colour and which came up gold under Claude
   (`lib/decideColour.test.ts`).
 
+### The agent's questions are drawn where they were asked
+
+An `ask_user` question is not a card above the composer. It is drawn in the
+transcript, at the call that asked it (`components/InlineQuestions`,
+`lib/questionBlock`), with no card round it: each question a heading line,
+its options radio rows (checkbox rows when `multiple`), an option's
+description under its label, a quiet `Recommended` in words, and one
+full-width button in `--decide`. Every question of one call is one block
+with one button. The host's contract is what it was: `question_pending`,
+the `user-question` events, `question_answer_batch`, `question_cancel`,
+`question_retry`.
+
+- **Where a block goes is worked out from the words** (`placeQuestions`).
+  The host's record carries no tool-use id, so a pending batch finds its
+  call by the questions it asked, in order, among the calls that carry no
+  answer yet. A batch whose call the page does not draw (asked before the
+  turns it holds, behind `Load earlier messages`, a subagent's call, a
+  provider with no such call such as Codex's native question) is drawn at
+  the end of the transcript. Asked of the turns actually drawn, so a
+  question is never placed where it cannot be seen.
+- **It is drawn only where the person can answer** (`ChatQuestionsContext`,
+  which `App` provides for a chat that is not a worker's). A worker asks
+  through a gate (`route_worker_questions`): the host makes no question
+  record for it and no page ever drew one, so in a worker's chat, the task
+  chat beside a run and a subagent's view the call keeps its tool row.
+- **The recommended option is selected when the block arrives**, and a
+  question with none starts with nothing selected (`startPick`). Only the
+  person's press sends it. The button stays off (`aria-disabled`, never
+  removed from the keyboard) until every question has an answer, and the
+  reason is in words under it (`submitReason`), where it moves nothing.
+  `Other…` is the last row of every question with options and shows its
+  text box under itself; a question with no options shows the box directly.
+- **It is never answered by the press or the key that was already going
+  on.** It arrives under the pointer with an answer already selected, so:
+  it never takes the focus (no `autoFocus`; the composer keeps it), the
+  button and Dismiss drop a key held down (`dropHeld`), and both drop a
+  pointer press that repeats the one made before the block was there
+  (`lastPointerPress` as the block mounts, `strayAnswer`). A new control
+  that answers takes the same two.
+- **Answered, it is a quiet line and the person's bubble** (`AnswerBubble`):
+  the bare answer for one question, the question and its answer for
+  several. The bubble is drawn from what the host holds, never from what
+  the page remembers, so a reload and a second tab draw the same: the
+  question's record while the host lists it, the call's result once it has
+  one (`lib/askAnswer`), or the host's own turn when the answer came after
+  the call had ended. That turn (`octiq-question-<record>`,
+  `isAnswerTurn`, `answerTurn`) is drawn as the bubble and not as the
+  host's words, where it stands in the conversation.
+- **The bubble is not a message.** No edit, retry, take-back or copy on it,
+  no point on the conversation map, not grouped as a turn, and never
+  returned to the composer (`reclaim` skips an answer turn).
+- **The half-states keep their own words** (`answeredNote`): `Answers saved
+  · waiting for the agent` only for what is on disk, `Answers sent · not
+  saved` with the host's reason behind a disclosure, `Answers need
+  attention` with `Retry delivery`. `Cancel pending delivery` and `Dismiss
+  without answering` are `question_cancel`.
+- **Out of view, one row above the composer says so** (`lib/questionSight`,
+  `QuestionWaitingRow`): `1 question waiting`, while a block that still asks
+  is not on screen, and not while it is. One `IntersectionObserver`, no
+  scroll listener. Pressing the row goes to the block and puts the keyboard
+  on its first control; it presses nothing.
+- **Nothing else reads a question differently.** The sidebar's badge,
+  `pendingActions.heldCards`, `lib/runWaits` and `lib/chatWait` go on
+  reading it as a held card from the page's one list; the block carries the
+  same `data-pending-keys` the card did. Do not add a second reader.
+
+### A reply can hold a card diagram
+
+A fenced code block whose info string is `octiq-diagram` is drawn as a
+diagram of framed cards (`lib/cardDiagram`, `components/CardDiagram`). Its
+body is JSON, `{ "rows": [ [ { "title", "note"?, "icon"?, "plain"? } ] ] }`:
+rows run top to bottom with an arrow between them, the nodes of a row sit
+side by side at equal widths and stack under about 480px of the diagram's
+own width (a container query, so a transcript beside a run panel stacks
+too), and `plain` draws a node without a frame. Limits: 8 rows, 4 nodes a
+row, title 60 characters, note 120. Icons are a fixed set of 24 names
+(`DIAGRAM_ICONS`); an unknown name draws none.
+
+- **Only a block that is closed, parses and validates is drawn**
+  (`diagramBlock`, `parseDiagram`). Anything else is the ordinary code
+  block: not JSON, a wrong type, over a limit, a block the reply ended
+  without closing. Nothing is repaired and nothing is cut to fit. A block
+  longer than any diagram can be is refused before it is parsed.
+- **Strings are text.** The validator hands back strings and the renderer
+  draws them as text; nothing of a diagram is ever set as HTML.
+- **While it is being written it is one quiet line**, over the rows written
+  so far drawn unseen (`partialRows`, `DiagramPending`), so the block is
+  already as tall as the diagram will be and nothing below moves when its
+  fence closes. Counted by the node, because the last row closes in the
+  same few characters as the fence.
+- **It has no colour of its own**: the border token on the card background,
+  no shadow, nothing behind the words. It is a list to a screen reader,
+  labelled with its titles in order.
+- **Agents are told in one paragraph, and never on a command line**
+  (`DIAGRAM_PROMPT` in `agent_provider.rs`, word for word
+  `DIAGRAM_INSTRUCTIONS` in `scripts/mcp/octiq-ask.cjs`; a test on each
+  side and `cardDiagram.test.ts` hold the three together). Claude reads it
+  from the MCP server's instructions, over stdio, where it is the FIRST
+  thing: Claude Code keeps only the first 4,096 characters of a server's
+  instructions (seen in a live chat on 2026-10-13, cut mid-word there), and
+  those were already 4,946 long. Codex's app-server reads it
+  in its developer instructions (a message on stdin), Antigravity in the
+  plugin's rules file. `codex exec` takes its instructions as an argument
+  and Pi has no host rules, so neither is told. A front desk is not told.
+
 ### A card that waits on the person arrives folded
 
 Folded, a decision card is the ask, its short facts and the buttons. What is
@@ -709,10 +814,12 @@ folded line and are not part of this.
   through. The run panel's disclosures are remembered by the same guard (see
   **An action that stops or starts work is never fired by the key or press
   that brought it on screen**).
-- **The question card folds nothing.** Its options and what each means are the
-  decision, and it has controls on every side of where a disclosure could go,
-  so opening or shutting one would slide a control under the pointer. Its
-  folded state is the strip it arrives as.
+- **The question surface folds nothing.** It is no card any more (see **The
+  agent's questions are drawn where they were asked**), and the rule is the
+  same: its options and what each means are the decision, and it has
+  controls on every side of where a disclosure could go, so opening or
+  shutting one would slide a control under the pointer. Only `Other…` grows,
+  under itself.
 - **State is the component's.** Folded for every new card; one the person
   opened stays open while it is on screen, by the id of what it asks. Nothing
   is remembered past that, and there is no setting.
@@ -945,7 +1052,10 @@ Four things report above the composer and ask nothing: the chat's folder is
 gone (`RemovedFolderBanner`), the chat is completing (`ChatCompletionLine`),
 background notices (`ChatNotices`), the run's progress (`RunProgressStrip`).
 They are one group (`components/ChatStatus`), mounted in that order directly
-on the composer, under the cards that ask.
+on the composer, under the cards that ask. A fifth row is first in the group
+and is there only while it has something to point at: `1 question waiting`
+(`QuestionWaitingRow`), for a question in the transcript that is out of
+view.
 
 - **A row is one line, with no box and no fill of its own.** The same
   height (28px), the same left edge and the same icon column, which is the
@@ -975,8 +1085,11 @@ on the composer, under the cards that ask.
   laptop matches). Nothing is reachable by hover alone.
 - **The group grows upward**, so a row arriving, or one opening, never
   moves the composer. Only the notices' panel can scroll, and only down.
-- **A card that asks is not a row of this group** (permission, question,
-  access, safety) and keeps its look.
+- **A card that asks is not a row of this group** (permission, access,
+  safety) and keeps its look. A question is neither: it is drawn in the
+  transcript, and the row that points at it asks nothing itself. That row is
+  the one whose words, not only its dot, are a state's colour (`--decide`),
+  as the composer's waiting words are.
 
 ### What a chat runs at is beside the agent's name
 

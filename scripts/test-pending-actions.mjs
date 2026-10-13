@@ -318,7 +318,8 @@ try {
   for (const id of ["q3", "q4"]) send("question-updated", asked(id, "batch-2", id === "q3" ? "Ship today?" : "Tell the team?", "saved"));
   await eventually(() => badge(page, "Pick a layout").count(), 0, "all answers saved");
   assert.equal(await page.locator(".sidebar .chat.has-pending").filter({ has: page.locator(".chat-title", { hasText: "Pick a layout" }) }).count(), 0);
-  await page.locator(".qa-card").getByText("Answers saved · waiting for agent").waitFor();
+  // The questions are drawn in the transcript now (`InlineQuestions`).
+  await page.locator(".qa-turn").getByText("Answers saved · waiting for the agent").first().waitFor();
   await page.screenshot({ path: join(artifacts, "desktop-saved-no-badge.png") });
   // A reload asks question_pending, which still lists the saved records.
   questions = [asked("q2", "batch-1", "Which colour?", "saved"), asked("q3", "batch-2", "Ship today?", "saved"), asked("q4", "batch-2", "Tell the team?", "saved")];
@@ -333,10 +334,9 @@ try {
   assert.match(await badge(page, "Pick a layout").getAttribute("aria-label"), /1 failed answer delivery/);
   await badge(page, "Pick a layout").click();
   results.delivery = await waitForFocus(page, "delivery:batch-2");
-  await page.locator(".qa-card .qa-restore").click();
   await page.getByRole("button", { name: "Retry delivery" }).waitFor();
-  // The card opens out of its strip with an animation; shoot it settled.
-  await page.waitForFunction(() => document.querySelector(".qa-card")?.getAnimations({ subtree: true }).length === 0);
+  // The block comes in with an animation; shoot it settled.
+  await page.waitForFunction(() => document.querySelector(".qa-turn")?.getAnimations({ subtree: true }).length === 0);
   assert.deepEqual(calls.filter(({ cmd }) => /^question_(retry|cancel|answer)/.test(cmd)), [], "showing a failed card retries nothing");
   await page.screenshot({ path: join(artifacts, "desktop-delivery-failed-revealed.png") });
   // The retry is taken: saved again, then delivered.
@@ -344,7 +344,7 @@ try {
   await eventually(() => badge(page, "Pick a layout").count(), 0, "retried delivery");
   questions = [];
   for (const id of ["q2", "q3", "q4"]) send("question-expired", { id });
-  await eventually(() => page.locator(".qa-card").count(), 0, "delivered answers leave");
+  await eventually(() => page.locator(".qa-turn .qa-block, .qa-turn .qa-asked-actions").count(), 0, "delivered answers leave");
 
   // 10. A phone: the list is its own screen, every badge fits its row, and
   //     tapping one lands on the card in the chat.

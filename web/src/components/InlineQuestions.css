@@ -1,0 +1,418 @@
+/* The agent's questions, in the conversation (`components/InlineQuestions`).
+
+   No card: no frame, no fill, no header. A question is a heading line in the
+   reply's own ink, its options are rows, and the one thing drawn in the
+   decision colour is what the person does about it: the mark of a selected
+   row and the button. Never the accent, which is a turn in flight and, in
+   the composer, the model's colour. */
+
+.qa-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  margin: 6px 0 4px;
+}
+
+/* A block with no call to stand at is a child of the transcript's column,
+   which spaces its own children. */
+.qa-turn.is-loose { margin: 0; }
+
+.qa-block {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.qa-q {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.qa-q-title {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* ---- The rows ------------------------------------------------------------- */
+
+.qa-rows {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* The whole row is the target, for a pointer and a finger alike. */
+.qa-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 0;
+  cursor: pointer;
+}
+
+/* The real control, over its drawn mark: the keyboard, a screen reader and a
+   form all meet the native one. */
+.qa-row input {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.qa-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+  transition: border-color 140ms ease-out, background-color 140ms ease-out;
+}
+
+.qa-mark::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--decide-fg);
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+
+.qa-row input[type="checkbox"] + .qa-mark { border-radius: 5px; }
+
+/* A tick, drawn as two sides of a box. */
+.qa-row input[type="checkbox"] + .qa-mark::after {
+  width: 9px;
+  height: 5px;
+  margin-top: -2px;
+  border: solid var(--decide-fg);
+  border-width: 0 0 2px 2px;
+  border-radius: 0;
+  background: none;
+  transform: rotate(-45deg);
+}
+
+.qa-row input:checked + .qa-mark {
+  border-color: var(--decide);
+  background: var(--decide);
+}
+
+.qa-row input:checked + .qa-mark::after { opacity: 1; }
+
+.qa-row input:focus-visible + .qa-mark {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .qa-row:hover input:not(:checked):not(:disabled) + .qa-mark { border-color: var(--fg-2); }
+}
+
+.qa-row input:disabled { cursor: default; }
+.qa-row:has(input:disabled) { cursor: default; opacity: 0.6; }
+
+.qa-row-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.qa-row-label {
+  color: var(--fg-0);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* What picking it means, when the label alone does not say. */
+.qa-row-desc {
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* The agent's own pick: said in words, quietly. */
+.qa-tip {
+  margin-left: 8px;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.qa-row.is-other .qa-row-label { color: var(--fg-1); }
+
+/* Under `Other…`, in line with the rows' words. */
+.qa-other {
+  padding: 2px 0 6px 32px;
+  animation: enter-fade var(--enter-duration) var(--enter-ease);
+}
+
+.qa-input {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 14px;
+  transition: border-color 140ms ease-out;
+}
+
+.qa-input:focus-visible {
+  border-color: var(--decide);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* ---- The one button -------------------------------------------------------- */
+
+/* The decision colour as a tint under its own outline, like every answer a
+   card leads with: never a solid block. */
+.qa-submit {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--decide);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
+}
+
+@media (hover: hover) {
+  .qa-submit:not([aria-disabled="true"]):hover { background: color-mix(in srgb, var(--decide) 28%, var(--bg-1)); }
+}
+
+.qa-submit:focus-visible,
+.qa-dismiss:focus-visible,
+.qa-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Off until every question has an answer; the line under it says why. */
+.qa-submit[aria-disabled="true"] {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: default;
+}
+
+.qa-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  /* Up against the button it belongs to, whatever the block's own gap. */
+  margin-top: -10px;
+  min-height: 20px;
+}
+
+.qa-why {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.qa-dismiss,
+.qa-link {
+  flex: 0 0 auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 3px;
+  transition: color 140ms ease-out;
+}
+
+@media (hover: hover) {
+  .qa-dismiss:not([aria-disabled="true"]):hover,
+  .qa-link:not([aria-disabled="true"]):hover { color: var(--fg-0); }
+}
+
+.qa-dismiss[aria-disabled="true"],
+.qa-link[aria-disabled="true"] { cursor: default; opacity: 0.6; }
+
+/* ---- Answered --------------------------------------------------------------- */
+
+/* The questions once they ask nothing: quiet lines on a hairline, in the
+   reply's own column. */
+.qa-asked {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--fg-3) 30%, transparent);
+  animation: enter-fade var(--enter-duration) var(--enter-ease);
+}
+
+.qa-asked-label {
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.qa-asked-q {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.qa-note {
+  margin: 2px 0 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.qa-note[data-tone="warn"] { color: var(--warn); }
+
+.qa-note-why {
+  margin-top: 2px;
+  color: var(--fg-2);
+}
+
+.qa-note-why summary {
+  width: max-content;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.qa-note-why summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.qa-note-why p { margin: 2px 0 0; }
+
+.qa-asked-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 4px;
+}
+
+.qa-asking {
+  margin: 0;
+  color: var(--fg-3);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* The answer, as the person's bubble: on the right, as wide as what it says.
+   The same wash their own messages wear, and none of a message's controls. */
+.qa-said {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+  animation: enter-rise var(--enter-duration) var(--enter-ease);
+}
+
+.qa-said-body {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  padding: 10px 17px;
+  border-radius: 21px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-1));
+  color: var(--fg-0);
+}
+
+.qa-said-line {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.qa-said-line + .qa-said-line { margin-top: 4px; }
+
+.qa-said-q { color: var(--fg-2); }
+.qa-said-line.is-none { color: var(--fg-2); }
+
+.qa-said-status {
+  margin: 0;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* A turn of the host's that carried a late answer back: the same bubble, in
+   the transcript's column. */
+.msg-answer {
+  align-self: stretch;
+  min-width: 0;
+}
+
+/* ---- The row above the composer -------------------------------------------- */
+
+/* The one row of that group that points at something waiting on the person,
+   so its words are the decision colour, as the composer's waiting words are. */
+.qa-waiting { animation: status-row-in 180ms ease-out; }
+.qa-waiting .status-row-label { color: var(--decide); }
+
+.qa-waiting-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* A finger gets a taller row. */
+@media (pointer: coarse) {
+  .qa-row { min-height: 44px; padding: 11px 0; }
+  .qa-row input { top: 12px; }
+  .qa-submit { min-height: 44px; }
+  .qa-input { min-height: 44px; font-size: 16px; }
+  .qa-dismiss, .qa-link { padding: 10px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qa-other, .qa-asked, .qa-said, .qa-waiting { animation: none; }
+  .qa-mark, .qa-mark::after, .qa-input, .qa-submit, .qa-dismiss, .qa-link { transition: none; }
+}

@@ -12,12 +12,14 @@
 //   outage card (`kind: "outage"`: Claude's check gave no verdict at all) has
 //   nothing to review, so it is its own calmer kind, under the same key the
 //   card carries;
-// - an unanswered question (`question_pending`), one per card: a batch asked
-//   in one call is one card, and stays until its last question is answered.
+// - an unanswered question (`question_pending`), one per call: a batch asked
+//   in one call is one block in the transcript (`components/InlineQuestions`),
+//   and stays until its last question is answered. It is read here as a held
+//   card like the others, wherever it is drawn.
 //   The host keeps an answered call listed until its answers reach the agent:
 //   `saved` is that wait, and asks nothing of the person. `failed` (delivery
 //   failed or could not be confirmed) is never re-sent on its own — only the
-//   card's Retry or Cancel closes it — so it is an action, but a different
+//   block's Retry or Cancel closes it — so it is an action, but a different
 //   one: its answers are in, and it is never called unanswered;
 // - whatever a run waits on the person for, as `lib/runWaits` reads the
 //   ledger: an open decision gate the host says is theirs (keyed by gate id),
@@ -42,7 +44,7 @@
 import { waitsOnPerson } from "./handover";
 import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
 import { ledgerWaits, type LedgerWaits, type Waiting } from "./runWaits";
-import type { Question } from "../components/UserQuestion";
+import type { Question } from "./question";
 
 export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "plan" | "handover";
 
@@ -86,7 +88,7 @@ export function isQuietWorkerRefusal(card: Pick<Request, "provider" | "kind" | "
   return card.provider === "claude" && card.kind !== "outage" && !canAllow;
 }
 
-/** What one question card still needs, per `batch || id`: `question` while any
+/** What one question block still needs, per `batch || id`: `question` while any
  *  of its questions is unanswered (a status-less one comes from a server older
  *  than the durable store, which only ever lists unanswered questions), else
  *  `delivery` when its delivery failed, else nothing — saved and on its way.
@@ -288,7 +290,7 @@ export function pendingDescription(actions: readonly PendingAction[]): string {
 }
 
 /** The selector a revealed card is found by. Several keys can share one
- *  element: a question card holds every batch of its chat. */
+ *  element: a question block carries its own and its delivery's. */
 export function pendingSelector(key: string): string {
   return `[data-pending-keys~="${key.replace(/["\\]/g, "\\$&")}"]`;
 }

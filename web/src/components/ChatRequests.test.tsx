@@ -5,22 +5,24 @@ import { ChatRequests } from "./ChatRequests";
 
 const callbacks = {
   onPermissionAnswered: () => {}, onSafetyAnswered: () => {},
-  onQuestionsAnswered: () => {}, onContinue: async () => {},
+  onContinue: async () => {},
 };
 
 describe("ChatRequests", () => {
   it("adds no layout container when there is no request", () => {
-    expect(renderToStaticMarkup(<ChatRequests asks={[]} safetyBlocks={[]} questions={[]} {...callbacks} />)).toBe("");
+    expect(renderToStaticMarkup(<ChatRequests asks={[]} safetyBlocks={[]} {...callbacks} />)).toBe("");
   });
 
-  it("keeps permissions and the question batch visible together", () => {
+  it("draws a permission, and no question: that is the transcript's", () => {
+    // A question is drawn where it was asked (`InlineQuestions`); this takes
+    // none, so a second copy cannot come back above the composer.
     const html = renderToStaticMarkup(<ChatRequests
       asks={[{ id: "permission", toolName: "Write", toolInput: { file_path: "/repo/app.ts" } }]}
-      safetyBlocks={[]} questions={[{ id: "question", question: "Which layout?" }]}
+      safetyBlocks={[]}
       {...callbacks}
     />);
     expect(html).toContain("Permission needed");
     expect(html).toContain("/repo/app.ts");
-    expect(html).toContain("Which layout?");
+    expect(html).not.toContain("qa-");
   });
 });
