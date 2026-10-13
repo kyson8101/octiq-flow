@@ -1717,6 +1717,18 @@ pub fn lead_for_chat(path: &Path, chat_key: &str) -> Result<Option<LeadRecord>, 
         .find(|record| record.chat_key == chat_key))
 }
 
+/// What the roster says of the agent whose own conversation `chat_key` is
+/// (`registered_access_of_chat`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Registered {
+    /// The access the agent is registered with now.
+    pub access: Access,
+    /// The one project a project-scoped agent works in, which is also the
+    /// project its lead record puts this conversation in. `None` for a
+    /// global agent, whose scope covers every project.
+    pub only_in: Option<String>,
+}
+
 /// The access the agent behind `chat_key` is registered with, as the roster
 /// stands now: the level a new process for that conversation is never
 /// started below (`agent_chat::start_session`).
@@ -1725,7 +1737,17 @@ pub fn lead_for_chat(path: &Path, chat_key: &str) -> Result<Option<LeadRecord>, 
 /// agent is no longer registered, and for a front desk's chat, which is
 /// launched read-only whatever its registration says. A roster that cannot
 /// be read is an error, never "nobody is registered".
-pub fn registered_access_of_chat(path: &Path, chat_key: &str) -> Result<Option<Access>, String> {
+///
+/// `None` too when the agent's scope as it is NOW does not cover the
+/// project the lead record put the conversation in: an agent moved to
+/// another project is no authority for the level of the chat it left
+/// behind (the same question `lead_brief` asks before a first message,
+/// `visible_in`). The chat is still that agent's conversation: `identity`
+/// and the turn brief do not ask this.
+pub fn registered_access_of_chat(
+    path: &Path,
+    chat_key: &str,
+) -> Result<Option<Registered>, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let stored = read(path)?;
     if stored
@@ -1738,11 +1760,16 @@ pub fn registered_access_of_chat(path: &Path, chat_key: &str) -> Result<Option<A
     let Some(record) = stored.leads.iter().find(|r| r.chat_key == chat_key) else {
         return Ok(None);
     };
-    Ok(stored
-        .agents
-        .iter()
-        .find(|agent| agent.id == record.lead_id)
-        .map(|agent| agent.access))
+    let Some(agent) = stored.agents.iter().find(|a| a.id == record.lead_id) else {
+        return Ok(None);
+    };
+    if !agent.visible_in(Some(&record.project_id)) {
+        return Ok(None);
+    }
+    Ok(Some(Registered {
+        access: agent.access,
+        only_in: agent.project_id.clone(),
+    }))
 }
 
 /// The registered agent named as a task's assignee, by id or by exact

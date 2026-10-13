@@ -1361,60 +1361,63 @@ impl ChatManager {
         }
     }
 
-    /// The access level a NEW process for the chat `key` is started at:
-    /// never below the access its agent is registered with.
+    /// The access the agent whose OWN CONVERSATION the chat `key` is stands
+    /// registered with, when the host is the authority for that chat's
+    /// level. `None` for every other chat.
     ///
-    /// A registered agent's chat runs on that agent's registered settings,
-    /// and the host is the one that can say so: it reads the roster as it is
-    /// at this moment, and every start goes through `start_session`. A page
-    /// asked instead, and did not always know the roster or whether a
-    /// process was running when it had to decide (review of ca81617, H1 and
-    /// M1). It only ever RAISES: a level asked at or above the registered
-    /// one is kept as asked, so a raise the person approved is not lost.
+    /// The one predicate, asked in three places that must agree: the door
+    /// (`start_session`, `raised_to`: the level a new process is never
+    /// started below), the chat index (`chat_index_save_from_page`: whose
+    /// entry's `access` only the host writes) and the host's own writes of
+    /// that entry (`index_keeps_level`). A chat this answers `None` for is
+    /// started exactly as asked and its index entry is the page's to save,
+    /// as before there was any such rule.
     ///
-    /// Asked as it was for every chat that is not a registered agent's own
-    /// conversation, each decided by what lasts:
+    /// `None`, each decided by what lasts:
     /// - a room seat (`session_key != key`): not the chat's own voice;
     /// - a worker's chat, by its key or an attempt on record
     ///   (`is_worker_chat`, never `active_task`): its level comes with its
     ///   task;
-    /// - a chat no lead record names, or whose agent is no longer on the
-    ///   roster (`team::registered_access_of_chat`), which also answers
-    ///   nothing for a front desk's chat;
-    /// - a roster or a ledger that cannot be read: what is unknown is not
-    ///   read as registered, nor as not a worker.
+    /// - a chat no lead record names, a front desk's chat, or one whose
+    ///   agent is no longer on the roster
+    ///   (`team::registered_access_of_chat`);
+    /// - an agent whose scope as it is NOW does not cover the chat's
+    ///   project: it was moved to another project since. The chat's project
+    ///   is the one its lead record names, and for a project-scoped agent
+    ///   the chat index has to list the chat under that same project when
+    ///   it lists it at all. Two durable sources that disagree are not an
+    ///   authority. A global agent's scope covers every project, so neither
+    ///   is asked;
+    /// - a roster, a ledger or (for a scoped agent) a chat index that
+    ///   cannot be read: what is unknown is not read as registered, as not
+    ///   a worker, or as the right project.
     ///
-    /// The roster's lock and then the ledger's, each let go before the next
-    /// is taken, and both before the session table is locked.
-    fn level_to_start_at(
-        &self,
-        session_key: &str,
-        key: &str,
-        asked: Option<Access>,
-    ) -> Option<Access> {
-        use crate::access_request::rank;
-        if session_key != key || !key.starts_with("chat:") {
-            return asked;
+    /// The index's lock, the roster's and the ledger's, each let go before
+    /// the next is taken, and all before the session table is locked: never
+    /// call this holding a session or the table.
+    fn registered_level(&self, session_key: &str, key: &str) -> Option<Access> {
+        let id = key.strip_prefix("chat:").filter(|_| session_key == key)?;
+        let registered =
+            crate::team::registered_access_of_chat(&crate::team::default_path(), key).ok()??;
+        if let Some(project) = registered.only_in.as_deref() {
+            match crate::chat_index::project_of(id) {
+                Ok(None) => {}
+                Ok(Some(listed)) if listed == project => {}
+                _ => return None,
+            }
         }
-        let Ok(Some(registered)) =
-            crate::team::registered_access_of_chat(&crate::team::default_path(), key)
-        else {
-            return asked;
-        };
         if self.orchestrations.is_worker_chat(key) != Ok(false) {
-            return asked;
+            return None;
         }
-        match asked {
-            Some(level) if rank(level) >= rank(registered) => asked,
-            _ => Some(registered),
-        }
+        Some(registered.access)
     }
 
     /// The level `start_session` raised a start to, kept the way a start's
     /// level is kept (`remember_start`): in memory, and in the ledger for a
-    /// chat a run knows. Every later host resume starts from it. Nothing for
-    /// a chat no start was remembered for: its caller remembers the start
-    /// once it worked (`run_scheduled_resume`).
+    /// chat a run knows, when that save works. A save that fails is a line
+    /// on the log and the process still starts (open: review of a4d072b,
+    /// R4). Nothing for a chat no start was remembered for: its caller
+    /// remembers the start once it worked (`run_scheduled_resume`).
     fn keep_start_level(&self, session_key: &str, access: Option<Access>) {
         let Some(mut start) = self.start_context(session_key) else {
             return;
@@ -1422,6 +1425,47 @@ impl ChatManager {
         if start.access != access {
             start.access = access;
             self.remember_start(session_key, start);
+        }
+    }
+
+    /// The chat index says `access` for the chat `key`, written by the host
+    /// and by nobody else, when the chat is a registered agent's own
+    /// conversation (`registered_level`). For any other chat this does
+    /// nothing: its entry is the page's to save.
+    ///
+    /// Called where the level of such a chat is decided by the host: a new
+    /// process (`start_session`) and a level that took hold under a live
+    /// one (`chat_set_access_impl`). A write that fails is put right by the
+    /// next save of the entry while the process lives
+    /// (`chat_index_save_from_page`). Nothing is said to a page beyond the
+    /// index's own change: there is no event for a level (see
+    /// `docs/agents-mode.md`).
+    fn index_keeps_level(&self, key: &str, access: Option<Access>) {
+        if self.registered_level(key, key).is_some() {
+            self.index_follows_level(key, access.unwrap_or(Access::Read));
+        }
+    }
+
+    /// Write `level` into the entry of a chat whose entry is the host's
+    /// (the caller has asked `registered_level`), and leave it saying the
+    /// level the process runs at NOW.
+    ///
+    /// The host writes the entry from three places (a start, a level that
+    /// took hold, a page's save while a process runs), none of them under
+    /// the session's lock, so two of them can write in the other order
+    /// than the levels changed in. Each therefore looks again AFTER its
+    /// write and writes what it finds when the level has moved: whichever
+    /// write lands last was checked against the process after it landed,
+    /// and a level that moves later brings its own write. With no process
+    /// the level given stands. A few rounds at most; never a loop that
+    /// waits on a chat whose level keeps moving.
+    fn index_follows_level(&self, key: &str, mut level: Access) {
+        for _ in 0..4 {
+            index_says_level(key, level);
+            match self.running_level(key) {
+                Some(now) if now != level => level = now,
+                _ => return,
+            }
         }
     }
 
@@ -3560,38 +3604,38 @@ fn codex_user_mcp_servers(
     crate::agent_provider::codex_front_desk_mcp_servers(&out).map_err(|e| format!("{WHY}: {e}"))
 }
 
-/// Say the level a chat runs at to every page: `chat-access-changed` with
-/// exactly `{ chatKey, access }`. The one way a page learns the level a
-/// process really runs at, when that is not the level it holds.
-fn announce_level(key: &str, access: Access) {
-    crate::bus::emit(
-        "chat-access-changed",
-        json!({ "chatKey": key, "access": access.as_env() }),
-    );
+/// The access level a NEW process is started at, for a chat whose agent
+/// stands registered at `registered` (`ChatManager::registered_level`,
+/// which says for which chats): never below it.
+///
+/// A registered agent's chat runs on that agent's registered settings, and
+/// the host is the one that can say so: it reads the roster as it is at
+/// this moment, and every start goes through `start_session`. A page asked
+/// instead, and did not always know the roster or whether a process was
+/// running when it had to decide (review of ca81617, H1 and M1). It only
+/// ever RAISES: a level asked at or above the registered one is kept as
+/// asked, so a raise the person approved is not lost. No level asked is the
+/// lowest. With nothing registered the level is as asked.
+fn raised_to(asked: Option<Access>, registered: Option<Access>) -> Option<Access> {
+    use crate::access_request::rank;
+    match (asked, registered) {
+        (_, None) => asked,
+        (Some(level), Some(registered)) if rank(level) >= rank(registered) => asked,
+        (_, registered) => registered,
+    }
 }
 
-/// A chat's own process was just started at `access`: the chat index says
-/// that level, and every page is told when it is not the one the index
-/// held or not the one that was asked for.
-///
-/// The index is written here, by the host, because the page that would
-/// save it holds the level it asked for: left to the page, the entry named
-/// a level the process did not run at (review of ca81617, M2), and a host
-/// resume after a restart is refused while the index and the ledger
-/// disagree (`deliver_orchestration_notification`). Nothing is written or
-/// said when the entry already names the level and it was the one asked.
-/// A seat is not the chat's own voice and changes neither.
-fn tell_started_level(session_key: &str, key: &str, asked: Option<Access>, access: Option<Access>) {
-    let Some(id) = key.strip_prefix("chat:").filter(|_| session_key == key) else {
+/// The host's own write of a level into a chat's index entry, announced
+/// like any change of the list. Only ever for a registered agent's own
+/// conversation, and only through `ChatManager::index_follows_level`.
+/// Nothing is written when the entry already means that level, or for a
+/// chat the index does not list.
+fn index_says_level(key: &str, level: Access) {
+    let Some(id) = key.strip_prefix("chat:") else {
         return;
     };
-    let level = access.unwrap_or(Access::Read);
-    let written = crate::chat_index::set_access(id, level.as_env()) == Ok(true);
-    if written {
+    if crate::chat_index::set_access(id, level.as_env()) == Ok(true) {
         announce_index_change(id, false);
-    }
-    if written || asked.unwrap_or(Access::Read) != level {
-        announce_level(key, level);
     }
 }
 
@@ -3668,15 +3712,21 @@ pub(crate) fn start_session(
     // says, on every start, resume and relaunch alike.
     let front_desk =
         session_key == key && crate::team::is_front_desk_chat(&crate::team::default_path(), &key);
-    // Every other chat of a registered agent starts no lower than that
-    // agent's registered access (`level_to_start_at`). This is the one door
-    // every process start goes through, so it is decided here and nowhere
-    // else, and a process that is already running never gets this far.
+    // A registered agent's own conversation starts no lower than that
+    // agent's registered access (`registered_level`, `raised_to`). This is
+    // the one door every process start goes through, so it is decided here
+    // and nowhere else, and a process that is already running never gets
+    // this far. Every other chat is started as asked.
     let asked = access;
+    let registered = if front_desk {
+        None
+    } else {
+        manager.registered_level(&session_key, &key)
+    };
     let access = if front_desk {
         Some(Access::Read)
     } else {
-        manager.level_to_start_at(&session_key, &key, access)
+        raised_to(asked, registered)
     };
     if !front_desk && access != asked {
         manager.keep_start_level(&session_key, access);
@@ -4105,7 +4155,14 @@ pub(crate) fn start_session(
 
     drop(sessions);
     reopen_started_chat(&session_key, &key);
-    tell_started_level(&session_key, &key, asked, access);
+    // The index entry of a registered agent's own conversation is the
+    // host's to write: it says the level this process was started at. The
+    // page that would have saved it holds the level it asked for (review of
+    // ca81617, M2), and a host resume after a restart is refused while the
+    // index and the ledger disagree (`deliver_orchestration_notification`).
+    if registered.is_some() {
+        manager.index_follows_level(&key, access.unwrap_or(Access::Read));
+    }
     // A stand-in says nothing and is written nothing: its pipes are read to
     // their end so it never meets a closed one, and the test ends it.
     #[cfg(test)]
@@ -6395,6 +6452,29 @@ pub fn chat_set_access_impl(
     key: String,
     access: Access,
 ) -> Result<(), String> {
+    let Some(relaunch) = set_level_of_process(manager, &key, access)? else {
+        return Ok(());
+    };
+    // The level took hold. For a registered agent's own conversation the
+    // index entry says it now, written by the host: it does not wait for a
+    // page's save, which no longer writes that entry's level
+    // (`chat_index_save_from_page`). With no session held: the question
+    // reads the roster and the ledger.
+    manager.index_keeps_level(&key, Some(access));
+    if relaunch {
+        end_process_when(manager, &key, Some(Duration::ZERO))?;
+    }
+    Ok(())
+}
+
+/// `chat_set_access_impl` up to the level taking hold. `None` when nothing
+/// was changed and nothing is to be (a front desk); otherwise whether the
+/// process is now to be ended so that its next one takes the level.
+fn set_level_of_process(
+    manager: &ChatManager,
+    key: &str,
+    access: Access,
+) -> Result<Option<bool>, String> {
     // A front desk's access is fixed at launch (read-only, `dontAsk` on
     // Claude), and every relaunch forces it again. A live switch would only
     // move it into another mode, so the change is accepted and not applied.
@@ -6403,14 +6483,14 @@ pub fn chat_set_access_impl(
         .front_desks
         .lock()
         .map_err(|e| e.to_string())?
-        .contains_key(&key)
+        .contains_key(key)
     {
-        return Ok(());
+        return Ok(None);
     }
-    if let Some(start) = manager.start_context(&key) {
+    if let Some(start) = manager.start_context(key) {
         manager.admit_beside_writers(
-            &key,
-            &key,
+            key,
+            key,
             std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()),
             access != Access::Read,
         )?;
@@ -6421,7 +6501,7 @@ pub fn chat_set_access_impl(
     // queued turn and the next process all start at it, so it needs its
     // record first, and while that cannot be written it is refused with
     // nothing changed. Said before anything else is touched.
-    let before = manager.start_context(&key);
+    let before = manager.start_context(key);
     let level = before
         .as_ref()
         .and_then(|start| start.access)
@@ -6430,10 +6510,10 @@ pub fn chat_set_access_impl(
     if raise {
         crate::profile::available().map_err(not_raised)?;
     }
-    cancel_auto_resume(manager, &key, "cancelled when access changed");
+    cancel_auto_resume(manager, key, "cancelled when access changed");
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.get(&key).cloned().ok_or("no such chat")?
+        sessions.get(key).cloned().ok_or("no such chat")?
     };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
     let provider = provider_for(guard.agent);
@@ -6468,7 +6548,7 @@ pub fn chat_set_access_impl(
         None
     };
     if raise {
-        manager.record_raise(&key, access)?;
+        manager.record_raise(key, access)?;
     }
     if let Some(codex) = guard.codex.as_mut() {
         // app-server accepts policy overrides on every `turn/start`. Do not
@@ -6476,14 +6556,14 @@ pub fn chat_set_access_impl(
         // the newly selected level on this same native thread.
         codex.access = Some(access);
         if let Ok(mut starts) = manager.starts.lock() {
-            if let Some(start) = starts.get_mut(&key) {
+            if let Some(start) = starts.get_mut(key) {
                 start.access = Some(access);
             }
         }
-        record_access_for(&key, Some(access));
-        manager.record_level(&key, Some(access));
-        manager.keep_access_for_resume(&key);
-        return Ok(());
+        record_access_for(key, Some(access));
+        manager.record_level(key, Some(access));
+        manager.keep_access_for_resume(key);
+        return Ok(Some(false));
     }
     if let Some(payload) = payload {
         let told = guard
@@ -6498,22 +6578,18 @@ pub fn chat_set_access_impl(
             // The agent was not told, so the chat still runs at the level
             // it had: the record of a raise goes back to that.
             if let (true, Some(before)) = (raise, before) {
-                manager.keep_resume_at(&key, before);
+                manager.keep_resume_at(key, before);
             }
             return Err(why);
         }
     }
-    if let Some(mut start) = manager.start_context(&key) {
+    if let Some(mut start) = manager.start_context(key) {
         start.access = Some(access);
-        manager.remember_start(&key, start);
+        manager.remember_start(key, start);
     }
-    manager.record_level(&key, Some(access));
-    manager.keep_access_for_resume(&key);
-    if relaunch {
-        drop(guard);
-        end_process_when(manager, &key, Some(Duration::ZERO))?;
-    }
-    Ok(())
+    manager.record_level(key, Some(access));
+    manager.keep_access_for_resume(key);
+    Ok(Some(relaunch))
 }
 
 /// How a raise that cannot be recorded is refused, before the reason. The
@@ -7832,53 +7908,49 @@ pub(crate) fn announce_index_change(id: &str, gone: bool) {
     );
 }
 
-/// `chat_index_save` as a page asks for it: the access level of a chat with
-/// a live process is that process's, whatever the save says.
+/// `chat_index_save` as a page asks for it.
 ///
-/// A page saves the level it holds, and that is not always the level the
-/// process runs at: the host may have started the chat at its agent's
-/// registered access a moment ago (`level_to_start_at`), with this save
-/// already on its way, or the page decided before it knew a process was
-/// running. So for a running chat the level saved is the process's
-/// (`running_level`), and a page that named another is told
-/// (`chat-access-changed`). A level changes under a live process only
-/// through `chat_set_access`, which records it first. With no process the
-/// save stands: it is the person's choice for the next start.
+/// For a registered agent's own conversation (`registered_level`, the
+/// predicate the door asks) the entry's `access` is the host's to write and
+/// a page's save never changes it. An entry that is there keeps the level it
+/// has (`chat_index::upsert_keeping_access`): the host wrote it when the
+/// chat's process was started and whenever `chat_set_access` took hold, so
+/// with a live process it is that process's level, and with none it is the
+/// level the last one ran at. A page saves the level it HOLDS, which may be
+/// the one it asked for a moment before the host raised it, or one a tab
+/// held since before the process ended: taken from the page, either put the
+/// entry back (review of ca81617, M2; of a4d072b, open item 2). A save that
+/// makes the entry takes the level it carries, there being nothing to keep,
+/// and a level the entry does not say while a process runs (the entry was
+/// made after the start, or the host's own write failed) is written from
+/// the process, asked AFTER the save: the start's own write and this look
+/// each come after the step the other needs, so one of them sees the other.
 ///
-/// The look and the save are not one step, and the session table's lock
-/// cannot be held across the index's (`close_completed` takes them the
-/// other way round). So the level is asked again after the save: a process
-/// that went into the table in between has its level written over what
-/// this save left.
+/// For every other chat (an ordinary chat, a PR dashboard's, a seat's, a
+/// worker's, a chat whose agent was removed or moved to another project)
+/// this is `chat_index_save` and nothing else, exactly as before there was
+/// a rule about levels: the person's picker is the authority there and the
+/// page orders its own writes.
+///
+/// Nothing is said about a level, here or anywhere. An event of its own
+/// for it was tried (review of a4d072b, R1): it had no order against a
+/// level the person had just picked, and an old frame put a fresh choice
+/// back.
 pub(crate) fn chat_index_save_from_page(
     manager: &ChatManager,
-    mut meta: crate::chat_index::ChatMeta,
+    meta: crate::chat_index::ChatMeta,
 ) -> Result<(), String> {
     let id = meta.id.clone();
     let key = format!("chat:{id}");
-    let named = meta.access.clone();
+    if manager.registered_level(&key, &key).is_none() {
+        return chat_index_save(meta);
+    }
+    crate::chat_index::upsert_keeping_access(meta)?;
+    announce_index_change(&id, false);
     if let Some(level) = manager.running_level(&key) {
-        meta.access = Some(level.as_env().to_string());
+        manager.index_follows_level(&key, level);
     }
-    chat_index_save(meta)?;
-    settle_index_level(manager, &id, named.as_deref());
     Ok(())
-}
-
-/// After a page's save of the chat `id`, which named the level `named`:
-/// the index says the level of the process that is running now, and a page
-/// that named another level is told the one it runs at.
-fn settle_index_level(manager: &ChatManager, id: &str, named: Option<&str>) {
-    let key = format!("chat:{id}");
-    let Some(level) = manager.running_level(&key) else {
-        return;
-    };
-    if crate::chat_index::set_access(id, level.as_env()) == Ok(true) {
-        announce_index_change(id, false);
-    }
-    if named.unwrap_or("read") != level.as_env() {
-        announce_level(&key, level);
-    }
 }
 
 /// Record a chat, or update what is known about it.

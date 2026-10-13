@@ -319,8 +319,32 @@ pub fn list() -> Vec<ChatMeta> {
     chats
 }
 
+/// The project the list puts the chat `id` under, in the trash or not.
+/// `None` for a chat it does not list. An index that cannot be read is an
+/// error, never "not listed".
+pub fn project_of(id: &str) -> Result<Option<String>, String> {
+    let index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    Ok(index
+        .chats
+        .into_iter()
+        .find(|chat| chat.id == id)
+        .map(|chat| chat.project_id))
+}
+
 /// Add a chat or update the one with this id.
-pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
+pub fn upsert(meta: ChatMeta) -> Result<(), String> {
+    upsert_as(meta, false)
+}
+
+/// `upsert` for a chat whose access level is the host's to write
+/// (`agent_chat::chat_index_save_from_page`): an entry that is there keeps
+/// the level it has, whatever the save names. A save that makes the entry
+/// takes the level it carries, because there is nothing to keep.
+pub fn upsert_keeping_access(meta: ChatMeta) -> Result<(), String> {
+    upsert_as(meta, true)
+}
+
+fn upsert_as(mut meta: ChatMeta, keep_access: bool) -> Result<(), String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut index = match read_checked() {
         Ok(index) => index,
@@ -376,6 +400,10 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             if meta.effort.is_none() {
                 meta.effort = existing.effort.clone();
             }
+            // The host's to write, never the save's (`upsert_keeping_access`).
+            if keep_access {
+                meta.access = existing.access.clone();
+            }
             // The plan is history: the first one recorded stands.
             let launch = existing
                 .launch
@@ -427,9 +455,9 @@ pub fn set_cwd(id: &str, cwd: &str) -> Result<bool, String> {
 }
 
 /// Say the access level a chat's process runs at, and nothing else. The
-/// host's own write (`agent_chat::start_session`, and a page's save that
-/// named another level for a running chat): a page only ever saves the level
-/// it holds, which is not always the one the process was started at.
+/// host's own write, for a registered agent's own conversation
+/// (`agent_chat::ChatManager::index_keeps_level`): a page only ever saves the
+/// level it holds, which is not always the one the process runs at.
 ///
 /// Answers whether the row changed. An entry with no level reads as `read`,
 /// the level a process with none asked is started at, so nothing is written
