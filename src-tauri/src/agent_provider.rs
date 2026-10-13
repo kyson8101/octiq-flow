@@ -1285,8 +1285,14 @@ fn antigravity_rules(role: AntigravityRole) -> String {
             };
             let access =
                 antigravity_access_prompt(access, matches!(role, AntigravityRole::Worker(_)));
+            // A worker keeps no plan (`chat_plan`), so it is not told when to.
+            let plan = if matches!(role, AntigravityRole::Chat(_)) {
+                format!("{PLAN_PROMPT}\n\n")
+            } else {
+                String::new()
+            };
             format!(
-                "# OctiqFlow\n\n{ANTIGRAVITY_HOST_PROMPT}\n\n{access}\n\n{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{DIAGRAM_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker}"
+                "# OctiqFlow\n\n{ANTIGRAVITY_HOST_PROMPT}\n\n{access}\n\n{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{DIAGRAM_PROMPT}\n\n{plan}{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker}"
             )
             .trim_end()
             .to_string()
@@ -1774,10 +1780,12 @@ pub(crate) fn codex_developer_instructions(
     // stdin (the app-server, which is also where questions are native). The
     // `codex exec` fallback takes them as a command-line argument, and gets
     // none of it: Windows stops a command line at 32,767 characters.
-    let diagram = if native_questions {
-        format!("{DIAGRAM_PROMPT}\n\n")
-    } else {
-        String::new()
+    // The plan sentence travels the same way, and not to a worker, which
+    // keeps no plan.
+    let diagram = match (native_questions, orchestration_worker) {
+        (true, false) => format!("{DIAGRAM_PROMPT}\n\n{PLAN_PROMPT}\n\n"),
+        (true, true) => format!("{DIAGRAM_PROMPT}\n\n"),
+        (false, _) => String::new(),
     };
     let mut prompt = format!(
         "{CODEX_COMMON_HOST_PROMPT}\n\n{question_prompt}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{diagram}{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{runtime}"
@@ -1842,7 +1850,20 @@ const FEEDBACK_PROMPT: &str = "When you observe a bug or hiccup in OctiqFlow its
 /// neither is told.
 pub(crate) const DIAGRAM_PROMPT: &str = r#"A reply can hold one card diagram: a fenced code block with the info string octiq-diagram whose body is JSON {"rows":[[{"title":"...","note":"...","icon":"...","plain":true}]]}. Rows run top to bottom with an arrow between them, the nodes of a row sit side by side, and plain draws a node with no frame (a conclusion); only title is required. Limits: 8 rows, 4 nodes a row, title 60 characters, note 120. Icons: moon, coffee, screen, user, users, server, database, file, folder, code, terminal, branch, check, cross, alert, clock, lock, key, globe, cloud, bolt, search, message, box. Draw one only when a relation or a flow is clearer as a picture than as a sentence, never by default, and at most one per reply."#;
 
-const CHAT_TITLE_PROMPT: &str = "When the work in this chat becomes clear, use `set_chat_title` if available to give it a concise, specific title in the person's language. Update it when the focus meaningfully changes, not for each step or progress update. This tool affects only the current chat and preserves titles chosen by the person; if it reports a user-chosen title, leave it in place.";
+/// When a chat agent keeps a plan (`chat_plan.rs`), in one sentence. How it
+/// keeps one is in the `plan_read` and `plan_update` tool descriptions,
+/// which reach every provider that has the tools.
+///
+/// Word for word `PLAN_INSTRUCTIONS` in `scripts/mcp/octiq-ask.cjs`, which is
+/// where Claude reads it, over stdio. Like the card diagram it rides no
+/// command line: Codex's app-server takes it in its developer instructions
+/// (a message on stdin) and Antigravity in the plugin's rules file. `codex
+/// exec` takes its instructions as an argument and Pi has no host rules, so
+/// neither is told here; the tool descriptions tell `codex exec`. A worker
+/// and a front desk keep no plan and are not told.
+pub(crate) const PLAN_PROMPT: &str = "When the person says several things are coming before work starts, or asks for a plan, keep one with plan_update, ask scoping questions as they come, and start no work until they press Start: the plan_update description says how.";
+
+const CHAT_TITLE_PROMPT: &str ="When the work in this chat becomes clear, use `set_chat_title` if available to give it a concise, specific title in the person's language. Update it when the focus meaningfully changes, not for each step or progress update. This tool affects only the current chat and preserves titles chosen by the person; if it reports a user-chosen title, leave it in place.";
 
 /// Docspace preferences are useful context, but loading all private preference
 /// files into every new model session would cross the vault's privacy boundary.
@@ -2963,6 +2984,44 @@ pub(crate) mod tests {
         assert!(DIAGRAM_PROMPT.is_ascii());
         // One line, and nothing a POSIX or a JavaScript quote has to escape.
         assert!(!DIAGRAM_PROMPT.contains(['\n', '\'', '\\']));
+    }
+
+    /// When to keep a plan is one sentence, said the same way wherever a
+    /// chat agent gets its host rules without a command line carrying it,
+    /// and never to a worker or a front desk, which keep none.
+    #[test]
+    fn a_chat_agent_is_told_when_to_keep_a_plan_and_no_command_line_carries_it() {
+        // The MCP server's instructions hold the sentence word for word:
+        // that is where Claude reads it, over stdio.
+        assert!(ASK_MCP.contains(PLAN_PROMPT));
+        for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Pi] {
+            let line = command(kind, Some(Path::new("/tmp/octiq-ask.json")));
+            assert!(!line.contains("plan_update"), "{line}");
+            assert!(!line.contains("plan_read"), "{line}");
+        }
+        let said = |app_server: bool, worker: bool| {
+            codex_developer_instructions(
+                Some("model-x"),
+                Some("high"),
+                Some(Access::Auto),
+                None,
+                app_server,
+                worker,
+            )
+        };
+        // Codex's app-server takes its instructions as a message on stdin.
+        assert!(said(true, false).contains(PLAN_PROMPT));
+        assert!(!said(true, true).contains("plan_update"));
+        // `codex exec` takes them as an argument: its tool list tells it.
+        assert!(!said(false, false).contains("plan_update"));
+        assert!(antigravity_rules(AntigravityRole::Chat(Access::Auto)).contains(PLAN_PROMPT));
+        assert!(!antigravity_rules(AntigravityRole::Worker(Access::Auto)).contains("plan_update"));
+        assert!(!antigravity_rules(AntigravityRole::FrontDesk).contains("plan_update"));
+        assert!(!FRONT_DESK_PROMPT.contains("plan_update"));
+        // One line, and nothing a POSIX or a JavaScript quote has to escape.
+        assert!(PLAN_PROMPT.chars().count() <= 240);
+        assert!(PLAN_PROMPT.is_ascii());
+        assert!(!PLAN_PROMPT.contains(['\n', '\'', '"', '\\']));
     }
 
     #[test]

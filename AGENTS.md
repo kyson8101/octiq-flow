@@ -249,6 +249,7 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | chat transcripts | profile dir | `chat_index.rs`, `transcript.rs` |
 | agent diagnostics | `~/.octiqflow/logs/agent-diagnostics.jsonl` (one rotated predecessor) | `diagnostics.rs` |
 | chat task status | `<chats dir>/task-status.json` | `chat_task.rs` |
+| a chat's plan (one file a chat) | `<chats dir>/plan_<chat id>.json` | `chat_plan.rs` |
 | registered agents (agents mode) | `<profile dir>/team.json` | `team.rs` — see `docs/agents-mode.md` |
 | XP awards (agents mode) | `xp_awards` in `<profile dir>/orchestrations.json` | `orchestration/levels.rs` |
 | agent token usage | `<chats dir>/agent-usage.json` | `agent_usage.rs` |
@@ -416,6 +417,76 @@ Three rules hold:
   on `git-status-changed`, and when the panel opens; verification is cached for
   four seconds so several open tabs cost one `git status`. The accent is for a
   turn in flight only — states the work is merely *owed* stay quiet.
+
+### A chat's plan
+
+A chat keeps one plan (`chat_plan.rs`, `docs/chat-plan.md`): the list the
+person and the agent agree on before work starts. It is not the
+orchestration plan card, which approves a run's tasks and still has to be
+approved after Start. Three owners, and nothing crosses between them:
+
+- **The agent writes the list** with `plan_read` and `plan_update`
+  (`octiq-ask.cjs` → `POST /hook/plan`): items with a status (`discussing`,
+  `decided`, `in_progress`, `done`, `dropped`), decisions, open questions, a
+  note and the task ids an item became. A change patches items by id and
+  carries the revision it was based on; a stale one is refused whole.
+  **Nothing is removed**: the person can only read the list, so an item
+  leaves by `dropped` and stays on it. Ids are the host's (`i1`, `i2`).
+- **The person starts it.** `chat_plan_start` is the page's command and
+  nobody else's: no hook routes to it and the MCP server has no such tool,
+  the same way `chat_complete` has none (`plan_tests::
+  no_hook_and_no_mcp_tool_can_start_a_plan`).
+- **The host counts the work.** An item's `progress` and `linked` are read
+  from the ledger for each answer (`orchestration/plan_link.rs`), never
+  stored and never taken from the agent. An item's own `in_progress` or
+  `done` is the agent's word and is shown as that; the two can disagree.
+
+Four rules hold:
+
+- **The Start gate is on the agent's door, not the person's.** While a plan
+  is not started and has an item that is not dropped (`Plan::awaits_start`),
+  `/hook/orchestration` refuses that chat's agent the commands in
+  `web::PLAN_GATED_COMMANDS`: run_create, task_create, the coordinator's
+  worker_start, dispatch_ready and task_reopen. The socket's commands of the
+  same names are the person's own and are not asked. A chat with no plan is
+  never asked anything. A new command that starts orchestrated work for an
+  agent joins that list. Once started a plan never gates again.
+- **A plan that cannot be read holds the gate.** A profile folder that is
+  away, or a file that cannot be understood, is an error from `chat_plan::
+  gate`, never "no plan": that would lift the gate, and the next change
+  would start the list again from nothing.
+- **Start is save-first, and the Start is not the turn.** It is recorded,
+  then the agent is handed one turn in the host's words (`start_message`,
+  turn id `octiq-plan-start-…`, queued behind a running turn like any
+  message, or the first message of a chat with no process, through
+  `start_chat`). A Start that cannot be saved is refused whole and tells
+  the agent nothing. A turn that cannot be handed over leaves the Start
+  standing: the answer says `delivered: false` with the reason, never an
+  error, `started.told` stays false, and the page asks again with the same
+  command, which tries the turn under a new id and records nothing twice.
+  The host does not retry by itself.
+- **Only the chat's own agent writes.** `/hook/plan` keeps the `HookCaller`
+  and refuses a front desk, a room seat (`session_key != chat_key`; a seat
+  may read) and a worker by `is_worker_chat`, which still holds after its
+  attempt settled. The socket refuses `chat_plan_update`.
+
+What the gate cannot do is said in the docs and in the tool description:
+it covers work started through the host, not an agent editing files in its
+own chat. The peer tools and the host's scheduler for a run that existed
+before the plan are not gated either.
+
+Agents are told how to keep a plan in the two tools' descriptions, which no
+client cuts, and when to keep one in a single sentence (`PLAN_PROMPT` in
+`agent_provider.rs`, word for word `PLAN_INSTRUCTIONS` in the script; a test
+on each side). Like the card diagram it rides no command line. **The MCP
+server's instructions stay under 4,096 characters**
+(`scripts/mcp/instructions.test.cjs`): Claude Code drops what is past that
+without a word, and at 5,658 the end of read_conversation, the orchestration
+and peer sentences, task_status and the ask_user sentence never reached a
+Claude chat. What belongs to one tool goes in that tool's description.
+
+A plan follows the chat's task status when the chat goes: kept through the
+trash window, removed when the chat is purged, kept by `/clear`.
 
 ### A chat whose folder was removed is recovered before it starts
 
@@ -652,7 +723,8 @@ row, title 60 characters, note 120. Icons are a fixed set of 24 names
   from the MCP server's instructions, over stdio, where it is the FIRST
   thing: Claude Code keeps only the first 4,096 characters of a server's
   instructions (seen in a live chat on 2026-10-13, cut mid-word there), and
-  those were already 4,946 long. Codex's app-server reads it
+  those were already 4,946 long. The whole text is held under that mark
+  now (see **A chat's plan**). Codex's app-server reads it
   in its developer instructions (a message on stdin), Antigravity in the
   plugin's rules file. `codex exec` takes its instructions as an argument
   and Pi has no host rules, so neither is told. A front desk is not told.
@@ -2151,7 +2223,8 @@ desk is removed.
 never taken from an agent**: `heldByPlan`, `heldByReopen`, `failure`,
 `retrying` and `retryLimit` on a task, `awaits` on an open gate and a pending
 native decision, `usage` and `context` on an attempt, `coordinatesRun` on a
-chat's index entry. Each is
+chat's index entry, `awaitsStart` on a chat's plan and `progress` and
+`linked` on its items. Each is
 `skip_deserializing` or added at the dispatch arm, and absent rather than
 zero or guessed when the host does not know (`docs/agents-mode.md`, What the
 run panel reads from the host). A fact the host does know is said outright:

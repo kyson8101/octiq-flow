@@ -1,0 +1,194 @@
+{
+  "awaitsStart": false,
+  "chatId": "plan-link-46f6616465df44bc979185b5472377ad",
+  "items": [
+    {
+      "addedIn": 1,
+      "changedIn": 2,
+      "decisions": [
+        "Status rows are one line",
+        "No box and no fill"
+      ],
+      "id": "i1",
+      "linked": [
+        {
+          "id": "task_4a24c793fd594abd92543ea61bae81e0",
+          "runId": "run_f9b7b9e22fe247e5a8da810e3b3d64a6",
+          "state": "done",
+          "title": "Composer rows"
+        },
+        {
+          "id": "task_0cd1f337d23542b193e7c1fc415c2a59",
+          "runId": "run_f9b7b9e22fe247e5a8da810e3b3d64a6",
+          "state": "failed",
+          "title": "Review the rows"
+        }
+      ],
+      "progress": {
+        "closed": 0,
+        "done": 1,
+        "failed": 1,
+        "running": 0,
+        "total": 2,
+        "unknown": 0,
+        "waiting": 0
+      },
+      "questions": [],
+      "status": "done",
+      "tasks": [
+        "task_4a24c793fd594abd92543ea61bae81e0",
+        "task_0cd1f337d23542b193e7c1fc415c2a59"
+      ],
+      "title": "A quieter composer"
+    },
+    {
+      "addedIn": 1,
+      "changedIn": 2,
+      "decisions": [
+        "Three rows of chrome"
+      ],
+      "id": "i2",
+      "linked": [
+        {
+          "id": "task_b86c71821a754178bdd37d078dd2acb1",
+          "runId": "run_f9b7b9e22fe247e5a8da810e3b3d64a6",
+          "state": "running",
+          "title": "Action bar"
+        },
+        {
+          "id": "task_3c77b2cd500545d7a1ccbb31c3b4fae8",
+          "runId": "run_f9b7b9e22fe247e5a8da810e3b3d64a6",
+          "state": "waiting",
+          "title": "Usage row"
+        }
+      ],
+      "progress": {
+        "closed": 0,
+        "done": 0,
+        "failed": 0,
+        "running": 1,
+        "total": 2,
+        "unknown": 0,
+        "waiting": 1
+      },
+      "questions": [],
+      "status": "in_progress",
+      "tasks": [
+        "task_b86c71821a754178bdd37d078dd2acb1",
+        "task_3c77b2cd500545d7a1ccbb31c3b4fae8"
+      ],
+      "title": "Action bar and usage row"
+    },
+    {
+      "addedIn": 1,
+      "changedIn": 2,
+      "decisions": [],
+      "id": "i3",
+      "linked": [
+        {
+          "id": "task_b593a0e3757c43d6878d3677eafdb87f",
+          "runId": "run_f9b7b9e22fe247e5a8da810e3b3d64a6",
+          "state": "failed",
+          "title": "Run panel tabs"
+        }
+      ],
+      "progress": {
+        "closed": 0,
+        "done": 0,
+        "failed": 1,
+        "running": 0,
+        "total": 1,
+        "unknown": 0,
+        "waiting": 0
+      },
+      "questions": [],
+      "status": "in_progress",
+      "tasks": [
+        "task_b593a0e3757c43d6878d3677eafdb87f"
+      ],
+      "title": "Run panel task rows"
+    },
+    {
+      "addedIn": 1,
+      "changedIn": 2,
+      "decisions": [
+        "Drawn where they were asked"
+      ],
+      "id": "i4",
+      "linked": [
+        {
+          "id": "task_dee1681b9e4945e6837911c17f2676f1",
+          "runId": "run_f9b7b9e22fe247e5a8da810e3b3d64a6",
+          "state": "closed",
+          "title": "Inline questions, first try"
+        },
+        {
+          "id": "task_a7bcf7d983864762aef9321c31789472",
+          "runId": "run_f9b7b9e22fe247e5a8da810e3b3d64a6",
+          "state": "waiting",
+          "title": "Inline questions"
+        }
+      ],
+      "progress": {
+        "closed": 1,
+        "done": 0,
+        "failed": 0,
+        "running": 0,
+        "total": 1,
+        "unknown": 0,
+        "waiting": 1
+      },
+      "questions": [],
+      "status": "in_progress",
+      "tasks": [
+        "task_dee1681b9e4945e6837911c17f2676f1",
+        "task_a7bcf7d983864762aef9321c31789472"
+      ],
+      "title": "Inline questions"
+    },
+    {
+      "addedIn": 1,
+      "changedIn": 1,
+      "decisions": [],
+      "id": "i5",
+      "note": "Asked on 2026-10-13.",
+      "questions": [
+        "How many icons?"
+      ],
+      "status": "discussing",
+      "tasks": [],
+      "title": "Card diagrams"
+    },
+    {
+      "addedIn": 1,
+      "changedIn": 1,
+      "decisions": [],
+      "id": "i6",
+      "questions": [],
+      "status": "dropped",
+      "tasks": [],
+      "title": "A sound on finish"
+    },
+    {
+      "addedIn": 2,
+      "changedIn": 2,
+      "decisions": [],
+      "id": "i7",
+      "questions": [
+        "Where does Start go?"
+      ],
+      "status": "discussing",
+      "tasks": [],
+      "title": "Plan panel"
+    }
+  ],
+  "revision": 2,
+  "started": {
+    "at": 1791886010635,
+    "revision": 1,
+    "told": true,
+    "turnId": "octiq-plan-start-00000000-0000-4000-8000-000000000000"
+  },
+  "updatedAt": 1791886010639,
+  "updatedBy": "OCTIQ HEAD"
+}

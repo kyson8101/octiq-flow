@@ -1682,6 +1682,20 @@ impl ChatManager {
         self.background.running(key)
     }
 
+    /// Whether a turn sent to this chat now would be taken: it has a
+    /// process, one is being replaced, or its queue waits for the profile
+    /// folder. Without any of them a send answers `no such chat` and the
+    /// chat has to be started.
+    pub(crate) fn takes_turns(&self, key: &str) -> bool {
+        self.has_process(key)
+            || self
+                .handoffs
+                .lock()
+                .map(|handoffs| handoffs.contains(key))
+                .unwrap_or(true)
+            || self.waits_because(key).is_some()
+    }
+
     pub(crate) fn has_process(&self, key: &str) -> bool {
         self.sessions
             .lock()
@@ -5226,6 +5240,19 @@ pub(crate) fn chat_can_continue_internal(manager: &ChatManager, key: &str) -> Re
     Ok(manager.start_context(key).is_some())
 }
 
+/// What became of a turn that was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sent {
+    /// Written to the agent: it has the turn.
+    Written,
+    /// Behind a turn that is running, a stopped one that has not sent its
+    /// full stop, or anything already queued.
+    Queued,
+    /// The record already holds this turn id: a retry of a send that got
+    /// through. Nothing was sent again.
+    Already,
+}
+
 fn chat_send_with_user_turn(
     manager: Arc<ChatManager>,
     key: String,
@@ -5234,6 +5261,53 @@ fn chat_send_with_user_turn(
     to: Option<String>,
     user_turn_id: Option<String>,
 ) -> Result<(), String> {
+    send_turn(manager, key, text, images, to, user_turn_id).map(|_| ())
+}
+
+/// Hand a chat's agent a turn in the host's own words, recorded under
+/// `turn_id`, which is the host's and not a person's (`is_person_turn_id`):
+/// the turn that tells it the person started its plan (`chat_plan`).
+///
+/// It waits like any message. With a turn in flight, a stopped one that has
+/// not sent its full stop, or anything queued, it joins the host's queue
+/// and answers `queued`; otherwise the agent has it, `started`. `Ok(None)`
+/// is a chat with no process: the caller starts it with this turn as its
+/// first message, the way a completion of a chat that is not running does.
+pub(crate) fn chat_host_turn_impl(
+    manager: &Arc<ChatManager>,
+    key: &str,
+    text: &str,
+    turn_id: &str,
+) -> Result<Option<&'static str>, String> {
+    cancel_auto_resume(manager, key, "superseded by the plan's Start");
+    let sent = send_turn(
+        manager.clone(),
+        key.to_string(),
+        text.to_string(),
+        None,
+        None,
+        Some(turn_id.to_string()),
+    );
+    let state = match sent {
+        Ok(Sent::Queued) => "queued",
+        Ok(Sent::Written | Sent::Already) => "started",
+        Err(why) if why == "no such chat" => return Ok(None),
+        Err(why) => return Err(why),
+    };
+    // A turn the person set going supersedes a refusal card, as a message
+    // of theirs does.
+    crate::safety_block::forget_chat(key);
+    Ok(Some(state))
+}
+
+fn send_turn(
+    manager: Arc<ChatManager>,
+    key: String,
+    text: String,
+    images: Option<Vec<String>>,
+    to: Option<String>,
+    user_turn_id: Option<String>,
+) -> Result<Sent, String> {
     if to.is_some() {
         return Err("additional agents are no longer supported".into());
     }
@@ -5264,7 +5338,7 @@ fn chat_send_with_user_turn(
             .as_deref()
             .is_some_and(|turn_id| durable_user_turn_exists(&key, turn_id))
         {
-            return Ok(());
+            return Ok(Sent::Already);
         }
         let Some(session) = sessions.get(&session_key).cloned() else {
             // A queue that waits for the profile folder (`keep_waiting`) is
@@ -5291,7 +5365,7 @@ fn chat_send_with_user_turn(
                     &images,
                     user_turn_id.clone(),
                 )?;
-                return Ok(());
+                return Ok(Sent::Queued);
             }
             return Err("no such chat".into());
         };
@@ -5341,7 +5415,7 @@ fn chat_send_with_user_turn(
                 // prevents the idle sweeper from ending the process in the handoff
                 // before its reaper starts the resume.
                 guard.turn_started();
-                return Ok(());
+                return Ok(Sent::Queued);
             }
             if let Some(turn_id) = user_turn_id.as_deref() {
                 record_durable_user_turn(&key, turn_id, &text, &images);
@@ -5357,7 +5431,7 @@ fn chat_send_with_user_turn(
                     "failed"
                 },
             );
-            result
+            result.map(|()| Sent::Written)
         }
     }
 }
@@ -7733,6 +7807,8 @@ fn purge_deleted_chats() -> Result<usize, String> {
         // the trash window, so a restore brings back a chat that still knows
         // where its work went.
         crate::chat_task::forget(id);
+        // And so does its plan, kept through the same window.
+        crate::chat_plan::forget(id);
         announce_index_change(id, true);
     }
     if !expired.is_empty() {

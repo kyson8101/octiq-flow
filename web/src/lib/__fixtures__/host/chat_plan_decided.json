@@ -1,0 +1,36 @@
+{
+  "awaitsStart": true,
+  "chatId": "dispatch-plan-7501abbd76784c3a9dbdee246b0bdf38",
+  "items": [
+    {
+      "addedIn": 1,
+      "changedIn": 2,
+      "decisions": [
+        "Status rows are one line",
+        "They fold on a phone too",
+        "The question row is first"
+      ],
+      "id": "i1",
+      "questions": [],
+      "status": "decided",
+      "tasks": [],
+      "title": "A quieter composer"
+    },
+    {
+      "addedIn": 1,
+      "changedIn": 2,
+      "decisions": [
+        "Desktop only; a phone keeps the one number"
+      ],
+      "id": "i2",
+      "note": "The person sent a screenshot of the old top bar.",
+      "questions": [],
+      "status": "decided",
+      "tasks": [],
+      "title": "A usage row under the top bar"
+    }
+  ],
+  "revision": 2,
+  "updatedAt": 1791886010142,
+  "updatedBy": "agent"
+}

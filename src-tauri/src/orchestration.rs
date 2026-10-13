@@ -46,6 +46,9 @@ pub mod lifecycle;
 pub mod mission;
 pub mod peer;
 pub mod peer_request;
+pub mod plan_link;
+#[cfg(test)]
+mod plan_link_tests;
 #[cfg(test)]
 mod raise_tests;
 #[cfg(test)]

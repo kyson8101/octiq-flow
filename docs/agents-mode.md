@@ -989,6 +989,15 @@ access become the task's worker settings, so a lead cannot misquote a teammate.
 
 ## Plan approval
 
+This is the plan card of a run: the tasks a lead created, waiting for your
+approval. It is not a chat's plan (`docs/chat-plan.md`), the list you and an
+agent agree on before any run exists. That one has a Start of its own, which
+only you press, and while it has not been pressed the chat's agent is
+refused `orchestration_run_create`, `orchestration_task_create`,
+`orchestration_worker_start`, `orchestration_dispatch_ready` and
+`orchestration_task_reopen`. Pressing it approves no task: a run the agent
+then opens still waits here.
+
 Every run a lead opens waits for you (`run.planApproval`, always required).
 The host starts a task only once you have approved it: until then it refuses
 every start of that task, manual or automatic, and the scheduler leaves it out
