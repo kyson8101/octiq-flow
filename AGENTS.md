@@ -1268,12 +1268,15 @@ view.
 
 ### What a chat runs at is beside the agent's name
 
-An agent's chat has no pickers: the registration owns its settings. So the
-composer says what THIS chat runs at beside the agent's name, as small quiet
-text, `opus · high · Auto` (`AgentIdentityChip`, `lib/chatSettings`).
+An agent's chat has no pickers: the registration says what a chat of the
+agent opens on, and the chat then keeps what it has (**A chat's level is its
+own**, above). So the composer says what THIS chat runs at beside the agent's
+name, as small quiet text, `opus · high · Auto` (`AgentIdentityChip`,
+`lib/chatSettings`).
 
-- **It is read-only, and it is a disclosure.** No picker: the person
-  changes them in Settings, Agents. A press, a tap or Enter on it shows the
+- **It is read-only, and it is a disclosure.** No picker: Settings, Agents
+  sets what the agent's new chats open on, and the sheet says so. A press, a
+  tap or Enter on it shows the
   three values whole (`Model`, `Effort`, `Access`, as the pickers name
   them) with the last turn's receipt, in a sheet that holds no control;
   Escape or a press outside shuts it. A narrow composer cuts the text, so
@@ -1287,6 +1290,13 @@ text, `opus · high · Auto` (`AgentIdentityChip`, `lib/chatSettings`).
   known when its index entry names one or the agent reported one, and its
   effort and access when the entry has them; otherwise that part is left
   out. Never filled in from the roster: a chat can differ from its agent.
+- **The access is the level the page holds for the chat**: the one it took
+  from the chat's own entry as it opened it, saves with it and asks for at
+  the next start. A chat the person put at Plan under an agent registered at
+  Auto says Plan, and one a card raised says the raised level.
+  `chatSettings.wiring.test.ts` reads `App.tsx` for that hand-off and fails
+  when the text is given the registration's level, when a start asks for
+  another, and when a level event or the read-only retry is put back.
 - **The settings text gives way before the name, and its access last.** On
   a narrow composer, or in a wider font, it is cut short and then gone
   before the name loses a letter. It is drawn in two parts

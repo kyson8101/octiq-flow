@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// `agentsMode` reads the roster over the socket bridge, which opens a
+// connection as it is imported.
+vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { knownSettings, receiptLines, runsAtLine, runsAtParts, runsAtRows } from "./chatSettings";
+import { leadSettings, type TeamAgent } from "./agentsMode";
+import { accessFor, modelFromId, type AccessLevel } from "./agentProviders";
 
 const opus = { agent: "claude" as const, model: "Opus" };
 const held = { choice: opus, effort: "high" as const, access: "auto" as const };
@@ -85,6 +91,59 @@ describe("the line in the two parts the composer draws", () => {
     });
     expect(runsAtRows(known).find((row) => row.label === "Access")?.value).toBe(runsAtParts(known).access.replace(" · ", ""));
     expect(runsAtLine(known)).toMatch(/^opus latest · high · /);
+  });
+});
+
+// 0.3.10: a chat opens on its agent's registered settings and then keeps the
+// level it has. The page holds that level, saves it with the chat and asks
+// for it at the next start; nothing raises or narrows it to the
+// registration's (AGENTS.md, "A chat's level is its own").
+describe("a chat whose level is not its agent's registered one", () => {
+  const ryan: TeamAgent = {
+    id: "agent_ryan", name: "Ryan", role: "CTO", agent: "claude", model: "opus",
+    effort: "high", access: "auto", createdAt: 1, updatedAt: 1,
+  };
+  const registered = leadSettings(ryan)!;
+
+  /** What the page holds for a saved chat it opens: its record's level, as
+   *  `App`'s `openConversation` takes it. */
+  const opened = (record: { modelId: string; effort: string; permission: string }) => {
+    const choice = modelFromId(record.modelId)!;
+    return knownSettings({
+      record, choice, effort: registered.effort,
+      access: accessFor(choice.agent, record.permission as AccessLevel),
+    });
+  };
+
+  it("says Plan for a chat the person put at Plan, under an agent registered at Auto", () => {
+    expect(registered.access).toBe("auto");
+    const known = opened({ modelId: registered.choice.id, effort: "high", permission: "read" });
+    expect(known.access).toBe("Plan");
+    expect(runsAtParts(known).access).toBe(" · Plan");
+    expect(runsAtRows(known)).toContainEqual({ label: "Access", value: "Plan" });
+    expect(runsAtLine(known)).not.toContain("Auto");
+  });
+
+  it("says the higher level for a chat an access card raised past its agent's", () => {
+    const known = opened({ modelId: registered.choice.id, effort: "high", permission: "full" });
+    expect(known.access).toBe("Bypass permissions");
+    expect(runsAtLine(known)).toMatch(/ · Bypass permissions$/);
+  });
+
+  it("says the registration's level only where that is what the chat has", () => {
+    // A conversation not saved yet: the page copied the registration in.
+    expect(knownSettings({ record: null, ...registered }).access).toBe("Auto");
+    // A chat an earlier build opened read-only and the host lifted at
+    // startup: its record says the lifted level, and so does the text.
+    expect(opened({ modelId: registered.choice.id, effort: "high", permission: "auto" }).access).toBe("Auto");
+  });
+
+  it("is given no registration to read: the level is the one handed in, whatever the agent has", () => {
+    const record = { modelId: registered.choice.id, effort: "high", permission: "read" };
+    for (const access of ["read", "manual", "edits", "auto", "full"] as const) {
+      const known = knownSettings({ record, choice: registered.choice, effort: "high", access });
+      expect(known.access).toBe({ read: "Plan", manual: "Manual", edits: "Accept edits", auto: "Auto", full: "Bypass permissions" }[access]);
+    }
   });
 });
 

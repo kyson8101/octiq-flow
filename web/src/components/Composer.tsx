@@ -1670,8 +1670,10 @@ export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initia
 }) {
   // The face and the name are the chip, with what the chat runs at beside
   // them in small quiet text. That text is not a picker: the agent's
-  // registration owns those settings and Settings, Agents is where they are
-  // changed. It is a disclosure, because a narrow composer cuts it short:
+  // registration says what its chats open on (Settings, Agents), and a chat
+  // then keeps the level it has, which is what is said here and may not be
+  // the registration's. It is a disclosure, because a narrow composer cuts
+  // it short:
   // a press, a tap or Enter shows the three values whole, read-only, with
   // the last turn's receipt, so none of it is behind a hover alone.
   const [open, setOpen] = useState(initiallyOpen);
@@ -1713,7 +1715,7 @@ export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initia
             {runsAtRows(runsAt ?? {}).map((row) => <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}
           </dl>
           {receipt.map((item) => <p key={item}>{item}</p>)}
-          <p className="composer-identity-sheet-note">Read-only here. An agent's settings are changed in Settings, Agents.</p>
+          <p className="composer-identity-sheet-note">Read-only here. This chat keeps what it runs at. Settings, Agents sets what an agent's new chats open on.</p>
         </div>
       </>}
     </div>

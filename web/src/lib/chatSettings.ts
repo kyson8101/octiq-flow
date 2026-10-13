@@ -6,7 +6,10 @@
 // beside its name, `opus · high · Auto`: read-only, and only what the page
 // knows of this chat. A value it does not know is left out, never guessed
 // and never filled in from the roster: a chat can differ from its agent's
-// registration (it keeps the model it was started on).
+// registration. It keeps the model it was started on, and its level is its
+// own: it opens on the registration's and then keeps the one it has, which
+// the page holds, saves with the chat and asks for at the next start
+// (`chatSettings.wiring.test.ts`).
 import { providerFor, type AccessLevel, type Effort, type ModelChoice } from "./agentProviders";
 
 /** What the page was told about a saved chat. Each is absent in a record

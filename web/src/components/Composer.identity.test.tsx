@@ -119,6 +119,12 @@ describe("the composer in agents mode", () => {
     expect(sheet).toContain("<dt>Effort</dt><dd>High</dd>");
     expect(sheet).toContain("<dt>Access</dt><dd>Plan</dd>");
     expect(sheet).toContain("<p>Last turn · 178.1s</p><p>Cost · $9.526</p>");
+    // Ryan is registered at Auto and this chat is at Plan: the chat's level
+    // is its own, and the sheet does not send the person to the
+    // registration to change what THIS chat runs at.
+    expect(ryan.access).toBe("auto");
+    expect(sheet).not.toContain("Auto");
+    expect(sheet).toContain("This chat keeps what it runs at. Settings, Agents sets what an agent&#x27;s new chats open on.");
     // Nothing in it changes anything: no button, no input, no link.
     expect(sheet).not.toMatch(/<button|<input|<select|<a |role="menu(item)?"/);
     // A press outside it shuts it.
