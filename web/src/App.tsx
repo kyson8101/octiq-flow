@@ -212,6 +212,7 @@ import { PlanButton, PlanPanel } from "./components/PlanPanel";
 import { useConfirm } from "./components/Confirm";
 import { CopyChatIdButton } from "./components/CopyChatIdButton";
 import { ActionBar, type BarAction } from "./components/ActionBar";
+import { BAR_SEEN_KEY, barSeen, holdsBar } from "./lib/actionBar";
 import { ChatTaskBar } from "./components/ChatTaskBar";
 import { BesideBar, BesideMainHead, TaskChatPane } from "./components/TaskChatPane";
 import { besideFor, besideTask, readBeside, roomBeside, type Beside } from "./lib/chatBeside";
@@ -464,6 +465,9 @@ export default function App() {
   // place and comes in once (`lib/arrival`), instead of saying one thing and
   // then another.
   const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  // Whether this browser's last visit to a chat's page had actions, read
+  // once: what holds the action bar's row before the project list answers.
+  const [barRemembered] = useState(() => recall(BAR_SEEN_KEY) === "1");
   const identity = useEntry(workspacesLoaded);
   const [shelfOpen, setShelfOpen] = useState(false);
   const [deletedChats, setDeletedChats] = useState<DeletedIndexEntry[]>([]);
@@ -5317,8 +5321,12 @@ export default function App() {
   ].filter((action): action is BarAction => !!action);
   // A chat's page has actions once its facts are in (which project, which
   // chat), so its bar is there before them and nothing moves when they
-  // come. Any other page draws a bar only for buttons it has.
-  const barHeld = onChat && (barActions.length > 0 || !workspacesLoaded || !!arrivingChat);
+  // come. A page that will have none never draws the row and then takes it
+  // away (`actionBar.holdsBar`): before the project list answers the row is
+  // held only when a chat is known or this browser's last visit had
+  // buttons. Any other page draws a bar only for buttons it has.
+  const barPage = { onChat, actions: barActions.length, loaded: workspacesLoaded, arriving: !!arrivingChat };
+  const barHeld = holdsBar({ ...barPage, chat: !!conversationId || !!arrivingChat, remembered: barRemembered });
   // A phone's one usage number ends the bar; a phone page with no bar keeps
   // it at the end of the top bar, where it was.
   const usageInBar = isMobile && (barHeld || barActions.length > 0);
@@ -5496,6 +5504,7 @@ export default function App() {
         actions={barActions}
         scrolls={isMobile}
         reserved={barHeld}
+        seen={barSeen(barPage)}
         lead={!isMobile && <div className="topbar-page-actions" ref={setActionsSlot} hidden={!mainPage} />}
         end={usageInBar ? usageEntry : null}
       />}

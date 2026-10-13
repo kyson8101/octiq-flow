@@ -17,7 +17,8 @@
 // are known (`reserved`), so a button or a count that arrives never moves the
 // page.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { cutEdges, overflowing } from "../lib/actionBar";
+import { BAR_SEEN_KEY, cutEdges, overflowing } from "../lib/actionBar";
+import { remember } from "../lib/remember";
 import { TopbarActionsMenu } from "./TopbarActionsMenu";
 import "./ActionBar.css";
 
@@ -44,6 +45,7 @@ export function ActionBar({
   actions,
   scrolls,
   reserved = false,
+  seen = null,
   lead,
   end,
   className = "",
@@ -56,6 +58,10 @@ export function ActionBar({
   /** Draw the bar even with nothing in it yet: this page has actions once
    *  its facts arrive, and the bar must already be there when they do. */
   reserved?: boolean;
+  /** Whether a chat's page had buttons this visit, once that is known
+   *  (`actionBar.barSeen`). Written down, so the next visit's first paint
+   *  knows whether to hold the row (`actionBar.holdsBar`). */
+  seen?: "1" | "0" | null;
   /** A page's own buttons, ahead of the actions (WorkspaceHeader's slot). */
   lead?: ReactNode;
   /** What stays at the far end whatever the row does (a phone's usage). */
@@ -66,6 +72,9 @@ export function ActionBar({
   initiallyOpen?: boolean;
 }) {
   const row = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (seen !== null) remember(BAR_SEEN_KEY, seen);
+  }, [seen]);
   const widths = useRef(new Map<string, number>());
   const moreWidth = useRef(MORE_WIDTH);
   const latest = useRef(actions);

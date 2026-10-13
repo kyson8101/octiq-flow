@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cutEdges, overflowing, type Sized } from "./actionBar";
+import { BAR_SEEN_KEY, barSeen, cutEdges, holdsBar, overflowing, type Sized } from "./actionBar";
 
 const GAP = 2;
 const MORE = 68;
@@ -78,5 +78,51 @@ describe("which edge of a phone's row is cut", () => {
 
   it("reads a right-to-left scroller, whose position counts down from zero", () => {
     expect(cutEdges(-120, 800, 390)).toBe("start end");
+  });
+});
+
+describe("whether a chat's page keeps the bar's row before it has a button", () => {
+  const page = { onChat: true, actions: 0, loaded: false, chat: false, arriving: false, remembered: false };
+
+  it("never draws the row for a first run with no project, before the list answers or after", () => {
+    // Nothing says buttons are coming: no chat open or named, and this
+    // browser has never seen a chat's page with any. The row was held here
+    // for the project list and taken away when it answered empty: 36px.
+    expect(holdsBar(page)).toBe(false);
+    expect(holdsBar({ ...page, loaded: true })).toBe(false);
+    expect(barSeen({ ...page, loaded: true })).toBe("0");
+  });
+
+  it("holds the row from the first paint when a chat is known", () => {
+    expect(holdsBar({ ...page, chat: true })).toBe(true);
+    expect(holdsBar({ ...page, chat: true, arriving: true })).toBe(true);
+    // A linked chat still on its way keeps it after the list has answered.
+    expect(holdsBar({ ...page, loaded: true, chat: true, arriving: true })).toBe(true);
+  });
+
+  it("holds it when this browser's last visit had buttons", () => {
+    expect(holdsBar({ ...page, remembered: true })).toBe(true);
+    // And gives it back once when the page has lost them all since.
+    expect(holdsBar({ ...page, remembered: true, loaded: true })).toBe(false);
+    expect(barSeen({ ...page, loaded: true })).toBe("0");
+  });
+
+  it("is there for the buttons the page has", () => {
+    expect(holdsBar({ ...page, actions: 2 })).toBe(true);
+    expect(holdsBar({ ...page, actions: 2, loaded: true })).toBe(true);
+    expect(barSeen({ ...page, actions: 2, loaded: true })).toBe("1");
+  });
+
+  it("is never held by a page that is not a chat's", () => {
+    for (const other of [page, { ...page, actions: 3 }, { ...page, chat: true, remembered: true }]) {
+      expect(holdsBar({ ...other, onChat: false })).toBe(false);
+    }
+  });
+
+  it("remembers nothing until the answer is known", () => {
+    expect(barSeen({ ...page, actions: 2 })).toBeNull();
+    expect(barSeen({ ...page, loaded: true, arriving: true })).toBeNull();
+    expect(barSeen({ ...page, onChat: false, loaded: true, actions: 2 })).toBeNull();
+    expect(BAR_SEEN_KEY).toBe("octiq.v2.actionBar");
   });
 });

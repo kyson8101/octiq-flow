@@ -1154,7 +1154,20 @@ narrow Windows window gets the phone's layout.
     drawn from the first paint (`reserved`), its buttons out of sight until
     the project list answers (the same gate the top bar's actions had), so
     a button or a count that arrives moves nothing under the bar. A page
-    with no actions draws no bar (the sheet's `:has`). What is left of a
+    with no actions draws no bar (the sheet's `:has`).
+  - **A page with no actions never has the row drawn and then taken away**
+    (`lib/actionBar.holdsBar`, one policy). Before the project list answers
+    the row is held only when something already says buttons are coming: a
+    chat is open or the address names one, or this browser's last visit to
+    a chat's page had buttons (`octiq.v2.actionBar`, written by the bar
+    through `lib/remember` once the answer is known: `barSeen`). A first
+    run in agents mode with no project has none of those: no row at the
+    first paint and none after. It used to be held for the list and removed
+    when the list answered empty, and the page jumped 36px. What is left: a
+    browser that has never been here, on an install that has projects, gets
+    its row with the project list, once; a browser whose last visit had
+    buttons, on a page that has lost them all since, gives the row back
+    once. What is left of a
     cold open's layout shift inside the bar is a button sliding along its
     row when Tasks or a count arrives beside it (0.006 of 0.013 at 1280,
     0.0015 at 390; `scripts/test-top-chrome.mjs` prints it).
