@@ -387,10 +387,19 @@ pub struct Handover {
     /// pruned; records written before it existed start from `outcomes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outcome_receipts: Vec<OutcomeReceipt>,
+    /// The one-time lift (`lift.rs`) has nothing to look at in this record.
+    /// Every record this build makes is born with it, and so is one whose
+    /// chat this build starts on the settings it read from the roster
+    /// (`prepare`); the lift sets it on a record it has looked at, whether
+    /// it lifted the chat or left it. So only a record an earlier build
+    /// left reads `false`, which is what a record that does not say reads
+    /// as. Private, like `origin`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lift_settled: bool,
 }
 
-/// A handover as the browser sees it: everything but the private origin
-/// and the outcome receipts.
+/// A handover as the browser sees it: everything but the private origin,
+/// the outcome receipts and the lift's mark.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Public {
@@ -1048,6 +1057,8 @@ pub fn request(path: &Path, host: &dyn Host, source: Source, ask: Ask) -> Result
         asks: Vec::new(),
         outcomes: Vec::new(),
         outcome_receipts: Vec::new(),
+        // Made by this build: nothing an earlier one narrowed (`lift.rs`).
+        lift_settled: true,
         kind: Kind::Handover,
         route: None,
     };
@@ -1354,18 +1365,6 @@ fn save_record(path: &Path, record: &Handover) -> Result<(), String> {
 /// Re-reads the registry, the project store and the checkout first: what
 /// the card showed is not trusted to still be true.
 pub fn confirm(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, String> {
-    confirm_with(path, id, host, false)
-}
-
-/// The person chose to open a route as a discussion instead: read-only, so
-/// a writer elsewhere in the project cannot keep it from opening. Offered
-/// on a card whose chat could not start; never once its chat may exist,
-/// since that chat already runs on the settings it started with.
-pub fn confirm_discussion(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, String> {
-    confirm_with(path, id, host, true)
-}
-
-fn confirm_with(path: &Path, id: &str, host: &dyn Host, discuss: bool) -> Result<Handover, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut record = read(path)?
         .handovers
@@ -1381,31 +1380,13 @@ fn confirm_with(path: &Path, id: &str, host: &dyn Host, discuss: bool) -> Result
         }
         Status::Pending | Status::Starting => {}
     }
-    if discuss && !record.route.as_ref().is_some_and(|r| r.discuss) {
-        if record.status == Status::Starting && may_have_started(&record, host) {
-            return Err(
-                "Its chat may already have started, so it can only be tried again as it is.".into(),
-            );
-        }
-        let Some(route) = record.route.as_mut() else {
-            return Err(
-                "Only a chat the front desk opens can be opened for discussion instead.".into(),
-            );
-        };
-        route.discuss = true;
-        route.message = route::render(
-            &record.from.name,
-            &record.brief.objective,
-            &route.attachments,
-            true,
-        );
-    }
     // Started before the record could say so (a failed save, a restart):
-    // finish the record, never start a second time.
+    // finish the record, never start a second time. Nothing is read from the
+    // roster here, so `lift_settled` stays as it is, as in `recover`.
     if record.status == Status::Starting && launched(&record, host) {
         return finish(path, record);
     }
-    let checked = match prepare(&mut record, host) {
+    let mut checked = match prepare(&mut record, host) {
         Ok(checked) => checked,
         Err(error) => {
             record.error = Some(error.clone());
@@ -1426,6 +1407,8 @@ fn confirm_with(path: &Path, id: &str, host: &dyn Host, discuss: bool) -> Result
         // On disk before anything irreversible. If this save fails nothing
         // was created, and the handover stays pending.
         save_record(path, &record)?;
+        // That write is the one `launch` would make: not made twice.
+        checked.recorded = true;
     }
     if let Err(error) = launch(path, &mut record, host, &checked) {
         record.error = Some(error.clone());
@@ -1470,7 +1453,16 @@ struct Checked {
     projects: Vec<Workspace>,
     agent: Option<TeamAgent>,
     fence: Fence,
+    /// Whether the record as checked is on disk. `prepare` changed it and
+    /// saves nothing, so this is false until someone has saved it since:
+    /// `launch` does, unless a caller that just did says so.
+    recorded: bool,
 }
+
+/// How the refusal of a start begins, when the record that says what the
+/// chat is started on could not be saved first.
+pub(crate) const NOT_RECORDED: &str =
+    "The new chat was not started, because its record could not be saved first:";
 
 /// Every check that can still refuse a confirm, run immediately before the
 /// start. Changes nothing outside the record.
@@ -1507,13 +1499,30 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
                     agent.name
                 ));
             }
-            let discuss = record.route.as_ref().is_some_and(|r| r.discuss);
-            let settings = route::opening_settings(&agent, discuss);
+            // A discussion too: what a chat is for never narrows its access.
+            let settings = settings_of(&agent);
             (Some(agent), settings)
         }
         None => (None, record.settings.clone()),
     };
     record.settings = settings;
+    // From here its chat is started by this build, on those settings: a
+    // record an earlier build left pending or starting at read is no longer
+    // one the lift may raise later (`lift.rs`). Set with the settings, so
+    // every save of the record from here on carries both, and the first of
+    // those is made before the chat is started (`launch`).
+    record.lift_settled = true;
+    // A discussion recorded before its note changed says the chat is
+    // read-only, which it is not: its first message is written again from
+    // the record, so the agent is told what is true now.
+    if let Some(route) = record.route.as_mut().filter(|route| route.discuss) {
+        route.message = route::render(
+            &record.from.name,
+            &record.brief.objective,
+            &route.attachments,
+            true,
+        );
+    }
 
     if record.workspace.mode == "continue" {
         recheck_checkout(&record.destination, &mut record.workspace)?;
@@ -1543,6 +1552,7 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
         projects,
         agent,
         fence,
+        recorded: false,
     })
 }
 
@@ -1620,6 +1630,9 @@ fn recheck_checkout(destination: &TaskDestination, plan: &mut WorkspacePlan) -> 
 /// the worktree is made once and remembered, the index and the lead record
 /// are rewritten in place, and the agent is started only when its first turn
 /// is not already on record.
+///
+/// The record is on disk before any of it. This is the one place a chat is
+/// started for a handover, so the one place that has to make sure.
 fn launch(
     path: &Path,
     record: &mut Handover,
@@ -1631,6 +1644,19 @@ fn launch(
         .clone()
         .ok_or("This handover has no chat id to start.")?;
     let chat_id = key.strip_prefix("chat:").unwrap_or(&key).to_owned();
+
+    // What `prepare` read from the roster and the mark that this build
+    // starts the chat (`lift_settled`), in one write, before the start. A
+    // pending handover's confirm has just made it. A record left starting
+    // comes here with both in memory only, and its start used to be made
+    // on that: when the save after the start then failed, or the server
+    // stopped first, the disk still held an earlier build's record of a
+    // chat this build had opened at its agent's own level, which the lift
+    // later raised. So a start whose record cannot be saved is refused,
+    // and nothing is made or started.
+    if !checked.recorded {
+        save_record(path, record).map_err(|why| format!("{NOT_RECORDED} {why}"))?;
+    }
 
     let cwd = match (
         &record.workspace.prepared_cwd,
@@ -1864,6 +1890,10 @@ pub fn recover(path: &Path, host: &dyn Host) -> Result<Vec<String>, String> {
         .filter(|h| h.status == Status::Starting && !confirmed_routes.contains(&h.id))
     {
         if launched(record, host) {
+            // Its chat was started before this start of the server, on what
+            // the record says: `lift_settled` stays as it is. This build's
+            // record was born with it; an earlier build's is one the lift
+            // looks at once it is confirmed, which is the next start.
             record.status = Status::Confirmed;
             record.error = None;
             record.abandonable = false;
@@ -2398,8 +2428,6 @@ pub enum Decision {
     Decline,
     /// Give up on a confirmed handover whose chat could not be started.
     Abandon,
-    /// Open a route as a read-only discussion instead (`confirm_discussion`).
-    Discuss,
 }
 
 /// The person's decision, from their socket. Then the calling agent is told:
@@ -2415,7 +2443,6 @@ pub fn decide(
             Decision::Confirm => confirm(path, id, host)?,
             Decision::Decline => decline(path, id)?,
             Decision::Abandon => abandon(path, id, host)?,
-            Decision::Discuss => confirm_discussion(path, id, host)?,
         };
         // A route tells nobody, and a cancelled one is already gone.
         if record.kind == Kind::Route {
@@ -2443,6 +2470,7 @@ pub fn live_recover(svc: &crate::dispatch::Services) {
 }
 
 pub mod back;
+pub(crate) mod lift;
 pub mod route;
 
 #[cfg(test)]

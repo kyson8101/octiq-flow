@@ -94,27 +94,40 @@ designated, the page is the plain picker above.
   folder of the route's own, which the new chat may read. A file that could
   not be given is named on the card. A newer proposal replaces a pending one.
   Cancel leaves no record and no file.
-- **A discussion is not work.** When the person wants to talk something
-  through rather than have it done, the front desk passes `purpose:
-  "discuss"`. The route then opens at **read-only** access, whatever the
-  agent's registered level, in the same place, and its first message says it
-  is a discussion. A chat the person drives is no longer refused for
-  writing beside an orchestration worker either (`chat_workspace_access`):
-  the person often runs several chats in one direction, so the chat is let
+- **A discussion is worded as one, and nothing else.** When the person wants
+  to talk something through rather than have it done, the front desk passes
+  `purpose: "discuss"`. The route keeps that on its record (`route.discuss`),
+  the card asks to discuss, and the first message ends with a line saying the
+  person wants to talk it through first (`route::DISCUSSION_NOTE`). It opens
+  in the same place and on the agent's registered provider, model, effort and
+  access, like any route: `purpose` never changes a chat's settings, at the
+  proposal or at confirm, where they are read from the registry again. A
+  discussion recorded by an earlier build at read-only access confirms on the
+  agent's registered settings too, with today's line in its first message.
+- **The host never narrows a chat because of what it is for.** Nothing in
+  the host, its MCP server or the text they give an agent opens a registered
+  agent's own conversation below that agent's registered level, or tells the
+  agent or the person that a discussion is read-only. Once it is open a chat
+  keeps its own level: it changes only when the person changes it (the access
+  picker, or an agent's `request_access` card), and no host rule raises or
+  lowers it at a start (see **The level of a routed chat** below). What this
+  does not touch: a worker's level comes with its task, and the front desk's
+  own launch is read-only, which is the desk and not a chat it opens (see
+  **It only routes** below).
+- **Writing beside a worker.** A chat the person drives is not refused for
+  writing beside an orchestration worker (`chat_workspace_access`): the
+  person often runs several chats in one direction, so the chat is let
   through and a line in it names the task writing there, once per task
   (`octiq_writer_beside`). Only an orchestration worker's own chat is still
   refused, so a Mission keeps one writer at a time, and the Git panel keeps
   the strict check (`require_workspace_access`). A worker's managed worktree
   is shared only by a chat working inside it, the same rule dispatch keeps
-  (`shares_checkout`). The read-only ways out below remain for a refusal
-  from an older backend or a workspace being cleaned up. A work route
-  whose start a writer refused offers **Discuss only (read-only)** beside Try
-  again and Give up (`handover_discuss`, socket-only), but only while the
-  host has made sure no chat started (`abandonable`), since a started chat
-  keeps the settings it started with. A conversation started straight with
-  an agent, or any other chat, gets the same way out: a message the writer
-  refused offers **Discuss read-only** on its bubble (`lib/writerConflict`),
-  which sends it again at read-only access in the same conversation.
+  (`shares_checkout`). A route whose start is refused all the same (a
+  workspace being cleaned up, the agent's CLI failing) offers Try again and
+  Give up, the second only while the host has made sure no chat started
+  (`abandonable`). There is no read-only way out of a refusal: the command
+  `handover_discuss` was removed, and a page that still sends it gets the
+  ordinary answer for a command the backend does not have.
 - The host checks scope at the proposal and again at confirm, and refuses a
   route to the front desk itself, to an agent who does not report to the
   person (naming the manager at the top of its chain,
@@ -155,6 +168,126 @@ designated, the page is the plain picker above.
 - The head and any agent who manages others cannot be the front desk, and
   nobody can report to it. Designating an agent changes none of its earlier
   chats.
+
+### The level of a routed chat
+
+Three things, and nothing else, say what level a routed chat runs at:
+
+1. **It opens on the agent's registered settings.** A route's settings are
+   the registry's at the proposal and are read from it again at confirm
+   (`handover::prepare`, `settings_of`). `purpose: "discuss"` is wording
+   only: the card and the first message.
+2. **The product never narrows a chat.** No route, retry, card or command of
+   the host's puts a chat at read. The "Discuss only (read-only)" answer on
+   a route card, the "Discuss read-only" retry on a message and the command
+   behind them (`handover_discuss`) are gone.
+3. **After it opens, a chat keeps its own level.** The level is the chat's:
+   the person's picker and an approved `request_access` card move it, the
+   page saves it with the chat's index entry, and the next start asks for
+   what was saved. No host rule raises it at a start. An agent registered at
+   Auto whose chat the person put at Plan starts at Plan.
+
+#### The one-time lift (`handover/lift.rs`)
+
+Up to 0.3.9 a route the front desk called a discussion was confirmed at read
+access, whatever its agent was registered at. Those chats were opened at read
+by the product, whatever level their agent had, and since nothing raises a
+chat at a start they would stay there. So they are lifted once, at the first
+start of a server that has this change, and by nothing else.
+
+| | |
+| --- | --- |
+| **Which records** | A handover record of kind `route`, status `confirmed`, `route.discuss: true`, `settings.access: read`, with a `targetChatKey`, and not marked `liftSettled`: a record an earlier build left that this pass has not looked at yet. A chat with no such record is never lifted: an ordinary chat, a PR Study or Review chat, a chat the old "Discuss read-only" retry narrowed, the front desk, a worker's chat, and every chat this build opens. |
+| **What that record proves** | That the chat was opened at read by a discussion route, and no more. With the mark absent it was left by an earlier build, and that build opened every discussion at read whatever the agent was registered at. The record cannot say whether the agent was itself registered at read then, and it does not say who put the chat at read since: only that it was opened there. The two limits below follow from that. |
+| **This build's records are born marked** | Every record this build makes is stored with `liftSettled: true` (both constructors: `handover::request`, `route::request`), and `handover::prepare` sets it together with the settings it reads from the roster, so a card an earlier build left that this build confirms, and a confirmed route this build finishes starting after a restart (`finish_route`), are marked in the write that records them. The mark and those settings are on disk before this build starts the chat (`handover::launch`), and a start whose record cannot be saved is refused with nothing started. Such a chat was opened by this build at its agent's own level: a discussion opened at read because the agent is registered at read is never raised when that registration is raised later. A record that does not say is an earlier build's (the field is new and reads `false`). |
+| **Lifted only when all hold** | The record's agent (`to.agentId`) is on the roster and registered above read. The chat is that agent's own conversation: its lead record names the same agent, and it is not a front desk's or a worker's chat. The agent's scope, as it is now, covers the project the lead record names. The chat index lists the chat, out of the trash, at exactly `read` (any other level was changed since, by a card's Upgrade or the picker, and is never touched). No process runs under the chat's key. |
+| **Otherwise** | The chat is left exactly as it is, and its record is marked all the same. |
+| **What is written, in order** | (1) The ledger's saved start settings for the chat, when it holds some and they are at exactly read (the index and the ledger must agree, or a run's notification is refused after a restart); settings at any other level are left. (2) The chat index entry's `access`, to the agent's registered access, and nothing else of the entry. (3) Last, the record's `liftSettled: true`. Each through its owner's own function: `OrchestrationStore::lift_resume_context`, `chat_index::lift_read`, the handover store. |
+| **The mark** | `liftSettled` is the one mark and means "the one-time pass has nothing to look at here": it has looked, lifted or left, or this build made the record or started its chat. A marked record is never looked at, so a registration that changes later lifts nothing. It is stored only, is not sent to the page (`Public`), and is absent until set. The pass does not write the record's `settings`: they stay what it was confirmed with. |
+| **Limit: an agent registered at read then** | Accepted limit. An earlier build's record whose agent was registered at Read when the chat was opened, so nothing was narrowed, and whose registration was raised before the start of this build that looks at the record (its first, unless something could not be read): the chat is lifted to the level registered at that look. |
+| **Limit: read picked again by the person** | Accepted limit. An earlier build's discussion chat that the person later raised and then deliberately set back to Plan on the access picker (possible only where the picker is drawn for it: agents mode off, or the moment the roster is still loading) reads as untouched, index and record both at read, and is lifted. |
+| **Could not read, or could not save the ledger or the index** | The record is not marked, on disk or in what the pass holds, and the next start tries again. Every step is safe to repeat: a ledger entry or an index entry already lifted is no longer at read. A profile folder that is away or is not the one the server started with, an unreadable handover store, and an unreadable roster each refuse the whole pass before anything is written. |
+| **Could not save the mark** | By then the chat is decided: the mark is set in the stored value the pass holds only after the record's ledger and index writes answered, or after the chat was left with nothing to write. The pass keeps that `true` and goes on, and each later write of the store in the same pass writes the whole store. So a mark is left for the next start only if no successful write of the store in this pass carried it. Carried, the record is not looked at again. Not carried, the next start decides the record afresh: a chat that was lifted is no longer at read, so it is left and the record marked; a chat that was left is decided as it stands then. Either way a chat the pass lifted, and nothing lowered since, is not raised by it a second time. Only an index entry put back at read between those two starts (the picker, or a page left open across the restart) reads as untouched under an unmarked record, and is lifted again. |
+| **When** | Once per server start, in `Services::load`: after the ledger is loaded and before the idle sweeper, the auto-resume scheduler and the run scheduler exist, so before anything can start a chat. Not on a timer, not from a page, not from a hook. |
+| **What it does not do** | No bus event, no line in a transcript, no page command, nothing kept in memory. It never raises above the registered access and never lowers. It does not touch `origin.start` of a pending question or handover. |
+
+It says one line on the log per start, with counts and no chat's name or
+words: `[handover] read-only discussions: 2 lifted to their agent's
+registered access, 1 (1 level changed since) left`, and `, N (…) to try again
+at the next start` when something could not be read or written. A record
+whose mark could not be saved is counted there and not under lifted or left,
+also when a later write in the same pass carried its mark and no next start
+looks at it.
+
+Two things follow from where it runs:
+
+- **A route a restart cut off.** `handover::recover` runs after the lift, on
+  its own thread. A discussion confirmed by the earlier build whose chat had
+  not started is started then on the registered settings (`finish_route`,
+  through `prepare`), so its record is marked and is never the lift's. One
+  whose chat HAD started at read, with the record not yet saying confirmed,
+  is only set to confirmed by `recover` (or by Try again on its card), which
+  reads nothing from the roster and leaves `liftSettled` as it is: an
+  earlier build's record still does not say and is lifted at the start after
+  this one, and a record this build made keeps the mark it was born with.
+- **A page that stayed open across the restart** may save the chat's old
+  level back with its index entry (the page's save is as it always was).
+  That chat is then where it was before this change, and its record is
+  already marked. This is a known limit, not something the host corrects.
+  What the person sees on that page: the chat goes on running at read and
+  nothing announces the lift (no event carries a level, and the page keeps
+  the level it loaded). Reloading the page after the release reads the
+  level the index holds: the lifted one, unless that page had already saved
+  its old level back.
+
+#### Tried and withdrawn
+
+Three rules were built for "a registered agent's chat never starts below its
+registered access", and each failed review:
+
+- **A rule on the page.** The page does not reliably know the roster, or
+  whether a process is running, at the moment it has to decide.
+- **A level event from the host to the page.** An event has no order against
+  what the person does: a frame that was already on its way put back a level
+  the person had just picked.
+- **The host as the only writer of the saved level.** The access picker is
+  drawn for an agent's own chat whenever agents mode is off (a setting of
+  one browser, which the host cannot see) and while the roster is loading.
+  A level picked there with no process running was dropped.
+
+They share one cause: the host cannot tell a stale saved level from a level
+the person picked. So there is no standing rule, only the lift above.
+
+#### Still open
+
+- `agent_chat::continue_origin` after a restart starts a chat from the
+  settings saved with the old question or handover (`origin.start`): it
+  checks the provider and the session, never the level, and the lift does
+  not touch `origin.start`. They are stale in both directions, and both are
+  open:
+  - *Read.* A question or handover saved while the chat was at read starts
+    the chat at read again after a restart, though the index and the agent's
+    registration now say higher: also a chat the lift raised. The rules
+    withdrawn above would have covered this direction; with them gone it is
+    open.
+  - *Higher.* One saved while the chat was at Full starts it at Full again,
+    though the person has since lowered it.
+
+  It was so before this change.
+- Test gaps in the lift, none known to hide a fault. No mutant is killed for
+  the three could-not-read arms of `lift::settle` (the lead record, the
+  roster read for the agent's scope, and an index entry that was listed and
+  is then not found) or for the second look at "still at read" inside the
+  ledger's write in `OrchestrationStore::lift_resume_context`. The two tests
+  of a failed save (the ledger's, the mark's) fail the write by taking the
+  profile folder's write permission and are unix-only, so neither runs on
+  Windows.
+- A send refused because another task writes in the checkout reads
+  "Delivery unconfirmed" on the page, though the refusal was definite.
+- Three tests fail on Windows only, as they do at 0.3.9:
+  `every_agent_launch_decides_front_desk_by_the_chat_key_in_one_place`
+  (it looks for a line-feed marker in a source file checked out with CRLF),
+  and two Antigravity assertions that compare a path written with `/`.
 
 ## Where a new task runs (automatic, with Advanced overrides)
 

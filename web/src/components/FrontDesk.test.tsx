@@ -12,7 +12,7 @@ import { WHOLE_MAX } from "../lib/cardFold";
 import { FRONT_DESK_GREETING } from "../lib/frontDesk";
 import { handover } from "../lib/handover.fixture";
 import {
-  canDiscussInstead, handoverPlaces, handoversFor, handoverTail, homeShort, isRoute, mergeHandover, routeFact, routeHeadline, routePlaceLine, settingsLine, type Handover,
+  handoverPlaces, handoversFor, handoverTail, homeShort, isRoute, mergeHandover, routeFact, routeHeadline, routePlaceLine, settingsLine, type Handover,
 } from "../lib/handover";
 import { pendingActions } from "../lib/pendingActions";
 import type { TeamAgent } from "../lib/agentsMode";
@@ -149,37 +149,43 @@ describe("the front desk's confirm card", () => {
     expect(tail).not.toContain(">Cancel<");
   });
 
-  it("offers a read-only discussion when a writer kept the chat from opening", () => {
+  // The page never opens a chat read-only of its own accord: a start a
+  // writer refused is a failed start like any other, with the host's words.
+  it("offers no read-only way out when a writer kept the chat from opening", () => {
     const writer = "This checkout has an active writer for task Storyboard. Wait or use a separate worktree.";
     const stuck = route({ status: "starting", targetChatKey: "chat:new", error: writer, abandonable: true });
-    expect(canDiscussInstead(stuck)).toBe(true);
     const { tail } = cards([stuck], "chat:desk");
     expect(tail).toContain(writer);
-    expect(tail).toContain("No chat was opened. Try again, open it read-only to discuss, or give up.");
-    expect(tail).toContain("Discuss only (read-only)");
+    expect(tail).toContain("No chat was opened. Try again, or give up.");
     expect(tail).toContain("Try again");
     expect(tail).toContain("Give up");
-    // Not when the chat may exist, nor for a discussion that already failed.
-    expect(canDiscussInstead(route({ status: "starting", error: writer, abandonable: false }))).toBe(false);
-    const talking = route({ status: "starting", error: "CLI unavailable", abandonable: true, route: { message: "x", discuss: true } });
-    expect(canDiscussInstead(talking)).toBe(false);
-    expect(cards([talking], "chat:desk").tail).not.toContain("Discuss only");
-    expect(canDiscussInstead(route({ status: "pending" }))).toBe(false);
+    expect(tail.match(/<button/g)).toHaveLength(3); // the fold's control, Give up, Try again
+    expect(tail).not.toMatch(/read-only|Discuss/i);
+    // Nor when the chat may exist.
+    const maybe = cards([route({ status: "starting", error: writer, abandonable: false })], "chat:desk").tail;
+    expect(maybe).toContain("Its chat may already have started, so it can only be tried again.");
+    expect(maybe).not.toMatch(/read-only|Discuss/i);
   });
 
-  it("asks to discuss, read-only, when the front desk proposes a discussion", () => {
+  // `discuss` is wording: the chat it opens runs on its agent's registered
+  // settings, which are the ones the card prints.
+  it("asks to discuss when the front desk proposes a discussion, and calls nothing read-only", () => {
     const talk = route({
-      settings: { agent: "claude", model: "opus", effort: "high", access: "read" },
+      settings: { agent: "claude", model: "opus", effort: "high", access: "auto" },
       route: { message: "Brainstorm the series.", discuss: true },
     });
     const { tail } = cards([talk], "chat:desk");
     expect(tail).toContain('aria-label="Discuss with Vesper?"');
     // A discussion is said first and once, then the project and its place.
-    expect(tail).toMatch(/<p class="handover-fact">Read-only discussion · <span class="handover-place has-tip"[^>]*>starfall-novel<span class="handover-tip"[^>]*>\/src\/starfall<\/span><\/span> · new worktree<\/p>/);
-    expect(tail).not.toContain("discussion, read-only");
-    expect(tail).toContain("</span>Opus latest · high · Plan</p>");
+    expect(tail).toMatch(/<p class="handover-fact">Discussion · <span class="handover-place has-tip"[^>]*>starfall-novel<span class="handover-tip"[^>]*>\/src\/starfall<\/span><\/span> · new worktree<\/p>/);
+    expect(tail).not.toMatch(/· discussion/);
+    expect(tail).toContain("</span>Opus latest · high · Auto</p>");
     expect(tail).toContain("Discuss with Vesper<");
-    expect(tail).not.toContain("Discuss only (read-only)");
+    expect(tail).not.toMatch(/read-only/i);
+    // A discussion that could not start has the same two answers.
+    const stuck = cards([route({ status: "starting", error: "CLI unavailable", abandonable: true, route: { message: "x", discuss: true } })], "chat:desk").tail;
+    expect(stuck).toContain("No chat was opened. Try again, or give up.");
+    expect(stuck).not.toMatch(/read-only/i);
   });
 
   it("leaves nothing behind once confirmed or cancelled, in either chat", () => {
@@ -253,11 +259,11 @@ describe("the front desk's confirm card", () => {
     expect(routePlaceLine(route({ workspace: { mode: "folder", path: "/g" }, destination: { projectId: "g", projectName: "General", repository: "/g" } }))).toBe("General");
     expect(routePlaceLine(route({ route: { message: "x", crossProject: true }, workspace: { mode: "folder", path: "/g" }, destination: { projectId: "g", projectName: "General", repository: "/g" } })))
       .toBe("General · plans across every project");
-    expect(routePlaceLine(route({ route: { message: "x", discuss: true } }))).toBe("starfall-novel · new worktree · discussion, read-only");
+    expect(routePlaceLine(route({ route: { message: "x", discuss: true } }))).toBe("starfall-novel · new worktree · discussion");
     // The card's own sentence says a discussion first, and once.
     expect(routeFact(route())).toEqual({ lead: "New chat", project: "starfall-novel", notes: ["new worktree"] });
     expect(routeFact(route({ route: { message: "x", discuss: true } })))
-      .toEqual({ lead: "Read-only discussion", project: "starfall-novel", notes: ["new worktree"] });
+      .toEqual({ lead: "Discussion", project: "starfall-novel", notes: ["new worktree"] });
     expect(routeFact(route({ route: { message: "x", crossProject: true, discuss: true } })).notes).toEqual(["plans across every project"]);
     // The settings the card prints, on one line.
     expect(settingsLine(route().settings)).toBe("Sonnet latest · high · Accept edits");

@@ -403,9 +403,9 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
       <div class="panel">
         <h2>文案：改了什么（都标在这里，没有悄悄改）</h2>
         <ul>
-          <li><span class="tag">保留</span> 所有按钮和提示句：<code>Cancel</code>、<code>Discuss with …</code>、<code>Open chat with …</code>、<code>Keep it here</code>、<code>Hand over to …</code>、<code>Try again</code>、<code>Give up</code>、<code>Discuss only (read-only)</code>、<code>Nothing opens until you choose</code>、<code>Nothing starts until you choose</code>、<code>Opening the chat.</code>、<code>Starting the new chat.</code>、失败后的三句提示、太长的那句说明、<code>Not passed on: …</code>。</li>
+          <li><span class="tag">保留</span> 所有按钮和提示句：<code>Cancel</code>、<code>Discuss with …</code>、<code>Open chat with …</code>、<code>Keep it here</code>、<code>Hand over to …</code>、<code>Try again</code>、<code>Give up</code>、<code>Nothing opens until you choose</code>、<code>Nothing starts until you choose</code>、<code>Opening the chat.</code>、<code>Starting the new chat.</code>、失败后的三句提示、太长的那句说明、<code>Not passed on: …</code>。</li>
           <li><span class="tag">建议</span> 信封行我写的是 <code>Brief · 511 characters · Exact first message · 5 lines</code>，没有用任务里的 <code>Brief · 511 characters · 5 lines</code>。511 个字符是简报，5 行是"发出去的第一条消息"，是两段不同的文字；合成一个标签就等于把第二段的名字藏了，违反"折叠的部分保留标签和大小"。</li>
-          <li><span class="tag">新</span> 事实句：<code>Read-only discussion · starfall</code>、<code>New chat · starfall · new worktree</code>；交接卡 <code>Takes over this task · octiq-flow</code> 和 <code>Continues on &lt;branch&gt; · uncommitted changes travel with it</code>（原来是 To / Where / Changes 三行）。</li>
+          <li><span class="tag">新</span> 事实句：<code>Discussion · starfall</code>、<code>New chat · starfall · new worktree</code>；交接卡 <code>Takes over this task · octiq-flow</code> 和 <code>Continues on &lt;branch&gt; · uncommitted changes travel with it</code>（原来是 To / Where / Changes 三行）。</li>
           <li><span class="tag">新</span> 文件写成一句：<code>With 3 files: a, b, c</code>（原来是 <code>Files</code> 标签加三个 chip）。</li>
           <li><span class="tag">新</span> 交接卡的"内容太长"状态：今天的交接卡没有这个状态，只有路由卡有。样稿按同一句式写了 <code>This brief is too long to show in full (…), so it cannot be handed over from here. Keep it here and ask for a shorter one.</code></li>
           <li><span class="tag">改</span> <code>Not passed on</code> 从 <code>--danger</code> 红改成 <code>--warn</code> 琥珀，加一个警告图标。它是整张卡上唯一的琥珀色。</li>
@@ -465,11 +465,11 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
   // ---- Sample content ---------------------------------------------------
   var BRIEF = "The person wants to talk through the Starfall season 2 release plan before any work is assigned. They are weighing two options: ship all eight episodes weekly starting November, or hold episodes 5 to 8 until the music for the finale is re-recorded. They want your read on which option protects the canon timeline, what each one costs STAR MUSIC and STAR VIDEO in rework, and whether the trailer should move. This is a discussion only: nothing is to be changed, scheduled or handed to a report until they say so.";
   var MESSAGE = [
-    "[Routed by Front desk · discussion, read-only]",
+    "[Routed by Front desk · discussion]",
     "Project: starfall (~/03-projects/Starfall)",
     "Brief: " + BRIEF,
     "Attached: none",
-    "Do not change files, schedule work or message your reports until the person says so.",
+    "This chat is a discussion, not a task: the person wants to talk it through first. Read whatever helps the conversation, and change nothing unless they ask you to.",
   ].join("\n");
   var HANDOVER = {
     objective: "Wire the server half of the name-card cards: the route record needs the agent's avatar and the settings line as the page now draws them.",
@@ -507,8 +507,8 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
       var discuss = st !== "4" && st !== "6";
       m.discuss = discuss;
       m.place = { name: "starfall", path: "~/03-projects/Starfall" };
-      m.facts = [(discuss ? "Read-only discussion · " : "New chat · ") + "{place}" + (st === "6" ? " · new worktree" : "")];
-      m.settings = "Opus latest · high · " + (discuss ? "Plan" : "Edits");
+      m.facts = [(discuss ? "Discussion · " : "New chat · ") + "{place}" + (st === "6" ? " · new worktree" : "")];
+      m.settings = "Opus latest · high · Edits";
       m.question = m.status === "starting"
         ? (m.failed ? "STAR LEAD's chat did not start" : "Opening a chat with STAR LEAD…")
         : (discuss ? "Discuss with STAR LEAD?" : "Open a chat with STAR LEAD?");
@@ -526,8 +526,8 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
         m.buttons = [{ label: "Cancel", act: "decline" }, { label: discuss ? "Discuss with STAR LEAD" : "Open chat with STAR LEAD", act: "confirm", go: true, off: !!m.over }];
       } else if (m.failed) {
         m.error = "Another chat is already working in ~/03-projects/Starfall, so one that can edit was not started.";
-        m.hint = "No chat was opened. Try again, open it read-only to discuss, or give up.";
-        m.buttons = [{ label: "Give up", act: "abandon" }, { label: "Discuss only (read-only)", act: "confirm" }, { label: "Try again", act: "confirm", go: true }];
+        m.hint = "No chat was opened. Try again, or give up.";
+        m.buttons = [{ label: "Give up", act: "abandon" }, { label: "Try again", act: "confirm", go: true }];
       } else { m.hint = "Opening the chat."; m.buttons = []; }
     } else {
       m.place = { name: "octiq-flow", path: HANDOVER.path };
@@ -601,7 +601,7 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
         ? "I want to talk the season 2 release plan through with STAR LEAD before anyone starts on it."
         : "The page side is done. Hand the server half to OCTIQ BE.") + "</div>"
       + '<div class="msg-agent"><div class="msg-role">' + avatar(agent, 18, hueNext(hashOf(agent), band)) + "<span>" + agent + "</span></div><p>"
-      + (m.route ? "STAR LEAD runs Starfall. I have written a brief for a read-only discussion; nothing opens until you confirm it." : "I have written a brief for OCTIQ BE with what is done and what is left. Nothing starts until you confirm it.")
+      + (m.route ? "STAR LEAD runs Starfall. I have written a brief for a discussion; nothing opens until you confirm it." : "I have written a brief for OCTIQ BE with what is done and what is left. Nothing starts until you confirm it.")
       + '</p></div><div class="dock" id="dock">' + cardHtml(m) + "</div>";
   }
 
@@ -693,7 +693,7 @@ pre.formula { margin: 0; padding: 10px 12px; border: 1px solid var(--border); bo
     if (m.route) {
       // The page goes to the chat it opened: the face and the name become
       // its title.
-      $("topbar-chat").innerHTML = avatar(m.to, 24, m.hue, "land-av") + '<span id="land-name">' + esc(m.to) + '</span><span class="dim">· ' + esc(m.place.name) + (m.discuss ? " · read-only" : "") + "</span>";
+      $("topbar-chat").innerHTML = avatar(m.to, 24, m.hue, "land-av") + '<span id="land-name">' + esc(m.to) + '</span><span class="dim">· ' + esc(m.place.name) + "</span>";
       $("composer-input").placeholder = "Message " + m.to + "…";
       $("column").className = "column view-in";
       $("column").innerHTML = '<div class="msg-user">' + esc(BRIEF) + "</div>"

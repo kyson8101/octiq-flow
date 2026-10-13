@@ -1469,9 +1469,9 @@ const ROUTE_CHAT = {
         enum: ["work", "discuss"],
         description:
           "\"discuss\" when the person wants to talk something through (brainstorm, " +
-          "explore an idea, ask questions) rather than have something done: the chat " +
-          "opens read-only, so work running in the project never blocks it. " +
-          "\"work\", the default, opens it on the agent's registered settings.",
+          "explore an idea, ask questions) rather than have something done: the chat's " +
+          "first message says it is a discussion. \"work\" is the default. Either way " +
+          "the chat opens on the agent's own settings, like any chat.",
       },
       requestId: {
         type: "string",
@@ -1568,7 +1568,7 @@ function callRoute(args = {}) {
     attachments: Array.isArray(args.attachments)
       ? args.attachments.filter((item) => typeof item === "string")
       : [],
-    // Only the one value that changes anything; any other word is work.
+    // Only the one value the host words differently; any other word is work.
     ...(args.purpose === "discuss" ? { purpose: "discuss" } : {}),
     requestId: text(args.requestId),
   };

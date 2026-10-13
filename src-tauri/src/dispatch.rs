@@ -70,6 +70,10 @@ impl Services {
         let mut chats = ChatManager::with_saved_questions(question_path);
         chats.orchestrations = orchestrations.clone();
         let chats = Arc::new(chats);
+        // Once, before anything below can start a chat: the chats an
+        // earlier build opened as read-only discussions go back to their
+        // agent's registered access (`handover::lift`).
+        crate::handover::lift::at_startup(&orchestrations, &|key| chats.has_process(key));
         // A chat nobody has touched for a quarter of an hour is ended and
         // resumed on its next message. This is where it matters most: the
         // service runs for days, and every chat left open holds an agent and
@@ -2041,11 +2045,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "id")?,
             crate::handover::Decision::Abandon,
         )),
-        "handover_discuss" => to_value(crate::handover::decide(
-            svc,
-            &arg::<String>(&args, "id")?,
-            crate::handover::Decision::Discuss,
-        )),
         // Front-desk chats the person left before they routed anywhere, for
         // the way back on the new-chat screen. No list shows them otherwise.
         "front_desk_unfinished" => to_value(crate::handover::route::unfinished_desks(
@@ -2745,6 +2744,11 @@ mod tests {
         // has to name the command, or "something failed" is the whole report.
         let err = dispatch(&svc, "no_such_command", json!({})).unwrap_err();
         assert!(err.contains("no_such_command"), "{err}");
+        assert!(err.contains("not available on this backend"), "{err}");
+        // The read-only way out of a refused route is gone with its command:
+        // a page that still sends it is told so, and nothing is opened.
+        let err = dispatch(&svc, "handover_discuss", json!({ "id": "handover_1" })).unwrap_err();
+        assert!(err.contains("'handover_discuss'"), "{err}");
         assert!(err.contains("not available on this backend"), "{err}");
     }
 

@@ -17,7 +17,7 @@
 // line a handover leaves in this one.
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import {
-  askBackSummary, canDiscussInstead, chatIdOf, handoverHeadline, handoverWhere, homeShort, isRoute, latestOutcome, noticeLine,
+  askBackSummary, chatIdOf, handoverHeadline, handoverWhere, homeShort, isRoute, latestOutcome, noticeLine,
   outcomeText, placeLine, routeFact, routeHeadline, settingsLine, waitsOnPerson,
   type Handover, type HandoverAction, type HandoverAsk, type handoverLayout,
 } from "../lib/handover";
@@ -256,7 +256,7 @@ function useAnswers(handover: Handover, onDecide: Decide, over: string) {
     if (stuck) forgetIdentity(id);
   }, [stuck, id]);
   const decide = useCallback(async (action: HandoverAction) => {
-    if (action === "confirm" || action === "discuss") rememberIdentity(id, card.current);
+    if (action === "confirm") rememberIdentity(id, card.current);
     setBusy(action);
     setError(null);
     try {
@@ -400,7 +400,6 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
   const route = handover.route;
   const files = route?.attachments ?? [];
   const unreadable = route?.unreadable ?? [];
-  const discussInstead = canDiscussInstead(handover);
   const fact = routeFact(handover);
   // A head's conversation spans every project, so it has no one folder.
   const repository = route?.crossProject ? "" : handover.destination.repository;
@@ -505,20 +504,13 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
           <span className="handover-hint">
             {!handover.error
               ? "Opening the chat."
-              : discussInstead
-                ? "No chat was opened. Try again, open it read-only to discuss, or give up."
-                : handover.abandonable
-                  ? "No chat was opened. Try again, or give up."
-                  : "Its chat may already have started, so it can only be tried again."}
+              : handover.abandonable
+                ? "No chat was opened. Try again, or give up."
+                : "Its chat may already have started, so it can only be tried again."}
           </span>
           {handover.error && handover.abandonable && (
             <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")}>
               {busy === "abandon" ? "Giving up…" : "Give up"}
-            </button>
-          )}
-          {discussInstead && (
-            <button type="button" className="handover-quiet" disabled={!!busy} {...send("discuss")}>
-              {busy === "discuss" ? "Opening…" : "Discuss only (read-only)"}
             </button>
           )}
           {handover.error && (

@@ -438,6 +438,29 @@ pub fn set_cwd(id: &str, cwd: &str) -> Result<bool, String> {
     write(&index).map(|()| true)
 }
 
+/// The one-time lift of a chat an earlier build opened as a read-only
+/// discussion (`handover::lift`): a listed chat whose level is exactly read
+/// moves to `to`, and nothing else of it changes. Answers `false`, and
+/// writes nothing, for a chat that is not listed, is in the trash or is at
+/// any other level: that one was changed since and is not the lift's to
+/// touch. An index that cannot be read is an error, never "not at read".
+pub fn lift_read(id: &str, to: &str) -> Result<bool, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    let Some(chat) = index
+        .chats
+        .iter_mut()
+        .find(|chat| chat.id == id && chat.deleted_at.is_none())
+    else {
+        return Ok(false);
+    };
+    if chat.access.as_deref() != Some("read") {
+        return Ok(false);
+    }
+    chat.access = Some(to.to_string());
+    write(&index).map(|()| true)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatTitleUpdate {

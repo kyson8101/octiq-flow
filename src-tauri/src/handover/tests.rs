@@ -178,6 +178,15 @@ pub(crate) struct FakeHost {
     /// The handover store to break as the next start returns, the way a full
     /// disk would: the chat is started and its record cannot be saved.
     pub(crate) break_store: StdMutex<Option<PathBuf>>,
+    /// The handover store to break as the next confirm or recovery checks
+    /// its handover (`prepare` asks for the projects): after the record was
+    /// read, before anything of it is saved or started.
+    pub(crate) break_store_at_check: StdMutex<Option<PathBuf>>,
+    /// The handover store to look at as each chat is started.
+    pub(crate) watch_store: StdMutex<Option<PathBuf>>,
+    /// What `watch_store` held at each start, in order: the disk a server
+    /// that stopped at that moment would leave.
+    pub(crate) store_at_start: StdMutex<Vec<Vec<u8>>>,
     /// Provider sessions of running chats, by chat key.
     pub(crate) sessions: StdMutex<Vec<(String, String)>>,
     /// Every answering turn run, and what each answers.
@@ -215,6 +224,12 @@ pub(crate) async fn eventually<T>(what: &str, mut check: impl FnMut() -> Option<
     }
 }
 
+/// Nothing can be saved to `store`, or read from it, until `mend_store`.
+fn break_now(store: &Path) {
+    fs::rename(store, store.with_extension("json.saved")).unwrap();
+    fs::create_dir(store).unwrap();
+}
+
 /// The store `FakeHost::break_store` broke, put back as it was.
 pub(crate) fn mend_store(store: &Path) {
     fs::remove_dir(store).unwrap();
@@ -234,6 +249,9 @@ impl FakeHost {
 
 impl Host for FakeHost {
     fn projects(&self) -> Result<Vec<Workspace>, String> {
+        if let Some(store) = self.break_store_at_check.lock().unwrap().take() {
+            break_now(&store);
+        }
         Ok(self.projects.clone())
     }
     fn team_path(&self) -> PathBuf {
@@ -270,10 +288,13 @@ impl Host for FakeHost {
         if *self.writer_busy.lock().unwrap() && start.access != Access::Read {
             return Err("This checkout has an active writer for task Storyboard. Wait or use a separate worktree.".into());
         }
+        if let Some(store) = self.watch_store.lock().unwrap().as_ref() {
+            let held = fs::read(store).unwrap();
+            self.store_at_start.lock().unwrap().push(held);
+        }
         self.starts.lock().unwrap().push(start);
         if let Some(store) = self.break_store.lock().unwrap().take() {
-            fs::rename(&store, store.with_extension("json.saved")).unwrap();
-            fs::create_dir(&store).unwrap();
+            break_now(&store);
         }
         Ok(())
     }

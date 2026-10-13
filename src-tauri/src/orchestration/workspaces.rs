@@ -13,8 +13,7 @@ pub struct WriterBeside {
 }
 
 impl WriterBeside {
-    /// What the strict check refuses with. `lib/writerConflict` matches
-    /// "has an active writer for task".
+    /// What the strict check refuses with.
     pub fn refusal(&self) -> String {
         format!(
             "This checkout has an active writer for task {} ({}). Wait or use a separate worktree.",
