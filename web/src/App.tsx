@@ -223,7 +223,7 @@ import { SafetyToast } from "./components/SafetyToast";
 import type { Continue } from "./components/SafetyBlock";
 import { splitSafety, useSafetyToast } from "./lib/safetyToast";
 import { foldedSafetyKeys, waitingChats, workingChats } from "./lib/chatWait";
-import { noteWaits, type TurnWaits } from "./lib/turnClock";
+import { withWait } from "./lib/turnClock";
 import { knownSettings, runsAtLine } from "./lib/chatSettings";
 import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
@@ -5027,13 +5027,15 @@ export default function App() {
   );
   const workingSet = useMemo(() => workingChats(busySet, chatWaits), [busySet, chatWaits]);
   // What each turn in flight has waited, so its clock leaves that out
-  // (`lib/turnClock`). In memory, on this page's clock.
-  const [turnWaits, setTurnWaits] = useState<Readonly<Record<string, TurnWaits>>>({});
+  // (`lib/turnClock`). Noted in the chat's own state, beside the turn's
+  // start: the checkpoint that brings the start back after a reload brings
+  // the waits with it, and nothing keeps one without the other. A state
+  // that did not change is handed back as it was, so this settles in one
+  // pass.
   useEffect(() => {
-    setTurnWaits((before) => noteWaits(
-      before, chatWaits, (id) => (chats[id]?.busy ? chats[id]?.turnStartedAt : undefined), Date.now(),
-    ));
-  }, [chats, chatWaits]);
+    const now = Date.now();
+    for (const id of Object.keys(chats)) patch(id, (state) => withWait(state, chatWaits.has(id), now));
+  }, [chats, chatWaits, patch]);
   const waitingHere = (conversationId && chatWaits.get(conversationId)) || null;
   // The host says a decision waits on the person and the page has no card
   // for it: the list it comes in was not read, or its request failed. Ask
@@ -6139,7 +6141,7 @@ export default function App() {
             /* Parked on a card: the running line says so, and its clock
                leaves the wait out. */
             waiting={waitingHere}
-            turnWaits={conversationId ? turnWaits[conversationId] : undefined}
+            turnWaits={chat.turnWaits}
             terminalOpen={termOpen}
             onTerminal={
               project && !focusMode

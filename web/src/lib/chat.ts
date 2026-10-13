@@ -34,6 +34,7 @@
 // So every message records the parent it came from, and every question about
 // what is currently being written is asked per parent.
 
+import type { TurnWaits } from "./turnClock";
 import {
   hasBriefHead,
   parseCommandEcho,
@@ -390,6 +391,13 @@ export type ChatState = {
    *  A conversation joined mid-turn counts from when we joined: nothing in the
    *  stream says when a turn already in progress began. */
   turnStartedAt?: number;
+  /** What that turn has waited on the person, which its clock leaves out
+   *  (`lib/turnClock`). It is kept HERE, beside the start it is counted
+   *  from, so the two are saved and restored as one thing: a checkpoint
+   *  that brought the start back without the waits put every minute waited
+   *  back on the clock. The reducer never reads it; the page notes it
+   *  (`turnClock.withWait`). */
+  turnWaits?: TurnWaits;
   /** Output tokens this turn, settled: the sum of what each message that has
    *  FINISHED reported in its own `usage`. Subagents included — their writing
    *  is this turn's work too. */
@@ -726,6 +734,7 @@ const asTokens = (text: string): number => text.length / 4;
 /** Nothing is running: every meter the status line reads goes quiet together. */
 const turnOver = {
   turnStartedAt: undefined,
+  turnWaits: undefined,
   turnTokens: undefined,
   turnDraft: undefined,
   status: undefined,

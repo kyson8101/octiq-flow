@@ -1295,10 +1295,33 @@ person is drawn waiting, not working (`lib/chatWait`).
   this line's and goes on being said beside it.
 - **The clock leaves the wait out** (`lib/turnClock`): the turn's start plus
   the waited intervals gives elapsed, so work goes on from where the clock
-  stopped. All on the page's clock, in memory. A page loaded in the middle
-  of a wait knows neither when the turn began nor how long it has waited:
-  it shows a clock stopped at about nothing beside the waiting words, and
-  after the answer counts the work done since.
+  stopped. All on the page's clock; no host stamp is compared with it.
+- **A turn's start and its waits are restored together or not at all.** The
+  waits are a field of the chat's own state, beside the start
+  (`ChatState.turnWaits` next to `turnStartedAt`; `App` notes them with
+  `turnClock.withWait`), so whatever saves or restores the one has the
+  other. They were the page's own, in memory, while the start came back
+  from the chat's checkpoint (`lib/chatCache`): 90 s of work and 180 s of
+  waiting read `1m 30s` before a reload and `4m 31s` after it. Two paths,
+  and what each does:
+  - *With a checkpoint* (the usual reload): both come back. A wait that was
+    on is still on, so the clock stands where it stood, and after the
+    answer it goes on from there. The time the page was away is counted as
+    what the turn was doing when the page last saw it: a wait answered
+    while no page was open is counted as waited up to the page's return,
+    never as work.
+  - *Without one* (a chat never saved or evicted from the twelve kept, one
+    read in pages, storage blocked): neither comes back. The turn starts
+    when the page joined it, as for any turn joined part-way, and the wait
+    when the page first sees the card: a clock stopped at about nothing
+    beside the waiting words, and after the answer only the work done since.
+
+  What it cannot tell: a wait that began and ended while no page was
+  looking, and the 700 ms before a checkpoint is written (a reload inside
+  it restores the state from before the wait began or ended). A new thing
+  the clock leaves out is a field of the chat's state too, never a state
+  of the page's beside it. `turnClock.reload.test.ts` is the round trip
+  through the real checkpoint and `loadChat`.
 - **The chat list** draws no working mark on a row whose chat waits
   (`Sidebar`'s `waiting`); its pending badge is unchanged. `busy` still
   means a turn is on record there, which is what holds Archive.

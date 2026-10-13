@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noteWait, noteWaits, turnElapsed, type TurnWaits } from "./turnClock";
+import { noteWait, turnElapsed, withWait, type TurnWaits } from "./turnClock";
 import { elapsedLabel } from "./working";
 
 const T = 1_000_000;
@@ -83,23 +83,35 @@ describe("a page loaded in the middle of a wait", () => {
   });
 });
 
-describe("the waits of every chat at once", () => {
-  const turns: Record<string, number | undefined> = { a: T, b: T + s(10), c: undefined };
-  const turnOf = (id: string) => turns[id];
+describe("a chat's state with its waits beside the turn's start", () => {
+  type Timed = { busy: boolean; turnStartedAt?: number; turnWaits?: TurnWaits; other?: string };
+  const working: Timed = { busy: true, turnStartedAt: T, other: "kept" };
 
-  it("opens a wait for each chat that waits, and only for a turn in flight", () => {
-    const next = noteWaits({}, new Map([["a", "answer"], ["c", "approval"]]), turnOf, T + s(30));
-    expect(next).toEqual({ a: { turn: T, waited: 0, since: T + s(30) } });
+  it("opens a wait for a turn in flight, and keeps everything else of the state", () => {
+    const waiting = withWait(working, true, T + s(30));
+    expect(waiting).toEqual({ busy: true, turnStartedAt: T, other: "kept", turnWaits: { turn: T, waited: 0, since: T + s(30) } });
+    // The start and the waits are fields of one object: whatever saves or
+    // restores the state has both.
+    expect(Object.keys(waiting)).toEqual(expect.arrayContaining(["turnStartedAt", "turnWaits"]));
   });
 
-  it("closes a wait whose card is gone, and forgets a chat whose turn ended", () => {
-    const before = { a: { turn: T, waited: 0, since: T + s(30) }, c: { turn: T, waited: 0, since: T + s(1) } };
-    expect(noteWaits(before, new Map(), turnOf, T + s(50))).toEqual({ a: { turn: T, waited: s(20), since: null } });
+  it("closes a wait whose card is gone", () => {
+    const waiting = withWait(working, true, T + s(30));
+    expect(withWait(waiting, false, T + s(50)).turnWaits).toEqual({ turn: T, waited: s(20), since: null });
   });
 
-  it("hands back the same record when nothing changed", () => {
-    const before = { a: { turn: T, waited: 0, since: T + s(30) } };
-    expect(noteWaits(before, new Map([["a", "answer"]]), turnOf, T + s(99))).toBe(before);
-    expect(noteWaits({}, new Map(), turnOf, T)).toEqual({});
+  it("hands back the same state when nothing changed", () => {
+    expect(withWait(working, false, T + s(9))).toBe(working);
+    const waiting = withWait(working, true, T + s(30));
+    expect(withWait(waiting, true, T + s(99))).toBe(waiting);
+  });
+
+  it("keeps none for a chat with no turn in flight", () => {
+    const idle: Timed = { busy: false };
+    expect(withWait(idle, true, T)).toBe(idle);
+    // A turn that ended takes its waits with it.
+    const ended: Timed = { ...withWait(working, true, T + s(30)), busy: false };
+    expect(withWait(ended, true, T + s(40)).turnWaits).toBeUndefined();
+    expect(withWait(ended, false, T + s(40)).turnWaits).toBeUndefined();
   });
 });

@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import app from "../App.tsx?raw";
 import chatWait from "./chatWait.ts?raw";
+import chatState from "./chat.ts?raw";
 
 const SITES: { name: string; has: RegExp }[] = [
   // The answer is read off the page's one list of who is waited on.
@@ -20,8 +21,10 @@ const SITES: { name: string; has: RegExp }[] = [
   { name: "the chat on screen", has: /const waitingHere = \(conversationId && chatWaits\.get\(conversationId\)\) \|\| null;/ },
   // The composer's running line and its clock.
   { name: "the composer's line", has: /<Composer\b[\s\S]*?\bwaiting=\{waitingHere\}/ },
-  { name: "the composer's clock", has: /<Composer\b[\s\S]*?\bturnWaits=\{conversationId \? turnWaits\[conversationId\] : undefined\}/ },
-  { name: "the clock's waits", has: /setTurnWaits\(\(before\) => noteWaits\(\s*before, chatWaits, / },
+  // Its waits are the chat's own state's, beside the turn's start, and are
+  // noted there from the one answer.
+  { name: "the composer's clock", has: /<Composer\b[\s\S]*?\bturnStartedAt=\{chat\.turnStartedAt\}[\s\S]*?\bturnWaits=\{chat\.turnWaits\}/ },
+  { name: "the clock's waits", has: /for \(const id of Object\.keys\(chats\)\) patch\(id, \(state\) => withWait\(state, chatWaits\.has\(id\), now\)\);/ },
   // The chat list's rows, and the projects page's.
   { name: "the chat list", has: /<Sidebar\b[\s\S]*?\bwaiting=\{chatWaits\}/ },
   { name: "the working set", has: /const workingSet = useMemo\(\(\) => workingChats\(busySet, chatWaits\), / },
@@ -73,7 +76,20 @@ describe("the app's hand-off of which chats wait on the person", () => {
     expect(missing(app.replace("waitingChats(pendingList, ", "waitingChats(heldCards(cards), "))).toEqual(["one reading"]);
     expect(missing(app.replace("waiting={!!waitingHere}", "waiting={false}"))).toEqual(["the task bar"]);
     expect(missing(app.replace("waiting={chatWaits.has(besideId)}", "waiting={false}"))).toEqual(["the task chat beside"]);
-    expect(missing(app.replace("before, chatWaits, (id)", "before, new Map(), (id)"))).toEqual(["the clock's waits"]);
+    expect(missing(app.replace("withWait(state, chatWaits.has(id), now)", "withWait(state, false, now)"))).toEqual(["the clock's waits"]);
+    expect(missing(app.replace("turnWaits={chat.turnWaits}", "turnWaits={undefined}"))).toEqual(["the composer's clock"]);
+  });
+});
+
+describe("a turn's waits", () => {
+  it("are kept in the chat's state beside its start, and nowhere else", () => {
+    // The page kept them in a state of its own while the turn's start came
+    // back from the chat's checkpoint: a reload restored one without the
+    // other. There is no second store of them to restore, or to forget.
+    expect(app).not.toMatch(/setTurnWaits|useState<[^>]*TurnWaits|noteWaits\(/);
+    expect(chatState).toMatch(/turnStartedAt\?: number;[\s\S]{0,700}?turnWaits\?: TurnWaits;/);
+    // A turn that is over takes both with it.
+    expect(chatState).toMatch(/const turnOver = \{\s*turnStartedAt: undefined,\s*turnWaits: undefined,/);
   });
 });
 

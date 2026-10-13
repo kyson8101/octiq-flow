@@ -10,12 +10,29 @@
 // page first saw it to when it last saw it. No host stamp is compared with
 // `Date.now()`, so a browser whose clock is off is off by nothing.
 //
-// It is in memory. A page loaded in the middle of a wait knows neither when
-// the turn began nor how long it has waited: its turn starts when the page
-// joined it (as it does for any turn joined part-way) and the wait starts
-// when the page first sees the card, a moment later. So until the answer it
-// shows a clock stopped at about nothing beside the waiting words, and after
-// it counts the work done since: never the wait.
+// A turn's start and its waits are restored together or not at all. The
+// waits are a field of the chat's own state, beside the start
+// (`ChatState.turnWaits`), so whatever keeps the one keeps the other: the
+// page while it runs, and the chat's checkpoint (`lib/chatCache`) across a
+// reload. They were once the page's own, in memory, while the start came
+// back from the checkpoint: 90 s of work and 180 s of waiting read `1m 30s`
+// before a reload and `4m 31s` after it.
+//
+// - With a checkpoint, a reload brings back both. A wait that was on is
+//   still on (`since` is kept), so the clock stands where it stood; the
+//   time the page was away is counted as what the turn was doing when the
+//   page last saw it.
+// - Without one (never saved, evicted, a chat read in pages, storage
+//   blocked), neither comes back: the turn starts when the page joined it,
+//   as for any turn joined part-way, and the wait when the page first sees
+//   the card, a moment later. Until the answer the clock is stopped at
+//   about nothing beside the waiting words, and after it counts the work
+//   done since.
+//
+// What it cannot tell: what happened while no page was looking. A wait that
+// began or ended in that time is counted as the state the page last saw.
+// And a checkpoint is written in a quiet moment, 700 ms after the state last
+// changed: a reload inside that moment restores the state before it.
 
 /** The waits of one turn. */
 export type TurnWaits = {
@@ -52,22 +69,15 @@ export function turnElapsed(turn: number, waits: TurnWaits | undefined, now: num
   return Math.max(0, (mine?.since ?? now) - turn - (mine?.waited ?? 0));
 }
 
-/** The waits of every chat, moved on by what the page sees now. `turnOf`
- *  answers a chat's turn in flight, or nothing when it has none. The same
- *  record comes back when no chat's waits changed. */
-export function noteWaits(
-  before: Readonly<Record<string, TurnWaits>>,
-  waiting: ReadonlyMap<string, unknown>,
-  turnOf: (chatId: string) => number | undefined,
+/** A chat's state with what the page sees now folded into its waits: the
+ *  same object when nothing changed. A chat with no turn in flight keeps
+ *  none. The waits stay in the state the start is in, so nothing can save
+ *  or restore one without the other. */
+export function withWait<T extends { busy: boolean; turnStartedAt?: number; turnWaits?: TurnWaits }>(
+  state: T,
+  waiting: boolean,
   now: number,
-): Readonly<Record<string, TurnWaits>> {
-  let next: Record<string, TurnWaits> | null = null;
-  for (const id of new Set([...Object.keys(before), ...waiting.keys()])) {
-    const after = noteWait(before[id], turnOf(id), waiting.has(id), now);
-    if (after === before[id]) continue;
-    next ??= { ...before };
-    if (after) next[id] = after;
-    else delete next[id];
-  }
-  return next ?? before;
+): T {
+  const after = noteWait(state.turnWaits, state.busy ? state.turnStartedAt : undefined, waiting, now);
+  return after === state.turnWaits ? state : { ...state, turnWaits: after };
 }
