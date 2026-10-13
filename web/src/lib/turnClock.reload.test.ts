@@ -103,6 +103,66 @@ describe("a reload while the chat waits on the person, with a checkpoint", () =>
   });
 });
 
+describe("a reload with a checkpoint older than what the page last saw", () => {
+  // A checkpoint is written in a quiet moment, 700 ms after the page's chats
+  // last changed, so with agents streaming elsewhere it can be minutes old:
+  // older than a wait the page did see begin. The reviewer's clock probe hit
+  // exactly this once in three runs, and read `4m 31s` again.
+  /** Saved 60 s into the turn, while it worked. */
+  async function savedWhileWorking(): Promise<void> {
+    const state = withWait(addUserTurn(emptyChat(), "Review now", [], T), false, T + s(30));
+    expect(state.turnWaits).toBeUndefined();
+    await saveChatCheckpoint({ id: "a", seq: 1, state, updatedAt: T + s(60) });
+  }
+
+  it("does not count the wait the page saw begin after it as work", async () => {
+    await savedWhileWorking();
+    // The card came at 90 s and the page waited 180 s; none of that reached
+    // the checkpoint. The page is reloaded at 271 s, still waiting.
+    const next = page();
+    await next.load(async () => []);
+    expect(next.state.turnStartedAt).toBe(T);
+    // Back parked since the checkpoint was written: nobody saw it after.
+    expect(next.state.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(60) });
+    const reloaded = T + s(271);
+    // The start alone read every second since as work.
+    expect(elapsedLabel(turnElapsed(T, undefined, reloaded))).toBe("4m 31s");
+    // It reads the work seen up to the checkpoint, before the first look
+    // and after it, however long the wait goes on.
+    expect(clock(next.state, reloaded)).toBe("1m 00s");
+    next.see(false, reloaded);
+    next.see(true, reloaded + 400);
+    expect(clock(next.state, reloaded + s(300))).toBe("1m 00s");
+    next.see(false, reloaded + s(300));
+    expect(clock(next.state, reloaded + s(305))).toBe("1m 05s");
+    // It never reads more than the turn worked: 90 s before the card.
+    expect(turnElapsed(T, next.state.turnWaits, reloaded + s(300))).toBeLessThanOrEqual(s(90));
+  });
+
+  it("leaves only the time away out of a turn that was working all along", async () => {
+    await savedWhileWorking();
+    const next = page();
+    await next.load(async () => []);
+    // Reloaded two seconds after the checkpoint, no card up: the clock goes
+    // on, two seconds short of the turn's real length.
+    next.see(false, T + s(62));
+    expect(next.state.turnWaits).toEqual({ turn: T, waited: s(2), since: null });
+    expect(clock(next.state, T + s(70))).toBe("1m 08s");
+  });
+
+  it("keeps the waits the checkpoint already had", async () => {
+    // Waited 30 s to 50 s, then worked; saved at 60 s.
+    let state = addUserTurn(emptyChat(), "Review now", [], T);
+    state = withWait(state, true, T + s(30));
+    state = withWait(state, false, T + s(50));
+    await saveChatCheckpoint({ id: "a", seq: 1, state, updatedAt: T + s(60) });
+    const next = page();
+    await next.load(async () => []);
+    expect(next.state.turnWaits).toEqual({ turn: T, waited: s(20), since: T + s(60) });
+    expect(clock(next.state, T + s(500))).toBe("40s");
+  });
+});
+
 describe("a reload while the chat waits on the person, with no checkpoint", () => {
   // A chat never saved, evicted, read in pages, or a browser whose storage
   // is blocked: the page reads the record and joins the turn part-way.

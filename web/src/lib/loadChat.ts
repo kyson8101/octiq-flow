@@ -3,6 +3,7 @@ import { type CatchUp, type Frame } from "./catchUp";
 import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
 import { replayChat } from "./replayChat";
 import { type ChatHistory, type ChatPage } from "./chatHistory";
+import { restoredTurn } from "./turnClock";
 
 /** Claude's queued prompts may exist only in this browser until echoed. */
 function keepPending(next: ChatState, current: ChatState): ChatState {
@@ -44,7 +45,9 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
     const cached = await readChatCheckpoint(id);
     if (cancelled()) return;
     if (cached && cached.seq >= (storedSeq ?? 0)) {
-      publish(cached.state);
+      // A turn in flight comes back with the time since this was written
+      // left off its clock: nobody saw it (`turnClock.restoredTurn`).
+      publish(restoredTurn(cached.state, cached.updatedAt));
       storedSeq = cached.seq;
     }
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noteWait, turnElapsed, withWait, type TurnWaits } from "./turnClock";
+import { noteWait, restoredTurn, turnElapsed, withWait, type TurnWaits } from "./turnClock";
 import { elapsedLabel } from "./working";
 
 const T = 1_000_000;
@@ -113,5 +113,47 @@ describe("a chat's state with its waits beside the turn's start", () => {
     const ended: Timed = { ...withWait(working, true, T + s(30)), busy: false };
     expect(withWait(ended, true, T + s(40)).turnWaits).toBeUndefined();
     expect(withWait(ended, false, T + s(40)).turnWaits).toBeUndefined();
+  });
+});
+
+describe("a turn as a checkpoint gives it back", () => {
+  type Timed = { busy: boolean; turnStartedAt?: number; turnWaits?: TurnWaits };
+  const saved = T + s(60);
+
+  it("comes back parked since the checkpoint was written when it was working", () => {
+    const state: Timed = { busy: true, turnStartedAt: T };
+    expect(restoredTurn(state, saved).turnWaits).toEqual({ turn: T, waited: 0, since: saved });
+    // What it had waited before is kept.
+    const waited: Timed = { busy: true, turnStartedAt: T, turnWaits: { turn: T, waited: s(20), since: null } };
+    expect(restoredTurn(waited, saved).turnWaits).toEqual({ turn: T, waited: s(20), since: saved });
+  });
+
+  it("comes back as it is when it was already waiting", () => {
+    const state: Timed = { busy: true, turnStartedAt: T, turnWaits: { turn: T, waited: s(5), since: T + s(40) } };
+    expect(restoredTurn(state, saved)).toBe(state);
+  });
+
+  it("is untouched when no turn is in flight", () => {
+    const idle: Timed = { busy: false, turnStartedAt: T };
+    expect(restoredTurn(idle, saved)).toBe(idle);
+    const never: Timed = { busy: true };
+    expect(restoredTurn(never, saved)).toBe(never);
+  });
+
+  it("does not take another turn's waits, or a save stamped before the turn", () => {
+    const other: Timed = { busy: true, turnStartedAt: T, turnWaits: { turn: T - s(900), waited: s(300), since: T - s(100) } };
+    expect(restoredTurn(other, saved).turnWaits).toEqual({ turn: T, waited: 0, since: saved });
+    // A stamp from before the turn (a clock set back) parks it from its start.
+    expect(restoredTurn({ busy: true, turnStartedAt: T } as Timed, T - s(30)).turnWaits).toEqual({ turn: T, waited: 0, since: T });
+  });
+
+  it("never lets time away be read as work, whatever the first look finds", () => {
+    const back = T + s(660);
+    for (const waitingNow of [true, false]) {
+      const restored = restoredTurn<Timed>({ busy: true, turnStartedAt: T }, saved);
+      const looked = withWait(restored, waitingNow, back);
+      // Ten minutes away: the clock still reads the one minute that was seen.
+      expect(turnElapsed(T, looked.turnWaits, back)).toBe(s(60));
+    }
   });
 });
