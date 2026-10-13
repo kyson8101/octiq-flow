@@ -338,6 +338,31 @@ const NOUN: Record<PendingActionKind, [string, string]> = {
   handover: ["handover to confirm", "handovers to confirm"],
 };
 
+/** What colour a badge is. Colour is state, and these are three states:
+ *  `decide` waits on the person's decision (a permission, a question, a
+ *  gate, a plan, a handover); `warn` is a problem they are told of (an
+ *  action the safety check refused, the check being down, an answer that
+ *  could not be delivered), which is what amber means everywhere else; and
+ *  `danger` is a failure that is theirs to decide, the one failure the run
+ *  panel draws red. It used to be amber for all nine. */
+export type PendingTone = "decide" | "warn" | "danger";
+
+const TONE: Record<PendingActionKind, PendingTone> = {
+  permission: "decide", question: "decide", gate: "decide", plan: "decide", handover: "decide",
+  safety: "warn", outage: "warn", delivery: "warn",
+  failure: "danger",
+};
+
+/** The colour of a badge over these actions. Several of one state are that
+ *  state. Mixed, something among them waits on a decision or is a failure
+ *  to decide, and the badge says "Action needed": the decision colour, as
+ *  the strip says "Needs you" for a failure beside a card. */
+export function pendingTone(actions: readonly PendingAction[]): PendingTone {
+  const tones = new Set(actions.map((action) => TONE[action.kind]));
+  if (tones.size === 1) return [...tones][0];
+  return "decide";
+}
+
 /** The badge's words: what it is when there is one, how many when several. */
 export function pendingLabel(actions: readonly PendingAction[]): string {
   if (actions.length === 0) return "";

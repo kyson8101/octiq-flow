@@ -23,6 +23,8 @@ import guofengSheet from "../guofeng.css?raw";
 import runPanelCss from "../components/OrchestrationPanel.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
 import runProgressCss from "../components/RunProgress.css?raw";
+import pendingBadgeCss from "../components/PendingActionBadge.css?raw";
+import { pendingLabel, pendingTone, type PendingAction, type PendingActionKind } from "./pendingActions";
 import { MANAGED, mapTokens, parseOklch, parseThemeCss } from "./theme";
 import { BUILT_IN, THEMES } from "./themeStore";
 
@@ -422,6 +424,70 @@ describe("a run's own surfaces", () => {
     // decision colour only when it counts decisions.
     expect(of(".orch-attention")[0].body).toMatch(/var\(--warn\)/);
     expect(of('.orch-attention[data-tone="decision"]')[0].body).not.toMatch(/--warn/);
+  });
+});
+
+/* ---- The badge in the chat list ----------------------------------------- */
+
+describe("the pending badge in the chat list", () => {
+  const sheet = rules(pendingBadgeCss, "PendingActionBadge.css");
+  const of = (selector: string) => sheet.filter((rule) => rule.selector === selector);
+  const action = (kind: PendingActionKind): PendingAction => ({ key: `${kind}:1`, kind, rowId: "main", openChatId: "main", surface: "chat" });
+
+  it("is the decision colour unless what it says is a problem or a failure", () => {
+    // One rule draws it, from one variable, and that variable is --decide.
+    const [base] = of(".pending-action-badge");
+    expect(base.body).toMatch(/--pending:\s*var\(--decide\);/);
+    expect(base.body).toMatch(/color:\s*var\(--pending\);/);
+    expect(base.body).toMatch(/border:[^;]*var\(--pending\)/);
+    expect(base.body).toMatch(/background:[^;]*var\(--pending\)/);
+    // Amber and red are named only by the tone that means them.
+    expect(of('.pending-action-badge[data-tone="warn"]').map((rule) => rule.body.trim())).toEqual(["--pending: var(--warn);"]);
+    expect(of('.pending-action-badge[data-tone="danger"]').map((rule) => rule.body.trim())).toEqual(["--pending: var(--danger);"]);
+    const named = (token: string) => sheet.filter((rule) => new RegExp(`--${token}\\b`).test(rule.body)).map((rule) => rule.selector);
+    expect(named("warn")).toEqual(['.pending-action-badge[data-tone="warn"]']);
+    expect(named("danger")).toEqual(['.pending-action-badge[data-tone="danger"]']);
+    // The accent is the focus ring's and nothing else's.
+    expect(named("accent")).toEqual([".pending-action-badge:focus-visible"]);
+    // The ring on the card a badge leads to points at what waits on them.
+    for (const rule of sheet.filter((each) => /pending-revealed|pending-reveal/.test(each.selector) || /outline-color/.test(each.body))) {
+      expect(rule.body, rule.selector).not.toMatch(/--warn\b/);
+    }
+  });
+
+  it("takes its tone from what it says, for every kind of wait", () => {
+    // Written by hand: a wait on the person's decision, a problem they are
+    // told of, and the failure that is theirs to decide.
+    const table: [PendingActionKind, string, string][] = [
+      ["permission", "Permission needed", "decide"],
+      ["question", "Answer needed", "decide"],
+      ["gate", "Decision needed", "decide"],
+      ["plan", "Plan approval", "decide"],
+      ["handover", "Handover to confirm", "decide"],
+      ["safety", "Review needed", "warn"],
+      ["outage", "Safety check was down", "warn"],
+      ["delivery", "Delivery failed", "warn"],
+      ["failure", "Failed · your decision", "danger"],
+    ];
+    for (const [kind, label, tone] of table) {
+      expect(pendingLabel([action(kind)]), kind).toBe(label);
+      expect(pendingTone([action(kind)]), kind).toBe(tone);
+    }
+    // Several of one state are that state; mixed, the decision colour.
+    expect(pendingTone([action("failure"), action("failure")])).toBe("danger");
+    expect(pendingTone([action("outage"), action("delivery")])).toBe("warn");
+    expect(pendingTone([action("failure"), action("permission")])).toBe("decide");
+    expect(pendingTone([action("safety"), action("question")])).toBe("decide");
+    expect(pendingTone([action("failure"), action("delivery")])).toBe("decide");
+  });
+
+  it("is amber for nothing that only waits on a decision", () => {
+    // The mutation this is here for: the sheet as it was, amber for all.
+    const before = pendingBadgeCss.replace("--pending: var(--decide);", "--pending: var(--warn);");
+    expect(before).not.toBe(pendingBadgeCss);
+    const [base] = rules(before, "PendingActionBadge.css").filter((rule) => rule.selector === ".pending-action-badge");
+    expect(base.body).toMatch(NOT_A_DECISION);
+    expect(of(".pending-action-badge")[0].body).not.toMatch(NOT_A_DECISION);
   });
 });
 

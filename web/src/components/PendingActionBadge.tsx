@@ -6,7 +6,7 @@
 // Going there only shows the card: nothing is approved, answered or
 // dismissed by looking.
 import { createContext, useContext } from "react";
-import { pendingDescription, pendingLabel, pendingSelector, type PendingAction } from "../lib/pendingActions";
+import { pendingDescription, pendingLabel, pendingSelector, pendingTone, type PendingAction } from "../lib/pendingActions";
 import type { Waiting } from "../lib/runWaits";
 import "./PendingActionBadge.css";
 
@@ -42,6 +42,7 @@ export function PendingActionBadge({ actions, subject, className = "" }: {
   return (
     <button type="button" className={`pending-action-badge${className ? ` ${className}` : ""}`}
       data-kind={several ? "several" : actions[0].kind}
+      data-tone={pendingTone(actions)}
       aria-label={`${label} for ${subject}: ${description}. Show ${several ? "the first one" : "it"}`}
       title={`${description}. Click to show ${several ? "the first one" : "it"}.`}
       onClick={(event) => {

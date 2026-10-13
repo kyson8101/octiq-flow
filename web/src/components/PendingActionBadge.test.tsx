@@ -85,6 +85,8 @@ describe("pending action badge", () => {
     const rowButtonEnd = main.indexOf("</button>");
     expect(main.indexOf("pending-action-badge")).toBeGreaterThan(rowButtonEnd);
     expect(main).toContain('data-kind="plan"');
+    // A wait on a decision is the decision colour (`pendingTone`).
+    expect(main).toContain('data-tone="decide"');
     expect(main).toContain(">Plan approval</span>");
   });
 
@@ -131,6 +133,8 @@ describe("pending action badge", () => {
     const failed = saved.map((q) => ({ ...q, status: "failed", error: "Could not continue the agent", retryable: true }));
     expect(quiet(failed)).toContain(">Delivery failed</span>");
     expect(quiet(failed)).toContain('data-kind="delivery"');
+    // A delivery that failed is a problem: amber, not the decision colour.
+    expect(quiet(failed)).toContain('data-tone="warn"');
     expect(quiet(failed)).not.toContain("Answer needed");
     expect(quiet([{ ...saved[0], status: "pending", answer: undefined }, saved[1]])).toContain(">Answer needed</span>");
   });
