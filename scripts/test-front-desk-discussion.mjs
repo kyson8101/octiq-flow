@@ -165,10 +165,12 @@ function resultFor(request) {
       // The host's half, stood in for: a registered agent's own conversation
       // is started at no less than the agent's registered access. The host
       // writes that level to the chat's index entry and says it to every page.
+      // `chat-access-changed` is the only thing it says here: nothing asks
+      // the page to read the chat list again, so what the page holds after
+      // this is the event's doing and not a row's (F is the row alone).
       if (host.raises && args.key === `chat:${left.id}` && args.access !== lead.access) {
         host.index = host.index.map((chat) => (chat.id === left.id ? { ...chat, access: lead.access } : chat));
         emit("chat-access-changed", { chatKey: args.key, access: lead.access });
-        emit("chat-index-changed", { id: left.id, gone: false });
         host.raisedAt = calls.length;
       }
       return null;
