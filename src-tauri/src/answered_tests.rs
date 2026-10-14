@@ -599,3 +599,161 @@ fn a_record_that_keeps_refusing_is_left_alone_between_tries() {
     assert!(chat.lines().is_empty());
     assert!(manager.questions.owes_notes());
 }
+
+/// An answer whose line the record refused, in a chat with a record. The
+/// line is owed, and the record takes lines again.
+fn owing(manager: &ChatManager, chat: &Chat) -> String {
+    let (id, answers) = waiting(&manager.questions, &chat.key);
+    manager.questions.answer(&answers).unwrap();
+    let blocked = record_refuses_lines(chat);
+    assert!(manager.questions.take_native(&id).unwrap().is_some());
+    assert!(manager.questions.owes_notes());
+    std::fs::remove_dir(&blocked).unwrap();
+    id
+}
+
+/// Review 2b, N1: the person clears the chat while the owed line's pass is
+/// reading the old record for it. The pass had checked which record the
+/// chat has before the read and did not ask again before it wrote, so the
+/// old answer was the second line of the new history. The check and the
+/// write are one step under the append lock now: nothing is written, and
+/// the debt is dropped as cleared.
+#[test]
+fn a_chat_cleared_while_an_owed_line_looks_for_itself_does_not_get_it() {
+    let manager = Arc::new(ChatManager::default());
+    let chat = Chat::new("cleared-mid-look");
+    owing(&manager, &chat);
+    // What the page's `/clear` does, then the next thing said in the chat,
+    // in the moment between the pass's look and its write.
+    crate::question_store::AFTER_LOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|key: &str| {
+            crate::transcript::forget(key);
+            crate::transcript::append(key, &json!({ "type": "user", "text": "new history" }))
+                .unwrap();
+        }));
+    });
+    manager.questions.settle_notes().unwrap();
+    assert!(
+        chat.lines().is_empty(),
+        "the cleared chat got an old answer: {:?}",
+        chat.lines()
+    );
+    assert!(!manager.questions.owes_notes(), "dropped as cleared");
+    assert_eq!(
+        crate::transcript::since(&chat.key, 0).len(),
+        1,
+        "the new history holds what was said in it and nothing else"
+    );
+}
+
+/// The reviewer's deterministic schedule for the same hole, with nothing of
+/// the host's switched: a FIFO stands where the record was, so the pass's
+/// read of it waits until this thread has cleared the chat and started the
+/// next history. Unix only: there is no `mkfifo` on Windows, where the test
+/// above holds the same window open.
+#[cfg(unix)]
+#[test]
+fn a_chat_cleared_during_the_owed_lines_read_does_not_get_it_unix_fifo() {
+    use std::io::Write;
+    let manager = Arc::new(ChatManager::default());
+    let chat = Chat::new("cleared-fifo");
+    owing(&manager, &chat);
+    let path = crate::transcript::path_for(&chat.key).unwrap();
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+    let pass = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.questions.settle_notes())
+    };
+    // Opening the writing end answers once the pass has opened its read.
+    let mut feed = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    crate::transcript::forget(&chat.key);
+    crate::transcript::append(&chat.key, &json!({ "type": "user", "text": "new history" }))
+        .unwrap();
+    feed.write_all(b"{\"type\":\"user\",\"text\":\"old record\"}\n")
+        .unwrap();
+    drop(feed);
+    pass.join().unwrap().unwrap();
+    assert!(
+        chat.lines().is_empty(),
+        "the cleared chat got an old answer: {:?}",
+        chat.lines()
+    );
+    assert!(!manager.questions.owes_notes());
+}
+
+/// The same hole with nothing held open for it: an ordinary long record
+/// makes the pass's read last, and the chat is cleared a little later each
+/// round, so the clear lands before the look, inside it and after the
+/// write. Whenever it lands, the history started after it holds no old
+/// answer. Before the fix the reviewer's five rounds of this put the old
+/// answer into five of five new histories.
+#[test]
+fn clearing_a_long_chat_at_any_moment_of_an_owed_lines_pass_keeps_the_old_answer_out() {
+    const ROUNDS: u64 = 30;
+    // About 24 MB: a read of it lasts well past the longest wait below.
+    let line = format!("{{\"type\":\"user\",\"text\":\"{}\"}}\n", "x".repeat(500));
+    let old = line.repeat(48_000);
+    let mut leaked = 0;
+    for round in 0..ROUNDS {
+        let manager = Arc::new(ChatManager::default());
+        let chat = Chat::new("cleared-long");
+        owing(&manager, &chat);
+        std::fs::write(crate::transcript::path_for(&chat.key).unwrap(), &old).unwrap();
+        let pass = {
+            let manager = manager.clone();
+            std::thread::spawn(move || manager.questions.settle_notes())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(round));
+        crate::transcript::forget(&chat.key);
+        crate::transcript::append(&chat.key, &json!({ "type": "user", "text": "new history" }))
+            .unwrap();
+        pass.join().unwrap().unwrap();
+        leaked += chat.lines().len();
+        assert!(!manager.questions.owes_notes(), "round {round}");
+    }
+    assert_eq!(
+        leaked, 0,
+        "of {ROUNDS} cleared chats, {leaked} got an old answer"
+    );
+}
+
+/// A line owed from while the profile folder was away has no record of its
+/// own yet: it belongs to the one that is there when the folder is back,
+/// and to that one from then on. The first try writes the line and cannot
+/// confirm it; the person clears the chat; the next try finds that record
+/// gone and writes nothing. Taken afresh on every try, "the record that is
+/// there" was the history started after the clear, and it got the old
+/// answer.
+#[test]
+fn a_line_owed_from_while_the_folder_was_away_keeps_to_the_record_it_found() {
+    let world = World::new();
+    let chat = Chat::new("away-then-cleared");
+    let store = &world.svc.chats.questions;
+    let (id, answers) = waiting(store, &chat.key);
+    store.answer(&answers).unwrap();
+    world.home.move_away();
+    assert!(store.take_native(&id).unwrap().is_some());
+    world.home.move_back();
+    assert!(store.owes_notes());
+
+    crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(true));
+    assert!(store.settle_notes().is_err());
+    crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(false));
+    assert_eq!(chat.lines().len(), 1, "written, and not confirmed");
+    assert!(store.owes_notes());
+
+    // `/clear`, then the next thing said in the chat.
+    crate::transcript::forget(&chat.key);
+    crate::transcript::append(&chat.key, &json!({ "type": "user", "text": "hello" })).unwrap();
+    store.notes_due_now();
+    store.settle_notes().unwrap();
+    assert!(
+        chat.lines().is_empty(),
+        "the cleared chat got an old answer"
+    );
+    assert!(!store.owes_notes());
+}

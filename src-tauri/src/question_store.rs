@@ -217,31 +217,52 @@ fn note_wait(tries: u32) -> Duration {
 }
 
 impl Note {
-    /// Put the line in the chat's record, unless it is there or the record
-    /// it belonged to is gone. An error is the line still owed.
+    /// Put the line in the record the answer was handed over in, unless it
+    /// is there, and ask that record for its receipt. `Ok` is a debt that
+    /// is paid: the record holds the line and is synced with its folder
+    /// (`Held::Confirmed`), or that record is gone and the line with it
+    /// (`Held::Moved`). An error is the line still owed.
+    ///
+    /// **And the line goes into that record or into none.** Which record it
+    /// is, is checked in the same step as the append, under the append lock
+    /// (`transcript::append_in`): a `/clear` that lands while the record is
+    /// being read here gets nothing written into the history that follows
+    /// it (the same review, N1).
     fn write(&self, id: &str) -> Result<(), String> {
-        let Some(now) = crate::transcript::generation(&self.chat) else {
+        use crate::transcript::Held;
+        let Some(record) = self.seen.clone() else {
             return Err(unwritten(&self.chat));
         };
-        // The record the answer was given in was removed since (`/clear`,
-        // the chat deleted): its history went with it, and this line is not
-        // put into whatever was started under the name afterwards.
-        if self.seen.as_ref().is_some_and(|seen| *seen != now) {
-            return Ok(());
-        }
-        // A write that answered nothing may still have left its line (the
-        // sync failed, not the write). Looked for by id, so it is never
-        // there twice.
-        if crate::transcript::of_type(&self.chat, ANSWERED)
+        // Read outside the append lock: it is a whole record. What is found
+        // is in `record` for as long as its generation stands, which is
+        // what the receipt asks; and one pass at a time looks (`noting`),
+        // so a line not found is written by nobody else meanwhile.
+        let there = crate::transcript::of_type(&self.chat, ANSWERED)
             .iter()
-            .any(|line| line["id"] == id)
-        {
-            return Ok(());
+            .any(|line| line["id"] == id);
+        #[cfg(test)]
+        if let Some(meanwhile) = AFTER_LOOK.with(|slot| slot.take()) {
+            meanwhile(&self.chat);
         }
-        crate::agent_chat::record_chat_event_synced(&self.chat, self.event.clone())
-            .map(|_| ())
-            .ok_or_else(|| unwritten(&self.chat))
+        let held = if there {
+            Held::Confirmed
+        } else {
+            crate::agent_chat::record_chat_event_in(&self.chat, Some(&record), self.event.clone())
+        };
+        match held {
+            Held::Confirmed | Held::Moved => Ok(()),
+            Held::Unconfirmed => Err(unwritten(&self.chat)),
+        }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What happens to a chat on this thread between the next owed line's
+    /// look at its record and its write, once: the window a `/clear` from
+    /// another thread lands in.
+    pub(crate) static AFTER_LOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&str)>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn now_ms() -> i64 {
@@ -486,15 +507,24 @@ impl QuestionStore {
     /// and before `question-expired` is said, so a page hears where the
     /// answer went before it is told to stop drawing the question.
     ///
-    /// The answer is not held for it. A line the record would not take is
-    /// said (`unsaved`) and owed: `settle_notes` writes it.
+    /// The answer is not held for it. A line the record would not take, or
+    /// took and could not be synced with its folder, is said (`unsaved`)
+    /// and owed: `settle_notes` sees to it.
     fn note(state: &mut State, id: &str, via: Via) {
+        use crate::transcript::Held;
         let record = &state.records[id];
         let chat = record.origin.chat_key.clone();
         let event = record.answered(via, now_ms());
+        // Which record the answer is handed over in, taken before the line
+        // is written and handed to the write, which puts the line in that
+        // record or in none and answers for its sync.
         let seen = crate::transcript::generation(&chat);
-        if crate::agent_chat::record_chat_event_synced(&chat, event.clone()).is_some() {
-            return;
+        match crate::agent_chat::record_chat_event_in(&chat, seen.as_ref(), event.clone()) {
+            // On disk, with its folder. Or the chat was cleared as the
+            // answer was handed over: its history is gone, and this line
+            // is not the first thing in the next one.
+            Held::Confirmed | Held::Moved => return,
+            Held::Unconfirmed => {}
         }
         let why = unwritten(&chat);
         crate::unsaved::say(ANSWERED_LINE, why.clone());
@@ -515,6 +545,16 @@ impl QuestionStore {
     /// record.
     pub fn owes_notes(&self) -> bool {
         self.state.lock().is_ok_and(|state| !state.notes.is_empty())
+    }
+
+    /// Make every owed line's next try due now, as the wait between tries
+    /// running out does.
+    #[cfg(test)]
+    pub(crate) fn notes_due_now(&self) {
+        let mut state = self.state.lock().unwrap();
+        for note in state.notes.values_mut() {
+            note.after = Instant::now();
+        }
     }
 
     /// Write the answered questions' lines their records would not take
@@ -545,6 +585,19 @@ impl QuestionStore {
             if now < note.after {
                 still = Some(note.why);
                 continue;
+            }
+            // A line owed from while the profile folder was away belongs
+            // to the record that is there when the folder is back, and to
+            // that one from then on: taken once and kept, so a try that
+            // wrote the line and could not confirm it does not write it
+            // again into a history started after a `/clear`.
+            let mut note = note;
+            if note.seen.is_none() {
+                note.seen = crate::transcript::generation(&note.chat);
+                let mut state = self.state.lock().map_err(|e| e.to_string())?;
+                if let Some(kept) = state.notes.get_mut(&id) {
+                    kept.seen = note.seen.clone();
+                }
             }
             // Outside the store's lock: the look reads a whole record.
             let written = note.write(&id);

@@ -216,6 +216,31 @@ pub(crate) fn record_chat_event_synced(key: &str, event: Value) -> Option<u64> {
     fan_out(key, crate::transcript::append_synced(key, &event), event)
 }
 
+/// `record_chat_event` for a line that belongs to one history of the chat:
+/// it goes into the record `seen` and no other, and what comes back says
+/// whether that record now holds it for good (`transcript::append_in`).
+/// `seen` is `None` when the chat's record could not be asked which it is
+/// (the profile folder is away): the line reaches the open pages only.
+///
+/// A record that is gone gets nothing and its pages hear nothing: the line
+/// is of a history the person removed.
+pub(crate) fn record_chat_event_in(
+    key: &str,
+    seen: Option<&crate::transcript::Generation>,
+    event: Value,
+) -> crate::transcript::Held {
+    use crate::transcript::Held;
+    let (held, seq) = match seen {
+        Some(seen) => crate::transcript::append_in(key, seen, &event),
+        None => (Held::Unconfirmed, None),
+    };
+    if held != Held::Moved {
+        fan_out(key, seq, event);
+    }
+    held
+}
+
+
 fn fan_out(key: &str, seq: Option<u64>, event: Value) -> Option<u64> {
     crate::bus::emit(
         "chat-event",

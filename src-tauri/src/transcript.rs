@@ -325,30 +325,8 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     let line = serde_json::to_string(event).ok()?;
     let record = identity(&path);
 
-    let mut guard = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-    let counts = guard.get_or_insert_with(HashMap::new);
-    let seq = match counts.get(&record) {
-        Some(next) => *next,
-        // First write this run: find out where the file already ends.
-        None => count(&path) + 1,
-    };
-
-    let existed = path.exists();
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .read(synced)
-        .open(&path)
-        .ok()?;
-    if synced && !ends_in_newline(&mut file) {
-        // A crash mid-line left half a line (counted above as a line). This
-        // one must not be glued onto it and lost with it.
-        file.write_all(b"\n").ok()?;
-    }
-    // Only claim the number once the line is actually on disk, so a failed
-    // write cannot leave a gap that `since` would read straight past.
-    writeln!(file, "{line}").ok()?;
-    counts.insert(record, seq + 1);
+    let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    let (seq, file, existed) = put(&mut appending, &path, record, &line, synced)?;
     if synced {
         file.sync_data().ok()?;
         if !existed {
@@ -359,6 +337,109 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
         }
     }
     Some(seq)
+}
+
+/// Put `line` at the end of the record at `path` and number it, with the
+/// append lock held. Answers its number, the file it went into and whether
+/// that file was there before. Nothing is synced here.
+///
+/// `whole` first ends a last line a crash left half written (counted as a
+/// line): the new one must not be glued onto it and lost with it.
+fn put(
+    appending: &mut Appending,
+    path: &Path,
+    record: PathBuf,
+    line: &str,
+    whole: bool,
+) -> Option<(u64, File, bool)> {
+    let counts = appending.get_or_insert_with(HashMap::new);
+    let seq = match counts.get(&record) {
+        Some(next) => *next,
+        // First write this run: find out where the file already ends.
+        None => count(path) + 1,
+    };
+
+    let existed = path.exists();
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(whole)
+        .open(path)
+        .ok()?;
+    if whole && !ends_in_newline(&mut file) {
+        file.write_all(b"\n").ok()?;
+    }
+    // Only claim the number once the line is actually on disk, so a failed
+    // write cannot leave a gap that `since` would read straight past.
+    writeln!(file, "{line}").ok()?;
+    counts.insert(record, seq + 1);
+    Some((seq, file, existed))
+}
+
+/// What a record answered when asked to hold a line for good (`append_in`,
+/// `receipt`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// The record is the one that was named, and it is synced as it is
+    /// now, with its folder: a receipt for every line in it.
+    Confirmed,
+    /// The record is the one that was named, or could not be asked. No
+    /// line in it is known to be on the disk: nothing is confirmed.
+    Unconfirmed,
+    /// The record that was named is gone: removed, or its host events
+    /// replaced. Nothing was written to what has its name now.
+    Moved,
+}
+
+/// Put `event` into the record `seen`, and into no other: whether the chat
+/// still has that record is asked and the line is appended in ONE step
+/// under the append lock, and so is its receipt (`receipt`). With the
+/// line's number when it was written.
+///
+/// For a line that belongs to a history: an answer handed over in a chat
+/// the person has since cleared is not put into whatever was started under
+/// the chat's name afterwards. A caller that asks `generation` first and
+/// appends after lets a `/clear` land between the two, where the old line
+/// then goes into the new record (review 2b of the UI batch, N1: every one
+/// of five fresh histories got the old answer, with an ordinary 63 MB
+/// record to read in between). Under the lock a removal comes before this,
+/// which then writes nothing, or after it, and takes the line with the
+/// record it was written into.
+pub fn append_in(key: &str, seen: &Generation, event: &Value) -> (Held, Option<u64>) {
+    let (Some(path), Ok(line)) = (path_for(key), serde_json::to_string(event)) else {
+        return (Held::Unconfirmed, None);
+    };
+    let record = identity(&path);
+    let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    if generation_of(&appending, &record) != *seen {
+        return (Held::Moved, None);
+    }
+    let Some((seq, file, _)) = put(&mut appending, &path, record, &line, true) else {
+        return (Held::Unconfirmed, None);
+    };
+    drop(file);
+    let held = match synced(&appending, &path) {
+        Some(()) => Held::Confirmed,
+        None => Held::Unconfirmed,
+    };
+    (held, Some(seq))
+}
+
+/// `confirm_synced`, telling a record that is gone (`Held::Moved`) from
+/// one that could not be confirmed. For a caller that owes the record a
+/// line: the first drops what it owes, the second owes it still.
+pub fn receipt(key: &str, seen: &Generation) -> Held {
+    let Some(path) = path_for(key) else {
+        return Held::Unconfirmed;
+    };
+    let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    if generation_of(&appending, &identity(&path)) != *seen {
+        return Held::Moved;
+    }
+    match synced(&appending, &path) {
+        Some(()) => Held::Confirmed,
+        None => Held::Unconfirmed,
+    }
 }
 
 /// A receipt for the lines that are in the record now: the file as it is
@@ -385,16 +466,14 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
 /// last line is missing, under the append lock, because an ordinary append
 /// would be glued onto such a line and take it with it.
 pub fn confirm_synced(key: &str, seen: &Generation) -> Option<()> {
-    let path = path_for(key)?;
-    let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-    if generation_of(&appending, &identity(&path)) != *seen {
-        return None;
-    }
-    let mut file = OpenOptions::new()
-        .append(true)
-        .read(true)
-        .open(&path)
-        .ok()?;
+    (receipt(key, seen) == Held::Confirmed).then_some(())
+}
+
+/// The record at `path` as it is now, synced with its folder. With the
+/// append lock held, so the lines confirmed are the ones the caller looked
+/// at or wrote under it.
+fn synced(_appending: &Appending, path: &Path) -> Option<()> {
+    let mut file = OpenOptions::new().append(true).read(true).open(path).ok()?;
     if !ends_in_newline(&mut file) {
         file.write_all(b"\n").ok()?;
     }
@@ -1584,6 +1663,117 @@ mod tests {
         append(&key, &json!({ "n": 3 }));
         assert_eq!(confirm_synced(&key, &none_there), None);
         forget(&key);
+    }
+
+    /// A line for one history of a chat goes into that record or into
+    /// none (`append_in`): written and confirmed while the chat still has
+    /// the record, refused whole once it was forgotten, whatever has the
+    /// name by then.
+    #[test]
+    fn a_line_for_a_record_is_put_in_that_record_or_in_none() {
+        let key = unique_key("append-in");
+        append(&key, &json!({ "n": 1 }));
+        let seen = generation(&key).unwrap();
+        assert_eq!(
+            append_in(&key, &seen, &json!({ "n": 2 })),
+            (Held::Confirmed, Some(2))
+        );
+        assert_eq!(receipt(&key, &seen), Held::Confirmed);
+
+        forget(&key);
+        assert_eq!(
+            append_in(&key, &seen, &json!({ "n": 3 })),
+            (Held::Moved, None),
+            "no record at all"
+        );
+        assert!(since(&key, 0).is_empty(), "and none was made for it");
+        append(&key, &json!({ "new": true }));
+        assert_eq!(
+            append_in(&key, &seen, &json!({ "n": 3 })),
+            (Held::Moved, None),
+            "the record there now is another"
+        );
+        assert_eq!(receipt(&key, &seen), Held::Moved);
+        let lines = since(&key, 0);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].event, json!({ "new": true }));
+
+        // A record not made yet is one too: the line makes it.
+        let fresh = unique_key("append-in-fresh");
+        let none_yet = generation(&fresh).unwrap();
+        assert_eq!(
+            append_in(&fresh, &none_yet, &json!({ "n": 1 })),
+            (Held::Confirmed, Some(1))
+        );
+        assert_eq!(
+            append_in("not/a key", &none_yet, &json!({ "n": 1 })),
+            (Held::Unconfirmed, None)
+        );
+        forget(&key);
+        forget(&fresh);
+    }
+
+    /// A line `append_in` wrote is confirmed by the record's own receipt,
+    /// in a file that was already there too: with the folder's sync
+    /// failing it is written, numbered and not confirmed, and `receipt`
+    /// says the same of it until the sync goes through.
+    #[test]
+    fn a_line_put_in_a_record_is_confirmed_only_with_its_folder() {
+        let key = unique_key("append-in-sync");
+        append(&key, &json!({ "n": 1 }));
+        let seen = generation(&key).unwrap();
+        FAIL_DIR_SYNC.with(|fail| fail.set(true));
+        assert_eq!(
+            append_in(&key, &seen, &json!({ "n": 2 })),
+            (Held::Unconfirmed, Some(2)),
+            "written, and its folder not synced"
+        );
+        assert_eq!(receipt(&key, &seen), Held::Unconfirmed);
+        assert_eq!(confirm_synced(&key, &seen), None);
+        FAIL_DIR_SYNC.with(|fail| fail.set(false));
+        assert_eq!(since(&key, 0).len(), 2, "the line is there all the while");
+        assert_eq!(receipt(&key, &seen), Held::Confirmed);
+        assert_eq!(generation(&key), Some(seen), "a receipt moves nothing");
+        forget(&key);
+    }
+
+    /// The check of which record a chat has and the append are one step:
+    /// a chat cleared and written to again by another thread, at any
+    /// moment, never has a line that was meant for its old record. Each
+    /// round ends one of two ways: the line was refused (the clear came
+    /// first), or it went with the record it was written into (the clear
+    /// came after). A check made before the lock and an append made under
+    /// it lets the clear land between the two.
+    #[test]
+    fn a_cleared_record_never_gets_a_line_meant_for_the_one_before_it() {
+        const ROUNDS: usize = 500;
+        let (mut refused, mut cleared_away) = (0, 0);
+        for round in 0..ROUNDS {
+            let key = unique_key("append-in-race");
+            append(&key, &json!({ "old": true }));
+            let seen = generation(&key).unwrap();
+            let together = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let clear = {
+                let (key, together) = (key.clone(), together.clone());
+                std::thread::spawn(move || {
+                    together.wait();
+                    forget(&key);
+                    append(&key, &json!({ "new": true }));
+                })
+            };
+            together.wait();
+            let (held, _) = append_in(&key, &seen, &json!({ "answer": "for the old record" }));
+            clear.join().unwrap();
+            let lines = since(&key, 0);
+            assert_eq!(lines.len(), 1, "round {round}: {lines:?}");
+            assert_eq!(lines[0].event, json!({ "new": true }), "round {round}");
+            match held {
+                Held::Moved => refused += 1,
+                _ => cleared_away += 1,
+            }
+            forget(&key);
+        }
+        assert_eq!(refused + cleared_away, ROUNDS);
     }
 
     /// A record removed by its file alone (startup's tidy of transcripts no
