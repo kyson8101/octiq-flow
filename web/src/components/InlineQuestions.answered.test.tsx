@@ -216,3 +216,100 @@ describe("a record that has both the line and the host's late turn", () => {
     expect(html).not.toContain("qa-turn is-answered");
   });
 });
+
+describe("a line is attached by what it is, never by its words", () => {
+  // Review 3b: an old `ask_user` call asked "Rebase onto develop first?" and
+  // was answered Merge (a record from before the host wrote lines, so it has
+  // a result and no line). Later the provider asks the same words by itself
+  // and the person answers Rebase. The native line was bound to the old
+  // call, the call drew its own result, and the page showed Merge alone,
+  // after a reload too.
+  const WORDS = "Rebase onto develop first?";
+  const asks = (id: string, via: "native" | "tool", answer: string): QuestionAnswered => ({
+    type: "octiq_question_answered", id, via, at: 1,
+    questions: [{ id: `${id}-q`, question: WORDS, options: [{ label: "Merge" }, { label: "Rebase" }], multiple: false, answer }],
+  });
+  const oldCall = (id: string, answer: string) => call(id, asks("old", "tool", answer), answer);
+
+  it("draws a native answer at its own line, after an old tool call that asked the same words", () => {
+    const line = asks("new-native-record", "native", "Rebase");
+    const state = heard([reply("m1", [oldCall("t-old", "Merge")]), reply("m2", [{ kind: "text", text: "One more check." }])], line);
+    const where = placeAnswered(state.messages);
+    expect(where.byTool.size).toBe(0);
+    expect([...where.atLine]).toEqual(["new-native-record"]);
+    const html = chat(state.messages);
+    // Both of the person's answers, each where it was given.
+    expect(bubbles(html)).toEqual([["Merge"], ["Rebase"]]);
+    expect(html).toContain('data-answered="new-native-record"');
+    expect(html.indexOf("One more check.")).toBeLessThan(html.indexOf('data-answered="new-native-record"'));
+    // From a state read back whole (a reload's checkpoint), the same.
+    expect(bubbles(chat(JSON.parse(JSON.stringify(state.messages))))).toEqual([["Merge"], ["Rebase"]]);
+    // Where nobody can answer the old call keeps its tool row, and the
+    // native answer is still the line's own bubble.
+    expect(bubbles(readOnly(state.messages))).toEqual([["Rebase"]]);
+  });
+
+  it("never attaches a native line to a tool call, one still waiting included", () => {
+    // A call that waits has no answer of its own, and is still not a native
+    // question's call.
+    const line = asks("native-1", "native", "Rebase");
+    const state = heard([reply("m1", [call("t-waits", line)])], line);
+    const where = placeAnswered(state.messages);
+    expect(where.byTool.size).toBe(0);
+    expect([...where.atLine]).toEqual(["native-1"]);
+    expect(bubbles(chat(state.messages))).toEqual([["Rebase"]]);
+  });
+
+  it("is the same in the other order: a native answer first, then a tool call in the same words", () => {
+    const native = asks("native-1", "native", "Merge");
+    const tool = asks("tool-2", "tool", "Rebase");
+    // Before the call's result is in, and after it.
+    for (const result of [undefined, "Rebase"]) {
+      const first = heard(TALK, native);
+      const state = heard([...first.messages, reply("m2", [call("t2", tool, result)])], tool);
+      const where = placeAnswered(state.messages);
+      expect([...where.atLine]).toEqual(["native-1"]);
+      expect([...where.byTool.keys()]).toEqual(["t2"]);
+      const html = chat(state.messages);
+      expect(bubbles(html)).toEqual([["Merge"], ["Rebase"]]);
+      expect(html.match(/data-answered="/g)).toHaveLength(1);
+    }
+  });
+
+  it("draws two native questions in the same words as two answers", () => {
+    const state = heard(TALK, asks("native-1", "native", "Merge"), asks("native-2", "native", "Rebase"));
+    expect([...placeAnswered(state.messages).atLine]).toEqual(["native-1", "native-2"]);
+    const html = chat(state.messages);
+    expect(bubbles(html)).toEqual([["Merge"], ["Rebase"]]);
+    expect(html).toContain('data-answered="native-1"');
+    expect(html).toContain('data-answered="native-2"');
+  });
+
+  it("never gives a call that has its own answer another one", () => {
+    // The line's own call is not in these turns (a subagent's, or behind
+    // Load earlier messages); an older call in the same words is, answered.
+    const line = asks("tool-2", "tool", "Rebase");
+    const state = heard([reply("m1", [oldCall("t-old", "Merge")])], line);
+    const where = placeAnswered(state.messages);
+    expect(where.byTool.size).toBe(0);
+    expect([...where.atLine]).toEqual(["tool-2"]);
+    expect(bubbles(chat(state.messages))).toEqual([["Merge"], ["Rebase"]]);
+    // And that old call is not used up by it: a line that is its own (its
+    // answers, heard late) still finds it.
+    const late = heard(state.messages, asks("old", "tool", "Merge"));
+    const both = placeAnswered(late.messages);
+    expect([...both.byTool.keys()]).toEqual(["t-old"]);
+    expect([...both.atLine]).toEqual(["tool-2"]);
+    expect(bubbles(chat(late.messages))).toEqual([["Merge"], ["Rebase"]]);
+  });
+
+  it("gives no line to a call that ended with nothing said", () => {
+    const line = asks("tool-2", "tool", "Rebase");
+    const closed = call("t-closed", line, "The user closed this question without answering.");
+    const state = heard([reply("m1", [closed])], line);
+    const where = placeAnswered(state.messages);
+    expect(where.byTool.size).toBe(0);
+    expect([...where.atLine]).toEqual(["tool-2"]);
+    expect(bubbles(chat(state.messages))).toEqual([["Rebase"]]);
+  });
+});

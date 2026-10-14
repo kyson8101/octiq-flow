@@ -355,12 +355,29 @@ export function partNote(said: number, open: number): { title: string; tone: "qu
  *  the answered question and the person's bubble from, so they are the same
  *  after delivery, after a reload and in a second tab.
  *
- *  One rule for every line, whichever way the answer went: it is attached
- *  to the `ask_user` call these messages hold for it, and otherwise drawn
- *  where the line stands. Attached, the call draws the answer and the line
- *  draws nothing, so a question answered through the tool is drawn once
- *  (its result carries the same answers). The host's turn for the same
- *  record (`octiq-question-<id>`, the rare record that has both) wins too. */
+ *  A line is attached by what it IS, never by its words alone. The words
+ *  say only which calls could be its own; the same words are asked twice.
+ *
+ *  - `via: "native"`: the provider asked by itself, so no tool call of the
+ *    transcript is this question's. Never attached to one: drawn where the
+ *    line stands.
+ *  - `via: "tool"`: attached to the `ask_user` call it was written for, and
+ *    then the call draws the answer and the line draws nothing, so a
+ *    question answered through the tool is drawn once. Its call is the
+ *    newest one before the line that asked these words and has no line yet,
+ *    and only while that call has no answer of its own, or says the very
+ *    answers the line does (its result has arrived). A call that carries
+ *    another answer was answered in its own right and is never given a
+ *    second; a call that ended without one has no line. The line is then
+ *    drawn where it stands.
+ *
+ *  The host's turn for the same record (`octiq-question-<id>`, the rare
+ *  record that has both) wins over either.
+ *
+ *  Words alone were the hole: an old call answered `Merge` (a record from
+ *  before the host wrote lines), then the same words asked natively and
+ *  answered `Rebase`. The native line was bound to the old call, the call
+ *  drew its own result, and the page showed `Merge` and no `Rebase`. */
 export type AnsweredPlacement = {
   /** The answers of the line attached to each call, by the call's id. */
   byTool: ReadonlyMap<string, AskItem[]>;
@@ -376,13 +393,25 @@ export function answeredItems(line: QuestionAnswered): AskItem[] {
   return line.questions.map((q) => ({ question: q.question, answer: q.answer }));
 }
 
+/** An `ask_user` call a `via: "tool"` line can be attached to, with what
+ *  the call itself says was answered: nothing yet, or its own answers. */
+type AskedCall = { toolId: string; own: string[] | null };
+
+/** Whether a call can be the one a line was written for: it carries no
+ *  answer of its own, or the very answers the line carries. */
+function takesLine(call: AskedCall, line: QuestionAnswered): boolean {
+  if (!call.own) return true;
+  return call.own.length === line.questions.length && call.own.every((answer, i) => answer.trim() === line.questions[i].answer.trim());
+}
+
 export function placeAnswered(messages: readonly Message[]): AnsweredPlacement {
   const byTool = new Map<string, AskItem[]>();
   const atLine = new Set<string>();
   const ids = new Set<string>();
   let turns: Set<string> | null = null;
-  /** The main agent's `ask_user` calls so far, by the words they asked. */
-  const calls = new Map<string, string[]>();
+  /** The main agent's `ask_user` calls so far that could still be given a
+   *  line, by the words they asked. */
+  const calls = new Map<string, AskedCall[]>();
   for (const message of messages) {
     if (message.role !== "assistant" || message.parent) continue;
     for (const block of message.blocks) {
@@ -390,10 +419,14 @@ export function placeAnswered(messages: readonly Message[]): AnsweredPlacement {
         if (block.state === "error") continue;
         const read = askAnswer(block.name, block.args, block.result);
         if (!read?.length) continue;
+        // A call that ended with nothing said (closed, timed out, saved for
+        // later) was handed no answer while it waited: no line is its own.
+        if (read.some((item) => item.unanswered)) continue;
+        const own = read.some((item) => item.answer) ? read.map((item) => item.answer) : null;
         const key = wordsKey(read.map((item) => item.question));
         const list = calls.get(key);
-        if (list) list.push(block.id);
-        else calls.set(key, [block.id]);
+        if (list) list.push({ toolId: block.id, own });
+        else calls.set(key, [{ toolId: block.id, own }]);
         continue;
       }
       if (block.kind !== "answered") continue;
@@ -402,12 +435,18 @@ export function placeAnswered(messages: readonly Message[]): AnsweredPlacement {
       // The same record's late answer, as the host's turn, is the bubble.
       turns ??= new Set(messages.flatMap((m) => (m.role === "user" && isAnswerTurn(m.turnId) ? [m.turnId!] : [])));
       if (turns.has(`${ANSWER_TURN_PREFIX}${line.id}`)) continue;
+      // The provider's own question has no call here, whatever the words.
+      if (line.via !== "tool") { atLine.add(line.id); continue; }
       // The newest call before the line that asked these words and has no
-      // line yet: the line is written between a call and its result.
+      // line yet (the line is written between a call and its result), when
+      // it can be this line's. One that cannot keeps its place: it is not
+      // used up by a line that was never its own.
       const open = calls.get(wordsKey(line.questions.map((q) => q.question)));
-      const toolId = open?.pop();
-      if (toolId) byTool.set(toolId, answeredItems(line));
-      else atLine.add(line.id);
+      const call = open?.at(-1);
+      if (call && takesLine(call, line)) {
+        open!.pop();
+        byTool.set(call.toolId, answeredItems(line));
+      } else atLine.add(line.id);
     }
   }
   return { byTool, atLine, ids };

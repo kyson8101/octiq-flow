@@ -873,19 +873,36 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   (`question.readQuestionAnswered`, `questionBlock.placeAnswered`,
   `AnsweredInline`). The reducer keeps it as one transcript item for a
   record (`octiq-answered-<id>`: the same line can be heard twice), with a
-  block of its own kind (`answered`). One rule for every line, whichever
-  way the answer went: it is attached to the `ask_user` call these turns
-  hold for it (the newest call before the line that asked those words and
-  has no line yet; the line is written between a call and its result), and
-  otherwise drawn where the line stands, as the questions asked and the
-  person's bubble. Attached, the call draws the answer (from its result,
-  or from the line before the result is in, so a tab that did not send it
-  draws it too) and the line draws nothing: a question answered through
-  the tool is drawn once. A question the line answers is not also drawn
-  from the pending list while the host still lists it, and the host's late
-  turn for the same record wins over the line. A line that is not whole (no
-  id, no question, an answer that is not text) draws nothing, in part or
-  otherwise.
+  block of its own kind (`answered`). **A line is attached by what it is,
+  never by its words alone**: the words say only which calls could be its
+  own, and the same words are asked twice.
+  - `via: "native"` is never attached to a tool call, one still waiting
+    included. It is drawn where the line stands, as the questions asked and
+    the person's bubble.
+  - `via: "tool"` is attached to the `ask_user` call it was written for:
+    the newest call before the line that asked those words and has no line
+    yet (the line is written between a call and its result), and only
+    while that call has no answer of its own or says the very answers the
+    line does (`takesLine`). Attached, the call draws the answer (from its
+    result, or from the line before the result is in, so a tab that did
+    not send it draws it too) and the line draws nothing: a question
+    answered through the tool is drawn once. Otherwise (no such call in
+    these turns, or the one there was answered in its own right) the line
+    is drawn where it stands.
+  - **A call that has its own answer is never given another**, and a call
+    that ended with nothing said (closed, timed out, saved for later) has
+    no line: the host writes one only for an answer handed to a call that
+    waits. A call a line could not take is not used up by it.
+  - Words alone were the hole (review 3b): an old call answered `Merge`,
+    from a record older than the host's lines, then the same words asked
+    natively and answered `Rebase`. The native line was bound to the old
+    call, the call drew its own result, and the page showed `Merge` and no
+    `Rebase`, after a reload too.
+
+  A question the line answers is not also drawn from the pending list
+  while the host still lists it, and the host's late turn for the same
+  record wins over the line. A line that is not whole (no id, no question,
+  an answer that is not text) draws nothing, in part or otherwise.
 - **A Codex question is still drawn at the end of the transcript while it
   waits.** The provider's own request leaves no tool call in the
   transcript, so there is no call to draw it at. Answered, it is where its
