@@ -767,8 +767,22 @@ fn clearing_a_long_chat_at_any_moment_of_an_owed_lines_pass_keeps_the_old_answer
         };
         std::thread::sleep(std::time::Duration::from_millis(round));
         crate::transcript::forget(&chat.key);
-        crate::transcript::append(&chat.key, &json!({ "type": "user", "text": "new history" }))
-            .unwrap();
+        // On Windows a file removed while the pass still reads it keeps its
+        // name until the read lets go, and nothing new can be made there
+        // until then: the next history starts as soon as it can.
+        let started = std::time::Instant::now();
+        while crate::transcript::append(
+            &chat.key,
+            &json!({ "type": "user", "text": "new history" }),
+        )
+        .is_none()
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "round {round}: the new history could not be started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         pass.join().unwrap().unwrap();
         leaked += chat.lines().len();
         assert!(!manager.questions.owes_notes(), "round {round}");
