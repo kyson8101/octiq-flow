@@ -495,6 +495,23 @@ Four rules hold:
     line, and the turn is handed over under the same id; handed over, and
     nothing is sent and a missing note is saved; gone, and the next try has
     the next id.
+  - *what the server did, kept by the server* (`chat_plan::StartTurns`, on
+    the chat manager, read and changed under the claim). The line and the
+    note are both files, and the line is written best effort: with a chats
+    folder that took no write the turn was with the agent and nothing said
+    so, and the next ask handed the same turn over again (review 2b, H2b).
+    A hand-over this server made is remembered for as long as it runs and
+    read before the record (`host_turns`' `here`): for that turn only a
+    line that says it is gone makes it so, and no line, or `queued` with
+    the queue no longer holding it, is handed over. A turn taken back from
+    this server's queue (✕) is remembered as that, and is gone whatever
+    line the record took: read from the files alone, `told` with no line
+    was handed over for good. Either note is owed when it could not be
+    saved (`plan starts told` in `profile_status.owed`,
+    `dispatch::settle_plan_starts`). **In memory: a server that stops
+    before either file took its write hands the turn over again.**
+    Refusing the tell when no receipt can be kept was the other choice
+    (`docs/chat-plan.md` says why not).
   - **A turn that is gone is told again, and that is how it differs from
     one that was delivered**: the person took it back (✕), it was marked not
     sent, or its last word is `queued` and no queue holds it (the queue is
@@ -506,8 +523,10 @@ Four rules hold:
     the agent`; the other two leave it true until the next ask, which reads
     the record whatever the note says.
   - A new thing the host tells an agent ONCE asks `host_turns` under an id
-    that is a function of what it tells of, the same way. A fresh id for
-    each try, and a flag for "was it told", is the shape that failed.
+    that is a function of what it tells of, the same way, and hands it the
+    turn it remembers handing over. A fresh id for each try, and a flag for
+    "was it told", is the shape that failed; so is a receipt that exists
+    only when a best-effort write went through.
 - **Only the chat's own agent writes.** `/hook/plan` keeps the `HookCaller`
   and refuses a front desk, a room seat (`session_key != chat_key`; a seat
   may read) and a worker by `is_worker_chat`, which still holds after its

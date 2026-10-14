@@ -677,6 +677,443 @@ fn a_delivery_whose_note_could_not_be_saved_is_not_made_again() {
     svc.chats.test_end(&chat.key);
 }
 
+/// A chat whose plan is started and whose agent has not been told, with a
+/// stand-in agent that keeps what it is written. Answers the chat, the
+/// Start's turn id and the stand-in's output.
+fn started_with_an_agent(
+    svc: &Services,
+    busy: bool,
+) -> (Chat, String, std::io::BufReader<std::process::ChildStdout>) {
+    let chat = Chat::new();
+    chat.change(
+        svc,
+        json!({ "baseRevision": 0, "add": [{ "title": "A", "status": "decided" }] }),
+    )
+    .unwrap();
+    let (_agent, heard) =
+        svc.chats
+            .test_hold_heard(&chat.key, crate::agent_chat::ChatAgent::Claude, busy);
+    let turn = crate::chat_plan::start_turn_id();
+    crate::chat_plan::start(&chat.id, 1, &turn).unwrap();
+    (chat, turn, heard)
+}
+
+/// How many turns the stand-in under `chat` was written, once it has
+/// finished: each is one line of JSON. (The stand-in is the test harness
+/// itself, which prints a few lines of its own as it ends.)
+fn written_to(
+    svc: &Services,
+    chat: &Chat,
+    heard: std::io::BufReader<std::process::ChildStdout>,
+) -> usize {
+    use std::io::BufRead;
+    svc.chats.test_finish(&chat.key);
+    heard
+        .lines()
+        .map_while(Result::ok)
+        .filter(|line| line.starts_with('{'))
+        .count()
+}
+
+/// Neither receipt of a hand-over can be kept: the chat's record takes no
+/// line (a folder stands where its file goes) and the plan's file no save.
+/// Answers the folder, to be removed when the record takes lines again.
+fn no_receipt_is_kept(chat: &Chat) -> std::path::PathBuf {
+    let record = crate::transcript::path_for(&chat.key).unwrap();
+    crate::profile::make_dir(&record).unwrap();
+    record
+}
+
+fn owes_a_note(svc: &Services) -> bool {
+    dispatch(svc, "profile_status", json!({})).unwrap()["owed"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(crate::chat_plan::OWED))
+}
+
+/// Review 2b of the UI batch, H2b. The Start's turn is handed over while
+/// neither of its receipts can be kept: the turn's line in the chat's
+/// record and the plan's note that the agent was told. Nothing on disk
+/// said the hand-over happened, so the next ask, with the files taking
+/// writes again, handed the same turn over a second time.
+///
+/// The server remembers what it handed over (`chat_plan::StartTurns`), and
+/// an ask reads that before the record. The first answer is what it was
+/// (`delivered: true`, `told: false`, the failure beside it) and the note
+/// is owed; every ask after it answers `told` and sends nothing, with the
+/// files still failing and once they are back. The agent is written the
+/// turn once, or it waits in the queue once.
+#[test]
+fn a_start_handed_over_with_neither_receipt_kept_is_not_handed_over_again() {
+    for busy in [false, true] {
+        let svc = Services::load();
+        let (chat, turn, heard) = started_with_an_agent(&svc, busy);
+        let record = no_receipt_is_kept(&chat);
+        let queue = |svc: &Services| {
+            let waits = chat.queued(svc);
+            assert_eq!(waits, if busy { vec![turn.clone()] } else { vec![] });
+        };
+
+        let (first, said) = crate::unsaved::told(|| {
+            crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 })))
+        });
+        let first = first.unwrap();
+        assert_eq!(first["delivered"], true, "{first}");
+        assert_eq!(
+            first["state"],
+            if busy { "queued" } else { "started" },
+            "{first}"
+        );
+        assert_eq!(first["turnId"], turn.as_str());
+        assert_eq!(first["plan"]["started"]["told"], false, "never said saved");
+        assert!(
+            said.iter()
+                .any(|unsaved| unsaved.what == crate::chat_plan::TOLD_NOTE),
+            "{said:?}"
+        );
+        assert!(chat.turns().is_empty(), "the record took no line");
+        assert!(owes_a_note(&svc), "the note is owed");
+        queue(&svc);
+
+        // Asked again while neither can be kept, and swept: nothing is
+        // sent, nothing is called saved, and the note stays owed.
+        let still =
+            crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 })))
+                .unwrap();
+        assert_eq!(still["state"], "told", "busy {busy}: {still}");
+        assert_eq!(still["turnId"], turn.as_str());
+        assert_eq!(still["plan"]["started"]["told"], false);
+        assert!(crate::chat_plan::while_writes_fail(|| settle_owed(&svc))
+            .contains(&crate::chat_plan::OWED));
+        queue(&svc);
+
+        // The files take writes again. The reviewer's ask: it answered
+        // `queued` (or `started`), with the same turn id in the queue.
+        std::fs::remove_dir(&record).unwrap();
+        let again = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+        assert_eq!(again["delivered"], true, "{again}");
+        assert_eq!(
+            again["state"], "told",
+            "busy {busy}: a Start already handed over was handed over again: {again}"
+        );
+        assert_eq!(again["turnId"], turn.as_str());
+        assert_eq!(again["plan"]["started"]["told"], true);
+        assert_eq!(chat.get(&svc)["started"]["told"], true);
+        assert!(!owes_a_note(&svc), "the note is on disk now");
+        queue(&svc);
+
+        assert_eq!(
+            written_to(&svc, &chat, heard),
+            usize::from(!busy),
+            "busy {busy}: what the agent was written"
+        );
+    }
+}
+
+/// The note that was owed is saved by the host's own sweep, with nobody
+/// asking again, and the pages hear it. A server started after that reads
+/// it from the plan's file and sends nothing.
+#[test]
+fn the_owed_note_of_a_hand_over_is_saved_by_the_sweep() {
+    let svc = Services::load();
+    let (chat, turn, heard) = started_with_an_agent(&svc, false);
+    let record = no_receipt_is_kept(&chat);
+    let first =
+        crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 }))).unwrap();
+    assert_eq!(first["state"], "started", "{first}");
+    assert_eq!(chat.get(&svc)["started"]["told"], false);
+    std::fs::remove_dir(&record).unwrap();
+
+    let tap = crate::bus::tap::Tap::on(&chat.id);
+    assert!(!settle_owed(&svc).contains(&crate::chat_plan::OWED));
+    let kept = chat.get(&svc)["started"].clone();
+    assert_eq!(
+        (&kept["told"], &kept["turnId"]),
+        (&json!(true), &json!(turn))
+    );
+    let heard_plans = plans_heard(&tap);
+    assert_eq!(heard_plans.len(), 1, "{heard_plans:?}");
+    assert_eq!(heard_plans[0]["plan"]["started"]["told"], true);
+    assert!(!owes_a_note(&svc));
+    // Swept again: nothing more is written or said.
+    assert!(!settle_owed(&svc).contains(&crate::chat_plan::OWED));
+    assert_eq!(plans_heard(&tap).len(), 1);
+    assert_eq!(written_to(&svc, &chat, heard), 1);
+
+    // Another server, which remembers nothing: the note is its receipt.
+    let restarted = Services::load();
+    let _agent = restarted
+        .chats
+        .test_hold(&chat.key, crate::agent_chat::ChatAgent::Claude, false);
+    let again = chat.start(&restarted, json!({ "revision": 1 })).unwrap();
+    assert_eq!(again["state"], "told", "{again}");
+    assert_eq!(again["turnId"], turn.as_str());
+    assert!(chat.turns().is_empty(), "nothing was sent by it");
+    restarted.chats.test_end(&chat.key);
+}
+
+/// A turn the person takes back with its ✕ can be told again, when no
+/// line of it was ever kept either. The turn waits in the queue with
+/// neither receipt; the ✕ takes it out, and the server remembers that it
+/// did, whatever the record took of the taking back. That try is over,
+/// as it is when its line says so (a page that heard it taken back drops
+/// its bubble by that id), and the next ask queues the next try, once.
+#[test]
+fn a_start_turn_taken_back_with_no_line_kept_can_be_told_again() {
+    let svc = Services::load();
+    let (chat, turn, heard) = started_with_an_agent(&svc, true);
+    let record = no_receipt_is_kept(&chat);
+    let first =
+        crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 }))).unwrap();
+    assert_eq!(first["state"], "queued", "{first}");
+    assert_eq!(chat.queued(&svc), [turn.clone()]);
+    assert!(owes_a_note(&svc));
+
+    let taken = dispatch(
+        &svc,
+        "chat_cancel_queued",
+        json!({ "key": chat.key, "turnId": turn }),
+    )
+    .unwrap();
+    assert_eq!(taken, json!(true));
+    assert!(chat.queued(&svc).is_empty());
+    assert!(!owes_a_note(&svc), "nothing is owed for a turn taken back");
+    assert_eq!(chat.get(&svc)["started"]["told"], false);
+
+    std::fs::remove_dir(&record).unwrap();
+    let second = format!("{turn}-try2");
+    let again = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+    assert_eq!(again["delivered"], true, "{again}");
+    assert_eq!(again["state"], "queued", "told again: {again}");
+    assert_eq!(again["turnId"], second.as_str(), "the first try is over");
+    assert_eq!(again["plan"]["started"]["told"], true);
+    assert_eq!(chat.queued(&svc), [second.clone()]);
+    // And that one is handed over once, like any other.
+    let told = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+    assert_eq!(told["state"], "told", "{told}");
+    assert_eq!(told["turnId"], second.as_str());
+    assert_eq!(chat.queued(&svc), [second.clone()]);
+    assert_eq!(written_to(&svc, &chat, heard), 0, "it never left the queue");
+}
+
+/// The other half of a taking back: the plan's file says the agent was
+/// told, the record took no line of the turn, and the ✕ can save neither
+/// its line nor the note that the agent no longer has the turn. Read from
+/// the files alone that turn was handed over for good, and no ask could
+/// tell the agent again. The server took it back itself and knows it: the
+/// note is said and owed, the sweep saves it (so the page offers `Tell
+/// the agent`), and an ask hands over the next try.
+#[test]
+fn a_start_turn_taken_back_while_nothing_could_be_saved_is_not_told_for_good() {
+    for swept in [false, true] {
+        let svc = Services::load();
+        let (chat, turn, heard) = started_with_an_agent(&svc, true);
+        // The record takes no line; the plan's file takes the note.
+        let record = no_receipt_is_kept(&chat);
+        let first = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+        assert_eq!(first["state"], "queued", "{first}");
+        assert_eq!(chat.get(&svc)["started"]["told"], true);
+        assert!(chat.turns().is_empty());
+
+        // The ✕, with the plan's file refusing its save as well.
+        let (taken, said) = crate::unsaved::told(|| {
+            crate::chat_plan::while_writes_fail(|| {
+                dispatch(
+                    &svc,
+                    "chat_cancel_queued",
+                    json!({ "key": chat.key, "turnId": turn }),
+                )
+            })
+        });
+        assert_eq!(taken.unwrap(), json!(true));
+        assert!(
+            said.iter()
+                .any(|unsaved| unsaved.what == crate::chat_plan::UNTOLD_NOTE),
+            "{said:?}"
+        );
+        assert!(chat.queued(&svc).is_empty());
+        assert_eq!(chat.get(&svc)["started"]["told"], true, "not saved yet");
+        assert!(owes_a_note(&svc));
+        std::fs::remove_dir(&record).unwrap();
+
+        if swept {
+            let tap = crate::bus::tap::Tap::on(&chat.id);
+            assert!(!settle_owed(&svc).contains(&crate::chat_plan::OWED));
+            assert_eq!(chat.get(&svc)["started"]["told"], false);
+            let plans = plans_heard(&tap);
+            assert_eq!(plans.len(), 1, "{plans:?}");
+            assert_eq!(plans[0]["plan"]["started"]["told"], false);
+        }
+        let second = format!("{turn}-try2");
+        let again = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+        assert_eq!(again["delivered"], true, "swept {swept}: {again}");
+        assert_eq!(again["state"], "queued", "swept {swept}: {again}");
+        assert_eq!(again["turnId"], second.as_str());
+        assert_eq!(chat.queued(&svc), [second.clone()]);
+        let kept = chat.get(&svc)["started"].clone();
+        assert_eq!(
+            (&kept["told"], &kept["turnId"]),
+            (&json!(true), &json!(second))
+        );
+        assert!(!owes_a_note(&svc));
+        assert_eq!(written_to(&svc, &chat, heard), 0);
+    }
+}
+
+/// The person clears the chat after a hand-over whose note could not be
+/// saved: the turn's lines go with the history, and the plan still says
+/// its agent was not told. The server that handed the turn over knows it
+/// did, and which try it was, so it sends nothing and saves the note. (A
+/// server started after the clear and before the note was saved has
+/// neither, and tells the agent again: `docs/chat-plan.md`.)
+///
+/// The turn handed over is the Start's second try, after a first whose
+/// write to the agent failed and was marked not sent. With the history
+/// cleared that line is gone too, and counted on from the record alone the
+/// first try's id would be handed over as though nothing had been.
+#[test]
+fn a_chat_cleared_after_a_hand_over_is_not_told_again_by_the_server_that_told_it() {
+    let svc = Services::load();
+    let chat = Chat::new();
+    chat.change(
+        &svc,
+        json!({ "baseRevision": 0, "add": [{ "title": "A", "status": "decided" }] }),
+    )
+    .unwrap();
+    let turn = crate::chat_plan::start_turn_id();
+    crate::chat_plan::start(&chat.id, 1, &turn).unwrap();
+    // An agent that takes no input: the first try is not sent.
+    svc.chats.test_launch(&chat.key);
+    let failed = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+    assert_eq!(failed["delivered"], false, "{failed}");
+    assert_eq!(failed["turnId"], turn.as_str());
+    svc.chats.test_end(&chat.key);
+    let (_agent, heard) =
+        svc.chats
+            .test_hold_heard(&chat.key, crate::agent_chat::ChatAgent::Claude, false);
+
+    let second = format!("{turn}-try2");
+    let first =
+        crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 }))).unwrap();
+    assert_eq!(first["state"], "started", "{first}");
+    assert_eq!(first["turnId"], second.as_str());
+    assert_eq!(chat.turns().len(), 2, "the record has both tries");
+    assert_eq!(chat.get(&svc)["started"]["told"], false);
+
+    // `/clear`.
+    crate::transcript::forget(&chat.key);
+    assert!(chat.turns().is_empty());
+    let again = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+    assert_eq!(again["state"], "told", "{again}");
+    assert_eq!(again["turnId"], second.as_str());
+    let kept = chat.get(&svc)["started"].clone();
+    assert_eq!(
+        (&kept["told"], &kept["turnId"]),
+        (&json!(true), &json!(second))
+    );
+    assert!(chat.turns().is_empty(), "nothing was sent");
+    assert_eq!(written_to(&svc, &chat, heard), 1);
+}
+
+/// **The stated limit of what the server remembers: it is in memory.** A
+/// server that stops after the hand-over and before either receipt was
+/// saved leaves nothing that says the turn was handed over, and the next
+/// server's first ask hands it over again, under the same id. This test
+/// holds that sentence to what the code does; it is not a guarantee.
+#[test]
+fn a_server_that_stops_before_either_receipt_is_kept_hands_the_start_over_again() {
+    let svc = Services::load();
+    let (chat, turn, heard) = started_with_an_agent(&svc, false);
+    let record = no_receipt_is_kept(&chat);
+    let first =
+        crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 }))).unwrap();
+    assert_eq!(first["state"], "started", "{first}");
+    std::fs::remove_dir(&record).unwrap();
+    assert_eq!(written_to(&svc, &chat, heard), 1);
+
+    // The server stops with the note still owed, and another starts.
+    let restarted = Services::load();
+    assert!(
+        !owes_a_note(&restarted),
+        "what was owed went with the server"
+    );
+    let (_agent, heard) =
+        restarted
+            .chats
+            .test_hold_heard(&chat.key, crate::agent_chat::ChatAgent::Claude, false);
+    let again = chat.start(&restarted, json!({ "revision": 1 })).unwrap();
+    assert_eq!(again["state"], "started", "{again}");
+    assert_eq!(again["turnId"], turn.as_str(), "the same turn id");
+    assert_eq!(again["plan"]["started"]["told"], true);
+    assert_eq!(written_to(&restarted, &chat, heard), 1, "a second time");
+}
+
+/// The reviewer's own schedule for H2b, with nothing of the host's
+/// switched: real permissions. The chats folder takes no new file and the
+/// chat's record no line, so the turn's line and the plan's note both fail
+/// with `Permission denied`, and the turn is written to the agent all the
+/// same. With the permissions back the next ask answered `queued`, the
+/// same turn id in the queue.
+///
+/// Unix only: a folder's mode bits do not refuse a write on Windows, where
+/// the test above makes the same two writes fail another way. Skipped for
+/// a user permissions do not bind (root).
+#[cfg(unix)]
+#[test]
+fn a_start_handed_over_while_permissions_refuse_both_receipts_is_not_queued_again_unix() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _process = crate::profile::started_in(&home.dir);
+    let svc = Services::at_profile();
+    let (chat, turn, heard) = started_with_an_agent(&svc, false);
+    crate::transcript::append(
+        &chat.key,
+        &json!({ "type": "user", "text": "earlier history" }),
+    )
+    .unwrap();
+    let record = crate::transcript::path_for(&chat.key).unwrap();
+    let folder = record.parent().unwrap().to_path_buf();
+
+    struct Restore(std::path::PathBuf, std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::set_permissions(&self.1, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+    let restore = Restore(folder.clone(), record.clone());
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o400)).unwrap();
+    if std::fs::write(folder.join("permissions-do-not-bind"), b"").is_ok() {
+        eprintln!("skipped: this user writes into a folder whose mode refuses it (root)");
+        return;
+    }
+
+    let (first, said) = crate::unsaved::told(|| chat.start(&svc, json!({ "revision": 1 })));
+    let first = first.unwrap();
+    assert_eq!(first["delivered"], true, "{first}");
+    assert_eq!(first["state"], "started", "{first}");
+    assert_eq!(first["plan"]["started"]["told"], false);
+    assert!(
+        said.iter()
+            .any(|unsaved| unsaved.what == crate::chat_plan::TOLD_NOTE
+                && unsaved.reason.contains("ermission")),
+        "{said:?}"
+    );
+    assert!(chat.turns().is_empty(), "the record took no line of it");
+    drop(restore);
+
+    let again = chat.start(&svc, json!({ "revision": 1 })).unwrap();
+    assert_eq!(
+        again["state"], "told",
+        "an already dispatched Start was queued again: {again}"
+    );
+    assert_eq!(again["turnId"], turn.as_str());
+    assert_eq!(again["plan"]["started"]["told"], true);
+    assert!(chat.queued(&svc).is_empty());
+    assert_eq!(written_to(&svc, &chat, heard), 1);
+}
+
 /// A turn that will not reach the agent is told again, once, and a turn
 /// that will is never told twice, across a server that stopped. The
 /// host's queue is in memory: a Start turn a server had only queued is
@@ -692,7 +1129,7 @@ fn a_start_turn_that_was_lost_or_not_sent_is_told_again_once() {
     assert_eq!(queued["state"], "queued");
     assert_eq!(queued["plan"]["started"]["told"], true);
     let fates = |svc: &Services| {
-        crate::agent_chat::host_turns(&svc.chats, &chat.key, &turn)
+        crate::agent_chat::host_turns(&svc.chats, &chat.key, &turn, None)
             .unwrap()
             .into_iter()
             .collect::<Vec<_>>()

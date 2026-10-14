@@ -608,6 +608,9 @@ pub fn told(svc: &Services, cmd: &str, args: Value) -> Told {
 /// write fails as it did and nothing is made.
 pub fn settle_owed(svc: &Services) -> Vec<&'static str> {
     let mut owed = crate::agent_chat::settle_owed(&svc.chats);
+    if settle_plan_starts(svc).is_err() {
+        owed.push(crate::chat_plan::OWED);
+    }
     if svc.orchestrations.settle_owed().is_err() {
         owed.push(crate::orchestration::OWED);
     }
@@ -617,9 +620,65 @@ pub fn settle_owed(svc: &Services) -> Vec<&'static str> {
     owed
 }
 
+/// Save the notes the plans' files are owed for what this server did with
+/// the turn that tells an agent its plan was started: that it was handed
+/// over, or that it was taken back (`chat_plan::StartTurns`). An error is
+/// why one is still owed. With nothing owed it is one lock.
+///
+/// Each is saved under the chat's claim, so a note that the agent was told
+/// is never written over a taking back. A claim that is held is an ask in
+/// flight, which saves the note itself: that chat is left for the next
+/// pass, and nothing here waits on a chat being started.
+fn settle_plan_starts(svc: &Services) -> Result<(), String> {
+    use crate::chat_plan::Note;
+    let starts = &svc.chats.plan_starts;
+    let owed = starts.owed();
+    if owed.is_empty() {
+        return Ok(());
+    }
+    crate::profile::available()?;
+    let mut still = None;
+    for chat_id in owed {
+        let claim = crate::chat_plan::telling(&chat_id);
+        let Ok(telling) = claim.try_lock() else {
+            still = Some(format!("the plan of {chat_id} is being started"));
+            continue;
+        };
+        // Asked again under the claim: noted, or changed, since.
+        let Some(note) = starts.of(&telling, &chat_id).owed else {
+            continue;
+        };
+        let saved = match crate::chat_plan::get(&chat_id) {
+            // The chat was removed for good, and its plan with it.
+            Ok(None) => {
+                starts.forget(&telling, &chat_id);
+                continue;
+            }
+            Ok(Some(_)) => match &note {
+                Note::Told(turn_id) => crate::chat_plan::told(&chat_id, turn_id).map(Some),
+                Note::Untold(turn_id) => crate::chat_plan::untold(&chat_id, turn_id),
+            },
+            Err(why) => Err(why),
+        };
+        match saved {
+            Ok(plan) => {
+                starts.noted(&telling, &chat_id);
+                if let Some(plan) = plan {
+                    announce_plan(&plan_view(svc, &chat_id, Some(plan)));
+                }
+            }
+            Err(why) => still = Some(why),
+        }
+    }
+    still.map_or(Ok(()), Err)
+}
+
 /// The stores `settle_owed` would write, without writing them.
 fn owed(svc: &Services) -> Vec<&'static str> {
     let mut owed = crate::agent_chat::owed(&svc.chats);
+    if svc.chats.plan_starts.owes() {
+        owed.push(crate::chat_plan::OWED);
+    }
     if svc.orchestrations.owes() {
         owed.push(crate::orchestration::OWED);
     }
@@ -1061,8 +1120,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             //   record (`host_turns`), not from the note `told`. A turn
             //   that was handed over and whose note could not be saved is
             //   found there, and this ask saves the note and sends nothing.
+            //
+            // And a third, for a record that took no line of the turn while
+            // the note could not be saved either (review 2b, H2b): what
+            // this server handed over itself it remembers
+            // (`chat_plan::StartTurns`), and that is read before the record.
             let claim = crate::chat_plan::telling(&chat_id);
-            let _telling = claim.lock().unwrap_or_else(|e| e.into_inner());
+            let telling = claim.lock().unwrap_or_else(|e| e.into_inner());
+            let starts = &svc.chats.plan_starts;
             // A plan that is started is never started again. Asked of one
             // whose agent has its turn, this answers that and sends nothing.
             // Asked of one whose turn was not handed over, or was taken
@@ -1080,7 +1145,26 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             {
                 use crate::agent_chat::HostTurn;
                 let first = crate::chat_plan::first_turn_id(&started.turn_id).to_string();
-                let turns = crate::agent_chat::host_turns(&svc.chats, &key, &first)?;
+                // What this server did itself for this Start: the try it
+                // handed over, and the tries it took back.
+                let known = starts.of(&telling, &chat_id);
+                let of_this_start = |id: &String| crate::chat_plan::first_turn_id(id) == first;
+                let here = known.handed.filter(of_this_start);
+                let mut turns =
+                    crate::agent_chat::host_turns(&svc.chats, &key, &first, here.as_deref())?;
+                // A try taken back from this server's queue is over,
+                // whatever line the record took of the taking back.
+                for taken_back in known.taken_back.into_iter().filter(of_this_start) {
+                    turns.insert(taken_back, HostTurn::Gone);
+                }
+                // A line says the try handed over is gone: it is over too.
+                let here = here.filter(|handed| {
+                    let gone = turns.get(handed) == Some(&HostTurn::Gone);
+                    if gone {
+                        starts.over(&telling, &chat_id, handed);
+                    }
+                    !gone
+                });
                 if started.told && turns.get(&started.turn_id) != Some(&HostTurn::Gone) {
                     let turn_id = started.turn_id.clone();
                     return Ok(json!({
@@ -1088,19 +1172,28 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                         "turnId": turn_id, "delivered": true, "state": "told",
                     }));
                 }
-                // The first try of this Start that is not gone. A turn the
+                // The turn this server handed over, when it did: the record
+                // may hold no line of it, nor of the tries before it. Else
+                // the first try of this Start that is not gone. A turn the
                 // person took back, one marked not sent and one a server
                 // that is gone had only queued are each a try that is over;
                 // the next has the next id.
                 let mut turn_id = first;
-                while turns.get(&turn_id) == Some(&HostTurn::Gone) {
-                    turn_id = crate::chat_plan::next_turn_id(&turn_id);
+                match here {
+                    Some(handed) => turn_id = handed,
+                    None => {
+                        while turns.get(&turn_id) == Some(&HostTurn::Gone) {
+                            turn_id = crate::chat_plan::next_turn_id(&turn_id);
+                        }
+                    }
                 }
                 if turns.get(&turn_id) == Some(&HostTurn::Handed) {
                     // The agent has it, or it waits in the queue for it:
                     // what is missing is the note. Nothing is sent.
-                    let plan = crate::chat_plan::told(&chat_id, &turn_id).unwrap_or_else(|why| {
-                        crate::unsaved::say("that the agent was told its plan was started", why);
+                    let noted = crate::chat_plan::told(&chat_id, &turn_id);
+                    starts.handed(&telling, &chat_id, &turn_id, noted.is_ok());
+                    let plan = noted.unwrap_or_else(|why| {
+                        crate::unsaved::say(crate::chat_plan::TOLD_NOTE, why);
                         plan.clone()
                     });
                     let view = plan_view(svc, &chat_id, Some(plan));
@@ -1124,10 +1217,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                         before = Some(plan);
                     }
                     Ok(None) => {}
-                    Err(why) => crate::unsaved::say(
-                        "that the agent no longer has the turn for its plan's Start",
-                        why,
-                    ),
+                    Err(why) => crate::unsaved::say(crate::chat_plan::UNTOLD_NOTE, why),
                 }
             }
             // As for a completion: a chat with no process is started with
@@ -1179,11 +1269,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 Ok(state) => {
                     // The agent has the turn. That it was told is a note
                     // of something that happened: when it cannot be kept it
-                    // is said beside the answer. The page may ask again,
-                    // and that ask finds the turn in the record, saves the
-                    // note and sends nothing.
-                    let plan = crate::chat_plan::told(&chat_id, &turn_id).unwrap_or_else(|why| {
-                        crate::unsaved::say("that the agent was told its plan was started", why);
+                    // is said beside the answer, and owed (`settle_owed`).
+                    // The page may ask again, and that ask finds the turn
+                    // in what this server remembers handing over, or in
+                    // the record, saves the note and sends nothing.
+                    let noted = crate::chat_plan::told(&chat_id, &turn_id);
+                    starts.handed(&telling, &chat_id, &turn_id, noted.is_ok());
+                    let plan = noted.unwrap_or_else(|why| {
+                        crate::unsaved::say(crate::chat_plan::TOLD_NOTE, why);
                         plan
                     });
                     let view = plan_view(svc, &chat_id, Some(plan));
@@ -1247,7 +1340,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .then(|| key.strip_prefix("chat:"))
                 .flatten();
             let claim = plan_chat.map(crate::chat_plan::telling);
-            let _telling = claim
+            let telling = claim
                 .as_ref()
                 .map(|claim| claim.lock().unwrap_or_else(|e| e.into_inner()));
             let cancelled = crate::agent_chat::chat_cancel_queued_impl(
@@ -1255,17 +1348,22 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 key.clone(),
                 turn_id.clone(),
             )?;
-            if let Some(chat_id) = plan_chat.filter(|_| cancelled) {
-                match crate::chat_plan::untold(chat_id, &turn_id) {
+            if let Some((chat_id, telling)) = plan_chat.zip(telling.as_ref()).filter(|_| cancelled)
+            {
+                let noted = crate::chat_plan::untold(chat_id, &turn_id);
+                // Taken back from this server's own queue, and the server
+                // remembers that it was: the try is over whatever line the
+                // record took of it, so the next ask hands over the next
+                // one. A note that could not be saved is said and owed
+                // (`settle_owed`): the page offers `Tell the agent` by it.
+                svc.chats
+                    .plan_starts
+                    .taken_back(telling, chat_id, &turn_id, noted.is_ok());
+                match noted {
                     Ok(Some(plan)) => announce_plan(&plan_view(svc, chat_id, Some(plan))),
                     Ok(None) => {}
-                    // The turn is taken back all the same. The next ask
-                    // reads that from the chat's record, whatever the plan
-                    // still says (`chat_plan_start`).
-                    Err(why) => crate::unsaved::say(
-                        "that the agent no longer has the turn for its plan's Start",
-                        why,
-                    ),
+                    // The turn is taken back all the same.
+                    Err(why) => crate::unsaved::say(crate::chat_plan::UNTOLD_NOTE, why),
                 }
             }
             Ok(json!(cancelled))

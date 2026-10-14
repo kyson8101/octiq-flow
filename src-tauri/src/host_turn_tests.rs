@@ -51,7 +51,7 @@ impl Record {
     }
 
     fn fates(&self) -> Vec<(String, HostTurn)> {
-        let all = host_turns(&self.manager, &self.key, &self.prefix).unwrap();
+        let all = host_turns(&self.manager, &self.key, &self.prefix, None).unwrap();
         all.into_iter()
             .map(|(id, fate)| (id[self.prefix.len() + 1..].to_string(), fate))
             .collect()
@@ -183,7 +183,7 @@ fn a_queued_turn_is_handed_while_the_queue_holds_it_or_it_is_being_carried() {
     // To another server the same record reads the same.
     let another = ChatManager::default();
     assert_eq!(
-        host_turns(&another, &record.key, &record.prefix).unwrap()[&id],
+        host_turns(&another, &record.key, &record.prefix, None).unwrap()[&id],
         Gone
     );
 
@@ -198,4 +198,62 @@ fn a_queued_turn_is_handed_while_the_queue_holds_it_or_it_is_being_carried() {
         .insert(record.key.clone());
     assert_eq!(record.fate("one"), Some(Gone), "taken back");
     record.manager.handoffs.lock().unwrap().remove(&record.key);
+}
+
+/// A turn this server handed over itself (`here`) is not asked of the
+/// record whether it was: its lines are written best effort, and a record
+/// that took none of them, or `queued` and not what followed, says less
+/// than happened (review 2b, H2b). Only a line that says the turn is gone
+/// makes it so.
+#[test]
+fn a_turn_this_server_handed_over_is_gone_only_by_a_line_that_says_so() {
+    use HostTurn::{Gone, Handed};
+    let record = Record::new();
+    let fate = |name: &str, here: bool| {
+        let id = record.id(name);
+        host_turns(
+            &record.manager,
+            &record.key,
+            &record.prefix,
+            here.then_some(id.as_str()),
+        )
+        .unwrap()
+        .get(&id)
+        .copied()
+    };
+
+    // No line at all.
+    assert_eq!(fate("silent", false), None, "never handed over");
+    assert_eq!(fate("silent", true), Some(Handed));
+
+    // Queued, and the queue no longer holds it: a server that is gone lost
+    // it; this server's own queue let it go, to the agent for all the
+    // record says.
+    let id = record.queued("let-go");
+    record.manager.cancel_queued_turn(&record.key, &id).unwrap();
+    assert_eq!(fate("let-go", false), Some(Gone));
+    assert_eq!(fate("let-go", true), Some(Handed));
+
+    // A line that says it is gone is believed, whoever handed it over.
+    record_delivery(&record.key, Some(&id), "failed");
+    assert_eq!(fate("let-go", true), Some(Gone));
+    let id = record.queued("taken-back");
+    let _sessions = record.manager.sessions.lock().unwrap();
+    let taken = record.manager.cancel_queued_turn(&record.key, &id).unwrap();
+    announce_cancelled(&record.key, &taken);
+    drop(_sessions);
+    assert_eq!(fate("taken-back", true), Some(Gone));
+
+    // A turn of another chain is not this one's.
+    assert_eq!(
+        host_turns(
+            &record.manager,
+            &record.key,
+            &record.prefix,
+            Some("octiq-plan-start-another")
+        )
+        .unwrap()
+        .get("octiq-plan-start-another"),
+        None
+    );
 }

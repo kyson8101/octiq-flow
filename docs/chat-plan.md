@@ -195,7 +195,7 @@ an error: `delivered: false` with the reason in `notDelivered`, and
 However often the command is asked, and from however many tabs at once, the
 agent is handed the Start's turn once. When and on which revision the plan
 was started is recorded once, by the first ask, and never touched again.
-Two things hold it:
+Three things hold it:
 
 - **A claim.** From reading whether the agent was told to noting that it
   was, one ask at a time has the chat's plan. Two asks at once are one after
@@ -211,9 +211,25 @@ Two things hold it:
 
 | What the record says of the Start's turn | The ask |
 | --- | --- |
-| nothing: no try left a line | hands the turn over, under the same id |
+| nothing: no try left a line, and this server did not hand it over | hands the turn over, under the same id |
 | handed over (written to the agent, in the host's queue or being carried into the next process, acknowledged, or its process ended before saying so) | sends nothing. If `told` was false it saves it. `state: "told"` |
 | gone (below) | hands over the next try, under the next id |
+
+- **What the server did, kept by the server.** Both receipts above are
+  files. The turn's line is written best effort before the turn goes to the
+  agent, and the note after it; when the chat's record takes no line and
+  the plan's file no save (a chats folder that refuses writes), the turn is
+  with the agent and nothing on disk says so. So the server remembers each
+  hand-over it made for as long as it runs (`chat_plan::StartTurns`, one for
+  a chat, beside the claim), and an ask reads that before the record. For a
+  turn it handed over itself only a line that says the turn is gone makes
+  it so: no line at all is **handed over**, and so is `queued` last with
+  the queue no longer holding it, which is this server's queue having let
+  it go, to the agent for all the record says. The note is owed:
+  `profile_status.owed` names `plan starts told`, the host saves it on its
+  next pass (every two seconds, under the claim, with a `chat-plan` event),
+  and so does the next ask. A turn the server took back from its queue is
+  remembered too, and is **gone** (below).
 
 So a turn that was handed over and whose note could not be saved
 (`delivered: true` with `started.told: false`, and the failure in `unsaved`
@@ -221,6 +237,10 @@ beside the answer) is not handed over again: the next ask finds it, saves
 the note and answers `state: "told"`. Before the fix of 2026-10-14 every ask
 made a fresh turn id, so nothing tied two asks to the one Start: two asks at
 once queued two turns, and so did an ask after a note that failed to save.
+And until the second fix of that day a turn whose line and note had BOTH
+failed was handed over again by the next ask, under the same id (the
+review's probe: chats folder mode 0500, record 0400, then the modes put
+back and `Tell the agent` pressed).
 
 **A turn that is gone can be told again, and that is how it is told apart
 from one that was delivered.** A Start's turn is gone when its line in the
@@ -249,9 +269,42 @@ hands over the next try. The page does not offer that ask today (it offers
 `Tell the agent` only while `told` is false): it can, for a Start turn its
 transcript shows as not sent.
 
-Not covered: `/clear` removes the chat's record and keeps the plan. A plan
-whose note is false with its turn's lines cleared reads as never told, and
-an ask then hands the turn over again.
+The server remembers a taking back the same way it remembers a hand-over:
+a turn taken back from its own queue is over, whatever line the record
+took of that, so a turn taken back while the record refused every line is
+told again by the next ask, under the next id (a page that heard it taken
+back has dropped its bubble by the old one). The note that the agent no
+longer has the turn is owed like the other when it could not be saved,
+and the host's pass saves it, so the page comes to offer `Tell the agent`
+without anyone asking first. Read from the files alone, a plan saying
+`told` for a turn that left no line was handed over for good.
+
+**What is not covered, and it is a restart.** What the server remembers is
+in memory, and so is the note it owes.
+
+- A server that stops after a hand-over and before either the turn's line
+  or the note was saved leaves nothing that says the turn was handed over.
+  The next server's first ask hands it over again, under the same id: the
+  agent is told of the Start twice. It needs both files to refuse a write
+  and the server to stop inside the time they do (the note is tried again
+  every two seconds).
+- `/clear` removes the chat's record and keeps the plan. The server that
+  handed the turn over still knows it did and sends nothing. A server
+  started after the clear, for a plan whose note was never saved, reads it
+  as never told, and an ask then hands the turn over again.
+- A turn this server queued, of which the record took no line, and which
+  then left the queue with the record refusing that line too, reads as
+  handed over until the server restarts, whether it went to the agent or
+  was dropped. The words may be with the agent, so they are not sent twice;
+  if they are not, the person's own message tells it.
+
+The other choice was to refuse the tell while no receipt could be kept. It
+was not taken: the hand-over is made in three places (written to a running
+agent, joined to the queue, the first message of a new process), the turn's
+line in the third is written once the process exists, and a receipt written
+ahead of a hand-over that then fails has to be taken back by a second write
+that can fail too, which leaves a plan saying `told` of an agent that was
+not.
 
 The turn is not the person's own message: its id is not a person's turn id,
 so the queue never folds a message into it, and it is no evidence for

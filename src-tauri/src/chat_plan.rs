@@ -736,6 +736,140 @@ pub(crate) fn telling(chat_id: &str) -> std::sync::Arc<Mutex<()>> {
         .clone()
 }
 
+/// The claim on telling one chat's agent of its plan's Start, held.
+pub(crate) type Telling<'a> = std::sync::MutexGuard<'a, ()>;
+
+/// The plan starts whose note of what became of their turn is not on
+/// disk, in the list of what still owes a save (`profile_status`).
+pub(crate) const OWED: &str = "plan starts told";
+
+/// What the note that an agent was told is called when it could not be
+/// saved (`unsaved::say`), and the note that its turn was taken back.
+pub(crate) const TOLD_NOTE: &str = "that the agent was told its plan was started";
+pub(crate) const UNTOLD_NOTE: &str = "that the agent no longer has the turn for its plan's Start";
+
+/// A note the plan's file does not hold yet, of something this server did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Note {
+    /// The agent was handed this turn (`told`).
+    Told(String),
+    /// This turn was taken back from the queue (`untold`).
+    Untold(String),
+}
+
+/// What this server did about telling one chat's agent of its plan's Start.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Known {
+    /// The try it handed over: written to the agent, queued for it, or the
+    /// first message of its new process. `None` once that try is over.
+    pub handed: Option<String>,
+    /// The tries it took back from its own queue. Each is over for good.
+    pub taken_back: std::collections::BTreeSet<String>,
+    /// What the plan's file is owed.
+    pub owed: Option<Note>,
+}
+
+/// **What this server did itself, kept for as long as it runs**: for each
+/// chat, the turn it handed the agent for the plan's Start, and the turns
+/// the person took back from its queue.
+///
+/// Whether a Start's turn was handed over is read from the chat's record
+/// and from the plan's note, and both are files: the turn's lines are
+/// written best effort around the hand-over, and the note after it. When
+/// neither could be written the turn was with the agent and nothing said
+/// so, and the next ask handed the same turn over again (review 2b of the
+/// UI batch, H2b: a chats folder that took no writes). A taking back is
+/// the same: its line and its note are files too. So the server keeps
+/// what it did, here, beside the claim, and an ask reads this before the
+/// record: a turn handed over here was handed over, whatever the files
+/// say, until a line says it is gone or the person takes it back; a turn
+/// taken back here is over, whatever the files say.
+///
+/// It is also what is owed: a note the plan's file did not take is
+/// written by `dispatch::settle_owed`, like every save that was owed.
+///
+/// In memory, so a server that stops before either the turn's line or the
+/// note was written loses it, and the next server's first ask finds no
+/// receipt and hands the turn over again, under the same id.
+///
+/// Read and changed only by whoever holds the chat's claim (`telling`).
+#[derive(Default)]
+pub(crate) struct StartTurns(Mutex<BTreeMap<String, Known>>);
+
+impl StartTurns {
+    fn kept(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Known>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What this server did for `chat_id`'s Start.
+    pub(crate) fn of(&self, _telling: &Telling, chat_id: &str) -> Known {
+        self.kept().get(chat_id).cloned().unwrap_or_default()
+    }
+
+    /// `turn_id` was handed to `chat_id`'s agent. `noted` is whether the
+    /// plan's file says so.
+    pub(crate) fn handed(&self, _telling: &Telling, chat_id: &str, turn_id: &str, noted: bool) {
+        let mut kept = self.kept();
+        let known = kept.entry(chat_id.to_string()).or_default();
+        known.handed = Some(turn_id.to_string());
+        known.owed = (!noted).then(|| Note::Told(turn_id.to_string()));
+    }
+
+    /// The person took `turn_id` back from this server's queue. `noted` is
+    /// whether the plan's file no longer says its agent has it. A note
+    /// that the agent was told is owed no longer.
+    pub(crate) fn taken_back(&self, _telling: &Telling, chat_id: &str, turn_id: &str, noted: bool) {
+        let mut kept = self.kept();
+        let known = kept.entry(chat_id.to_string()).or_default();
+        if known.handed.as_deref() == Some(turn_id) {
+            known.handed = None;
+        }
+        known.taken_back.insert(turn_id.to_string());
+        known.owed = (!noted).then(|| Note::Untold(turn_id.to_string()));
+    }
+
+    /// A line in the chat's record says `turn_id` is gone: it is not the
+    /// turn the agent has, and no note that it was told is owed for it.
+    pub(crate) fn over(&self, _telling: &Telling, chat_id: &str, turn_id: &str) {
+        let mut kept = self.kept();
+        let Some(known) = kept.get_mut(chat_id) else {
+            return;
+        };
+        if known.handed.as_deref() == Some(turn_id) {
+            known.handed = None;
+        }
+        if known.owed == Some(Note::Told(turn_id.to_string())) {
+            known.owed = None;
+        }
+    }
+
+    /// The plan's file holds what was owed for `chat_id`.
+    pub(crate) fn noted(&self, _telling: &Telling, chat_id: &str) {
+        if let Some(known) = self.kept().get_mut(chat_id) {
+            known.owed = None;
+        }
+    }
+
+    /// `chat_id` has no plan any more: nothing is known or owed for it.
+    pub(crate) fn forget(&self, _telling: &Telling, chat_id: &str) {
+        self.kept().remove(chat_id);
+    }
+
+    /// The chats whose plan's file is owed a note.
+    pub(crate) fn owed(&self) -> Vec<String> {
+        self.kept()
+            .iter()
+            .filter(|(_, known)| known.owed.is_some())
+            .map(|(chat_id, _)| chat_id.clone())
+            .collect()
+    }
+
+    /// Whether a note is still to be saved.
+    pub(crate) fn owes(&self) -> bool {
+        self.kept().values().any(|known| known.owed.is_some())
+    }
+}
+
 /// Record the person's Start on `revision`. Save-first: the plan is started
 /// only when this answers `Ok`, and a Start that cannot be written is
 /// refused whole, with the plan as it was.

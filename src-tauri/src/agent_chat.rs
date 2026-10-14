@@ -240,7 +240,6 @@ pub(crate) fn record_chat_event_in(
     held
 }
 
-
 fn fan_out(key: &str, seq: Option<u64>, event: Value) -> Option<u64> {
     crate::bus::emit(
         "chat-event",
@@ -1030,6 +1029,9 @@ pub struct ChatManager {
     /// queue while they could not be written (`record_unsent`), as (chat,
     /// turn id): written once the profile folder is back (`settle_unsent`).
     unsent: Mutex<Vec<(String, String)>>,
+    /// The turns this server handed chats' agents for their plans' Starts
+    /// (`chat_plan::StartTurns`): what it did, whatever the files took.
+    pub(crate) plan_starts: crate::chat_plan::StartTurns,
     /// What the person sent, as the browser handed it over — see
     /// `TurnEvidence`. Newest last, bounded.
     evidence: Mutex<VecDeque<TurnEvidence>>,
@@ -5371,10 +5373,24 @@ pub(crate) enum HostTurn {
 /// (`handoffs`), or its `dispatched` or `failed` line is in the record:
 /// never between two of those, where it would read as lost and be sent
 /// again.
+///
+/// **`here` is a turn this server knows it handed over itself**
+/// (`chat_plan::StartTurns`), and the record is not asked whether it did.
+/// The turn's lines are written best effort, so a record that took none of
+/// them, or took `queued` and not the `dispatched` that followed, says
+/// nothing or says less than happened. For that turn only a line that says
+/// it is gone makes it so (taken back, `failed`): with no line it is
+/// **handed**, and `queued` last with the queue no longer holding it is
+/// this server's queue having let it go, which is a turn written to the
+/// agent whose `dispatched` line the record refused, or one dropped whose
+/// "not sent" line it refused. Those two cannot be told apart, and the
+/// words may be with the agent, so it is **handed**: never sent a second
+/// time for the host.
 pub(crate) fn host_turns(
     manager: &ChatManager,
     key: &str,
     prefix: &str,
+    here: Option<&str>,
 ) -> Result<std::collections::BTreeMap<String, HostTurn>, String> {
     #[derive(Default)]
     struct Seen {
@@ -5420,11 +5436,15 @@ pub(crate) fn host_turns(
         .contains(key);
     let queued = manager.queued_turns.lock().map_err(|e| e.to_string())?;
     let waits = |id: &str| {
-        carried
+        here == Some(id)
+            || carried
             || queued
                 .get(key)
                 .is_some_and(|queue| queue.iter().any(|turn| turn.owns_turn_id(id)))
     };
+    if let Some(here) = here.filter(|id| id.starts_with(prefix)) {
+        seen.entry(here.to_string()).or_default();
+    }
     Ok(seen
         .into_iter()
         .map(|(id, turn)| {
