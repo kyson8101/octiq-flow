@@ -132,25 +132,44 @@ event into the chat's record, at that moment:
   draws; the id after the prefix is the same `id`. A worker's question is a
   gate and has no record at all.
 - **The answer never waits for the line.** The agent is given its answer
-  whether or not the record takes the line. A line the record would not take
-  is said (`unsaved`: `the answered questions in the chat's record`, with
-  the reason; never as saved) and owed: `profile_status.owed` names
-  `answered questions`, and the host writes it on its next pass (every two
-  seconds once the profile folder is back; a record that goes on refusing
-  with the folder there is asked again after 4 seconds, doubling to a
-  minute). Each try looks for the line by `id` first, one pass at a time,
-  so it is never there twice. Every page open at the time still heard the
-  event, with `seq: null`.
+  whether or not the record takes the line. A line the record would not
+  take, or took and could not confirm, is said (`unsaved`: `the answered
+  questions in the chat's record`, with the reason; never as saved) and
+  owed: `profile_status.owed` names `answered questions`, and the host sees
+  to it on its next pass (every two seconds once the profile folder is
+  back; a record that goes on refusing with the folder there is asked again
+  after 4 seconds, doubling to a minute). Each try looks for the line by
+  `id` first, one pass at a time, so it is never there twice. Every page
+  open at the time still heard the event, with `seq: null` when the line
+  was not written.
+- **Owed until the record gives a receipt for it.** A line that can be read
+  back is not a saved one: the write may have held and the sync after it
+  not. So the line stops being owed only when the record it is in has been
+  synced as it is and then its folder, in one step under the transcript's
+  append lock, for the record the answer was handed over in
+  (`transcript::append_in` for a line written now, `transcript::receipt`
+  for one found there). That holds for the first write too, into a file
+  that was already there as much as into one the line made. Until the
+  review of 2026-10-14 a pass that found the line dropped what was owed
+  with nothing asked of the disk.
+- **It goes into the history the answer was given in, or into none.** Which
+  record the chat has is taken when the answer is handed over, and the
+  check that the chat still has it and the append are one step under that
+  same lock. A chat cleared (`/clear`) or deleted at any moment before the
+  line is written does not get it: nothing is written into the history
+  started afterwards, no page is told, and the line is dropped with the
+  record it belonged to. The check used to be made before the pass read
+  the record for the line and not again before it wrote, so a `/clear`
+  during that read put the old answer into the new history.
 - **Limits.** What is owed is in memory: a restart before the line is
-  written loses it, and that question then has no line. (With the profile
-  folder away the hand-over itself is usually owed too, and a restart then
-  reads the answer as not delivered and sends it as the host's turn, which a
-  page does draw. So a record can, in that one case, have both: the page
-  draws one, by `id`.) A chat cleared (`/clear`) or deleted between a failed
-  write and its next try does not get the line: the record the answer was
-  given in is gone, and the line is dropped with it. The line is written
-  with the same durability as a reopen notice's (`append_synced`); nothing
-  waits on a receipt for it.
+  confirmed loses the debt, and that question then has no line, or has one
+  nobody confirmed. (With the profile folder away the hand-over itself is
+  usually owed too, and a restart then reads the answer as not delivered
+  and sends it as the host's turn, which a page does draw. So a record can,
+  in that one case, have both: the page draws one, by `id`.) The line and
+  its sync are written while the answer is being handed over, so a slow
+  disk delays the answer by that write; it never refuses it. Nothing but
+  the debt waits on the receipt.
 - The command the page sends is unchanged: `question_answer_batch` takes and
   answers what it did.
 

@@ -600,6 +600,64 @@ fn a_record_that_keeps_refusing_is_left_alone_between_tries() {
     assert!(manager.questions.owes_notes());
 }
 
+/// Review 2b, N2: a line that can be read back is not a saved one. The
+/// answer's line is written and the sync of its folder fails, so it is said
+/// and owed. The next pass finds the line by its id, and that used to end
+/// the debt with nothing asked of the disk. It ends only on the record's
+/// own receipt: while the folder cannot be synced the line stays owed, is
+/// never written twice, and is confirmed once the sync goes through.
+///
+/// Both for a record the answer's line made and for one that was already
+/// there: an append into a file that existed synced the file and said
+/// nothing of its folder, which was taken for a receipt too.
+#[test]
+fn a_line_that_can_be_read_back_is_owed_until_its_record_is_synced() {
+    for existed in [false, true] {
+        let manager = Arc::new(ChatManager::default());
+        let chat = Chat::new("unsynced");
+        let store = &manager.questions;
+        let (id, answers) = waiting(store, &chat.key);
+        store.answer(&answers).unwrap();
+        if existed {
+            crate::transcript::append(&chat.key, &json!({ "type": "user", "text": "hello" }))
+                .unwrap();
+        }
+
+        crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(true));
+        let (taken, said) = crate::unsaved::told(|| store.take_native(&id));
+        assert_eq!(taken.unwrap(), Some(vec!["SQLite".to_string()]));
+        assert_eq!(
+            said.iter()
+                .filter(|unsaved| unsaved.what == "the answered questions in the chat's record")
+                .count(),
+            1,
+            "existed {existed}: {said:?}"
+        );
+        assert!(store.owes_notes(), "existed {existed}");
+        assert_eq!(chat.lines().len(), 1, "the line itself was written");
+        let record = crate::transcript::generation(&chat.key).unwrap();
+
+        // The line is found, and finding it is not a receipt.
+        for _ in 0..3 {
+            store.notes_due_now();
+            assert!(store.settle_notes().is_err(), "existed {existed}");
+            assert!(
+                store.owes_notes(),
+                "existed {existed}: read back, not saved"
+            );
+            assert!(crate::transcript::confirm_synced(&chat.key, &record).is_none());
+        }
+        assert_eq!(chat.lines().len(), 1, "never written a second time");
+
+        crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(false));
+        store.notes_due_now();
+        store.settle_notes().unwrap();
+        assert!(!store.owes_notes(), "existed {existed}");
+        assert_eq!(chat.lines().len(), 1);
+        assert_eq!(chat.lines()[0]["id"], id.as_str());
+    }
+}
+
 /// An answer whose line the record refused, in a chat with a record. The
 /// line is owed, and the record takes lines again.
 fn owing(manager: &ChatManager, chat: &Chat) -> String {

@@ -223,6 +223,13 @@ impl Note {
     /// (`Held::Confirmed`), or that record is gone and the line with it
     /// (`Held::Moved`). An error is the line still owed.
     ///
+    /// **A line that can be read back is not a saved one.** The first write
+    /// may have left its line and failed at the sync, and a look that found
+    /// it used to end the debt there, with nothing said of the disk (review
+    /// 2b of the UI batch, N2). Found or written now, the debt ends only on
+    /// the receipt `transcript` gives for this record: its file as it is
+    /// synced, then its folder, under the append lock.
+    ///
     /// **And the line goes into that record or into none.** Which record it
     /// is, is checked in the same step as the append, under the append lock
     /// (`transcript::append_in`): a `/clear` that lands while the record is
@@ -245,7 +252,7 @@ impl Note {
             meanwhile(&self.chat);
         }
         let held = if there {
-            Held::Confirmed
+            crate::transcript::receipt(&self.chat, &record)
         } else {
             crate::agent_chat::record_chat_event_in(&self.chat, Some(&record), self.event.clone())
         };
@@ -563,7 +570,8 @@ impl QuestionStore {
     /// away nothing is read or made.
     ///
     /// Each line is written once: one pass at a time, and a pass looks for
-    /// the line before it writes. A line whose record was removed since is
+    /// the line before it writes. A debt ends on the record's own receipt
+    /// and on nothing else, and a line whose record was removed since is
     /// dropped with it (`Note::write`).
     pub fn settle_notes(&self) -> Result<(), String> {
         let _one = self.noting.lock().unwrap_or_else(|e| e.into_inner());

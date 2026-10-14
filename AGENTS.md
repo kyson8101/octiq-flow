@@ -913,7 +913,14 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   `profile_status.owed`) and written by `settle_notes`, which looks for it
   by `id` first. Review 3 of the batch (H3) found the answer to a Codex
   question gone from the page after delivery and after a reload: nothing a
-  transcript reader finds held it.
+  transcript reader finds held it. **The line is for the record the answer
+  was handed over in, and is owed until that record gives a receipt**: it
+  is written by `transcript::append_in`, which checks the record's
+  generation and appends in one step under the append lock (a `/clear`
+  while the owed pass read the record put the old answer into the new
+  history), and what is owed is dropped only on `Held::Confirmed`, or on
+  `Held::Moved` for a history that is gone, never because the line can be
+  read back (review 2b, N1 and N2).
 - **The page draws a delivered question from that line**
   (`question.readQuestionAnswered`, `questionBlock.placeAnswered`,
   `AnsweredInline`). The reducer keeps it as one transcript item for a
@@ -3106,7 +3113,14 @@ time limit).
   read back (the OS holds it), an append's own answer (it syncs the folder
   only for a file it made), "the file existed", and a number two files
   share. A new step that waits on "the person was told" or "this is on
-  disk" asks the same call; it does not adopt what it finds.
+  disk" asks the same call; it does not adopt what it finds. **And a line
+  that belongs to one history of a chat is written through
+  `transcript::append_in`**: "is this still that record" and the append are
+  one step under the append lock, or a `/clear` lands between them and the
+  line goes into the history that follows. A generation checked before a
+  read and an append made after it is the shape that failed. The reopen
+  notice is not such a line: it is for the person, in whatever record the
+  chat has.
 - **Profile state is read from the folder fixed at startup.** Every path
   under the profile comes from `profile::profile_dir()`, and nothing reads
   `config.json`, falls back to another base, or makes the profile folder
