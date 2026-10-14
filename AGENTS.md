@@ -3276,6 +3276,16 @@ time limit).
   batch's questions arriving one event at a time, a delivered question
   after `question-expired` and after a reload, and a press repeated where a
   button was about to be. Test the lifecycle, not only the press.
+- **A matrix of orders is not a matrix of combinations.** Three findings
+  passed every order of arrival and failed the first mix of two facts
+  (review 3b): two cards waiting where the orders had one, and one answered
+  while the other's list was still out; a durable line beside an older
+  call that asked the same words and has only its result; a fallback for
+  an older host, after a part of it went through and the page reloaded.
+  When a rule reads several sources, or two generations of the host, vary
+  what each HOLDS as well as when it answers. And run a reviewer's older
+  probes against a new rule before the loop: one of theirs
+  (`failed-other`) passed only because of the bug the next review found.
 - **A mutation check of a script section switches off the one thing the
   section claims to prove, and sees that section fail.** A mock that sends
   two signals for one fact proves neither: with the first switched off the
