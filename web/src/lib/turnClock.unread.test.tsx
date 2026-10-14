@@ -36,7 +36,7 @@ import { loadChat } from "./loadChat";
 import { EMPTY_ORCHESTRATION } from "./orchestration";
 import { SILENT_MS, WAIT_SOURCES, pendingReading, type SourceRead, type SourcesRead, type WaitSource } from "./pendingActions";
 import type { Question } from "./question";
-import { parkRestored, withWait } from "./turnClock";
+import { parkRestored, withWait, withWork } from "./turnClock";
 
 beforeEach(() => {
   vi.stubGlobal("indexedDB", new IDBFactory());
@@ -61,6 +61,7 @@ type Drawn = { eyebrow: string; taskBar: string; listedWorking: boolean };
 function page({ unknownIsNotWaiting = false } = {}) {
   let state = emptyChat();
   let questions: Record<string, Question[]> = {};
+  let asks: Record<string, { id: string }[]> = {};
   let sources = every("asked");
   let late = false;
   const options = { id: "a", key: "chat:a", catchUp: new CatchUp(), getState: () => state,
@@ -68,7 +69,7 @@ function page({ unknownIsNotWaiting = false } = {}) {
 
   // The three steps `App` makes, in its order.
   const reading = () => pendingReading({
-    orchestration: EMPTY_ORCHESTRATION, parents: new Map(), questions, sources, late,
+    orchestration: EMPTY_ORCHESTRATION, parents: new Map(), questions, asks, sources, late,
   });
   const waits = (): ReadonlyMap<string, ChatHold> => {
     const read = reading();
@@ -103,6 +104,14 @@ function page({ unknownIsNotWaiting = false } = {}) {
     reconnects() { sources = every("asked"); late = false; },
     /** A live `question-updated` event. */
     updates(list: Question[]) { questions = { a: list }; },
+    /** The permission cards the page holds: its list answering with them,
+     *  or a live `permission-expired` taking one away. */
+    asksFor(list: { id: string }[]) { asks = { a: list }; },
+    /** A live event of the chat's stream at `now`, as `App` folds one
+     *  (`withWork`, after the reducer). The agent writing, unless told. */
+    streams(now: number, event: unknown = { type: "stream_event", event: { type: "content_block_delta" } }) {
+      state = unknownIsNotWaiting ? state : withWork(state, event, now);
+    },
     /** Whether the composer offers `Check again` at `now`. */
     recheckOffered(now: number): boolean {
       look(now);
@@ -182,7 +191,7 @@ describe("a reload while the chat waits, with the lists of what waits not read y
     expect(next.at(RELOAD + s(120))).toEqual(WAITING);
     expect(next.at(RELOAD + s(600))).toEqual(WAITING);
     // The wait kept the moment it began before the reload.
-    expect(next.state.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(90) });
+    expect(next.state.turnWaits).toEqual({ turn: T, waited: 0, since: T + s(90), park: "confirmed" });
     // Answered: work goes on from where the clock stopped.
     next.updates([question("saved")]);
     expect(next.at(RELOAD + s(600))).toEqual(working("1m 30s"));
@@ -304,11 +313,23 @@ describe("a reload while the chat waits, with the lists of what waits not read y
     expect(failed.at(RELOAD + s(360))).toEqual(UNCHECKED);
     failed.answers("question_pending", [question("pending")]);
     expect(failed.at(RELOAD + s(420))).toEqual(WAITING);
-    // The page saw that card, and sees it go: the wait it confirmed is over,
-    // as for any card, and work goes on from where the clock stood.
+    // The page saw that card, and sees it go. The permission list is still
+    // unread, so that is not "nothing waits": the chat is held, and the
+    // clock stands. It used to go on here, and a permission behind the
+    // unread list was counted as work.
     failed.updates([question("saved")]);
-    expect(failed.at(RELOAD + s(480))).toEqual(working("1m 30s"));
-    expect(failed.at(RELOAD + s(485))).toEqual(working("1m 35s"));
+    expect(failed.at(RELOAD + s(480))).toEqual(UNCHECKED);
+    expect(failed.at(RELOAD + s(1080))).toEqual(UNCHECKED);
+    // The host's own line about the answer, and the answer reaching the
+    // agent, are not the agent at work.
+    failed.streams(RELOAD + s(1080), { type: "octiq_question_answered", id: "q1" });
+    failed.streams(RELOAD + s(1080), { type: "user", message: { content: [{ type: "tool_result" }] } });
+    expect(failed.at(RELOAD + s(1081))).toEqual(UNCHECKED);
+    // The agent writes: it was let on, and work goes on from where the
+    // clock stood, with everything since the checkpoint left out.
+    failed.streams(RELOAD + s(1085));
+    expect(failed.at(RELOAD + s(1085))).toEqual(working("1m 30s"));
+    expect(failed.at(RELOAD + s(1090))).toEqual(working("1m 35s"));
   });
 
   it("never reads more than the 90 s the turn worked, in any of these orders", async () => {
@@ -420,6 +441,132 @@ describe("the 120 orders the five lists can answer in", () => {
       }
     }
   }, LONG);
+});
+
+describe("one card back and answered while another list is still unread", () => {
+  // The re-review's finding: the host holds a question AND a permission for
+  // the chat. The question's list comes back first and confirms the wait;
+  // the person answers that question while the permission's list is still
+  // out. The park ended there with no whole read, and the wait on the
+  // permission was counted as work: 90 s read 211 s, and 216 s after both
+  // answers and 5 s of work.
+  const APPROVAL = { eyebrow: "1m 30s · Waiting for your approval", taskBar: "Needs you", listedWorking: false };
+  const permission = [{ id: "p1" }];
+
+  it("holds the clock through the answer, the unread list, its card and that card's answer", async () => {
+    const next = await reloadedWhileWaiting();
+    for (const source of WAIT_SOURCES) if (source !== "question_pending" && source !== "permission_pending") next.answers(source);
+    expect(next.at(RELOAD)).toEqual(HELD);
+    next.waitedTooLong();
+    expect(next.at(RELOAD + s(320))).toEqual(UNCHECKED);
+    // The question's list answers: one card confirms the wait.
+    next.answers("question_pending", [question("pending")]);
+    expect(next.at(RELOAD + s(320))).toEqual(WAITING);
+    expect(parkRestored(next.state)).toBe(true);
+    // The person answers it. The permission's list is still out.
+    next.updates([question("saved")]);
+    expect(next.at(RELOAD + s(321))).toEqual(UNCHECKED);
+    expect(next.at(RELOAD + s(441))).toEqual(UNCHECKED);
+    expect(next.recheckOffered(RELOAD + s(441))).toBe(true);
+    // It answers at last, with the permission the agent was parked on.
+    next.answers("permission_pending");
+    next.asksFor(permission);
+    expect(next.at(RELOAD + s(441))).toEqual(APPROVAL);
+    // Answered: every source is read and nothing waits.
+    next.asksFor([]);
+    expect(next.at(RELOAD + s(450))).toEqual(working("1m 30s"));
+    expect(next.at(RELOAD + s(455))).toEqual(working("1m 35s"));
+  });
+
+  it("is let on by the agent's own writing when there was no second card", async () => {
+    const next = await reloadedWhileWaiting();
+    next.answers("question_pending", [question("pending")]);
+    expect(next.at(RELOAD + s(10))).toEqual(WAITING);
+    next.updates([question("saved")]);
+    // Four lists unread: still checking, and the clock stands.
+    expect(next.at(RELOAD + s(12))).toEqual(HELD);
+    next.streams(RELOAD + s(14));
+    expect(next.at(RELOAD + s(14))).toEqual(working("1m 30s"));
+    expect(next.at(RELOAD + s(20))).toEqual(working("1m 36s"));
+    // A permission the late list then brings is an ordinary wait from there.
+    next.answers("permission_pending");
+    next.asksFor(permission);
+    expect(next.at(RELOAD + s(20)).eyebrow).toBe("1m 36s · Waiting for your approval");
+    expect(next.at(RELOAD + s(200)).eyebrow).toBe("1m 36s · Waiting for your approval");
+  });
+
+  it("is not let on by a stream that moved before the card was answered", async () => {
+    const next = await reloadedWhileWaiting();
+    // Nothing confirmed: the page saw no card go.
+    next.streams(RELOAD + s(5));
+    expect(next.at(RELOAD + s(6))).toEqual(HELD);
+    next.answers("question_pending", [question("pending")]);
+    expect(next.at(RELOAD + s(10))).toEqual(WAITING);
+    // A card is up.
+    next.streams(RELOAD + s(11));
+    expect(next.at(RELOAD + s(12))).toEqual(WAITING);
+    expect(next.at(RELOAD + s(600))).toEqual(WAITING);
+  });
+
+  /** The reviewer's 120: both cards really wait; each list answers in its
+   *  turn; the question is answered five seconds after its list is back;
+   *  the permission only when every list is. 60 of these, the ones where
+   *  the question's list comes back before the permission's, counted the
+   *  wait on the permission as work. */
+  const combination = (before: (next: ReturnType<typeof page>) => void) => async () => {
+    const all = orders();
+    expect(all).toHaveLength(120);
+    const wrong: string[] = [];
+    for (const order of all) {
+      vi.stubGlobal("indexedDB", new IDBFactory());
+      const next = await reloadedWhileWaiting();
+      let now = RELOAD;
+      const read = [next.at(now)];
+      before(next);
+      now += s(629);
+      read.push(next.at(now));
+      for (const source of order) {
+        now += s(10);
+        next.answers(source, source === "question_pending" ? [question("pending")] : undefined);
+        if (source === "permission_pending") next.asksFor(permission);
+        read.push(next.at(now));
+        if (source === "question_pending") {
+          now += s(5);
+          next.updates([question("saved")]);
+          read.push(next.at(now));
+        }
+      }
+      // Every list is read and the permission is still up.
+      const atCard = next.at(now);
+      now += s(5);
+      next.asksFor([]);
+      read.push(next.at(now));
+      const done = next.at(now + s(5));
+      const name = order.join(" > ");
+      for (const drawn of read) {
+        expect(drawn.eyebrow, name).toMatch(/^1m 30s · /);
+        if (drawn !== read.at(-1)) {
+          expect(drawn.listedWorking, name).toBe(false);
+          expect(drawn.taskBar, name).not.toBe("Working");
+          expect(drawn.eyebrow, name).not.toMatch(/thinking/);
+        }
+      }
+      expect(atCard, name).toEqual(APPROVAL);
+      if (done.eyebrow !== "1m 35s · thinking with high effort") wrong.push(name);
+      expect(done, name).toEqual(working("1m 35s"));
+    }
+    expect(wrong).toEqual([]);
+  };
+
+  it("never counts the second wait, in any of the 120 orders, after the page gave up", combination((next) => next.waitedTooLong()), LONG);
+
+  it("nor before it gave up", combination(() => {}), LONG);
+
+  it("nor with every list failed twice first and asked again", combination((next) => {
+    for (const source of WAIT_SOURCES) next.fails(source);
+    next.at(RELOAD + s(4));
+    next.reconnects();
+  }), LONG);
 });
 
 describe("the page as it was: a list not read yet taken for an empty one", () => {

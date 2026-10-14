@@ -13,7 +13,12 @@ import chatWait from "./chatWait.ts?raw";
 import pendingActions from "./pendingActions.ts?raw";
 import requests from "./useChatRequests.ts?raw";
 import chatState from "./chat.ts?raw";
-import turnClock from "./turnClock.ts?raw";
+import turnClockRaw from "./turnClock.ts?raw";
+import restoredParkRaw from "./restoredPark.ts?raw";
+import { lf } from "./sourceText";
+
+const turnClock = lf(turnClockRaw);
+const restoredPark = lf(restoredParkRaw);
 
 const SITES: { name: string; has: RegExp }[] = [
   // The answer is read off the page's one list of who is waited on.
@@ -145,20 +150,45 @@ describe("a list that has not been read yet", () => {
     expect(app.match(/\bwaitSources\b/g)).toHaveLength(3);
   });
 
-  it("ends a restored wait on a read and on nothing else: no give-up, no guess", () => {
+  it("ends a restored wait in one place, the machine: no give-up, no guess, no flag cleared in passing", () => {
     // A list that failed twice, or said nothing for five minutes, proves
-    // nothing. The clock used to let the wait go there and count on a guess.
-    expect(turnClock).toMatch(/if \(before\.restored && read !== "read"\) return before;/);
-    const code = turnClock.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+    // nothing, and one card confirming the wait is not every source read.
+    // The clock used to let the wait go at each: on a guess, then because a
+    // card had cleared `restored`.
+    const strip = (text: string) => text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+    const code = strip(turnClock);
+    const machine = strip(restoredPark);
+    // The clock hands a restored park to the machine before it reads the
+    // look itself, and adds the time up only where the machine said ended.
+    expect(code).toMatch(/if \(isParked\(before\)\) return parked\(before, lookOf\(waiting, read\), now\);\s*if \(waiting === "unknown"\) return before;/);
+    expect(code).toMatch(/const after = parkStep\(before\.park, event\);\s*if \(after === "ended"\) return plain\(/);
+    expect(code.match(/parkStep\(/g)).toHaveLength(1);
+    // It decides nothing of a park by itself: it never compares how whole
+    // the reading is but to keep "not known" from being a whole read, and
+    // names no state of the park but the one a checkpoint comes back in.
+    expect(code.match(/\bread [!=]== "/g)).toEqual(['read === "']);
+    expect(code).toMatch(/waiting === "unknown" && read === "read" \? "unread" : read/);
+    expect(code).not.toMatch(/"gaveUp"\)|=== "gaveUp"|"confirmed"|"answered"|\brestored\b/);
+    expect(code.match(/park: "held"/g)).toHaveLength(2);
+    // The machine: a whole read ends it; work ends it only once a card the
+    // page saw has gone; a card ends nothing.
+    expect(machine).toMatch(/case "card":\s*return "confirmed";/);
+    expect(machine).toMatch(/if \(event\.read === "read"\) return "ended";\s*return park === "held" \? "held" : "answered";/);
+    expect(machine).toMatch(/case "work":\s*return park === "answered" \? "ended" : park;/);
+    expect(machine.match(/"ended"/g)).toHaveLength(3);
     // Nothing in the clock makes a guess or reads one, but the one line that
     // leaves out a guess an older checkpoint still holds.
     expect(code.match(/guessed/g)).toHaveLength(4);
     expect(code).toMatch(/const old = \(mine as \{ guessed\?: number \} \| undefined\)\?\.guessed;/);
-    expect(code).not.toMatch(/"gaveUp"\)|=== "gaveUp"/);
-    // The mutation: the wait let go when the page gives up, as it was.
-    const guessing = turnClock.replace('if (before.restored && read !== "read") return before;', 'if (before.restored && read === "unread") return before;');
-    expect(guessing).not.toBe(turnClock);
-    expect(guessing).not.toMatch(/if \(before\.restored && read !== "read"\) return before;/);
+    // The agent's sign of work reaches the machine from the one place live
+    // frames are folded, after the reducer, and from no replay.
+    expect(app).toMatch(/patch\(id, \(s\) => withWork\(reduceChat\(s, frame\.event\), frame\.event, Date\.now\(\)\)\);/);
+    expect(app.match(/withWork\(/g)).toHaveLength(1);
+    // The mutation that was the bug: a card that confirms the wait takes it
+    // out of the machine's hands, so its going ends the park unread.
+    const cleared = turnClock.replace("return after === before.park ? before : { ...plain(before.turn, before.waited, before.since), park: after };",
+      'return after === "confirmed" ? plain(before.turn, before.waited, before.since) : before;');
+    expect(cleared).not.toBe(turnClock);
     // The person's way to ask again is the composer's, and asks every source.
     expect(app).toMatch(/const recheckWaits = useCallback\(\(\) => \{\s*rereadLists\(\);\s*void orchestrationFeed\.refresh\(\)\.catch\(\(\) => \{\}\);\s*\}, \[rereadLists\]\);/);
     expect(app).toMatch(/waiting=\{waitingHere\}\s*onRecheckWaits=\{recheckWaits\}/);

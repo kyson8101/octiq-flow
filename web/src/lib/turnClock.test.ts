@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noteWait, parkRestored, restoredTurn, turnElapsed, withWait, type TurnWaits } from "./turnClock";
+import { noteWait, parkRestored, restoredTurn, turnElapsed, withWait, withWork, type TurnWaits } from "./turnClock";
 import { elapsedLabel } from "./working";
 
 const T = 1_000_000;
@@ -122,20 +122,31 @@ describe("a turn as a checkpoint gives it back", () => {
 
   it("comes back parked since the checkpoint was written when it was working", () => {
     const state: Timed = { busy: true, turnStartedAt: T };
-    expect(restoredTurn(state, saved).turnWaits).toEqual({ turn: T, waited: 0, since: saved, restored: true });
+    expect(restoredTurn(state, saved).turnWaits).toEqual({ turn: T, waited: 0, since: saved, park: "held" });
     // What it had waited before is kept.
     const waited: Timed = { busy: true, turnStartedAt: T, turnWaits: { turn: T, waited: s(20), since: null } };
-    expect(restoredTurn(waited, saved).turnWaits).toEqual({ turn: T, waited: s(20), since: saved, restored: true });
+    expect(restoredTurn(waited, saved).turnWaits).toEqual({ turn: T, waited: s(20), since: saved, park: "held" });
   });
 
   it("comes back with the wait it was already on, marked as the checkpoint's word", () => {
     const state: Timed = { busy: true, turnStartedAt: T, turnWaits: { turn: T, waited: s(5), since: T + s(40) } };
     // The moment the wait began is kept; that this page has not confirmed
     // it is said.
-    expect(restoredTurn(state, saved).turnWaits).toEqual({ turn: T, waited: s(5), since: T + s(40), restored: true });
+    expect(restoredTurn(state, saved).turnWaits).toEqual({ turn: T, waited: s(5), since: T + s(40), park: "held" });
     // Restored a second time (a reload while it was still held), unchanged.
     const again = restoredTurn(state, saved);
     expect(restoredTurn(again, saved + s(30))).toBe(again);
+  });
+
+  it("comes back held whatever an earlier page knew of it, or an earlier build wrote", () => {
+    // A card that page saw, or its answer, is not this page's to go by.
+    for (const park of ["confirmed", "answered"] as const) {
+      const state: Timed = { busy: true, turnStartedAt: T, turnWaits: { turn: T, waited: s(5), since: T + s(40), park } };
+      expect(restoredTurn(state, saved).turnWaits).toEqual({ turn: T, waited: s(5), since: T + s(40), park: "held" });
+    }
+    // The build before this one marked the same thing `restored`.
+    const old = { busy: true, turnStartedAt: T, turnWaits: { turn: T, waited: 0, since: T + s(40), restored: true } } as Timed;
+    expect(restoredTurn(old, saved).turnWaits).toEqual({ turn: T, waited: 0, since: T + s(40), park: "held" });
   });
 
   it("is untouched when no turn is in flight", () => {
@@ -147,9 +158,9 @@ describe("a turn as a checkpoint gives it back", () => {
 
   it("does not take another turn's waits, or a save stamped before the turn", () => {
     const other: Timed = { busy: true, turnStartedAt: T, turnWaits: { turn: T - s(900), waited: s(300), since: T - s(100) } };
-    expect(restoredTurn(other, saved).turnWaits).toEqual({ turn: T, waited: 0, since: saved, restored: true });
+    expect(restoredTurn(other, saved).turnWaits).toEqual({ turn: T, waited: 0, since: saved, park: "held" });
     // A stamp from before the turn (a clock set back) parks it from its start.
-    expect(restoredTurn({ busy: true, turnStartedAt: T } as Timed, T - s(30)).turnWaits).toEqual({ turn: T, waited: 0, since: T, restored: true });
+    expect(restoredTurn({ busy: true, turnStartedAt: T } as Timed, T - s(30)).turnWaits).toEqual({ turn: T, waited: 0, since: T, park: "held" });
   });
 
   it("never lets time away be read as work, whatever the first look finds", () => {
@@ -190,14 +201,23 @@ describe("a look made before the page knows whether the chat waits", () => {
     expect(withWait(state, false, back, "read").turnWaits).toEqual({ turn: T, waited: s(181), since: null });
   });
 
-  it("is confirmed by a card, and keeps the moment it began", () => {
+  it("is confirmed by a card, keeps the moment it began, and is still a restored park", () => {
     const state = restored();
     for (const read of ["read", "unread", "gaveUp"] as const) {
       const confirmed = withWait(withWait(state, "unknown", back, read), true, back + s(120), read);
-      expect(confirmed.turnWaits).toEqual({ turn: T, waited: 0, since: saved });
-      expect(parkRestored(confirmed)).toBe(false);
-      // A wait this page has seen is ended by its card going, read or not.
-      expect(withWait(confirmed, false, back + s(300), "unread").turnWaits).toEqual({ turn: T, waited: s(300) - s(90) + s(271), since: null });
+      expect(confirmed.turnWaits).toEqual({ turn: T, waited: 0, since: saved, park: "confirmed" });
+      // One card is not every source: the park is not over because a card
+      // confirmed it. This was `false`, and the card going then ended it.
+      expect(parkRestored(confirmed)).toBe(true);
+      // Its card going while a source is unread or given up ends nothing.
+      for (const other of ["unread", "gaveUp"] as const) {
+        const answered = withWait(confirmed, false, back + s(300), other);
+        expect(answered.turnWaits).toEqual({ turn: T, waited: 0, since: saved, park: "answered" });
+        expect(parkRestored(answered)).toBe(true);
+        expect(turnElapsed(T, answered.turnWaits, back + s(900))).toBe(s(90));
+      }
+      // Its card going in a whole reading does.
+      expect(withWait(confirmed, false, back + s(300), "read").turnWaits).toEqual({ turn: T, waited: s(300) - s(90) + s(271), since: null });
     }
   });
 
@@ -221,7 +241,7 @@ describe("a look made before the page knows whether the chat waits", () => {
     expect(parkRestored(seen)).toBe(false);
     expect(withWait(seen, false, T + s(50), "unread").turnWaits).toEqual({ turn: T, waited: s(20), since: null });
     // No turn in flight, no park.
-    expect(parkRestored({ busy: false, turnStartedAt: T, turnWaits: { turn: T, waited: 0, since: T, restored: true } })).toBe(false);
+    expect(parkRestored({ busy: false, turnStartedAt: T, turnWaits: { turn: T, waited: 0, since: T, park: "held" } })).toBe(false);
     expect(parkRestored(undefined)).toBe(false);
   });
 });
@@ -250,7 +270,7 @@ describe("a restored wait the page could not check", () => {
     // another is still silent (the reading is still `gaveUp`).
     const found = gaveUp + s(40);
     const state = withWait(withWait(restored(), false, gaveUp, "gaveUp"), true, found, "gaveUp");
-    expect(state.turnWaits).toEqual({ turn: T, waited: 0, since: saved });
+    expect(state.turnWaits).toEqual({ turn: T, waited: 0, since: saved, park: "confirmed" });
     expect(turnElapsed(T, state.turnWaits, found + s(60))).toBe(s(90));
     // Every list read at last, the card still up; then answered, and 5 s of work.
     const all = withWait(state, true, found + s(60), "read");
@@ -271,14 +291,19 @@ describe("a restored wait the page could not check", () => {
   it("never reads more than the work the checkpoint saw, whatever is said and however it is read", () => {
     const words = [true, false, "unknown"] as const;
     const reads = ["read", "unread", "gaveUp"] as const;
-    // Every pair of looks, ten minutes apart, and the clock read at once.
-    for (const first of words) for (const how of reads) for (const second of words) for (const then of reads) {
-      // A whole read that says nothing waits ends the wait, and what follows
-      // is work the page saw: that one is not a restore's to bound.
-      if (first === false && how === "read") continue;
-      let state = withWait(restored(), first, gaveUp, how);
-      state = withWait(state, second, gaveUp + s(600), then);
-      expect(turnElapsed(T, state.turnWaits, gaveUp + s(600)), `${first}/${how} then ${second}/${then}`).toBeLessThanOrEqual(s(90));
+    // Every three looks, ten minutes apart, and the clock read at once. A
+    // whole read that says nothing waits ends the park, and what follows is
+    // work the page saw: the run stops there, as that is not a restore's to
+    // bound.
+    for (const a of words) for (const ra of reads) for (const b of words) for (const rb of reads) for (const c of words) for (const rc of reads) {
+      let state = restored();
+      let at = gaveUp;
+      for (const [seen, read] of [[a, ra], [b, rb], [c, rc]] as const) {
+        state = withWait(state, seen, at, read);
+        expect(turnElapsed(T, state.turnWaits, at), `${a}/${ra} ${b}/${rb} ${c}/${rc}`).toBeLessThanOrEqual(s(90));
+        if (!parkRestored(state)) break;
+        at += s(600);
+      }
     }
   });
 
@@ -287,7 +312,67 @@ describe("a restored wait the page could not check", () => {
     // that time was never known to be work.
     const old = { busy: true, turnStartedAt: T, turnWaits: { turn: T, waited: gaveUp - saved, since: null, guessed: gaveUp } } as Timed;
     const again = restoredTurn(old, gaveUp + s(40));
-    expect(again.turnWaits).toEqual({ turn: T, waited: gaveUp + s(40) - saved, since: gaveUp + s(40), restored: true });
+    expect(again.turnWaits).toEqual({ turn: T, waited: gaveUp + s(40) - saved, since: gaveUp + s(40), park: "held" });
     expect(turnElapsed(T, again.turnWaits, gaveUp + s(900))).toBe(s(90));
+  });
+});
+
+describe("the agent's sign of work", () => {
+  type Timed = { busy: boolean; turnStartedAt?: number; turnWaits?: TurnWaits };
+  const saved = T + s(90);
+  const back = T + s(271);
+  const restored = () => restoredTurn<Timed>({ busy: true, turnStartedAt: T }, saved);
+  const writes = { type: "stream_event", event: { type: "content_block_delta" } };
+
+  it("ends a restored park only after a card the page saw has gone", () => {
+    // Held, nothing confirmed: the page saw no card go.
+    const held = restored();
+    expect(withWork(held, writes, back + s(5))).toBe(held);
+    // Confirmed: a card is up.
+    const confirmed = withWait(held, true, back + s(10), "unread");
+    expect(withWork(confirmed, writes, back + s(15))).toBe(confirmed);
+    // Answered, another list still unread: held, until the agent writes.
+    const answered = withWait(confirmed, false, back + s(20), "unread");
+    expect(parkRestored(answered)).toBe(true);
+    const working = withWork(answered, writes, back + s(26));
+    // All the time from the checkpoint to that moment is left out.
+    expect(working.turnWaits).toEqual({ turn: T, waited: back + s(26) - saved, since: null });
+    expect(parkRestored(working)).toBe(false);
+    expect(turnElapsed(T, working.turnWaits, back + s(31))).toBe(s(95));
+  });
+
+  it("is not a tool's result, the host's own line, a subagent or a seat", () => {
+    const answered = withWait(withWait(restored(), true, back, "gaveUp"), false, back + s(20), "gaveUp");
+    for (const event of [
+      { type: "user", message: { content: [{ type: "tool_result" }] } },
+      { type: "octiq_question_answered", id: "q" },
+      { type: "system", subtype: "status" },
+      { type: "result", subtype: "success" },
+      { type: "item.completed", item: { type: "mcp_tool_call" } },
+      { type: "stream_event", event: { type: "content_block_delta" }, parent_tool_use_id: "task-1" },
+      { type: "item.started", item: { type: "command_execution" }, octiq_speaker: { id: "s1" } },
+      null, "words", 7,
+    ]) expect(withWork(answered, event, back + s(30)), JSON.stringify(event)).toBe(answered);
+    for (const event of [
+      { type: "assistant", message: { content: [] } },
+      { type: "item.started", item: { type: "command_execution" } },
+      { type: "item.completed", item: { type: "agent_message", text: "On it." } },
+      { type: "item.completed", item: { type: "reasoning" } },
+      { event: "step_update", step_update: {} },
+    ]) expect(parkRestored(withWork(answered, event, back + s(30))), JSON.stringify(event)).toBe(false);
+  });
+
+  it("touches nothing that is not a restored park of the turn in flight", () => {
+    const working: Timed = { busy: true, turnStartedAt: T };
+    expect(withWork(working, writes, T + s(9))).toBe(working);
+    // A wait this page saw begin is ended by its card going, never by a stream.
+    const waiting = withWait(working, true, T + s(30));
+    expect(withWork(waiting, writes, T + s(40))).toBe(waiting);
+    // Another turn's park, and a chat with no turn in flight.
+    const answered = withWait(withWait(restored(), true, back, "unread"), false, back + s(20), "unread");
+    const other = { ...answered, turnStartedAt: T + s(500) };
+    expect(withWork(other, writes, back + s(30))).toBe(other);
+    const idle = { ...answered, busy: false };
+    expect(withWork(idle, writes, back + s(30))).toBe(idle);
   });
 });

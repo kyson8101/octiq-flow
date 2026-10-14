@@ -39,31 +39,26 @@
 //
 // "Not read yet" is not "nothing waits". A page that has just loaded holds
 // no card: its lists of what waits are read from the host a moment later,
-// or much later. A look made before they have answered knows nothing, and
-// ended the restored wait: with `question_pending` held back two minutes,
-// `1m 30s` read `3m 31s`, drawn as thinking. So a look says one of three
-// things (`lib/chatWait`): the chat waits, it does not, or the page does not
-// know yet. Only the first two move a wait that came back from a
-// checkpoint (`restored`):
+// or much later, or never (`pendingActions.wholeOf`). A look made before
+// they have answered knows nothing, and ended the restored wait: with
+// `question_pending` held back two minutes, `1m 30s` read `3m 31s`, drawn
+// as thinking.
 //
-// - not known: nothing changes. The wait stays on with its `since`.
-// - it waits: the wait is confirmed and keeps its `since`.
-// - it does not: the wait ends there, and the time it was held is waited.
-//
-// The page may never come to know (`pendingActions.wholeOf`: a list that
-// failed twice, or one that said nothing for five minutes). A list that
-// failed or was given up on proves nothing, so it ends no restored wait:
-// the clock stands where the checkpoint left it, the chat is drawn as held
-// with words that say the page could not check (`chatWait`'s `unchecked`),
-// and the person can ask the lists again. Only a read ends it: a card found
-// keeps the wait, and every list read with no card ends it there.
+// So a wait that came back from a checkpoint is a park with a state of its
+// own (`park`), and when it ends is decided in ONE place, `lib/restoredPark`:
+// on a whole read that names no card, or on the agent's own sign of work
+// after a card the page saw has gone. Never because a card confirmed the
+// wait, never on a look made before the lists were read, never on a list
+// that failed or was given up on. This module hands the machine what
+// happened (`noteWait` a look, `withWork` a live event of the stream) and
+// does the sum when it says the park ended: the whole time since the
+// checkpoint is waited, whatever was unread in between.
 //
 // There is no guess. The page used to let a restored wait go when it gave
-// up, and count from there; a card that came back later took the guessed
-// time off again only when it was the last list to answer (24 of the 120
-// orders five lists can answer in), and a list that failed twice let the
-// clock run for good. A clock that only ever counts what a read confirmed
-// has nothing to take back.
+// up, and count from there; then it let one go when a single card had
+// confirmed it and that card was answered, with another list still unread.
+// A clock that only counts what was confirmed has nothing to take back.
+import { parkStep, signOfWork, type Park, type ParkEvent } from "./restoredPark";
 
 /** The waits of one turn. */
 export type TurnWaits = {
@@ -73,9 +68,10 @@ export type TurnWaits = {
   waited: number;
   /** When the wait that is on now began, or `null` while work goes on. */
   since: number | null;
-  /** The wait that is on came back from a checkpoint, and no look of this
-   *  page has yet said whether the chat waits. */
-  restored?: true;
+  /** The wait that is on came back from a checkpoint, and this is where
+   *  that park stands (`lib/restoredPark`). Absent on a wait this page saw
+   *  begin. */
+  park?: Park;
 };
 
 /** What a look says of one chat: it waits on the person, it does not, or the
@@ -89,6 +85,24 @@ export type Seen = boolean | "unknown";
 export type Read = "read" | "unread" | "gaveUp";
 
 const plain = (turn: number, waited: number, since: number | null): TurnWaits => ({ turn, waited, since });
+
+/** A look, as the machine's event. "Not known" is never a whole reading
+ *  that names no card, whatever it came with. */
+function lookOf(waiting: Seen, read: Read): ParkEvent {
+  if (waiting === true) return { type: "card" };
+  return { type: "noCard", read: waiting === "unknown" && read === "read" ? "unread" : read };
+}
+
+/** A restored park after one event: where the machine now has it, or over,
+ *  with all the time since the checkpoint left out. The same object when
+ *  nothing changed. */
+function parked(before: TurnWaits & { park: Park; since: number }, event: ParkEvent, now: number): TurnWaits {
+  const after = parkStep(before.park, event);
+  if (after === "ended") return plain(before.turn, before.waited + Math.max(0, now - before.since), null);
+  return after === before.park ? before : { ...plain(before.turn, before.waited, before.since), park: after };
+}
+
+const isParked = (waits: TurnWaits): waits is TurnWaits & { park: Park; since: number } => !!waits.park && waits.since !== null;
 
 /** What the page sees now, folded into what it had: a wait beginning, a wait
  *  ending, or a new turn. Returns the same object when nothing changed, and
@@ -104,18 +118,12 @@ export function noteWait(
   // Another turn: nothing of the last one's waits is this one's. A turn that
   // has not waited yet has nothing to keep.
   if (!before || before.turn !== turn) return waiting === true ? { turn, waited: 0, since: now } : undefined;
+  // A wait a checkpoint brought back is the machine's, whatever the look says.
+  if (isParked(before)) return parked(before, lookOf(waiting, read), now);
   // Not known: nothing is said, so nothing changes.
   if (waiting === "unknown") return before;
-  if (waiting) {
-    // A wait that is on is confirmed, and keeps the moment it began.
-    if (before.since !== null) return before.restored ? plain(turn, before.waited, before.since) : before;
-    return plain(turn, before.waited, now);
-  }
+  if (waiting) return before.since !== null ? before : plain(turn, before.waited, now);
   if (before.since === null) return before;
-  // A restored wait is ended only by a read that says nothing waits: never
-  // by a look made before the lists were read, and never by a list that
-  // failed or was given up on, which says nothing.
-  if (before.restored && read !== "read") return before;
   return plain(turn, before.waited + Math.max(0, now - before.since), null);
 }
 
@@ -137,12 +145,25 @@ export function withWait<T extends Turn>(state: T, waiting: Seen, now: number, r
   return after === state.turnWaits ? state : { ...state, turnWaits: after };
 }
 
+/** A chat's state after a live event of its stream (`App`, where live
+ *  frames are folded; never a replay, which is history). The agent's own
+ *  sign of work is the one thing besides a whole read that can end a
+ *  restored park, and only after a card the page saw has gone
+ *  (`lib/restoredPark`). The same object when nothing changed. */
+export function withWork<T extends Turn>(state: T, event: unknown, now: number): T {
+  const waits = state.busy && state.turnWaits?.turn === state.turnStartedAt ? state.turnWaits : undefined;
+  if (!waits || !isParked(waits) || !signOfWork(event)) return state;
+  const after = parked(waits, { type: "work" }, now);
+  return after === waits ? state : { ...state, turnWaits: after };
+}
+
 /** Whether the chat's turn stands on a wait its checkpoint brought back and
- *  no look has settled: the one case where "the page does not know yet"
- *  holds the clock (`chatWait.waitingChats`). */
+ *  the machine has not ended: the one case where "the page does not know
+ *  yet" holds the clock (`chatWait.waitingChats`). True through every state
+ *  of the park, a confirmed one included: one card is not every source. */
 export function parkRestored(state: Turn | undefined): boolean {
   const waits = state?.busy && state.turnWaits?.turn === state.turnStartedAt ? state.turnWaits : undefined;
-  return !!waits?.restored && waits.since !== null;
+  return !!waits && isParked(waits);
 }
 
 /** A chat's state as its checkpoint gives it back, `savedAt` being when the
@@ -151,12 +172,11 @@ export function parkRestored(state: Turn | undefined): boolean {
  *  From then until a page looks again nobody saw the turn, so that time is
  *  not work: a turn that was working when it was saved comes back parked
  *  since the save. A turn saved while it waited is still waiting, and comes
- *  back with the moment that wait began. Either way the wait is marked
- *  `restored`: it is the checkpoint's word, and the page's first look that
- *  KNOWS decides the rest (`noteWait`). A card that is up keeps it parked,
- *  so the clock stands at the work that was seen; every list read with no
- *  card ends the wait there, so the clock goes on having left the time away
- *  out; and a look made before the lists were read changes nothing.
+ *  back with the moment that wait began. Either way the wait is a restored
+ *  park that starts `held`: it is the checkpoint's word, and what this page
+ *  comes to know decides the rest (`lib/restoredPark`). What an earlier
+ *  page knew of it (a card it saw, an answer) is not this page's to go by,
+ *  so a park saved in any state comes back held.
  *
  *  A checkpoint an earlier build wrote may hold a guess that build made and
  *  never had answered (`guessed`): the time from it to the save was never
@@ -165,9 +185,11 @@ export function restoredTurn<T extends Turn>(state: T, savedAt: number): T {
   const turn = state.busy ? state.turnStartedAt : undefined;
   if (turn === undefined) return state;
   const mine = state.turnWaits?.turn === turn ? state.turnWaits : undefined;
-  if (mine && mine.since !== null) return mine.restored ? state : { ...state, turnWaits: { ...mine, restored: true } };
+  if (mine && mine.since !== null) {
+    return mine.park === "held" ? state : { ...state, turnWaits: { ...plain(turn, mine.waited, mine.since), park: "held" } };
+  }
   const since = Math.max(savedAt, turn);
   const old = (mine as { guessed?: number } | undefined)?.guessed;
   const guessed = typeof old === "number" ? Math.max(0, since - old) : 0;
-  return { ...state, turnWaits: { turn, waited: (mine?.waited ?? 0) + guessed, since, restored: true } };
+  return { ...state, turnWaits: { ...plain(turn, (mine?.waited ?? 0) + guessed, since), park: "held" } };
 }

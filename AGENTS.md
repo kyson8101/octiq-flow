@@ -1503,7 +1503,9 @@ person is drawn waiting, not working (`lib/chatWait`).
   chat whose checkpoint brought it back parked (`turnClock.parkRestored`)
   and that no card names is held until the reading is `read`: `unknown`
   while it is `unread`, `unchecked` once it is `gaveUp`. A card is a card
-  however little was read.
+  however little was read, and one card is not every source: a chat stays
+  such a park while a card is up and after that card is answered, until the
+  park's own machine ends it (`lib/restoredPark`, below).
   - **Held is drawn as neither.** The composer's line says `Checking
     what waits on you` in grey with the clock stopped and the companion
     still; the chat list and the projects page draw no working mark; the
@@ -1529,13 +1531,15 @@ person is drawn waiting, not working (`lib/chatWait`).
     you`, with `Check again` beside the words (a button, never a tooltip).
     That asks every list again on the connection (`useChatRequests.reread`)
     and the ledger (`orchestrationFeed.refresh`), and the chat is `unknown`
-    while they are out. Only a read ends it. There is no guess: the page
-    used to let the wait go here and count from there, and a card that came
-    back later took the guessed time off again only when it was the last
-    list to answer (24 of the 120 orders five lists answer in; review 1c).
-    What is left: a chat that is in fact working, behind a list the page
-    cannot read, says it could not check until its turn ends or a read
-    answers. That is the cost of not counting a wait as work.
+    while they are out. A read ends it, or the agent's own writing after a
+    card the page saw has gone (the machine, below). There is no guess: the
+    page used to let the wait go here and count from there, and a card that
+    came back later took the guessed time off again only when it was the
+    last list to answer (24 of the 120 orders five lists answer in; review
+    1c). What is left: a chat that is in fact working, behind a list the
+    page cannot read and with no card the page ever saw, says it could not
+    check until its turn ends or a read answers. That is the cost of not
+    counting a wait as work.
 - **Never the length of a card list.** The host goes on listing a question
   the person has answered (`status: "saved"`, then `delivered`) until its
   agent has it, so `questions[chat].length` is one while nobody is waited
@@ -1580,34 +1584,73 @@ person is drawn waiting, not working (`lib/chatWait`).
     the waits beside the start was not enough by itself: the review's clock
     probe, run again, restored a checkpoint from before the wait once in
     three runs and read `4m 31s`.
-  - *A look made before the lists were read ends no restored wait.* The
-    wait a checkpoint brings back is marked (`TurnWaits.restored`), and the
-    clock is told the reading's three answers and how whole the reading is
-    (`chatWait.seenWait`, `withWait(state, seen, now, whole)`). Unknown
-    changes nothing; a card confirms the wait and keeps the moment it
-    began; only a whole reading that names no card ends it (`read`, never
-    `unread` and never `gaveUp`), with the time it was held left out. The page used to say `false` for a list it had
-    not read: with `question_pending` held back 120 s, `1m 30s` read `3m
-    31s`, drawn as thinking, and kept it once the question was back.
-    `noteWait` refuses that `false` itself (`unread`), so the rule holds in
-    the clock as well as in what it is told.
+  - *When a restored park ends is decided in one place, a state machine*
+    (`lib/restoredPark`: `parkStep`). The wait a checkpoint brings back is
+    a park with a state of its own (`TurnWaits.park`), and `turnClock`
+    hands the machine what happened and decides nothing itself: a look
+    (`withWait(state, seen, now, whole)`, told the reading's three answers
+    and how whole the reading is) is `card` or `noCard` with `read`,
+    `unread` or `gaveUp`; a live event of the agent's own stream is `work`
+    (`withWork`).
+
+    | state | card | no card, read | no card, unread or gave up | work |
+    | --- | --- | --- | --- | --- |
+    | `held` (the checkpoint's word, nothing confirmed) | confirmed | **ended** | held | held |
+    | `confirmed` (a card names the chat) | confirmed | **ended** | answered | confirmed |
+    | `answered` (the card the page saw is gone, the reading not whole) | confirmed | **ended** | answered | **ended** |
+
+    So a park ends only on (a) a whole reading that names no card, or (b)
+    the agent's sign of work after a card the page saw has gone. Never
+    because a card confirmed the wait, never on a look made before the
+    lists were read, never on a list that failed or was given up on. When
+    it ends, all the time from the checkpoint to that moment is left out,
+    whatever was unread in between. `turnClock.parkRestored` is true in all
+    three states, so the chat is held (`unknown`, `unchecked`) wherever no
+    card names it, a confirmed park's answer included.
+    - It was flags cleared in passing, twice wrong. The page said `false`
+      for a list it had not read: with `question_pending` held back 120 s,
+      `1m 30s` read `3m 31s`, drawn as thinking. Then one card confirming
+      the wait cleared "restored": with the question's list back and its
+      question answered while the permission's list was still out, the wait
+      on the permission was counted as work (90 s read 211 s; 60 of the 120
+      orders with both cards waiting; review 3b).
+    - **A sign of work is the model writing or starting on something, seen
+      live** (`restoredPark.signOfWork`): Claude's `stream_event` and
+      `assistant`, Codex's `item.started`, `item.updated` and a completed
+      `agent_message` or `reasoning`, Antigravity's `step_update`, of the
+      chat's main writer. Not a tool's result (the answer reaching the
+      agent: with a second call parked on a card the model writes nothing),
+      not the host's `octiq_…` lines, not a subagent's or a seat's writing,
+      not a full stop. `App` hands it over where live frames are folded,
+      after the reducer and never from a replay, which is history.
+    - A reload starts the machine at `held` whatever state was saved: what
+      an earlier page saw of a card is not this page's to go by.
+    - A new way for a restored park to end is an event and a row of that
+      table, with its line in `restoredPark.test.ts`. Never a field cleared
+      where it is convenient.
 
   What each path does:
   - *With a checkpoint* (the usual reload): the start and the waits come
     back, and the clock reads the work seen up to the checkpoint. It stands
-    there while the lists are unread and while a card is up; after the
-    answer, or once every list has answered with no card, it goes on from
-    there. It can read less than the turn really worked (what was seen
-    after the last checkpoint, and the time the lists took, are not kept);
-    it never reads time the turn spent waiting, or time nobody saw. That
-    holds in every order the lists arrive in, before and after the page
-    gives up on one (`turnClock.unread.test.tsx` walks all 120, three
-    ways).
+    there while the lists are unread and while a card is up. With every
+    list read it goes on from there once no card is left. With a list
+    still unread or given up on, an answered card leaves the chat held
+    (`Checking what waits on you`, or `Could not check` with `Check
+    again`) until that list is read or the agent writes. It can read less
+    than the turn really worked (what was seen after the last checkpoint,
+    the time the lists took, and work behind an unread list before the
+    agent's next writing are not kept); it never reads time the turn spent
+    waiting, or time nobody saw. That holds in every order the lists
+    arrive in, before and after the page gives up on one, with one card
+    waiting or two (`turnClock.unread.test.tsx` walks the 120 three ways
+    for each).
   - *When the page cannot read a list* (`gaveUp`): nothing changes on the
     clock. The restored wait stays on with the moment it began, the chat is
     held as `unchecked`, and the person can ask again. A card that a later
-    read finds confirms the wait, so there is nothing to take back; every
-    list read with no card ends it there, with all the time held left out.
+    read finds confirms the wait, so there is nothing to take back, and
+    answering it leaves the chat `unchecked` while the other list is still
+    unread; every list read with no card ends it there, with all the time
+    held left out.
     A checkpoint an earlier build wrote may still hold a guess
     (`guessed`): the time from it to the save is left out on restore.
   - *Without one* (a chat never saved or evicted from the twelve kept, one
@@ -1624,9 +1667,14 @@ person is drawn waiting, not working (`lib/chatWait`).
   `App` makes (the reading, which chats wait, the clock) to what the
   composer, the task bar and the chat list draw: the lists unread for 120 s
   and then the question still pending, the lists empty, one that never
-  arrives, one that failed twice, and the page as it was, which fails them.
+  arrives, one that failed twice, one card back and answered while another
+  list is still out, and the page as it was, which fails them.
+  `restoredPark.test.ts` is the table, every sequence of seven events, and
+  the reviewer's helper probes as written.
   A probe of a restore holds a request back: a fast reload passing ten
-  times of ten says nothing of the slow one.
+  times of ten says nothing of the slow one. And it lets one card come
+  back and be answered while another source is still unread or given up:
+  the 120 orders with a single card never met that.
 - **The chat list** draws no working mark on a row whose chat waits
   (`Sidebar`'s `waiting`); its pending badge is unchanged. `busy` still
   means a turn is on record there, which is what holds Archive.

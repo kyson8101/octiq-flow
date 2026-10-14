@@ -225,7 +225,7 @@ import { SafetyToast } from "./components/SafetyToast";
 import type { Continue } from "./components/SafetyBlock";
 import { splitSafety, useSafetyToast } from "./lib/safetyToast";
 import { foldedSafetyKeys, seenWait, waitingChats, workingChats } from "./lib/chatWait";
-import { parkRestored, withWait } from "./lib/turnClock";
+import { parkRestored, withWait, withWork } from "./lib/turnClock";
 import { knownSettings } from "./lib/chatSettings";
 import { ReadOnlyBadge } from "./components/ReadOnlyBadge";
 import { useChatRequests } from "./lib/useChatRequests";
@@ -1771,7 +1771,12 @@ export default function App() {
           if (e && e.type === "octiq_user_turn_cancelled" && typeof e.uuid === "string") {
             reclaim(id, e.uuid, chatsRef.current[id]?.messages.find((m) => m.turnId === e.uuid));
           }
-          patch(id, (s) => reduceChat(s, frame.event));
+          // A live event of the agent's own stream is its sign of work: the
+          // one thing besides a whole read of what waits that can end a wait
+          // a checkpoint brought back (`turnClock.withWork`). Here and not
+          // in the reducer for the same reason as above: a replay is
+          // history, and proves nothing about now.
+          patch(id, (s) => withWork(reduceChat(s, frame.event), frame.event, Date.now()));
         }
       }),
     [patch, reclaim],

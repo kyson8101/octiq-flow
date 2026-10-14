@@ -90,7 +90,12 @@ export type Unsettled = { whole: Whole; restored: Iterable<string> };
  *  waits. Held is only a restored chat no card names while the list is not
  *  wholly read: `unknown` while a source is still to answer, `unchecked`
  *  once no more are coming without asking again. Only when every source
- *  has been read (`read`) does a chat no card names not wait. */
+ *  has been read (`read`) does a chat no card names not wait.
+ *
+ *  `restored` is every chat whose restored park is still on, one a card
+ *  confirmed included (`turnClock.parkRestored`): its card answered while
+ *  another source is unread, it is held again, not let go. When the park
+ *  ends is `lib/restoredPark`'s to say and nobody else's. */
 export function waitingChats(
   actions: readonly PendingAction[],
   folded: ReadonlySet<string> = NONE,
