@@ -1,3 +1,5 @@
+import { sawOneAtATime } from "./questionHost";
+
 export type QuestionAnswer = { id: string; answer: string };
 type Invoke = (command: string, args: Record<string, unknown>) => Promise<unknown>;
 
@@ -53,9 +55,14 @@ export async function submitQuestionAnswers(
     // A network error may follow a successful write. Never fall back or resend
     // unless the server explicitly says this command does not exist.
     if (!missingQuestionCommand(error, "question_answer_batch")) throw error;
+    // This host takes answers one question at a time and drops each as it
+    // is answered. Remembered before the first is sent: a reload after a
+    // part of them went through must know it (`lib/questionHost`).
+    sawOneAtATime(true);
     await submitLegacyQuestionAnswers(invoke, answers);
     return "delivered";
   }
+  sawOneAtATime(false);
   const unsaved = deliveredUnsaved(receipt);
   if (unsaved) return unsaved;
   if (!receipt || typeof receipt !== "object" || !("saved" in receipt) || receipt.saved !== true) {

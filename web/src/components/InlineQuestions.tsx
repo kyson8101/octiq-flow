@@ -40,7 +40,7 @@ import { dropHeld, lastPointerPress, strayAnswer } from "../lib/pressGuard";
 import type { Question, QuestionAnswered } from "../lib/question";
 import { choicesOf, togglePick } from "../lib/questionAnswer";
 import {
-  answeredItems, answeredNote, asks, batchParts, partNote, pickAnswer, saidLines, startPick, submitReason, waitingLabel,
+  answeredItems, answeredNote, asks, batchParts, partNote, pickAnswer, saidLines, startPick, stillMissing, submitReason, waitingLabel,
   type AnsweredPlacement, type Batch, type Picked, type Placement, type Said,
 } from "../lib/questionBlock";
 import { hiddenNow, revealWaiting, subscribeSight, watchBlock } from "../lib/questionSight";
@@ -122,7 +122,18 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
   // Not to be sent until every question of the call has arrived
   // (`Batch.missing`): the host takes a part of a call's answers and goes on
   // waiting for the rest, which this block would then have no way to ask.
-  const reason = submitReason(questions, picks, batch.missing);
+  // A part the host's own list named is held for the rest only so long
+  // (`Batch.until`): the block is drawn again when that wait is over.
+  const waitOver = batch.missing > 0 ? batch.until : undefined;
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    if (waitOver === undefined) return;
+    const left = waitOver - Date.now();
+    if (left <= 0) return;
+    const timer = setTimeout(() => redraw((n) => n + 1), left + 20);
+    return () => clearTimeout(timer);
+  }, [waitOver]);
+  const reason = submitReason(questions, picks, stillMissing(batch, Date.now()));
   const total = questions.length;
 
   // Out of view, the row above the composer says this block is waiting.

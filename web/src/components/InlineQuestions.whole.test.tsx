@@ -8,7 +8,7 @@
 // sent. The lists below are the page's question list at each step of the
 // reviewer's probe (`review-3/partial-batch-probe.mjs`): what
 // `user-question` and `question-updated` leave in it, in that order.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("./Thumb", () => ({ SentFiles: () => null }));
@@ -19,7 +19,10 @@ import source from "./InlineQuestions.tsx?raw";
 import type { Block, Message } from "../lib/chat";
 import type { Question } from "../lib/question";
 import requestsRaw from "../lib/useChatRequests.ts?raw";
-import { batchesOf, batchParts, keepBatches, knownBatches, listedQuestions, partNote, readingReason, submitReason } from "../lib/questionBlock";
+import { LISTED_GRACE_MS, batchesOf, batchParts, keepBatches, knownBatches, listedQuestions, partNote, readingReason, stillMissing, submitReason } from "../lib/questionBlock";
+import { answersOneAtATime } from "../lib/questionHost";
+import { submitQuestionAnswers } from "../lib/submitQuestionAnswers";
+import { fakeLocalStorage } from "../lib/__fixtures__/fakeLocalStorage";
 import { lf } from "../lib/sourceText";
 
 const requests = lf(requestsRaw);
@@ -71,7 +74,7 @@ describe("a call whose questions have not all arrived", () => {
     expect(submit(html)).toContain('aria-disabled="true"');
     expect(html).toMatch(/<p class="qa-why" id="[^"]+">Still reading the questions: 1 of 2 has arrived\.<\/p>/);
     // The handler refuses it too: the reason is asked before anything is sent.
-    expect(source).toMatch(/const reason = submitReason\(questions, picks, batch\.missing\);/);
+    expect(source).toMatch(/const reason = submitReason\(questions, picks, stillMissing\(batch, Date\.now\(\)\)\);/);
     expect(source).toMatch(/const submit = async \(\) => \{\s*if \(sending \|\| reason\) return;/);
   });
 
@@ -159,7 +162,7 @@ describe("a call that is answered in part", () => {
   });
 });
 
-describe("what the host's list names of a call is what remains of it", () => {
+describe("a part of a call that the host's own list named", () => {
   // Review 3b. A host older than the durable store has no batch command, so
   // the page answers one question at a time and that host drops each as it
   // is answered. The first of two went through and the second's send
@@ -167,13 +170,18 @@ describe("what the host's list names of a call is what remains of it", () => {
   // `batchSize: 2`. Counted against what this page had seen arrive (nothing,
   // after a reload), the block said `Still reading the questions: 1 of 2
   // has arrived` for good, and its button never came on.
-  it("is sendable after a reload on an older host that lists one of two", () => {
+  const NOW = 1_800_000_000_000;
+  const at = (now: number) => vi.setSystemTime(now);
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); at(NOW); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("is whole at once on a host that answers one question at a time: the reload after a part went through", () => {
     const [, b] = pair("legacy-reload", { status: undefined });
-    // The page as it was: the list's answer counted like an event.
-    expect(batchesOf([b])[0].missing).toBe(1);
+    // The page as it was: the list's answer counted like an event, for good.
+    expect(batchesOf([b])[0]).toEqual({ key: "legacy-reload", questions: [b], missing: 1 });
     keepBatches([]);
-    // The list answers, and the page is told it was the list.
-    listedQuestions([b]);
+    // The list answers, and the page knows what kind of host answered.
+    listedQuestions([b], NOW, true);
     expect(batchesOf([b])).toEqual([{ key: "legacy-reload", questions: [b], missing: 0 }]);
     const html = chat([b]);
     expect(titles(html)).toEqual(["Which target?"]);
@@ -182,16 +190,58 @@ describe("what the host's list names of a call is what remains of it", () => {
     expect(html).not.toContain("Still reading");
   });
 
-  it("is told by the one place the list is read, and by nothing an event says", () => {
-    expect(requests).toMatch(/refill\(prompts, "question_pending", \(list\) => \{\s*listedQuestions\(list \?\? \[\]\);\s*return \[\.\.\.\(list \?\? \[\]\)\];\s*\}\),/);
+  it("is held for the rest on any other host, as the first of two arriving is: the reviewer's partial probe", () => {
+    // Their probe puts one of two in the list at page load, on a host that
+    // has the batch command, and presses: nothing may be sent.
+    const [a, b] = pair("listed-part");
+    listedQuestions([a], NOW);
+    const [batch] = batchesOf([a]);
+    expect(batch).toEqual({ key: "listed-part", questions: [a], missing: 1, until: NOW + LISTED_GRACE_MS });
+    expect(stillMissing(batch, NOW)).toBe(1);
+    expect(stillMissing(batch, NOW + LISTED_GRACE_MS - 1)).toBe(1);
+    at(NOW + 2_000);
+    const html = chat([a]);
+    expect(submit(html)).toContain('aria-disabled="true"');
+    expect(html).toContain("Still reading the questions: 1 of 2 has arrived.");
+    // The second arrives: whole, and nothing left to wait out.
+    expect(batchesOf([a, b])[0]).toEqual({ key: "listed-part", questions: [a, b], missing: 0 });
+    expect(submit(chat([a, b]))).toContain('aria-disabled="false"');
+  });
+
+  it("is never held for good: `batchSize` delays a send and does not forbid one", () => {
+    // A host this browser has not yet sent to, that lists one of two and
+    // sends nothing more: the older host met by a fresh browser, or by a
+    // second device after the first answered a part.
+    const [, b] = pair("listed-for-good", { status: undefined });
+    listedQuestions([b], NOW);
+    const [batch] = batchesOf([b]);
+    expect(stillMissing(batch, NOW + LISTED_GRACE_MS)).toBe(0);
+    at(NOW + LISTED_GRACE_MS - 1);
+    expect(submit(chat([b]))).toContain('aria-disabled="true"');
+    at(NOW + LISTED_GRACE_MS);
+    const html = chat([b]);
+    expect(submit(html)).toContain('aria-disabled="false"');
+    expect(html).not.toContain("Still reading");
+    // The block draws itself again when that wait is over, by itself.
+    expect(source).toMatch(/const waitOver = batch\.missing > 0 \? batch\.until : undefined;/);
+    expect(source).toMatch(/const timer = setTimeout\(\(\) => redraw\(\(n\) => n \+ 1\), left \+ 20\);\s*return \(\) => clearTimeout\(timer\);\s*\}, \[waitOver\]\);/);
+    expect(source).toMatch(/const reason = submitReason\(questions, picks, stillMissing\(batch, Date\.now\(\)\)\);/);
+    // A later read of the list does not start the wait over.
+    listedQuestions([b], NOW + 60_000);
+    expect(batchesOf([b])[0].until).toBe(NOW + LISTED_GRACE_MS);
+  });
+
+  it("is told by the one place the list is read, with what the page knows of the host", () => {
+    expect(requests).toMatch(/refill\(prompts, "question_pending", \(list\) => \{\s*listedQuestions\(list \?\? \[\], Date\.now\(\), answersOneAtATime\(\)\);\s*return \[\.\.\.\(list \?\? \[\]\)\];\s*\}\),/);
     expect(requests.match(/listedQuestions\(/g)).toHaveLength(1);
   });
 
   it("is the same for a durable host's reload in the middle of a call: one answered, one asked", () => {
+    // That host lists every question of a record until the record is whole.
     const [a, b] = pair("durable-reload", { status: "pending" });
     const list = [{ ...a, answer: "develop" }, b];
-    listedQuestions(list);
-    expect(batchesOf(list)[0].missing).toBe(0);
+    listedQuestions(list, NOW);
+    expect(batchesOf(list)[0]).toEqual({ key: "durable-reload", questions: list, missing: 0 });
     const html = chat(list);
     expect(titles(html)).toEqual(["Which target?"]);
     expect(bubbles(html)).toEqual(["Which branch? develop"]);
@@ -201,41 +251,75 @@ describe("what the host's list names of a call is what remains of it", () => {
 
   it("still holds a call whose questions arrive in two events before the list is read", () => {
     const [a, b] = pair("two-events");
-    // The first event, on a connection whose list has not answered.
+    // The first event, on a connection whose list has not answered: held,
+    // with no end to wait out. The second ends it.
+    expect(batchesOf([a])[0]).toEqual({ key: "two-events", questions: [a], missing: 1 });
     let html = chat([a]);
     expect(submit(html)).toContain('aria-disabled="true"');
     expect(html).toContain("Still reading the questions: 1 of 2 has arrived.");
-    // The second event.
+    at(NOW + 3_600_000);
+    expect(submit(chat([a]))).toContain('aria-disabled="true"');
     html = chat([a, b]);
     expect(submit(html)).toContain('aria-disabled="false"');
     expect(html).not.toContain("Still reading");
     // Then the list, naming both: nothing changes.
-    listedQuestions([a, b]);
+    listedQuestions([a, b], NOW + 3_600_000);
     expect(batchesOf([a, b])[0].missing).toBe(0);
   });
 
   it("still holds a call that arrives after a list that did not name it", () => {
     // The usual live case: the list was read long ago, and a new call's
     // questions come one event each. A read list is not a licence for every
-    // later call: more of this one can still arrive.
-    listedQuestions([{ id: "elsewhere", chatKey: "chat:c1", question: "Ship?" }]);
+    // later call, on either kind of host.
+    listedQuestions([{ id: "elsewhere", chatKey: "chat:c1", question: "Ship?" }], NOW - 3_600_000, true);
     const [a, b] = pair("after-list");
+    expect(batchesOf([a])[0]).toEqual({ key: "after-list", questions: [a], missing: 1 });
     const html = chat([a]);
     expect(submit(html)).toContain('aria-disabled="true"');
     expect(html).toContain("Still reading the questions: 1 of 2 has arrived.");
     expect(submit(chat([a, b]))).toContain('aria-disabled="false"');
   });
+});
 
-  it("lets the list end the wait for a member that never comes", () => {
-    // One event arrived, then the connection dropped; the new connection's
-    // list names what there is. `batchSize` delays a send; it never forbids
-    // one once the list has been read.
-    const [a] = pair("lost-member");
-    expect(submit(chat([a]))).toContain('aria-disabled="true"');
-    listedQuestions([a]);
-    const html = chat([a]);
-    expect(submit(html)).toContain('aria-disabled="false"');
-    expect(html).not.toContain("Still reading");
+describe("what the page knows of the host", () => {
+  const invokeOn = (legacy: boolean, fail?: string) => async (command: string, args: Record<string, unknown>) => {
+    if (command === "question_answer_batch") {
+      if (legacy) throw new Error("'question_answer_batch' is not available on this backend");
+      return { saved: true };
+    }
+    if (args.id === fail) throw new Error("transport failed on the second answer");
+    return true;
+  };
+  const answers = [{ id: "legacy-1", answer: "develop" }, { id: "legacy-2", answer: "staging" }];
+  beforeEach(() => { fakeLocalStorage(); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("is learned by sending, and remembered before the first answer goes: a part can fail", async () => {
+    expect(answersOneAtATime()).toBe(false);
+    // The reviewer's case: the first is taken, the second's send fails.
+    await expect(submitQuestionAnswers(invokeOn(true, "legacy-2"), answers)).rejects.toThrow("transport failed");
+    expect(answersOneAtATime()).toBe(true);
+    // What a reload reads back.
+    expect(localStorage.getItem("octiq.v2.questionsOneAtATime")).toBe("1");
+  });
+
+  it("is forgotten the first time the batch command answers: an upgraded host is not called old", async () => {
+    await submitQuestionAnswers(invokeOn(true), answers);
+    expect(answersOneAtATime()).toBe(true);
+    expect(await submitQuestionAnswers(invokeOn(false), answers)).toBe("saved");
+    expect(answersOneAtATime()).toBe(false);
+    expect(localStorage.getItem("octiq.v2.questionsOneAtATime")).toBeNull();
+  });
+
+  it("is not learned from a failure that says nothing of the host", async () => {
+    const down = async () => { throw new Error("socket closed"); };
+    await expect(submitQuestionAnswers(down, answers)).rejects.toThrow("socket closed");
+    expect(answersOneAtATime()).toBe(false);
+    // Storage that cannot be read is a host not known to be old.
+    vi.stubGlobal("localStorage", { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); }, removeItem: () => {} });
+    expect(answersOneAtATime()).toBe(false);
+    await submitQuestionAnswers(invokeOn(true), answers);
+    expect(answersOneAtATime()).toBe(false);
   });
 });
 
@@ -263,7 +347,7 @@ describe("what the page counts of a call", () => {
     expect(batchesOf([b])[0].missing).toBe(0);
     // And a list's word is kept as long.
     const [, y] = pair("forget-listed", { status: undefined });
-    listedQuestions([y]);
+    listedQuestions([y], 1, true);
     keepBatches([b, y]);
     expect(batchesOf([y])[0].missing).toBe(0);
   });

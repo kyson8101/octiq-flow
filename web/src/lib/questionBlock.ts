@@ -29,12 +29,21 @@ export type Batch = {
   /** How many questions of the call can still arrive on this page. The
    *  host says how many a call carried (`batchSize`) and sends them one
    *  event each, so a block can be on screen before its last question is.
-   *  It is not whole, and not to be sent, until this is zero.
-   *
-   *  It is zero as soon as nothing more can arrive, whatever `batchSize`
-   *  says: `batchSize` may delay a send, and never forbids one. */
+   *  It is not whole, and not to be sent, until this is zero
+   *  (`stillMissing`, which also reads `until`). */
   missing: number;
+  /** When the wait for the missing ones is over whatever arrives, on the
+   *  page's clock: `batchSize` may delay a send, and never forbids one.
+   *  Set for a call the host's own list has named (`listedQuestions`);
+   *  absent for one whose questions are coming by event. */
+  until?: number;
 };
+
+/** How long a part of a call that the host's LIST named is held for the
+ *  rest. A host that keeps a call's record lists every question of it, so
+ *  a part in its list is a call caught as it was being asked, and the rest
+ *  follows in the same breath. Long past that, nothing more is coming. */
+export const LISTED_GRACE_MS = 10_000;
 
 /** What this page knows of one call's questions. */
 type Known = {
@@ -43,10 +52,12 @@ type Known = {
    *  so the page takes it off its own list) has still arrived: what is left
    *  of its call is whole, and must stay answerable. */
   ids: Set<string>;
-  /** The host's own list of what is pending named this call, in a read of
-   *  that list (`listedQuestions`). What it listed IS what remains of the
-   *  call: nothing more is coming, however many it once carried. */
-  listed: boolean;
+  /** When a read of the host's list of what is pending named this call
+   *  (`listedQuestions`), on the page's clock. */
+  listedAt: number | null;
+  /** That list came from a host that drops each question as it is
+   *  answered: what it named IS what remains of the call. */
+  whole: boolean;
 };
 
 /** By the call. In memory: a reload starts from what the host lists. It
@@ -58,24 +69,33 @@ const batchKey = (question: Question) => question.batch || question.id;
 
 function knownOf(key: string): Known {
   let entry = known.get(key);
-  if (!entry) known.set(key, entry = { ids: new Set(), listed: false });
+  if (!entry) known.set(key, entry = { ids: new Set(), listedAt: null, whole: false });
   return entry;
 }
 
 /** The host's list of what is pending (`question_pending`), as one read of
- *  it answered. Every call it names is whole as listed.
+ *  it answered at `now`. `oneAtATime` is whether this host was last seen
+ *  taking answers one question at a time (`lib/questionHost`).
  *
- *  A host that keeps no record of an answer (older than the durable store)
- *  is answered one question at a time and drops each as it is answered. So
- *  after a reload it lists what is left of a call, still with the call's
- *  first `batchSize`: one of two. Counted against what this page had seen
- *  arrive (nothing, after a reload), that block said `Still reading the
- *  questions: 1 of 2 has arrived` for good and could not be sent (review
- *  3b). "Still reading" is for questions that can still arrive: the events
- *  of a call that is being asked now. A list the host has answered is not
- *  still being read. */
-export function listedQuestions(list: readonly Question[]): void {
-  for (const question of list) if (question?.id) knownOf(batchKey(question)).listed = true;
+ *  Such a host keeps no record of an answer and drops each question as it
+ *  is answered. So after a reload it lists what is left of a call, still
+ *  with the call's first `batchSize`: one of two. Counted against what this
+ *  page had seen arrive (nothing, after a reload), that block said `Still
+ *  reading the questions: 1 of 2 has arrived` for good and could not be
+ *  sent (review 3b). "Still reading" is for questions that can still
+ *  arrive. On that host none can: what the list named is what remains.
+ *
+ *  On any other host a part of a call in the list is a call caught while
+ *  it is being asked, and is held for the rest as an event's would be, but
+ *  only for `LISTED_GRACE_MS`: a list the host has answered is not still
+ *  being read for good. */
+export function listedQuestions(list: readonly Question[], now: number, oneAtATime = false): void {
+  for (const question of list) {
+    if (!question?.id) continue;
+    const entry = knownOf(batchKey(question));
+    entry.listedAt ??= now;
+    if (oneAtATime) entry.whole = true;
+  }
 }
 
 /** Forget every call that none of these questions belongs to: its record is
@@ -108,8 +128,16 @@ export function batchesOf(questions: readonly Question[]): Batch[] {
   }
   return [...out.values()].map(({ size, ...batch }) => {
     const entry = known.get(batch.key);
-    return { ...batch, missing: entry?.listed ? 0 : Math.max(0, size - (entry?.ids.size ?? 0)) };
+    const missing = entry?.whole ? 0 : Math.max(0, size - (entry?.ids.size ?? 0));
+    if (!missing || entry?.listedAt == null) return { ...batch, missing };
+    return { ...batch, missing, until: entry.listedAt + LISTED_GRACE_MS };
   });
+}
+
+/** How many questions of a call are still waited for at `now`: none once
+ *  the wait a list started is over. */
+export function stillMissing(batch: Pick<Batch, "missing" | "until">, now: number): number {
+  return batch.until !== undefined && now >= batch.until ? 0 : batch.missing;
 }
 
 /** Whether one question still has no answer. A status-less question comes
