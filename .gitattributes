@@ -1,0 +1,3 @@
+# Every text file is LF in the repository and in every checkout, Windows included:
+# tests and scripts read sources as text, and a CRLF checkout broke them.
+* text=auto eol=lf
