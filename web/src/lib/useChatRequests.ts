@@ -5,6 +5,7 @@ import type { NoticeKind } from "./notify";
 import { askSummary, type Ask } from "../components/PermissionAsk";
 import type { SafetyBlockNotice } from "../components/SafetyBlock";
 import type { Question } from "./question";
+import { keepBatches, listedQuestions } from "./questionBlock";
 import { accessRequestTitle, type AccessRequest } from "./accessRequest";
 import { keepArrivals, stampArrival } from "./askClock";
 import { readTwice } from "./listRead";
@@ -113,7 +114,13 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       // met in this list has no known age (`lib/askClock`).
       refill(permissions, "permission_pending", keepArrivals),
       refill(safety, "safety_block_pending"),
-      refill(prompts, "question_pending"),
+      // What the host's list names of a call is what remains of it: a block
+      // read from it is whole, whatever the call once carried
+      // (`questionBlock.listedQuestions`).
+      refill(prompts, "question_pending", (list) => {
+        listedQuestions(list ?? []);
+        return [...(list ?? [])];
+      }),
       refill(raises, "access_request_pending"),
     ];
     return () => {
@@ -121,6 +128,11 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       cancel.forEach((stop) => stop());
     };
   }, [conn, round]);
+
+  // What the page counts of each call's questions is kept only while a
+  // question of that call is still held: a record that completed, was
+  // cancelled or went with its chat's history is forgotten.
+  useEffect(() => { keepBatches(Object.values(questions).flat()); }, [questions]);
 
   useEffect(() => {
     const offAsk = bridge.on<Ask>("permission-ask", (ask) => {

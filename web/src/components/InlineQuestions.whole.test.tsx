@@ -18,7 +18,11 @@ vi.mock("../lib/pathStore", () => ({ knownPath: () => undefined, askPaths: () =>
 import source from "./InlineQuestions.tsx?raw";
 import type { Block, Message } from "../lib/chat";
 import type { Question } from "../lib/question";
-import { batchesOf, batchParts, partNote, readingReason, submitReason } from "../lib/questionBlock";
+import requestsRaw from "../lib/useChatRequests.ts?raw";
+import { batchesOf, batchParts, keepBatches, knownBatches, listedQuestions, partNote, readingReason, submitReason } from "../lib/questionBlock";
+import { lf } from "../lib/sourceText";
+
+const requests = lf(requestsRaw);
 import { ChatQuestionsContext } from "./InlineQuestions";
 import { MessageList } from "./MessageList";
 
@@ -152,5 +156,119 @@ describe("a call that is answered in part", () => {
     expect(html).not.toContain("qa-block");
     expect(html).toContain("Answers saved · waiting for the agent");
     expect(bubbles(html)).toEqual(["Which branch? develop", "Which target? staging"]);
+  });
+});
+
+describe("what the host's list names of a call is what remains of it", () => {
+  // Review 3b. A host older than the durable store has no batch command, so
+  // the page answers one question at a time and that host drops each as it
+  // is answered. The first of two went through and the second's send
+  // failed; after a reload the host lists the second alone, still with
+  // `batchSize: 2`. Counted against what this page had seen arrive (nothing,
+  // after a reload), the block said `Still reading the questions: 1 of 2
+  // has arrived` for good, and its button never came on.
+  it("is sendable after a reload on an older host that lists one of two", () => {
+    const [, b] = pair("legacy-reload", { status: undefined });
+    // The page as it was: the list's answer counted like an event.
+    expect(batchesOf([b])[0].missing).toBe(1);
+    keepBatches([]);
+    // The list answers, and the page is told it was the list.
+    listedQuestions([b]);
+    expect(batchesOf([b])).toEqual([{ key: "legacy-reload", questions: [b], missing: 0 }]);
+    const html = chat([b]);
+    expect(titles(html)).toEqual(["Which target?"]);
+    expect(submit(html)).toContain('aria-disabled="false"');
+    expect(submit(html)).toContain(">Send answer<");
+    expect(html).not.toContain("Still reading");
+  });
+
+  it("is told by the one place the list is read, and by nothing an event says", () => {
+    expect(requests).toMatch(/refill\(prompts, "question_pending", \(list\) => \{\s*listedQuestions\(list \?\? \[\]\);\s*return \[\.\.\.\(list \?\? \[\]\)\];\s*\}\),/);
+    expect(requests.match(/listedQuestions\(/g)).toHaveLength(1);
+  });
+
+  it("is the same for a durable host's reload in the middle of a call: one answered, one asked", () => {
+    const [a, b] = pair("durable-reload", { status: "pending" });
+    const list = [{ ...a, answer: "develop" }, b];
+    listedQuestions(list);
+    expect(batchesOf(list)[0].missing).toBe(0);
+    const html = chat(list);
+    expect(titles(html)).toEqual(["Which target?"]);
+    expect(bubbles(html)).toEqual(["Which branch? develop"]);
+    expect(submit(html)).toContain('aria-disabled="false"');
+    expect(html).not.toContain("Still reading");
+  });
+
+  it("still holds a call whose questions arrive in two events before the list is read", () => {
+    const [a, b] = pair("two-events");
+    // The first event, on a connection whose list has not answered.
+    let html = chat([a]);
+    expect(submit(html)).toContain('aria-disabled="true"');
+    expect(html).toContain("Still reading the questions: 1 of 2 has arrived.");
+    // The second event.
+    html = chat([a, b]);
+    expect(submit(html)).toContain('aria-disabled="false"');
+    expect(html).not.toContain("Still reading");
+    // Then the list, naming both: nothing changes.
+    listedQuestions([a, b]);
+    expect(batchesOf([a, b])[0].missing).toBe(0);
+  });
+
+  it("still holds a call that arrives after a list that did not name it", () => {
+    // The usual live case: the list was read long ago, and a new call's
+    // questions come one event each. A read list is not a licence for every
+    // later call: more of this one can still arrive.
+    listedQuestions([{ id: "elsewhere", chatKey: "chat:c1", question: "Ship?" }]);
+    const [a, b] = pair("after-list");
+    const html = chat([a]);
+    expect(submit(html)).toContain('aria-disabled="true"');
+    expect(html).toContain("Still reading the questions: 1 of 2 has arrived.");
+    expect(submit(chat([a, b]))).toContain('aria-disabled="false"');
+  });
+
+  it("lets the list end the wait for a member that never comes", () => {
+    // One event arrived, then the connection dropped; the new connection's
+    // list names what there is. `batchSize` delays a send; it never forbids
+    // one once the list has been read.
+    const [a] = pair("lost-member");
+    expect(submit(chat([a]))).toContain('aria-disabled="true"');
+    listedQuestions([a]);
+    const html = chat([a]);
+    expect(submit(html)).toContain('aria-disabled="false"');
+    expect(html).not.toContain("Still reading");
+  });
+});
+
+describe("what the page counts of a call", () => {
+  it("is forgotten when no question of the call is left on the page", () => {
+    keepBatches([]);
+    expect(knownBatches()).toBe(0);
+    const [a, b] = pair("forget-1");
+    const [c, d] = pair("forget-2");
+    batchesOf([a, b, c, d]);
+    expect(knownBatches()).toBe(2);
+    // The first call's record completes: its questions leave the page.
+    keepBatches([c, d]);
+    expect(knownBatches()).toBe(1);
+    // Every chat's history cleared.
+    keepBatches([]);
+    expect(knownBatches()).toBe(0);
+  });
+
+  it("is kept while one question of the call is: the older host's guard survives the forgetting", () => {
+    const [a, b] = pair("forget-legacy", { status: undefined });
+    batchesOf([a, b]);
+    // The page drops the first itself; the second is still held.
+    keepBatches([b]);
+    expect(batchesOf([b])[0].missing).toBe(0);
+    // And a list's word is kept as long.
+    const [, y] = pair("forget-listed", { status: undefined });
+    listedQuestions([y]);
+    keepBatches([b, y]);
+    expect(batchesOf([y])[0].missing).toBe(0);
+  });
+
+  it("is forgotten by the page as its question list changes", () => {
+    expect(requests).toMatch(/useEffect\(\(\) => \{ keepBatches\(Object\.values\(questions\)\.flat\(\)\); \}, \[questions\]\);/);
   });
 });

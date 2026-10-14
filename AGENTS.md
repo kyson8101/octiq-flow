@@ -824,7 +824,27 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   (review 3, H4). What has arrived is counted by what this page was told
   (`batchesOf`), so a question the page itself took off its list (an older
   host keeps no record of an answer) still counts and the rest stays
-  answerable. In memory: a reload starts from what the host lists.
+  answerable.
+  - **`Still reading` is said only while more can still arrive, and
+    `batchSize` may delay a send but never forbids one.** More can arrive
+    for a call whose questions are coming by event now. What the host's
+    own list of pending questions names of a call, in a read of that list,
+    IS what remains of it (`questionBlock.listedQuestions`, told by the
+    one place `question_pending` is read): that block is sendable for the
+    questions it holds, whatever the call once carried. A host with no
+    batch command is answered one question at a time and drops each as it
+    is answered; with the first of two through and the second's send
+    failed, a reload listed the second alone, still `batchSize: 2`, and
+    the block said `1 of 2 has arrived` for good with its button off
+    (review 3b). That is the state between a client build and a server
+    restart.
+  - A read list is not a licence for a later call: one whose questions
+    come by event after it is held until every one is here, or until a
+    read of the list names it (a new connection asks again).
+  - What the page counts of a call is in memory, and is forgotten when no
+    question of the call is left on the page (`keepBatches`, as the
+    page's question list changes): a record that completed, was
+    cancelled, or went with its chat's history.
 - **A call answered in part is drawn in parts** (`batchParts`). The host
   takes a call's answers one question at a time and wakes the agent only
   when every one is in, so a call can be half answered: by another tab, by
