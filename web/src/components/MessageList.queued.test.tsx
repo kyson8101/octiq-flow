@@ -18,6 +18,35 @@ const draw = (extra: Partial<Message> = {}, busy = true) => renderToStaticMarkup
     onRestoreUnsent={() => {}} onDismissUnsent={() => {}} />,
 );
 
+describe("the host's turn that tells an agent its plan was started", () => {
+  // The bubble said `The agent was told to begin` whatever became of the
+  // turn, under a Plan panel that said it was not sent.
+  const start = (extra: Partial<Message>) => draw({ turnId: "octiq-plan-start-7f", blocks: [{ kind: "text", text: "The person started the plan. Begin." }], ...extra }, false);
+  const detail = (html: string) => /<span class="wrap-up-note-detail">([^<]*)<\/span>/.exec(html)?.[1];
+
+  it("says a turn whose send failed did not reach the agent", () => {
+    const html = start({ delivery: "failed" });
+    expect(html).toContain('<span class="wrap-up-note-label">Plan started</span>');
+    expect(detail(html)).toBe("Not sent · this turn did not reach the agent");
+    expect(html).not.toContain("The agent was told to begin");
+    // The host's words are still behind the disclosure, and still its own.
+    expect(html).toContain("The person started the plan. Begin.");
+  });
+
+  it("says a turn lost from the queue did not reach the agent", () => {
+    const html = start({ delivery: "queued", queueLost: true });
+    expect(detail(html)).toBe("Lost from the queue · this turn did not reach the agent");
+    expect(html).not.toContain("The agent was told to begin");
+    expect(html).not.toContain("Telling the agent after the current reply");
+  });
+
+  it("says told only of a turn that was handed over, and waiting of one still queued", () => {
+    expect(detail(start({ delivery: "dispatched" }))).toBe("The agent was told to begin");
+    expect(detail(start({ delivery: "failed", echo: "e1" }))).toBe("The agent was told to begin");
+    expect(detail(start({ delivery: "queued" }))).toBe("Telling the agent after the current reply");
+  });
+});
+
 describe("message delivery controls", () => {
   it.each([false, true])("offers queued actions independently of another turn's busy state (%s)", (busy) => {
     const html = draw({}, busy);

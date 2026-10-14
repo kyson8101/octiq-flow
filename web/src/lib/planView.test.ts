@@ -19,7 +19,7 @@ import {
   openQuestions, planHeader, planItems, planOffered, planStart, progressView, questionsLine, reducePlans, stampLabel, startNote,
   tasksInFlight, tasksLabel,
 } from "./planView";
-import { PLAN_START_LABEL, isPlanStartTurn, planStartBubble } from "./planTurn";
+import { PLAN_START_LABEL, isPlanStartTurn, planStartBubble, startTurnLost, startTurnUnsent } from "./planTurn";
 import { progressRow } from "./runProgress";
 
 const UTC = { locale: "en-GB", timeZone: "UTC" };
@@ -398,5 +398,31 @@ describe("the turn that tells the agent its plan was started", () => {
     expect(planStartBubble({ turnId, delivery: "queued" })).toEqual({ label: PLAN_START_LABEL, detail: "Telling the agent after the current reply" });
     expect(planStartBubble({ turnId, delivery: "dispatched", echo: "e1" })).toEqual({ label: "Plan started", detail: "The agent was told to begin" });
     expect(planStartBubble({ turnId: "3f1c" })).toBeNull();
+  });
+
+  it("says what happened to a turn that was not sent, never that the agent was told", () => {
+    // It said `The agent was told to begin` whatever the turn's line said,
+    // under a panel that said not sent and offered `Tell the agent`.
+    const turnId = started().started!.turnId;
+    const failed = planStartBubble({ turnId, delivery: "failed" });
+    expect(failed).toEqual({ label: "Plan started", detail: "Not sent · this turn did not reach the agent" });
+    const lost = planStartBubble({ turnId, delivery: "queued", queueLost: true });
+    expect(lost).toEqual({ label: "Plan started", detail: "Lost from the queue · this turn did not reach the agent" });
+    // A turn the agent has is told, whatever an older word on it says.
+    expect(planStartBubble({ turnId, delivery: "failed", echo: "e1" })?.detail).toBe("The agent was told to begin");
+    expect(planStartBubble({ turnId, queueLost: true, takenUp: true })?.detail).toBe("The agent was told to begin");
+    // On its way, and handed over.
+    for (const delivery of ["sending", "starting", "dispatched", "unknown"] as const) {
+      expect(planStartBubble({ turnId, delivery })?.detail, delivery).toBe("The agent was told to begin");
+    }
+    // The bubble and the panel's `Tell the agent` read the turn the same way.
+    for (const message of [
+      { delivery: "failed" as const }, { delivery: "queued" as const, queueLost: true }, { delivery: "queued" as const },
+      { delivery: "failed" as const, echo: "e1" }, { delivery: "dispatched" as const }, {},
+    ]) {
+      const unsent = startTurnUnsent(message) !== null;
+      expect(startTurnLost([{ role: "user", turnId, ...message }], turnId), JSON.stringify(message)).toBe(unsent);
+      expect(/did not reach the agent/.test(planStartBubble({ turnId, ...message })!.detail), JSON.stringify(message)).toBe(unsent);
+    }
   });
 });

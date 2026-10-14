@@ -624,7 +624,14 @@ plan by saying so in the chat.
   (`WrapUpNote` with `mark="start"`): a Start is not a completion and does
   not wear its flag. Its take-back says
   Cancel, takes the turn back and never the Start, and returns nothing to
-  the composer (`reclaim` skips it).
+  the composer (`reclaim` skips it). **The bubble says what happened to
+  that turn** (`planStartBubble`): `The agent was told to begin` only for
+  one that was handed over, `Telling the agent after the current reply`
+  while it is queued, `Not sent · this turn did not reach the agent` and
+  `Lost from the queue · this turn did not reach the agent` for one that
+  was not sent. It speaks of the turn, not the plan: a later try may have
+  told the agent. The bubble and the panel's `Tell the agent` read a try
+  through one reader (`startTurnUnsent`).
 - `scripts/test-plan-panel.mjs` draws the host's four plans in the real App
   at 1280 and 390 and presses Start. `lib/decideColour.test.ts` names the
   panel's parts (`PLAN_PARTS`): a part added to the sheet is added there.

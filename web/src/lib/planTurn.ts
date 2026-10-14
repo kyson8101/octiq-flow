@@ -19,14 +19,37 @@ export function isPlanStartTurn(turnId?: string | null): boolean {
 
 export const PLAN_START_LABEL = "Plan started";
 
-/** What the bubble says in place of the host's text. The ✕ on a queued one
+/** What became of one try of the turn, as its own line says: `failed` (the
+ *  write to the agent failed, or its process was ended with the turn still
+ *  queued), `lost` (the host's queue no longer holds it: `lib/recovery`
+ *  marks that one), or `null` for a turn that was handed over, is on its
+ *  way, or that the agent took up. One reader, for the bubble and for the
+ *  panel's `Tell the agent`. */
+export function startTurnUnsent(message: Pick<Message, "echo" | "takenUp" | "queueLost" | "delivery">): "failed" | "lost" | null {
+  if (message.echo || message.takenUp) return null;
+  if (message.queueLost) return "lost";
+  return message.delivery === "failed" ? "failed" : null;
+}
+
+/** What the bubble says of a try that did not reach the agent. Of the turn,
+ *  not of the plan: a later try may have told it. */
+export const START_TURN_UNSENT = {
+  failed: "Not sent · this turn did not reach the agent",
+  lost: "Lost from the queue · this turn did not reach the agent",
+} as const;
+
+/** What the bubble says in place of the host's text: what happened to this
+ *  turn. It said `The agent was told to begin` of a turn that was never
+ *  sent, under a panel that rightly said not sent. The ✕ on a queued one
  *  takes the turn back, not the Start: there is no un-start
  *  (`docs/chat-plan.md`). */
-export function planStartBubble(message: Pick<Message, "turnId" | "delivery" | "echo" | "takenUp">): {
+export function planStartBubble(message: Pick<Message, "turnId" | "delivery" | "echo" | "takenUp" | "queueLost">): {
   label: string;
   detail: string;
 } | null {
   if (!isPlanStartTurn(message.turnId)) return null;
+  const unsent = startTurnUnsent(message);
+  if (unsent) return { label: PLAN_START_LABEL, detail: START_TURN_UNSENT[unsent] };
   const waiting = !message.echo && !message.takenUp && message.delivery === "queued";
   return {
     label: PLAN_START_LABEL,
@@ -58,6 +81,5 @@ export function startTurnLost(
   const tries = messages.filter((message) => message.role === "user" && typeof message.turnId === "string"
     && (message.turnId === base || (message.turnId.startsWith(`${base}-try`) && /^\d+$/.test(message.turnId.slice(base.length + 4)))));
   const last = tries.at(-1);
-  if (!last || last.echo || last.takenUp) return false;
-  return !!last.queueLost || last.delivery === "failed";
+  return !!last && startTurnUnsent(last) !== null;
 }
