@@ -143,6 +143,9 @@ let pending = Object.entries(SCENES).flatMap(([id, scene]) => scene.questions.ma
 const record = {};
 const calls = [];
 let answerWith = () => ({ saved: true });
+/** A command the host refuses, with the host's words, or nothing: how the
+ *  scene of a host older than the batch command answers. */
+let refuse = () => null;
 function resultFor(request) {
   calls.push({ cmd: request.cmd, args: request.args });
   switch (request.cmd) {
@@ -154,6 +157,8 @@ function resultFor(request) {
     case "chat_since": return (record[request.args?.key] ?? []).filter((frame) => frame.seq > (request.args?.after ?? 0));
     case "question_pending": return pending;
     case "question_answer_batch": return answerWith(request.args);
+    // One question at a time, as a host older than the batch command takes it.
+    case "question_answer": return true;
     case "chat_list": case "chat_activity": case "permission_pending": case "access_request_pending":
     case "safety_block_pending": case "pr_repositories": case "codex_skills": case "team_list":
       return [];
@@ -204,6 +209,12 @@ async function open(browser, scene, { width, height, phone = false }) {
     socket.onMessage((raw) => {
       const request = JSON.parse(String(raw));
       if (request.t !== "invoke") return;
+      const refused = refuse(request);
+      if (refused) {
+        calls.push({ cmd: request.cmd, args: request.args });
+        socket.send(JSON.stringify({ t: "reply", id: request.id, ok: false, error: refused }));
+        return;
+      }
       socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
     });
   });
@@ -816,6 +827,109 @@ async function answeredScene(browser, size, label, out) {
   await context.close();
 }
 
+/** A native answer after an old tool call that asked the same words (review
+ *  3b). The old `ask_user` call was answered Merge and has only its result
+ *  (a record older than the host's lines); the provider then asks the same
+ *  words by itself and the person answers Rebase. The line was bound to
+ *  the old call by its words, and the page showed Merge alone. */
+async function sameWordsScene(browser, size, label, out) {
+  const mine = out.sameWords = {};
+  const question = "Rebase onto develop first?";
+  const line = {
+    type: "octiq_question_answered", id: `native-after-tool-${size.name}`, via: "native", at: Date.now(),
+    questions: [{ id: `native-q-${size.name}`, question, options: [{ label: "Rebase" }, { label: "Merge" }], multiple: false, answer: "Rebase" }],
+  };
+  record["chat:loose"] = [
+    { seq: 1, event: { type: "assistant", message: { id: "msg_old_ask", type: "message", role: "assistant", content: [{ type: "tool_use", id: "old-ask", name: "mcp__octiq__ask_user", input: { question, options: ["Rebase", "Merge"] } }] } } },
+    { seq: 2, event: { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "old-ask", content: "Merge" }] } } },
+    { seq: 3, event: { type: "assistant", message: { id: "msg_between", type: "message", role: "assistant", content: [{ type: "text", text: "Merged. One more thing came up." }] } } },
+    { seq: 4, event: line },
+  ];
+  const kept = pending;
+  pending = pending.filter((item) => item.chatKey !== "chat:loose");
+  const { context, page } = await open(browser, "loose", size);
+  const read = async () => ({
+    bubbles: await page.locator(".qa-said").allTextContents(),
+    atLine: await page.locator(`[data-answered="${line.id}"]`).count(),
+    forms: await page.locator(".qa-block").count(),
+  });
+  const drawn = { bubbles: ["Merge", "Rebase"], atLine: 1, forms: 0 };
+  await page.locator(".qa-turn.is-answered").waitFor();
+  mine.first = await read();
+  assert.deepEqual(mine.first, drawn, `${label}: both answers are drawn, the native one at its own line`);
+  const order = await page.evaluate((id) => {
+    const text = document.querySelector(".msgs-inner").textContent;
+    return [text.indexOf("Merge"), text.indexOf("One more thing came up."), [...document.querySelectorAll(".msgs-inner *")].indexOf(document.querySelector(`[data-answered="${id}"]`))];
+  }, line.id);
+  assert(order[0] >= 0 && order[0] < order[1], `${label}: the old answer stays at its call, before what followed`);
+  await fits(page, `${label} same words`);
+  await shot(page, `${label}-same-words`);
+  await page.reload();
+  await page.locator(".qa-turn.is-answered").waitFor();
+  mine.reload = await read();
+  assert.deepEqual(mine.reload, drawn, `${label}: and after a reload`);
+  pending = kept;
+  delete record["chat:loose"];
+  await context.close();
+}
+
+/** A host with no batch command, a call answered in part, then a reload
+ *  (review 3b). That host is answered one question at a time and drops each
+ *  as it is answered: the first of two goes through, the second's send
+ *  fails, and after a reload it lists the second alone, still `batchSize:
+ *  2`. The block said `Still reading the questions: 1 of 2 has arrived` for
+ *  good. This is the state between a client build and a server restart. */
+async function olderHostScene(browser, size, label, out) {
+  const mine = out.olderHost = {};
+  const a = { id: `older-1-${size.name}`, chatKey: "chat:loose", batch: `older-${size.name}`, batchSize: 2, question: "Which branch?", options: ["develop", "main"], recommended: 0 };
+  const b = { ...a, id: `older-2-${size.name}`, question: "Which target?", options: ["staging", "production"] };
+  const kept = pending;
+  pending = [...pending.filter((item) => item.chatKey !== "chat:loose"), a, b];
+  let failSecond = true;
+  refuse = (request) => {
+    if (request.cmd === "question_answer_batch") return "'question_answer_batch' is not available on this backend";
+    if (request.cmd !== "question_answer") return null;
+    if (request.args.id === b.id && failSecond) return "transport failed on the second answer";
+    // Taken: this host keeps no record, and lists it no longer.
+    pending = pending.filter((item) => item.id !== request.args.id);
+    return null;
+  };
+  const answered = () => sent("question_answer").filter((each) => each.args.id === a.id || each.args.id === b.id).map((each) => each.args);
+  const { context, page } = await open(browser, "loose", size);
+  await page.locator(".qa-block").waitFor();
+  const sample = async () => ({
+    titles: await page.locator(".qa-q-title").allTextContents(),
+    off: await page.locator(".qa-submit").getAttribute("aria-disabled"),
+    why: (await page.locator(".qa-why").allTextContents()).map((text) => text.trim()).filter(Boolean),
+  });
+  assert.deepEqual(await sample(), { titles: ["Which branch?", "Which target?"], off: "false", why: [] }, `${label}: both listed, both asked`);
+  await page.waitForTimeout(800);
+  await page.locator(".qa-submit").click();
+  await page.waitForFunction(() => document.querySelectorAll(".qa-q-title").length === 1);
+  mine.part = await sample();
+  assert.deepEqual(mine.part.titles, ["Which target?"], `${label}: the first went through and the second is still asked`);
+  assert.equal(mine.part.off, "false");
+  // The reload: the host lists what is left, with the call's first size.
+  await page.reload();
+  await page.locator(".qa-block").waitFor();
+  await page.waitForTimeout(500);
+  mine.reload = await sample();
+  assert.deepEqual(mine.reload, { titles: ["Which target?"], off: "false", why: [] }, `${label}: what is left of the call can be sent after a reload`);
+  await shot(page, `${label}-older-host-reload`);
+  failSecond = false;
+  const before = answered().length;
+  await page.waitForTimeout(800);
+  await page.locator(".qa-submit").click();
+  await page.locator(".qa-block").waitFor({ state: "detached" });
+  mine.sent = answered().slice(before);
+  assert.deepEqual(mine.sent, [{ id: b.id, answer: "staging" }], `${label}: and it is sent, once`);
+  // What the page learned of the host is this browser's, not the script's
+  // next scene's: every scene opens a context of its own.
+  refuse = () => null;
+  pending = kept;
+  await context.close();
+}
+
 let browser;
 try {
   await server.listen();
@@ -824,7 +938,7 @@ try {
     ...(classic ? { ignoreDefaultArgs: ["--hide-scrollbars"], args: ["--disable-features=OverlayScrollbar"] } : {}),
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
   });
-  // SCENE=partial or SCENE=answered runs one of the two record scenes alone.
+  // SCENE=partial, answered, sameWords or olderHost runs one record scene alone.
   const only = process.env.SCENE;
   for (const size of [{ name: "1280", width: 1280, height: 900, phone: false }, { name: "390", width: 390, height: 844, phone: true }]) {
     const label = `${tag}-${size.name}`;
@@ -839,6 +953,8 @@ try {
     }
     if (!only || only === "partial") await partialScene(browser, size, label, out);
     if (!only || only === "answered") await answeredScene(browser, size, label, out);
+    if (!only || only === "sameWords") await sameWordsScene(browser, size, label, out);
+    if (!only || only === "olderHost") await olderHostScene(browser, size, label, out);
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, ...report }, null, 1));
