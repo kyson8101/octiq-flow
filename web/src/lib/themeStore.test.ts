@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED } from "./theme";
-import { applyTheme, BUILT_IN, DARK_MODE, FUN_MODE, GUOFENG_MODE, LIGHT_MODE, MANGA_MODE, savedThemeId, THEME_EVENT, THEMES } from "./themeStore";
+import { applyTheme, BUILT_IN, DARK_MODE, FUN_MODE, GUOFENG_MODE, LIGHT_MODE, MANGA_MODE, savedThemeId, THEME_EVENT, THEMES, XP_MODE } from "./themeStore";
 
 describe("appearance switching", () => {
   let properties: Map<string, string>;
@@ -69,8 +69,18 @@ describe("appearance switching", () => {
     expect(savedThemeId()).toBe(GUOFENG_MODE);
   });
 
-  it("only exposes light, dark, fun, manga and 中国风", () => {
-    expect(THEMES.map(({ id }) => id)).toEqual([LIGHT_MODE, DARK_MODE, FUN_MODE, MANGA_MODE, GUOFENG_MODE]);
+  it("puts Windows XP on as a light mode with Luna's blue accent", () => {
+    applyTheme(XP_MODE);
+    expect(attributes.get("data-color-scheme")).toBe("light");
+    expect(attributes.get("data-theme")).toBe(XP_MODE);
+    expect(properties.get("--accent")).toBe("#0054e3");
+    // A decision is its own steel blue, never the accent.
+    expect(properties.get("--decide")).toBe("#1a6a8a");
+    expect(savedThemeId()).toBe(XP_MODE);
+  });
+
+  it("only exposes light, dark, fun, manga, 中国风 and Windows XP", () => {
+    expect(THEMES.map(({ id }) => id)).toEqual([LIGHT_MODE, DARK_MODE, FUN_MODE, MANGA_MODE, GUOFENG_MODE, XP_MODE]);
   });
 
   it("migrates retired theme ids to a supported mode", () => {

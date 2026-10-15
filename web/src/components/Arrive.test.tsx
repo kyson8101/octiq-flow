@@ -14,10 +14,12 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn(), on: () => () => {} 
 import designSystemCss from "../design-system.css?raw";
 import mangaSheet from "../manga.css?raw";
 import guofengSheet from "../guofeng.css?raw";
+import xpSheet from "../xp.css?raw";
 import lightPalette from "../lib/themes/light.css?raw";
 import funPalette from "../lib/themes/fun.css?raw";
 import mangaPalette from "../lib/themes/manga.css?raw";
 import guofengPalette from "../lib/themes/guofeng.css?raw";
+import xpPalette from "../lib/themes/xp.css?raw";
 import { useMemo, useRef, useState } from "react";
 import { liveAppend } from "../lib/arrival";
 import { entryClass, useLiveAppend } from "../lib/useArrival";
@@ -235,7 +237,7 @@ describe("the entry motion", () => {
   });
 
   it("is the same in every mode: no palette or mode sheet restates it", () => {
-    const sheets = { lightPalette, funPalette, mangaPalette, guofengPalette, mangaSheet, guofengSheet };
+    const sheets = { lightPalette, funPalette, mangaPalette, guofengPalette, xpPalette, mangaSheet, guofengSheet, xpSheet };
     for (const [name, sheet] of Object.entries(sheets)) {
       expect(sheet.length, name).toBeGreaterThan(0);
       expect(sheet, name).not.toContain("--enter-");

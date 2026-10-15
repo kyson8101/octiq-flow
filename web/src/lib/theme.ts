@@ -12,9 +12,10 @@
 //   * the drop shadow. The pasted shadows are built for small light cards
 //     (`3px 3px 0px`); on a full-height dark popover they read as a mistake.
 //
-// Manga is the one exception, and it is not made here: its lettering, panel
-// frames and screentone are a stylesheet of their own (`src/manga.css`)
-// scoped to `[data-theme="manga"]`, so no other mode can inherit them.
+// Manga, 中国风 and Windows XP are the exceptions, and they are not made here:
+// what they change beyond colour is a stylesheet of each mode's own
+// (`src/manga.css`, `src/guofeng.css`, `src/xp.css`) scoped to its
+// `[data-theme=…]`, so no other mode can inherit it.
 
 /** A mode's palette tokens, under the names the palette files use. */
 export type Tokens = Record<string, string>;

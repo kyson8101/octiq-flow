@@ -1,0 +1,51 @@
+/* OctiqFlow Windows XP palette, after the Luna look: white panes on a beige
+   window face, royal-blue title bars, black text in a plain UI face.
+
+   The page is white, as an XP window's content pane is, and the beige
+   (#ECE9D8) is the face of the controls and the bars round it. The accent is
+   Luna's royal blue: it is a fill under white text and it is drawn as text,
+   and both read. A decision waiting on the person is a calmer steel blue of
+   its own, nearer teal, so a card that asks never reads as a turn in flight.
+   Amber stays for warnings and nothing else.
+
+   Like Manga and 中国风 this mode is more than a palette: the title-bar
+   strips, raised buttons, the green Send and the edit-box edges live in
+   `src/xp.css`, scoped to `[data-theme="xp"]`. Corners are small and named
+   outright: Luna rounds a button by three pixels, not by a ladder. */
+:root {
+  --background: #ffffff;
+  --foreground: #141414;
+  --card: #fbfaf5;
+  --card-foreground: #141414;
+  --popover: #ffffff;
+  --popover-foreground: #141414;
+  --primary: #0054e3;
+  --primary-foreground: #ffffff;
+  --secondary: #ece9d8;
+  --surface-raised: #e3dfcc;
+  --selection-tint: rgb(49 106 197 / 14%);
+  --secondary-foreground: #141414;
+  --muted: #f1efe2;
+  --muted-foreground: #565656;
+  --accent: #ece9d8;
+  --accent-foreground: #141414;
+  --destructive: #c42b1c;
+  --destructive-foreground: #ffffff;
+  /* A decision waiting on the person: steel blue, nearer teal than Luna's
+     royal blue, so a waiting card and a turn in flight are told apart. */
+  --decide: #1a6a8a;
+  --decide-foreground: #ffffff;
+  --decide-tint: rgb(26 106 138 / 8%);
+  --border: #aca899;
+  --input: #7f9db9;
+  --ring: #316ac5;
+  --chart-1: oklch(0.5 0.14 145);
+  --chart-2: oklch(0.56 0.12 75);
+  --chart-3: oklch(0.5 0.15 260);
+  --sidebar: #f1efe4;
+  --radius: 0.1875rem;
+  --radius-sm: 3px;
+  --radius-md: 3px;
+  --radius-lg: 6px;
+  --radius-pill: 999px;
+}

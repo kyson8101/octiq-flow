@@ -13,6 +13,7 @@ import "./design-system.css";
 import "./styles.css";
 import "./manga.css";
 import "./guofeng.css";
+import "./xp.css";
 import { applyTheme, savedThemeId } from "./lib/themeStore";
 
 // Old pane URLs now open the same single workspace as every other chat link.

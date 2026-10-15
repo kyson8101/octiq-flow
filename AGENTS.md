@@ -2731,22 +2731,22 @@ escape codes flag a terminal — run `octiq-notify` and the alert fires.
 
 ### Appearance modes (browser client)
 
-The client offers exactly five modes in Settings: **Light**, **Dark**,
-**Fun**, **Manga** and **中国风**. Their persisted ids are `light`, `dark`,
-`fun`, `manga` and `guofeng`; `themeStore.ts` migrates the retired
+The client offers exactly six modes in Settings: **Light**, **Dark**,
+**Fun**, **Manga**, **中国风** and **Windows XP**. Their persisted ids are
+`light`, `dark`, `fun`, `manga`, `guofeng` and `xp`; `themeStore.ts` migrates the retired
 `one-light`, `octiq`, `candyland` and `comic` ids and sends every other
 retired palette back to Dark.
 
-- Dark is the default palette in `design-system.css`. Light, Fun, Manga and
-  中国风 are the palette files under `web/src/lib/themes/`.
+- Dark is the default palette in `design-system.css`. Light, Fun, Manga,
+  中国风 and Windows XP are the palette files under `web/src/lib/themes/`.
 - `web/src/lib/theme.ts` translates their shadcn-shaped tokens (`--primary`,
   `--card`, `--muted-foreground`) into the app's semantic variables
   (`--accent`, `--bg-1`, `--fg-2`). Palettes set colours and corner radii only —
   never fonts or shadows. A palette may name its radius rungs outright
   (`--radius-sm/md/lg/pill`), which is how Manga gets uneven hand-cut corners.
-- **Manga and 中国风 change more than colour.** Each has its own sheet next to
-  `styles.css`, every rule scoped to its `:root[data-theme=…]`, so no other
-  mode picks any of it up. Both follow one rule: **readability wins over
+- **Manga, 中国风 and Windows XP change more than colour.** Each has its own
+  sheet next to `styles.css`, every rule scoped to its `:root[data-theme=…]`,
+  so no other mode picks any of it up. All three follow one rule: **readability wins over
   effect** — reading text stays in a real reading face, nothing is drawn
   behind words, and display lettering is for the few biggest headings.
 - **Manga** (`web/src/manga.css`): thin, slightly uneven panel
@@ -2769,9 +2769,25 @@ retired palette back to Dark.
   veiled to half behind a chat so replies stay legible. The accent
   is gold, not cinnabar, because ~90 rules draw text in `--accent` and red
   text reads as an error; cinnabar is `--seal`, used by name.
+- **Windows XP** (`web/src/xp.css`): the Luna look, drawn with gradients
+  only (no picture, logo or flag). Royal-blue title-bar strips on the top bar,
+  the sidebar's head and the heads of panels, sheets and dialogs, with white
+  bold titles on the bar's darker middle; the strip turns `--fg-*`, `--bg-1/2`
+  and `--accent` white for what is in it, and a menu that opens from one takes
+  them back from `--xp-*`. White content panes on beige (`#ECE9D8`) faces,
+  raised buttons with a dark blue-grey edge and an orange-gold rim under the
+  pointer, edit boxes with the thin blue-grey edge, and the composer's Send in
+  a Start-button green. Tahoma for the UI. The accent is Luna's blue
+  `#0054e3`; `--decide` is a steel blue of its own (`#1a6a8a`), and on a card
+  that asks the hover rim is `--decide`, never orange, which stays a hover
+  elsewhere and never means anything. A sky over a green hill on the empty
+  page only, clear of the question.
 - The terminal cannot read a `var()` — xterm hands its palette to WebGL. So
-  `web/src/lib/xtermTheme.ts` resolves variables through a hidden element and a
-  1×1 canvas.
+  `web/src/lib/xtermTheme.ts` resolves variables through hidden elements and a
+  1×1 canvas: one element per colour, never one element given each colour in
+  turn, which Chrome 155 read back stale (every colour after the first was the
+  first, so the terminal's text was its background colour). Magenta and cyan
+  are fixed values with a deeper pair for a light mode.
 - Text on a fill uses `--accent-fg` / `--danger-fg`, not hardcoded white.
 - `vite.config.ts` keeps `test: { css: true }`; otherwise Vitest stubs raw CSS
   imports to an empty string and alternate modes silently use fallback colours.

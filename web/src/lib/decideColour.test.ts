@@ -20,6 +20,7 @@ import questionCss from "../components/InlineQuestions.css?raw";
 import planReviewCss from "../components/PlanReview.css?raw";
 import planPanelCss from "../components/PlanPanel.css?raw";
 import guofengSheet from "../guofeng.css?raw";
+import xpSheet from "../xp.css?raw";
 import runPanelCss from "../components/OrchestrationPanel.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
 import runProgressCss from "../components/RunProgress.css?raw";
@@ -92,7 +93,7 @@ function hue(rgb: Rgb): { h: number; chroma: number } {
   return { h: (h * 60 + 360) % 360, chroma };
 }
 
-/* ---- The five modes, as the page gets them ----------------------------- */
+/* ---- The six modes, as the page gets them ----------------------------- */
 
 type Mode = { id: string; vars: Record<string, string>; declared: Record<string, string> };
 
@@ -185,6 +186,7 @@ const RULES = [
   ...rules(planReviewCss, "PlanReview.css"),
   ...rules(chatPlanCss, "ChatPlanCards.css"),
   ...rules(mangaSheet, "manga.css"),
+  ...rules(xpSheet, "xp.css"),
 ];
 
 /** Colours a decision card must not take: amber means a problem, and the
@@ -561,7 +563,7 @@ describe("the Plan panel", () => {
   it("writes no colour out: tokens only, in every mode", () => {
     for (const rule of sheet) expect(rule.body, rule.selector).not.toMatch(/#[0-9a-f]{3,8}\b|\brgba?\(|\boklch\(|\bhsla?\(/i);
     // No mode's own sheet redraws a part of it.
-    for (const css of [mangaSheet, guofengSheet, stylesCss]) expect(css).not.toMatch(/\.cplan-/);
+    for (const css of [mangaSheet, guofengSheet, xpSheet, stylesCss]) expect(css).not.toMatch(/\.cplan-/);
   });
 
   it("has no animation that loops, and holds every one still for reduced motion", () => {

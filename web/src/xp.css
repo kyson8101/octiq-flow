@@ -1,0 +1,325 @@
+/* ==========================================================================
+   Windows XP mode — the Luna look, drawn from scratch.
+
+   A palette (`lib/themes/xp.css`) plus this sheet: royal-blue title-bar
+   strips on the top bar and on the heads of panels and dialogs, beige control
+   faces round white content panes, raised buttons with a soft light from the
+   top and an orange-gold rim under the pointer, edit boxes with a thin
+   blue-grey edge, and the composer's Send in the green of a Start button.
+   Every rule is scoped to `:root[data-theme="xp"]`, so no other mode can pick
+   any of it up. Nothing here is a copy of Windows: no picture, no logo, no
+   flag, only gradients and colours written for this sheet.
+
+   Readable first, as Manga taught: reading text stays black on white in a
+   plain UI face (Tahoma, as XP used), nothing is drawn behind words, and the
+   white of a title bar's text sits on the darker middle of its gradient. The
+   orange-gold rim is a pointer's hover and nothing else: a card that asks is
+   rimmed in the decision colour, and amber stays the colour of a warning.
+   The monospace font is left alone, so code in a reply and the terminal are
+   the same shapes.
+   ========================================================================== */
+
+:root[data-theme="xp"] {
+  --font: Tahoma, "Segoe UI", Verdana, sans-serif;
+  --prose-font: var(--font);
+
+  /* The palette's own values under names of their own, taken where they are
+     declared: a title bar turns the text colours white for what is in it, and
+     a menu that opens from one gives them back from here. */
+  --xp-fg-0: var(--fg-0);
+  --xp-fg-1: var(--fg-1);
+  --xp-fg-2: var(--fg-2);
+  --xp-fg-3: var(--fg-3);
+  --xp-bg-1: var(--bg-1);
+  --xp-bg-2: var(--bg-2);
+  --xp-border: var(--border);
+  --xp-accent: var(--accent);
+  --xp-accent-fg: var(--accent-fg);
+
+  /* The window face, and the edges controls are drawn with. */
+  --xp-face: #ece9d8;
+  --xp-edge: #7f9db9;
+  --xp-button-edge: #2c5a9e;
+  --xp-hover-top: #ffe2a3;
+  --xp-hover-bottom: #e8a33a;
+  /* Royal blue, lit from the top, as a title bar is. The middle, where the
+     title sits, is the darkest band, so white text reads at 6:1 or better. */
+  --xp-title: linear-gradient(180deg, #3d86f0 0%, #1361e6 9%, #0453dc 32%, #0049d0 70%, #0a52d8 90%, #0035ad 100%);
+  --xp-title-edge: #0031a0;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 14%);
+  --shadow: 2px 3px 10px rgb(0 0 0 / 28%), 0 0 0 1px rgb(0 49 160 / 55%);
+  --scrim: rgb(0 0 0 / 30%);
+  --focus: #0054e3;
+  --focus-ring: 0 0 0 2px rgb(255 255 255), 0 0 0 4px rgb(0 84 227 / 70%);
+  --link: #0046c8;
+}
+
+/* ---- The window: white panes, beige faces ------------------------------ */
+
+:root[data-theme="xp"] ::selection {
+  background: #316ac5;
+  color: #ffffff;
+}
+
+:root[data-theme="xp"] * { scrollbar-color: #b3c5e8 #f2f1ea; }
+
+/* ---- Title bars --------------------------------------------------------- */
+
+/* The top bar, the title of a panel and the title of a dialog are XP title
+   bars: the blue strip with its white bold title. What is in a strip reads
+   white on blue, so the text and surface colours are turned for it there,
+   and given back to anything that opens from it. */
+:root[data-theme="xp"] :is(.topbar, .task-sidebar .sidebar-head, .panel-head, .gitp-head, .sheet-nav, .ask-title) {
+  --fg-0: #ffffff;
+  --fg-1: #ffffff;
+  --fg-2: #e2ebff;
+  --fg-3: #cbdafc;
+  --bg-1: rgb(255 255 255 / 14%);
+  --bg-2: rgb(255 255 255 / 22%);
+  --border: rgb(255 255 255 / 40%);
+  --accent: #ffffff;
+  --accent-fg: #0049d0;
+  --focus: #ffffff;
+  background: var(--xp-title);
+  color: #ffffff;
+  text-shadow: 1px 1px 0 rgb(0 30 110 / 55%);
+}
+
+:root[data-theme="xp"] :is(.topbar, .task-sidebar .sidebar-head) {
+  border-bottom: 1px solid var(--xp-title-edge);
+}
+
+:root[data-theme="xp"] :is(.topbar-title, .topbar-name, .sidebar-title, .panel-name, .sheet-title, .ask-title) {
+  font-weight: 700;
+}
+
+:root[data-theme="xp"] :is(.panel-head, .gitp-head) {
+  border-bottom: 1px solid var(--xp-title-edge);
+}
+
+/* A sheet and a dialog round their top corners as a window does, and the
+   strip follows the corners. */
+:root[data-theme="xp"] .sheet-nav {
+  margin: -8px -12px 6px;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+}
+
+:root[data-theme="xp"] .ask-title {
+  margin: calc(-1 * var(--ask-pad, 20px)) calc(-1 * var(--ask-pad, 20px)) 12px;
+  padding: 7px 12px;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  font-size: 14px;
+}
+
+/* What opens from a strip is a white menu again, not part of the strip. */
+:root[data-theme="xp"] :is(.topbar, .task-sidebar .sidebar-head, .panel-head, .gitp-head, .sheet-nav) :is(
+  [role="menu"], [role="listbox"], [role="dialog"], [role="tooltip"], .picker-menu, .sidebar-dropdown, .chat-task-panel
+) {
+  --fg-0: var(--xp-fg-0);
+  --fg-1: var(--xp-fg-1);
+  --fg-2: var(--xp-fg-2);
+  --fg-3: var(--xp-fg-3);
+  --bg-1: var(--xp-bg-1);
+  --bg-2: var(--xp-bg-2);
+  --border: var(--xp-border);
+  --accent: var(--xp-accent);
+  --accent-fg: var(--xp-accent-fg);
+  --focus: #0054e3;
+  color: var(--fg-1);
+  text-shadow: none;
+}
+
+/* ---- The toolbar under it ---------------------------------------------- */
+
+:root[data-theme="xp"] .actionbar {
+  --actionbar-bg: var(--xp-face);
+  border-bottom-color: #aca899;
+  box-shadow: inset 0 1px 0 #ffffff;
+}
+
+:root[data-theme="xp"] .sidebar {
+  border-right-color: #aca899;
+}
+
+/* ---- Buttons ------------------------------------------------------------ */
+
+/* A button with a face of its own is raised: a dark blue-grey edge, small
+   corners and a light from the top. The pointer rims it orange-gold, as XP
+   did; a press sinks it. */
+:root[data-theme="xp"] :is(
+  .resume-open, .gitp-btn, .panel-btn, .sheet-done, .panel-inline-btn, .shelf-card-act,
+  .settings-project-new, .ask .ask-btn:not(.is-primary)
+) {
+  border: 1px solid var(--xp-button-edge);
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #f6f5f0 40%, #ebe8dc 88%, #d9d4c4 100%);
+  color: #141414;
+  text-shadow: none;
+}
+
+:root[data-theme="xp"] :is(
+  .resume-open, .gitp-btn, .panel-btn, .sheet-done, .panel-inline-btn, .shelf-card-act,
+  .settings-project-new, .ask .ask-btn:not(.is-primary)
+):hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f5f0 40%, #ebe8dc 88%, #d9d4c4 100%);
+  box-shadow:
+    inset 0 2px 0 var(--xp-hover-top),
+    inset 0 -2px 0 var(--xp-hover-bottom),
+    inset 2px 0 0 #f6c46a,
+    inset -2px 0 0 #f6c46a;
+  color: #141414;
+}
+
+:root[data-theme="xp"] :is(
+  .resume-open, .gitp-btn, .panel-btn, .sheet-done, .panel-inline-btn, .shelf-card-act,
+  .settings-project-new, .ask .ask-btn:not(.is-primary)
+):active:not(:disabled) {
+  background: linear-gradient(180deg, #d9d4c4 0%, #e6e2d4 20%, #f2f0e8 100%);
+  box-shadow: inset 1px 1px 2px rgb(0 0 0 / 22%);
+}
+
+/* The one button a page leads with keeps the accent's fill, lit the same way. */
+:root[data-theme="xp"] :is(.settings-primary, .ask .ask-btn.is-primary:not(.is-danger)) {
+  border: 1px solid #00329b;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #2f78ec 0%, #0054e3 45%, #004bd0 100%);
+  color: #ffffff;
+  text-shadow: none;
+}
+
+:root[data-theme="xp"] :is(.settings-primary, .ask .ask-btn.is-primary:not(.is-danger)):hover:not(:disabled) {
+  box-shadow: inset 0 2px 0 var(--xp-hover-top), inset 0 -2px 0 var(--xp-hover-bottom);
+}
+
+/* On a card that asks, the answers are raised buttons too, and the pointer
+   rims them in the decision colour: orange-gold on a question would read as a
+   warning. The answer a card leads with keeps its own fill. */
+:root[data-theme="xp"] :is(.permission-card, .access-card, .safety-card) .ask-btn:not(.is-primary) {
+  border: 1px solid var(--xp-button-edge);
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #f6f5f0 40%, #ebe8dc 88%, #d9d4c4 100%);
+  color: #141414;
+}
+
+:root[data-theme="xp"] :is(.permission-card, .access-card, .safety-card) .ask-btn:not(.is-primary):hover:not(:disabled) {
+  box-shadow: inset 0 0 0 2px var(--decide);
+}
+
+:root[data-theme="xp"] :is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary {
+  border-color: var(--decide);
+  border-radius: 3px;
+}
+
+/* ---- Send: the green of a Start button --------------------------------- */
+
+/* Decoration only: the label and the icon are the button's own. The light is
+   above the icon; white on the band the icon sits in is 4.6:1 or better. */
+:root[data-theme="xp"] .composer .send:not(.stop) {
+  border: 1px solid #1a5e1d;
+  background: linear-gradient(180deg, #62bb62 0%, #2e8533 14%, #287a2b 50%, #24722a 86%, #1a5e1d 100%);
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%), 1px 1px 2px rgb(0 0 0 / 25%);
+}
+
+:root[data-theme="xp"] .composer .send:not(.stop):hover:not(:disabled) {
+  filter: brightness(1.06);
+  transform: none;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 55%), 1px 1px 3px rgb(0 0 0 / 30%);
+}
+
+:root[data-theme="xp"] .composer .send:not(.stop):active:not(:disabled) {
+  filter: brightness(0.94);
+  box-shadow: inset 1px 1px 3px rgb(0 0 0 / 35%);
+}
+
+/* ---- Edit boxes --------------------------------------------------------- */
+
+:root[data-theme="xp"] :is(
+  input[type="text"], input[type="search"], input[type="email"], input[type="url"], input[type="number"],
+  input[type="password"], input:not([type]), textarea, select
+):not(.composer-input):not(.attach-input) {
+  border: 1px solid var(--xp-edge);
+  border-radius: 0;
+  background-color: #ffffff;
+  color: var(--fg-0);
+}
+
+:root[data-theme="xp"] :is(
+  input[type="text"], input[type="search"], input[type="email"], input[type="url"], input[type="number"],
+  input[type="password"], input:not([type]), textarea, select
+):not(.composer-input):not(.attach-input):focus {
+  border-color: #316ac5;
+}
+
+/* The composer is the edit box you write in: white, with XP's edge. */
+:root[data-theme="xp"] .composer-box {
+  border: 1px solid var(--xp-edge);
+  border-radius: var(--r-md);
+  background: #ffffff;
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 8%);
+}
+
+:root[data-theme="xp"] .composer-box:focus-within {
+  border-color: #316ac5;
+  box-shadow: var(--focus-ring);
+}
+
+/* ---- Messages ----------------------------------------------------------- */
+
+:root[data-theme="xp"] .prose pre {
+  border: 1px solid #aca899;
+  border-radius: 0;
+  background: #fbfaf5;
+}
+
+:root[data-theme="xp"] .prose blockquote {
+  border-left: 3px solid #7f9db9;
+}
+
+/* ---- Things that float: menus, sheets, dialogs ------------------------- */
+
+:root[data-theme="xp"] :is(.picker-menu, .sidebar-dropdown, .prose-file-action-menu, .slash, [role="menu"], [role="listbox"]) {
+  border: 1px solid #aca899;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: 2px 2px 4px rgb(0 0 0 / 25%);
+}
+
+:root[data-theme="xp"] .ask {
+  border: 1px solid var(--xp-title-edge);
+  background: var(--xp-face);
+}
+
+:root[data-theme="xp"] .sheet {
+  border: 1px solid var(--xp-title-edge);
+  background: var(--xp-face);
+}
+
+/* ---- The empty page ----------------------------------------------------- */
+
+/* A soft sky over a green hill, drawn here as two gradients: the sky fades
+   to white before the question, and the hill stays under the button, so
+   nothing is drawn behind a word. Only the empty page: a chat is plain white. */
+:root[data-theme="xp"] .hero:not(.is-waiting) {
+  background:
+    radial-gradient(75% 100% at 30% 100%, #6aab43 0 62%, #7dbb52 69%, rgb(125 187 82 / 0%) 70.5%) bottom / 100% 22% no-repeat,
+    radial-gradient(70% 100% at 82% 100%, #9ccc6b 0 66%, rgb(156 204 107 / 0%) 70%) bottom / 100% 28% no-repeat,
+    linear-gradient(180deg, #7fb3ee 0%, #b5d3f6 18%, #e6f0fc 30%, #ffffff 40%) top / 100% 100% no-repeat;
+}
+
+/* ---- Theme tile --------------------------------------------------------- */
+
+/* The XP tile carries its title bar in every mode, so it can be found. */
+.thm[data-theme-id="xp"] .thm-bar {
+  height: 14px;
+  background: linear-gradient(180deg, #3d86f0 0%, #0453dc 35%, #0049d0 75%, #0035ad 100%) !important;
+}
+
+.thm[data-theme-id="xp"] .thm-dot {
+  background: linear-gradient(180deg, #6cc46c 0%, #2f8a2f 55%, #1f6b1f 100%) !important;
+}
+
+.thm[data-theme-id="xp"] .thm-name {
+  font-family: Tahoma, "Segoe UI", Verdana, sans-serif;
+}
