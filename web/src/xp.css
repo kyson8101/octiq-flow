@@ -7,14 +7,17 @@
    top and an orange-gold rim under the pointer, edit boxes with a thin
    blue-grey edge, and the composer's Send in the green of a Start button.
    Every rule is scoped to `:root[data-theme="xp"]`, so no other mode can pick
-   any of it up. Nothing here is a copy of Windows: no picture, no logo, no
+   any of it up, except the three at the end that draw XP's own tile in
+   Settings' appearance picker, which shows every mode's tile in every mode.
+   Nothing here is a copy of Windows: no picture, no logo, no
    flag, only gradients and colours written for this sheet.
 
    Readable first, as Manga taught: reading text stays black on white in a
    plain UI face (Tahoma, as XP used), nothing is drawn behind words, and the
    white of a title bar's text sits on the darker middle of its gradient. The
-   orange-gold rim is a pointer's hover and nothing else: a card that asks is
-   rimmed in the decision colour, and amber stays the colour of a warning.
+   orange-gold rim is a pointer's hover on a tool button and nothing else: an
+   answer to a question keeps its own colours and is rimmed in the decision
+   colour, and amber stays the colour of a warning.
    The monospace font is left alone, so code in a reply and the terminal are
    the same shapes.
    ========================================================================== */
@@ -112,6 +115,13 @@
   font-size: 14px;
 }
 
+/* The Complete question's flag is the decision colour, which is near the
+   strip's blue (1.2:1). In the strip it is that colour a fifth strength on
+   white: 4:1 or better on the bands it sits on. */
+:root[data-theme="xp"] .ask-title .complete-ask-mark {
+  color: color-mix(in srgb, var(--decide) 20%, #ffffff);
+}
+
 /* What opens from a strip is a white menu again, not part of the strip. */
 :root[data-theme="xp"] :is(.topbar, .task-sidebar .sidebar-head, .panel-head, .gitp-head, .sheet-nav) :is(
   [role="menu"], [role="listbox"], [role="dialog"], [role="tooltip"], .picker-menu, .sidebar-dropdown, .chat-task-panel
@@ -146,10 +156,11 @@
 
 /* A button with a face of its own is raised: a dark blue-grey edge, small
    corners and a light from the top. The pointer rims it orange-gold, as XP
-   did; a press sinks it. */
+   did; a press sinks it. These are tool and panel buttons, which ask nothing:
+   an answer to a question is drawn below, and never takes this rim. */
 :root[data-theme="xp"] :is(
   .resume-open, .gitp-btn, .panel-btn, .sheet-done, .panel-inline-btn, .shelf-card-act,
-  .settings-project-new, .ask .ask-btn:not(.is-primary)
+  .settings-project-new
 ) {
   border: 1px solid var(--xp-button-edge);
   border-radius: 3px;
@@ -160,7 +171,7 @@
 
 :root[data-theme="xp"] :is(
   .resume-open, .gitp-btn, .panel-btn, .sheet-done, .panel-inline-btn, .shelf-card-act,
-  .settings-project-new, .ask .ask-btn:not(.is-primary)
+  .settings-project-new
 ):hover:not(:disabled) {
   background: linear-gradient(180deg, #ffffff 0%, #f6f5f0 40%, #ebe8dc 88%, #d9d4c4 100%);
   box-shadow:
@@ -173,14 +184,15 @@
 
 :root[data-theme="xp"] :is(
   .resume-open, .gitp-btn, .panel-btn, .sheet-done, .panel-inline-btn, .shelf-card-act,
-  .settings-project-new, .ask .ask-btn:not(.is-primary)
+  .settings-project-new, .ask-btn:not(.is-primary)
 ):active:not(:disabled) {
   background: linear-gradient(180deg, #d9d4c4 0%, #e6e2d4 20%, #f2f0e8 100%);
   box-shadow: inset 1px 1px 2px rgb(0 0 0 / 22%);
 }
 
-/* The one button a page leads with keeps the accent's fill, lit the same way. */
-:root[data-theme="xp"] :is(.settings-primary, .ask .ask-btn.is-primary:not(.is-danger)) {
+/* The one button Settings leads with keeps the accent's fill, lit the same
+   way. It saves; it answers nobody. */
+:root[data-theme="xp"] .settings-primary {
   border: 1px solid #00329b;
   border-radius: 3px;
   background: linear-gradient(180deg, #2f78ec 0%, #0054e3 45%, #004bd0 100%);
@@ -188,27 +200,54 @@
   text-shadow: none;
 }
 
-:root[data-theme="xp"] :is(.settings-primary, .ask .ask-btn.is-primary:not(.is-danger)):hover:not(:disabled) {
+:root[data-theme="xp"] .settings-primary:hover:not(:disabled) {
   box-shadow: inset 0 2px 0 var(--xp-hover-top), inset 0 -2px 0 var(--xp-hover-bottom);
 }
 
-/* On a card that asks, the answers are raised buttons too, and the pointer
-   rims them in the decision colour: orange-gold on a question would read as a
-   warning. The answer a card leads with keeps its own fill. */
-:root[data-theme="xp"] :is(.permission-card, .access-card, .safety-card) .ask-btn:not(.is-primary) {
-  border: 1px solid var(--xp-button-edge);
+/* ---- Answers to a question --------------------------------------------- */
+
+/* `.ask-btn` answers something: a card the agent raised (permission, access,
+   safety), the Complete question, the app's own Confirm. This sheet gives an
+   answer XP's shape and never its colour. What an answer means is its
+   component's to say (the decision colour on a card that waits on the
+   person, the accent or red on Confirm, amber on Allow anyway), so the
+   leading answer keeps its fill, edge and ink and only takes the corners and
+   a colourless light from the top, at rest and under the pointer; the light
+   is gone by a third of the way down, so white on the accent or on red keeps
+   4.5:1 where the label is. The others
+   are raised beige faces, and the pointer rims them in the decision colour:
+   orange-gold on a question would read as a warning, and a fixed list of the
+   cards that ask is how the Complete question was missed. */
+:root[data-theme="xp"] .ask-btn {
   border-radius: 3px;
+  text-shadow: none;
+}
+
+:root[data-theme="xp"] :is(.ask-btn.is-primary, .ask-btn.is-primary:hover:not(:disabled)) {
+  background-image: linear-gradient(180deg, rgb(255 255 255 / 45%) 0%, rgb(255 255 255 / 0%) 35%, rgb(255 255 255 / 0%) 70%, rgb(0 0 0 / 5%) 100%);
+}
+
+:root[data-theme="xp"] .ask-btn:not(.is-primary) {
+  border: 1px solid var(--xp-button-edge);
   background: linear-gradient(180deg, #ffffff 0%, #f6f5f0 40%, #ebe8dc 88%, #d9d4c4 100%);
   color: #141414;
 }
 
-:root[data-theme="xp"] :is(.permission-card, .access-card, .safety-card) .ask-btn:not(.is-primary):hover:not(:disabled) {
+:root[data-theme="xp"] .ask-btn:not(.is-primary):hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f5f0 40%, #ebe8dc 88%, #d9d4c4 100%);
   box-shadow: inset 0 0 0 2px var(--decide);
+  color: #141414;
 }
 
-:root[data-theme="xp"] :is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary {
-  border-color: var(--decide);
-  border-radius: 3px;
+/* Allow anyway is a risk the card names in amber: it keeps its amber edge,
+   and amber is its rim. */
+:root[data-theme="xp"] .ask-btn.safety-allow {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--xp-button-edge));
+}
+
+:root[data-theme="xp"] .ask-btn.safety-allow:hover:not(:disabled) {
+  border-color: var(--warn);
+  box-shadow: inset 0 0 0 1px var(--warn);
 }
 
 /* ---- Send: the green of a Start button --------------------------------- */

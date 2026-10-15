@@ -4,7 +4,10 @@
 // terminal, Settings' appearance tiles and the empty page. It also checks what
 // a mode must never break: the phone keeps the phone's layout, nothing scrolls
 // the page sideways, and the action bar keeps its height (36px, 45px on a
-// phone).
+// phone). And what a mode must never do to an answer to a question: the
+// permission card's and the Complete question's leading answer keep the
+// decision colour (its edge, its tint or its fill), never the accent, and no
+// answer at rest or under the pointer is drawn orange-gold (`answers`).
 //
 // The socket is mocked; everything else is the real App and its CSS.
 //
@@ -178,6 +181,82 @@ const frame = (page) => page.evaluate(() => {
   };
 });
 
+
+/** How an answer to a question is drawn, read off the page: its colours as
+ *  RGB (through a 1x1 canvas, so `color(srgb …)` and `oklab(…)` read alike)
+ *  and the decision colour, the accent and the two decision tints as the
+ *  same element would compute them. */
+const answerLook = (page, selector) => page.evaluate((selector) => {
+  const el = document.querySelector(selector);
+  if (!el) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 1;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const rgb = (value) => {
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = "#000"; ctx.fillStyle = value; ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    return [r, g, b, a];
+  };
+  const colours = (text) => (text.match(/(rgba?|color|oklab|oklch|lab|lch)\([^()]*\)|#[0-9a-f]{3,8}\b/gi) ?? []).map(rgb);
+  const probe = (prop, value) => {
+    const span = document.createElement("span");
+    span.style[prop] = value;
+    el.parentElement.append(span);
+    const read = getComputedStyle(span)[prop];
+    span.remove();
+    return rgb(read);
+  };
+  const s = getComputedStyle(el);
+  return {
+    text: el.textContent.trim(),
+    background: rgb(s.backgroundColor),
+    border: rgb(s.borderTopColor),
+    painted: colours(`${s.backgroundImage} ${s.boxShadow} ${s.borderTopColor} ${s.backgroundColor}`),
+    shadow: s.boxShadow,
+    decide: probe("color", "var(--decide)"),
+    accent: probe("color", "var(--accent)"),
+    tint18: probe("backgroundColor", "color-mix(in srgb, var(--decide) 18%, var(--bg-1))"),
+    tint28: probe("backgroundColor", "color-mix(in srgb, var(--decide) 28%, var(--bg-1))"),
+  };
+}, selector);
+
+const same = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
+/** Orange-gold, amber: a warm hue with colour in it. */
+const orange = ([r, g, b, a]) => {
+  if (a < 40) return false;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), chroma = (max - min) / 255;
+  if (chroma < 0.2 || max !== r) return false;
+  const h = (((g - b) / (max - min)) * 60 + 360) % 360;
+  return h >= 15 && h <= 60;
+};
+
+/** Measures an answer at rest and under the pointer, and checks it. */
+async function answer(page, selector, { leading }) {
+  const button = page.locator(selector).first();
+  await button.scrollIntoViewIfNeeded();
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(200);
+  const rest = await answerLook(page, selector);
+  await button.hover();
+  await page.waitForTimeout(250);
+  const hover = await answerLook(page, selector);
+  for (const [when, look] of [["at rest", rest], ["under the pointer", hover]]) {
+    const where = `${selector} (${look.text}) ${when}`;
+    assert.equal(look.painted.some(orange), false, `${where} is drawn orange-gold: ${JSON.stringify(look.painted)}`);
+    if (leading) {
+      assert.ok(same(look.border, look.decide), `${where}: its edge is not the decision colour`);
+      // Manga is monochrome: its decision colour and its accent are both ink.
+      if (!same(look.decide, look.accent)) assert.ok(!same(look.background, look.accent), `${where}: its fill is the accent`);
+      const tint = when === "at rest" ? look.tint18 : look.tint28;
+      assert.ok(same(look.background, tint) || same(look.background, look.decide), `${where}: its fill is not the decision colour (${look.background} vs ${tint})`);
+    } else if (theme === "xp" && when === "under the pointer") {
+      assert.ok(look.painted.some((c) => same(c, look.decide)), `${where}: not rimmed in the decision colour`);
+    }
+  }
+  return { rest, hover };
+}
+
 async function desktop(browser, out) {
   const { context, page } = await open(browser, { width: 1280, height: 860 });
   out.frame = await frame(page);
@@ -192,6 +271,30 @@ async function desktop(browser, out) {
   const fold = page.locator(".permission-card .card-fold-toggle, .permission-card [aria-expanded]").first();
   if (await fold.count()) { await fold.click().catch(() => {}); await page.waitForTimeout(300); }
   await page.screenshot({ path: join(artifacts, `${theme}-1280-cards.png`) });
+  out.permission = {
+    leading: await answer(page, ".permission-card .ask-card-actions .ask-btn.is-primary", { leading: true }),
+    other: await answer(page, ".permission-card .ask-card-actions .ask-btn:not(.is-primary):not(.is-quiet)", { leading: false }),
+  };
+  await page.screenshot({ path: join(artifacts, `${theme}-1280-permission-hover.png`), clip: await page.locator(".permission-card").first().evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.left - 8, y: r.top - 8, width: r.width + 16, height: r.height + 16 }; }) });
+  // The Complete question: the person's own decision, from the action bar.
+  await page.locator(".complete-chat").first().click();
+  await page.locator(".complete-ask").waitFor();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: join(artifacts, `${theme}-1280-complete.png`) });
+  out.complete = {
+    leading: await answer(page, ".complete-ask .ask-btn.is-primary", { leading: true }),
+    other: await answer(page, ".complete-ask .ask-btn:not(.is-primary)", { leading: false }),
+  };
+  await page.locator(".complete-ask .ask-btn.is-primary").hover();
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: join(artifacts, `${theme}-1280-complete-hover.png`), clip: await page.locator(".complete-ask").evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.left - 8, y: r.top - 8, width: r.width + 16, height: r.height + 16 }; }) });
+  // Its flag in the title, against the title's own background.
+  out.complete.flag = await page.evaluate(() => {
+    const mark = document.querySelector(".complete-ask-mark");
+    return { mark: getComputedStyle(mark).color, title: getComputedStyle(mark.parentElement).backgroundImage };
+  });
+  await page.keyboard.press("Escape");
+  await page.locator(".complete-ask").waitFor({ state: "detached" });
   // The question, drawn in the transcript.
   const question = page.locator(".qa-block, .inline-questions, [data-pending-keys]").first();
   if (await question.count()) {

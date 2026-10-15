@@ -21,6 +21,7 @@ import planReviewCss from "../components/PlanReview.css?raw";
 import planPanelCss from "../components/PlanPanel.css?raw";
 import guofengSheet from "../guofeng.css?raw";
 import xpSheet from "../xp.css?raw";
+import completeCss from "../components/CompleteChat.css?raw";
 import runPanelCss from "../components/OrchestrationPanel.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
 import runProgressCss from "../components/RunProgress.css?raw";
@@ -187,6 +188,7 @@ const RULES = [
   ...rules(chatPlanCss, "ChatPlanCards.css"),
   ...rules(mangaSheet, "manga.css"),
   ...rules(xpSheet, "xp.css"),
+  ...rules(completeCss, "CompleteChat.css"),
 ];
 
 /** Colours a decision card must not take: amber means a problem, and the
@@ -218,6 +220,9 @@ const DECISION_RULES = [
   // The safety card's leading answer is one of them (see below).
   ":is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary",
   ":is(.permission-card, .access-card, .safety-card) .ask-btn.is-primary:hover",
+  // Completing a chat: the person's own question, drawn as a decision.
+  ".complete-ask .ask-btn.is-primary",
+  ".complete-ask .ask-btn.is-primary:hover",
   // A question from the agent, drawn in the transcript with no card round
   // it: what the person does about it is the decision colour.
   ".qa-submit",
@@ -381,6 +386,77 @@ describe("the cards that wait on a decision", () => {
     for (const card of [".ask-card:not(.safety-card)", ".handover-card.is-waiting", ".chat-plan[data-pending]"]) {
       expect(raised[0].selector).toContain(card);
     }
+  });
+});
+
+/* ---- Windows XP: an answer's shape, never its colour ------------------- */
+
+/** What a rule of the XP sheet does wrong to an answer (`.ask-btn`): every
+ *  card that asks, the Complete question and Confirm draw their answers with
+ *  it, and what each answer means is its component's to colour. */
+function xpAnswerOffences(sheet: Rule[]): string[] {
+  const out: string[] = [];
+  // A rule that can reach an answer: names the button, or the buttons of a
+  // dialog, or every button.
+  const reaches = (rule: Rule) => /\.ask-btn|\.ask(?![\w-])\s|(^|[\s,(])button\b/.test(rule.selector);
+  const orangeOrAccent = /--xp-hover|#(ffe2a3|e8a33a|f6c46a|2f78ec|0054e3|004bd0|00329b)\b|--accent\b/i;
+  for (const rule of sheet.filter(reaches)) {
+    if (orangeOrAccent.test(rule.body)) out.push(`${rule.selector}: orange-gold or the accent on an answer`);
+    // The leading answer: its fill, edge and ink are the component's.
+    const leading = /\.ask-btn\.is-primary|\.ask(?![\w-])\s[^,]*\.is-primary/.test(rule.selector.replace(/:not\([^)]*\)/g, ""));
+    if (leading) {
+      const props = [...rule.body.matchAll(/([\w-]+)\s*:/g)].map((m) => m[1]);
+      for (const prop of props) {
+        if (!["border-radius", "background-image", "text-shadow"].includes(prop)) out.push(`${rule.selector}: sets ${prop} on the leading answer`);
+      }
+      for (const m of rule.body.matchAll(/rgb\(\s*(\d+)\s+(\d+)\s+(\d+)/g)) {
+        if (!(m[1] === m[2] && m[2] === m[3])) out.push(`${rule.selector}: a hue in the leading answer's light`);
+      }
+      if (/#[0-9a-f]{3,8}\b|--(decide|danger|warn|ok)\b/i.test(rule.body)) out.push(`${rule.selector}: a colour on the leading answer`);
+    }
+  }
+  return out;
+}
+
+describe("Windows XP draws an answer's shape, never its colour", () => {
+  const xp = rules(xpSheet, "xp.css");
+
+  it("leaves every answer's colour to its component, and keeps orange off it", () => {
+    expect(xpAnswerOffences(xp)).toEqual([]);
+  });
+
+  it("would have caught review 1's Complete question", () => {
+    // 2d172bb drew `.ask .ask-btn.is-primary` in the accent's lit gradient
+    // with the orange-gold rim, over the Complete question's decision tint.
+    const before = `
+      :root[data-theme="xp"] :is(.settings-primary, .ask .ask-btn.is-primary:not(.is-danger)) {
+        border: 1px solid #00329b; background: linear-gradient(180deg, #2f78ec 0%, #0054e3 45%, #004bd0 100%); color: #ffffff;
+      }
+      :root[data-theme="xp"] :is(.settings-primary, .ask .ask-btn.is-primary:not(.is-danger)):hover:not(:disabled) {
+        box-shadow: inset 0 2px 0 var(--xp-hover-top), inset 0 -2px 0 var(--xp-hover-bottom);
+      }
+      :root[data-theme="xp"] :is(.resume-open, .ask .ask-btn:not(.is-primary)):hover:not(:disabled) {
+        box-shadow: inset 0 2px 0 var(--xp-hover-top);
+      }`;
+    expect(xpAnswerOffences(rules(before, "xp.css")).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("rims the other answers in the decision colour under the pointer", () => {
+    const rim = xp.filter((rule) => rule.selector === ':root[data-theme="xp"] .ask-btn:not(.is-primary):hover:not(:disabled)');
+    expect(rim).toHaveLength(1);
+    expect(rim[0].body).toMatch(/box-shadow:[^;]*var\(--decide\)/);
+    // Orange-gold is a tool button's hover, on nothing that answers.
+    for (const rule of xp.filter((item) => /--xp-hover/.test(item.body))) expect(rule.selector).not.toMatch(/\.ask/);
+  });
+
+  it("gives the Complete question's flag a visible pale decision colour in the title strip", () => {
+    const flag = xp.filter((rule) => /\.complete-ask-mark/.test(rule.selector));
+    expect(flag).toHaveLength(1);
+    expect(flag[0].body).toMatch(/color:\s*color-mix\(in srgb, var\(--decide\) 20%, #ffffff\)/);
+    const mode = MODES.find((item) => item.id === "xp")!;
+    const pale = over(solid(mode.vars["--decide"]), 0.2, [255, 255, 255]);
+    // The strip's bands under the 15px mark (its middle half): 3:1 for a mark.
+    for (const band of ["#0453dc", "#0049d0", "#0a52d8"]) expect(contrast(pale, solid(band)), band).toBeGreaterThanOrEqual(3);
   });
 });
 

@@ -2746,7 +2746,9 @@ retired palette back to Dark.
   (`--radius-sm/md/lg/pill`), which is how Manga gets uneven hand-cut corners.
 - **Manga, 中国风 and Windows XP change more than colour.** Each has its own
   sheet next to `styles.css`, every rule scoped to its `:root[data-theme=…]`,
-  so no other mode picks any of it up. All three follow one rule: **readability wins over
+  so no other mode picks any of it up. The one exception is each sheet's own
+  tile in Settings' appearance picker (`.thm[data-theme-id=…]`), which draws
+  that mode's look in every mode so it can be found. All three follow one rule: **readability wins over
   effect** — reading text stays in a real reading face, nothing is drawn
   behind words, and display lettering is for the few biggest headings.
 - **Manga** (`web/src/manga.css`): thin, slightly uneven panel
@@ -2775,13 +2777,21 @@ retired palette back to Dark.
   bold titles on the bar's darker middle; the strip turns `--fg-*`, `--bg-1/2`
   and `--accent` white for what is in it, and a menu that opens from one takes
   them back from `--xp-*`. White content panes on beige (`#ECE9D8`) faces,
-  raised buttons with a dark blue-grey edge and an orange-gold rim under the
-  pointer, edit boxes with the thin blue-grey edge, and the composer's Send in
-  a Start-button green. Tahoma for the UI. The accent is Luna's blue
-  `#0054e3`; `--decide` is a steel blue of its own (`#1a6a8a`), and on a card
-  that asks the hover rim is `--decide`, never orange, which stays a hover
-  elsewhere and never means anything. A sky over a green hill on the empty
-  page only, clear of the question.
+  raised tool buttons with a dark blue-grey edge and an orange-gold rim under
+  the pointer, edit boxes with the thin blue-grey edge, and the composer's
+  Send in a Start-button green. Tahoma for the UI. The accent is Luna's blue
+  `#0054e3`; `--decide` is a steel blue of its own (`#1a6a8a`).
+  **An answer to a question (`.ask-btn`, wherever it is drawn) gets XP's shape
+  and never its colour**: the leading answer keeps the fill, edge and ink its
+  component gives it (the decision tint on a card that waits on the person
+  and on the Complete question, the accent or red on Confirm) and only takes
+  the corners and a colourless light from the top; the other answers are
+  raised beige faces rimmed in `--decide` under the pointer, never orange.
+  Orange is a tool button's hover and never means anything. This is one rule
+  on the button, not a list of the cards that ask: a list missed the
+  Complete question (review 1), and `decideColour.test.ts` plus
+  `scripts/test-appearance-mode.mjs` check it. A sky over a green hill on the
+  empty page only, clear of the question.
 - The terminal cannot read a `var()` — xterm hands its palette to WebGL. So
   `web/src/lib/xtermTheme.ts` resolves variables through hidden elements and a
   1×1 canvas: one element per colour, never one element given each colour in
