@@ -18,9 +18,20 @@
  *  Painting one pixel and reading it back is the browser's own conversion, and
  *  it keeps the alpha the selection colour depends on. */
 function resolve(values: string[]): string[] {
-  const probe = document.createElement("span");
-  probe.style.cssText = "position:fixed;left:-9999px;top:0;width:0;height:0";
-  document.body.appendChild(probe);
+  // One probe per value, all in the page before any is read. One probe whose
+  // `color` was set to each value in turn read back stale in Chrome 155: every
+  // `var()` after the first answered the first's colour, so the terminal drew
+  // its text in its own background colour and only the fixed hex colours
+  // (magenta, cyan) could be seen, in every mode.
+  const box = document.createElement("div");
+  box.style.cssText = "position:fixed;left:-9999px;top:0;width:0;height:0;overflow:hidden";
+  const probes = values.map((value) => {
+    const probe = document.createElement("span");
+    probe.style.color = value;
+    box.appendChild(probe);
+    return probe;
+  });
+  document.body.appendChild(box);
 
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 1;
@@ -31,8 +42,7 @@ function resolve(values: string[]): string[] {
   if (ctx) ctx.globalCompositeOperation = "copy";
 
   try {
-    return values.map((value) => {
-      probe.style.color = value;
+    return probes.map((probe) => {
       const resolved = getComputedStyle(probe).color;
       if (!ctx) return resolved;
       ctx.fillStyle = resolved;
@@ -43,7 +53,7 @@ function resolve(values: string[]): string[] {
         : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
     });
   } finally {
-    probe.remove();
+    box.remove();
   }
 }
 
@@ -89,10 +99,11 @@ export function xtermTheme() {
     brightBlack, brightRed, brightGreen, brightYellow, brightBlue, brightWhite,
     // Magenta and cyan are the two ANSI colours the app has no opinion about —
     // nothing in the UI means either — so they are left as they were rather
-    // than invented from a token that does not fit them.
-    magenta: "#bf5af2",
-    cyan: "#64d2ff",
-    brightMagenta: "#da8fff",
-    brightCyan: "#8be9ff",
+    // than invented from a token that does not fit them. A light mode gets
+    // the deeper pair: the dark pair's cyan is under 2:1 on white.
+    ...(document.documentElement.getAttribute("data-color-scheme") === "light" ? LIGHT_PAIR : DARK_PAIR),
   };
 }
+
+const DARK_PAIR = { magenta: "#bf5af2", cyan: "#64d2ff", brightMagenta: "#da8fff", brightCyan: "#8be9ff" };
+const LIGHT_PAIR = { magenta: "#9a32c8", cyan: "#0a7491", brightMagenta: "#b046e0", brightCyan: "#0b87a8" };
