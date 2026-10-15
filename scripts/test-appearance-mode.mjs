@@ -231,15 +231,65 @@ const orange = ([r, g, b, a]) => {
   return h >= 15 && h <= 60;
 };
 
+/** Waits until the first element `selector` names is in the state asked
+ *  (under the pointer, or not) and has finished drawing it: `:hover` says
+ *  so, for a hover the element at the pointer is it or inside it, nothing
+ *  of it is animating, and its painted colours read the same over two
+ *  frames in a row. A wait on a condition, never on a clock: under load a
+ *  fixed 250 ms read the 130 ms transition before it had run (review 1b,
+ *  H2). Fails with the part that never settled. */
+const settled = (page, selector, { hovered, at = null, timeout = 20_000 }) => page.evaluate(({ selector, hovered, at, timeout }) => new Promise((resolve, reject) => {
+  const started = performance.now();
+  let previous = null;
+  let steady = 0;
+  const check = () => {
+    const el = document.querySelector(selector);
+    const why = [];
+    if (!el) why.push("the element is not on the page");
+    else {
+      if (el.matches(":hover") !== hovered) why.push(hovered ? "it does not match :hover" : "it still matches :hover");
+      if (hovered && at) {
+        const under = document.elementFromPoint(at.x, at.y);
+        if (!under || !el.contains(under)) why.push(`the element under the pointer is ${under ? under.tagName.toLowerCase() + (under.className ? "." + String(under.className).trim().replace(/\s+/g, ".") : "") : "nothing"}`);
+      }
+      const running = el.getAnimations({ subtree: true }).filter((a) => a.playState !== "finished" && a.playState !== "idle");
+      if (running.length) why.push(`${running.length} animation(s) still running (${running.map((a) => a.transitionProperty ?? a.animationName ?? a.constructor.name).join(", ")})`);
+      const s = getComputedStyle(el);
+      const now = [s.backgroundColor, s.backgroundImage, s.borderTopColor, s.boxShadow, s.color].join("|");
+      steady = now === previous ? steady + 1 : 0;
+      previous = now;
+      if (steady < 2) why.push("its colours changed between frames");
+    }
+    if (!why.length) return resolve();
+    if (performance.now() - started > timeout) return reject(new Error(`${selector} never settled ${hovered ? "under the pointer" : "at rest"} in ${timeout} ms: ${why.join("; ")}`));
+    requestAnimationFrame(check);
+  };
+  requestAnimationFrame(check);
+}), { selector, hovered, at, timeout });
+
+/** Puts the pointer on the first element `selector` names and waits until
+ *  it is drawn hovered. */
+async function hoverSettled(page, selector) {
+  const button = page.locator(selector).first();
+  await button.hover();
+  const box = await button.boundingBox();
+  await settled(page, selector, { hovered: true, at: { x: box.x + box.width / 2, y: box.y + box.height / 2 } });
+}
+
+/** Takes the pointer off everything and waits until `selector` is drawn
+ *  at rest. */
+async function restSettled(page, selector) {
+  await page.mouse.move(0, 0);
+  await settled(page, selector, { hovered: false });
+}
+
 /** Measures an answer at rest and under the pointer, and checks it. */
 async function answer(page, selector, { leading }) {
   const button = page.locator(selector).first();
   await button.scrollIntoViewIfNeeded();
-  await page.mouse.move(0, 0);
-  await page.waitForTimeout(200);
+  await restSettled(page, selector);
   const rest = await answerLook(page, selector);
-  await button.hover();
-  await page.waitForTimeout(250);
+  await hoverSettled(page, selector);
   const hover = await answerLook(page, selector);
   for (const [when, look] of [["at rest", rest], ["under the pointer", hover]]) {
     const where = `${selector} (${look.text}) ${when}`;
@@ -285,8 +335,7 @@ async function desktop(browser, out) {
     leading: await answer(page, ".complete-ask .ask-btn.is-primary", { leading: true }),
     other: await answer(page, ".complete-ask .ask-btn:not(.is-primary)", { leading: false }),
   };
-  await page.locator(".complete-ask .ask-btn.is-primary").hover();
-  await page.waitForTimeout(250);
+  await hoverSettled(page, ".complete-ask .ask-btn.is-primary");
   await page.screenshot({ path: join(artifacts, `${theme}-1280-complete-hover.png`), clip: await page.locator(".complete-ask").evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.left - 8, y: r.top - 8, width: r.width + 16, height: r.height + 16 }; }) });
   // Its flag in the title, against the title's own background.
   out.complete.flag = await page.evaluate(() => {
@@ -337,8 +386,7 @@ async function desktop(browser, out) {
   // A raised button under the pointer.
   const resume = empty.page.locator(".resume-open").first();
   if (await resume.count()) {
-    await resume.hover();
-    await empty.page.waitForTimeout(250);
+    await hoverSettled(empty.page, ".resume-open");
     await empty.page.screenshot({ path: join(artifacts, `${theme}-button-hover.png`), clip: await resume.evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.left - 12, y: r.top - 12, width: r.width + 24, height: r.height + 24 }; }) });
   }
   await empty.context.close();
