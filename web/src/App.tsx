@@ -98,7 +98,7 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
-import { ChatStatus } from "./components/ChatStatus";
+import { ChatStatus, StatusChevron } from "./components/ChatStatus";
 import { ChatQuestionsContext, QuestionWaitingRow, type ChatQuestions } from "./components/InlineQuestions";
 import { isAnswerTurn } from "./lib/questionBlock";
 import { Arrive } from "./components/Arrive";
@@ -6028,7 +6028,16 @@ export default function App() {
                 {/* Feedback 76cde28e: one quiet line, the card behind it. */}
                 {quiet.length > 0 && (
                   <details className="worker-refusal-line">
-                    <summary>{title}: {quiet.length === 1 ? "1 action" : `${quiet.length} actions`} blocked by Claude's auto mode · nothing to approve</summary>
+                    <summary className="status-row">
+                      <span className="status-row-icon" aria-hidden="true">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                          <circle cx="8" cy="8" r="5.75" />
+                          <path d="m4 12 8-8" />
+                        </svg>
+                      </span>
+                      <span className="status-row-text">{title}: {quiet.length === 1 ? "1 action" : `${quiet.length} actions`} blocked by Claude's auto mode · nothing to approve</span>
+                      <StatusChevron />
+                    </summary>
                     {requests(quiet)}
                   </details>
                 )}

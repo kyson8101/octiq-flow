@@ -9,13 +9,17 @@
    `--warn` a problem, `--ok` done, `--decide` what waits on the person,
    `--danger` a failure, the accent a turn in flight. */
 
-.chat-status {
+.chat-status,
+.worker-refusal-line {
   --status-row: 28px;
   --status-icon: 18px;
   --status-gap: 6px;
   /* A hairline of the text's own ink, so it is as faint in a mode whose
      border token is a drawn frame (Manga) as in the others. */
   --status-rule: color-mix(in srgb, var(--fg-3) 22%, transparent);
+}
+
+.chat-status {
   /* Never squeezed by the column it sits in: a row that gave up height drew
      its words over its neighbours. */
   flex: 0 0 auto;
@@ -174,6 +178,47 @@
 
 @keyframes status-panel-in {
   from { opacity: 0; }
+}
+
+/* ---- A worker's refusal nobody can approve --------------------------------
+   One quiet line in the coordinator's chat, the card behind it (App.tsx,
+   feedback 76cde28e). It stands with the cards, above the group, and is a row
+   of the group in all but that: the same left edge and icon column as
+   `.chat-status > *`, one line cut with an ellipsis, and the group's chevron
+   after the words. The browser's own marker sat on the text's baseline, which
+   a fallback font (a title that mixes CJK and Latin) moved; the chevron is
+   centred on the text's box instead. What it opens is the card as the cards
+   are drawn, at their width. */
+
+.worker-refusal-line > summary {
+  width: calc(100% - 50px);
+  max-width: calc(var(--chat-column) - 26px);
+  margin-inline: auto;
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+  list-style: none;
+  cursor: pointer;
+}
+
+.worker-refusal-line > summary::-webkit-details-marker { display: none; }
+.worker-refusal-line > summary::marker { content: ""; }
+
+/* One line box whatever font draws a character of it, so the box the
+   chevron is centred on does not move with the title's script. */
+.worker-refusal-line > summary > .status-row-text {
+  height: 16px;
+  line-height: 16px;
+}
+
+.worker-refusal-line[open] > summary { margin-bottom: 6px; }
+
+.worker-refusal-line[open] > summary > .status-row-chevron {
+  transform: rotate(180deg);
+}
+
+.worker-refusal-line > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 /* ---- The chat's folder is gone -------------------------------------------
