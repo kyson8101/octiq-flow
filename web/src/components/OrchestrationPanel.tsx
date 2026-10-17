@@ -1,5 +1,8 @@
 import { useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
+import { jobLine, jobRowNote } from "../lib/jobs";
+import { elapsedLabel } from "../lib/working";
+import { useRunningJob } from "./Background";
 import "./OrchestrationPanel.css";
 import { AGENT_NAME } from "../lib/agentProviders";
 import {
@@ -1436,12 +1439,18 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   // behind the disclosure. A stopped task's step is its last.
   const steps = taskStepSummary(task, attempt, report);
   const step = steps && stepLabel(steps);
+  // A job the worker registered with the host (`lib/jobs`) and that is
+  // still running, while its attempt executes: the job's own numbers, never
+  // estimated. It goes ahead of the step, and absent draws nothing.
+  const heldJob = useRunningJob(row.flight && !row.why ? attempt?.workerChatKey : null);
+  const job = heldJob ? jobLine(heldJob, now) : null;
   // The host's word comes first: a row that waits on something or went
   // wrong says that, and names no step.
-  const doing = row.why ? null : row.step;
-  // What the row says under the title: the host's word, else the step its
-  // worker is on, else how far its checklist has got.
-  const note = row.why ?? (doing ? stepAtLabel(doing) : row.steps ? stepsLabel(row.steps) : null);
+  const doing = row.why || job ? null : row.step;
+  // What the row says under the title: the host's word, else the job its
+  // worker is running, else the step it is on, else how far its checklist
+  // has got.
+  const note = row.why ?? (job ? jobRowNote(job, elapsedLabel) : doing ? stepAtLabel(doing) : row.steps ? stepsLabel(row.steps) : null);
   const figures = figuresLabel(row);
   const reported = steps ? `${steps.done} of ${steps.total} reported steps done · reported ${agoLabel(steps.reportedAt, now)}` : null;
   // "Awaiting approval" is said only of a row whose wait is the person's
@@ -1522,8 +1531,9 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
             {/* A step's title is the worker's text: one line of plain text,
                 cut with an ellipsis, whole in the tooltip and in the Steps
                 tab. An old report is muted, and the tooltip says how old. */}
-            <span className="run-row-note" data-tone={row.tone ?? undefined} data-stale={doing?.stale || undefined}
-              title={[doing && `Step ${doing.at} of ${doing.total}: ${doing.title}`, reported ? `${stateWord} · ${reported}` : stateWord, hint].filter(Boolean).join("\n")}>
+            <span className="run-row-note" data-tone={row.tone ?? undefined} data-stale={doing?.stale || job?.stale || undefined}
+              data-job={job ? "" : undefined}
+              title={[job?.title, doing && `Step ${doing.at} of ${doing.total}: ${doing.title}`, reported ? `${stateWord} · ${reported}` : stateWord, hint].filter(Boolean).join("\n")}>
               {note}{doing && <span className="run-row-step"> · {stepOneLine(doing.title)}</span>}
             </span>
             {figures && <span className="run-row-figures">{figures}</span>}

@@ -52,7 +52,7 @@ describe("backgroundSummary", () => {
       [task({ id: "t2", label: "a subagent", startedAt: 4000 }), task({ startedAt: 1000 })],
       253_000,
     );
-    expect(summary).toEqual({ count: 2, label: "codex exec", elapsedMs: 252_000 });
+    expect(summary).toEqual({ count: 2, label: "codex exec", elapsedMs: 252_000, job: null });
   });
 });
 

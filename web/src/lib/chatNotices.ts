@@ -1,3 +1,5 @@
+import { interruptedJobs } from "./jobs";
+
 export type PresentedNotice = {
   key: string;
   title: string;
@@ -63,6 +65,18 @@ export function presentNotice(raw: string): Omit<PresentedNotice, "count"> {
     return {
       key: `background-interrupted:${interrupted[2].toLocaleLowerCase()}`,
       title: `${count} background ${count === 1 ? "task" : "tasks"} interrupted`,
+      detail: text,
+    };
+  }
+
+  // The host's sentence for jobs a server restart interrupted
+  // (`octiq_job_interrupted`). Folded it is a count, like the background
+  // tasks above; the sentence with the jobs' names is inside the panel.
+  const jobs = interruptedJobs(text);
+  if (jobs) {
+    return {
+      key: `jobs-interrupted:${jobs.labels.toLocaleLowerCase()}`,
+      title: `${jobs.count} ${jobs.count === 1 ? "job" : "jobs"} interrupted`,
       detail: text,
     };
   }

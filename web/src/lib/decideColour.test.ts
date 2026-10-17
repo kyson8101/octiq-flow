@@ -505,6 +505,41 @@ describe("a run's own surfaces", () => {
   });
 });
 
+/* ---- A job the agent registered ------------------------------------------ */
+
+describe("a job's progress", () => {
+  const sheet = rules(stylesCss, "styles.css");
+  /** The parts a job is drawn with on the line above the composer
+   *  (`components/Background`'s `JobProgress`). A part added there is added
+   *  here, or the scans below do not see it. */
+  const JOB_PARTS = ["progress", "phase", "meter", "fill", "percent"];
+  const mine = sheet.filter((rule) => /\.job-/.test(rule.selector));
+
+  it("names every part, and the sheet draws no part it does not name", () => {
+    const classes = new Set(mine.flatMap((rule) => [...rule.selector.matchAll(/\.job-([a-z-]+)/g)].map((match) => match[1])));
+    expect([...classes].sort()).toEqual([...JOB_PARTS].sort());
+  });
+
+  it("asks nothing of the person and is no problem: never the decision colour, amber or red", () => {
+    for (const rule of mine) expect(rule.body, rule.selector).not.toMatch(/--(decide|warn|danger)\b/);
+  });
+
+  it("keeps the accent for a job in flight, as a mix on the fill, and nothing else", () => {
+    const accent = mine.filter((rule) => /var\(--accent\b/.test(rule.body));
+    expect(accent.map((rule) => rule.selector)).toEqual([".job-fill"]);
+    expect(accent[0].body).toMatch(/color-mix\(in srgb, var\(--accent\)/);
+  });
+
+  it("is muted grey once the job has gone quiet, its dot too", () => {
+    for (const selector of [".job-progress[data-stale]", ".job-progress[data-stale] .job-fill", ".bgwork-dot[data-stale]"]) {
+      const found = sheet.filter((rule) => rule.selector === selector);
+      expect(found.length, `no rule for ${selector}`).toBeGreaterThan(0);
+      expect(found.some((rule) => /var\(--fg-3\)/.test(rule.body)), selector).toBe(true);
+    }
+    expect(sheet.find((rule) => rule.selector === ".bgwork-dot[data-stale]")!.body).toMatch(/animation:\s*none/);
+  });
+});
+
 /* ---- The badge in the chat list ----------------------------------------- */
 
 describe("the pending badge in the chat list", () => {

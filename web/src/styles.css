@@ -3764,6 +3764,63 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* A job the agent registered with the host says how far it is in its own
+   numbers (`lib/jobs`). Not a second moving thing: the bar only moves when the
+   job reports, and its width eases there. The fill is the accent while the job
+   is in flight, and muted grey once it has said nothing for ten minutes; the
+   dot then stands still too. */
+.bgwork-dot[data-stale] {
+  background: var(--fg-3);
+  animation: none;
+}
+
+.job-progress[data-stale] {
+  color: var(--fg-3);
+}
+
+.job-phase {
+  color: var(--fg-2);
+}
+
+.job-progress[data-stale] .job-phase {
+  color: var(--fg-3);
+}
+
+.job-meter {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+  width: 44px;
+  height: 4px;
+  margin: -1px 5px 0 0;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+}
+
+.job-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--accent) 55%, var(--bg-2));
+  transition: width 200ms ease-out;
+}
+
+.job-progress[data-stale] .job-fill {
+  background: color-mix(in srgb, var(--fg-3) 60%, var(--bg-2));
+}
+
+.job-percent {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-fill {
+    transition: none;
+  }
+}
+
 /* The turn's own clock. Tabular figures because it is not rolled any more and
    nothing else is holding its width: a proportional `1` would let the whole
    line breathe in and out once a second, which is the fidget the roll was

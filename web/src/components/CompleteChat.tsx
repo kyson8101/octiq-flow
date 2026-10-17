@@ -69,6 +69,19 @@ function StartedIcon({ size = 17 }: { size?: number }) {
   );
 }
 
+/** A job that ran on its own: the mark of the host's turn that tells an agent
+ *  a job it registered has ended (`lib/jobs`). */
+function JobIcon({ size = 17 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="13" r="7.5" />
+      <path d="M12 9.5V13l2.5 1.5" />
+      <path d="M10 3h4" />
+    </svg>
+  );
+}
+
 /** Asks the host what it knows, then asks the person. Nothing is sent to the
  *  agent until the person confirms. */
 export function CompleteChatDialog({
@@ -258,20 +271,21 @@ export function ChatCompletionLine({
 export function WrapUpNote({ label, detail, text, mark = "complete" }: {
   label: string; detail: string; text: string;
   /** Which of the host's turns this is. A plan's Start is not a completion,
-   *  and does not wear its flag: the mark is a start's. */
-  mark?: "complete" | "start";
+   *  and does not wear its flag: the mark is a start's. A job's end is told
+   *  to the agent, not asked of it. */
+  mark?: "complete" | "start" | "job";
 }) {
   const lines = text.split("\n").filter((line) => line.trim()).length;
   return (
     <div className="wrap-up-note" data-mark={mark}>
       <span className="wrap-up-note-head">
-        <span className="wrap-up-note-mark" aria-hidden="true">{mark === "start" ? <StartedIcon size={13} /> : <CompleteIcon size={13} />}</span>
+        <span className="wrap-up-note-mark" aria-hidden="true">{mark === "start" ? <StartedIcon size={13} /> : mark === "job" ? <JobIcon size={13} /> : <CompleteIcon size={13} />}</span>
         <span className="wrap-up-note-label">{label}</span>
-        <span className="wrap-up-note-detail">{detail}</span>
+        {detail && <span className="wrap-up-note-detail">{detail}</span>}
       </span>
       {lines > 0 && (
         <details className="wrap-up-note-text">
-          <summary>What the agent is asked · {lines} {lines === 1 ? "line" : "lines"}</summary>
+          <summary>{mark === "job" ? "What the agent was told" : "What the agent is asked"} · {lines} {lines === 1 ? "line" : "lines"}</summary>
           <p>{text}</p>
         </details>
       )}

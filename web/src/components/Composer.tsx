@@ -32,7 +32,7 @@ import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
 import type { BackgroundTask } from "../lib/background";
-import { BackgroundNote } from "./Background";
+import { BackgroundNote, useHasRunningJob } from "./Background";
 import { RollingText } from "./RollingNumber";
 import { useLate } from "../lib/useArrival";
 import { receiptLines, runsAtLine, runsAtParts, runsAtRows, type KnownSettings } from "../lib/chatSettings";
@@ -370,6 +370,7 @@ export function Composer({
   thinking,
   thought,
   background,
+  jobChat,
   effort,
   onEffort,
   lite,
@@ -481,6 +482,9 @@ export function Composer({
   /** Work the turn started and left running behind it. Shown on the status
    *  line rather than on a row of its own — see `BackgroundNote`. */
   background?: BackgroundTask[];
+  /** The chat's key (`chat:<id>`), whose registered jobs (`lib/jobs`) join
+   *  `background` on the same line. */
+  jobChat?: string;
   /** The thought being written right now, or "" — see `thinkingNow` in
    *  lib/chat. Watched here and nowhere else: it is left out of the transcript
    *  entirely, because a fold-out row of the agent talking to itself between
@@ -1020,6 +1024,9 @@ export function Composer({
   // The last turn's receipt, for a tooltip: on the agent's chip, or on the
   // model picker of an ordinary chat. It is not on the eyebrow.
   const receipt = receiptLines(lastDurationMs, lastCostUsd);
+  // A job the agent registered counts as work left running, for the robot's
+  // eyes, the same as a background command does.
+  const hasJob = useHasRunningJob(jobChat);
 
   return (
     <div className={`composer ${focusMode ? "composer-focus" : ""} ${focusMode && focusOptions ? "focus-options-open" : ""}`} data-composer-style={choice.composerStyle} data-model-id={choice.id}>
@@ -1044,7 +1051,7 @@ export function Composer({
             in front of the clock, and what it is running after the words. It
             used to have a row of its own directly above, which is a line of
             chrome parked in the chat for as long as the build takes. */}
-        <BackgroundNote tasks={background ?? []} busy={busy}>
+        <BackgroundNote tasks={background ?? []} chatKey={jobChat} busy={busy}>
         {busy ? (
           <Working
             since={turnStartedAt}
@@ -1056,7 +1063,7 @@ export function Composer({
             activity={activity}
             thinking={thinking}
             effort={eff.label.toLowerCase()}
-            background={(background ?? []).length > 0}
+            background={(background ?? []).length > 0 || hasJob}
             robot={choice.composerStyle}
             persona={identity}
           />

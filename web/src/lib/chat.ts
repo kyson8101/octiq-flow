@@ -1103,6 +1103,16 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     };
   }
 
+  // A server restart interrupted jobs the agent registered (`lib/jobs`). The
+  // host's sentence is a notice, said the way an interrupted background task
+  // is; the jobs themselves leave the strip through `chat-job` and
+  // `chat_jobs`, which are the job store's, not this record's.
+  if (type === "octiq_job_interrupted") {
+    const message = asStr(e.message);
+    if (!message || state.notices.includes(message)) return state;
+    return { ...state, notices: [...state.notices, message].slice(-8) };
+  }
+
   if (type === "octiq_auto_resume_cancelled") {
     const id = asStr(e.id);
     if (!state.autoResume || (id && state.autoResume.id !== id)) return state;

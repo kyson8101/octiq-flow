@@ -14,6 +14,7 @@
 // draws one. The rail answers "what has this conversation started", which is
 // history and includes what has finished; this answers "is anything running
 // right now", which is the one question the screen was not answering at all.
+import { jobLine, startedAt, type HeldJob, type JobLine } from "./jobs";
 import { commandHead } from "./toolGroups";
 
 /** One piece of work still going, after the call that started it answered. */
@@ -62,18 +63,29 @@ export function backgroundCalls(tasks: BackgroundTask[]): Set<string> {
  *
  *  One label for any number of runs, and it is the OLDEST one — the longest
  *  wait is the one the reader is actually asking about, and it carries the
- *  biggest number, which is the part that answers "is this going anywhere". */
-export type BackgroundSummary = { count: number; label: string; elapsedMs: number };
+ *  biggest number, which is the part that answers "is this going anywhere".
+ *
+ *  A running job the agent registered with the host (`lib/jobs`) joins the
+ *  same roster. When the oldest entry is one, `job` is what it says of
+ *  itself: its phase, and its own percent when it gave one. */
+export type BackgroundSummary = { count: number; label: string; elapsedMs: number; job: JobLine | null };
 
 export function backgroundSummary(
   tasks: BackgroundTask[],
   now: number,
+  jobs: readonly HeldJob[] = [],
 ): BackgroundSummary | null {
-  if (tasks.length === 0) return null;
-  const oldest = tasks.reduce((a, b) => (b.startedAt < a.startedAt ? b : a));
+  const entries = [
+    ...tasks.map((task) => ({ startedAt: task.startedAt, label: task.label, job: null as HeldJob | null })),
+    ...jobs.map((held) => ({ startedAt: startedAt(held), label: held.job.label, job: held })),
+  ];
+  if (entries.length === 0) return null;
+  const oldest = entries.reduce((a, b) => (b.startedAt < a.startedAt ? b : a));
+  const job = oldest.job ? jobLine(oldest.job, now) : null;
   return {
-    count: tasks.length,
+    count: entries.length,
     label: oldest.label,
-    elapsedMs: Math.max(0, now - oldest.startedAt),
+    elapsedMs: job ? job.elapsedMs : Math.max(0, now - oldest.startedAt),
+    job,
   };
 }

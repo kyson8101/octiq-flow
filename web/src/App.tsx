@@ -25,6 +25,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
@@ -95,7 +96,7 @@ import * as push from "./lib/push";
 import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail, RailButton } from "./components/AgentRail";
 import { ProjectsPage } from "./components/ProjectsPage";
-import { BackgroundProvider } from "./components/Background";
+import { BackgroundProvider, JobCallsProvider, JobStoreProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
 import { ChatStatus, StatusChevron } from "./components/ChatStatus";
@@ -104,6 +105,8 @@ import { isAnswerTurn } from "./lib/questionBlock";
 import { Arrive } from "./components/Arrive";
 import { useEntry, entryClass, useLateKeys } from "./lib/useArrival";
 import { backgroundCalls } from "./lib/background";
+import { callCommands, isJobTurn, jobCalls, runningJobs, runningSignature } from "./lib/jobs";
+import { jobFeed, readChatJobs } from "./lib/jobFeed";
 import { MOBILE, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
@@ -454,6 +457,31 @@ const RUN_CHATS_KEY = "octiq.v2.runChats";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
+const NO_JOB_CALLS: ReadonlyMap<string, string> = new Map();
+
+/** Which card of a chat started which of its running jobs, by call id → job
+ *  id (`lib/jobs.jobCalls`). Matched again only when a job of the chat starts
+ *  or ends, or the transcript changes while one runs: a job's progress moves
+ *  nothing here, and a chat with no running job costs one string compare. */
+function useJobCalls(chatKey: string | null, messages: readonly Message[]): ReadonlyMap<string, string> {
+  const signature = useSyncExternalStore(jobFeed.subscribe, () => runningSignature(jobFeed.snapshot()));
+  const live = !!chatKey && signature.includes(`\u0000${chatKey}\u0000`);
+  return useMemo(() => {
+    if (!live || !chatKey) return NO_JOB_CALLS;
+    const matched = jobCalls(callCommands(messages), runningJobs(jobFeed.snapshot(), chatKey));
+    if (matched.size === 0) return NO_JOB_CALLS;
+    return new Map([...matched].map(([call, held]) => [call, held.job.id]));
+  }, [live, chatKey, signature, live ? messages : null]);
+}
+
+/** The running calls with the job cards among them. */
+function withJobCalls(calls: Set<string>, jobs: ReadonlyMap<string, string>): Set<string> {
+  if (jobs.size === 0) return calls;
+  const out = new Set(calls);
+  for (const id of jobs.keys()) out.add(id);
+  return out;
+}
+
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -1644,8 +1672,9 @@ export default function App() {
   const reclaim = useCallback((id: string, turnId: string, message: Message | undefined) => {
     // The host's wrap-up turn was never typed; taking it back returns nothing.
     // Nor was an answer to the agent's question: it is never the composer's.
-    // Nor the turn that tells an agent its plan was started.
-    if (!message || isWrapUpTurn(turnId) || isAnswerTurn(turnId) || isPlanStartTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
+    // Nor the turn that tells an agent its plan was started, or that a job
+    // it registered ended.
+    if (!message || isWrapUpTurn(turnId) || isAnswerTurn(turnId) || isPlanStartTurn(turnId) || isJobTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
     const words = reclaimedMessage(message);
     reclaimedIds.current = [...reclaimedIds.current.slice(-199), turnId];
     setReclaimed((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), words] }));
@@ -2267,7 +2296,8 @@ export default function App() {
     () => (besideId ? contextFor(besideId, besidePersona, besideModel) : undefined),
     [besideId, contextFor, besidePersona, besideModel],
   );
-  const besideCalls = useMemo(() => backgroundCalls(besideChat.background), [besideChat.background]);
+  const besideJobCalls = useJobCalls(besideId ? keyFor(besideId) : null, besideChat.messages);
+  const besideCalls = useMemo(() => withJobCalls(backgroundCalls(besideChat.background), besideJobCalls), [besideChat.background, besideJobCalls]);
   const openAgentsSettings = useCallback(() => {
     setAgentsDashboard(false);
     setPrDashboardOpen(false);
@@ -2567,7 +2597,16 @@ export default function App() {
    *  on the roster itself: it is a context value read by every card on screen,
    *  and a fresh Set on every render would re-render the whole transcript on
    *  every keystroke. */
-  const runningCalls = useMemo(() => backgroundCalls(chat.background), [chat.background]);
+  //
+  // A card that started a job the agent registered (`lib/jobs`) is one of
+  // them too, so a folded run of calls never hides it.
+  const chatJobCalls = useJobCalls(conversationId ? keyFor(conversationId) : null, chat.messages);
+  const runningCalls = useMemo(() => withJobCalls(backgroundCalls(chat.background), chatJobCalls), [chat.background, chatJobCalls]);
+  // The open chat's own jobs, read once a connection, so a wake turn can name
+  // a job that ended before the all-chats read's ten minutes.
+  useEffect(() => {
+    if (conversationId) readChatJobs(keyFor(conversationId));
+  }, [conversationId]);
 
   // A turn that ended, announced to the desktop.
   //
@@ -5343,6 +5382,7 @@ export default function App() {
     ? pendingList.filter((action) => action.surface === "chat" && action.openChatId === conversationId).length : 0;
 
   return (
+    <JobStoreProvider value={jobFeed}>
     <WorkspaceSlotsContext.Provider value={workspaceSlots}>
     <AgentRosterContext.Provider value={agentsMode ? roster : NO_ROSTER}>
     <ChatPersonaContext.Provider value={personaForChat}>
@@ -5843,6 +5883,7 @@ export default function App() {
                     four levels down, past a grouping pass that rebuilds its
                     rows — see components/Background. */}
                 <BackgroundProvider value={runningCalls}>
+                <JobCallsProvider value={chatJobCalls}>
                   <div className="chat-main">
                     {/* The agent's questions are drawn in the transcript, where
                         they were asked, in a chat the person can answer in. */}
@@ -5900,6 +5941,7 @@ export default function App() {
                       />
                     )}
                   </div>
+                </JobCallsProvider>
                 </BackgroundProvider>
               </PathCwdProvider>
             </div>
@@ -6124,6 +6166,7 @@ export default function App() {
             thinking={isThinking(chat)}
             thought={thinkingNow(chat)}
             background={chat.background}
+            jobChat={conversationId ? keyFor(conversationId) : undefined}
             effort={effort}
             onEffort={changeEffort}
             lite={lite}
@@ -6191,6 +6234,7 @@ export default function App() {
             persona={besidePersona}
             cwd={besideChat.cwd ?? besideConversation.cwd ?? ""}
             runningCalls={besideCalls}
+            jobCalls={besideJobCalls}
             hasEarlier={chatHistory.current.hasEarlier(besideId)}
             loadingEarlier={!!earlierReads[besideId]?.loading}
             earlierError={earlierReads[besideId]?.error}
@@ -6324,5 +6368,6 @@ export default function App() {
     </ChatPersonaContext.Provider>
     </AgentRosterContext.Provider>
     </WorkspaceSlotsContext.Provider>
+    </JobStoreProvider>
   );
 }

@@ -295,8 +295,13 @@ describe("the wrap-up's bubble", () => {
     expect(started).toContain('data-mark="start"');
     expect(started).not.toMatch(flag);
     expect(started).toContain('<circle cx="12" cy="12" r="8.5"></circle>');
-    // The transcript says which of the two a turn is.
-    expect(listSource).toMatch(/<WrapUpNote label=\{wrapUp\.label\} detail=\{wrapUp\.detail\} text=\{answer\} mark=\{planStart \? "start" : "complete"\} \/>/);
+    // A job's end (`lib/jobs`) is neither: it has its own mark too.
+    const job = renderToStaticMarkup(<WrapUpNote label="Job finished" detail="Render mp4 · exit 0" text="It finished." mark="job" />);
+    expect(job).toContain('data-mark="job"');
+    expect(job).not.toMatch(flag);
+    expect(job).toContain("What the agent was told");
+    // The transcript says which of the three a turn is.
+    expect(listSource).toMatch(/<WrapUpNote label=\{wrapUp\.label\} detail=\{wrapUp\.detail\} text=\{answer\} mark=\{planStart \? "start" : jobEnd \? "job" : "complete"\} \/>/);
   });
 
   it("draws the note without a disclosure when there is no text to open", () => {

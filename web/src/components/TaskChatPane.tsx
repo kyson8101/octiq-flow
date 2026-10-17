@@ -11,7 +11,7 @@ import type { Message } from "../lib/chat";
 import type { Persona } from "../lib/agentPersona";
 import type { ChatHold } from "../lib/chatWait";
 import { MessageList } from "./MessageList";
-import { BackgroundProvider } from "./Background";
+import { BackgroundProvider, JobCallsProvider } from "./Background";
 import { PathCwdProvider } from "./ProsePath";
 import { AgentAvatar } from "./AgentAvatar";
 import { ChatTaskBar, type PanelContext } from "./ChatTaskBar";
@@ -20,6 +20,7 @@ import { SplitIcon } from "./OpenBesideButton";
 import "./TaskChatPane.css";
 
 const NO_CALLS: ReadonlySet<string> = new Set();
+const NO_JOB_CALLS: ReadonlyMap<string, string> = new Map();
 
 export type TaskChatPaneProps = {
   chatId: string;
@@ -34,6 +35,8 @@ export type TaskChatPaneProps = {
   persona: Persona | null;
   cwd: string;
   runningCalls?: ReadonlySet<string>;
+  /** Which of its cards started a running job, by call id → job id. */
+  jobCalls?: ReadonlyMap<string, string>;
   hasEarlier: boolean;
   loadingEarlier: boolean;
   earlierError?: string;
@@ -89,6 +92,7 @@ export const TaskChatPane = forwardRef(function TaskChatPane(props: TaskChatPane
         <div className="chat-body">
           <PathCwdProvider value={props.cwd}>
             <BackgroundProvider value={props.runningCalls ?? NO_CALLS}>
+            <JobCallsProvider value={props.jobCalls ?? NO_JOB_CALLS}>
               <div className="chat-main">
                 <MessageList
                   messages={messages}
@@ -105,6 +109,7 @@ export const TaskChatPane = forwardRef(function TaskChatPane(props: TaskChatPane
                   // Read-only: nothing here can queue, take back or send.
                 />
               </div>
+            </JobCallsProvider>
             </BackgroundProvider>
           </PathCwdProvider>
         </div>
