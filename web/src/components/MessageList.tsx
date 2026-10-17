@@ -1096,7 +1096,7 @@ function CopyAnswer({ text, what }: { text: string; what: "reply" | "message" })
         }}
       >
         {state === "done" ? <TickIcon /> : <CopyIcon />}
-        {state === "done" ? "copied" : state === "failed" ? "could not copy" : "copy"}
+        {state === "done" ? "Copied" : state === "failed" ? "Could not copy" : "Copy"}
       </button>
     </div>
   );
