@@ -1,0 +1,140 @@
+Downloading Chrome Headless Shell https://www.remotion.dev/chrome-headless-shell
+Downloading from: https://remotion.media/chromium-headless-shell-mac-arm64-157.0.8080.0.zip?clear
+Getting Headless Shell - 9.5 Mb/170.9 Mb
+Getting Headless Shell - 19.1 Mb/170.9 Mb
+Getting Headless Shell - 28.6 Mb/170.9 Mb
+Getting Headless Shell - 38.2 Mb/170.9 Mb
+Getting Headless Shell - 47.7 Mb/170.9 Mb
+Getting Headless Shell - 57.3 Mb/170.9 Mb
+Getting Headless Shell - 66.8 Mb/170.9 Mb
+Getting Headless Shell - 76.3 Mb/170.9 Mb
+Getting Headless Shell - 85.9 Mb/170.9 Mb
+Getting Headless Shell - 95.4 Mb/170.9 Mb
+Getting Headless Shell - 105 Mb/170.9 Mb
+Getting Headless Shell - 114.5 Mb/170.9 Mb
+Getting Headless Shell - 124.1 Mb/170.9 Mb
+Getting Headless Shell - 133.6 Mb/170.9 Mb
+Getting Headless Shell - 143.2 Mb/170.9 Mb
+Getting Headless Shell - 152.7 Mb/170.9 Mb
+Getting Headless Shell - 162.3 Mb/170.9 Mb
+Got Headless Shell
+Bundling 6%
+Bundling 21%
+Bundling 32%
+Bundling 43%
+Bundling 54%
+Bundling 65%
+Bundling 70%
+Bundling 75%
+Bundling 80%
+Bundling 85%
+Bundling 91%
+Bundling 98%
+Bundling 100%
+Getting composition
+⚡️ Cached bundle. Subsequent renders will be faster.
+Composition          Tiny
+Codec                h264
+Output               out/tiny.mp4
+Concurrency          5x
+Rendered 0/90
+Rendered 1/90, time remaining: 12m 55s
+Rendered 2/90, time remaining: 6m 23s
+Rendered 3/90, time remaining: 4m 12s
+Rendered 4/90, time remaining: 3m 7s
+Rendered 5/90, time remaining: 2m 28s
+Rendered 6/90, time remaining: 2m 7s
+Rendered 7/90, time remaining: 1m 47s
+Rendered 8/90, time remaining: 1m 33s
+Rendered 9/90, time remaining: 1m 21s
+Rendered 10/90, time remaining: 1m 12s
+Rendered 10/90, time remaining: 1m 12s
+Rendered 11/90, time remaining: 1m 8s
+Rendered 12/90, time remaining: 1m 1s
+Rendered 13/90, time remaining: 56s
+Rendered 14/90, time remaining: 51s
+Rendered 15/90, time remaining: 47s
+Rendered 16/90, time remaining: 45s
+Rendered 17/90, time remaining: 41s
+Rendered 18/90, time remaining: 39s
+Rendered 19/90, time remaining: 37s
+Rendered 20/90, time remaining: 34s
+Rendered 21/90, time remaining: 32s
+Rendered 21/90, time remaining: 32s
+Rendered 22/90, time remaining: 31s
+Rendered 23/90, time remaining: 30s
+Rendered 24/90, time remaining: 28s
+Rendered 25/90, time remaining: 26s
+Rendered 26/90, time remaining: 25s
+Rendered 27/90, time remaining: 24s
+Rendered 28/90, time remaining: 23s
+Rendered 29/90, time remaining: 22s
+Rendered 30/90, time remaining: 21s
+Rendered 31/90, time remaining: 20s
+Rendered 32/90, time remaining: 19s
+Rendered 32/90, time remaining: 19s
+Rendered 33/90, time remaining: 18s
+Rendered 34/90, time remaining: 17s
+Rendered 35/90, time remaining: 17s
+Rendered 36/90, time remaining: 16s
+Rendered 37/90, time remaining: 15s
+Rendered 38/90, time remaining: 15s
+Rendered 39/90, time remaining: 14s
+Rendered 40/90, time remaining: 14s
+Rendered 41/90, time remaining: 13s
+Rendered 42/90, time remaining: 12s
+Rendered 42/90, time remaining: 12s
+Rendered 43/90, time remaining: 12s
+Rendered 44/90, time remaining: 12s
+Rendered 45/90, time remaining: 11s
+Rendered 46/90, time remaining: 11s
+Rendered 47/90, time remaining: 10s
+Rendered 48/90, time remaining: 10s
+Rendered 49/90, time remaining: 9s
+Rendered 50/90, time remaining: 9s
+Rendered 51/90, time remaining: 9s
+Rendered 52/90, time remaining: 8s
+Rendered 53/90, time remaining: 8s
+Rendered 54/90, time remaining: 8s
+Rendered 55/90, time remaining: 7s
+Rendered 56/90, time remaining: 7s
+Rendered 57/90, time remaining: 7s
+Rendered 57/90, time remaining: 7s
+Rendered 58/90, time remaining: 6s
+Rendered 59/90, time remaining: 6s
+Rendered 60/90, time remaining: 6s
+Rendered 61/90, time remaining: 5s
+Rendered 62/90, time remaining: 5s
+Rendered 63/90, time remaining: 5s
+Rendered 64/90, time remaining: 5s
+Rendered 65/90, time remaining: 4s
+Rendered 66/90, time remaining: 4s
+Rendered 67/90, time remaining: 4s
+Rendered 67/90, time remaining: 4s
+Rendered 68/90, time remaining: 4s
+Rendered 69/90, time remaining: 3s
+Rendered 70/90, time remaining: 3s
+Rendered 71/90, time remaining: 3s
+Rendered 72/90, time remaining: 3s
+Rendered 73/90, time remaining: 3s
+Rendered 74/90, time remaining: 2s
+Rendered 75/90, time remaining: 2s
+Rendered 76/90, time remaining: 2s
+Rendered 77/90, time remaining: 2s
+Rendered 78/90, time remaining: 2s
+Rendered 79/90, time remaining: 1s
+Rendered 80/90, time remaining: 1s
+Rendered 81/90, time remaining: 1s
+Rendered 82/90, time remaining: 1s
+Rendered 83/90, time remaining: 1s
+Rendered 84/90, time remaining: 0s
+Rendered 85/90, time remaining: 0s
+Rendered 85/90, time remaining: 0s
+Rendered 86/90, time remaining: 0s
+Rendered 87/90, time remaining: 0s
+Rendered 88/90, time remaining: 0s
+Rendered 89/90, time remaining: 0s
+Encoded 28/90
+Encoded 72/90
+Encoded 90/90
++                    out/tiny.mp4 35.3 kB

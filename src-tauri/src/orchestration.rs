@@ -1836,6 +1836,20 @@ impl OrchestrationStore {
     /// The registered agent a worker chat runs as, with the task and run its
     /// latest attempt belongs to. `None` for a chat that is no worker, or a
     /// worker of a task with no assignee.
+    /// The task a worker chat's latest attempt ran, as `(task id, run id,
+    /// title)`, assignee or not: for naming it to its coordinator.
+    pub(crate) fn worker_task(&self, chat_key: &str) -> Option<(String, String, String)> {
+        let inner = self.inner.lock().ok()?;
+        let attempt = inner
+            .data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.worker_chat_key == chat_key)
+            .max_by_key(|attempt| attempt.created_at)?;
+        let task = inner.data.tasks.get(&attempt.task_id)?;
+        Some((task.id.clone(), task.run_id.clone(), task.title.clone()))
+    }
+
     pub fn worker_assignment(
         &self,
         chat_key: &str,

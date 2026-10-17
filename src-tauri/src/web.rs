@@ -556,6 +556,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/orchestration", post(orchestration_handler))
         .route("/hook/task", post(task_handler))
         .route("/hook/plan", post(plan_handler))
+        .route("/hook/job", post(job_handler))
         .route("/hook/feedback", post(feedback_handler))
         .route("/hook/agents", post(agents_handler))
         .route("/hook/vault", post(vault_handler))
@@ -852,6 +853,11 @@ fn ct_eq(a: &str, b: &str) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// `ct_eq` for a secret another module keeps: a job's token (`chat_jobs`).
+pub(crate) fn same_secret(expected: &str, given: &str) -> bool {
+    ct_eq(expected, given)
 }
 
 /// Turn a request path into a relative path that cannot leave the folder it is
@@ -2300,6 +2306,106 @@ async fn task_handler(
                 .into_response()
         }
         Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
+    }
+}
+
+/// A call about a long-running job (`chat_jobs.rs`, `docs/jobs.md`).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JobHook {
+    /// A claim, checked against the capability.
+    #[serde(default)]
+    chat_key: Option<String>,
+    /// The process key the capability was issued to (`OCTIQ_JOB_SESSION`).
+    #[serde(default)]
+    session_key: Option<String>,
+    action: String,
+    #[serde(default)]
+    args: Value,
+}
+
+/// `octiq-job`'s start, progress and end, and an agent's `job_register`
+/// and `job_list`.
+///
+/// What begins a job (`start`, `register`) and what reads a chat's jobs
+/// (`list`) take the launch's capability, and act for the chat it proves; a
+/// front desk is refused, and a worker may keep jobs of its own. A start is
+/// answered with the job's id and a token of the host's, and `progress` and
+/// `end` are taken on that token alone: a job outlives the agent process
+/// that started it (a Stop, a model switch, a one-shot provider's turn),
+/// and that process's capability with it. The token speaks for its one job
+/// and for nothing else.
+async fn job_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<JobHook>,
+) -> Response {
+    use crate::outcome::{ReasonClass, Refusal};
+    let refuse = |reason, message: String| {
+        hook_failed(StatusCode::BAD_REQUEST, Refusal::new(reason, message))
+    };
+    let action = request.action.clone();
+    let chat = match action.as_str() {
+        "progress" | "end" => None,
+        "start" | "register" | "list" => {
+            let claim = HookClaim {
+                chat_key: request.chat_key.as_deref(),
+                session_key: request.session_key.as_deref(),
+                launch_id: None,
+            };
+            match hook_caller(&ctx.services.chats, &headers, claim)
+                .and_then(|caller| not_front_desk(&ctx, caller))
+            {
+                Ok(caller) => Some(caller.chat_key),
+                Err(refused) => return hook_refusal(refused),
+            }
+        }
+        _ => return refuse(ReasonClass::Validation, "Unknown job action.".into()),
+    };
+    let chats = ctx.services.chats.clone();
+    let args = request.args;
+    let answer = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let jobs = &chats.jobs;
+        let parse = |what: &str| -> Result<String, String> {
+            args.get(what)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("{what} is missing"))
+        };
+        match (action.as_str(), chat) {
+            ("start", Some(chat)) => {
+                let start = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
+                let (job, token) = jobs.start(&chat, start)?;
+                Ok(json!({ "id": job["id"], "token": token, "job": job }))
+            }
+            ("register", Some(chat)) => {
+                let register = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
+                Ok(json!({ "job": jobs.register(&chat, register)? }))
+            }
+            ("list", Some(chat)) => Ok(json!({ "jobs": jobs.list(Some(&chat)) })),
+            ("progress", None) => {
+                let progress = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
+                jobs.progress(&parse("id")?, &parse("token")?, progress)?;
+                Ok(json!({ "ok": true }))
+            }
+            ("end", None) => {
+                let end = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
+                jobs.end(&parse("id")?, &parse("token")?, end)?;
+                // The agent is woken now, not on the watcher's next pass.
+                crate::chat_jobs::deliver_wakes(&chats);
+                Ok(json!({ "ok": true }))
+            }
+            _ => Err("Unknown job action.".into()),
+        }
+    })
+    .await;
+    match answer {
+        Ok(Ok(result)) => axum::Json(json!({ "result": result })).into_response(),
+        Ok(Err(why)) => refuse(ReasonClass::Validation, why),
+        Err(error) => refuse(
+            ReasonClass::Other,
+            format!("the job call did not finish: {error}"),
+        ),
     }
 }
 
