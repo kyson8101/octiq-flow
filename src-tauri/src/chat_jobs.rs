@@ -49,6 +49,8 @@ const RUNNING_MAX: usize = 32;
 const LABEL_MAX: usize = 120;
 const COMMAND_MAX: usize = 600;
 const TEXT_MAX: usize = 400;
+/// Why a wrapper's job is interrupted when the wrapper went without an end.
+const WRAPPER_GONE: &str = "octiq-job stopped without saying how the command ended: it was killed, or could not reach OctiqFlow. The command may still be running.";
 /// How much of a registered job's log is read in one look.
 const LOG_READ_MAX: u64 = 256 * 1024;
 
@@ -181,6 +183,10 @@ struct Follow {
     last_emit: Option<Instant>,
     /// Changed since the last `chat-job`.
     unsaid: bool,
+    /// Reported through a spool folder (`job_spool`): its reader, not the
+    /// pid watch, says when a wrapper went without an end, because only it
+    /// knows whether the end is still unread.
+    spooled: bool,
 }
 
 struct LogWatch {
@@ -394,6 +400,21 @@ impl Store {
     /// A wrapper's start. Answers the job's id and the token its progress
     /// and its end carry.
     pub(crate) fn start(&self, chat: &str, start: Start) -> Result<(Value, String), String> {
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let job = self.start_as(chat, start, Some(token.clone()))?;
+        Ok((job, token))
+    }
+
+    /// A wrapper's start read from a spool folder (`job_spool`). The job
+    /// has no token: nothing over the hook can speak for it, and only the
+    /// spool reader, which holds the id this answers, reports its progress
+    /// and its end.
+    pub(crate) fn start_spooled(&self, chat: &str, start: Start) -> Result<Value, String> {
+        self.start_as(chat, start, None)
+    }
+
+    fn start_as(&self, chat: &str, start: Start, token: Option<String>) -> Result<Value, String> {
+        let spooled = token.is_none();
         let command = start
             .command
             .as_deref()
@@ -406,8 +427,7 @@ impl Store {
             .filter(|l| !l.is_empty())
             .or_else(|| command.as_deref().map(|c| clean(c, LABEL_MAX)))
             .unwrap_or_else(|| "Job".into());
-        let token = uuid::Uuid::new_v4().simple().to_string();
-        let job = self.add(
+        self.add(
             chat,
             label,
             Source::Wrapper,
@@ -415,15 +435,15 @@ impl Store {
             start.wake,
             start.wrapper_pid,
             Follow {
-                token: Some(token.clone()),
+                token,
                 log: None,
                 file_text: None,
                 last_emit: None,
                 unsaid: false,
+                spooled,
             },
             |_| {},
-        )?;
-        Ok((job, token))
+        )
     }
 
     /// A process already running, which the host watches.
@@ -467,6 +487,7 @@ impl Store {
                 file_text: None,
                 last_emit: None,
                 unsaid: false,
+                spooled: false,
             },
             move |job| {
                 job.log_file = log_file;
@@ -555,23 +576,76 @@ impl Store {
     /// A wrapper's progress report.
     pub(crate) fn progress(&self, id: &str, token: &str, progress: Progress) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        let job = Self::by_token(&mut inner, id, token)?;
-        if !job.running() {
-            return Ok(());
-        }
-        let progress = checked(progress);
-        let view = update(job, progress);
-        Self::said(&mut inner, id, view);
+        Self::by_token(&mut inner, id, token)?;
+        Self::progress_locked(&mut inner, id, progress);
         Ok(())
+    }
+
+    fn progress_locked(inner: &mut Inner, id: &str, progress: Progress) {
+        let Some(job) = inner.jobs.get_mut(id).filter(|job| job.running()) else {
+            return;
+        };
+        let view = update(job, checked(progress));
+        Self::said(inner, id, view);
     }
 
     /// A wrapper's end report: how its command ended and its last lines.
     pub(crate) fn end(&self, id: &str, token: &str, end: End) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        let job = Self::by_token(&mut inner, id, token)?;
-        if !job.running() {
-            return Ok(());
+        Self::by_token(&mut inner, id, token)?;
+        self.end_locked(&mut inner, id, end);
+        Ok(())
+    }
+
+    /// The job a spool reader started, if it is one (`start_spooled`).
+    fn spooled<'a>(inner: &'a mut Inner, id: &str) -> Result<&'a mut Inner, String> {
+        if inner.follow.get(id).is_some_and(|follow| follow.spooled) {
+            Ok(inner)
+        } else {
+            Err("not a job reported through a spool folder".into())
         }
+    }
+
+    /// A progress record read from a spool folder.
+    pub(crate) fn spooled_progress(&self, id: &str, progress: Progress) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Self::progress_locked(Self::spooled(&mut inner, id)?, id, progress);
+        Ok(())
+    }
+
+    /// An end record read from a spool folder.
+    pub(crate) fn spooled_end(&self, id: &str, end: End) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let inner = Self::spooled(&mut inner, id)?;
+        self.end_locked(inner, id, end);
+        Ok(())
+    }
+
+    /// A spooled wrapper that died with its end still unwritten, after its
+    /// file was read to the last line (`job_spool`).
+    pub(crate) fn spooled_gone(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let inner = Self::spooled(&mut inner, id)?;
+        let Some(job) = inner.jobs.get_mut(id).filter(|job| job.running()) else {
+            return Ok(());
+        };
+        job.status = Status::Interrupted;
+        job.reason = Some(WRAPPER_GONE.into());
+        self.finish(inner, id);
+        Ok(())
+    }
+
+    /// Whether the job is running, and the wrapper the host follows it by:
+    /// `None` for a job it does not hold.
+    pub(crate) fn running_pid(&self, id: &str) -> Option<(bool, Option<u32>)> {
+        let inner = self.inner.lock().ok()?;
+        inner.jobs.get(id).map(|job| (job.running(), job.pid))
+    }
+
+    fn end_locked(&self, inner: &mut Inner, id: &str, end: End) {
+        let Some(job) = inner.jobs.get_mut(id).filter(|job| job.running()) else {
+            return;
+        };
         job.status = if end.exit_code == Some(0) {
             Status::Done
         } else {
@@ -587,8 +661,7 @@ impl Store {
             .rev()
             .map(|line| clean(line, TEXT_MAX))
             .collect();
-        self.finish(&mut inner, id);
-        Ok(())
+        self.finish(inner, id);
     }
 
     /// Mark a job that is over as ended and owe its wake, say it, save it.
@@ -669,7 +742,8 @@ impl Store {
                     Self::said(&mut inner, &id, view);
                 }
             }
-            if job.pid.is_some_and(|pid| !alive(pid)) {
+            let spooled = inner.follow.get(&id).is_some_and(|f| f.spooled);
+            if !spooled && job.pid.is_some_and(|pid| !alive(pid)) {
                 let tail = inner
                     .follow
                     .get(&id)
@@ -685,7 +759,7 @@ impl Store {
                         }
                         Source::Wrapper => {
                             job.status = Status::Interrupted;
-                            job.reason = Some("octiq-job stopped without saying how the command ended: it was killed, or could not reach OctiqFlow. The command may still be running.".into());
+                            job.reason = Some(WRAPPER_GONE.into());
                         }
                     }
                 }
@@ -1046,6 +1120,13 @@ pub(crate) fn deliver_wakes(manager: &std::sync::Arc<crate::agent_chat::ChatMana
 pub(crate) fn start_watcher(manager: std::sync::Arc<crate::agent_chat::ChatManager>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(1));
+        // The spool first: a wrapper's end in its file is read before the
+        // pid watch could call its going an interruption.
+        manager.spools.pass(
+            &manager.jobs,
+            &|session, launch| manager.launch_running(session, launch),
+            &crate::profile_lock::alive,
+        );
         manager.jobs.look(&crate::profile_lock::alive);
         deliver_wakes(&manager);
     });

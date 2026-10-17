@@ -1005,6 +1005,9 @@ pub struct ChatManager {
     /// that is running holds the chat off the idle reaper, like background
     /// work does.
     pub(crate) jobs: crate::chat_jobs::Store,
+    /// Each launch's spool folder, where `octiq-job` reports a job when its
+    /// sandbox refuses the hook (`job_spool.rs`).
+    pub(crate) spools: crate::job_spool::Spools,
     /// The agent program each live process was started from, resolved through
     /// its symlinks (`remember_binary`), keyed like `sessions`.
     binaries: Mutex<HashMap<String, PathBuf>>,
@@ -1193,6 +1196,20 @@ impl ChatManager {
         let session = self.sessions.lock().ok()?.get(session_key).cloned()?;
         let live = session.lock().ok()?.launch_id == known.launch_id;
         live.then_some((known.chat_key, known.launch_id))
+    }
+
+    /// Whether the launch `launch_id` is the process running under
+    /// `session_key` right now.
+    pub(crate) fn launch_running(&self, session_key: &str, launch_id: &str) -> bool {
+        let Some(session) = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(session_key).cloned())
+        else {
+            return false;
+        };
+        session.lock().is_ok_and(|s| s.launch_id == launch_id)
     }
 
     /// Give the launch about to run under `session_key` its capability, and
@@ -3845,7 +3862,7 @@ pub(crate) fn start_session(
     let project_env = crate::workspaces::resolved_env(&env.unwrap_or_default());
     // `octiq-job` on the agent's PATH, and where its shells reach the host
     // from (`chat_jobs::agent_env`): put before the project's PATH.
-    let job_env = crate::chat_jobs::agent_env(
+    let mut job_env = crate::chat_jobs::agent_env(
         &session_key,
         project_env
             .iter()
@@ -3853,6 +3870,11 @@ pub(crate) fn start_session(
             .map(|(_, value)| value.clone())
             .or_else(|| std::env::var("PATH").ok()),
     );
+    // Where `octiq-job` reports when a sandbox refuses the hook
+    // (`job_spool.rs`). A front desk keeps no jobs.
+    if !front_desk {
+        job_env.extend(manager.spools.open(&key, &session_key, &launch_id));
+    }
     let mut child = shell
         .command(&format!("exec {line}"))
         .current_dir(&process_cwd)
