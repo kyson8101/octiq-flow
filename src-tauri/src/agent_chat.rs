@@ -304,12 +304,15 @@ fn record_appended_turn(key: &str, target: &str, source: &str) {
     );
 }
 
-fn durable_user_turn_exists(key: &str, turn_id: &str) -> bool {
-    crate::transcript::since(key, 0).iter().any(|entry| {
+/// Whether the turn's own envelope is in the record. A record that cannot
+/// be read answers an error, never "not there": the send that asks would
+/// otherwise hand the same words over a second time.
+fn durable_user_turn_exists(key: &str, turn_id: &str) -> Result<bool, String> {
+    Ok(crate::transcript::every_line(key)?.iter().any(|entry| {
         entry.event["type"] == "user"
             && entry.event["octiq_user_turn"] == true
             && entry.event["uuid"].as_str() == Some(turn_id)
-    })
+    }))
 }
 
 /// Tie each provider acknowledgement to its exact dispatched prompt. Text is
@@ -5496,7 +5499,9 @@ pub(crate) fn host_turns(
         None => None,
     };
     let mut seen: std::collections::BTreeMap<String, Seen> = Default::default();
-    for item in crate::transcript::since(key, 0) {
+    // A record that cannot be read is an error, never one that holds no
+    // turn: that would read as "never handed over" and send it again.
+    for item in crate::transcript::every_line(key)? {
         let event = item.event;
         let ours = |id: &&str| id.starts_with(prefix);
         // The provider's own acknowledgement of the prompt.
@@ -5589,11 +5594,13 @@ fn send_turn(
         // Browser reconnects and ambiguous RPC retries reuse their stable turn
         // id. The canonical envelope is the durable acceptance receipt, so a
         // retry never creates a second queue unit or dispatches the same words
-        // after the first unit has already left the queue.
-        if user_turn_id
-            .as_deref()
-            .is_some_and(|turn_id| durable_user_turn_exists(&key, turn_id))
-        {
+        // after the first unit has already left the queue. A record that
+        // cannot be read cannot say, and the words are not sent on a guess.
+        let already = match user_turn_id.as_deref() {
+            Some(turn_id) => durable_user_turn_exists(&key, turn_id)?,
+            None => false,
+        };
+        if already {
             return Ok(Sent::Already);
         }
         let Some(session) = sessions.get(&session_key).cloned() else {
@@ -14266,7 +14273,7 @@ mod leaving_tests {
         // A message from the person.
         assert_eq!(led.send("A message", "user-1"), Err(leaving.into()));
         assert!(
-            !durable_user_turn_exists(&led.key, "user-1"),
+            !durable_user_turn_exists(&led.key, "user-1").unwrap(),
             "refused before it was written down"
         );
         // A message that was already waiting when a turn reached its full

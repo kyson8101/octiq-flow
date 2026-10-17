@@ -69,15 +69,19 @@ pub(crate) fn chats_folder() -> Result<PathBuf, String> {
 /// keys come from a browser, so a key with a slash in it must never become a
 /// path somewhere else.
 pub(crate) fn path_for(key: &str) -> Option<PathBuf> {
-    let safe = !key.is_empty()
-        && key.len() <= 128
-        && key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':');
-    if !safe {
+    if !safe_key(key) {
         return None;
     }
     Some(chats_dir()?.join(file_name(key)))
+}
+
+/// Whether `path_for` names a file for `key`, the folder aside.
+fn safe_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':')
 }
 
 /// The name of a chat's record in the chats folder.
@@ -529,13 +533,16 @@ pub(crate) fn of_type(key: &str, kind: &str) -> Vec<Value> {
 /// such a line, and `map_while(Result::ok)` stops there.
 ///
 /// The line is handed over without its line end (`\n` or `\r\n`).
-pub(crate) fn for_each_line(file: File, mut see: impl FnMut(u64, &[u8])) {
+pub(crate) fn for_each_line(file: File, see: impl FnMut(u64, &[u8])) {
+    let _ = try_each_line(file, see);
+}
+
+/// `for_each_line`, answering a read that failed part way instead of
+/// ending there as if the file did.
+fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std::io::Result<()> {
     let mut reader = BufReader::new(file);
     let (mut line, mut seq) = (Vec::new(), 0u64);
-    while reader
-        .read_until(b'\n', &mut line)
-        .is_ok_and(|read| read > 0)
-    {
+    while reader.read_until(b'\n', &mut line)? > 0 {
         seq += 1;
         let mut body = line.as_slice();
         if let [rest @ .., b'\n'] = body {
@@ -547,6 +554,7 @@ pub(crate) fn for_each_line(file: File, mut see: impl FnMut(u64, &[u8])) {
         see(seq, body);
         line.clear();
     }
+    Ok(())
 }
 
 /// Start a chat's record with `events`, but only a record that has nothing in
@@ -687,6 +695,41 @@ pub fn since(key: &str, after: u64) -> Vec<Recorded> {
         }
     });
     out
+}
+
+/// `since(key, 0)` for a reader that must tell "never written" from "cannot
+/// be read": the told-once receipts (`agent_chat::host_turns`, a send's
+/// `durable_user_turn_exists`). No record file is an empty record: nothing
+/// at the path, or something that is not a file (a folder holds no line).
+/// A file that is there and cannot be opened or read to its end, or a chats
+/// folder that is not there to look in, is an error, never "nothing was
+/// handed over".
+pub(crate) fn every_line(key: &str) -> Result<Vec<Recorded>, String> {
+    let unread = |e: std::io::Error| format!("the chat's record could not be read: {e}");
+    let Some(path) = path_for(key) else {
+        // Not a key a record can be kept under: one never was.
+        if !safe_key(key) {
+            return Ok(Vec::new());
+        }
+        return Err(chats_folder()
+            .err()
+            .unwrap_or_else(|| "the chat's record could not be found in the chats folder".into()));
+    };
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_dir() => return Ok(Vec::new()),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(unread(e)),
+    }
+    let file = File::open(&path).map_err(unread)?;
+    let mut out = Vec::new();
+    try_each_line(file, |seq, line| {
+        if let Ok(event) = serde_json::from_slice::<Value>(line) {
+            out.push(Recorded { seq, event });
+        }
+    })
+    .map_err(unread)?;
+    Ok(out)
 }
 
 /// A recent, contiguous window. The exclusive cursor is an event sequence,

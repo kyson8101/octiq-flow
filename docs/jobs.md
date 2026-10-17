@@ -14,17 +14,52 @@ thing: they are the provider's own, with an elapsed time and no figure.
 
 ```bash
 octiq-job [--label L] [--format auto|ffmpeg|cargo|remotion|nm|percent] \
-          [--progress-file P] [--no-wake] -- <cmd> [args…]
+          [--progress-file P] [--no-wake] [--detach] -- <cmd> [args…]
 ```
 
 (`$OCTIQ_JOB` is the same launcher by its full path). The command is started
 directly, never through a shell; both of its streams pass through unchanged;
 `\r`-updated lines are read as the terminal would show them; SIGINT, SIGTERM,
-SIGHUP and SIGQUIT are handed on to it; and `octiq-job` exits with its exit
-code (128 + the signal when a signal ended it). Its last 20 lines of output
-are kept for the wake turn. Outside an OctiqFlow chat, or with a host that
-cannot be reached, the command runs and nothing is reported: the host is
-never a reason for the command to fail.
+SIGHUP and SIGQUIT are handed on to it, except one the wrapper was started
+with ignored (`nohup`'s SIGHUP, SIGINT and SIGQUIT under a shell's `&`),
+which stays ignored; and `octiq-job` exits with its exit code (128 + the
+signal when a signal ended it). Its last 20 lines of output are kept for the
+wake turn. Outside an OctiqFlow chat, or with a host that cannot be reached,
+the command runs and nothing is reported: the host is never a reason for the
+command to fail.
+
+### Running a job that outlives the tool call: `--detach`
+
+```bash
+octiq-job --detach --label "render" -- npx remotion render … > render.log 2>&1
+```
+
+Run in the foreground, with no `&`. `--detach` starts the wrapper again in a
+session of its own (Windows: a process group with no console), with no
+input and this output, waits until the chat knows of the job (at most 10 s),
+says so on stderr (`octiq-job: job <id> runs in the background (pid N) …`),
+and exits 0; a command that cannot start gives its own code (127). The job
+then runs on whatever happens to the shell, the tool call and the agent's
+process, and its end wakes the agent as usual. Redirect its output to a
+file: the first lines of that file say what became of the start.
+
+**Do not background `octiq-job` with `&` or `nohup` in a Codex chat.**
+Codex ends the whole process group of a shell command with SIGKILL the
+moment the command's shell exits. Measured on 2026-10-17 (codex-cli 0.162.1,
+app-server and `codex exec`, Auto and Full): `octiq-job … &` and
+`nohup octiq-job … &` were killed before their first line and left no job
+and an empty log; nothing can catch or ignore that signal. Claude Code
+(2.1.301) leaves both alive, and its Bash `run_in_background` runs
+`octiq-job` fine, but `--detach` is the one form that holds in both.
+
+**Codex at Read, Edits or Auto cannot reach the host from a command.** Its
+`workspace-write` sandbox refuses the connection to `127.0.0.1`
+(`Operation not permitted`), so the job runs and the chat is not told: the
+log says `the chat was not told of this job (… Operation not permitted …)`.
+The MCP tools run outside that sandbox, so in such a chat register the
+running wrapper instead: `job_register` with the pid `--detach` printed and
+`logFile` (progress is read from the log; the exit code is not known). At
+Full the sandbox is off and `octiq-job` reports itself.
 
 **`job_register`, for a process already running** (MCP, `octiq-ask.cjs`):
 `{ label, pid, logFile?, pattern?, progressFile?, wake? }`. The host watches
@@ -59,7 +94,7 @@ own, for anyone who wants it on their `PATH`.
 
 | Format | What it reads | Unit |
 | --- | --- | --- |
-| `ffmpeg` | `time=` of a stats line, or `out_time=` of `-progress`, against the `Duration:` of ffmpeg's own header (the first input). No duration, no figure. | seconds |
+| `ffmpeg` | `time=` of a stats line, or `out_time=` of `-progress`, against the `Duration:` of ffmpeg's own header (the first input). No duration, no figure: a first input that says `Duration: N/A` gives none, whatever a later input's header says. | seconds |
 | `cargo` | `Building [=====>  ] N/M: …`. Cargo draws its bar into a pipe only with `CARGO_TERM_PROGRESS_WHEN=always`, which `octiq-job` sets (with a width of 80) for a cargo child that has not set it. | crates |
 | `remotion` | the CLI's piped output: `Bundling NN%`, `Rendered N/M`, `Encoded N/M`, each its own phase. | percent, frames |
 | `nm` | a bare count `N/M`, never a date, a path or a rate. | items |
@@ -112,7 +147,8 @@ type Job = {
   watcher's next pass), and on end.
 - Socket command **`chat_jobs { chatKey? }`** → `{ jobs: Job[] }`, newest
   first: one chat's jobs, or with no `chatKey` every chat's running jobs and
-  those that ended in the last ten minutes (the page's worker rows).
+  those that ended in the last ten minutes (the page's worker rows). An
+  error, never `[]`, when the jobs file could not be read (Store and limits).
 - Chat event **`octiq_job_interrupted`** `{ job_ids, message }`: written into
   each chat whose jobs a restart interrupted.
 
@@ -183,9 +219,21 @@ The job "render · "final" cut" failed: exit code 1, after 2m 14s.
 
 - `<chats dir>/jobs.json` (`chat_jobs.rs`), read with `profile::read`,
   written whole through `profile::make_dir`. A save that fails is said
-  `unsaved` and owed (`jobs` in `profile_status.owed`); a file that could not
-  be read is never written over. Ended jobs are dropped a week after they
-  ended, once their wake is told.
+  `unsaved` and owed (`jobs` in `profile_status.owed`). **A file that could
+  not be read at load is never an empty store, and is never written over**:
+  `chat_jobs`, the hook's `list`, `start` and `register` answer an error in
+  words (`OctiqFlow could not read its jobs file when it started, …`) until
+  the server is restarted with a file it can read. The wrapper's command runs
+  all the same (a refused start reports nothing). Ended jobs are dropped a
+  week after they ended, once their wake is told.
+- **The wake's receipt is the chat's record, read strictly**
+  (`transcript::every_line`, under `agent_chat::host_turns` and a send's
+  `durable_user_turn_exists`): no record file is an empty record, and a
+  record file that cannot be read is an error, so its wake stays owed and is
+  asked again on the watcher's next pass. It was read as empty and handed
+  over a second time. The plan's Start shares the reader: a `Tell the agent`
+  asked while the record cannot be read is refused in words and sends
+  nothing.
 - A running job keeps its chat off the idle reaper, like native background
   work.
 - **A restart interrupts.** The wrapper's token and the pid watch are in

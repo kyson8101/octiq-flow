@@ -100,6 +100,9 @@ pub struct Parser {
     settled: Option<Format>,
     /// The first input's `Duration:` from ffmpeg's own header.
     duration: Option<f64>,
+    /// A `Duration:` header was read, whatever it said: `N/A` is the first
+    /// input's too, and a later input's duration is not its total.
+    duration_seen: bool,
 }
 
 impl Parser {
@@ -151,7 +154,8 @@ impl Parser {
     fn ffmpeg(&mut self, line: &str) -> Option<Progress> {
         if let Some(duration) = ffmpeg_duration(line) {
             // The first input's: a second input's header comes later.
-            if self.duration.is_none() {
+            if !self.duration_seen {
+                self.duration_seen = true;
                 self.duration = duration;
             }
             return None;
@@ -533,6 +537,8 @@ mod tests {
     const FFMPEG_NO_DURATION: &[u8] =
         include_bytes!("job_progress/fixtures/ffmpeg-no-duration.txt");
     const FFMPEG_PIPE: &[u8] = include_bytes!("job_progress/fixtures/ffmpeg-progress-pipe.txt");
+    const FFMPEG_TWO_INPUTS: &[u8] =
+        include_bytes!("job_progress/fixtures/ffmpeg-two-inputs-first-unknown.txt");
     const CARGO: &[u8] = include_bytes!("job_progress/fixtures/cargo-build.txt");
     const REMOTION: &[u8] = include_bytes!("job_progress/fixtures/remotion-render.txt");
     const REMOTION_FIRST: &[u8] = include_bytes!("job_progress/fixtures/remotion-first-run.txt");
@@ -562,6 +568,20 @@ mod tests {
         // Its closing x264 statistics are full of `NN.N%`.
         assert!(String::from_utf8_lossy(FFMPEG_NO_DURATION).contains('%'));
         assert!(readings(FFMPEG_NO_DURATION, Format::Auto).is_empty());
+    }
+
+    /// Review 1, M1 (`unknownFirstInputUsesSecondDuration`): a lavfi first
+    /// input says `Duration: N/A` and a wav second input `00:00:10.00`. The
+    /// second's duration is not the first's: no figure, where it used to
+    /// read `time=` against 10 s. Recorded from ffmpeg 9.0.1.
+    #[test]
+    fn unknown_first_input_does_not_use_the_second_inputs_duration() {
+        let text = String::from_utf8_lossy(FFMPEG_TWO_INPUTS);
+        assert!(text.contains("Duration: N/A") && text.contains("Duration: 00:00:10.00"));
+        assert!(text.contains("time=00:00:04.50"));
+        for format in [Format::Ffmpeg, Format::Auto] {
+            assert!(readings(FFMPEG_TWO_INPUTS, format).is_empty(), "{format:?}");
+        }
     }
 
     #[test]

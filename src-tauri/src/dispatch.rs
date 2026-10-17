@@ -1478,7 +1478,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // is what the page draws on a worker's run row.
         "chat_jobs" => {
             let key: Option<String> = arg(&args, "chatKey")?;
-            Ok(json!({ "jobs": svc.chats.jobs.list(key.as_deref().filter(|k| !k.is_empty())) }))
+            Ok(json!({ "jobs": svc.chats.jobs.list(key.as_deref().filter(|k| !k.is_empty()))? }))
         }
         // Where this chat is and what became of its work. The report half is
         // whatever the agent last said; everything else is checked with git on

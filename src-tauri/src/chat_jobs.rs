@@ -491,6 +491,7 @@ impl Store {
         // A job is a record the person reads and the agent is woken from:
         // not started while it cannot be kept.
         crate::profile::available()?;
+        self.readable()?;
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let running = inner
             .jobs
@@ -706,13 +707,25 @@ impl Store {
         }
     }
 
+    /// A jobs file that could not be read at load is not an empty one: what
+    /// it holds is unknown, and nothing new is kept over it. `list`, `start`
+    /// and `register` answer this; `progress` and `end` of a job held in
+    /// memory are not asked it (an ending never waits on a save).
+    fn readable(&self) -> Result<(), String> {
+        match &self.load_error {
+            Some(error) => Err(format!(
+                "OctiqFlow could not read its jobs file when it started, so it cannot say which jobs there are or keep a new one until it is restarted with a file it can read: {error}"
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// `chat_jobs`: one chat's jobs, or, with no chat, every chat's running
     /// jobs and those that ended in the last ten minutes. Newest first.
-    pub(crate) fn list(&self, chat: Option<&str>) -> Vec<Value> {
+    pub(crate) fn list(&self, chat: Option<&str>) -> Result<Vec<Value>, String> {
+        self.readable()?;
         let now = now_ms();
-        let Ok(inner) = self.inner.lock() else {
-            return Vec::new();
-        };
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut jobs: Vec<&Job> = inner
             .jobs
             .values()
@@ -727,7 +740,7 @@ impl Store {
             })
             .collect();
         jobs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-        jobs.into_iter().map(|job| job.view(now)).collect()
+        Ok(jobs.into_iter().map(|job| job.view(now)).collect())
     }
 
     /// The jobs whose wake is owed, oldest end first.

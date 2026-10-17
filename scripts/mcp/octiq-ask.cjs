@@ -1189,7 +1189,11 @@ const JOB_REGISTER = {
     "To start a NEW long command, prefer `octiq-job --label \"<what>\" -- <command> [args...]` " +
     "(also at $OCTIQ_JOB): it runs the command unchanged, reads its progress from its output " +
     "(ffmpeg, cargo, Remotion, N/M, NN%; or --progress-file), reports how it ended with its exit code " +
-    "and last lines, and is the only way the exit code is known. Run it in the background for a long job. " +
+    "and last lines, and is the only way the exit code is known. For a job that outlives this tool call, run " +
+    "`octiq-job --detach --label \"<what>\" -- <command> > <log> 2>&1` in the foreground, never with `&` or nohup " +
+    "(Codex kills a command's process group when its shell exits): it returns once the job is registered and the job runs on. " +
+    "A Codex chat below Full access cannot reach OctiqFlow from a command (the log says the chat was not told): " +
+    "start it with --detach all the same, then register the pid the log names here, with logFile. " +
     "Here the host watches the pid: when the process exits the job is 'ended' and its exit code is unknown. " +
     "Progress comes from logFile (read from where it ends now) or progressFile, a JSON file the job rewrites whole: " +
     "{\"done\":3,\"total\":8,\"phase\":\"Generating\"}. With neither, the page shows the time only: " +
