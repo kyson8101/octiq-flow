@@ -54,7 +54,7 @@ pub(crate) fn mark_in(line: &str) -> Option<&str> {
 /// Whether a process is still alive. `kill -0` asks exactly that and changes
 /// nothing; no signal is delivered.
 #[cfg(not(windows))]
-fn alive(pid: u32) -> bool {
+pub(crate) fn alive(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
         .output()
@@ -65,7 +65,7 @@ fn alive(pid: u32) -> bool {
 /// A native process handle avoids depending on Unix tools or confusing MSYS
 /// process IDs with Windows PIDs. Only a confirmed exit releases the lock.
 #[cfg(windows)]
-fn alive(pid: u32) -> bool {
+pub(crate) fn alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0,
     };

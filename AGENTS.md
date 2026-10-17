@@ -249,6 +249,9 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   `src/bin/`). It prints an OSC 777 sequence to its own stdout; run inside an
   OctiqFlow terminal, the PTY scanner sees it and raises an attention alert.
   See `docs/octiq-notify.md`.
+- `bin/octiq-job.rs` — `octiq-job`, the job wrapper (`job_wrapper.rs`,
+  progress parsers in `job_progress.rs`). Agents reach the same code as
+  `octiq-server job` through `OCTIQ_JOB`; see **Jobs** below.
 
 ### Persistence locations
 
@@ -264,6 +267,8 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | registered agents (agents mode) | `<profile dir>/team.json` | `team.rs` — see `docs/agents-mode.md` |
 | XP awards (agents mode) | `xp_awards` in `<profile dir>/orchestrations.json` | `orchestration/levels.rs` |
 | agent token usage | `<chats dir>/agent-usage.json` | `agent_usage.rs` |
+| long-running jobs (`octiq-job`, `job_register`) | `<chats dir>/jobs.json` | `chat_jobs.rs` — see `docs/jobs.md` |
+| the `octiq-job` launcher agents run | `~/.octiqflow/bin/octiq-job` (`.cmd` beside it on Windows) | `chat_jobs.rs` |
 | chat record compaction (size when last compacted) | `<chats dir>/.compacted-sizes-v1.json` | `record_trim.rs` |
 | Antigravity plugin, settings backup | `~/.octiqflow/mcp/antigravity/` | `agent_provider.rs` |
 
@@ -2722,6 +2727,31 @@ asks nothing at all (the host refuses an agent with work in progress).
 sorted by activity, and a row that only changed position used to be
 somewhere else on the next frame. Positions are read as the order changes,
 never on every render.
+
+### Jobs: long commands with real progress
+
+An agent runs a command that takes minutes as `octiq-job --label L -- <cmd>`,
+or shows a process already running with the MCP `job_register`; the page reads
+`chat_jobs` and hears `chat-job` (`chat_jobs.rs`, contract in
+`docs/jobs.md`). Four rules:
+
+- **Progress is the job's own word** (`job_progress.rs`): ffmpeg's `time=`
+  against its own `Duration:`, cargo's bar, Remotion's `Rendered`/`Encoded
+  N/M`, a bare `N/M`, an `NN%`, or a progress file. `done` and `total` are
+  sent both or neither, never from a rate. A new parser is tested on output
+  recorded from the real program (`job_progress/fixtures`), never on text
+  written by hand.
+- **A finished job wakes its agent once**, as host turn `octiq-job-<id>`,
+  asked of `agent_chat::host_turns` before every send (the told-once rule of
+  **A chat's plan**). It queues like a message; a settled worker's job wakes
+  its coordinator instead.
+- **Only the start needs the launch's capability.** `progress` and `end`
+  carry the job's own token, because a job outlives the agent process that
+  started it. The token is memory only; a restart marks running jobs
+  `interrupted` and says so in their chat.
+- **The wrapper never fails the command for the host's sake**: with no hook
+  environment, or a host that does not answer, it runs the command, passes
+  its output through unchanged and exits with its code.
 
 ### Attention alerts
 

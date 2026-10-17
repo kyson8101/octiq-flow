@@ -1,0 +1,124 @@
+Bundling 6%
+Bundling 16%
+Bundling 22%
+Bundling 53%
+Bundling 65%
+Bundling 71%
+Bundling 76%
+Bundling 81%
+Bundling 87%
+Bundling 92%
+Bundling 98%
+Bundling 100%
+Getting composition
+Composition          Tiny
+Codec                h264
+Output               out/tiny2.mp4
+Concurrency          5x
+Rendered 0/90
+Rendered 1/90, time remaining: 14m 12s
+Rendered 2/90, time remaining: 7m 2s
+Rendered 3/90, time remaining: 4m 38s
+Rendered 4/90, time remaining: 3m 26s
+Rendered 5/90, time remaining: 2m 43s
+Rendered 6/90, time remaining: 2m 21s
+Rendered 6/90, time remaining: 2m 21s
+Rendered 7/90, time remaining: 2m 2s
+Rendered 8/90, time remaining: 1m 45s
+Rendered 9/90, time remaining: 1m 32s
+Rendered 10/90, time remaining: 1m 22s
+Rendered 11/90, time remaining: 1m 17s
+Rendered 12/90, time remaining: 1m 10s
+Rendered 13/90, time remaining: 1m 4s
+Rendered 14/90, time remaining: 59s
+Rendered 15/90, time remaining: 54s
+Rendered 15/90, time remaining: 54s
+Rendered 16/90, time remaining: 53s
+Rendered 17/90, time remaining: 49s
+Rendered 18/90, time remaining: 46s
+Rendered 19/90, time remaining: 43s
+Rendered 19/90, time remaining: 43s
+Rendered 20/90, time remaining: 41s
+Rendered 21/90, time remaining: 40s
+Rendered 22/90, time remaining: 37s
+Rendered 23/90, time remaining: 35s
+Rendered 24/90, time remaining: 33s
+Rendered 25/90, time remaining: 31s
+Rendered 25/90, time remaining: 31s
+Rendered 26/90, time remaining: 31s
+Rendered 27/90, time remaining: 29s
+Rendered 28/90, time remaining: 28s
+Rendered 28/90, time remaining: 28s
+Rendered 29/90, time remaining: 27s
+Rendered 30/90, time remaining: 26s
+Rendered 31/90, time remaining: 25s
+Rendered 32/90, time remaining: 24s
+Rendered 33/90, time remaining: 23s
+Rendered 33/90, time remaining: 23s
+Rendered 34/90, time remaining: 22s
+Rendered 35/90, time remaining: 21s
+Rendered 36/90, time remaining: 20s
+Rendered 37/90, time remaining: 20s
+Rendered 38/90, time remaining: 19s
+Rendered 39/90, time remaining: 18s
+Rendered 40/90, time remaining: 17s
+Rendered 41/90, time remaining: 17s
+Rendered 42/90, time remaining: 16s
+Rendered 43/90, time remaining: 15s
+Rendered 43/90, time remaining: 15s
+Rendered 44/90, time remaining: 15s
+Rendered 45/90, time remaining: 14s
+Rendered 46/90, time remaining: 14s
+Rendered 47/90, time remaining: 13s
+Rendered 48/90, time remaining: 13s
+Rendered 48/90, time remaining: 13s
+Rendered 49/90, time remaining: 12s
+Rendered 50/90, time remaining: 12s
+Rendered 51/90, time remaining: 11s
+Rendered 52/90, time remaining: 11s
+Rendered 53/90, time remaining: 10s
+Rendered 54/90, time remaining: 10s
+Rendered 54/90, time remaining: 10s
+Rendered 55/90, time remaining: 10s
+Rendered 56/90, time remaining: 9s
+Rendered 57/90, time remaining: 9s
+Rendered 58/90, time remaining: 8s
+Rendered 59/90, time remaining: 8s
+Rendered 60/90, time remaining: 8s
+Rendered 60/90, time remaining: 8s
+Rendered 61/90, time remaining: 7s
+Rendered 62/90, time remaining: 7s
+Rendered 63/90, time remaining: 7s
+Rendered 64/90, time remaining: 6s
+Rendered 65/90, time remaining: 6s
+Rendered 66/90, time remaining: 6s
+Rendered 67/90, time remaining: 5s
+Rendered 68/90, time remaining: 5s
+Rendered 69/90, time remaining: 5s
+Rendered 70/90, time remaining: 4s
+Rendered 70/90, time remaining: 4s
+Rendered 71/90, time remaining: 4s
+Rendered 72/90, time remaining: 4s
+Rendered 73/90, time remaining: 4s
+Rendered 74/90, time remaining: 3s
+Rendered 75/90, time remaining: 3s
+Rendered 76/90, time remaining: 3s
+Rendered 77/90, time remaining: 2s
+Rendered 78/90, time remaining: 2s
+Rendered 79/90, time remaining: 2s
+Rendered 80/90, time remaining: 2s
+Rendered 81/90, time remaining: 1s
+Rendered 81/90, time remaining: 1s
+Rendered 82/90, time remaining: 1s
+Rendered 83/90, time remaining: 1s
+Rendered 84/90, time remaining: 1s
+Rendered 85/90, time remaining: 1s
+Rendered 86/90, time remaining: 0s
+Rendered 87/90, time remaining: 0s
+Rendered 88/90, time remaining: 0s
+Rendered 88/90, time remaining: 0s
+Rendered 89/90, time remaining: 0s
+Encoded 30/90
+Encoded 72/90
+Encoded 90/90
++                    out/tiny2.mp4 35.3 kB

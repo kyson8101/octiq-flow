@@ -80,6 +80,10 @@ impl Services {
         // its whole MCP fleet.
         crate::agent_chat::start_idle_reaper(chats.clone());
         crate::agent_chat::start_auto_resume_scheduler(chats.clone());
+        // Jobs: registered pids, logs and progress files, and the turn that
+        // wakes an agent when its job ends (`chat_jobs.rs`).
+        #[cfg(not(test))]
+        crate::chat_jobs::start_watcher(chats.clone());
         let workspaces = Arc::new(WorkspaceState::load());
         crate::orchestration::automation::start_scheduler(
             orchestrations.clone(),
@@ -614,6 +618,9 @@ pub fn settle_owed(svc: &Services) -> Vec<&'static str> {
     if svc.orchestrations.settle_owed().is_err() {
         owed.push(crate::orchestration::OWED);
     }
+    if svc.chats.jobs.settle().is_err() {
+        owed.push(crate::chat_jobs::OWED);
+    }
     if crate::sandbox::Store::profile().settle().is_err() {
         owed.push(crate::sandbox::OWED);
     }
@@ -681,6 +688,9 @@ fn owed(svc: &Services) -> Vec<&'static str> {
     }
     if svc.orchestrations.owes() {
         owed.push(crate::orchestration::OWED);
+    }
+    if svc.chats.jobs.owes() {
+        owed.push(crate::chat_jobs::OWED);
     }
     if crate::sandbox::Store::profile().owes() {
         owed.push(crate::sandbox::OWED);
@@ -1462,6 +1472,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "chat_index_deleted" => {
             crate::profile::available()?;
             Ok(json!(crate::agent_chat::chat_index_deleted()))
+        }
+        // Long-running jobs (`chat_jobs.rs`): one chat's, or every chat's
+        // running jobs and those that ended in the last ten minutes, which
+        // is what the page draws on a worker's run row.
+        "chat_jobs" => {
+            let key: Option<String> = arg(&args, "chatKey")?;
+            Ok(json!({ "jobs": svc.chats.jobs.list(key.as_deref().filter(|k| !k.is_empty())) }))
         }
         // Where this chat is and what became of its work. The report half is
         // whatever the agent last said; everything else is checked with git on

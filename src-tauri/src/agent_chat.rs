@@ -998,6 +998,10 @@ enum QueueTurnResult {
 #[derive(Default)]
 pub struct ChatManager {
     background: crate::background_tasks::Store,
+    /// Long-running jobs this chat's agent started (`chat_jobs.rs`). A job
+    /// that is running holds the chat off the idle reaper, like background
+    /// work does.
+    pub(crate) jobs: crate::chat_jobs::Store,
     /// The agent program each live process was started from, resolved through
     /// its symlinks (`remember_binary`), keyed like `sessions`.
     binaries: Mutex<HashMap<String, PathBuf>>,
@@ -1308,8 +1312,10 @@ impl ChatManager {
         let auto_resume_path = path.with_file_name("auto-resumes.json");
         let background_path = path.with_file_name("background-tasks.json");
         let usage_path = path.with_file_name("agent-usage.json");
+        let jobs_path = path.with_file_name("jobs.json");
         Self {
             background: crate::background_tasks::Store::load(background_path),
+            jobs: crate::chat_jobs::Store::load(jobs_path),
             usage: crate::agent_usage::Store::load(usage_path),
             questions: Arc::new(crate::question_store::QuestionStore::load(path)),
             auto_resumes: crate::auto_resume::Store::load(auto_resume_path),
@@ -1699,7 +1705,7 @@ impl ChatManager {
                     .get(key)
                     .is_some_and(|s| s.try_lock().is_ok_and(|s| !s.busy))
             })
-            .filter(|key| !self.background.has_running(key))
+            .filter(|key| !self.background.has_running(key) && !self.jobs.has_running(key))
             .filter(|key| self.orchestrations.refusal_owner(key).is_none())
             .collect()
     }
@@ -1968,7 +1974,7 @@ impl ChatManager {
     /// and the reader picking the queue up, the session reads idle with
     /// messages still waiting behind it. Send in that window and, without this,
     /// the newer message went first.
-    fn has_queued_turns(&self, key: &str) -> bool {
+    pub(crate) fn has_queued_turns(&self, key: &str) -> bool {
         self.queued_turns
             .lock()
             .ok()
@@ -3833,6 +3839,17 @@ pub(crate) fn start_session(
     .map_err(|e| format!("could not start {}: {e}", provider.bin()))?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     let capability = manager.grant_capability(&sessions, &session_key, &key, &launch_id);
+    let project_env = crate::workspaces::resolved_env(&env.unwrap_or_default());
+    // `octiq-job` on the agent's PATH, and where its shells reach the host
+    // from (`chat_jobs::agent_env`): put before the project's PATH.
+    let job_env = crate::chat_jobs::agent_env(
+        &session_key,
+        project_env
+            .iter()
+            .find(|(name, _)| name == "PATH")
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var("PATH").ok()),
+    );
     let mut child = shell
         .command(&format!("exec {line}"))
         .current_dir(&process_cwd)
@@ -3840,7 +3857,8 @@ pub(crate) fn start_session(
         // variables a terminal in this project would (e.g. `starfall`'s
         // `CLAUDE_CONFIG_DIR`). Applied first so every var this backend sets
         // below always wins if a project happened to name the same key.
-        .envs(crate::workspaces::resolved_env(&env.unwrap_or_default()))
+        .envs(project_env)
+        .envs(job_env)
         // The selected provider declares whether it owns a persistent stdin
         // protocol. A command-line provider must receive EOF immediately so a
         // one-shot CLI does not wait for a second prompt.
@@ -5331,6 +5349,79 @@ pub(crate) fn chat_host_turn_impl(
     // of theirs does.
     crate::safety_block::forget_chat(key);
     Ok(Some(state))
+}
+
+/// What became of a host turn `wake_chat` tried to hand over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Woken {
+    /// The agent has it, or it waits in the host's queue for it.
+    Handed,
+    /// It never will: the chat is no longer listed.
+    Gone,
+    /// Not now, and why: to be tried again.
+    Later(String),
+}
+
+/// Hand a chat's agent one turn in the host's words, under `turn_id`: the
+/// turn that wakes it when a job ends (`chat_jobs`). It waits like any
+/// message (`send_turn`): written between turns, queued behind a running
+/// one, a Stop whose full stop is owed, or anything queued. A chat with no
+/// process is started with it as its first message, from the settings it
+/// last ran with in this server; one this server has not run is `Later`,
+/// and is woken once it runs again.
+///
+/// The caller asks `host_turns` first: this sends.
+pub(crate) fn wake_chat(
+    manager: &Arc<ChatManager>,
+    key: &str,
+    turn_id: &str,
+    text: &str,
+) -> Result<Woken, String> {
+    match send_turn(
+        manager.clone(),
+        key.to_string(),
+        text.to_string(),
+        None,
+        None,
+        Some(turn_id.to_string()),
+    ) {
+        Ok(_) => return Ok(Woken::Handed),
+        Err(why) if why == "no such chat" => {}
+        Err(why) => return Ok(Woken::Later(why)),
+    }
+    match crate::chat_index::listed_ids() {
+        Ok(ids) if !ids.contains(key.strip_prefix("chat:").unwrap_or(key)) => {
+            return Ok(Woken::Gone)
+        }
+        Err(why) => return Ok(Woken::Later(why)),
+        Ok(_) => {}
+    }
+    let Some(start) = manager.start_context(key) else {
+        return Ok(Woken::Later(
+            "the chat is not running and has not run since OctiqFlow started".into(),
+        ));
+    };
+    match start_session(
+        manager.clone(),
+        Voice::host(key.to_string()),
+        start.cwd,
+        start.agent,
+        start.model,
+        start.access,
+        Some(text.to_string()),
+        start.session_id,
+        start.extra_dirs,
+        start.env,
+        start.effort,
+        None,
+        start.lite,
+        Some(turn_id.to_string()),
+        true,
+        None,
+    ) {
+        Ok(()) => Ok(Woken::Handed),
+        Err(why) => Ok(Woken::Later(why)),
+    }
 }
 
 /// What became of a turn the host handed, or tried to hand, a chat's agent
@@ -7458,6 +7549,7 @@ fn end_process_when(
             // ending it as idle would drop what the person queued.
             if session.still_for().is_none_or(|still| still < timeout)
                 || manager.background.has_running(key)
+                || manager.jobs.has_running(key)
                 || manager.waits_because(key).is_some()
             {
                 return Ok(false);

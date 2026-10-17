@@ -1449,6 +1449,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "jsonwebtoken",
+ "libc",
  "memchr",
  "notify",
  "openssl",

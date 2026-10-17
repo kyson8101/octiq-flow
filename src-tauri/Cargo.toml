@@ -49,6 +49,11 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 # `LocalNow`). Already built for `web-push`; this only names it.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+[target.'cfg(unix)'.dependencies]
+# `octiq-job` hands a termination signal on to the command it wraps
+# (job_wrapper.rs). Already built for other dependencies.
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # Profile ownership uses native process handles, not Unix/MSYS process IDs.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }

@@ -12,6 +12,13 @@
 //!     OCTIQ_WEB_BIND=127.0.0.1 OCTIQ_WEB_PORT=1421 octiq-server
 
 fn main() {
+    // `octiq-server job -- <cmd>` is `octiq-job` (docs/jobs.md), so one
+    // binary serves both: the launcher agents are given (`OCTIQ_JOB`) runs
+    // this, and the npm package ships nothing else.
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("job") {
+        std::process::exit(octiq_flow_lib::job_wrapper::main(args.collect()));
+    }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {

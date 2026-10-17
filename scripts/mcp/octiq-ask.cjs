@@ -1177,6 +1177,52 @@ const TASK_STATUS = {
   },
 };
 
+/** Long-running jobs (`chat_jobs.rs`, docs/jobs.md). A new command is best
+ *  run under `octiq-job`, which reports its progress and its end itself;
+ *  these two are for a process already running, and for reading back. The
+ *  progress the page shows is only ever what the job printed or wrote. */
+const JOB_REGISTER = {
+  name: "job_register",
+  description:
+    "Show a long job that is ALREADY running (a build, an ffmpeg or Remotion render, an image-generation batch) " +
+    "on this chat, with its progress, and be woken with a new turn when it ends. " +
+    "To start a NEW long command, prefer `octiq-job --label \"<what>\" -- <command> [args...]` " +
+    "(also at $OCTIQ_JOB): it runs the command unchanged, reads its progress from its output " +
+    "(ffmpeg, cargo, Remotion, N/M, NN%; or --progress-file), reports how it ended with its exit code " +
+    "and last lines, and is the only way the exit code is known. Run it in the background for a long job. " +
+    "Here the host watches the pid: when the process exits the job is 'ended' and its exit code is unknown. " +
+    "Progress comes from logFile (read from where it ends now) or progressFile, a JSON file the job rewrites whole: " +
+    "{\"done\":3,\"total\":8,\"phase\":\"Generating\"}. With neither, the page shows the time only: " +
+    "never estimate progress. A job keeps an idle chat alive while it runs. On Windows give the Windows PID, not Git Bash's $!.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      label: { type: "string", minLength: 1, maxLength: 120, description: "What the job is, in a few words the person recognises." },
+      pid: { type: "integer", minimum: 1, description: "The running process to watch." },
+      logFile: { type: "string", description: "Absolute path of the log the job writes, to read its progress from." },
+      pattern: {
+        type: "string",
+        enum: ["auto", "ffmpeg", "cargo", "remotion", "nm", "percent"],
+        description: "How to read the log. auto (default) tries each.",
+      },
+      progressFile: { type: "string", description: "Absolute path of a JSON progress file the job rewrites whole." },
+      wake: { type: "boolean", description: "Wake this chat's agent with a new turn when the job ends (default true)." },
+    },
+    required: ["label", "pid"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+};
+
+const JOB_LIST = {
+  name: "job_list",
+  description:
+    "List this chat's long-running jobs (octiq-job and job_register): each one's status " +
+    "(running, done, failed, ended, interrupted), progress when the job gave it, exit code when known, and how long it has run.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+};
+
 /** A chat's plan (`chat_plan.rs`): the list the person and the agent agree
  *  on before work starts. The agent writes it with these two tools; the
  *  person reads it beside the chat and is the only one who starts it. There
@@ -2526,6 +2572,7 @@ const BASE_SERVER_INSTRUCTIONS =
   DIAGRAM_INSTRUCTIONS + " " +
   (IS_WORKER ? "" : PLAN_INSTRUCTIONS + " ") +
   "Use task_status when a task has more than a couple of steps and whenever its plan or active step changes: it is the status line above the chat. Report the objective and the steps only; OctiqFlow checks git itself. " +
+  "Run a command that takes minutes under octiq-job: job_register says how. " +
   "Use orchestration tools only when the person explicitly asks for supervised multi-agent work or a task DAG, or an agents-mode brief tells you to delegate. The master creates one run and a shallow dependency graph, starts the full ready wave before waiting, and reads orchestration_snapshot as truth. Fable and Astra coordinate and never run as workers. A worker settles its exact attempt with orchestration_worker_report. " +
   "A teammate named in your agents-mode brief is a peer, not a report: ask one a question with orchestration_peer_ask, or hand one a single bounded piece of work with orchestration_peer_request, which the person approves on the plan card before anything starts. " +
   "When the person asks you to register, change or remove an agent, change the shared agent policy, or make or change a peer-help team, read agent_list, then propose it with agent_register, agent_update, agent_delete, agent_policy_update, team_create or team_update; the person approves each on a card. " +
@@ -2597,6 +2644,8 @@ async function handle(msg) {
               READ_CONVERSATION,
               CREATE_ARTIFACT,
               TASK_STATUS,
+              JOB_REGISTER,
+              JOB_LIST,
               SET_CHAT_TITLE,
               ...(IS_WORKER ? [] : [PLAN_READ, PLAN_UPDATE, HANDOVER, HANDOVER_ASK, HANDOVER_OUTCOME, REQUEST_ACCESS]),
               ...AGENT_TOOLS(IS_WORKER),
@@ -2793,6 +2842,19 @@ async function handle(msg) {
           return reply(msg.id, { outcome: error?.outcome,
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The call could not be made." }],
+          });
+        }
+      }
+
+      if (msg.params?.name === "job_register" || msg.params?.name === "job_list") {
+        try {
+          const list = msg.params.name === "job_list";
+          const result = await callHook("job", list ? "list" : "register", list ? {} : msg.params.arguments || {}, 60 * 1000, "job call");
+          return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
+        } catch (error) {
+          return reply(msg.id, { outcome: error?.outcome,
+            isError: true,
+            content: [{ type: "text", text: error instanceof Error ? error.message : "The job call could not be made." }],
           });
         }
       }
