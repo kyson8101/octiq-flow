@@ -29,7 +29,8 @@ import { DiffStat, DiffView } from "./DiffView";
 import { GitChangeDiff } from "./GitChangeDiff";
 import { baseOf, dirOf } from "../lib/folderHead";
 import { ToolIcon, ToolState } from "./ToolIcon";
-import { useStillRunning } from "./Background";
+import { useCallJob, useStillRunning } from "./Background";
+import { backgroundChip } from "../lib/jobs";
 import { ProseLink } from "./ProseLink";
 
 type Tool = Extract<Block, { kind: "tool" }>;
@@ -173,7 +174,12 @@ export function ToolCard({
   // Only for a call that has already ANSWERED. While the call itself is in
   // flight the card is running for its own reasons and says so; and once the
   // ending has landed the card has a real word for how it went.
-  const stillRunning = useStillRunning(tool.id) && tool.state === "done" && !tool.finish;
+  //
+  // A job the call registered with the host (`octiq-job`, `lib/jobs`) is the
+  // same news with a number on it: the job's own percent, when it gave one.
+  // Only the one card the job was matched to says it (`jobs.jobCalls`).
+  const job = useCallJob(tool.id);
+  const stillRunning = (useStillRunning(tool.id) || !!job) && tool.state === "done" && !tool.finish;
   const picture = toolPicture(tool.name, tool.args, tool.state);
 
   return (
@@ -236,9 +242,9 @@ export function ToolCard({
               the card's own small share of a screen that reads as finished, so
               the tick waits and this pulses in its place. */}
           {stillRunning ? (
-            <span className="tool-state is-background">
+            <span className="tool-state is-background" title={job ? job.job.label : undefined}>
               <span className="tool-spinner" aria-hidden="true" />
-              in background
+              {job ? backgroundChip(job.job) : "in background"}
             </span>
           ) : (
             <ToolState state={tool.state} outcome={tool.outcome} />

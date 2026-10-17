@@ -398,6 +398,9 @@ button.run-group-head:focus-visible { outline: 2px solid var(--focus); outline-o
    strip's texture is the one thing that does). */
 .run-row-step { transition: color 160ms ease-out; }
 .run-row-note[data-stale] .run-row-step { color: var(--fg-3); }
+/* A worker's running job (`lib/jobs`), muted once it has said nothing for
+   ten minutes: running as far as the host knows, moving as far as nobody. */
+.run-row-note[data-job][data-stale] { color: var(--fg-3); }
 
 .run-row-note[data-tone="decide"] { color: var(--decide); }
 .run-row-note[data-tone="danger"] { color: var(--danger); }

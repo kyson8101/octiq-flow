@@ -54,6 +54,8 @@ import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { RollingText } from "./RollingNumber";
 import { MessageBubble } from "./MessageBubble";
 import { WrapUpNote } from "./CompleteChat";
+import { useJob } from "./Background";
+import { isJobTurn, jobIdOfTurn, jobTurnBubble } from "../lib/jobs";
 import { wrapUpBubble } from "../lib/chatComplete";
 import { planStartBubble } from "../lib/planTurn";
 import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
@@ -910,8 +912,13 @@ function TurnView({
   const completion = role === "user" ? wrapUpBubble(message) : null;
   // Nor is the turn that tells the agent its plan was started (`lib/planTurn`).
   const planStart = role === "user" && !completion ? planStartBubble(message) : null;
-  /** Either of the host's own turns: named, with its words behind a disclosure. */
-  const wrapUp = completion ?? planStart;
+  // Nor the turn that tells an agent a job it registered ended (`lib/jobs`),
+  // named from the job the page holds.
+  const jobTurn = role === "user" && isJobTurn(message.turnId) ? message.turnId! : null;
+  const wakeJob = useJob(jobTurn ? jobIdOfTurn(jobTurn) : null);
+  const jobEnd = jobTurn ? jobTurnBubble(message, wakeJob?.job) : null;
+  /** One of the host's own turns: named, with its words behind a disclosure. */
+  const wrapUp = completion ?? planStart ?? jobEnd;
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
@@ -1013,7 +1020,7 @@ function TurnView({
           <span className="msg-reply-preview">{replyTo.preview}</span>
         </div>
       )}
-      <MessageBubble user={role === "user"} message={message} wrapUp={!!completion} planStart={!!planStart} onStart={start} onCancel={cancel}
+      <MessageBubble user={role === "user"} message={message} wrapUp={!!completion} planStart={!!planStart} jobTurn={!!jobEnd} onStart={start} onCancel={cancel}
         onRestore={!wrapUp && (unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
         onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
         footer={role === "user" && answer && !wrapUp ? <CopyAnswer text={answer} what="message" /> : undefined}>
@@ -1030,7 +1037,7 @@ function TurnView({
             Anything else in a user turn (there is nothing today) still goes the
             ordinary way. */}
         {wrapUp ? (
-          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark={planStart ? "start" : "complete"} />
+          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark={planStart ? "start" : jobEnd ? "job" : "complete"} />
         ) : role === "user" && blocks.every((b) => b.kind === "text") ? (
           blocks.map((b, i) => <UserText key={i} text={shown((b as { text: string }).text)} />)
         ) : (
