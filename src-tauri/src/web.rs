@@ -2382,7 +2382,7 @@ async fn job_handler(
                 let register = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
                 Ok(json!({ "job": jobs.register(&chat, register)? }))
             }
-            ("list", Some(chat)) => Ok(json!({ "jobs": jobs.list(Some(&chat)) })),
+            ("list", Some(chat)) => Ok(json!({ "jobs": jobs.list(Some(&chat))? })),
             ("progress", None) => {
                 let progress = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
                 jobs.progress(&parse("id")?, &parse("token")?, progress)?;

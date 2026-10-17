@@ -47,7 +47,12 @@ fn end(code: Option<i32>) -> End {
 }
 
 fn job_of(store: &Store, chat: &str) -> Value {
-    store.list(Some(chat)).into_iter().next().expect("a job")
+    store
+        .list(Some(chat))
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("a job")
 }
 
 #[test]
@@ -192,15 +197,19 @@ fn every_chats_running_jobs_and_the_last_ten_minutes_ended() {
         .get_mut(&old)
         .unwrap()
         .ended_at = Some(now_ms() - RECENT_MS - 1);
-    let all = store.list(None);
+    let all = store.list(None).unwrap();
     let chats: BTreeSet<&str> = all.iter().filter_map(|j| j["chatKey"].as_str()).collect();
     assert!(chats.contains(a.as_str()) && chats.contains(b.as_str()));
     assert!(
         !chats.contains(c.as_str()),
         "ended more than ten minutes ago"
     );
-    assert_eq!(store.list(Some(&c)).len(), 1, "a chat's own list keeps it");
-    let failed = &store.list(Some(&b))[0];
+    assert_eq!(
+        store.list(Some(&c)).unwrap().len(),
+        1,
+        "a chat's own list keeps it"
+    );
+    let failed = &store.list(Some(&b)).unwrap()[0];
     assert_eq!(
         (&failed["status"], &failed["exitCode"]),
         (&json!("failed"), &json!(2))
@@ -241,6 +250,55 @@ fn a_restart_interrupts_what_was_running_says_so_and_keeps_no_token() {
     let saved: Value =
         serde_json::from_slice(&std::fs::read(dir.join("jobs.json")).unwrap()).unwrap();
     assert_eq!(saved[&id]["status"], "interrupted");
+}
+
+#[test]
+fn a_jobs_file_that_cannot_be_read_is_an_error_never_an_empty_store_and_is_not_written_over() {
+    // What review 1's store probe did: a jobs file that is there and is not
+    // JSON. Read as an empty store, the page listed no jobs and a start was
+    // answered with a job no write would ever keep.
+    let dir = TestDir::new("jobs");
+    let path = dir.join("jobs.json");
+    let corrupt = b"{\"a\": {\"id\": \"a\", not json";
+    std::fs::write(&path, corrupt).unwrap();
+    let store = store_at(&dir);
+    let chat = chat();
+
+    let listed = store.list(Some(&chat)).unwrap_err();
+    assert!(listed.contains("could not read its jobs file"), "{listed}");
+    assert!(store.list(None).is_err(), "every chat's list too");
+    let started = store
+        .start(
+            &chat,
+            serde_json::from_value(json!({ "label": "render", "command": "sleep 1" })).unwrap(),
+        )
+        .unwrap_err();
+    assert!(
+        started.contains("could not read its jobs file"),
+        "{started}"
+    );
+    let registered = store
+        .register(
+            &chat,
+            serde_json::from_value(json!({ "label": "render", "pid": std::process::id() }))
+                .unwrap(),
+        )
+        .unwrap_err();
+    assert!(
+        registered.contains("could not read its jobs file"),
+        "{registered}"
+    );
+    assert!(!store.has_running(&chat));
+    assert!(!store.owes(), "nothing was taken that would owe a save");
+    store.settle().unwrap();
+    store.look(&|_| false);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        corrupt,
+        "the file is as it was"
+    );
+    // A restart over the same file says the same.
+    assert!(store_at(&dir).list(Some(&chat)).is_err());
 }
 
 #[test]
@@ -614,4 +672,100 @@ fn a_wake_turns_first_line_names_the_job_in_one_line_of_json_and_says_the_same_e
     let facts: Value =
         serde_json::from_str(first.strip_prefix(WAKE_TAG).unwrap().trim_start()).unwrap();
     assert_eq!(facts["label"], label);
+}
+
+/// Review 1, H2: a wake whose receipt is in the chat's record, read by a
+/// server that cannot read that record. It used to read as "never handed
+/// over" (the reader turned the open's error into an empty record) and the
+/// wake was handed over a second time. It stays owed while the record
+/// cannot be read, and once it can, the receipt is found and nothing is
+/// sent. Unix only: the record is made unreadable by its mode. Skipped for
+/// a user permissions do not bind (root).
+#[cfg(unix)]
+#[test]
+fn a_wake_whose_record_cannot_be_read_stays_owed_and_is_never_handed_over_twice() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TestDir::new("jobs");
+    let chat = chat();
+    let manager = manager_with(store_at(&dir));
+    let (_child, heard) = manager.test_hold_heard(&chat, ChatAgent::Claude, false);
+    let (id, token) = start(&manager.jobs, &chat, true);
+    manager.jobs.end(&id, &token, end(Some(0))).unwrap();
+    deliver_wakes(&manager);
+    let turn_id = format!("{WAKE_PREFIX}{id}");
+    assert_eq!(wake_lines(&chat, &turn_id), 1);
+
+    // The note that it was told did not reach the file, and the server
+    // restarts: the record is the only receipt.
+    manager
+        .jobs
+        .inner
+        .lock()
+        .unwrap()
+        .jobs
+        .get_mut(&id)
+        .unwrap()
+        .wake_turn = Wake::Owed;
+    let mut inner = manager.jobs.inner.lock().unwrap();
+    manager.jobs.save(&mut inner);
+    drop(inner);
+    let restarted = manager_with(store_at(&dir));
+    let (_again, heard_again) = restarted.test_hold_heard(&chat, ChatAgent::Claude, false);
+
+    let record = crate::transcript::path_for(&chat).unwrap();
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+    let restore = Restore(record.clone());
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&record).is_ok() {
+        eprintln!("skipped: this user reads a file whose mode refuses it (root)");
+        return;
+    }
+    assert!(
+        crate::agent_chat::host_turns(&restarted, &chat, &turn_id, None).is_err(),
+        "an unreadable record is an error, never an empty one"
+    );
+    deliver_wakes(&restarted);
+    deliver_wakes(&restarted);
+    assert_eq!(
+        restarted.jobs.inner.lock().unwrap().jobs[&id].wake_turn,
+        Wake::Owed,
+        "owed while the record cannot say"
+    );
+
+    drop(restore);
+    deliver_wakes(&restarted);
+    assert_eq!(
+        wake_lines(&chat, &turn_id),
+        1,
+        "no second turn in the record"
+    );
+    assert_eq!(
+        restarted.jobs.inner.lock().unwrap().jobs[&id].wake_turn,
+        Wake::Told,
+        "the receipt was found"
+    );
+
+    let written = |manager: &ChatManager, heard: std::io::BufReader<std::process::ChildStdout>| {
+        manager.test_finish(&chat);
+        heard
+            .lines()
+            .map_while(Result::ok)
+            .filter(|line| line.starts_with('{'))
+            .count()
+    };
+    assert_eq!(
+        written(&manager, heard),
+        1,
+        "the first server handed it over"
+    );
+    assert_eq!(
+        written(&restarted, heard_again),
+        0,
+        "the restarted server sent nothing"
+    );
 }

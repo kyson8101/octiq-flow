@@ -1114,6 +1114,61 @@ fn a_start_handed_over_while_permissions_refuse_both_receipts_is_not_queued_agai
     assert_eq!(written_to(&svc, &chat, heard), 1);
 }
 
+/// The told-once receipt shared with job wakes (`host_turns`), read from a
+/// record that is there and cannot be read. The Start's turn was handed
+/// over and its line kept, the note that the agent was told was not, and
+/// the server restarted: the record is the only receipt. An ask while it
+/// cannot be read is refused in words and sends nothing (it used to read
+/// as an empty record and hand the turn over again); the Start stays as it
+/// was recorded. Once the record can be read the turn is found and nothing
+/// is sent. Unix only; skipped for a user permissions do not bind (root).
+#[cfg(unix)]
+#[test]
+fn a_start_whose_record_cannot_be_read_is_refused_and_never_told_twice_unix() {
+    use std::os::unix::fs::PermissionsExt;
+    let svc = Services::load();
+    let (chat, turn, heard) = started_with_an_agent(&svc, false);
+    let first =
+        crate::chat_plan::while_writes_fail(|| chat.start(&svc, json!({ "revision": 1 }))).unwrap();
+    assert_eq!(first["state"], "started", "{first}");
+    assert_eq!(first["plan"]["started"]["told"], false);
+    assert_eq!(chat.turns().len(), 1, "the turn's line was kept");
+    assert_eq!(written_to(&svc, &chat, heard), 1);
+
+    let restarted = Services::load();
+    let (_agent, heard) =
+        restarted
+            .chats
+            .test_hold_heard(&chat.key, crate::agent_chat::ChatAgent::Claude, false);
+    let record = crate::transcript::path_for(&chat.key).unwrap();
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+    let restore = Restore(record.clone());
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&record).is_ok() {
+        eprintln!("skipped: this user reads a file whose mode refuses it (root)");
+        return;
+    }
+    let refused = chat
+        .start(&restarted, json!({ "revision": 1 }))
+        .unwrap_err();
+    assert!(refused.contains("could not be read"), "{refused}");
+    assert!(chat.queued(&restarted).is_empty(), "nothing queued");
+    assert_eq!(chat.get(&restarted)["started"]["told"], false);
+
+    drop(restore);
+    let again = chat.start(&restarted, json!({ "revision": 1 })).unwrap();
+    assert_eq!(again["state"], "told", "{again}");
+    assert_eq!(again["turnId"], turn.as_str());
+    assert_eq!(again["plan"]["started"]["told"], true);
+    assert_eq!(chat.turns().len(), 1, "no second turn in the record");
+    assert_eq!(written_to(&restarted, &chat, heard), 0, "sent nothing");
+}
+
 /// A turn that will not reach the agent is told again, once, and a turn
 /// that will is never told twice, across a server that stopped. The
 /// host's queue is in memory: a Start turn a server had only queued is

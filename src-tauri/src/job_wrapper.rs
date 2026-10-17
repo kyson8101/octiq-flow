@@ -47,6 +47,9 @@ pub(crate) struct Options {
     pub format: Format,
     pub progress_file: Option<String>,
     pub wake: bool,
+    /// Run the job in a session of its own and return once the chat knows
+    /// of it (`detach`).
+    pub detach: bool,
     pub command: Vec<String>,
 }
 
@@ -61,6 +64,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Parsed, String> {
         format: Format::Auto,
         progress_file: None,
         wake: true,
+        detach: false,
         command: Vec::new(),
     };
     let mut i = 0;
@@ -93,6 +97,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 options.wake = false;
                 i += 1;
             }
+            "--detach" | "-d" => {
+                options.detach = true;
+                i += 1;
+            }
             _ if arg.starts_with('-') => return Err(format!("unknown option {arg}")),
             // The command, without a `--` before it.
             _ => {
@@ -111,7 +119,7 @@ pub(crate) const HELP: &str = "\
 octiq-job - run a long command and show its progress in its OctiqFlow chat
 
 USAGE:
-    octiq-job [--label L] [--format F] [--progress-file P] [--no-wake] -- <cmd> [args...]
+    octiq-job [--label L] [--format F] [--progress-file P] [--no-wake] [--detach] -- <cmd> [args...]
 
 OPTIONS:
     -l, --label <L>          What the chat calls the job (default: the command).
@@ -120,12 +128,21 @@ OPTIONS:
     -p, --progress-file <P>  A JSON file the job rewrites whole:
                              {\"done\":3,\"total\":8,\"phase\":\"Generating\"}
         --no-wake            Do not wake the chat's agent when the job ends.
+    -d, --detach             Run the job in a session of its own, with no input,
+                             and return as soon as the chat knows of it. Use this,
+                             not `&` or nohup, for a job that outlives the shell
+                             that starts it: redirect its output to a log.
     -h, --help               Show this help.
 
 The command runs directly (no shell), its output passes through unchanged,
-and octiq-job exits with its exit code. Outside an OctiqFlow chat it only
-runs the command.
+and octiq-job exits with its exit code (with --detach: 0 once the job is
+started). Outside an OctiqFlow chat it only runs the command.
 ";
+
+/// Set on the process a `--detach` starts: where it says the chat was told.
+const SUPERVISE_ENV: &str = "OCTIQ_JOB_SUPERVISE";
+/// How long `--detach` waits to hear that the chat knows of the job.
+const DETACH_WAIT: Duration = Duration::from_secs(10);
 
 /// The command line as the page shows it: each argument that needs quoting
 /// in single quotes.
@@ -253,17 +270,148 @@ pub fn main(args: Vec<String>) -> i32 {
             return 2;
         }
     };
-    run(options, Host::from_env(&|name| std::env::var(name).ok()))
+    let host = Host::from_env(&|name| std::env::var(name).ok());
+    if options.detach {
+        match std::env::var_os(SUPERVISE_ENV) {
+            None => return detach(),
+            Some(ready) => return run(options, host, Some(ready.into())),
+        }
+    }
+    run(options, host, None)
 }
 
-fn run(options: Options, host: Option<Host>) -> i32 {
+/// `--detach`: start this same `octiq-job` again in a session of its own,
+/// with no input and this one's output, and wait until it says whether the
+/// chat was told of the job. Then return 0 and leave it running.
+///
+/// An agent's shell tool may end the whole process group of a command the
+/// moment its shell exits. Codex does, with a SIGKILL nothing can catch or
+/// ignore: `octiq-job … &` and `nohup octiq-job … &` died before they had
+/// reached the host, and left no job and no output. A session of its own is
+/// out of that group's reach, and the shell's hang-up with it. Waiting here
+/// until the job is registered is what makes it hold: the tool call does
+/// not end until the job is out of its group.
+fn detach() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            eprintln!("octiq-job: could not find itself to run in the background: {error}");
+            return 126;
+        }
+    };
+    // Itself, as it was started: `octiq-job …` or `octiq-server job …`.
+    let mut command = Command::new(exe);
+    command.args(std::env::args_os().skip(1));
+    detach_as(command)
+}
+
+/// `detach`, given the process to start: the wrapper again, or a stand-in
+/// under test.
+fn detach_as(mut command: Command) -> i32 {
+    let ready =
+        std::env::temp_dir().join(format!("octiq-job-{}.ready", uuid::Uuid::new_v4().simple()));
+    command
+        .env(SUPERVISE_ENV, &ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    new_session(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("octiq-job: could not start in the background: {error}");
+            return 126;
+        }
+    };
+    let pid = child.id();
+    let read = || {
+        std::fs::read_to_string(&ready)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    };
+    let deadline = Instant::now() + DETACH_WAIT;
+    let said = loop {
+        if let Some(said) = read() {
+            break Some(said);
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            // Ended before it said: its command could not start (it said
+            // why), or it said in the moment between the two looks.
+            match read() {
+                Some(said) => break Some(said),
+                None => {
+                    let _ = std::fs::remove_file(&ready);
+                    return status.code().unwrap_or(1);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let _ = std::fs::remove_file(&ready);
+    match said {
+        Some(said) if said["id"].is_string() => eprintln!(
+            "octiq-job: job {} runs in the background (pid {pid}); the chat shows its progress, and its agent is woken when it ends",
+            said["id"].as_str().unwrap_or_default()
+        ),
+        Some(said) => eprintln!(
+            "octiq-job: the command runs in the background (pid {pid}), but the chat was not told of it ({})",
+            said["why"].as_str().unwrap_or("no reason given")
+        ),
+        None => eprintln!(
+            "octiq-job: the command runs in the background (pid {pid}); the chat has not confirmed the job yet"
+        ),
+    }
+    0
+}
+
+/// Start `command` in a session (Windows: a process group, with no console)
+/// of its own.
+#[cfg(unix)]
+fn new_session(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setsid is async-signal-safe, and it is all that runs between
+    // the fork and the exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(windows)]
+fn new_session(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+}
+
+/// Tell the `--detach` that started this process what became of the start:
+/// the job's id, or why the chat was not told. Written whole (a rename), so
+/// it is never read in part.
+fn say_ready(ready: &std::path::Path, said: &Value) {
+    let temp = ready.with_extension("ready.tmp");
+    if std::fs::write(&temp, said.to_string()).is_ok() && std::fs::rename(&temp, ready).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
+fn run(options: Options, host: Option<Host>, ready: Option<std::path::PathBuf>) -> i32 {
     let program = resolve_program(&options.command[0]);
     let mut command = Command::new(&program);
     command
         .args(&options.command[1..])
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // An `octiq-job --detach` inside the command is a start of its own.
+        .env_remove(SUPERVISE_ENV);
     for (name, value) in cargo_env(options.format, &options.command[0], &|name| {
         std::env::var_os(name).is_some()
     }) {
@@ -287,30 +435,39 @@ fn run(options: Options, host: Option<Host>) -> i32 {
         .clone()
         .filter(|label| !label.trim().is_empty())
         .unwrap_or_else(|| shown.chars().take(80).collect());
-    let job = host.as_ref().and_then(|host| {
-        let answer = host.call(
-            "start",
-            json!({
-                "label": label,
-                "command": shown,
-                "wake": options.wake,
-                "wrapperPid": std::process::id(),
-                "childPid": child.id(),
+    let started = match host.as_ref() {
+        None => Err("not run from an OctiqFlow chat".to_string()),
+        Some(host) => host
+            .call(
+                "start",
+                json!({
+                    "label": label,
+                    "command": shown,
+                    "wake": options.wake,
+                    "wrapperPid": std::process::id(),
+                    "childPid": child.id(),
+                }),
+            )
+            .and_then(|value| {
+                Ok(Registered {
+                    id: value["id"].as_str().ok_or("no job id")?.to_string(),
+                    token: value["token"].as_str().ok_or("no job token")?.to_string(),
+                })
+            })
+            .inspect_err(|why| {
+                eprintln!("octiq-job: the chat was not told of this job ({why}); running it anyway")
             }),
+    };
+    if let Some(ready) = &ready {
+        say_ready(
+            ready,
+            &match &started {
+                Ok(job) => json!({ "id": job.id }),
+                Err(why) => json!({ "why": why }),
+            },
         );
-        match answer {
-            Ok(value) => Some(Registered {
-                id: value["id"].as_str()?.to_string(),
-                token: value["token"].as_str()?.to_string(),
-            }),
-            Err(why) => {
-                eprintln!(
-                    "octiq-job: the chat was not told of this job ({why}); running it anyway"
-                );
-                None
-            }
-        }
-    });
+    }
+    let job = started.ok();
 
     let shared = Arc::new(Mutex::new(Shared {
         parser: Parser::new(options.format),
@@ -576,16 +733,23 @@ mod signals {
     }
 
     /// Hold the signals that end a process, so the wrapper lives to hand
-    /// them on and to report how the command ended.
+    /// them on and to report how the command ended. A signal the wrapper
+    /// was started with ignored stays ignored, and is not handed on: that
+    /// is what `nohup` asks of SIGHUP, and what a shell asks of SIGINT and
+    /// SIGQUIT for a command it runs with `&`. Caught, they were handed on
+    /// to the command and ended it.
     pub fn install() {
         for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
             // SAFETY: the handler only stores into an atomic, which is
-            // async-signal-safe.
+            // async-signal-safe; putting back SIG_IGN is what was there.
             unsafe {
-                libc::signal(
+                let before = libc::signal(
                     signal,
                     note as extern "C" fn(libc::c_int) as libc::sighandler_t,
                 );
+                if before == libc::SIG_IGN {
+                    libc::signal(signal, libc::SIG_IGN);
+                }
             }
         }
     }
@@ -763,13 +927,91 @@ mod tests {
     #[test]
     fn with_no_host_the_command_runs_and_its_code_is_kept() {
         assert_eq!(
-            run(options(&["--", "sh", "-c", "echo 1/2; exit 3"]), None),
+            run(options(&["--", "sh", "-c", "echo 1/2; exit 3"]), None, None),
             3
         );
         assert_eq!(
-            run(options(&["--", "sh", "-c", "kill -TERM $$"]), None),
+            run(options(&["--", "sh", "-c", "kill -TERM $$"]), None, None),
             128 + 15
         );
-        assert_eq!(run(options(&["--", "no-such-program-here"]), None), 127);
+        assert_eq!(
+            run(options(&["--", "no-such-program-here"]), None, None),
+            127
+        );
+    }
+
+    #[test]
+    fn detach_is_an_option_before_the_command() {
+        assert!(options(&["--detach", "--label", "r", "--", "x"]).detach);
+        assert!(options(&["-d", "--", "x"]).detach);
+        assert!(
+            !options(&["--", "x", "--detach"]).detach,
+            "the command's own"
+        );
+    }
+
+    /// The process a `--detach` starts says what became of the start, and
+    /// the command does not inherit the variable that asks it to.
+    #[cfg(unix)]
+    #[test]
+    fn a_supervisor_says_whether_the_chat_was_told_and_hides_that_from_its_command() {
+        let dir = crate::test_dir::TestDir::new("job-detach");
+        let ready = dir.join("job.ready");
+        let seen = dir.join("seen");
+        let script = format!(
+            "printf '%s' \"${{{SUPERVISE_ENV}:-unset}}\" > '{}'",
+            seen.display()
+        );
+        let code = run(
+            options(&["--detach", "--", "sh", "-c", &script]),
+            None,
+            Some(ready.clone()),
+        );
+        assert_eq!(code, 0);
+        let said: Value = serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
+        assert_eq!(said, json!({ "why": "not run from an OctiqFlow chat" }));
+        assert_eq!(std::fs::read_to_string(&seen).unwrap(), "unset");
+    }
+
+    /// `--detach` returns as soon as the process it started says the chat
+    /// knows of the job, and leaves that process running in a session of
+    /// its own: out of reach of whatever ends the shell's process group.
+    #[cfg(unix)]
+    #[test]
+    fn detach_returns_once_the_job_is_told_and_leaves_it_in_a_session_of_its_own() {
+        let dir = crate::test_dir::TestDir::new("job-detach");
+        let ids = dir.join("ids");
+        let done = dir.join("done");
+        // A stand-in for the wrapper started again: says its pid and its
+        // process group and session, then that the job is j1, then lives on.
+        let script = format!(
+            "echo \"$$ $(ps -o pgid= -p $$) $(ps -o sess= -p $$)\" > '{ids}'; \
+             printf '{{\"id\":\"j1\"}}' > \"${SUPERVISE_ENV}.tmp\" && mv \"${SUPERVISE_ENV}.tmp\" \"${SUPERVISE_ENV}\"; \
+             sleep 3; touch '{done}' 2>/dev/null",
+            ids = ids.display(),
+            done = done.display(),
+        );
+        let mut command = Command::new("sh");
+        command.args(["-c", &script]);
+        let began = Instant::now();
+        assert_eq!(detach_as(command), 0);
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "it did not wait for the job"
+        );
+        assert!(!done.exists(), "the job runs on");
+        let ids = std::fs::read_to_string(&ids).unwrap();
+        let ids: Vec<&str> = ids.split_whitespace().collect();
+        assert_eq!(ids[0], ids[1], "a process group of its own: {ids:?}");
+        let ours = unsafe { libc::getsid(0) };
+        let theirs = unsafe { libc::getsid(ids[0].parse().unwrap()) };
+        assert_eq!(theirs.to_string(), ids[0], "a session it leads");
+        assert_ne!(theirs, ours);
+
+        // One that ends before it says anything (its command could not
+        // start) is answered with its own code.
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 127"]);
+        assert_eq!(detach_as(command), 127);
     }
 }
