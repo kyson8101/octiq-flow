@@ -545,3 +545,73 @@ fn the_launcher_runs_the_server_binary_that_wrote_it() {
         .into_owned();
     assert!(get("PATH").unwrap().starts_with(&dir) && get("PATH").unwrap().ends_with("/usr/bin"));
 }
+
+#[test]
+fn a_wake_turns_first_line_names_the_job_in_one_line_of_json_and_says_the_same_every_try() {
+    let dir = TestDir::new("jobs");
+    let chat = chat();
+    let store = store_at(&dir);
+    let label = "render · \"final\"\ncut";
+    let open = |code: Option<i32>| {
+        let (job, token) = store
+            .start(
+                &chat,
+                serde_json::from_value(json!({ "label": label, "wake": true })).unwrap(),
+            )
+            .unwrap();
+        let id = job["id"].as_str().unwrap().to_string();
+        store.end(&id, &token, end(code)).unwrap();
+        id
+    };
+    for (code, status, exit) in [
+        (Some(0), "done", json!(0)),
+        (Some(3), "failed", json!(3)),
+        (None, "failed", Value::Null),
+    ] {
+        let id = open(code);
+        let job = store.inner.lock().unwrap().jobs[&id].clone();
+        let text = wake_text(&job, None);
+        assert_eq!(text, wake_text(&job, None), "every try says the same");
+        let (first, rest) = text.split_once('\n').unwrap();
+        let facts = first
+            .strip_prefix("[OctiqFlow job ended] ")
+            .unwrap_or_else(|| panic!("{first}"));
+        let facts: Value = serde_json::from_str(facts).unwrap();
+        assert_eq!(
+            facts,
+            json!({ "id": id, "label": job.label, "status": status, "exitCode": exit })
+        );
+        assert_eq!(facts.as_object().unwrap().len(), 4);
+        assert!(
+            first.starts_with(&format!("{WAKE_TAG} {{\"id\":")),
+            "{first}"
+        );
+        assert!(rest.starts_with("The job \"render"), "{rest}");
+    }
+    let mut interrupted = store
+        .inner
+        .lock()
+        .unwrap()
+        .jobs
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    // The store makes a label one line, but a newline that reached the job
+    // some other way is escaped by serde and still leaves one line of JSON.
+    assert_eq!(interrupted.label, "render · \"final\" cut");
+    interrupted.label = label.to_string();
+    interrupted.status = Status::Interrupted;
+    interrupted.exit_code = None;
+    let text = wake_text(&interrupted, None);
+    let first = text.lines().next().unwrap();
+    assert!(
+        first.ends_with(
+            ",\"label\":\"render · \\\"final\\\"\\ncut\",\"status\":\"interrupted\",\"exitCode\":null}"
+        ),
+        "{first}"
+    );
+    let facts: Value =
+        serde_json::from_str(first.strip_prefix(WAKE_TAG).unwrap().trim_start()).unwrap();
+    assert_eq!(facts["label"], label);
+}

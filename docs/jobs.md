@@ -139,6 +139,27 @@ code, how long it took, the command or log, the reason, and the last lines
 of output (wrapper) as a fenced block, then a line saying it is a host
 notification and not the person's instruction.
 
+**Its first line is for the page**, so it can name the job after `chat_jobs`
+no longer holds it (ten minutes after it ended, or after a reload): the tag
+`[OctiqFlow job ended]`, ONE space, then one line of JSON made by
+`serde_json` with exactly these four keys in this order (`chat_jobs::
+wake_facts`):
+
+```text
+[OctiqFlow job ended] {"id":"<jobId>","label":"<label>","status":"done|failed|ended|interrupted","exitCode":<n>|null}
+```
+
+`exitCode` is `null` wherever the job has none (ended, interrupted, killed
+by a signal). The label is the stored one, which the host already made one
+line; a newline or quote is escaped by `serde_json` in any case, so the JSON
+never spans lines. Everything from the second line on is the readable text
+above and has no fixed form. For example:
+
+```text
+[OctiqFlow job ended] {"id":"06264a51017846c0acb3fac3d11db852","label":"render · \"final\" cut","status":"failed","exitCode":1}
+The job "render · "final" cut" failed: exit code 1, after 2m 14s.
+```
+
 - **Told once** (AGENTS.md, *A chat's plan*): before it sends, the host asks
   the chat's record what became of that id (`agent_chat::host_turns`, with
   the turns this server handed over itself as `here`). A turn that is there,

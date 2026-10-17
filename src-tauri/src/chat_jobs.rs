@@ -866,6 +866,31 @@ fn say(view: &Value) {
     );
 }
 
+/// What the first line of a wake turn starts with.
+pub(crate) const WAKE_TAG: &str = "[OctiqFlow job ended]";
+
+/// The facts on a wake turn's first line, after the tag and one space: one
+/// line of JSON, in this order, so the page can name a job it no longer
+/// holds. Made from the stored job alone, so every try says the same.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WakeFacts<'a> {
+    id: &'a str,
+    label: &'a str,
+    status: Status,
+    exit_code: Option<i32>,
+}
+
+fn wake_facts(job: &Job) -> String {
+    serde_json::to_string(&WakeFacts {
+        id: &job.id,
+        label: &job.label,
+        status: job.status,
+        exit_code: job.exit_code,
+    })
+    .expect("a job's facts serialise")
+}
+
 /// The words of the turn that wakes an agent when a job ends.
 fn wake_text(job: &Job, about_task: Option<&str>) -> String {
     let seconds = job
@@ -892,7 +917,9 @@ fn wake_text(job: &Job, about_task: Option<&str>) -> String {
         Status::Running => "is still running".to_string(),
     };
     let mut text = format!(
-        "[OctiqFlow job ended]\nThe job \"{}\" {how}, after {took}.",
+        "{} {}\nThe job \"{}\" {how}, after {took}.",
+        WAKE_TAG,
+        wake_facts(job),
         job.label
     );
     if let Some(task) = about_task {
