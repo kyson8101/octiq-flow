@@ -344,20 +344,66 @@ export function interruptedJobs(text: string): { count: number; labels: string }
   return match ? { count: Number(match[1]), labels: match[2] } : null;
 }
 
+/** The tag the host's wake turn opens with (`chat_jobs.rs`). */
+export const WAKE_TAG = "[OctiqFlow job ended]";
+
+const ENDED: ReadonlySet<string> = new Set(["done", "failed", "ended", "interrupted"]);
+
+/** What the wake turn's first line says of its job. */
+export type WakeLine = {
+  id: string;
+  label: string;
+  status: Exclude<JobStatus, "running">;
+  exitCode: number | null;
+};
+
+/** The job a wake turn's own first line names, or null. The host writes it
+ *  as the tag, one space and one single-line JSON object with `id`, `label`,
+ *  `status` and `exitCode`; the words for the agent follow from line 2.
+ *  Anything else is null: a line that is not that shape, a key missing or
+ *  of the wrong type, a status a job does not end with. An older host's
+ *  text (the tag on a line of its own, then prose) is null too. Nothing is
+ *  read out of the prose, and nothing here throws. Keys beyond the four are
+ *  ignored. */
+export function wakeLine(said: unknown): WakeLine | null {
+  if (typeof said !== "string") return null;
+  const end = said.indexOf("\n");
+  const first = (end < 0 ? said : said.slice(0, end)).replace(/\r$/, "");
+  if (!first.startsWith(`${WAKE_TAG} {`)) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(first.slice(WAKE_TAG.length + 1));
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const id = text(r.id);
+  const label = text(r.label);
+  const status = typeof r.status === "string" && ENDED.has(r.status) ? (r.status as WakeLine["status"]) : undefined;
+  const exitCode = r.exitCode === null ? null
+    : typeof r.exitCode === "number" && Number.isInteger(r.exitCode) ? r.exitCode : undefined;
+  if (!id || !label || !status || exitCode === undefined) return null;
+  return { id, label, status, exitCode };
+}
+
 /** What the wake turn's bubble says in place of the host's text: how the job
- *  ended and which job, from the job the page holds. A job the page no
- *  longer holds (ended long ago, or an older host) is `Job ended` alone:
- *  nothing is read out of the host's words. */
+ *  ended and which job. From the job the page holds; else from the turn's
+ *  own first line (`wakeLine`), when it names this very turn's job; else
+ *  `Job ended` alone. Nothing is read out of the host's prose. */
 export function jobTurnBubble(
   message: { turnId?: string | null },
   job: Job | undefined,
+  turnText?: string,
 ): { label: string; detail: string } | null {
   if (!isJobTurn(message.turnId)) return null;
-  if (!job) return { label: ENDED_LABEL.ended, detail: "" };
+  const line = job ? undefined : wakeLine(turnText);
+  const said = job ?? (line && line.id === jobIdOfTurn(message.turnId!) ? line : undefined);
+  if (!said) return { label: ENDED_LABEL.ended, detail: "" };
   // `exitCode` is absent while a job runs, and `null` once it ended with
   // none to give: a registered pid's end, an interruption, a wrapper killed
   // by a signal. Null is said as that, never as "exit null".
-  const exit = typeof job.exitCode === "number" ? `exit ${job.exitCode}`
-    : job.exitCode === null ? "no exit code" : null;
-  return { label: ENDED_LABEL[job.status], detail: [job.label, exit].filter(Boolean).join(" · ") };
+  const exit = typeof said.exitCode === "number" ? `exit ${said.exitCode}`
+    : said.exitCode === null ? "no exit code" : null;
+  return { label: ENDED_LABEL[said.status], detail: [said.label, exit].filter(Boolean).join(" · ") };
 }

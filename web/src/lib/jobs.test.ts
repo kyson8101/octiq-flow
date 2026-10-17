@@ -24,6 +24,7 @@ import {
   runningSignature,
   type HeldJob,
   type Job,
+  wakeLine,
 } from "./jobs";
 import { backgroundSummary } from "./background";
 import { elapsedLabel } from "./working";
@@ -299,6 +300,71 @@ describe("the wake turn", () => {
   it("reads nothing out of the host's words for a job it does not hold", () => {
     expect(jobTurnBubble({ turnId: "octiq-job-gone" }, undefined)).toEqual({ label: "Job ended", detail: "" });
     expect(jobTurnBubble({ turnId: "turn-1" }, wire())).toBeNull();
+  });
+});
+
+describe("the wake turn's own first line", () => {
+  // The host's first line (`chat_jobs.rs`): the tag, one space, one JSON object.
+  const line = (job: Record<string, unknown>, rest = "\nThe job finished with exit code 0, after 2m 10s.\nCommand: cargo build") =>
+    `[OctiqFlow job ended] ${JSON.stringify(job)}${rest}`;
+  const build = { id: "job_7", label: "Build", status: "done", exitCode: 0 };
+  // The text before the host wrote the line (933ced1), still on recorded chats.
+  const old = "[OctiqFlow job ended]\nThe job \"Build\" finished with exit code 0, after 2m 10s.\nCommand: cargo build";
+
+  it("reads the four fields of a line that is that shape", () => {
+    expect(wakeLine(line(build))).toEqual(build);
+    expect(wakeLine(line({ ...build, status: "interrupted", exitCode: null }))).toEqual({ ...build, status: "interrupted", exitCode: null });
+    expect(wakeLine(line(build, ""))).toEqual(build);
+    expect(wakeLine(line(build, "\r\nmore"))).toEqual(build);
+  });
+
+  it("keeps a label as written: a dot, quotes, an escaped newline", () => {
+    const label = 'Render "intro" · 4K\nfinal';
+    expect(wakeLine(line({ ...build, label }))).toEqual({ ...build, label });
+  });
+
+  it("is null for a key missing or of the wrong type", () => {
+    for (const key of ["id", "label", "status", "exitCode"]) {
+      const partial: Record<string, unknown> = { ...build };
+      delete partial[key];
+      expect(wakeLine(line(partial))).toBeNull();
+    }
+    expect(wakeLine(line({ ...build, id: 7 }))).toBeNull();
+    expect(wakeLine(line({ ...build, id: "" }))).toBeNull();
+    expect(wakeLine(line({ ...build, label: ["Build"] }))).toBeNull();
+    expect(wakeLine(line({ ...build, status: "running" }))).toBeNull();
+    expect(wakeLine(line({ ...build, status: "finished" }))).toBeNull();
+    expect(wakeLine(line({ ...build, exitCode: "0" }))).toBeNull();
+    expect(wakeLine(line({ ...build, exitCode: 1.5 }))).toBeNull();
+  });
+
+  it("is null for anything that is not the line, and never throws", () => {
+    expect(wakeLine(old)).toBeNull();
+    expect(wakeLine("[OctiqFlow job ended] {not json")).toBeNull();
+    expect(wakeLine("[OctiqFlow job ended] [1,2]")).toBeNull();
+    expect(wakeLine("[OctiqFlow job ended]  " + JSON.stringify(build))).toBeNull();
+    expect(wakeLine(`The job ended. ${line(build)}`)).toBeNull();
+    // The object over two lines is not a single-line object.
+    expect(wakeLine("[OctiqFlow job ended] {\"id\":\"job_7\",\n\"label\":\"Build\",\"status\":\"done\",\"exitCode\":0}")).toBeNull();
+    expect(wakeLine("")).toBeNull();
+    expect(wakeLine(undefined)).toBeNull();
+    expect(wakeLine(42)).toBeNull();
+  });
+
+  it("names the bubble from the line when the page does not hold the job", () => {
+    const turn = { turnId: "octiq-job-job_7" };
+    expect(jobTurnBubble(turn, undefined, line(build))).toEqual({ label: "Job finished", detail: "Build · exit 0" });
+    expect(jobTurnBubble(turn, undefined, line({ ...build, status: "failed", exitCode: null }))).toEqual({ label: "Job failed", detail: "Build · no exit code" });
+  });
+
+  it("goes by the job the page holds before the line", () => {
+    const turn = { turnId: "octiq-job-job_1" };
+    expect(jobTurnBubble(turn, wire({ status: "failed", exitCode: 2 }), line({ ...build, id: "job_1" }))).toEqual({ label: "Job failed", detail: "Render mp4 · exit 2" });
+  });
+
+  it("ignores a line about another job, and the old text, and says Job ended", () => {
+    expect(jobTurnBubble({ turnId: "octiq-job-job_8" }, undefined, line(build))).toEqual({ label: "Job ended", detail: "" });
+    expect(jobTurnBubble({ turnId: "octiq-job-job_7" }, undefined, old)).toEqual({ label: "Job ended", detail: "" });
   });
 });
 

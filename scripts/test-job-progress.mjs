@@ -47,7 +47,10 @@ const chats = [main, workerChat];
 
 const BUILD = "octiq-job --label Build -- cargo build --release";
 const RENDER = `octiq-job --label "Render mp4" -- npx remotion render src/index.ts Main out.mp4`;
-const WAKE = "[OctiqFlow job ended]\nThe job \"Build\" finished with exit code 0, after 2m 10s.\nCommand: cargo build --release";
+const WAKE = '[OctiqFlow job ended] {"id":"job_0","label":"Build","status":"done","exitCode":0}\nThe job "Build" finished with exit code 0, after 2m 10s.\nCommand: cargo build --release';
+// A job the page no longer holds (ended long ago): its bubble is named from
+// the turn's own first line.
+const WAKE_GONE = '[OctiqFlow job ended] {"id":"job_thumbs","label":"Thumbnails · 4K","status":"failed","exitCode":1}\nThe job "Thumbnails · 4K" failed with exit code 1, after 40s.';
 const toolUse = (msg, id, command, text) => ({
   type: "assistant",
   message: { id: msg, role: "assistant", content: [{ type: "text", text }, { type: "tool_use", id, name: "Bash", input: { command, description: text } }] },
@@ -71,6 +74,7 @@ const record = [
   toolResult("toolu_render", "Registered job job_1 (Render mp4). You will be woken when it ends."),
   { type: "assistant", message: { id: "msg-4", role: "assistant", content: [{ type: "text", text: "The render is running as a job." }] } },
   { type: "result", subtype: "success", is_error: false, result: "The render is running as a job." },
+  ...turn("octiq-job-job_thumbs", WAKE_GONE),
   // An earlier job a server restart interrupted, in the host's own words.
   { type: "octiq_job_interrupted", job_ids: ["job_old"], message: INTERRUPTED },
 ].map((event, at) => ({ seq: at + 1, event }));
@@ -202,6 +206,8 @@ const read = (page) => page.evaluate(() => {
     rowNote: text(document.querySelector('.run-row-note[data-job]')),
     wakeLabel: text(document.querySelector('.wrap-up-note[data-mark="job"] .wrap-up-note-label')),
     wakeDetail: text(document.querySelector('.wrap-up-note[data-mark="job"] .wrap-up-note-detail')),
+    wakes: [...document.querySelectorAll('.wrap-up-note[data-mark="job"]')].map((note) =>
+      [note.querySelector(".wrap-up-note-label"), note.querySelector(".wrap-up-note-detail")].map(text).filter(Boolean).join(" · ")),
     wakeSummary: text(document.querySelector('.wrap-up-note[data-mark="job"] summary')),
     notices: text(document.querySelector(".chat-notices-title")),
     wakeActions: text(document.querySelector('.wrap-up-note[data-mark="job"]')?.closest(".message-bubble")?.querySelector(".message-delivery")),
@@ -229,7 +235,7 @@ try {
       };
 
       // The wake turn is the first thing in the transcript worth a look.
-      await page.locator('.wrap-up-note[data-mark="job"]').waitFor();
+      await page.locator('.wrap-up-note[data-mark="job"]').nth(1).waitFor();
       await page.locator(".tool-state.is-background").first().waitFor();
       const first = await read(page);
       assert.match(first.strip, /^Render mp4 · Encoding · 40%$/, `${where}: strip says ${first.strip}`);
@@ -239,6 +245,7 @@ try {
       assert.deepEqual(first.chips, ["in background · 40%"], `${where}: one card marked (${JSON.stringify(first.chips)})`);
       assert.equal(first.wakeLabel, "Job finished", `${where}: wake label`);
       assert.equal(first.wakeDetail, "Build · exit 0", `${where}: wake detail`);
+      assert.deepEqual(first.wakes, ["Job finished · Build · exit 0", "Job failed · Thumbnails · 4K · exit 1"], `${where}: wakes say ${JSON.stringify(first.wakes)}`);
       assert.match(first.wakeSummary, /^What the agent was told · 3 lines$/, `${where}: wake disclosure`);
       assert.equal(first.wakeQuoted, false, `${where}: the host's words are not drawn as the person's`);
       assert.equal(first.wakeActions, "Sent", `${where}: a delivered wake turn offers nothing (${first.wakeActions})`);
@@ -248,6 +255,7 @@ try {
       await clip(".composer-hint", "strip");
       await clip('.tool:has(.tool-state.is-background)', "card");
       await clip('.wrap-up-note[data-mark="job"]', "wake");
+      await clip('.wrap-up-note[data-mark="job"] >> nth=1', "wake-from-line");
 
       // The worker's row. Beside the chat on a desktop; on a phone, behind
       // the action bar's Tasks.

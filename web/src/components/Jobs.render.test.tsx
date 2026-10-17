@@ -96,7 +96,7 @@ describe("the card that started it", () => {
 describe("the turn that wakes the agent", () => {
   const turn: Message = {
     id: "m1", turnId: "octiq-job-job_1", role: "user", streaming: false, delivery: "dispatched", echo: "e1",
-    blocks: [{ kind: "text", text: "[OctiqFlow job ended]\nThe job \"Render mp4\" finished with exit code 0, after 2m 10s.\nCommand: npx remotion render Main out.mp4" }],
+    blocks: [{ kind: "text", text: '[OctiqFlow job ended] {"id":"job_1","label":"Render mp4","status":"done","exitCode":0}\nThe job "Render mp4" finished with exit code 0, after 2m 10s.\nCommand: npx remotion render Main out.mp4' }],
   };
   const draw = (store: JobStore, message: Message = turn) => renderToStaticMarkup(
     <JobStoreProvider value={store}>
@@ -126,8 +126,23 @@ describe("the turn that wakes the agent", () => {
     expect(html).toContain("Render mp4 · exit 1");
   });
 
-  it("is Job ended alone for a job the page does not hold", () => {
+  it("is named from its own first line for a job the page does not hold", () => {
     const html = draw(storeOf());
+    expect(html).toContain('<span class="wrap-up-note-label">Job finished</span>');
+    expect(html).toContain('<span class="wrap-up-note-detail">Render mp4 · exit 0</span>');
+  });
+
+  it("is Job ended alone for a job the page does not hold and a turn with no line", () => {
+    // The host's text before the line (933ced1), still on recorded chats.
+    const older: Message = { ...turn, blocks: [{ kind: "text", text: "[OctiqFlow job ended]\nThe job \"Render mp4\" finished with exit code 0, after 2m 10s." }] };
+    const html = draw(storeOf(), older);
+    expect(html).toContain('<span class="wrap-up-note-label">Job ended</span>');
+    expect(html).not.toContain("wrap-up-note-detail");
+  });
+
+  it("ignores a line that names another job", () => {
+    const other: Message = { ...turn, turnId: "octiq-job-job_9" };
+    const html = draw(storeOf(), other);
     expect(html).toContain('<span class="wrap-up-note-label">Job ended</span>');
     expect(html).not.toContain("wrap-up-note-detail");
   });

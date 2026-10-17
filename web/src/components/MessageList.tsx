@@ -913,10 +913,10 @@ function TurnView({
   // Nor is the turn that tells the agent its plan was started (`lib/planTurn`).
   const planStart = role === "user" && !completion ? planStartBubble(message) : null;
   // Nor the turn that tells an agent a job it registered ended (`lib/jobs`),
-  // named from the job the page holds.
+  // named from the job the page holds, else from the turn's own first line.
   const jobTurn = role === "user" && isJobTurn(message.turnId) ? message.turnId! : null;
   const wakeJob = useJob(jobTurn ? jobIdOfTurn(jobTurn) : null);
-  const jobEnd = jobTurn ? jobTurnBubble(message, wakeJob?.job) : null;
+  const jobEnd = jobTurn ? jobTurnBubble(message, wakeJob?.job, answer) : null;
   /** One of the host's own turns: named, with its words behind a disclosure. */
   const wrapUp = completion ?? planStart ?? jobEnd;
 
