@@ -722,20 +722,35 @@ fn a_growing_junk_file_stays_refused_cheap_and_in_place() {
 }
 
 /// A refused name that is removed and made again is a new file, and is
-/// looked at again.
+/// looked at again. Unix tells it by its inode whatever its size; Windows,
+/// which gives no inode here, by a size that went down (a real wrapper never
+/// reuses a name, so only junk is ever made again under one).
 #[test]
 fn a_refused_name_made_again_is_looked_at_again() {
     let scene = scene();
     let chat = chat();
     let (dir, key) = open(&scene, &chat);
     let file = file_in(&dir);
-    append(&file, &start("wrong"));
+    append(&file, &(start("wrong") + &"z".repeat(4096) + "\n"));
     pass(&scene, true, true);
     std::fs::remove_file(&file).unwrap();
     append(&file, &real_start(&key));
     pass(&scene, true, true);
     pass(&scene, true, true);
     assert_eq!(jobs_of(&scene, &chat).len(), 1);
+
+    #[cfg(unix)]
+    {
+        // No smaller, and made again all the same.
+        let other = file_in(&dir);
+        append(&other, &(start("wrong") + &"z".repeat(64) + "\n"));
+        pass(&scene, true, true);
+        std::fs::remove_file(&other).unwrap();
+        append(&other, &(real_start(&key) + &"\n".repeat(4096)));
+        pass(&scene, true, true);
+        pass(&scene, true, true);
+        assert_eq!(jobs_of(&scene, &chat).len(), 2);
+    }
 }
 
 // Review 3, B: nothing in a spool folder is followed through a link.

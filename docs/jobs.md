@@ -144,7 +144,9 @@ told once and a restart's `interrupted` are shared, not repeated.
   line carries no secret, a wrong one or another launch's is refused whole:
   remembered by name, size, modification time and inode, never read again
   while it is that file (one that only grows stays refused; one removed and
-  made again under the name is looked at again), never removed, and never
+  made again under the name is looked at again: on Windows, which gives no
+  inode here, only when it is smaller or older than the one refused), never
+  removed, and never
   counted against what a real job needs. A first line not yet whole is not
   refused; one longer than 64 KB is.
 - **Junk cannot hold a real job back for long.** A file of the launch's is
