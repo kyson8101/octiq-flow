@@ -18,22 +18,34 @@
 //! so events, `chat_jobs`, the idle reaper's hold, the wake told once and a
 //! restart's interruption are the hook's own and not repeated here.
 //!
-//! **Everything in a spool file is untrusted.** The chat a record speaks for
-//! comes from its secret, which the host holds in memory for one launch and
-//! never writes down: never from the folder or the file's name. A record
-//! with no secret, a wrong one, or another launch's is refused, changes
-//! nothing, and is logged once for its file. Lines are bounded
-//! (`LINE_MAX`), a malformed line is skipped, a last line with no newline
-//! yet is waited for, and the store makes the label one line as it does for
-//! the hook. The id a record names is the wrapper's own and names only its
-//! file: the job the host makes for it gets an id of the host's, so a spool
-//! job can never collide with, or speak for, a job of the hook's.
+//! **Everything in a spool folder is untrusted.** The chat a record speaks
+//! for comes from its secret, which the host holds in memory for one launch
+//! and never writes down: never from the folder or the file's name. A file
+//! whose first line carries no secret, a wrong one or another launch's is
+//! refused whole, remembered by name, size and modification time, and never
+//! read again, never deleted, and never counted against anything a real job
+//! needs. Lines are bounded (`LINE_MAX`), a malformed line is skipped, a
+//! last line with no newline yet is waited for, and the store makes the
+//! label one line as it does for the hook. The id a record names is the
+//! wrapper's own and names only its file: the job the host makes for it gets
+//! an id of the host's, so a spool job can never collide with, or speak for,
+//! a job of the hook's. Nothing in a folder is followed through a link, and
+//! only a regular file is ever removed (`job_spool_folder.rs`).
+//!
+//! **Absence is never removal.** A file is gone only when the system says
+//! so of that very name (`NotFound` on its open or stat); one a listing did
+//! not show, or one not looked at this pass, is not.
+
+#[path = "job_spool_folder.rs"]
+mod folder;
 
 use crate::chat_jobs::{End, Start, Store};
 use crate::job_progress::Progress;
+pub(crate) use folder::process_alive;
+use folder::{Folder, Meta};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::collections::BTreeMap;
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -47,8 +59,11 @@ pub(crate) const KEY_ENV: &str = "OCTIQ_JOB_SPOOL_CAPABILITY";
 const LINE_MAX: usize = 64 * 1024;
 /// How much of one file is read in one pass.
 const READ_MAX: u64 = 256 * 1024;
-/// How many files of one folder are looked at in one pass.
-const FILES_MAX: usize = 64;
+/// How many files not yet vetted are looked at in one folder in one pass,
+/// each for its first line alone (at most `LINE_MAX` and a byte): about
+/// 4 MB a pass at the most. Files already known to be the launch's are read
+/// every pass and are not counted; files known to be refused cost a stat.
+const LOOK_MAX: usize = 64;
 /// How long an answer to a start (`.ack`) is left for `--detach` to read.
 const ACK_KEEP: Duration = Duration::from_secs(15);
 
@@ -57,15 +72,36 @@ struct Launch {
     chat_key: String,
     session_key: String,
     launch_id: String,
+    /// The folder's name under the root, and its path for what is logged.
+    name: String,
     dir: PathBuf,
+    /// (device, inode) of the folder the host made, asked again each pass.
+    ident: (u64, u64),
     /// SHA-256 of the secret.
     digest: [u8; 32],
     files: BTreeMap<String, Cursor>,
+    /// The next place in the line of files waiting to be looked at.
+    next_ticket: u64,
+    /// That the folder could not be opened as itself was logged.
+    folder_logged: bool,
+}
+
+/// What a file is to the launch, by its first line.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Vetted {
+    /// Not looked at yet, or its first line was not whole: waits its turn
+    /// in the line, by ticket.
+    Waiting(u64),
+    /// Its first line carries the launch's secret: read every pass.
+    Ours,
+    /// Refused: the file as it was when refused. Never read again while it
+    /// is that file.
+    Foreign(Meta),
 }
 
 /// One spool file, as far as it has been read.
-#[derive(Default)]
 struct Cursor {
+    vetted: Vetted,
     offset: u64,
     /// A line longer than `LINE_MAX` is being skipped to its newline.
     discarding: bool,
@@ -76,8 +112,26 @@ struct Cursor {
     unreadable_logged: bool,
     /// When the answer to its start was written.
     ack_at: Option<Instant>,
-    /// The file itself is gone (removed by the host, or by someone else).
+    /// Done with: the system said it is gone, or the host removed it.
     removed: bool,
+    /// How many times the file was opened, for the tests to count.
+    opened: u32,
+}
+
+impl Cursor {
+    fn waiting(ticket: u64) -> Self {
+        Self {
+            vetted: Vetted::Waiting(ticket),
+            offset: 0,
+            discarding: false,
+            state: State::Fresh,
+            logged: false,
+            unreadable_logged: false,
+            ack_at: None,
+            removed: false,
+            opened: 0,
+        }
+    }
 }
 
 #[derive(Default, Clone, PartialEq, Debug)]
@@ -93,9 +147,15 @@ enum State {
     Ended(String),
 }
 
+/// The root every launch's folder is in, held open.
+struct Root {
+    path: PathBuf,
+    folder: Folder,
+}
+
 /// Every launch's spool folder.
 pub(crate) struct Spools {
-    root: Option<PathBuf>,
+    root: Option<Root>,
     launches: Mutex<BTreeMap<String, Arc<Mutex<Launch>>>>,
     /// One pass at a time.
     passing: Mutex<()>,
@@ -119,6 +179,27 @@ fn spool_stem(name: &str) -> Option<&str> {
     (stem.len() == 32 && stem.bytes().all(|b| b.is_ascii_hexdigit())).then_some(stem)
 }
 
+/// The record a line is, when it carries the launch's own secret; else
+/// why not.
+fn keyed(line: &[u8], own: &[u8; 32], digests: &[[u8; 32]]) -> Result<Value, &'static str> {
+    let Ok(record) = serde_json::from_slice::<Value>(line) else {
+        return Err("a line that is not JSON");
+    };
+    let key = record.get("key").and_then(Value::as_str).unwrap_or("");
+    if key.is_empty() {
+        return Err("a record with no key");
+    }
+    let given = digest(key);
+    if !same(&given, own) {
+        return Err(if digests.iter().any(|d| same(d, &given)) {
+            "a record with another launch's key"
+        } else {
+            "a record with a wrong key"
+        });
+    }
+    Ok(record)
+}
+
 /// Where the launches' folders go: the temp folder the Codex sandbox may
 /// write (`$TMPDIR`, which `excludeTmpdirEnvVar: false` keeps writable),
 /// one folder per OS user. Under test, a scratch folder for the binary.
@@ -139,27 +220,6 @@ fn default_root() -> PathBuf {
     }
 }
 
-/// Make a folder only this user can open, and check that what is there is
-/// that: a real folder (not a link), owned by this user.
-fn private_dir(dir: &Path) -> Result<(), String> {
-    crate::profile::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    if !meta.is_dir() {
-        return Err(format!("{} is not a folder", dir.display()));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        // SAFETY: geteuid has no preconditions.
-        if meta.uid() != unsafe { libc::geteuid() } {
-            return Err(format!("{} belongs to another user", dir.display()));
-        }
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    Ok(())
-}
-
 impl Default for Spools {
     fn default() -> Self {
         Self::at(default_root())
@@ -168,17 +228,21 @@ impl Default for Spools {
 
 impl Spools {
     /// Spools under `root`, and the folders a server that is gone left
-    /// there removed: nobody holds their secrets any more.
+    /// there removed: nobody holds their secrets any more. The root must be
+    /// a real folder of this user's (not a link); it is made 0700.
     pub(crate) fn at(root: PathBuf) -> Self {
-        let root = match private_dir(&root) {
-            Ok(()) => Some(root),
+        let made = crate::profile::create_dir_all(&root)
+            .and_then(|()| Folder::adopt(&root))
+            .map_err(|e| format!("{}: {e}", root.display()));
+        let root = match made {
+            Ok(folder) => Some(Root { path: root, folder }),
             Err(why) => {
                 eprintln!("[jobs] no spool folder, so a sandboxed chat's octiq-job reports nothing: {why}");
                 None
             }
         };
         if let Some(root) = &root {
-            sweep(root, std::process::id(), &crate::profile_lock::alive);
+            sweep(&root.folder, std::process::id(), &process_alive);
         }
         Self {
             root,
@@ -200,11 +264,18 @@ impl Spools {
             return Vec::new();
         };
         let name = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
-        let dir = root.join(&name);
-        if let Err(why) = private_dir(&dir) {
-            eprintln!("[jobs] no spool folder for {chat_key}: {why}");
-            return Vec::new();
-        }
+        let dir = root.path.join(&name);
+        let made = crate::profile::create_dir_all(&dir).and_then(|()| root.folder.adopt_in(&name));
+        let ident = match made {
+            Ok(folder) => folder.ident,
+            Err(why) => {
+                eprintln!(
+                    "[jobs] no spool folder for {chat_key}: {}: {why}",
+                    dir.display()
+                );
+                return Vec::new();
+            }
+        };
         let secret = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
@@ -214,9 +285,13 @@ impl Spools {
             chat_key: chat_key.into(),
             session_key: session_key.into(),
             launch_id: launch_id.into(),
+            name: name.clone(),
             dir: dir.clone(),
+            ident,
             digest: digest(&secret),
             files: BTreeMap::new(),
+            next_ticket: 0,
+            folder_logged: false,
         };
         match self.launches.lock() {
             Ok(mut launches) => {
@@ -232,14 +307,18 @@ impl Spools {
 
     /// One pass over every launch's folder. `live` says whether a launch
     /// (session, launch id) is still the process running, `alive` asks
-    /// after a pid. A launch whose process is gone and whose folder holds
-    /// nothing unread is removed, folder and secret.
+    /// after a pid (`process_alive`). A launch whose process is gone and
+    /// whose folder holds nothing of its own left unread is over: its
+    /// secret is dropped and its folder removed if nothing else is in it.
     pub(crate) fn pass(
         &self,
         jobs: &Store,
         live: &dyn Fn(&str, &str) -> bool,
         alive: &dyn Fn(u32) -> bool,
     ) {
+        let Some(root) = &self.root else {
+            return;
+        };
         let Ok(_one) = self.passing.try_lock() else {
             return;
         };
@@ -266,7 +345,7 @@ impl Spools {
             let Ok(mut launch) = launch.lock() else {
                 continue;
             };
-            if read_launch(&mut launch, &digests, jobs, alive, running) {
+            if read_launch(&mut launch, &root.folder, &digests, jobs, alive, running) {
                 finished.push(name);
             }
         }
@@ -278,140 +357,201 @@ impl Spools {
     }
 }
 
-/// Remove the folders of servers that are gone. A folder is
+/// Clear the folders of servers that are gone. A folder is
 /// `<server pid>-<id>`; one of a live server, this one or another sharing
-/// the temp folder, is left alone.
-fn sweep(root: &Path, own: u32, alive: &dyn Fn(u32) -> bool) {
-    let Ok(entries) = std::fs::read_dir(root) else {
+/// the temp folder, is left alone, and so is one whose server cannot be
+/// asked about (`process_alive` says gone only for "no such process"). In a
+/// gone server's folder only regular files under the names a launch uses
+/// are removed, never through a link, then the folder if that empties it.
+fn sweep(root: &Folder, own: u32, alive: &dyn Fn(u32) -> bool) {
+    let Ok(names) = root.names() else {
         return;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
+    for name in names {
         let Some(pid) = name
             .split_once('-')
             .and_then(|(pid, _)| pid.parse::<u32>().ok())
         else {
             continue;
         };
-        if pid != own && !alive(pid) {
-            let _ = std::fs::remove_dir_all(entry.path());
+        if pid == own || alive(pid) {
+            continue;
         }
+        // A link, another user's folder or one not 0700 is not ours.
+        let Ok(folder) = root.open_in(&name) else {
+            continue;
+        };
+        for file in folder.names().unwrap_or_default() {
+            let launch_file = spool_stem(&file).is_some()
+                || file
+                    .split_once(".ack")
+                    .is_some_and(|(stem, _)| spool_stem(&format!("{stem}.ndjson")).is_some());
+            if launch_file {
+                let _ = folder.remove_file(&file);
+            }
+        }
+        let _ = root.remove_dir_in(&name);
+    }
+}
+
+fn log_once(flag: &mut bool, what: impl FnOnce() -> String) {
+    if !*flag {
+        eprintln!("[jobs] {}", what());
+        *flag = true;
     }
 }
 
 /// Read what one launch's folder gained. True when the launch is over:
-/// its process is gone and nothing in its folder is left unread.
+/// its process is gone and nothing of its own in its folder is left
+/// unread.
 fn read_launch(
     launch: &mut Launch,
+    root: &Folder,
     digests: &[[u8; 32]],
     jobs: &Store,
     alive: &dyn Fn(u32) -> bool,
     running: bool,
 ) -> bool {
-    let listed = match std::fs::read_dir(&launch.dir) {
-        Ok(entries) => {
-            let mut names: Vec<String> = entries
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|name| spool_stem(name).is_some())
-                .collect();
-            names.sort();
-            names.truncate(FILES_MAX);
-            Some(names)
+    // The folder the host made, asked for again by its name under the
+    // root, never through a link: anything else there is not read.
+    let folder = match root.open_in(&launch.name) {
+        Ok(folder) if folder.ident == launch.ident => {
+            launch.folder_logged = false;
+            folder
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        // A folder that cannot be listed is not an empty one.
-        Err(_) => return false,
-    };
-    let Some(listed) = listed else {
-        // The folder is gone: its files went with it. A job of it whose
-        // wrapper died has no end to wait for.
-        for cursor in launch.files.values_mut() {
-            gone_if_dead(cursor, jobs, alive);
+        Ok(_) => {
+            let dir = launch.dir.display().to_string();
+            log_once(&mut launch.folder_logged, || {
+                format!("spool folder {dir} is not the folder made for its launch; left alone")
+            });
+            return false;
         }
-        return !running;
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            // The folder is gone, and its files with it: a job of it whose
+            // wrapper died has no end to wait for.
+            for cursor in launch.files.values_mut() {
+                if cursor.vetted == Vetted::Ours && !cursor.removed {
+                    cursor.removed = true;
+                    gone_if_dead(cursor, jobs, alive);
+                }
+            }
+            return !running;
+        }
+        Err(error) => {
+            // A link, another user's, a mode that is not 0700, or a folder
+            // that cannot be opened: not an empty one.
+            let dir = launch.dir.display().to_string();
+            log_once(&mut launch.folder_logged, || {
+                format!("spool folder {dir} could not be opened as itself, left alone: {error}")
+            });
+            return false;
+        }
     };
-    let listed_set: BTreeSet<&String> = listed.iter().collect();
-    for (name, cursor) in launch.files.iter_mut() {
-        if !listed_set.contains(name) && !cursor.removed {
-            cursor.removed = true;
-            gone_if_dead(cursor, jobs, alive);
+    // A folder that cannot be listed is not an empty one.
+    let Ok(listed) = folder.names() else {
+        return false;
+    };
+    // New names join the end of the line, in name order.
+    for name in listed {
+        if spool_stem(&name).is_some() && !launch.files.contains_key(&name) {
+            launch
+                .files
+                .insert(name, Cursor::waiting(launch.next_ticket));
+            launch.next_ticket += 1;
         }
     }
+
+    let own = launch.digest;
     let mut unread = false;
-    for name in &listed {
-        let path = launch.dir.join(name);
-        // Only a plain file is opened: not a link, not a pipe.
-        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+    let mut line = Vec::new();
+    let names: Vec<String> = launch.files.keys().cloned().collect();
+    for name in &names {
+        let Some(cursor) = launch.files.get_mut(name) else {
+            continue;
+        };
+        if cursor.removed {
             continue;
         }
-        let cursor = launch.files.entry(name.clone()).or_default();
-        cursor.removed = false;
-        // Asked before the read: a wrapper dead before it holds no line it
-        // has not written yet.
-        let dead_before = match &cursor.state {
-            State::Started(id) => jobs
-                .running_pid(id)
-                .and_then(|(_, pid)| pid)
-                .is_some_and(|pid| !alive(pid)),
-            _ => false,
-        };
-        let at_end = match read_file(&path, cursor) {
-            Ok((lines, at_end)) => {
-                cursor.unreadable_logged = false;
-                for line in lines {
-                    take_line(
-                        &line,
-                        name,
-                        cursor,
-                        &launch.chat_key,
-                        &launch.dir,
-                        &launch.digest,
-                        digests,
-                        jobs,
-                    );
+        match cursor.vetted {
+            // Read every pass, listed or not: only `NotFound` on its own
+            // open says it is gone.
+            Vetted::Ours => {
+                let ctx = Ctx {
+                    folder: &folder,
+                    chat_key: &launch.chat_key,
+                    dir: &launch.dir,
+                    own: &own,
+                    digests,
+                    jobs,
+                };
+                unread |= read_ours(&ctx, name, cursor, alive, running);
+            }
+            Vetted::Foreign(was) => match folder.stat(name) {
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    launch.files.remove(name);
                 }
-                at_end
-            }
-            Err(error) => {
-                // Not "no events": it stays, and is read again next pass.
-                if !cursor.unreadable_logged {
-                    eprintln!(
-                        "[jobs] spool file {} could not be read, trying again: {error}",
-                        path.display()
-                    );
-                    cursor.unreadable_logged = true;
+                Ok(now) if same_file(&was, &now) => cursor.vetted = Vetted::Foreign(now),
+                // Removed and made again under the name: looked at again.
+                Ok(_) => {
+                    *cursor = Cursor::waiting(launch.next_ticket);
+                    launch.next_ticket += 1;
+                    unread = true;
                 }
-                unread = true;
-                continue;
-            }
-        };
-        if let State::Started(id) = &cursor.state {
-            let still = jobs.running_pid(id).is_some_and(|(running, _)| running);
-            if !still || (dead_before && at_end) {
-                let id = id.clone();
-                let _ = jobs.spooled_gone(&id);
-                cursor.state = State::Ended(id);
-            }
-        }
-        let done = match &cursor.state {
-            // Removed once the store has saved its end.
-            State::Ended(_) => !jobs.owes(),
-            State::Refused => true,
-            // Lines and no start, from a launch that is over.
-            State::Fresh => at_end && !running,
-            State::Started(_) => false,
-        };
-        if done {
-            if std::fs::remove_file(&path).is_ok() {
-                cursor.removed = true;
-            }
-        } else {
-            unread = true;
+                Err(_) => {}
+            },
+            Vetted::Waiting(ticket) => line.push((ticket, name.clone())),
         }
     }
-    // What is left of a file that is gone: its answer, once `--detach` has
-    // had time to read it.
+
+    // The files waiting, oldest ticket first. One whose first line is not
+    // whole yet goes to the back, so what came before a real job can hold
+    // it back for a bounded number of passes and no more.
+    line.sort();
+    for (looked, (_, name)) in line.into_iter().enumerate() {
+        if looked >= LOOK_MAX {
+            // Left for a later pass: not gone, and not refused.
+            unread = true;
+            continue;
+        }
+        let Some(cursor) = launch.files.get_mut(&name) else {
+            continue;
+        };
+        let path = launch.dir.join(&name);
+        match vet(&folder, &name, cursor, &own, digests) {
+            Vet::Ours => {
+                cursor.vetted = Vetted::Ours;
+                let ctx = Ctx {
+                    folder: &folder,
+                    chat_key: &launch.chat_key,
+                    dir: &launch.dir,
+                    own: &own,
+                    digests,
+                    jobs,
+                };
+                unread |= read_ours(&ctx, &name, cursor, alive, running);
+            }
+            Vet::Foreign(meta, why) => {
+                cursor.vetted = Vetted::Foreign(meta);
+                log_once(&mut cursor.logged, || {
+                    format!(
+                        "spool file {} refused: {why}; never read again, nothing changed",
+                        path.display()
+                    )
+                });
+            }
+            Vet::Gone => {
+                launch.files.remove(&name);
+            }
+            Vet::NotYet => {
+                cursor.vetted = Vetted::Waiting(launch.next_ticket);
+                launch.next_ticket += 1;
+                unread = true;
+            }
+        }
+    }
+
+    // What is left of an own file that is gone: its answer, once
+    // `--detach` has had time to read it. Only an answer the host wrote.
     launch.files.retain(|name, cursor| {
         if !cursor.removed {
             return true;
@@ -419,16 +559,179 @@ fn read_launch(
         if cursor.ack_at.is_some_and(|at| at.elapsed() < ACK_KEEP) {
             return true;
         }
-        if let Some(stem) = spool_stem(name) {
-            let _ = std::fs::remove_file(launch.dir.join(format!("{stem}.ack")));
+        if let (Some(_), Some(stem)) = (cursor.ack_at, spool_stem(name)) {
+            let _ = folder.remove_file(&format!("{stem}.ack"));
         }
         false
     });
-    if running || unread || !launch.files.is_empty() {
+    let holds = launch.files.values().any(|cursor| match cursor.vetted {
+        Vetted::Ours | Vetted::Waiting(_) => true,
+        Vetted::Foreign(_) => false,
+    });
+    if running || unread || holds {
         return false;
     }
-    let _ = std::fs::remove_dir_all(&launch.dir);
+    // The launch is over. Its folder goes if nothing is left in it; one that
+    // still holds files the host did not take is left as it is.
+    if let Err(error) = root.remove_dir_in(&launch.name) {
+        if error.kind() != ErrorKind::NotFound {
+            eprintln!(
+                "[jobs] spool folder {} left in place: {error}",
+                launch.dir.display()
+            );
+        }
+    }
     true
+}
+
+/// Whether a refused file is still the file that was refused: the same
+/// inode, no shorter, no older. A file that only grew is still refused.
+fn same_file(was: &Meta, now: &Meta) -> bool {
+    now.ino == was.ino && now.len >= was.len && now.mtime >= was.mtime && now.regular == was.regular
+}
+
+enum Vet {
+    Ours,
+    Foreign(Meta, String),
+    /// The system says there is no such file.
+    Gone,
+    /// The first line is not whole yet, or the file could not be read now.
+    NotYet,
+}
+
+/// Look at a file's first line, and only that.
+fn vet(
+    folder: &Folder,
+    name: &str,
+    cursor: &mut Cursor,
+    own: &[u8; 32],
+    digests: &[[u8; 32]],
+) -> Vet {
+    let (mut file, meta) = match folder.open_file(name) {
+        Ok(opened) => opened,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Vet::Gone,
+        Err(error) if error.kind() == ErrorKind::InvalidInput => {
+            // A link, a folder or a pipe under a spool file's name.
+            return match folder.stat(name) {
+                Ok(meta) => Vet::Foreign(meta, error.to_string()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Vet::Gone,
+                Err(_) => Vet::NotYet,
+            };
+        }
+        Err(_) => return Vet::NotYet,
+    };
+    cursor.opened += 1;
+    let mut bytes = Vec::new();
+    if (&mut file)
+        .take(LINE_MAX as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Vet::NotYet;
+    }
+    match bytes.iter().position(|&b| b == b'\n') {
+        Some(at) => match keyed(&bytes[..at], own, digests) {
+            Ok(_) => Vet::Ours,
+            Err(why) => Vet::Foreign(meta, format!("its first line is {why}")),
+        },
+        None if bytes.len() > LINE_MAX => Vet::Foreign(
+            meta,
+            "its first line is too long to be a record".to_string(),
+        ),
+        None => Vet::NotYet,
+    }
+}
+
+/// What reading one of the launch's own files needs.
+struct Ctx<'a> {
+    folder: &'a Folder,
+    chat_key: &'a str,
+    dir: &'a Path,
+    own: &'a [u8; 32],
+    digests: &'a [[u8; 32]],
+    jobs: &'a Store,
+}
+
+/// Read on in one of the launch's own files. True while something of it is
+/// left unread.
+fn read_ours(
+    ctx: &Ctx,
+    name: &str,
+    cursor: &mut Cursor,
+    alive: &dyn Fn(u32) -> bool,
+    running: bool,
+) -> bool {
+    let jobs = ctx.jobs;
+    let path = ctx.dir.join(name);
+    // Asked before the read: a wrapper dead before it holds no line it has
+    // not written yet.
+    let dead_before = match &cursor.state {
+        State::Started(id) => jobs
+            .running_pid(id)
+            .and_then(|(_, pid)| pid)
+            .is_some_and(|pid| !alive(pid)),
+        _ => false,
+    };
+    let read = ctx.folder.open_file(name).and_then(|(file, meta)| {
+        cursor.opened += 1;
+        read_file(file, meta.len, cursor)
+    });
+    let at_end = match read {
+        Ok((lines, at_end)) => {
+            cursor.unreadable_logged = false;
+            for line in lines {
+                take_line(&line, name, cursor, ctx);
+            }
+            at_end
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            // The system says the file is gone: what it held unread is
+            // gone with it.
+            cursor.removed = true;
+            gone_if_dead(cursor, jobs, alive);
+            return false;
+        }
+        Err(error) => {
+            // Not "no events", and not gone: it stays, and is read again
+            // next pass.
+            log_once(&mut cursor.unreadable_logged, || {
+                format!(
+                    "spool file {} could not be read, trying again: {error}",
+                    path.display()
+                )
+            });
+            return true;
+        }
+    };
+    if let State::Started(id) = &cursor.state {
+        let still = jobs.running_pid(id).is_some_and(|(running, _)| running);
+        if !still || (dead_before && at_end) {
+            let id = id.clone();
+            let _ = jobs.spooled_gone(&id);
+            cursor.state = State::Ended(id);
+        }
+    }
+    let done = match &cursor.state {
+        // Removed once the store has saved its end.
+        State::Ended(_) => !jobs.owes(),
+        State::Refused => true,
+        // Lines and no start, from a launch that is over.
+        State::Fresh => at_end && !running,
+        State::Started(_) => false,
+    };
+    if !done {
+        return true;
+    }
+    match ctx.folder.remove_file(name) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => eprintln!(
+            "[jobs] spool file {} read to its end and left in place: {error}",
+            path.display()
+        ),
+    }
+    cursor.removed = true;
+    false
 }
 
 fn gone_if_dead(cursor: &mut Cursor, jobs: &Store, alive: &dyn Fn(u32) -> bool) {
@@ -446,9 +749,11 @@ fn gone_if_dead(cursor: &mut Cursor, jobs: &Store, alive: &dyn Fn(u32) -> bool) 
 
 /// The whole lines a file gained since the cursor, and whether it was read
 /// to its end. A last line with no newline yet is left for the next pass.
-fn read_file(path: &Path, cursor: &mut Cursor) -> std::io::Result<(Vec<Vec<u8>>, bool)> {
-    let mut file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
+fn read_file(
+    mut file: std::fs::File,
+    len: u64,
+    cursor: &mut Cursor,
+) -> std::io::Result<(Vec<Vec<u8>>, bool)> {
     if len < cursor.offset {
         // Cut short by someone: read it again. A second start says nothing
         // and an end is taken once.
@@ -481,45 +786,23 @@ fn read_file(path: &Path, cursor: &mut Cursor) -> std::io::Result<(Vec<Vec<u8>>,
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn take_line(
-    line: &[u8],
-    name: &str,
-    cursor: &mut Cursor,
-    chat_key: &str,
-    dir: &Path,
-    own: &[u8; 32],
-    digests: &[[u8; 32]],
-    jobs: &Store,
-) {
+fn take_line(line: &[u8], name: &str, cursor: &mut Cursor, ctx: &Ctx) {
     let note = |cursor: &mut Cursor, why: &str| {
-        if !cursor.logged {
-            eprintln!(
-                "[jobs] spool file {}: {why}; skipped, nothing changed (said once for this file)",
-                dir.join(name).display()
-            );
-            cursor.logged = true;
-        }
+        log_once(&mut cursor.logged, || {
+            format!(
+                "spool file {}: {why}; skipped, nothing changed (said once for this file)",
+                ctx.dir.join(name).display()
+            )
+        });
     };
     if line.iter().all(u8::is_ascii_whitespace) {
         return;
     }
-    let Ok(record) = serde_json::from_slice::<Value>(line) else {
-        return note(cursor, "a line that is not JSON");
+    let record = match keyed(line, ctx.own, ctx.digests) {
+        Ok(record) => record,
+        Err(why) => return note(cursor, why),
     };
-    let key = record.get("key").and_then(Value::as_str).unwrap_or("");
-    if key.is_empty() {
-        return note(cursor, "a record with no key");
-    }
-    let given = digest(key);
-    if !same(&given, own) {
-        let why = if digests.iter().any(|d| same(d, &given)) {
-            "a record with another launch's key"
-        } else {
-            "a record with a wrong key"
-        };
-        return note(cursor, why);
-    }
+    let jobs = ctx.jobs;
     let stem = spool_stem(name).unwrap_or_default();
     let kind = record
         .get("type")
@@ -531,7 +814,7 @@ fn take_line(
             let Ok(start) = serde_json::from_value::<Start>(record) else {
                 return note(cursor, "a start that does not parse");
             };
-            let answer = match jobs.start_spooled(chat_key, start) {
+            let answer = match jobs.start_spooled(ctx.chat_key, start) {
                 Ok(job) => match job["id"].as_str() {
                     Some(id) => {
                         cursor.state = State::Started(id.to_string());
@@ -547,7 +830,7 @@ fn take_line(
                     json!({ "why": why })
                 }
             };
-            write_ack(dir, stem, &answer);
+            write_ack(ctx.folder, stem, &answer);
             cursor.ack_at = Some(Instant::now());
         }
         (Some("progress"), State::Started(id)) => {
@@ -570,17 +853,15 @@ fn take_line(
 }
 
 /// The answer to a start, for a `--detach` waiting on it: written whole
-/// under a temporary name and renamed, so it is never read in part.
-fn write_ack(dir: &Path, stem: &str, answer: &Value) {
-    let path = dir.join(format!("{stem}.ack"));
-    let temp = dir.join(format!("{stem}.ack-{}", uuid::Uuid::new_v4().simple()));
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .and_then(|mut file| file.write_all(answer.to_string().as_bytes()));
-    if written.is_err() || std::fs::rename(&temp, &path).is_err() {
-        let _ = std::fs::remove_file(&temp);
+/// under a new temporary name (never through a link) and renamed over the
+/// answer's name, so it is never read in part. A link planted at that name
+/// is replaced as a name; what it pointed at is not touched.
+fn write_ack(folder: &Folder, stem: &str, answer: &Value) {
+    let name = format!("{stem}.ack");
+    let temp = format!("{stem}.ack-{}", uuid::Uuid::new_v4().simple());
+    let written = folder.write_new(&temp, answer.to_string().as_bytes());
+    if written.is_err() || folder.rename(&temp, &name).is_err() {
+        let _ = folder.remove_file(&temp);
     }
 }
 
