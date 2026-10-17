@@ -818,7 +818,7 @@ impl Store {
     }
 
     /// The jobs whose wake is owed, oldest end first.
-    fn owed_wakes(&self) -> Vec<Job> {
+    pub(crate) fn owed_wakes(&self) -> Vec<Job> {
         let Ok(inner) = self.inner.lock() else {
             return Vec::new();
         };
@@ -1121,13 +1121,14 @@ pub(crate) fn start_watcher(manager: std::sync::Arc<crate::agent_chat::ChatManag
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(1));
         // The spool first: a wrapper's end in its file is read before the
-        // pid watch could call its going an interruption.
+        // pid watch could call its going an interruption. Both pid questions
+        // take only "no such process" for gone.
         manager.spools.pass(
             &manager.jobs,
             &|session, launch| manager.launch_running(session, launch),
-            &crate::profile_lock::alive,
+            &crate::job_spool::process_alive,
         );
-        manager.jobs.look(&crate::profile_lock::alive);
+        manager.jobs.look(&crate::job_spool::process_alive);
         deliver_wakes(&manager);
     });
 }

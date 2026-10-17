@@ -140,12 +140,46 @@ told once and a restart's `interrupted` are shared, not repeated.
 - **The chat is the secret's**, never the folder's or the file's name. A
   record with no `key`, a wrong one or another launch's is refused, changes
   nothing, and is logged once for its file.
+- **A file is the launch's by its first line.** A file whose first whole
+  line carries no secret, a wrong one or another launch's is refused whole:
+  remembered by name, size, modification time and inode, never read again
+  while it is that file (one that only grows stays refused; one removed and
+  made again under the name is looked at again: on Windows, which gives no
+  inode here, only when it is smaller or older than the one refused), never
+  removed, and never
+  counted against what a real job needs. A first line not yet whole is not
+  refused; one longer than 64 KB is.
+- **Junk cannot hold a real job back for long.** A file of the launch's is
+  read every pass. Files not yet looked at wait in a line, in the order they
+  were first seen, and at most 64 of them are looked at a pass, for their
+  first line only (about 4 MB at the most); one whose first line is not
+  whole goes to the back. So N files that were there before a real job hold
+  it back at most ceil((N + 1) / 64) passes, and files made after it not at
+  all.
+- **Absence is never removal.** A file is gone only when the system says
+  so of that very name (`NotFound` on its open or stat). One a listing did
+  not show, or one the line has not reached yet, is neither gone nor
+  refused. A job is `interrupted` only when its wrapper is gone (only "no
+  such process" says so, never a question that could not be asked), its
+  file is gone or read to its end, and no end is in it.
+- **Nothing is followed through a link.** On Unix the host works relative
+  to the folders it holds open (`O_NOFOLLOW | O_DIRECTORY`, a real folder of
+  this user's, mode 0700): the root once, and each launch's folder again
+  every pass, checked to be the very folder made for it (device and inode).
+  Files are opened with `O_NOFOLLOW`, statted without following, the answer
+  is made with `O_EXCL | O_NOFOLLOW` and renamed (a link at its name is
+  replaced as a name), and only a regular file is ever removed, by
+  `unlinkat`. A link, another folder or a folder that is not 0700 in a
+  launch's place is refused and logged, and nothing in it is read or
+  removed. On Windows the same checks are made by path before each step
+  (`symlink_metadata`, which takes a junction for a link), so a link put in
+  between a check and its step is not caught: that half is unverified.
 - **Everything in a file is untrusted.** Only plain files named
-  `<32 hex>.ndjson` are opened (no links, no pipes), at most 64 a folder, at
-  most 256 KB of a file a pass. A line longer than 64 KB is skipped to its
-  newline; a malformed line, or one of no known type, is skipped; a last line
-  with no newline yet is waited for. The store makes a label one line and
-  bounds every text as it does for the hook.
+  `<32 hex>.ndjson` are opened (no links, no pipes), at most 256 KB of a
+  file a pass. A line longer than 64 KB is skipped to its newline; a
+  malformed line, or one of no known type, is skipped; a last line with no
+  newline yet is waited for. The store makes a label one line and bounds
+  every text as it does for the hook.
 - **A spool job never meets a hook job.** The id in a file names the file
   only: the host gives the job an id of its own, and the job has no hook
   token, so nothing over `/hook/job` can speak for it. A second start in a
@@ -155,11 +189,15 @@ told once and a restart's `interrupted` are shared, not repeated.
   `interrupted`; the pid watch leaves spooled jobs to the reader.
 - **Files and folders go.** A file goes once its end is taken and the jobs
   file has saved it (a refused start's at once); its `.ack` 15 s after it was
-  written. A launch's folder and secret go once its process is gone and
-  nothing in the folder is left unread. A file the host cannot read is not
-  "no events": it stays, is read again each pass, and keeps its folder. A
-  server that starts removes the folders of servers that are gone (by the
-  pid in the folder's name) and leaves a live one's alone.
+  written (only an answer the host wrote). A launch's secret goes once its
+  process is gone and nothing of its own in the folder is left unread; the
+  folder goes then if it is empty, and is left as it is when it holds files
+  the host refused. A file the host cannot read is not "no events": it
+  stays, is read again each pass, and keeps its launch. A server that starts
+  clears the folders of servers that are gone (by the pid in the folder's
+  name, "no such process" only): the regular files under a launch's names
+  (`<32 hex>.ndjson`, `.ack`) are removed, never through a link, and the
+  folder if that empties it. A live server's folders are left alone.
 - **A restart.** The secrets are in memory: the jobs a spool reported are
   interrupted with every other at load, and what their wrappers write next
   is never read.
