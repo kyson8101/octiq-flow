@@ -271,6 +271,7 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | the `octiq-job` launcher agents run | `~/.octiqflow/bin/octiq-job` (`.cmd` beside it on Windows) | `chat_jobs.rs` |
 | chat record compaction (size when last compacted) | `<chats dir>/.compacted-sizes-v1.json` | `record_trim.rs` |
 | Antigravity plugin, settings backup | `~/.octiqflow/mcp/antigravity/` | `agent_provider.rs` |
+| job spool folders (a sandboxed chat's `octiq-job`; never in the profile) | `$TMPDIR/octiqflow-job-spool-<uid>/` | `job_spool.rs` — see `docs/jobs.md` |
 
 `profile.rs` decides the profile dir; `profile_lock.rs` makes sure only one
 process owns a profile at a time (a second one refuses to start rather than

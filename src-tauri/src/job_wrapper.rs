@@ -21,7 +21,9 @@
 //! with the job's id and a token of its own, which carry the progress and the
 //! end, so a job outlives the agent process that started it. With no such
 //! environment the command is run and nothing is reported, and a host that
-//! cannot be reached never fails the command.
+//! cannot be reached never fails the command. When the start cannot even
+//! connect (Codex's sandbox refuses `127.0.0.1`) and the launch has a spool
+//! folder, the whole job is written there instead (`job_spool`).
 //!
 //! The same code runs as the `octiq-job` binary and as `octiq-server job`,
 //! which is what agents reach through `OCTIQ_JOB` (`chat_jobs::launcher`).
@@ -214,35 +216,69 @@ impl Host {
     }
 
     fn call(&self, action: &str, args: Value) -> Result<Value, String> {
+        self.ask(action, args).map_err(|failed| failed.why)
+    }
+
+    /// `call`, saying whether the host was never reached.
+    fn ask(&self, action: &str, args: Value) -> Result<Value, Failed> {
         let body = json!({ "sessionKey": self.session, "action": action, "args": args });
         let answer = self
             .agent
             .post(&self.url)
             .set("x-octiq-chat-capability", &self.capability)
             .send_json(body);
+        let failed = |why: String, unreachable: bool| Failed { why, unreachable };
         match answer {
             Ok(response) => {
-                let value: Value = response.into_json().map_err(|e| e.to_string())?;
+                let value: Value = response
+                    .into_json()
+                    .map_err(|e| failed(e.to_string(), false))?;
                 Ok(value.get("result").cloned().unwrap_or(Value::Null))
             }
             Err(ureq::Error::Status(_, response)) => {
                 let value: Value = response.into_json().unwrap_or(Value::Null);
-                Err(value["error"]
-                    .as_str()
-                    .unwrap_or("the host refused the call")
-                    .to_string())
+                Err(failed(
+                    value["error"]
+                        .as_str()
+                        .unwrap_or("the host refused the call")
+                        .to_string(),
+                    false,
+                ))
             }
-            Err(error) => Err(error.to_string()),
+            // Never connected: the call cannot have reached the host, so a
+            // spool start cannot make a second job of one the host made.
+            Err(ureq::Error::Transport(transport)) => {
+                let unreachable = matches!(
+                    transport.kind(),
+                    ureq::ErrorKind::ConnectionFailed | ureq::ErrorKind::Dns
+                );
+                Err(failed(transport.to_string(), unreachable))
+            }
         }
     }
 }
 
-/// The job as the host knows it: its id and the token that carries its
-/// progress and its end.
-struct Registered {
-    id: String,
-    token: String,
+/// A call to the host that failed, and whether it never connected.
+struct Failed {
+    why: String,
+    unreachable: bool,
 }
+
+/// How the job is reported: over the hook, or, when the hook could not be
+/// reached at the start, through the launch's spool folder for the rest of
+/// the job (`job_spool`).
+enum Report {
+    Hook {
+        host: Arc<Host>,
+        id: String,
+        token: String,
+    },
+    Spool(Arc<Mutex<crate::job_spool::Writer>>),
+}
+
+/// How long a `--detach` start in the spool waits for the host to answer
+/// it: the host reads the folder once a second.
+const SPOOL_ANSWER_WAIT: Duration = Duration::from_secs(5);
 
 /// What the readers of the two streams and the progress file share.
 struct Shared {
@@ -270,14 +306,16 @@ pub fn main(args: Vec<String>) -> i32 {
             return 2;
         }
     };
-    let host = Host::from_env(&|name| std::env::var(name).ok());
+    let get = |name: &str| std::env::var(name).ok();
+    let host = Host::from_env(&get);
+    let spool = crate::job_spool::Writer::from_env(&get);
     if options.detach {
         match std::env::var_os(SUPERVISE_ENV) {
             None => return detach(),
-            Some(ready) => return run(options, host, Some(ready.into())),
+            Some(ready) => return run(options, host, spool, Some(ready.into())),
         }
     }
-    run(options, host, None)
+    run(options, host, spool, None)
 }
 
 /// `--detach`: start this same `octiq-job` again in a session of its own,
@@ -356,6 +394,10 @@ fn detach_as(mut command: Command) -> i32 {
             "octiq-job: job {} runs in the background (pid {pid}); the chat shows its progress, and its agent is woken when it ends",
             said["id"].as_str().unwrap_or_default()
         ),
+        Some(said) if said["pending"].is_string() => eprintln!(
+            "octiq-job: the command runs in the background (pid {pid}); the chat has not confirmed the job yet ({})",
+            said["pending"].as_str().unwrap_or_default()
+        ),
         Some(said) => eprintln!(
             "octiq-job: the command runs in the background (pid {pid}), but the chat was not told of it ({})",
             said["why"].as_str().unwrap_or("no reason given")
@@ -402,7 +444,12 @@ fn say_ready(ready: &std::path::Path, said: &Value) {
     }
 }
 
-fn run(options: Options, host: Option<Host>, ready: Option<std::path::PathBuf>) -> i32 {
+fn run(
+    options: Options,
+    host: Option<Host>,
+    spool: Option<(std::path::PathBuf, String)>,
+    ready: Option<std::path::PathBuf>,
+) -> i32 {
     let program = resolve_program(&options.command[0]);
     let mut command = Command::new(&program);
     command
@@ -435,37 +482,37 @@ fn run(options: Options, host: Option<Host>, ready: Option<std::path::PathBuf>) 
         .clone()
         .filter(|label| !label.trim().is_empty())
         .unwrap_or_else(|| shown.chars().take(80).collect());
-    let started = match host.as_ref() {
-        None => Err("not run from an OctiqFlow chat".to_string()),
-        Some(host) => host
-            .call(
-                "start",
-                json!({
-                    "label": label,
-                    "command": shown,
-                    "wake": options.wake,
-                    "wrapperPid": std::process::id(),
-                    "childPid": child.id(),
-                }),
-            )
-            .and_then(|value| {
-                Ok(Registered {
-                    id: value["id"].as_str().ok_or("no job id")?.to_string(),
-                    token: value["token"].as_str().ok_or("no job token")?.to_string(),
-                })
-            })
-            .inspect_err(|why| {
-                eprintln!("octiq-job: the chat was not told of this job ({why}); running it anyway")
-            }),
-    };
-    if let Some(ready) = &ready {
-        say_ready(
-            ready,
-            &match &started {
-                Ok(job) => json!({ "id": job.id }),
-                Err(why) => json!({ "why": why }),
-            },
-        );
+    let start = json!({
+        "label": label,
+        "command": shown,
+        "wake": options.wake,
+        "wrapperPid": std::process::id(),
+        "childPid": child.id(),
+    });
+    let started = begin(host, spool, start).inspect_err(|why| {
+        eprintln!("octiq-job: the chat was not told of this job ({why}); running it anyway")
+    });
+    let mut answering = None;
+    if let Some(ready) = ready {
+        match &started {
+            Ok(Report::Hook { id, .. }) => say_ready(&ready, &json!({ "id": id })),
+            Err(why) => say_ready(&ready, &json!({ "why": why })),
+            // The host reads the folder on its own tick: its answer is
+            // waited for beside the command, whose output must not wait.
+            Ok(Report::Spool(writer)) => {
+                let path = writer.lock().ok().map(|writer| writer.answer_path());
+                answering = Some(std::thread::spawn(move || {
+                    let answer = path
+                        .and_then(|path| crate::job_spool::wait_answer(&path, SPOOL_ANSWER_WAIT));
+                    say_ready(
+                        &ready,
+                        &answer.unwrap_or_else(|| {
+                            json!({ "pending": "written to the spool folder, not read by the host yet" })
+                        }),
+                    );
+                }));
+            }
+        }
     }
     let job = started.ok();
 
@@ -491,21 +538,16 @@ fn run(options: Options, host: Option<Host>, ready: Option<std::path::PathBuf>) 
     if let Some(path) = options.progress_file.clone() {
         watch_file(path, shared.clone(), finished.clone());
     }
-    let host = host.map(Arc::new);
-    let reporter = match (&host, &job) {
-        (Some(host), Some(job)) => {
-            let host = host.clone();
-            let (id, token) = (job.id.clone(), job.token.clone());
-            let (shared, finished) = (shared.clone(), finished.clone());
-            Some(std::thread::spawn(move || {
-                while !finished.load(Ordering::SeqCst) {
-                    std::thread::sleep(REPORT_EVERY);
-                    report_progress(&host, &id, &token, &shared);
-                }
-            }))
-        }
-        _ => None,
-    };
+    let job = job.map(Arc::new);
+    let reporter = job.clone().map(|job| {
+        let (shared, finished) = (shared.clone(), finished.clone());
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::SeqCst) {
+                std::thread::sleep(REPORT_EVERY);
+                report_progress(&job, &shared);
+            }
+        })
+    });
 
     // Wait for the command, handing on any signal meanwhile.
     let status = loop {
@@ -535,21 +577,21 @@ fn run(options: Options, host: Option<Host>, ready: Option<std::path::PathBuf>) 
         let _ = reporter.join();
     }
     let (exit_code, signal) = describe(status.as_ref());
-    if let (Some(host), Some(job)) = (&host, &job) {
-        report_progress(host, &job.id, &job.token, &shared);
+    if let Some(job) = &job {
+        report_progress(job, &shared);
         let tail = shared
             .lock()
             .map(|shared| shared.tail.lines())
             .unwrap_or_default();
-        if let Err(why) = host.call(
-            "end",
-            json!({
-                "id": job.id, "token": job.token,
-                "exitCode": exit_code, "signal": signal, "tail": tail,
-            }),
-        ) {
+        let end = json!({ "exitCode": exit_code, "signal": signal, "tail": tail });
+        if let Err(why) = send(job, "end", end) {
             eprintln!("octiq-job: the chat was not told how the job ended ({why})");
         }
+    }
+    // A command quicker than the host's tick: the `--detach` waiting on
+    // this process hears the answer before the process goes.
+    if let Some(answering) = answering {
+        let _ = answering.join();
     }
     match (exit_code, signal) {
         (Some(code), _) => code,
@@ -646,7 +688,65 @@ fn watch_file(path: String, shared: Arc<Mutex<Shared>>, finished: Arc<AtomicBool
     });
 }
 
-fn report_progress(host: &Host, id: &str, token: &str, shared: &Mutex<Shared>) {
+/// Tell the host of the job's start: over the hook, or, only when the hook
+/// could not be connected to and the launch has a spool folder, in that
+/// folder, which then carries the rest of the job.
+fn begin(
+    host: Option<Host>,
+    spool: Option<(std::path::PathBuf, String)>,
+    start: Value,
+) -> Result<Report, String> {
+    let Some(host) = host else {
+        return Err("not run from an OctiqFlow chat".into());
+    };
+    match host.ask("start", start.clone()) {
+        Ok(value) => Ok(Report::Hook {
+            id: value["id"].as_str().ok_or("no job id")?.to_string(),
+            token: value["token"].as_str().ok_or("no job token")?.to_string(),
+            host: Arc::new(host),
+        }),
+        Err(Failed {
+            why,
+            unreachable: true,
+        }) => {
+            let Some((dir, key)) = spool else {
+                return Err(why);
+            };
+            let mut writer = crate::job_spool::Writer::create(&dir, &key)
+                .map_err(|e| format!("{why}; and the spool folder could not be written: {e}"))?;
+            if !writer.record("start", start) {
+                return Err(format!("{why}; and the spool folder could not be written"));
+            }
+            eprintln!("octiq-job: the host could not be reached ({why}); this job is reported through the chat's spool folder");
+            Ok(Report::Spool(Arc::new(Mutex::new(writer))))
+        }
+        Err(failed) => Err(failed.why),
+    }
+}
+
+/// A progress or end report, the way the job is reported.
+fn send(job: &Report, action: &str, mut args: Value) -> Result<(), String> {
+    match job {
+        Report::Hook { host, id, token } => {
+            args["id"] = json!(id);
+            args["token"] = json!(token);
+            host.call(action, args).map(|_| ())
+        }
+        Report::Spool(writer) => {
+            let written = writer
+                .lock()
+                .map(|mut writer| writer.record(action, args))
+                .unwrap_or(false);
+            if written {
+                Ok(())
+            } else {
+                Err("the spool folder could not be written".into())
+            }
+        }
+    }
+}
+
+fn report_progress(job: &Report, shared: &Mutex<Shared>) {
     let progress = {
         let Ok(mut shared) = shared.lock() else {
             return;
@@ -658,11 +758,9 @@ fn report_progress(host: &Host, id: &str, token: &str, shared: &Mutex<Shared>) {
         shared.progress.clone()
     };
     let Some(progress) = progress else { return };
-    let mut args = serde_json::to_value(&progress).unwrap_or_else(|_| json!({}));
-    args["id"] = json!(id);
-    args["token"] = json!(token);
+    let args = serde_json::to_value(&progress).unwrap_or_else(|_| json!({}));
     // A progress report that does not arrive is replaced by the next one.
-    let _ = host.call("progress", args);
+    let _ = send(job, "progress", args);
 }
 
 /// The program to start. On Windows a bare name is looked up with the
@@ -927,17 +1025,212 @@ mod tests {
     #[test]
     fn with_no_host_the_command_runs_and_its_code_is_kept() {
         assert_eq!(
-            run(options(&["--", "sh", "-c", "echo 1/2; exit 3"]), None, None),
+            run(
+                options(&["--", "sh", "-c", "echo 1/2; exit 3"]),
+                None,
+                None,
+                None
+            ),
             3
         );
         assert_eq!(
-            run(options(&["--", "sh", "-c", "kill -TERM $$"]), None, None),
+            run(
+                options(&["--", "sh", "-c", "kill -TERM $$"]),
+                None,
+                None,
+                None
+            ),
             128 + 15
         );
         assert_eq!(
-            run(options(&["--", "no-such-program-here"]), None, None),
+            run(options(&["--", "no-such-program-here"]), None, None, None),
             127
         );
+    }
+
+    /// A host nobody listens on: the call never connects.
+    fn unreachable_host() -> Host {
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        Host {
+            agent: ureq::AgentBuilder::new().timeout(HOST_TIMEOUT).build(),
+            url: format!("http://127.0.0.1:{port}/hook/job"),
+            capability: "cap".into(),
+            session: "chat:a".into(),
+        }
+    }
+
+    fn spool_lines(dir: &std::path::Path) -> Vec<Vec<Value>> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".ndjson"))
+            .map(|e| {
+                std::fs::read_to_string(e.path())
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The hook cannot be connected to and the launch has a spool folder:
+    /// the whole job goes there, a whole line a record, with the real exit
+    /// code, and the command's own code is the wrapper's.
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_that_cannot_be_reached_hands_the_job_to_the_spool_folder() {
+        let dir = crate::test_dir::TestDir::new("job-wrap-spool");
+        let code = run(
+            options(&[
+                "--label",
+                "t",
+                "--",
+                "sh",
+                "-c",
+                "echo 1/2; sleep 0.8; echo 2/2; exit 3",
+            ]),
+            Some(unreachable_host()),
+            Some((dir.to_path_buf(), "secret".into())),
+            None,
+        );
+        assert_eq!(code, 3);
+        let files = spool_lines(&dir);
+        assert_eq!(files.len(), 1, "one file for one job");
+        let records = &files[0];
+        let kinds: Vec<&str> = records
+            .iter()
+            .map(|r| r["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds.first(), Some(&"start"));
+        assert_eq!(kinds.last(), Some(&"end"));
+        assert!(kinds.contains(&"progress"), "{kinds:?}");
+        assert!(records.iter().all(|r| r["key"] == "secret"));
+        assert_eq!(records[0]["label"], "t");
+        let end = records.last().unwrap();
+        assert_eq!(end["exitCode"], 3);
+        assert_eq!(end["tail"], json!(["1/2", "2/2"]));
+
+        // No spool folder: the command runs as before, and nothing is written.
+        let empty = crate::test_dir::TestDir::new("job-wrap-nospool");
+        assert_eq!(
+            run(
+                options(&["--", "sh", "-c", "exit 4"]),
+                Some(unreachable_host()),
+                None,
+                None
+            ),
+            4
+        );
+        assert!(spool_lines(&empty).is_empty());
+    }
+
+    /// A host that answers, even with a refusal, was reached: its word
+    /// stands, and nothing goes to the spool.
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_that_refuses_is_not_a_reason_to_spool() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten().take(1) {
+                let mut reader = BufReader::new(&stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                let answer = "{\"error\":\"the profile folder is away\"}";
+                let _ = (&stream).write_all(
+                    format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let host = Host {
+            agent: ureq::AgentBuilder::new().timeout(HOST_TIMEOUT).build(),
+            url: format!("http://127.0.0.1:{port}/hook/job"),
+            capability: "cap".into(),
+            session: "chat:a".into(),
+        };
+        let dir = crate::test_dir::TestDir::new("job-wrap-refused");
+        let code = run(
+            options(&["--", "sh", "-c", "exit 0"]),
+            Some(host),
+            Some((dir.to_path_buf(), "secret".into())),
+            None,
+        );
+        assert_eq!(code, 0);
+        assert!(spool_lines(&dir).is_empty());
+    }
+
+    /// `--detach` through the spool: the process it starts says what the
+    /// host's reader answered, the host's own job id.
+    #[cfg(unix)]
+    #[test]
+    fn a_detached_job_in_the_spool_says_the_hosts_answer() {
+        let scene = crate::test_dir::TestDir::new("job-wrap-detach-spool");
+        let store = crate::chat_jobs::Store::load(scene.join("jobs.json"));
+        let spools = crate::job_spool::Spools::at(scene.join("spool"));
+        let chat = format!("chat:wrap-spool-{}", uuid::Uuid::new_v4().simple());
+        let env: std::collections::BTreeMap<String, String> =
+            spools.open(&chat, &chat, "launch").into_iter().collect();
+        let dir = std::path::PathBuf::from(&env[crate::job_spool::SPOOL_ENV]);
+        let key = env[crate::job_spool::KEY_ENV].clone();
+        let ready = scene.join("job.ready");
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    spools.pass(&store, &|_, _| true, &|_| true);
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                (spools, store)
+            })
+        };
+        let code = run(
+            options(&[
+                "--detach",
+                "--label",
+                "d",
+                "--",
+                "sh",
+                "-c",
+                "sleep 1; exit 0",
+            ]),
+            Some(unreachable_host()),
+            Some((dir, key)),
+            Some(ready.clone()),
+        );
+        assert_eq!(code, 0);
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let said: Value = serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
+        stop.store(true, Ordering::SeqCst);
+        let (spools, store) = reader.join().unwrap();
+        // The wrapper has written its end and gone: one more look reads it.
+        spools.pass(&store, &|_, _| true, &|_| true);
+        let jobs = store.list(Some(&chat)).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(said, json!({ "id": jobs[0]["id"] }));
+        assert_eq!(jobs[0]["status"], "done");
     }
 
     #[test]
@@ -964,6 +1257,7 @@ mod tests {
         );
         let code = run(
             options(&["--detach", "--", "sh", "-c", &script]),
+            None,
             None,
             Some(ready.clone()),
         );

@@ -52,14 +52,13 @@ and an empty log; nothing can catch or ignore that signal. Claude Code
 (2.1.301) leaves both alive, and its Bash `run_in_background` runs
 `octiq-job` fine, but `--detach` is the one form that holds in both.
 
-**Codex at Read, Edits or Auto cannot reach the host from a command.** Its
-`workspace-write` sandbox refuses the connection to `127.0.0.1`
-(`Operation not permitted`), so the job runs and the chat is not told: the
-log says `the chat was not told of this job (… Operation not permitted …)`.
-The MCP tools run outside that sandbox, so in such a chat register the
-running wrapper instead: `job_register` with the pid `--detach` printed and
-`logFile` (progress is read from the log; the exit code is not known). At
-Full the sandbox is off and `octiq-job` reports itself.
+**Codex at Edits or Auto cannot reach the host from a command, and reports
+through its spool folder instead** (see The spool folder, below). At Read it
+can do neither: the chat is not told of the job. The MCP tools run outside
+the sandbox, so at Read register the running wrapper instead: `job_register`
+with the pid `--detach` printed and `logFile` (progress is read from the
+log; the exit code is not known). At Full the sandbox is off and
+`octiq-job` reports over the hook.
 
 **`job_register`, for a process already running** (MCP, `octiq-ask.cjs`):
 `{ label, pid, logFile?, pattern?, progressFile?, wake? }`. The host watches
@@ -84,9 +83,99 @@ Every agent launch is given (`chat_jobs::agent_env`):
 - `OCTIQ_JOB_SESSION`: the session the launch's capability was issued to.
   Codex hides every variable whose name contains `KEY` from the commands it
   runs, `OCTIQ_CHAT_KEY` and `OCTIQ_SESSION_KEY` among them.
+- `OCTIQ_JOB_SPOOL` and `OCTIQ_JOB_SPOOL_CAPABILITY`: the launch's spool
+  folder and its secret (The spool folder). Not given to a front desk.
 
 `src-tauri/src/bin/octiq-job.rs` builds the same wrapper as a binary of its
 own, for anyone who wants it on their `PATH`.
+
+## The spool folder: a chat whose commands cannot reach the host
+
+Codex below Full runs its commands in a sandbox that refuses a connection
+to `127.0.0.1` (`Operation not permitted`), so `octiq-job` there cannot call
+`/hook/job`. Turning on the sandbox's network access would let it, and is
+not done: it is a widening of what the agent may do. Instead each chat
+launch is given (`job_spool.rs`):
+
+- `OCTIQ_JOB_SPOOL`: a folder of its own,
+  `$TMPDIR/octiqflow-job-spool-<uid>/<server pid>-<id>/`, made through
+  `profile::create_dir_all`, mode 0700, in a root that must be a real folder
+  owned by the same user (a link, or another user's folder, gives no spool).
+  The temp folder is the place Codex's `workspace-write` sandbox can write
+  that git never sees: the workspace can be written too, but `.git/` cannot
+  (measured with codex-cli 0.162.1: `$TMPDIR`, `/tmp` and the workspace
+  writable at Edits and Auto; `.git/` and `~/.octiqflow` refused; nothing at
+  all writable at Read).
+- `OCTIQ_JOB_SPOOL_CAPABILITY`: a secret for that launch, held by the host in
+  memory (a digest) and never written to the profile. Its name has no KEY,
+  SECRET or TOKEN in it, which Codex's environment filter can keep from its
+  commands.
+
+**The wrapper tries the hook first.** Only when the call cannot connect
+(connection failed, or the address cannot be resolved) and `OCTIQ_JOB_SPOOL`
+is set does it switch to the spool, for the rest of that job. A host that
+answers, a refusal included, is not a reason to: its word stands. It writes
+append-only NDJSON to `<spool>/<its own id>.ndjson`, made with `O_EXCL` and
+mode 0600, one whole line in one `O_APPEND` write per record: `start` (as
+the hook's), `progress` (the same throttle, at most twice a second) and
+`end`, **with the real exit code**, which `job_register` cannot know. Every
+record carries the secret as `key`. Output, signals and the exit code are as
+over the hook; a spool write that fails ends the spool for that job and
+never the command.
+
+**`--detach` in the spool** waits for the host's answer to the start: after
+it reads a start the host writes `<id>.ack` (`{"id": <host job id>}`, or
+`{"why": …}` for a refusal) under a temporary name and renames it. The
+supervisor waits up to 5 s beside the command (its output never waits), and
+the line on stderr gives the host's job id as over the hook. Not answered in
+time, it says the chat has not confirmed the job yet.
+
+**The host reads each folder once a second**, on the job watcher's own tick,
+before its pid look, so a wrapper's end in its file is read before its going
+could be taken for an interruption. What it reads goes to the same store
+calls as the hook (`chat_jobs::Store::start_spooled`, `spooled_progress`,
+`spooled_end`), so `chat-job`, `chat_jobs`, the idle reaper's hold, the wake
+told once and a restart's `interrupted` are shared, not repeated.
+
+- **The chat is the secret's**, never the folder's or the file's name. A
+  record with no `key`, a wrong one or another launch's is refused, changes
+  nothing, and is logged once for its file.
+- **Everything in a file is untrusted.** Only plain files named
+  `<32 hex>.ndjson` are opened (no links, no pipes), at most 64 a folder, at
+  most 256 KB of a file a pass. A line longer than 64 KB is skipped to its
+  newline; a malformed line, or one of no known type, is skipped; a last line
+  with no newline yet is waited for. The store makes a label one line and
+  bounds every text as it does for the hook.
+- **A spool job never meets a hook job.** The id in a file names the file
+  only: the host gives the job an id of its own, and the job has no hook
+  token, so nothing over `/hook/job` can speak for it. A second start in a
+  file is ignored, and an end is taken once.
+- **The wrapper's pid is asked before the file is read.** Dead before the
+  read, and the file read to its end with no end in it, the job is
+  `interrupted`; the pid watch leaves spooled jobs to the reader.
+- **Files and folders go.** A file goes once its end is taken and the jobs
+  file has saved it (a refused start's at once); its `.ack` 15 s after it was
+  written. A launch's folder and secret go once its process is gone and
+  nothing in the folder is left unread. A file the host cannot read is not
+  "no events": it stays, is read again each pass, and keeps its folder. A
+  server that starts removes the folders of servers that are gone (by the
+  pid in the folder's name) and leaves a live one's alone.
+- **A restart.** The secrets are in memory: the jobs a spool reported are
+  interrupted with every other at load, and what their wrappers write next
+  is never read.
+
+| Agent and level | How `octiq-job` reports |
+| --- | --- |
+| Claude Code, any level | the hook |
+| Codex Full | the hook (no sandbox) |
+| Codex Auto, Edits | the spool folder |
+| Codex Read | nothing: the sandbox writes nowhere. `job_register` (MCP) for a pid and log |
+
+Limits: a file grows by about 150 bytes a progress report for as long as the
+job runs (about 1 MB an hour), and is removed at its end. Another process of
+the same user can read the secret from the agent's environment, as it can
+the hook's capability. On Windows the folder is under `%TEMP%` and no owner
+check is made.
 
 ## Progress is the job's, never an estimate
 
