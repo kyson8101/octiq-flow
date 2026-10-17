@@ -96,7 +96,7 @@ describe("the card that started it", () => {
 describe("the turn that wakes the agent", () => {
   const turn: Message = {
     id: "m1", turnId: "octiq-job-job_1", role: "user", streaming: false, delivery: "dispatched", echo: "e1",
-    blocks: [{ kind: "text", text: "The job Render mp4 finished with exit code 0.\nOutput: out.mp4" }],
+    blocks: [{ kind: "text", text: "[OctiqFlow job ended]\nThe job \"Render mp4\" finished with exit code 0, after 2m 10s.\nCommand: npx remotion render Main out.mp4" }],
   };
   const draw = (store: JobStore, message: Message = turn) => renderToStaticMarkup(
     <JobStoreProvider value={store}>
@@ -109,8 +109,15 @@ describe("the turn that wakes the agent", () => {
     expect(html).toContain('<span class="wrap-up-note-label">Job finished</span>');
     expect(html).toContain('<span class="wrap-up-note-detail">Render mp4 · exit 0</span>');
     expect(html).toContain('data-mark="job"');
-    expect(html).toContain("What the agent was told · 2 lines");
+    expect(html).toContain("What the agent was told · 3 lines");
     expect(html).toMatch(/<details class="wrap-up-note-text">/);
+  });
+
+  it("says a job that ended with no exit code as that, never exit null", () => {
+    const html = draw(storeOf(wire({ status: "interrupted", exitCode: null })));
+    expect(html).toContain('<span class="wrap-up-note-label">Job interrupted</span>');
+    expect(html).toContain("Render mp4 · no exit code");
+    expect(html).not.toContain("null");
   });
 
   it("says a failure in words", () => {

@@ -337,6 +337,13 @@ const ENDED_LABEL: Record<JobStatus, string> = {
   interrupted: "Job interrupted",
 };
 
+/** The host's sentence for jobs a restart interrupted
+ *  (`octiq_job_interrupted`, `chat_jobs.rs`), read for its count. */
+export function interruptedJobs(text: string): { count: number; labels: string } | null {
+  const match = /^OctiqFlow restarted while (\d+) job\(s\) ran and can no longer follow them: (.+?)\. Check their output/i.exec(text);
+  return match ? { count: Number(match[1]), labels: match[2] } : null;
+}
+
 /** What the wake turn's bubble says in place of the host's text: how the job
  *  ended and which job, from the job the page holds. A job the page no
  *  longer holds (ended long ago, or an older host) is `Job ended` alone:
@@ -347,6 +354,10 @@ export function jobTurnBubble(
 ): { label: string; detail: string } | null {
   if (!isJobTurn(message.turnId)) return null;
   if (!job) return { label: ENDED_LABEL.ended, detail: "" };
-  const exit = typeof job.exitCode === "number" ? `exit ${job.exitCode}` : null;
+  // `exitCode` is absent while a job runs, and `null` once it ended with
+  // none to give: a registered pid's end, an interruption, a wrapper killed
+  // by a signal. Null is said as that, never as "exit null".
+  const exit = typeof job.exitCode === "number" ? `exit ${job.exitCode}`
+    : job.exitCode === null ? "no exit code" : null;
   return { label: ENDED_LABEL[job.status], detail: [job.label, exit].filter(Boolean).join(" · ") };
 }

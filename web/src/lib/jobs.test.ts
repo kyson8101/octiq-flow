@@ -18,6 +18,7 @@ import {
   jobTurnBubble,
   NO_JOBS,
   percent,
+  interruptedJobs,
   readJob,
   runningJobs,
   runningSignature,
@@ -26,6 +27,8 @@ import {
 } from "./jobs";
 import { backgroundSummary } from "./background";
 import { elapsedLabel } from "./working";
+import { emptyChat, reduceChat } from "./chat";
+import { noticesHeadline, presentNotice, presentNotices } from "./chatNotices";
 
 /** A job exactly as the contract says the host sends it. */
 const wire = (over: Partial<Job> = {}): Job => ({
@@ -285,12 +288,41 @@ describe("the wake turn", () => {
     const turn = { turnId: "octiq-job-job_1" };
     expect(jobTurnBubble(turn, wire({ status: "done", exitCode: 0 }))).toEqual({ label: "Job finished", detail: "Render mp4 · exit 0" });
     expect(jobTurnBubble(turn, wire({ status: "failed", exitCode: 1 }))).toEqual({ label: "Job failed", detail: "Render mp4 · exit 1" });
-    expect(jobTurnBubble(turn, wire({ status: "interrupted", exitCode: null }))).toEqual({ label: "Job interrupted", detail: "Render mp4" });
-    expect(jobTurnBubble(turn, wire({ status: "ended", source: "registered" }))).toEqual({ label: "Job ended", detail: "Render mp4" });
+    expect(jobTurnBubble(turn, wire({ status: "interrupted", exitCode: null }))).toEqual({ label: "Job interrupted", detail: "Render mp4 · no exit code" });
+    expect(jobTurnBubble(turn, wire({ status: "ended", source: "registered", exitCode: null }))).toEqual({ label: "Job ended", detail: "Render mp4 · no exit code" });
+    // A wrapper killed by a signal failed with no exit code to give.
+    expect(jobTurnBubble(turn, wire({ status: "failed", exitCode: null }))).toEqual({ label: "Job failed", detail: "Render mp4 · no exit code" });
+    // Absent is not null: nothing is said of it.
+    expect(jobTurnBubble(turn, wire({ status: "ended" }))).toEqual({ label: "Job ended", detail: "Render mp4" });
   });
 
   it("reads nothing out of the host's words for a job it does not hold", () => {
     expect(jobTurnBubble({ turnId: "octiq-job-gone" }, undefined)).toEqual({ label: "Job ended", detail: "" });
     expect(jobTurnBubble({ turnId: "turn-1" }, wire())).toBeNull();
+  });
+});
+
+describe("jobs a restart interrupted", () => {
+  // The host's own sentence (`chat_jobs.rs`, `octiq_job_interrupted`).
+  const one = "OctiqFlow restarted while 1 job(s) ran and can no longer follow them: Render mp4. Check their output before starting them again.";
+  const two = "OctiqFlow restarted while 2 job(s) ran and can no longer follow them: Build, Render mp4. Check their output before starting them again.";
+
+  it("reads the count and the jobs' names", () => {
+    expect(interruptedJobs(one)).toEqual({ count: 1, labels: "Render mp4" });
+    expect(interruptedJobs(two)).toEqual({ count: 2, labels: "Build, Render mp4" });
+    expect(interruptedJobs("1 background task(s) interrupted when the provider process ended: a1. Retained output")).toBeNull();
+  });
+
+  it("is a notice of the chat, said once however often the line is read", () => {
+    const event = { type: "octiq_job_interrupted", job_ids: ["job_1"], message: one };
+    let state = reduceChat(emptyChat(), event);
+    state = reduceChat(state, event);
+    expect(state.notices).toEqual([one]);
+  });
+
+  it("is folded as a count, with the host's sentence in the panel", () => {
+    expect(presentNotice(one)).toMatchObject({ title: "1 job interrupted", detail: one });
+    expect(presentNotice(two).title).toBe("2 jobs interrupted");
+    expect(noticesHeadline(presentNotices([one]), 1)).toBe("1 job interrupted");
   });
 });

@@ -8,6 +8,8 @@
 //   - the worker's row in the run panel: `Encoding · 60%`;
 //   - the turn that woke the agent when an earlier job ended: `Job finished`
 //     with `Build · exit 0`, the host's words behind a disclosure;
+//   - jobs a server restart interrupted are one notice above the composer,
+//     `1 job interrupted`, with the host's sentence inside it;
 //   - a `chat-job` event moves the strip and the card to the new percent,
 //     and a job's end takes it off both.
 //
@@ -45,12 +47,13 @@ const chats = [main, workerChat];
 
 const BUILD = "octiq-job --label Build -- cargo build --release";
 const RENDER = `octiq-job --label "Render mp4" -- npx remotion render src/index.ts Main out.mp4`;
-const WAKE = "The job Build (job_0) finished with exit code 0 after 2m 10s.\nLast lines:\n    Finished `release` profile [optimized] target(s)";
+const WAKE = "[OctiqFlow job ended]\nThe job \"Build\" finished with exit code 0, after 2m 10s.\nCommand: cargo build --release";
 const toolUse = (msg, id, command, text) => ({
   type: "assistant",
   message: { id: msg, role: "assistant", content: [{ type: "text", text }, { type: "tool_use", id, name: "Bash", input: { command, description: text } }] },
 });
 const toolResult = (id, text) => ({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text }] } });
+const INTERRUPTED = "OctiqFlow restarted while 1 job(s) ran and can no longer follow them: Thumbnails. Check their output before starting them again.";
 /** A recorded turn and Claude's echo of it: the echo is what says it reached
  *  the agent. */
 const turn = (id, text) => [
@@ -68,6 +71,8 @@ const record = [
   toolResult("toolu_render", "Registered job job_1 (Render mp4). You will be woken when it ends."),
   { type: "assistant", message: { id: "msg-4", role: "assistant", content: [{ type: "text", text: "The render is running as a job." }] } },
   { type: "result", subtype: "success", is_error: false, result: "The render is running as a job." },
+  // An earlier job a server restart interrupted, in the host's own words.
+  { type: "octiq_job_interrupted", job_ids: ["job_old"], message: INTERRUPTED },
 ].map((event, at) => ({ seq: at + 1, event }));
 
 /** A job exactly as the contract says the host sends it. */
@@ -198,8 +203,9 @@ const read = (page) => page.evaluate(() => {
     wakeLabel: text(document.querySelector('.wrap-up-note[data-mark="job"] .wrap-up-note-label')),
     wakeDetail: text(document.querySelector('.wrap-up-note[data-mark="job"] .wrap-up-note-detail')),
     wakeSummary: text(document.querySelector('.wrap-up-note[data-mark="job"] summary')),
+    notices: text(document.querySelector(".chat-notices-title")),
     wakeActions: text(document.querySelector('.wrap-up-note[data-mark="job"]')?.closest(".message-bubble")?.querySelector(".message-delivery")),
-    wakeQuoted: [...document.querySelectorAll(".msg-user .user-text, .msg-user .msg-body > p")].some((el) => el.textContent.includes("finished with exit code 0")),
+    wakeQuoted: [...document.querySelectorAll(".msg-user .user-text, .msg-user .msg-body > p")].some((el) => el.textContent.includes("[OctiqFlow job ended]")),
     sideways: document.documentElement.scrollWidth > innerWidth,
   };
 });
@@ -236,6 +242,7 @@ try {
       assert.match(first.wakeSummary, /^What the agent was told · 3 lines$/, `${where}: wake disclosure`);
       assert.equal(first.wakeQuoted, false, `${where}: the host's words are not drawn as the person's`);
       assert.equal(first.wakeActions, "Sent", `${where}: a delivered wake turn offers nothing (${first.wakeActions})`);
+      assert.equal(first.notices, "1 job interrupted", `${where}: interrupted jobs are a notice (${first.notices})`);
       assert.equal(first.sideways, false, `${where}: nothing scrolls sideways`);
       await shot("chat");
       await clip(".composer-hint", "strip");
