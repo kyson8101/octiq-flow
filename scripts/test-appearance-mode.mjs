@@ -182,6 +182,32 @@ const frame = (page) => page.evaluate(() => {
 });
 
 
+/** An empty conversation with the composer focused and nothing sent: the
+ *  box's border and the page's accent (a turn in flight), as RGB through a
+ *  1x1 canvas, read once the box's transition has finished. */
+const idleFocus = async (page, shot) => {
+  await page.locator(".composer textarea").first().focus();
+  const look = await page.evaluate(() => new Promise((done) => {
+    const box = document.querySelector(".composer-box");
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const rgb = (value) => {
+      ctx.clearRect(0, 0, 1, 1);
+      ctx.fillStyle = "#000"; ctx.fillStyle = value; ctx.fillRect(0, 0, 1, 1);
+      return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    };
+    const wait = () => {
+      if (box.getAnimations().length) return requestAnimationFrame(wait);
+      const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+      done({ focused: box.matches(":focus-within"), border: rgb(getComputedStyle(box).borderTopColor), accent: rgb(accent) });
+    };
+    requestAnimationFrame(wait);
+  }));
+  await page.screenshot({ path: join(artifacts, shot) });
+  return look;
+};
+
 /** How an answer to a question is drawn, read off the page: its colours as
  *  RGB (through a 1x1 canvas, so `color(srgb …)` and `oklab(…)` read alike)
  *  and the decision colour, the accent and the two decision tints as the
@@ -389,6 +415,8 @@ async function desktop(browser, out) {
     await hoverSettled(empty.page, ".resume-open");
     await empty.page.screenshot({ path: join(artifacts, `${theme}-button-hover.png`), clip: await resume.evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.left - 12, y: r.top - 12, width: r.width + 24, height: r.height + 24 }; }) });
   }
+  await empty.page.mouse.move(0, 0);
+  out.idleFocus = await idleFocus(empty.page, `${theme}-1280-idle-focus.png`);
   await empty.context.close();
 }
 
@@ -408,6 +436,9 @@ async function phone(browser, out) {
     await page.screenshot({ path: join(artifacts, `${theme}-390-sheet.png`) });
   }
   await context.close();
+  const empty = await open(browser, { width: 390, height: 844, phone: true, hash: "#/p/octiq-flow" });
+  out.idleFocus = await idleFocus(empty.page, `${theme}-390-idle-focus.png`);
+  await empty.context.close();
 }
 
 let browser;
@@ -425,6 +456,13 @@ try {
   assert.equal(p.frame.sideways, false, "no sideways scroll at 390");
   assert.equal(d.frame.actionBar, 36, "the action bar is 36px on a desktop");
   assert.equal(p.frame.actionBar, 45, "the action bar is 45px on a phone");
+  for (const scene of [d, p]) assert.equal(scene.idleFocus.focused, true, "the composer has the focus");
+  // Cyberpunk's accent is a cyan that means a turn in flight, so a focused
+  // idle composer must not be drawn in it. (Manga, 中国风 and Windows XP draw
+  // their focus in their accent by design, and are not asked.)
+  if (theme === "cyberpunk") {
+    for (const scene of [d, p]) assert.notDeepEqual(scene.idleFocus.border, scene.idleFocus.accent, "an idle focused composer is not the accent");
+  }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, ...report }, null, 1));
 } catch (error) {

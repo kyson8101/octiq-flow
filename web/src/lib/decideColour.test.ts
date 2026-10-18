@@ -502,6 +502,70 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
     const gap = Math.abs(hue(solid(mode.vars["--decide"])).h - hue(solid(mode.vars["--accent"])).h);
     expect(gap).toBeGreaterThanOrEqual(20);
   });
+
+  /* The focus cues, resolved to the colours they draw. A scan of token names
+     cannot see `--focus: var(--neon-cyan)`, and the cyan IS the accent: an
+     idle composer with the focus looked as if a turn were running. */
+  const mode = MODES.find((item) => item.id === "cyberpunk")!;
+  const declarations = (body: string) => Object.fromEntries(
+    [...body.matchAll(/(--[\w-]+)\s*:\s*([^;]+)/g)].map((m) => [m[1], m[2].trim().replace(/\s+/g, " ")]),
+  );
+  const custom: Record<string, string> = {
+    ...mode.vars,
+    ...Object.assign({}, ...sheet.filter((rule) => rule.selector === ':root[data-theme="cyberpunk"]').map((rule) => declarations(rule.body))),
+  };
+  /** A value with every `var()` replaced by what it names, all the way down. */
+  const resolve = (value: string, depth = 0): string => {
+    expect(depth, value).toBeLessThan(12);
+    return value.replace(/var\((--[\w-]+)(?:,\s*([^()]*))?\)/g, (_, name: string, fallback?: string) => {
+      const named = custom[name] ?? fallback;
+      expect(named, `${name} is not defined in Cyberpunk`).toBeTruthy();
+      return resolve(named!, depth + 1);
+    });
+  };
+  /** Every colour a resolved value draws, but for black and white. */
+  const coloursIn = (value: string): Rgb[] => [
+    ...[...value.matchAll(/#[0-9a-f]{6}\b/gi)].map((m) => solid(m[0])),
+    ...[...value.matchAll(/rgb\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/gi)].map((m) => [+m[1], +m[2], +m[3]] as Rgb),
+  ].filter((rgb) => hue(rgb).chroma > 0);
+  const accent = solid(mode.vars["--accent"]);
+  const tooNear = (rgb: Rgb) => {
+    if (rgb.every((v, i) => Math.round(v) === Math.round(accent[i]))) return true;
+    const gap = Math.abs(hue(rgb).h - hue(accent).h);
+    return Math.min(gap, 360 - gap) < 20;
+  };
+  const focusValues = (): [string, string][] => [
+    ...["--focus", "--focus-ring"].map((name) => [name, resolve(`var(${name})`)] as [string, string]),
+    ["--ring (palette)", resolve(mode.declared["ring"])],
+    ...sheet.filter((rule) => /:focus/.test(rule.selector))
+      .flatMap((rule) => Object.entries(declarations(rule.body.replace(/(^|;)\s*(?!--)([\w-]+)\s*:/g, "$1--$2:")))
+        .map(([prop, value]) => [`${rule.selector} ${prop.slice(2)}`, resolve(value)] as [string, string])),
+  ];
+
+  it("draws no focus cue in the accent, or within 20° of its hue", () => {
+    const values = focusValues();
+    // The two tokens, the palette's ring, the outline and the composer's box.
+    expect(values.map(([where]) => where)).toEqual(expect.arrayContaining([
+      ":root[data-theme=\"cyberpunk\"] :focus-visible outline-color",
+      ":root[data-theme=\"cyberpunk\"] .composer-box:focus-within border-color",
+      ":root[data-theme=\"cyberpunk\"] .composer-box:focus-within box-shadow",
+    ]));
+    for (const [where, value] of values) {
+      const colours = coloursIn(value);
+      expect(colours.length, `${where} draws no colour: ${value}`).toBeGreaterThan(0);
+      for (const rgb of colours) expect(tooNear(rgb), `${where}: ${value}`).toBe(false);
+      // Nor the decision colour: a focused box is not a card that asks.
+      expect(value.toLowerCase(), where).not.toContain(mode.vars["--decide"].toLowerCase());
+    }
+  });
+
+  it("draws a focus indicator that stands out from the frame it lights", () => {
+    const focus = solid(resolve("var(--focus)"));
+    for (const ground of ["--bg-0", "--bg-1"]) expect(contrast(focus, solid(mode.vars[ground])), ground).toBeGreaterThanOrEqual(3);
+    // The composer's frame at rest: 40% violet over the border.
+    const rest = over(solid(resolve("var(--neon-violet)")), 0.4, solid(mode.vars["--border"]));
+    expect(contrast(focus, rest)).toBeGreaterThanOrEqual(3);
+  });
 });
 
 /* ---- A run: what waits on the person, and what is only a problem ------- */

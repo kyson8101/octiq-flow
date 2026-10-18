@@ -2828,7 +2828,9 @@ retired palette back to Dark.
 - **Cyberpunk** (`web/src/cyberpunk.css`): a neon city at night, dark. A
   near-black blue-violet base (`#0a0a14`), a thin violet glow round the
   frames of panels, sheets, dialogs and menus, a magenta-to-violet rule under
-  the top bar, a cyan focus ring with a halo, and a faint perspective grid
+  the top bar, a lilac focus ring with a halo (`--neon-lilac`, never the
+  cyan: an idle box with the focus must not read as a turn in flight), and a
+  faint perspective grid
   along the foot of the empty page only (gone on a phone, where that page
   holds the picker and the message box). Orbitron (`@fontsource/orbitron`,
   700 only) on the empty page's question and the Settings headings; the
@@ -2838,8 +2840,9 @@ retired palette back to Dark.
   中国风's `--seal`. `--decide` is an electric blue of its own (`#6fb6ff`),
   and a card that asks glows in it (`.ask-card`), a safety card in `--warn`.
   The sheet never draws in `--accent`, touches no `.ask-btn`, has no
-  animation, and `decideColour.test.ts` checks all of that and that every
-  rule is scoped.
+  animation, and `decideColour.test.ts` checks all of that, that every rule
+  is scoped, and, resolving the sheet's aliases to colours, that no focus or
+  ring value is the accent or within 20° of its hue.
 - The terminal cannot read a `var()` — xterm hands its palette to WebGL. So
   `web/src/lib/xtermTheme.ts` resolves variables through hidden elements and a
   1×1 canvas: one element per colour, never one element given each colour in

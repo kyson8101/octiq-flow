@@ -26,6 +26,9 @@
   --neon-cyan: #29e3f5;
   --neon-magenta: #ff2bd6;
   --neon-violet: #8b6cff;
+  /* The focus colour: a lighter violet, so a focused box never reads as the
+     cyan of a turn in flight, and 3:1 against the violet frame it lights. */
+  --neon-lilac: #b39dff;
   --night: #0a0a14;
 
   --display: "Orbitron", var(--font);
@@ -37,8 +40,8 @@
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 45%);
   --shadow: 0 24px 64px rgb(0 0 0 / 60%), var(--cp-frame);
   --scrim: rgb(2 2 10 / 66%);
-  --focus: var(--neon-cyan);
-  --focus-ring: 0 0 0 1px var(--neon-cyan), 0 0 12px color-mix(in srgb, var(--neon-cyan) 45%, transparent);
+  --focus: var(--neon-lilac);
+  --focus-ring: 0 0 0 1px var(--neon-lilac), 0 0 12px color-mix(in srgb, var(--neon-lilac) 45%, transparent);
   --link: #7ad7ff;
 }
 
@@ -136,7 +139,9 @@
   box-shadow: 0 0 16px color-mix(in srgb, var(--warn) 16%, transparent);
 }
 
-/* The box you write in: a violet frame, lit cyan while it has the focus. */
+/* The box you write in: a violet frame, lit lilac while it has the focus.
+   Never cyan: that is the accent, a turn in flight, and an idle box with the
+   focus would look as if one were running. */
 :root[data-theme="cyberpunk"] .composer-box {
   border-color: color-mix(in srgb, var(--neon-violet) 40%, var(--border));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--neon-violet) 10%, transparent), 0 0 20px color-mix(in srgb, var(--neon-violet) 12%, transparent), 0 18px 50px rgb(0 0 0 / 45%);
@@ -149,7 +154,7 @@
 
 /* A focus ring is a line of light: the outline, and a halo round it. */
 :root[data-theme="cyberpunk"] :focus-visible {
-  outline-color: var(--neon-cyan);
+  outline-color: var(--focus);
 }
 
 /* ---- Messages ------------------------------------------------------------ */

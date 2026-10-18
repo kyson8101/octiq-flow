@@ -37,7 +37,7 @@
   --decide-tint: rgb(111 182 255 / 9%);
   --border: #262842;
   --input: #33365a;
-  --ring: #29e3f5;
+  --ring: #b39dff;
   /* The meaning colours keep their hues: green is fine, amber is a warning. */
   --chart-1: oklch(0.82 0.19 150);
   --chart-2: oklch(0.84 0.15 85);

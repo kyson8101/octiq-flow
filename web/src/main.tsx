@@ -6,7 +6,9 @@ import { OpenFileProvider } from "./components/OpenFile";
 import "lxgw-wenkai-screen-webfont/lxgwwenkaiscreen.css";
 import "@fontsource-variable/inter";
 // Heading faces for Manga, 中国风 and Cyberpunk. A font file is fetched only when a rule
-// uses it (and only the unicode ranges it draws), so other modes pay nothing.
+// uses it (and only the unicode ranges it draws), so another mode fetches none of them,
+// with one exception: Settings → Appearance draws the Manga and Cyberpunk tiles in their
+// own faces, so opening it fetches Dela Gothic One and Orbitron in any mode.
 import "@fontsource/dela-gothic-one";
 import "@fontsource/ma-shan-zheng";
 import "@fontsource/orbitron/700.css";
