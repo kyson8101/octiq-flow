@@ -468,13 +468,18 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
   it("scopes every rule to the mode, but for its own tile in the picker", () => {
     for (const rule of sheet) {
       for (const part of rule.selector.split(/,(?![^(]*\))/)) {
-        expect(part.trim(), rule.selector).toMatch(/^(:root\[data-theme="cyberpunk"\]|\.thm\[data-theme-id="cyberpunk"\])/);
+        expect(part.trim(), rule.selector).toMatch(/^(:where\()?(:root\[data-theme="cyberpunk"\]|\.thm\[data-theme-id="cyberpunk"\])/);
       }
     }
   });
 
   it("never draws in the accent, which is a turn in flight", () => {
-    for (const rule of sheet) expect(rule.body, rule.selector).not.toMatch(/--(accent|composer-accent)\b/);
+    // A focused element is handed the focus colour AS its accent, and what
+    // is around it the accent back (both checked below); nothing reads it.
+    for (const rule of sheet) {
+      if (isAccentHandBack(rule.selector)) continue;
+      expect(rule.body.replace(/(^|;)\s*--accent\s*:/g, "$1"), rule.selector).not.toMatch(/--(accent|composer-accent)\b/);
+    }
   });
 
   it("glows a card that asks in the decision colour, and a warning's card in amber", () => {
@@ -534,10 +539,14 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
     const gap = Math.abs(hue(rgb).h - hue(accent).h);
     return Math.min(gap, 360 - gap) < 20;
   };
+  const isAccentHandBack = (selector: string) => /:has\(>/.test(selector) || /\)\s*>\s*\*$/.test(selector);
   const focusValues = (): [string, string][] => [
     ...["--focus", "--focus-ring"].map((name) => [name, resolve(`var(${name})`)] as [string, string]),
     ["--ring (palette)", resolve(mode.declared["ring"])],
-    ...sheet.filter((rule) => /:focus/.test(rule.selector))
+    // Every rule on a focused element. Not the two that hand the accent back
+    // to what is around it: the parent's (`:has(> …)`) and the children's
+    // (`… > *`), which draw nothing of the focus and keep the cyan on purpose.
+    ...sheet.filter((rule) => /:focus/.test(rule.selector) && !isAccentHandBack(rule.selector))
       .flatMap((rule) => Object.entries(declarations(rule.body.replace(/(^|;)\s*(?!--)([\w-]+)\s*:/g, "$1--$2:")))
         .map(([prop, value]) => [`${rule.selector} ${prop.slice(2)}`, resolve(value)] as [string, string])),
   ];
@@ -549,6 +558,9 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
       ":root[data-theme=\"cyberpunk\"] :focus-visible outline-color",
       ":root[data-theme=\"cyberpunk\"] .composer-box:focus-within border-color",
       ":root[data-theme=\"cyberpunk\"] .composer-box:focus-within box-shadow",
+      ":root[data-theme=\"cyberpunk\"] .chat-search-form:focus-within border-color",
+      // The base sheets' `outline: … var(--accent)` on a focused element.
+      ":root[data-theme=\"cyberpunk\"] :is(:focus-visible, input:focus, textarea:focus, select:focus) accent",
     ]));
     for (const [where, value] of values) {
       const colours = coloursIn(value);
@@ -557,6 +569,16 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
       // Nor the decision colour: a focused box is not a card that asks.
       expect(value.toLowerCase(), where).not.toContain(mode.vars["--decide"].toLowerCase());
     }
+  });
+
+  it("hands what is inside a focused element back the accent around it", () => {
+    // A running ring or a "Running" line inside a focused row stays cyan, and
+    // the composer's controls keep their model's colour.
+    const handBack = sheet.filter((rule) => /:focus/.test(rule.selector) && isAccentHandBack(rule.selector));
+    expect(handBack.map((rule) => [rule.selector, declarations(rule.body)])).toEqual([
+      [':root[data-theme="cyberpunk"] :has(> :is(:focus-visible, input:focus, textarea:focus, select:focus))', { "--cp-ink": "var(--accent)" }],
+      [':where(:root[data-theme="cyberpunk"] :is(:focus-visible, input:focus, textarea:focus, select:focus)) > *', { "--accent": "var(--cp-ink, var(--neon-cyan))" }],
+    ]);
   });
 
   it("draws a focus indicator that stands out from the frame it lights", () => {

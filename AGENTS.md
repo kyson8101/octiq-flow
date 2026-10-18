@@ -2843,6 +2843,20 @@ retired palette back to Dark.
   animation, and `decideColour.test.ts` checks all of that, that every rule
   is scoped, and, resolving the sheet's aliases to colours, that no focus or
   ring value is the accent or within 20° of its hue.
+  **The base sheets draw most focus cues in `var(--accent)`** (an outline on
+  the element, on its `::before` as a sidebar row's "…" does, a field's
+  border), so the sheet does not chase them one by one: a focused element
+  (`:focus-visible`, and a text field or select on `:focus`) is given
+  `--accent: var(--neon-lilac)`, which its pseudo-elements inherit, and its
+  children get back the accent its parent had (`--cp-ink`), so a "Running"
+  line or a live run strip inside a focused control stays cyan and the
+  composer's controls keep their model's colour. A `:focus-within` frame is
+  not reached that way and is named (`.chat-search-form`, `.composer-box`).
+  `scripts/test-appearance-mode.mjs` with `OCTIQ_THEME=cyberpunk` Tabs
+  through the chat page, the sidebar, chat search and Settings' appearance
+  at 1280 and 390 and fails for any outline, border or box-shadow in the
+  accent on the focused element, its `::before` and `::after`, or a frame
+  round it that is the accent only while the focus is inside it.
 - The terminal cannot read a `var()` — xterm hands its palette to WebGL. So
   `web/src/lib/xtermTheme.ts` resolves variables through hidden elements and a
   1×1 canvas: one element per colour, never one element given each colour in

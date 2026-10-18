@@ -8,6 +8,10 @@
 // permission card's and the Complete question's leading answer keep the
 // decision colour (its edge, its tint or its fill), never the accent, and no
 // answer at rest or under the pointer is drawn orange-gold (`answers`).
+// In Cyberpunk, whose accent means a turn in flight, it also Tabs through the
+// chat page, chat search and Settings' appearance (`focusScenes`): no focus
+// cue may be drawn in the accent, and what is in flight inside a focused
+// control must keep it.
 //
 // The socket is mocked; everything else is the real App and its CSS.
 //
@@ -207,6 +211,108 @@ const idleFocus = async (page, shot) => {
   await page.screenshot({ path: join(artifacts, shot) });
   return look;
 };
+
+/** Cyberpunk only: the focus cues of the element that has the focus, read
+ *  off the page once nothing round it is moving. For the element and its
+ *  ::before and ::after: every outline, border and box-shadow colour that is
+ *  the root accent (the cyan of a turn in flight). For each element round
+ *  it: what is the accent only while the focus is inside it (a `:focus-within`
+ *  frame), found by taking the focus away and giving it back. A danger
+ *  answer draws in --danger and is not asked. Answers null for no focus and
+ *  `repeat` for an element this walk has had already. */
+const focusProbe = (page) => page.evaluate(() => new Promise((done) => {
+  const el = document.activeElement;
+  if (!el || el === document.body || el === document.documentElement) return done(null);
+  window.__focusWalked ??= new Set();
+  if (window.__focusWalked.has(el)) return done({ repeat: true });
+  window.__focusWalked.add(el);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 1;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const rgb = (value) => {
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = "#000"; ctx.fillStyle = value; ctx.fillRect(0, 0, 1, 1);
+    return [...ctx.getImageData(0, 0, 1, 1).data];
+  };
+  const accent = rgb(getComputedStyle(document.documentElement).getPropertyValue("--accent").trim());
+  const isAccent = ([r, g, b, a]) => a > 0 && Math.abs(r - accent[0]) <= 3 && Math.abs(g - accent[1]) <= 3 && Math.abs(b - accent[2]) <= 3;
+  const colours = (text) => (text.match(/(rgba?|color|oklab|oklch|lab|lch)\([^()]*\)|#[0-9a-f]{3,8}\b/gi) ?? []).map(rgb);
+  /** The cue properties of `node` (or its pseudo-element) drawn in the accent. */
+  const cues = (node, pseudo = null) => {
+    const s = getComputedStyle(node, pseudo);
+    if (pseudo && (s.content === "none" || s.content === "normal" || s.display === "none")) return [];
+    const drawn = [];
+    if (s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0) drawn.push(["outline", s.outlineColor]);
+    for (const side of ["Top", "Right", "Bottom", "Left"]) {
+      if (s[`border${side}Style`] !== "none" && parseFloat(s[`border${side}Width`]) > 0) drawn.push([`border-${side.toLowerCase()}`, s[`border${side}Color`]]);
+    }
+    if (s.boxShadow !== "none") drawn.push(["box-shadow", s.boxShadow]);
+    return [...new Set(drawn.filter(([, text]) => colours(text).some(isAccent)).map(([prop]) => prop))];
+  };
+  const chain = [];
+  for (let node = el.parentElement; node && node !== document.documentElement; node = node.parentElement) chain.push(node);
+  const name = (node) => `${node.tagName.toLowerCase()}${node.className && typeof node.className === "string" ? "." + node.className.trim().split(/\s+/).join(".") : ""}${node.getAttribute("aria-label") ? `[${node.getAttribute("aria-label").slice(0, 40)}]` : ""}`;
+  /** Waits until no transition runs on the element or round it. */
+  const still = (then, started = performance.now(), quiet = 0) => requestAnimationFrame(() => {
+    const moving = document.getAnimations().some((a) => a.playState === "running" && typeof CSSTransition !== "undefined" && a instanceof CSSTransition
+      && (a.effect?.target === el || chain.includes(a.effect?.target)));
+    const next = moving ? 0 : quiet + 1;
+    if (next >= 2 || performance.now() - started > 3000) return then();
+    still(then, started, next);
+  });
+  still(() => {
+    const visible = el.matches(":focus-visible");
+    const own = { self: cues(el), "::before": cues(el, "::before"), "::after": cues(el, "::after") };
+    const around = chain.map((node) => cues(node));
+    const look = {
+      name: name(el), visible,
+      danger: el.matches(".is-danger"),
+      bad: Object.entries(own).flatMap(([part, props]) => props.map((prop) => `${part} ${prop}`)),
+    };
+    if (!around.some((props) => props.length)) return done(look);
+    // Something round it is the accent: is it only while the focus is in it?
+    el.blur();
+    still(() => {
+      const rest = chain.map((node) => cues(node));
+      el.focus({ preventScroll: true });
+      chain.forEach((node, at) => {
+        for (const prop of around[at]) if (!rest[at].includes(prop)) look.bad.push(`${name(node)}:focus-within ${prop}`);
+      });
+      still(() => done(look));
+    });
+  });
+}));
+
+/** Tabs through every control from where the focus is until it comes round
+ *  again, probing each (above). `shots` names controls to photograph as
+ *  the walk reaches them: { selector, frame (what round it is in the
+ *  picture), file, pad }. */
+async function focusWalk(page, scene, shots = []) {
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => { window.__focusWalked = new Set(); });
+  const walked = [];
+  const found = [];
+  const shot = new Set();
+  for (let step = 0; step < 400; step++) {
+    await page.keyboard.press("Tab");
+    const look = await focusProbe(page);
+    if (!look) continue;
+    if (look.repeat) break;
+    walked.push(look.name);
+    if (look.bad.length && !look.danger) found.push(`${scene}: ${look.name} draws its focus in the accent (${look.bad.join(", ")})`);
+    for (const { selector, frame = selector, file, pad = 10 } of shots) {
+      if (shot.has(file) || !await page.evaluate((selector) => document.activeElement?.matches(selector), selector)) continue;
+      shot.add(file);
+      const clip = await page.evaluate(({ frame, pad }) => {
+        const r = (document.activeElement.closest(frame) ?? document.activeElement).getBoundingClientRect();
+        const x = Math.max(0, r.left - pad), y = Math.max(0, r.top - pad);
+        return { x, y, width: Math.min(innerWidth - x, r.width + 2 * pad), height: Math.min(innerHeight - y, r.height + 2 * pad) };
+      }, { frame, pad });
+      await page.screenshot({ path: join(artifacts, file), clip });
+    }
+  }
+  return { walked: walked.length, names: walked, found, shots: [...shot] };
+}
 
 /** How an answer to a question is drawn, read off the page: its colours as
  *  RGB (through a 1x1 canvas, so `color(srgb …)` and `oklab(…)` read alike)
@@ -441,6 +547,59 @@ async function phone(browser, out) {
   await empty.context.close();
 }
 
+/** Cyberpunk: Tab through the chat page (the sidebar and its rows' "…"
+ *  included), the chat search page and Settings' appearance, and photograph
+ *  the row's "…" and the search box with the focus. */
+async function focusScenes(browser, out, { width, height, phone = false }) {
+  const { context, page } = await open(browser, { width, height, phone });
+  const menu = { selector: ".task-chat-list .chat-actions-trigger", frame: ".chat", file: `${theme}-${width}-sidebar-menu-focus.png` };
+  if (phone) {
+    // The phone's chat list is drawn in the chat's place.
+    await page.locator("[aria-label='Show chats']").first().click();
+    await page.locator(".task-chat-list .chat-actions-trigger").first().waitFor({ state: "attached" });
+  }
+  out.chat = await focusWalk(page, `${width} chat page`, [menu]);
+  // What is in flight inside a focused control keeps the accent: the row's
+  // "Running" line, and the run strip's bar.
+  out.inFlight = {};
+  const look = ({ control, part }) => {
+    const el = document.querySelector(control);
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const rgb = (value) => {
+      ctx.clearRect(0, 0, 1, 1);
+      ctx.fillStyle = "#000"; ctx.fillStyle = value; ctx.fillRect(0, 0, 1, 1);
+      return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    };
+    const s = getComputedStyle(el.querySelector(part));
+    return {
+      focused: el.matches(":focus-visible"),
+      drawn: rgb(part === ".run-strip-fill" ? s.backgroundColor : s.color),
+      accent: rgb(getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()),
+    };
+  };
+  for (const [control, part] of [[".task-chat-list .chat.is-tasks-running .chat-btn", ".chat-workflow-status"], [".run-strip[data-live] .run-strip-open", ".run-strip-fill"]]) {
+    if (!await page.locator(control).count()) continue;
+    await page.evaluate(() => document.activeElement?.blur?.());
+    const rest = await page.evaluate(look, { control, part });
+    await page.keyboard.press("Shift");
+    await page.locator(control).first().focus();
+    out.inFlight[part] = { rest: rest.drawn, ...await page.evaluate(look, { control, part }) };
+  }
+  await page.locator(".sidebar-place", { hasText: "Search chats" }).first().click();
+  await page.locator(".chat-search-form").waitFor();
+  await page.waitForTimeout(300);
+  out.search = await focusWalk(page, `${width} search`, [{ selector: ".chat-search-form input", frame: ".chat-search-form", file: `${theme}-${width}-search-focus.png` }]);
+  if (phone) await page.locator("[aria-label='Show chats']").first().click();
+  await page.locator(".sidebar-place", { hasText: /^Settings$/ }).first().click();
+  await page.getByRole("button", { name: /Appearance/ }).first().click();
+  await page.locator(".thm-grid").waitFor();
+  await page.waitForTimeout(300);
+  out.settings = await focusWalk(page, `${width} settings`);
+  await context.close();
+}
+
 let browser;
 try {
   await server.listen();
@@ -450,6 +609,10 @@ try {
   });
   await desktop(browser, report.scenes.desktop = {});
   await phone(browser, report.scenes.phone = {});
+  if (theme === "cyberpunk") {
+    await focusScenes(browser, report.scenes.focusDesktop = {}, { width: 1280, height: 860 });
+    await focusScenes(browser, report.scenes.focusPhone = {}, { width: 390, height: 844, phone: true });
+  }
   const { desktop: d, phone: p } = report.scenes;
   assert.equal(d.frame.theme, theme === "dark" ? null : theme);
   assert.equal(d.frame.sideways, false, "no sideways scroll at 1280");
@@ -462,6 +625,25 @@ try {
   // their focus in their accent by design, and are not asked.)
   if (theme === "cyberpunk") {
     for (const scene of [d, p]) assert.notDeepEqual(scene.idleFocus.border, scene.idleFocus.accent, "an idle focused composer is not the accent");
+    // No focus cue anywhere is the accent, on the element, its ::before and
+    // ::after, or a frame round it lit by :focus-within.
+    const walks = [report.scenes.focusDesktop, report.scenes.focusPhone].flatMap((scene) => [scene.chat, scene.search, scene.settings]);
+    report.focusTargets = walks.reduce((sum, walk) => sum + walk.walked, 0);
+    assert.deepEqual(walks.flatMap((walk) => walk.found), [], "a focus cue is drawn in the accent");
+    for (const [scene, size] of [[report.scenes.focusDesktop, 1280], [report.scenes.focusPhone, 390]]) {
+      assert.ok(scene.chat.names.some((name) => name.includes("chat-actions-trigger")), `the ${size} walk reached a row's "…"`);
+      assert.ok(scene.search.names.some((name) => name.includes("Search chats")), `the ${size} walk reached the search box`);
+      assert.ok(scene.settings.names.some((name) => name.includes("thm")), `the ${size} walk reached the appearance tiles`);
+      assert.equal(scene.chat.shots.length + scene.search.shots.length, 2, `the ${size} focus pictures were taken`);
+    }
+    // ...and what is in flight inside a focused control is still the accent.
+    const inFlight = Object.entries(report.scenes.focusDesktop.inFlight);
+    assert.deepEqual(inFlight.map(([part]) => part), [".chat-workflow-status", ".run-strip-fill"], "the row's Running line and the live run strip were asked");
+    for (const [part, look] of inFlight) {
+      assert.equal(look.focused, true, `${part}: its control has the focus`);
+      assert.deepEqual(look.drawn, look.rest, `${part} inside a focused control is drawn as it is without the focus`);
+      if (part === ".chat-workflow-status") assert.deepEqual(look.drawn, look.accent, `${part} inside a focused control keeps the accent`);
+    }
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, ...report }, null, 1));

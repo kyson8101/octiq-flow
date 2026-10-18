@@ -157,6 +157,35 @@
   outline-color: var(--focus);
 }
 
+/* Most of the base sheets draw a focus cue in var(--accent): an outline on
+   the element, on its ::before (a sidebar row's "…"), or a field's border. In
+   this mode that is the cyan of a turn in flight, so the focused element
+   takes the focus colour AS its accent, and every one of those rules draws
+   lilac with no rule of its own here. Its ::before and ::after inherit it.
+
+   Only the element: what is inside it gets back the accent its parent had
+   (`--cp-ink`, read on the parent, so the composer's model colour too), so a
+   running ring or a "Running" line inside a focused row stays cyan. A child
+   that sets its own accent keeps it (`:where`). Text fields and selects
+   draw on :focus, so they are named. A danger answer draws in --danger and
+   is untouched; Send draws in --composer-accent and is untouched. */
+:root[data-theme="cyberpunk"] :has(> :is(:focus-visible, input:focus, textarea:focus, select:focus)) {
+  --cp-ink: var(--accent);
+}
+
+:root[data-theme="cyberpunk"] :is(:focus-visible, input:focus, textarea:focus, select:focus) {
+  --accent: var(--neon-lilac);
+}
+
+:where(:root[data-theme="cyberpunk"] :is(:focus-visible, input:focus, textarea:focus, select:focus)) > * {
+  --accent: var(--cp-ink, var(--neon-cyan));
+}
+
+/* A box that lights while something inside it has the focus. */
+:root[data-theme="cyberpunk"] .chat-search-form:focus-within {
+  border-color: var(--focus);
+}
+
 /* ---- Messages ------------------------------------------------------------ */
 
 :root[data-theme="cyberpunk"] .prose pre {
