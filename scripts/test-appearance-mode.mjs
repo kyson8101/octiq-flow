@@ -11,7 +11,7 @@
 //
 // The socket is mocked; everything else is the real App and its CSS.
 //
-//   OCTIQ_THEME=light|dark|fun|manga|guofeng|xp   the mode (xp)
+//   OCTIQ_THEME=light|dark|fun|manga|guofeng|xp|cyberpunk   the mode (xp)
 //   OCTIQ_EVIDENCE_DIR   where the screenshots go (a temp folder otherwise)
 //   PLAYWRIGHT_MODULE, PLAYWRIGHT_CHANNEL   as the other scripts take them
 import assert from "node:assert/strict";

@@ -1,0 +1,51 @@
+/* OctiqFlow Cyberpunk palette — a neon city at night: a near-black blue-violet
+   base, cool pale text, a neon cyan accent, hot magenta used by name.
+
+   The accent is the cyan, never the magenta or anything warm: ~90 rules draw
+   TEXT in `--accent`, and red or amber lettering reads as an error or a
+   warning. Magenta is used by name (`--neon-magenta`) in `src/cyberpunk.css`,
+   only on decoration, the way 中国风 uses its cinnabar `--seal`.
+
+   Like Manga, 中国风 and Windows XP, this mode is more than a palette: the
+   frame glow, the grid on the empty page and the display lettering live in
+   `src/cyberpunk.css`, scoped to `[data-theme="cyberpunk"]`. Corners are
+   small: a city of screens is cut square. */
+:root {
+  --background: #0a0a14;
+  --foreground: #e4e7f5;
+  --card: #11111f;
+  --card-foreground: #e4e7f5;
+  --popover: #11111f;
+  --popover-foreground: #e4e7f5;
+  --primary: #29e3f5;
+  --primary-foreground: #021417;
+  --secondary: #191a2d;
+  --surface-raised: #1b1c31;
+  --selection-tint: rgb(41 227 245 / 14%);
+  --secondary-foreground: #e4e7f5;
+  --muted: #191a2d;
+  --muted-foreground: #9ea2c6;
+  --accent: #191a2d;
+  --accent-foreground: #e4e7f5;
+  --destructive: #ff5a64;
+  --destructive-foreground: #1a0507;
+  /* A decision waiting on the person: a cool electric blue, bluer and calmer
+     than the cyan, so a card that asks never reads as a turn in flight, and
+     never warm, which would read as a warning. */
+  --decide: #6fb6ff;
+  --decide-foreground: #06121f;
+  --decide-tint: rgb(111 182 255 / 9%);
+  --border: #262842;
+  --input: #33365a;
+  --ring: #29e3f5;
+  /* The meaning colours keep their hues: green is fine, amber is a warning. */
+  --chart-1: oklch(0.82 0.19 150);
+  --chart-2: oklch(0.84 0.15 85);
+  --chart-3: oklch(0.7 0.26 335);
+  --sidebar: #07070f;
+  --radius: 0.25rem;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 7px;
+  --radius-pill: 999px;
+}

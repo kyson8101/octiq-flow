@@ -1,0 +1,207 @@
+/* ==========================================================================
+   Cyberpunk mode — a neon city at night.
+
+   A palette (`lib/themes/cyberpunk.css`) plus this sheet: a thin neon glow
+   round the frames of panels, sheets, dialogs and cards, a glowing focus
+   ring, a magenta-to-violet rule under the top bar, a faint perspective grid
+   along the foot of the empty page, and Orbitron on the few biggest headings.
+   Every rule is scoped to `:root[data-theme="cyberpunk"]`, so no other mode
+   can pick any of it up, except the ones at the end that draw this mode's
+   own tile in Settings' appearance picker, which shows every mode's tile in
+   every mode.
+
+   Readable first, as Manga taught: reading text stays in the reading face,
+   with no glow on it and nothing drawn behind it (the grid sits below the
+   question, on the empty page only, and goes on a phone, where that page
+   holds the picker and the message box). The glow is on frames, never on
+   words; the one heading that glows is the empty page's question. Colour
+   keeps its meaning: the cyan accent is a turn in flight, a card that asks
+   glows in the decision colour, a warning in amber, and magenta and violet
+   are decoration that means nothing. Nothing flickers or loops, and with
+   reduced motion nothing here moves at all. The monospace font and the
+   terminal are left alone.
+   ========================================================================== */
+
+:root[data-theme="cyberpunk"] {
+  --neon-cyan: #29e3f5;
+  --neon-magenta: #ff2bd6;
+  --neon-violet: #8b6cff;
+  --night: #0a0a14;
+
+  --display: "Orbitron", var(--font);
+
+  /* A frame lit from inside: a hairline of violet and a soft halo round it. */
+  --cp-frame: 0 0 0 1px color-mix(in srgb, var(--neon-violet) 34%, transparent),
+    0 0 18px color-mix(in srgb, var(--neon-violet) 16%, transparent);
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 45%);
+  --shadow: 0 24px 64px rgb(0 0 0 / 60%), var(--cp-frame);
+  --scrim: rgb(2 2 10 / 66%);
+  --focus: var(--neon-cyan);
+  --focus-ring: 0 0 0 1px var(--neon-cyan), 0 0 12px color-mix(in srgb, var(--neon-cyan) 45%, transparent);
+  --link: #7ad7ff;
+}
+
+:root[data-theme="cyberpunk"] ::selection {
+  background: color-mix(in srgb, var(--neon-cyan) 30%, transparent);
+  color: #ffffff;
+}
+
+:root[data-theme="cyberpunk"] * { scrollbar-color: #33365a transparent; }
+
+/* ---- The frame: a neon rule under the top bar ---------------------------- */
+
+:root[data-theme="cyberpunk"] .topbar {
+  background:
+    linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--neon-magenta) 70%, transparent) 35%, color-mix(in srgb, var(--neon-violet) 70%, transparent) 70%, transparent 100%) bottom / 100% 1px no-repeat,
+    var(--bg-sunken);
+  border-bottom-color: transparent;
+}
+
+:root[data-theme="cyberpunk"] .sidebar {
+  border-right-color: color-mix(in srgb, var(--neon-violet) 26%, var(--border));
+}
+
+/* ---- Lettering ----------------------------------------------------------- */
+
+/* Orbitron on the biggest headings only. It has no CJK, so a Chinese title
+   falls back to the reading face. */
+:root[data-theme="cyberpunk"] :is(.settings-section-head h2, .settings-page h1) {
+  font-family: var(--display);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+/* ---- The empty page ------------------------------------------------------ */
+
+/* The question in neon lettering, the one heading that glows. */
+:root[data-theme="cyberpunk"] .hero-title {
+  font-family: var(--display);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ffffff;
+  text-shadow:
+    0 0 6px color-mix(in srgb, var(--neon-cyan) 55%, transparent),
+    0 0 22px color-mix(in srgb, var(--neon-cyan) 28%, transparent);
+}
+
+/* A perspective grid along the foot of the page, fading out well before it
+   reaches the question. */
+:root[data-theme="cyberpunk"] .hero:not(.is-waiting) {
+  position: relative;
+  isolation: isolate;
+}
+
+:root[data-theme="cyberpunk"] .hero:not(.is-waiting)::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 30%;
+  z-index: -1;
+  background:
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--neon-violet) 22%, transparent) 0 1px, transparent 1px 56px),
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--neon-violet) 22%, transparent) 0 1px, transparent 1px 28px);
+  transform: perspective(240px) rotateX(52deg);
+  transform-origin: bottom;
+  -webkit-mask-image: linear-gradient(to top, #000 0%, rgb(0 0 0 / 55%) 55%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 0%, rgb(0 0 0 / 55%) 55%, transparent 100%);
+  pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  :root[data-theme="cyberpunk"] .hero:not(.is-waiting)::before { display: none; }
+}
+
+/* ---- Frames that glow ---------------------------------------------------- */
+
+/* Panels, sheets, dialogs and menus: the violet frame over their own drop. */
+:root[data-theme="cyberpunk"] :is(
+  .picker-menu, .sidebar-dropdown, .prose-file-action-menu, .slash, [role="menu"], [role="listbox"],
+  .sheet, .panel, .ask, [role="dialog"]
+) {
+  border-color: color-mix(in srgb, var(--neon-violet) 38%, var(--border));
+  box-shadow: var(--shadow);
+}
+
+/* A card that waits on the person glows in the decision colour, the colour
+   its border already is. */
+:root[data-theme="cyberpunk"] .ask-card {
+  box-shadow: 0 0 16px color-mix(in srgb, var(--decide) 20%, transparent);
+}
+
+/* A refusal is a warning, and its card glows amber. */
+:root[data-theme="cyberpunk"] .safety-card {
+  box-shadow: 0 0 16px color-mix(in srgb, var(--warn) 16%, transparent);
+}
+
+/* The box you write in: a violet frame, lit cyan while it has the focus. */
+:root[data-theme="cyberpunk"] .composer-box {
+  border-color: color-mix(in srgb, var(--neon-violet) 40%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--neon-violet) 10%, transparent), 0 0 20px color-mix(in srgb, var(--neon-violet) 12%, transparent), 0 18px 50px rgb(0 0 0 / 45%);
+}
+
+:root[data-theme="cyberpunk"] .composer-box:focus-within {
+  border-color: var(--focus);
+  box-shadow: var(--focus-ring), 0 18px 50px rgb(0 0 0 / 50%);
+}
+
+/* A focus ring is a line of light: the outline, and a halo round it. */
+:root[data-theme="cyberpunk"] :focus-visible {
+  outline-color: var(--neon-cyan);
+}
+
+/* ---- Messages ------------------------------------------------------------ */
+
+:root[data-theme="cyberpunk"] .prose pre {
+  border: 1px solid color-mix(in srgb, var(--neon-violet) 28%, var(--border));
+  background: #0d0d1a;
+}
+
+:root[data-theme="cyberpunk"] .prose blockquote {
+  border-left: 2px solid var(--neon-magenta);
+}
+
+/* ---- Sidebar and Settings navigation ------------------------------------- */
+
+:root[data-theme="cyberpunk"] .sidebar-place.is-active,
+:root[data-theme="cyberpunk"] .settings-nav-item[aria-current="page"],
+:root[data-theme="cyberpunk"] .settings-nav-item.is-active {
+  box-shadow: inset 2px 0 0 var(--neon-magenta);
+}
+
+/* ---- Motion -------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="cyberpunk"] .composer-box { transition: none; }
+}
+
+/* ---- Theme tile ---------------------------------------------------------- */
+
+/* The Cyberpunk tile carries its grid and its neon in every mode, so it can
+   be found. */
+.thm[data-theme-id="cyberpunk"] .thm-shot::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 18px;
+  background:
+    linear-gradient(#ff2bd6, #ff2bd6) top / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, rgb(139 108 255 / 45%) 0 1px, transparent 1px 12px);
+  pointer-events: none;
+}
+
+.thm[data-theme-id="cyberpunk"] .thm-bar {
+  box-shadow: inset 0 -1px 0 #ff2bd6;
+}
+
+.thm[data-theme-id="cyberpunk"] .thm-dot {
+  box-shadow: 0 0 6px 1px rgb(41 227 245 / 70%);
+}
+
+.thm[data-theme-id="cyberpunk"] .thm-name {
+  font-family: "Orbitron", sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}

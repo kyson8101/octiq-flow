@@ -21,6 +21,7 @@ import planReviewCss from "../components/PlanReview.css?raw";
 import planPanelCss from "../components/PlanPanel.css?raw";
 import guofengSheet from "../guofeng.css?raw";
 import xpSheet from "../xp.css?raw";
+import cyberpunkSheet from "../cyberpunk.css?raw";
 import completeCss from "../components/CompleteChat.css?raw";
 import runPanelCss from "../components/OrchestrationPanel.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
@@ -94,7 +95,7 @@ function hue(rgb: Rgb): { h: number; chroma: number } {
   return { h: (h * 60 + 360) % 360, chroma };
 }
 
-/* ---- The six modes, as the page gets them ----------------------------- */
+/* ---- The seven modes, as the page gets them ----------------------------- */
 
 type Mode = { id: string; vars: Record<string, string>; declared: Record<string, string> };
 
@@ -188,6 +189,7 @@ const RULES = [
   ...rules(chatPlanCss, "ChatPlanCards.css"),
   ...rules(mangaSheet, "manga.css"),
   ...rules(xpSheet, "xp.css"),
+  ...rules(cyberpunkSheet, "cyberpunk.css"),
   ...rules(completeCss, "CompleteChat.css"),
 ];
 
@@ -460,6 +462,48 @@ describe("Windows XP draws an answer's shape, never its colour", () => {
   });
 });
 
+describe("Cyberpunk keeps colour's meaning under its neon", () => {
+  const sheet = rules(cyberpunkSheet, "cyberpunk.css");
+
+  it("scopes every rule to the mode, but for its own tile in the picker", () => {
+    for (const rule of sheet) {
+      for (const part of rule.selector.split(/,(?![^(]*\))/)) {
+        expect(part.trim(), rule.selector).toMatch(/^(:root\[data-theme="cyberpunk"\]|\.thm\[data-theme-id="cyberpunk"\])/);
+      }
+    }
+  });
+
+  it("never draws in the accent, which is a turn in flight", () => {
+    for (const rule of sheet) expect(rule.body, rule.selector).not.toMatch(/--(accent|composer-accent)\b/);
+  });
+
+  it("glows a card that asks in the decision colour, and a warning's card in amber", () => {
+    const ask = sheet.filter((rule) => rule.selector === ':root[data-theme="cyberpunk"] .ask-card');
+    expect(ask).toHaveLength(1);
+    expect(ask[0].body).toMatch(/box-shadow:[^;]*var\(--decide\)/);
+    const safety = sheet.filter((rule) => rule.selector === ':root[data-theme="cyberpunk"] .safety-card');
+    expect(safety).toHaveLength(1);
+    expect(safety[0].body).toMatch(/var\(--warn\)/);
+  });
+
+  it("leaves every answer to its component", () => {
+    for (const rule of sheet) expect(rule.selector).not.toMatch(/\.ask-btn/);
+  });
+
+  it("puts no glow on reading text, and no loop or flicker anywhere", () => {
+    const glowing = sheet.filter((rule) => /text-shadow/.test(rule.body)).map((rule) => rule.selector);
+    // The empty page's question is the one heading that glows.
+    expect(glowing).toEqual([':root[data-theme="cyberpunk"] .hero-title']);
+    expect(cyberpunkSheet).not.toMatch(/@keyframes|animation\s*:/);
+  });
+
+  it("keeps the decision colour apart from the accent, by more than a shade", () => {
+    const mode = MODES.find((item) => item.id === "cyberpunk")!;
+    const gap = Math.abs(hue(solid(mode.vars["--decide"])).h - hue(solid(mode.vars["--accent"])).h);
+    expect(gap).toBeGreaterThanOrEqual(20);
+  });
+});
+
 /* ---- A run: what waits on the person, and what is only a problem ------- */
 
 describe("a run's own surfaces", () => {
@@ -674,7 +718,7 @@ describe("the Plan panel", () => {
   it("writes no colour out: tokens only, in every mode", () => {
     for (const rule of sheet) expect(rule.body, rule.selector).not.toMatch(/#[0-9a-f]{3,8}\b|\brgba?\(|\boklch\(|\bhsla?\(/i);
     // No mode's own sheet redraws a part of it.
-    for (const css of [mangaSheet, guofengSheet, xpSheet, stylesCss]) expect(css).not.toMatch(/\.cplan-/);
+    for (const css of [mangaSheet, guofengSheet, xpSheet, cyberpunkSheet, stylesCss]) expect(css).not.toMatch(/\.cplan-/);
   });
 
   it("has no animation that loops, and holds every one still for reduced motion", () => {

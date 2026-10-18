@@ -2762,24 +2762,26 @@ escape codes flag a terminal — run `octiq-notify` and the alert fires.
 
 ### Appearance modes (browser client)
 
-The client offers exactly six modes in Settings: **Light**, **Dark**,
-**Fun**, **Manga**, **中国风** and **Windows XP**. Their persisted ids are
-`light`, `dark`, `fun`, `manga`, `guofeng` and `xp`; `themeStore.ts` migrates the retired
+The client offers exactly seven modes in Settings: **Light**, **Dark**,
+**Fun**, **Manga**, **中国风**, **Windows XP** and **Cyberpunk**. Their
+persisted ids are `light`, `dark`, `fun`, `manga`, `guofeng`, `xp` and
+`cyberpunk`; `themeStore.ts` migrates the retired
 `one-light`, `octiq`, `candyland` and `comic` ids and sends every other
 retired palette back to Dark.
 
 - Dark is the default palette in `design-system.css`. Light, Fun, Manga,
-  中国风 and Windows XP are the palette files under `web/src/lib/themes/`.
+  中国风, Windows XP and Cyberpunk are the palette files under
+  `web/src/lib/themes/`.
 - `web/src/lib/theme.ts` translates their shadcn-shaped tokens (`--primary`,
   `--card`, `--muted-foreground`) into the app's semantic variables
   (`--accent`, `--bg-1`, `--fg-2`). Palettes set colours and corner radii only —
   never fonts or shadows. A palette may name its radius rungs outright
   (`--radius-sm/md/lg/pill`), which is how Manga gets uneven hand-cut corners.
-- **Manga, 中国风 and Windows XP change more than colour.** Each has its own
+- **Manga, 中国风, Windows XP and Cyberpunk change more than colour.** Each has its own
   sheet next to `styles.css`, every rule scoped to its `:root[data-theme=…]`,
   so no other mode picks any of it up. The one exception is each sheet's own
   tile in Settings' appearance picker (`.thm[data-theme-id=…]`), which draws
-  that mode's look in every mode so it can be found. All three follow one rule: **readability wins over
+  that mode's look in every mode so it can be found. All four follow one rule: **readability wins over
   effect** — reading text stays in a real reading face, nothing is drawn
   behind words, and display lettering is for the few biggest headings.
 - **Manga** (`web/src/manga.css`): thin, slightly uneven panel
@@ -2823,6 +2825,21 @@ retired palette back to Dark.
   Complete question (review 1), and `decideColour.test.ts` plus
   `scripts/test-appearance-mode.mjs` check it. A sky over a green hill on the
   empty page only, clear of the question.
+- **Cyberpunk** (`web/src/cyberpunk.css`): a neon city at night, dark. A
+  near-black blue-violet base (`#0a0a14`), a thin violet glow round the
+  frames of panels, sheets, dialogs and menus, a magenta-to-violet rule under
+  the top bar, a cyan focus ring with a halo, and a faint perspective grid
+  along the foot of the empty page only (gone on a phone, where that page
+  holds the picker and the message box). Orbitron (`@fontsource/orbitron`,
+  700 only) on the empty page's question and the Settings headings; the
+  question is the one heading that glows, and reading text has no glow. The
+  accent is neon cyan `#29e3f5`; magenta (`--neon-magenta`) and violet
+  (`--neon-violet`) are decoration used by name and mean nothing, like
+  中国风's `--seal`. `--decide` is an electric blue of its own (`#6fb6ff`),
+  and a card that asks glows in it (`.ask-card`), a safety card in `--warn`.
+  The sheet never draws in `--accent`, touches no `.ask-btn`, has no
+  animation, and `decideColour.test.ts` checks all of that and that every
+  rule is scoped.
 - The terminal cannot read a `var()` — xterm hands its palette to WebGL. So
   `web/src/lib/xtermTheme.ts` resolves variables through hidden elements and a
   1×1 canvas: one element per colour, never one element given each colour in

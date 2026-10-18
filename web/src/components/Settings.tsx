@@ -313,7 +313,7 @@ export function Settings({ current, onPick, chatWidth = CHAT_WIDTH_DEFAULT, onCh
                 <header className="settings-section-head">
                   <div>
                     <h2 id="settings-appearance-title">Appearance</h2>
-                    <p>Keep it light, stay focused in dark, add some colour with fun mode, ink it like a manga, go cinematic with 中国风, or go back to Windows XP.</p>
+                    <p>Keep it light, stay focused in dark, add some colour with fun mode, ink it like a manga, go cinematic with 中国风, go back to Windows XP, or light it up in neon with Cyberpunk.</p>
                   </div>
                 </header>
 

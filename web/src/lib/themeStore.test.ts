@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED } from "./theme";
-import { applyTheme, BUILT_IN, DARK_MODE, FUN_MODE, GUOFENG_MODE, LIGHT_MODE, MANGA_MODE, savedThemeId, THEME_EVENT, THEMES, XP_MODE } from "./themeStore";
+import { applyTheme, BUILT_IN, CYBERPUNK_MODE, DARK_MODE, FUN_MODE, GUOFENG_MODE, LIGHT_MODE, MANGA_MODE, savedThemeId, THEME_EVENT, THEMES, XP_MODE } from "./themeStore";
 
 describe("appearance switching", () => {
   let properties: Map<string, string>;
@@ -79,8 +79,19 @@ describe("appearance switching", () => {
     expect(savedThemeId()).toBe(XP_MODE);
   });
 
-  it("only exposes light, dark, fun, manga, 中国风 and Windows XP", () => {
-    expect(THEMES.map(({ id }) => id)).toEqual([LIGHT_MODE, DARK_MODE, FUN_MODE, MANGA_MODE, GUOFENG_MODE, XP_MODE]);
+  it("puts Cyberpunk on as a dark mode with the neon cyan accent", () => {
+    applyTheme(CYBERPUNK_MODE);
+    expect(attributes.get("data-color-scheme")).toBe("dark");
+    expect(attributes.get("data-theme")).toBe(CYBERPUNK_MODE);
+    // Cyan, not the magenta: the accent is also drawn as text.
+    expect(properties.get("--accent")).toBe("#29e3f5");
+    // A decision is its own electric blue, never the accent.
+    expect(properties.get("--decide")).toBe("#6fb6ff");
+    expect(savedThemeId()).toBe(CYBERPUNK_MODE);
+  });
+
+  it("only exposes light, dark, fun, manga, 中国风, Windows XP and Cyberpunk", () => {
+    expect(THEMES.map(({ id }) => id)).toEqual([LIGHT_MODE, DARK_MODE, FUN_MODE, MANGA_MODE, GUOFENG_MODE, XP_MODE, CYBERPUNK_MODE]);
   });
 
   it("migrates retired theme ids to a supported mode", () => {

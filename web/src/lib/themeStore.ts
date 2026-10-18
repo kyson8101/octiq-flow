@@ -1,4 +1,4 @@
-// OctiqFlow has six appearance modes, and one function that puts one on the
+// OctiqFlow has seven appearance modes, and one function that puts one on the
 // screen. Keep the public ids as plain words because they are persisted.
 //
 // Split from `theme.ts` on purpose: everything in there is pure and tested in
@@ -10,6 +10,7 @@ import funCss from "./themes/fun.css?raw";
 import mangaCss from "./themes/manga.css?raw";
 import guofengCss from "./themes/guofeng.css?raw";
 import xpCss from "./themes/xp.css?raw";
+import cyberpunkCss from "./themes/cyberpunk.css?raw";
 
 /** The built-in theme has no tokens because it does not need any: it is what
  *  `design-system.css` already says. Choosing it CLEARS the overrides rather than
@@ -20,6 +21,7 @@ export const FUN_MODE = "fun";
 export const MANGA_MODE = "manga";
 export const GUOFENG_MODE = "guofeng";
 export const XP_MODE = "xp";
+export const CYBERPUNK_MODE = "cyberpunk";
 /** Kept as an alias for callers that need to clear palette overrides. */
 export const BUILT_IN = DARK_MODE;
 
@@ -30,6 +32,7 @@ export const THEMES: Theme[] = [
   { id: MANGA_MODE, name: "Manga", scheme: "light", tokens: parseThemeCss(mangaCss).light },
   { id: GUOFENG_MODE, name: "中国风", scheme: "dark", tokens: parseThemeCss(guofengCss).light },
   { id: XP_MODE, name: "Windows XP", scheme: "light", tokens: parseThemeCss(xpCss).light },
+  { id: CYBERPUNK_MODE, name: "Cyberpunk", scheme: "dark", tokens: parseThemeCss(cyberpunkCss).light },
 ];
 
 /** The five colours a tile needs to show what a theme looks like without
@@ -77,6 +80,7 @@ export function savedThemeId(): string {
     if (saved === MANGA_MODE || saved === "comic") return MANGA_MODE;
     if (saved === GUOFENG_MODE) return GUOFENG_MODE;
     if (saved === XP_MODE) return XP_MODE;
+    if (saved === CYBERPUNK_MODE) return CYBERPUNK_MODE;
     if (saved === DARK_MODE || saved === "octiq") return DARK_MODE;
     // Retired custom themes return to the calm default.
     return DARK_MODE;

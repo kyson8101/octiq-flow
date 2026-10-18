@@ -62,6 +62,9 @@ importers:
       '@fontsource/ma-shan-zheng':
         specifier: ^5.3.1
         version: 5.3.1
+      '@fontsource/orbitron':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@lezer/highlight':
         specifier: ^1.2.3
         version: 1.2.3
@@ -421,6 +424,9 @@ packages:
 
   '@fontsource/ma-shan-zheng@5.3.1':
     resolution: {integrity: sha512-cGGn7Yje2RSduXVxEk+rCfNZyD/T/7FMGj03LNPiK8TRL9Sing0tq1zJF3n+W29szPqgb2RNs5oIvmm+ikeI+Q==}
+
+  '@fontsource/orbitron@5.3.0':
+    resolution: {integrity: sha512-+BhPsbUAo/AF7sRcf+TEexm+EWWkgTiR9Zwb7AhYIPkc5oplfvw0C45Oc2xlKPhwVEmxG8hHuA6/Ansbl+Bc6w==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -1622,6 +1628,8 @@ snapshots:
   '@fontsource/dela-gothic-one@5.3.0': {}
 
   '@fontsource/ma-shan-zheng@5.3.1': {}
+
+  '@fontsource/orbitron@5.3.0': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
