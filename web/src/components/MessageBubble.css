@@ -44,16 +44,41 @@
   align-items: center;
   /* Wrapped, both halves keep to the right, where the thread comes in. */
   justify-content: flex-end;
-  column-gap: 8px;
+  /* A pipe stands in the middle of each gap. Every item carries the one on
+     its right, hung just outside its box, and the line clips what is past
+     its right edge: the item that ends a row (the line keeps to the right,
+     wrapped or not) loses its pipe, so no row ends on one, and none starts
+     on one either. Only sideways: a row's height is never clipped. */
+  column-gap: 2px;
+  overflow-x: clip;
   /* The same height whether it is queued or sent, so pickup moves nothing. */
   min-height: 32px;
 }
 .message-delivery-status {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  /* The buttons' own padding, so a pipe sits midway between the words and a
+     status that wraps to a row of its own keeps the buttons' right edge. */
+  padding-inline-end: 8px;
   color: var(--fg-2);
   white-space: nowrap;
+}
+.message-delivery-status:empty { padding: 0; }
+/* The pipe: a short grey hairline, never the accent, and never the bubble's
+   edge, which is ink in Manga.
+   Drawn, not typed, so no button's name and no status says "|". */
+:is(.message-delivery-status:not(:empty), .message-delivery-actions :is(button, .msg-copy))::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -1.5px;
+  width: 1px;
+  height: 12px;
+  margin-top: -6px;
+  background: color-mix(in srgb, var(--fg-3) 70%, transparent);
+  pointer-events: none;
 }
 .message-delivery-icon { flex: 0 0 auto; color: var(--fg-3); }
 .message-delivery[data-delivery="failed"] .message-delivery-status { color: var(--warn, #ff9f0a); }
@@ -65,8 +90,11 @@
   flex-shrink: 0;
   margin-left: auto;
 }
+/* Nothing to do: no group, so the status ends the line and its pipe goes. */
+.message-delivery-actions:empty { display: none; }
 .message-delivery-actions .msg-actions { gap: 2px; }
 .message-delivery-actions :is(button, .msg-copy) {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -90,7 +118,9 @@
   background: color-mix(in srgb, var(--fg-0) 7%, transparent);
   color: var(--fg-0);
 }
-.message-delivery-actions :is(button, .msg-copy):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Inside the button: the line clips at its right edge, and the last button
+   stands on it. */
+.message-delivery-actions :is(button, .msg-copy):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .message-delivery-actions button:disabled { opacity: .45; cursor: wait; }
 
 /* A finger gets a whole target, and the line grows to hold it. */
@@ -98,6 +128,7 @@
   .message-delivery-line { min-height: 44px; }
   .message-delivery::after { height: 22px; }
   .message-delivery-actions :is(button, .msg-copy) { min-height: 44px; padding-inline: 10px; }
+  .message-delivery-status:not(:empty) { padding-inline-end: 10px; }
 }
 
 .message-delivery-detail, .message-delivery-error {

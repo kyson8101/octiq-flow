@@ -7,6 +7,8 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
 import { MessageList } from "./MessageList";
 import { addUserTurn, emptyChat, reduceChat, type Message } from "../lib/chat";
+import { lf } from "../lib/sourceText";
+import bubbleCssRaw from "./MessageBubble.css?raw";
 
 const sent: Message = {
   id: "m1", turnId: "u-1", role: "user", streaming: false,
@@ -60,6 +62,26 @@ describe("message delivery controls", () => {
     expect(html).not.toContain("Send now stops it.");
     expect(html).not.toContain("message-delivery-note");
     expect(html).not.toContain("message-delivery-detail");
+  });
+
+  it("separates the status and each action with a pipe that is drawn, never typed", () => {
+    // `Queued | Send now | Edit | Copy`, `Sent | Copy`: the pipes are CSS
+    // hairlines, so no button's name and no status reads "|".
+    const line = (html: string) => html.split('<div class="message-delivery-line">')[1].split("</div></div>")[0];
+    for (const html of [draw(), draw({ delivery: "dispatched", takenUp: true }), draw({ delivery: "failed", queueLost: true })]) {
+      expect(line(html)).not.toContain("|");
+      expect(line(html)).not.toContain("&#124;");
+    }
+    const css = lf(bubbleCssRaw);
+    const pipe = /:is\(\.message-delivery-status:not\(:empty\), \.message-delivery-actions :is\(button, \.msg-copy\)\)::after \{([^}]*)\}/.exec(css)?.[1];
+    expect(pipe).toBeDefined();
+    expect(pipe).toContain('content: "";');
+    expect(pipe).not.toMatch(/--accent/);
+    // The pipe hangs outside the item that carries it and the line clips
+    // sideways, so a row (wrapped or not) never ends on one.
+    expect(pipe).toMatch(/right: -/);
+    expect(/\.message-delivery-line \{[^}]*overflow-x: clip;/.exec(css)).not.toBeNull();
+    expect(css).toContain(".message-delivery-actions:empty { display: none; }");
   });
 
   it("drops the waiting clock while a queue action is out", () => {
