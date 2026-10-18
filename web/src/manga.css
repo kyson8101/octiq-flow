@@ -245,8 +245,19 @@
   pointer-events: none;
 }
 
+:root[data-theme="manga"] .msg-user .msg-body {
+  /* Your own message keeps to most of the column, as in every mode. */
+  max-width: min(100%, max(85%, 320px));
+}
+
 :root[data-theme="manga"] .msg-user.is-queued .msg-body {
   border-style: dashed;
+}
+
+/* The balloon's tail already ties it to the line under it; a second thread
+   beside the tail would be two. The balloon's room for its tail is the gap. */
+:root[data-theme="manga"] .msg-user .message-delivery::after {
+  content: none;
 }
 
 /* The agent's name is a beta tag: solid black, white lettering. */

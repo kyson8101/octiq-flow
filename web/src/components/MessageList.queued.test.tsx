@@ -55,13 +55,16 @@ describe("message delivery controls", () => {
     expect(html).toContain('>Edit</button>');
     expect(html.match(/Send this queued message now/g)).toHaveLength(1);
     expect(html).toContain("Send now stops that reply");
-    // What it waits for is said on the footer's own line, never only in a tooltip.
-    expect(html).toContain('<span class="message-delivery-note">Runs after the current reply. Send now stops it.</span>');
+    // What it waits for is the status's tooltip; the bubble carries no sentence about it.
+    expect(html).not.toContain(">Runs after the current reply");
+    expect(html).not.toContain("Send now stops it.");
+    expect(html).not.toContain("message-delivery-note");
     expect(html).not.toContain("message-delivery-detail");
   });
 
-  it("drops the waiting note while a queue action is out", () => {
-    expect(draw({ queueAction: "start" })).not.toContain("message-delivery-note");
+  it("drops the waiting clock while a queue action is out", () => {
+    expect(draw({})).toContain("message-delivery-icon");
+    expect(draw({ queueAction: "start" })).not.toContain("message-delivery-icon");
   });
 
   it.each(["sending", "starting", "dispatched", "unknown", "failed"] as const)("never offers queue mutations for %s", (delivery) => {

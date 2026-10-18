@@ -1931,18 +1931,17 @@ body {
   }
 }
 
-/* Your turn is a right-hand COLUMN, not itself the bubble: the bubble and the
-   copy row under it are two stacked things, and the row has to sit outside the
-   tint or it reads as part of what you said. Both hug their own content, so a
-   three-word message is still a three-word bubble. */
-/* Your turn spans the column, and it is the only thing in the conversation
-   wearing the accent. Both halves of that are the point: scrolling back through
-   a long run looking for what you last asked, a narrow tinted rectangle in the
-   right-hand margin is something you have to HUNT for among the tool cards, and
-   what you are hunting for should be the one thing that cannot be missed.
-   The reply that follows keeps the plain full-width prose it has always had, so
-   the two are still told apart at a glance — by colour rather than by edge. */
+/* Your turn is a right-hand column: the bubble, then the line under it that
+   says what became of it, each as wide as what it holds. A three-word message
+   is a three-word bubble.
+
+   What tells it from the reply is its surface, not a colour: a framed wash of
+   the foreground on whatever the transcript sits on, where tool cards and
+   prose have none. Never the accent: the accent is a turn in flight, and your
+   message is not one. `--bubble-edge` is the frame, and the thread that ties
+   the line under it to the bubble (MessageBubble.css) is drawn in the same. */
 .msg-user {
+  --bubble-edge: var(--border-strong);
   align-self: stretch;
   display: flex;
   flex-direction: column;
@@ -1955,43 +1954,43 @@ body {
   min-width: 0;
 }
 
-/* The pill itself. Fully rounded at one line, which is what most messages are,
-   and a generously rounded block when one runs longer.
-
-   A WASH of the accent, not the accent itself. Full width and rounded is what
-   makes your own message findable when you scroll back through a turn's worth
-   of tool cards — the colour only has to whisper which of these it is, and a
-   saturated slab of it repeated down a long conversation is a lot to read past.
-
-   Mixed INTO `--bg-1` rather than laid over it, and that is what makes the rest
-   of this section short: the pill is a surface, so the ordinary foreground
-   colours are legible on it and everything a message can hold — prose, code,
-   links, attachments — keeps the colours it wears everywhere else. A solid
-   `--accent` fill needed every one of those restated in `--accent-fg`, and one
-   it did not get restated was `.chip.is-image`'s placeholder, drawn in
-   `--accent` itself: an icon painted the exact colour behind it, which is how
-   an attachment came to show nothing at all. */
+/* The bubble. Rounded at one line, a softer block when it runs longer, and
+   never wider than most of the column, so it stays a thing on the right
+   rather than a band across the page. The wash is mixed over transparent, so
+   it reads on any background a mode paints behind the conversation, and the
+   ordinary foreground colours stay legible on it: prose, code, links and
+   attachments keep the colours they wear everywhere else. */
 .msg-user .msg-body {
-  width: 100%;
-  /* Actions live below the bubble; the text keeps its full width. */
-  min-height: 48px;
-  padding: 11px 17px;
-  border-radius: 21px;
-  background: color-mix(in srgb, var(--accent) 18%, var(--bg-1));
+  width: fit-content;
+  max-width: min(100%, max(85%, 320px));
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid var(--bubble-edge);
+  /* Round ends at one line. */
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--fg-0) 6%, transparent);
   color: var(--fg-0);
   /* The clock hangs off this. */
   position: relative;
   /* The moment the agent picks the message up, `is-queued` lifts and the whole
-     pill comes back to full strength. That is a real state change and the one
+     bubble comes back to full strength. That is a real state change and the one
      the reader is waiting for, so it eases rather than snapping. */
   transition: opacity 200ms ease-out;
 }
 
-/* The one thing the tint does still swallow. A chip's `--bg-2` body lands at
-   almost exactly this surface's lightness, so the box around an attachment
-   disappears and leaves its name and icon floating loose. Lifted off the pill
-   with a wash of the FOREGROUND, which works whatever the accent underneath it
-   happens to be. */
+/* What measures itself by the width it is given (a card diagram, a code block
+   that scrolls) takes all the bubble may have, rather than the little it would
+   claim inside a bubble that hugs its content. Strong enough to hold against
+   a mode's own fit-content bubble (Manga, 中国风). */
+:root .msg.msg-user .msg-body:has(.dgm, .dgm-pending, pre, table) {
+  width: 100%;
+}
+
+/* A chip's `--bg-2` body lands at almost exactly this surface's lightness, so
+   the box around an attachment would disappear and leave its name and icon
+   floating loose. Lifted off the bubble with a stronger wash of the
+   foreground. */
 .msg-user .msg-body .chip {
   background: color-mix(in srgb, var(--fg-0) 12%, transparent);
 }

@@ -210,6 +210,11 @@
 
 /* Your message: a slip of paper, as wide as what it says. An answer to the
    agent's question is the same slip. */
+:root[data-theme="guofeng"] .msg-user {
+  /* The slip's gold edge, which the thread to its line is drawn in too. */
+  --bubble-edge: color-mix(in srgb, var(--gold) 22%, var(--border));
+}
+
 :root[data-theme="guofeng"] :is(.msg-user .msg-body, .qa-said-body) {
   width: fit-content;
   max-width: 100%;
@@ -218,6 +223,11 @@
   border: 1px solid color-mix(in srgb, var(--gold) 22%, var(--border));
   border-radius: var(--r-md);
   background: var(--bg-1);
+}
+
+:root[data-theme="guofeng"] .msg-user .msg-body {
+  /* Your own message keeps to most of the column, as in every mode. */
+  max-width: min(100%, max(85%, 320px));
 }
 
 /* The agent's name is a cinnabar seal. */

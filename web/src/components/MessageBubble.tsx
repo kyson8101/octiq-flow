@@ -43,8 +43,8 @@ export function MessageBubble({ user, message, wrapUp = false, planStart = false
     : delivery === "failed" ? "This message is no longer waiting. Restore it to edit or send again."
     : delivery === "unknown" ? "Delivery could not be confirmed. Check the conversation before sending again."
     : undefined;
-  // A queued message says what it waits for on its own line, beside the
-  // actions; it drops under them only where the line has no room.
+  // What a queued message waits for is the status's tooltip (`detail`); the
+  // line itself carries the word, its clock and the actions.
   const waiting = delivery === "queued" && !accepted && !pending;
   return (
     <div className="message-bubble" data-noswipe={onStart || onCancel || onRestore || onDismiss ? "" : undefined}>
@@ -56,7 +56,6 @@ export function MessageBubble({ user, message, wrapUp = false, planStart = false
               {waiting && <QueuedIcon />}
               {label}
             </span>
-            {waiting && <span className="message-delivery-note">Runs after the current reply.{onStart && " Send now stops it."}</span>}
             <div className="message-delivery-actions" role="group" aria-label="Message actions">
               {onStart && <button type="button" disabled={pending}
                 title={wrapUp ? "Stop the current reply and wrap up now" : planStart ? "Stop the current reply and tell the agent now" : jobTurn ? "Stop the current reply and tell the agent the job ended" : "Stop the current reply and send this message next"}

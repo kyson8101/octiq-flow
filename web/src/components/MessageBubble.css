@@ -1,20 +1,49 @@
 .message-bubble { width: 100%; min-width: 0; }
 
+/* Your own turn is a column on the right: the bubble, then the line under it,
+   each as wide as what it holds. */
+.msg-user .message-bubble {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
 /* The line under your own message: what became of it, then what you can do
    about it. One quiet line in grey: nothing here is a turn in flight, and
-   nothing asks. The container is named so a query inside a message (a card
-   diagram's) never reads this one by mistake. */
+   nothing asks. No container on it: it is as wide as its words, and an
+   inline-size container that sizes to its content measures nothing. */
 .message-delivery {
-  container: msg-delivery / inline-size;
-  margin-top: 2px;
-  padding-inline: 10px 4px;
+  position: relative;
+  max-width: 100%;
+  /* Room on the right for the thread that ties the line to the bubble. */
+  padding-inline: 4px 30px;
   font-size: 12px;
   line-height: 1.4;
+}
+
+/* The thread: a hairline in the bubble's own edge colour, out of the bubble's
+   flat bottom and round into the end of the line, so the actions read as the
+   bubble's. Both are right-aligned, so it lands on the bubble however short
+   the message is. Only drawn when there is a line: no line, no thread. */
+.message-delivery::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 16px;
+  width: 10px;
+  /* Half the line's height: it turns in at the words' middle. */
+  height: 16px;
+  border: solid var(--bubble-edge, var(--border));
+  border-width: 0 1px 1px 0;
+  border-bottom-right-radius: 8px;
+  pointer-events: none;
 }
 .message-delivery-line {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  /* Wrapped, both halves keep to the right, where the thread comes in. */
+  justify-content: flex-end;
   column-gap: 8px;
   /* The same height whether it is queued or sent, so pickup moves nothing. */
   min-height: 32px;
@@ -28,14 +57,6 @@
 }
 .message-delivery-icon { flex: 0 0 auto; color: var(--fg-3); }
 .message-delivery[data-delivery="failed"] .message-delivery-status { color: var(--warn, #ff9f0a); }
-
-/* Beside the word where the line has room, under it where it has not. */
-.message-delivery-note {
-  flex: 1 1 0;
-  min-width: 0;
-  color: var(--fg-3);
-}
-.message-delivery-note::before { content: "·"; margin-right: 8px; color: var(--fg-3); }
 
 .message-delivery-actions {
   display: flex;
@@ -75,18 +96,8 @@
 /* A finger gets a whole target, and the line grows to hold it. */
 @media (hover: none), (any-pointer: coarse) {
   .message-delivery-line { min-height: 44px; }
+  .message-delivery::after { height: 22px; }
   .message-delivery-actions :is(button, .msg-copy) { min-height: 44px; padding-inline: 10px; }
-}
-
-/* Too narrow for one line: the note takes a line of its own under the word
-   and the actions, and loses its separator. */
-@container msg-delivery (max-width: 560px) {
-  .message-delivery-note { order: 3; flex-basis: 100%; padding-bottom: 4px; }
-  .message-delivery-note::before { content: none; }
-  /* The 44px targets leave air under the word; the note sits up into it. */
-  @media (hover: none), (any-pointer: coarse) {
-    .message-delivery-note { margin-top: -8px; }
-  }
 }
 
 .message-delivery-detail, .message-delivery-error {
@@ -99,6 +110,8 @@
   overflow-wrap: anywhere;
 }
 .message-delivery-error { color: var(--warn, #ff9f0a); }
+/* Under your own bubble they keep to its side. */
+.msg-user :is(.message-delivery-detail, .message-delivery-error) { text-align: end; text-wrap: pretty; }
 
 @media (prefers-reduced-motion: reduce) {
   .msg-user .msg-body { transition: none; }
