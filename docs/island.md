@@ -410,14 +410,14 @@ MCP tool on their next launch.
 ### Island portraits in chat
 
 Registered agents use their island robot as the avatar in conversation headers,
-replies, the composer, task chats and the chat list. The animated portrait renders the same
+replies, task chats and the chat list. The composer footer and activity line
+keep the agent name/status as text, without repeating the avatar. The animated portrait renders the same
 rig, look and equipped accessory assets as the island, including hats, scarves,
 backpacks and hand props. An island or roster change refreshes the snapshot;
 accessory revisions invalidate the cache even when the worn asset id stays the
 same. All displayed avatars share one renderer and one read of the island and
 roster per refresh, without a continuous animation loop. Breathing, head turns, gentle swaying and blinks play from a cached 24-frame
-sprite strip in CSS. Replies show a 40px robot, headers 48px, and the composer
-32–36px. Reduced motion freezes the first frame. The renderer and images
+sprite strip in CSS. Replies show a 40px robot and headers 48px. Reduced motion freezes the first frame. The renderer and images
 are released when the final chat avatar unmounts.
 
 The avatar editor continues to show the uploaded picture or generated candidate.

@@ -20,7 +20,6 @@ import { Mascot } from "./Mascot";
 import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
-import { AgentAvatar } from "./AgentAvatar";
 import type { AgentIdentity } from "../lib/agentsMode";
 import { composerPlaceholder } from "../lib/agentPersona";
 import {
@@ -1069,14 +1068,12 @@ export function Composer({
           />
         ) : (() => {
           // Idle companions dance in the same full-body slot used during work.
-          // A registered agent is its own face instead.
+          // Registered agents are identified on their reply, without another avatar here.
           const text = activity ?? idleHint(TYPES_ON_GLASS);
           const face = idleCompanion(!!identity, text);
           return (
             <>
-              {face === "avatar" && identity
-                ? <AgentAvatar island name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={32} removed={identity.removed} className="composer-hint-avatar" />
-                : face === "mascot" ? <Mascot robot={choice.composerStyle} mood="idle" /> : null}
+              {face === "mascot" ? <Mascot robot={choice.composerStyle} mood="idle" /> : null}
               {text}
             </>
           );
@@ -1706,7 +1703,6 @@ export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initia
   ].filter(Boolean).join("\n");
   return (
     <div className="composer-identity" title={open ? undefined : tip} data-removed={identity.removed || undefined} data-chat={chat || undefined}>
-      <AgentAvatar island name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={36} removed={identity.removed} decorative />
       {/* What a confirmed route's name lands on (`identityTravel`): it stays
           the name alone, and it is the last thing here to be cut short. */}
       <span className="composer-identity-name">{identity.name}</span>
@@ -2703,11 +2699,8 @@ function Working({
   // and rarely is exactly when the motion earns its keep.
   return (
     <>
-      {/* A turn switches the same companion from dancing to thinking or typing. */}
-      {persona
-        ? <AgentAvatar island name={persona.name} label={asksPerson(waiting) ? `${persona.name} is waiting for you` : waiting ? persona.name : `${persona.name} is working`} avatar={persona.avatar} id={persona.id ?? persona.name} size={32}
-            className={`composer-hint-avatar${waiting ? "" : " is-working"}`} />
-        : <Mascot robot={robot} alert={background} mood={waiting ? "still" : thinking ? "think" : "work"} />}
+      {/* The reply already identifies the agent; keep its activity line quiet. */}
+      {!persona && <Mascot robot={robot} alert={background} mood={waiting ? "still" : thinking ? "think" : "work"} />}
       {since !== undefined && (
         <>
           <span className="working-clock">{elapsedLabel(turnElapsed(since, waits, Date.now()))}</span>

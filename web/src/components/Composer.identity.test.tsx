@@ -44,7 +44,7 @@ describe("the composer in agents mode", () => {
     expect(html).not.toContain(`>${opus.model}<`);
     expect(html).toMatch(new RegExp(`title="Ryan\\nCTO\\nClaude ${opus.model}`));
     expect(html).toContain('placeholder="Message Ryan…"');
-    expect(html).toContain("agent-avatar-initials");
+    expect(html).not.toContain("agent-avatar");
     expect(html).not.toContain("model-trigger");
     expect(html).not.toContain("eff-btn");
     expect(html).not.toContain("settings-toggle");
@@ -61,10 +61,11 @@ describe("the composer in agents mode", () => {
     expect(composer(agentIdentity(ryan, "Ryan", opus))).not.toContain("data-chat");
   });
 
-  it("draws the registered avatar when there is one", () => {
+  it("keeps the composer text-only even when the agent has an avatar", () => {
     const withFace = { ...ryan, avatar: "data:image/png;base64,AA==" };
     const html = composer(agentIdentity(withFace, "Ryan", opus));
-    expect(html).toContain('src="data:image/png;base64,AA=="');
+    expect(html).not.toContain('src="data:image/png;base64,AA=="');
+    expect(html).toContain('class="composer-identity-name">Ryan');
   });
 
   it("keeps where a new task runs behind Advanced until it is opened", () => {
@@ -187,11 +188,10 @@ describe("a chat that waits on the person does not look like it is running", () 
   const running = { busy: true, turnStartedAt: T - 300_000, turnTokens: 754, thinking: true } as const;
   const eyebrow = (html: string) => html.slice(html.indexOf('<div class="composer-hint">'), html.indexOf('class="composer-history"'));
 
-  it("says thinking, under the working face, while nothing waits", () => {
+  it("says thinking without repeating the reply avatar while nothing waits", () => {
     const html = eyebrow(composer(agentIdentity(ryan, "Ryan", opus), running));
     expect(html).toContain("thinking with high effort");
-    expect(html).toContain("is-working");
-    expect(html).toContain("Ryan is working");
+    expect(html).not.toContain("agent-avatar");
     expect(html).not.toContain("working-waits");
   });
 
@@ -200,9 +200,9 @@ describe("a chat that waits on the person does not look like it is running", () 
     expect(html).toContain('<span class="working-waits enter-fade">Waiting for your answer</span>');
     expect(html).not.toContain("thinking");
     expect(html).not.toContain("working…");
-    // The face is still: no working ring, which is the accent.
+    // Waiting remains text-only, without a duplicate avatar or working ring.
     expect(html).not.toContain("is-working");
-    expect(html).toContain("Ryan is waiting for you");
+    expect(html).not.toContain("agent-avatar");
     // The stopped clock, then the words: nothing else is news while it waits.
     expect(html).toMatch(/<span class="working-clock">[^<]+<\/span> · <span class="working-waits/);
     expect(html).not.toContain("tokens");
