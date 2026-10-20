@@ -372,3 +372,37 @@ The MCP tools are `island_look`, `island_build`, `island_grant`,
 every chat but a front desk and a worker. Their descriptions are short;
 `island_look` carries the whole guide, so an agent pays for it only when it
 builds.
+
+### Small concerts
+
+A dancing resident performs for 18–28 seconds. Up to five free, awake neighbours
+within eight metres can gather at reachable spots around the performer. Work,
+sleep, games and conversations keep priority. Audience members face the performer
+and occasionally cheer; they disperse when the performance ends or work arrives.
+Once someone reaches the audience, the performer gains a soft violet glow and a
+pair of speakers pops up, pulsing with the dance. Props retract after the show;
+reduced motion keeps the glow and speakers steady. This is a visual performance,
+without autoplay audio or a provider call.
+
+### Team offices and public projects
+
+Registered `teamId` membership groups residents into one shared office per team.
+Every resident has a desk owned by its agent id, including when the roster or
+membership changes. Residents without a team use the shared Agent Tower; the
+public tower is always present. Offices grow by floors (six desks per floor),
+with transparent walls and an open front so the person can watch inside.
+
+This layout is a deterministic view of the existing store, not a destructive
+migration: old personal starter homes stop appearing, existing accessories and
+presents survive, and gifted buildings remain as public annexes. Offices occupy
+compact cells while the island keeps its land area and reserved playground.
+
+Registered leads (top-level agents or managers with reports) can call
+`island_propose({text})` with a concrete public improvement or building proposal.
+It becomes a wish for the existing Grant flow. Retries reuse the same open wish;
+one open wish per lead and the global open-wish limit still apply. Leads also
+occasionally wish for public concert, arcade, garden and library projects. A
+public grant gets a new public plot and preserves every existing office and
+present. The host verifies lead identity; a background maker cannot propose,
+register agents or ask for extra permissions. Existing live chats learn the new
+MCP tool on their next launch.

@@ -591,7 +591,7 @@ impl AgentProvider for ClaudeProvider {
                 sh_quote(&mcp.to_string_lossy()),
                 sh_quote(
                     "mcp__octiq__ask_user mcp__octiq__task_status mcp__octiq__set_chat_title mcp__octiq__feedback_submit mcp__octiq__feedback_list mcp__octiq__feedback_get mcp__octiq__feedback_update mcp__octiq__search_conversations mcp__octiq__read_conversation \\
-                     mcp__octiq__preview_image mcp__octiq__preview_html mcp__octiq__island_look mcp__octiq__island_build mcp__octiq__island_grant \\
+                     mcp__octiq__preview_image mcp__octiq__preview_html mcp__octiq__island_propose mcp__octiq__island_look mcp__octiq__island_build mcp__octiq__island_grant \\
                      mcp__octiq__orchestration_run_create mcp__octiq__orchestration_task_create \\
                      mcp__octiq__orchestration_snapshot mcp__octiq__orchestration_worker_start \\
                      mcp__octiq__orchestration_worker_report mcp__octiq__orchestration_gate_create \\
@@ -812,7 +812,12 @@ fn append_codex_mcp(cmd: &mut String, mcp: Option<&Path>, front_desk: bool) {
         ))
     ));
     if !front_desk {
-        for tool in ["island_look", "island_build", "island_grant"] {
+        for tool in [
+            "island_look",
+            "island_build",
+            "island_grant",
+            "island_propose",
+        ] {
             cmd.push_str(&format!(
                 " -c {}",
                 sh_quote(&format!(
@@ -2309,7 +2314,7 @@ pub(crate) mod tests {
             assert!(!line.contains("route_chat"), "{line}");
             // Access requests use a card; the three island present tools are host-only.
             assert!(line.contains(ask_access), "{line}");
-            assert_eq!(line.matches("approval_mode").count(), 4, "{line}");
+            assert_eq!(line.matches("approval_mode").count(), 5, "{line}");
             assert!(line.contains("\"OCTIQ_HOOK_PORT\"]"), "{line}");
         }
         // With no MCP config written there is no server to approve a tool on;

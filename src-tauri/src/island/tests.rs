@@ -1704,3 +1704,87 @@ fn autonomous_improvements_stay_on_a_registered_agents_plot_and_leave_gifts_and_
         None
     );
 }
+
+#[test]
+fn a_leads_public_project_gets_its_own_plot_without_replacing_any_office_or_gift() {
+    let f = Fixture::new();
+    let id = f.wish(&Owner::agent("ag_nova"), Want::Building, None);
+    f.edit(|island| {
+        island.wishes.iter_mut().find(|w| w.id == id).unwrap().text =
+            super::wishes::PUBLIC_PROJECTS[0].into()
+    });
+    let before = f.island();
+    let giver = chat("chat:public-maker");
+    let asset = built(
+        &f.call(&giver, "build", starter::workshop("#ffffff", "#88aaff"))
+            .unwrap(),
+    );
+    f.call(&giver, "grant", json!({"wishId":id,"assetId":asset}))
+        .unwrap();
+    let after = f.island();
+    for placement in &before.placed {
+        assert!(after.placed.contains(placement));
+    }
+    let public = after
+        .plots
+        .iter()
+        .find(|p| p.owner.id == format!("public:{id}"))
+        .unwrap();
+    assert!(after
+        .placed
+        .iter()
+        .any(|p| p.plot == public.id && p.asset == asset));
+    let visible = super::view(&after, Some(&f.roster));
+    assert!(visible["plots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == public.id));
+    assert!(super::wishes::brief(
+        after.wishes.iter().find(|w| w.id == id).unwrap(),
+        "Nova",
+        None
+    )
+    .contains("public island improvement"));
+}
+
+#[test]
+fn an_ordinary_member_cannot_turn_a_private_wish_into_a_public_project() {
+    let mut f = Fixture::new();
+    f.roster[0].reports_to = Some("ag_ada".into());
+    let id = f.wish(&Owner::agent("ag_nova"), Want::Building, None);
+    f.edit(|island| {
+        island.wishes.iter_mut().find(|w| w.id == id).unwrap().text =
+            super::wishes::PUBLIC_PROJECTS[0].into()
+    });
+    let giver = chat("chat:public-maker");
+    let asset = built(
+        &f.call(&giver, "build", starter::workshop("#ffffff", "#88aaff"))
+            .unwrap(),
+    );
+    let before = f.island();
+    assert!(f
+        .call(&giver, "grant", json!({"wishId":id,"assetId":asset}))
+        .unwrap_err()
+        .contains("Only a registered lead"));
+    assert_eq!(f.island(), before);
+}
+
+#[test]
+fn a_lead_can_propose_one_custom_public_wish_and_retries_do_not_duplicate_it() {
+    let mut f = Fixture::new();
+    f.edit(|island| island.wishes.clear());
+    let request = json!({"text":"a riverside music stage with flower beds"});
+    let first = f.call(&nova(), "propose", request.clone()).unwrap();
+    let second = f.call(&nova(), "propose", request.clone()).unwrap();
+    assert_eq!(first["wishId"], second["wishId"]);
+    let island = f.island();
+    assert_eq!(island.wishes.len(), 1);
+    assert!(super::wishes::public_project(&island.wishes[0]));
+    assert!(f
+        .call(&chat("chat:stranger"), "propose", request.clone())
+        .is_err());
+    f.roster[0].reports_to = Some("ag_ada".into());
+    assert!(f.call(&nova(), "propose", request).is_err());
+    assert_eq!(f.island(), island);
+}

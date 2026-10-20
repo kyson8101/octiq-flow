@@ -27,7 +27,7 @@ function call(env, method, params, flags = []) {
   });
 }
 
-const NAMES = ["island_look", "island_build", "island_grant", "island_style", "island_place"];
+const NAMES = ["island_look", "island_build", "island_grant", "island_propose", "island_style", "island_place"];
 const islandTools = result => result.tools.filter(tool => tool.name.startsWith("island_"));
 
 test("the island tools are offered to a chat, and to no worker, front desk or stranger", async () => {
@@ -41,7 +41,7 @@ test("the island tools are offered to a chat, and to no worker, front desk or st
       assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
       for (const key of ["chatKey", "by", "agentId"]) assert.ok(!(key in tool.inputSchema.properties), `${tool.name}: ${key}`);
     }
-    const [look, build, grant, style, place] = tools;
+    const [look, build, grant, propose, style, place] = tools;
     assert.match(look.description, /building guide/);
     assert.match(look.description, /Call it first/);
     assert.equal(look.annotations.readOnlyHint, true);
@@ -96,6 +96,9 @@ test("island calls go to /hook/island with only their documented fields", async 
 
   await call(env, "tools/call", { name: "island_grant", arguments: { wishId: "w_1", assetId: "a_1", x: 1, z: 2, wisher: "b_1" } }, ["--disable-ask-user"]);
   assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "grant", args: { wishId: "w_1", assetId: "a_1", x: 1, z: 2 } });
+
+  await call(env, "tools/call", { name: "island_propose", arguments: { text: "a riverside stage", agentId: "someone-else" } });
+  assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "propose", args: { text: "a riverside stage" } });
 
   await call(env, "tools/call", { name: "island_style", arguments: { frame: "slim", worn: { neck: "a_1", head: null } } });
   assert.deepEqual(requests.at(-1).body, { chatKey: "chat:lead", action: "style", args: { frame: "slim", worn: { neck: "a_1", head: null } } });

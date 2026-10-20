@@ -2532,6 +2532,7 @@ const ISLAND_TOOLS = [
     z: ISLAND_NUMBER("Plot z (+z faces the plaza)."),
     turn: ISLAND_NUMBER("Degrees about y."),
   }, ["wishId"]),
+  islandTool("propose", "Registered leads only: propose a concrete public island improvement or new public building as a wish. It enters the island wish list; it does not send a chat message or change another agent. One open wish per lead.", { text: { type: "string", minLength: 1, maxLength: 110 } }, ["text"]),
   islandTool("style", "Change your own robot's look (a registered agent's own chat only): frame, colours, eyes, antenna, and per slot the assetId of an accessory to wear, one you made or were given (null takes it off). Fields you leave out stay as they are.", {
     ...ISLAND_LOOK_FIELDS,
     worn: {

@@ -21,7 +21,7 @@ use super::{guide, room};
 use crate::team::TeamAgent;
 
 /// Every action the door knows.
-pub const ACTIONS: &[&str] = &["look", "build", "grant", "style", "place"];
+pub const ACTIONS: &[&str] = &["look", "build", "grant", "style", "place", "propose"];
 
 /// Who is calling, as the host knows it.
 #[derive(Clone, Debug)]
@@ -76,7 +76,7 @@ pub fn call(
 ) -> Result<Value, String> {
     if !ACTIONS.contains(&action) {
         return Err(invalid(
-            "Unknown island action. The actions are look, build, grant, style and place.",
+            "Unknown island action. The actions are look, build, grant, style, place and propose.",
         ));
     }
     if action != "look" {
@@ -105,6 +105,10 @@ pub fn call(
         "grant" => {
             let (answer, id) = grant(&mut island, roster, caller, args, now)?;
             (answer, "grant", id)
+        }
+        "propose" => {
+            let (answer, id) = propose(&mut island, roster, caller, args, now)?;
+            (answer, "wish", id)
         }
         "style" => {
             let (answer, id) = style(&mut island, caller, args)?;
@@ -659,10 +663,36 @@ fn grant(
                 described(&asset)
             )));
         }
-        let plot = super::plot_of(island, &wish.who)
-            .map(|plot| plot.id.clone())
-            .ok_or_else(|| invalid(format!("{name} has no plot to give it on.")))?;
         let mut rng = Rng::for_change(island.seed, island.rev, now, super::SALT_GRANT);
+        let plot = if super::wishes::public_project(&wish) {
+            let lead = roster
+                .iter()
+                .find(|agent| agent.id == wish.who.id)
+                .is_some_and(|agent| {
+                    agent.reports_to.is_none()
+                        || roster
+                            .iter()
+                            .any(|member| member.reports_to.as_deref() == Some(&agent.id))
+                });
+            if !lead {
+                return Err(invalid(
+                    "Only a registered lead may request a public island project.",
+                ));
+            }
+            super::claim(
+                island,
+                Owner {
+                    kind: OwnerKind::Home,
+                    id: format!("public:{}", wish.id),
+                },
+                now,
+                &mut rng,
+            )?
+        } else {
+            super::plot_of(island, &wish.who)
+                .map(|plot| plot.id.clone())
+                .ok_or_else(|| invalid(format!("{name} has no plot to give it on.")))?
+        };
         match asset.kind {
             Kind::Accessory => {
                 let slot = asset.slot.ok_or("An accessory has no slot.")?;
@@ -1025,4 +1055,74 @@ fn place(
     };
     let id = placed.id.clone();
     Ok((placement_line(&placed), id))
+}
+
+/// A registered lead's concrete public proposal, queued as an ordinary wish.
+fn propose(
+    island: &mut Island,
+    roster: &[TeamAgent],
+    caller: &Caller,
+    args: Value,
+    now: i64,
+) -> Result<(Value, String), String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Args {
+        text: String,
+    }
+    let args: Args = args_of(args)?;
+    let agent_id = caller
+        .agent
+        .as_ref()
+        .map(|(id, _)| id.as_str())
+        .ok_or_else(|| not_yours("Only a registered lead can propose public island projects."))?;
+    let agent = roster
+        .iter()
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| not_yours("The lead must still be registered."))?;
+    if agent.reports_to.is_some()
+        && !roster
+            .iter()
+            .any(|member| member.reports_to.as_deref() == Some(agent_id))
+    {
+        return Err(not_yours(
+            "Only a registered lead can propose public island projects.",
+        ));
+    }
+    let text = args.text.trim();
+    if text.is_empty() || text.chars().count() > 110 || text.chars().any(char::is_control) {
+        return Err(invalid(
+            "Describe the public improvement in one line, 1–110 characters.",
+        ));
+    }
+    let who = Owner::agent(agent_id);
+    let text = format!("a public island project: {text}");
+    if let Some(wish) = island
+        .wishes
+        .iter()
+        .find(|wish| wish.who == who && wish.state == WishState::Open && wish.text == text)
+    {
+        return Ok((json!({"wishId":wish.id,"state":"open"}), wish.id.clone()));
+    }
+    if super::has_open_wish(island, &who) || super::open_wishes(island) >= super::OPEN_MAX {
+        return Err(invalid(
+            "Finish or dismiss the existing wish before proposing another public project.",
+        ));
+    }
+    let mut rng = Rng::for_change(island.seed, island.rev, now, super::SALT_GRANT);
+    let id = super::new_id("w", &mut rng, &|id| {
+        island.wishes.iter().any(|wish| wish.id == id)
+    });
+    island.wishes.push(Wish {
+        id: id.clone(),
+        who,
+        want: Want::Building,
+        slot: None,
+        text,
+        made_at: now,
+        state: WishState::Open,
+        grant: None,
+        closed_at: None,
+    });
+    Ok((json!({"wishId":id,"state":"open"}), id))
 }

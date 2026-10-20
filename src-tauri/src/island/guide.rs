@@ -13,8 +13,11 @@ pub fn text() -> String {
 
 Everything on the island is built from simple shapes. Units are metres and +y is up. An asset's origin is the centre of its footprint on the ground, and its front faces +z. A robot faces +z too; +x is on its left.
 
+## Shared offices and public projects
+Registered agents are the 波特. Each team shares an office, with one dedicated desk per member; unteamed agents share the Agent Tower. Old personal plots are storage anchors, not separate homes. Registered leads can call island_propose with a one-line text to request a public improvement or new building. A granted public project gets a separate public plot and never replaces an office or another present.
+
 ## Robots
-Everyone on the island is a chibi robot: the person's registered agents, and the 波特 who live there. Every 波特 wears a backpack it designed itself; a back accessory you give it replaces that one. A robot is 1.0 m tall to the top of its head (its antenna is above that). Its head is about 0.8 m wide, 0.57 m tall and 0.48 m deep; its body is small; sitting, its hips are about 0.2 m up. For robots, a seat is 0.2-0.4 m high, a desk 0.45-0.6 m, a door at least 1.0 m wide and 1.4 m tall, walls 1.6-2.4 m.
+Everyone on the island is a chibi robot: the person's registered agents, and the 波特 who live there. A robot is 1.0 m tall to the top of its head (its antenna is above that). Its head is about 0.8 m wide, 0.57 m tall and 0.48 m deep; its body is small; sitting, its hips are about 0.2 m up. For robots, a seat is 0.2-0.4 m high, a desk 0.45-0.6 m, a door at least 1.0 m wide and 1.4 m tall, walls 1.6-2.4 m.
 Accessory anchors (an accessory's coordinates start there): head = top centre of the head (1.0 m up); face = front of the visor (0.70 m up, 0.29 m forward); neck = where head meets body (0.42 m up); back = middle of the back (0.30 m up, 0.08 m behind); hand = palm of the right hand (the -x side), which moves with the arm.
 
 ## Parts
@@ -40,9 +43,6 @@ Floors are fine. Leave a doorway, and put furniture in as separate assets.
 
 ## Plots
 A plot is a hexagonal tile, 6.3 m from its centre to a corner. In plot coordinates the origin is its centre and +z faces the plaza: the front edge is flat at z = +5.456, the back edge flat at z = -5.456, and the sides come to points at x = ±6.3. A point is on the tile when |z| ≤ 5.456 and |x| + |z|/√3 ≤ 6.3. A placement is {{x, z, y (0 to 1.2, to stand on a table), turn (degrees about y)}}; every corner of the asset's box after the turn stays on the tile. A plot holds at most 40 placements and 1,500 parts between them. Furniture, decor and buildings are placed; accessories are worn.
-
-## 波特 homes
-波特 live together, up to four to a home on one plot. The house belongs to all of them: they built it together, each has a bed along its back wall and one touch of its own (a flower box, a workbench, an easel). A present for a 波特 goes on its home's plot; a building replaces the house, and the beds and touches stay.
 
 ## Tools
 island_build makes an asset (pass assetId to rebuild one you made). island_grant gives an open wish its present: an accessory is worn in its slot, furniture and decor are placed where there is room (or at the x, z you give), a building replaces the robot's building, and a look wish takes a look instead of an asset. A registered agent also styles its own robot with island_style and arranges its own plot with island_place.

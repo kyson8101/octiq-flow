@@ -770,7 +770,23 @@ pub fn make(rng: &mut Rng, character: Trait) -> (Want, Option<Slot>, String) {
 /// a wish: which wish, whose, what, and the three tools. Derived for an open
 /// wish on every answer, never stored. An island bot is a 波特 in every word
 /// the person or an agent reads; only the data says `bot`.
+pub const PUBLIC_PROJECTS: [&str; 4] = [
+    "a public concert pavilion where everyone can perform together",
+    "a public games arcade for the whole island",
+    "a public garden pavilion with new landscaping for everyone",
+    "a public library and lounge for every team",
+];
+
+pub fn public_project(wish: &Wish) -> bool {
+    wish.want == Want::Building
+        && (PUBLIC_PROJECTS.contains(&wish.text.as_str())
+            || wish.text.starts_with("a public island project: "))
+}
+
 pub fn brief(wish: &Wish, name: &str, character: Option<Trait>) -> String {
+    if public_project(wish) {
+        return format!("Lead {name} proposes {} (wish {}). Build a public island improvement, not a private home: call island_look with wishId first, make a building with island_build, then island_grant with wishId and assetId. The host gives it a new public plot, preserving offices, gifts and the playground. Include decorative landscaping as building parts when appropriate.", wish.text, wish.id);
+    }
     let who = match character {
         Some(character) => format!("{name}, a 波特 ({}),", character.word()),
         None => name.to_owned(),

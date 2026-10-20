@@ -1,3 +1,5 @@
+import { officeLayout } from "./offices";
+import { concertStage } from "./concert";
 // The island drawn and running: one WebGL canvas, the scenery, every placed
 // asset, a robot for every resident, the simulation that moves them, and the
 // camera the person turns round it. The page gives it the island and the
@@ -30,6 +32,7 @@ export type ViewEvents = {
 };
 
 type RobotView = {
+  concert: ReturnType<typeof concertStage>;
   atmosphere: ReturnType<typeof robotAtmosphere>;
   rig: RobotRig;
   look: string;
@@ -286,6 +289,9 @@ export class IslandView {
   // --- the island's data --------------------------------------------------
 
   setIsland(island: Island, residents: Resident[]) {
+    const offices = officeLayout(island, residents);
+    island = offices.island;
+    residents = offices.residents;
     const before = new Set(this.residents.map((r) => r.key));
     this.island = island;
     this.residents = residents;
@@ -344,7 +350,7 @@ export class IslandView {
       }
       solids.push(...placementSolids(asset, plot, placement));
       const seat = placementSeat(asset, plot, placement);
-      if (seat) seats.push(seat);
+      if (seat) { seat.owner = offices.deskOwners.get(placement.id); seat.key += `:${seat.x}:${seat.z}:${seat.y}:${seat.face}`; seats.push(seat); }
     }
     for (const [id, view] of [...this.placed]) {
       if (keep.has(id)) continue;
@@ -437,7 +443,9 @@ export class IslandView {
     this.proxies.add(proxy);
     const atmosphere = robotAtmosphere(resident.look.trim);
     rig.root.add(atmosphere.umbrella, atmosphere.aura);
-    const view: RobotView = { rig, atmosphere, look, worn: "", shadow, proxy, bubble, bubbleKey: "" };
+    const concert = concertStage();
+    this.scene.add(concert.root);
+    const view: RobotView = { concert, rig, atmosphere, look, worn: "", shadow, proxy, bubble, bubbleKey: "" };
     this.robots.set(key, view);
     return view;
   }
@@ -449,6 +457,8 @@ export class IslandView {
     this.proxies.remove(view.proxy);
     view.rig.dispose();
     view.atmosphere.dispose();
+    this.scene.remove(view.concert.root);
+    view.concert.dispose();
     this.robots.delete(key);
   }
 
@@ -602,6 +612,9 @@ export class IslandView {
       const y = robot.perched ? Math.max(robot.y, ground) : ground;
       view.rig.root.position.set(robot.x, y, robot.z);
       view.rig.root.rotation.y = robot.heading;
+      view.concert.root.position.set(robot.x, ground, robot.z);
+      view.concert.root.rotation.y = robot.heading;
+      view.concert.update(robot.pose === "dance" && this.sim.audience(key) > 0, dt, t, calm);
       const act = robot.plan.act;
       const atDesk = act.kind === "work" && act.seat?.kind === "desk" && !robot.path.length;
       poseIslandRobot(view.rig, robot.pose, t + (hashOf(key) % 97) * 0.13, {

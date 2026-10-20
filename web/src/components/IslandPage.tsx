@@ -17,6 +17,7 @@ import {
   openWishes, residentsOf, wisher, type IslandAgent, type Resident, type Wish, type WishPace,
 } from "../lib/island/model";
 import { agentModes, ago } from "../lib/island/reading";
+import { officeLayout } from "../lib/island/offices";
 import { IslandView } from "../lib/island/scene";
 import type { WeatherChoice } from "../lib/island/weather";
 
@@ -57,14 +58,15 @@ export default function IslandPage({
   onClose: () => void;
 }) {
   const feed = useIsland(connected);
-  const { rows, team } = useAgentRows({ connected, snapshot, projects, running, busy, waitingOn, held, chatTitle, chatExists });
+  const { rows, team, teams } = useAgentRows({ connected, snapshot, projects, running, busy, waitingOn, held, chatTitle, chatExists });
   const confirm = useConfirm();
   const roster = useMemo<IslandAgent[]>(
-    () => (team ?? []).map((agent) => ({ id: agent.id, name: agent.name, agent: agent.agent, model: agent.model, avatar: agent.avatar,
+    () => (team ?? []).map((agent) => ({ id: agent.id, name: agent.name, agent: agent.agent, model: agent.model, avatar: agent.avatar, teamId: agent.teamId, teamName: teams.find(t => t.id === agent.teamId)?.name,
       leader: !agent.reportsTo || (team ?? []).some(member => member.reportsTo === agent.id) })),
-    [team],
+    [team, teams],
   );
   const residents = useMemo(() => (feed.island ? residentsOf(feed.island, roster) : []), [feed.island, roster]);
+  const officeResidents = useMemo(() => feed.island ? officeLayout(feed.island, residents).residents : [], [feed.island, residents]);
   const wishes = useMemo(() => (feed.island ? openWishes(feed.island) : []), [feed.island]);
   const modes = useMemo(() => agentModes(rows), [rows]);
   const modesKey = useMemo(() => JSON.stringify([...modes]), [modes]);
@@ -182,7 +184,7 @@ export default function IslandPage({
     }
   };
 
-  const resident = selected ? residents.find((r) => r.key === selected) : undefined;
+  const resident = selected ? officeResidents.find((r) => r.key === selected) : undefined;
   const row = resident?.agent ? rows.find((r) => r.id === resident.agent!.id) : undefined;
   const wishOf = (r: Resident) => wishes.find((w) => w.who.kind === r.owner.kind && w.who.id === r.owner.id);
   const granted = useMemo(() => (feed.island?.wishes ?? [])
@@ -237,8 +239,8 @@ export default function IslandPage({
             row={row}
             status={status}
             mood={mood}
-            housemates={resident.owner.kind === "bot" && resident.plot
-              ? residents.filter((r) => r.plot?.id === resident.plot?.id && r.key !== resident.key).map((r) => r.name)
+            housemates={resident.plot
+              ? officeResidents.filter((r) => r.plot?.id === resident.plot?.id && r.key !== resident.key).map((r) => r.name)
               : []}
             wish={wishOf(resident)}
             busy={!!busyAction || !connected}
@@ -398,7 +400,8 @@ function RobotCard({ resident, row, status, mood, housemates, wish, busy, buildi
         </button>
       </div>
       {status && <p className="island-card-status" data-tone={tone}>{status}</p>}
-      {housemates.length > 0 && <p className="island-meta island-card-home">Lives with <bdi>{listNames(housemates)}</bdi></p>}
+      {resident.plot?.officeName && <p className="island-meta">{resident.plot.officeName} · Personal desk</p>}
+      {housemates.length > 0 && <p className="island-meta island-card-home">Office with <bdi>{listNames(housemates)}</bdi></p>}
       {mood?.said && <p className="island-card-said">“<bdi>{mood.said}</bdi>”</p>}
       {mood && <BoredomMeter boredom={mood.boredom} excited={mood.excited} />}
       {wish && <div className="island-card-wish">

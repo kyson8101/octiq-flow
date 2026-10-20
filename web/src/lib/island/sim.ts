@@ -27,6 +27,7 @@ export type Seat = {
   /** The plot it is on, or null for the island's own benches. */
   plot: string | null;
   name: string;
+  owner?: string;
 };
 
 /** What the scene knows about the island that behaviour needs. */
@@ -63,6 +64,7 @@ type Act =
   | { kind: "sleep"; seat: Seat | null }
   | { kind: "gaze"; seconds: number; face: number }
   | { kind: "dance"; seconds: number }
+  | { kind: "watch"; performer: string }
   | { kind: "tend"; seconds: number; face: number }
   | { kind: "chat"; with: string; seconds: number; first: boolean }
   | { kind: "invite"; game: Game; with: string; answer?: "yes" | "no" }
@@ -402,7 +404,37 @@ export class IslandSim {
       this.tick(robot, step, now);
       this.feel(robot, step);
     }
+    this.concerts(now);
     this.greetings(now);
+  }
+
+  /** A performance gathers only nearby, unoccupied residents. */
+  private concerts(now: number) {
+    for (const performer of this.robots.values()) {
+      if (performer.mode.state !== "free" || performer.plan.act.kind !== "dance" || performer.path.length) continue;
+      const watching = [...this.robots.values()].filter(r => r.plan.act.kind === "watch" && r.plan.act.performer === performer.key);
+      if (watching.length >= 5) continue;
+      for (const guest of this.robots.values()) {
+        if (guest === performer || guest.mode.state !== "free" || guest.chatAfter > now || guest.plan.seek
+          || !["look", "gaze", "sit"].includes(guest.plan.act.kind)
+          || Math.hypot(guest.x - performer.x, guest.z - performer.z) > 8) continue;
+        const angle = performer.heading + Math.PI * 2 * watching.length / 5;
+        const spot = { x: performer.x + Math.sin(angle) * 2.4, z: performer.z + Math.cos(angle) * 2.4 };
+        const path = this.nav.path(guest, spot);
+        if (!path) continue;
+        this.release(guest, now);
+        guest.perched = false;
+        guest.plan = { label: `Watching ${performer.resident.name} perform`, goal: spot, act: { kind: "watch", performer: performer.key } };
+        guest.path = path;
+        watching.push(guest);
+        if (watching.length >= 5) break;
+      }
+    }
+  }
+
+  audience(key: string): number {
+    return [...this.robots.values()].filter(r => r.mode.state === "free" && !r.path.length
+      && r.plan.act.kind === "watch" && r.plan.act.performer === key).length;
   }
 
   /** Boredom goes up while nothing happens and down while something fun
@@ -425,6 +457,14 @@ export class IslandSim {
     if (robot.bubble && robot.bubble.until < now) robot.bubble = null;
     if (robot.gesture && robot.gesture.until < now) robot.gesture = null;
     const plan = robot.plan;
+    if (plan.act.kind === "watch") {
+      const performer = this.robots.get(plan.act.performer);
+      if (!performer || performer.mode.state !== "free" || performer.plan.act.kind !== "dance" || performer.path.length) {
+        robot.chatAfter = now + 30;
+        this.replan(robot, now);
+        return;
+      }
+    }
     if (plan.act.kind === "tag" && plan.since !== undefined) {
       this.tagTick(robot, plan.act.game, dt, now);
       return;
@@ -549,6 +589,18 @@ export class IslandSim {
         this.sigh(robot, dt, now);
         if (ended(act.seconds)) this.replan(robot, now);
         return;
+      case "watch": {
+        const performer = this.robots.get(act.performer);
+        if (!performer || performer.mode.state !== "free" || performer.plan.act.kind !== "dance" || performer.path.length) {
+          robot.chatAfter = now + 30;
+          this.replan(robot, now);
+          return;
+        }
+        this.turn(robot, faceTowards(robot, performer), dt);
+        robot.pose = Math.floor(elapsed / 2) % 3 === 1 ? "cheer" : "stand";
+        robot.boredom = Math.max(0, robot.boredom - dt / 45);
+        return;
+      }
       case "dance":
         robot.pose = "dance";
         if (!robot.bubble) robot.bubble = { text: "🎵", tone: "plain", until: now + 2.5 };
@@ -777,7 +829,7 @@ export class IslandSim {
   private ownSeat(robot: SimRobot, kind: Seat["kind"]): Seat | null {
     const plot = this.places.plots.get(robot.key);
     if (!plot) return null;
-    return this.places.seats.find((s) => s.plot === plot.id && s.kind === kind && !this.taken.has(s.key)) ?? null;
+    return this.places.seats.find((s) => s.plot === plot.id && s.kind === kind && (!s.owner || s.owner === robot.key) && !this.taken.has(s.key)) ?? null;
   }
 
   private takeSeat(robot: SimRobot, seat: Seat | null): Seat | null {
@@ -879,7 +931,7 @@ export class IslandSim {
         const r = 2.6 + rng() * 1.2;
         return {
           label: "Dancing on the plaza", goal: { x: Math.sin(angle) * r, z: Math.cos(angle) * r },
-          act: { kind: "dance", seconds: 6 + rng() * 8 },
+          act: { kind: "dance", seconds: 18 + rng() * 10 },
         };
       }
       case "tend": {

@@ -81,6 +81,7 @@ pub fn host_bookkeeping(tool: &str) -> bool {
                 | "feedback_update"
                 | "preview_image"
                 | "preview_html"
+                | "island_propose"
                 | "island_look"
                 | "island_build"
                 | "island_grant"

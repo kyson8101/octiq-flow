@@ -35,6 +35,7 @@ export function useAgentRows(input: AgentRowsInput): {
   rows: AgentRow[];
   /** Null until the roster has loaded. */
   team: TeamAgent[] | null;
+  teams: AgentTeam[];
   error: string;
 } {
   const { connected, snapshot, projects, running, busy, waitingOn, held, chatTitle, chatExists } = input;
@@ -100,5 +101,5 @@ export function useAgentRows(input: AgentRowsInput): {
     providerLabel: (agent) => `${AGENT_NAME[agent.agent]} ${teamModelLabel(agent)}`,
     chatTitle, chatExists, leadActivity, waitingOn, held, now,
   });
-  return { rows, team, error };
+  return { rows, team, teams, error };
 }

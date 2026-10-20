@@ -15,7 +15,7 @@ import {residentsOf,cellCenter} from '/src/lib/island/model.ts';
 const roster=[{id:'lead',name:'Maya',agent:'codex',model:'sol',leader:true},{id:'member',name:'Kai',agent:'claude',model:'sonnet',leader:false}];
 const plots=roster.map((a,i)=>({id:'p'+i,owner:{kind:'agent',id:a.id},ring:1,slot:i,q:i-1,r:1,...cellCenter(i-1,1),facing:150,radius:6.3,claimedAt:0}));
 const island={version:1,rev:1,seed:42,createdAt:0,updatedAt:0,radius:30,settings:{wishPace:'sometimes'},plots,bots:[{id:'chip',name:'Chip',trait:'cozy',look:{},arrivedAt:0}],looks:{},assets:[],placed:[],wishes:[],lastRollAt:0};
-const residents=residentsOf(island,roster);window.names=residents.map(r=>r.name);
+const residents=residentsOf(island,roster);window.fixture={island,residents};window.names=residents.map(r=>r.name);
 const view=new IslandView(document.getElementById('stage'),{onPick:()=>{}},false);
 view.setIsland(island,residents);view.setHourOverride(12);view.setWeather('rain');window.view=view;
 `;
@@ -37,6 +37,42 @@ try{
  await page.evaluate(()=>window.view.setWeather('sunny'));
  await page.waitForFunction(()=>[...window.view.robots.values()].every(v=>!v.atmosphere.umbrella.visible));
  await page.screenshot({path:join(evidence,'sunny.png')});
+ await page.evaluate(()=>{
+   const sim=window.view.sim;
+   const star=sim.robots.get('agent:lead');const fan=sim.robots.get('agent:member');
+   for(const [r,x] of [[star,0],[fan,3]]) {r.x=x;r.z=-5;r.path=[];r.perched=false;r.bubble=null;r.chatAfter=0;}
+   star.plan={label:'Performing',goal:null,act:{kind:'dance',seconds:60},since:sim.clockNow};
+   fan.plan={label:'Watching',goal:null,act:{kind:'look',seconds:60},since:sim.clockNow};
+   window.view.centerOn?.('agent:lead');
+ });
+ await page.waitForFunction(()=>window.view.sim.audience('agent:lead')===1);
+ await page.waitForFunction(()=>window.view.robots.get('agent:lead').concert.root.scale.x>.95);
+ await page.screenshot({path:join(evidence,'concert.png')});
+ await page.evaluate(()=>{const s=window.view.sim;const r=s.robots.get('agent:lead');r.plan={label:'Finished',goal:null,act:{kind:'look',seconds:60},since:s.clockNow};});
+ await page.waitForFunction(()=>!window.view.robots.get('agent:lead').concert.root.visible);
+ assert.equal(await page.evaluate(()=>window.view.sim.audience('agent:lead')),0);
+ await page.evaluate(()=>{
+   const {island,residents}=window.fixture;
+   const officePeople=residents.map(r=>({...r,agent:{...r.agent,teamId:'studio',teamName:'Studio'}}));
+   const general={...residents[1],key:'agent:general',owner:{kind:'agent',id:'general'},name:'General',agent:{...residents[1].agent,id:'general',name:'General',teamId:undefined}};
+   window.view.setIsland(island,[...officePeople,general]);
+   window.view.setModes(new Map([...officePeople,general].map(r=>[r.key,{state:'working'}])));
+ });
+ await page.waitForFunction(()=>[...window.view.sim.robots.values()].every(r=>r.plan.act.kind==='work'&&r.perched));
+ const offices=await page.evaluate(()=>({plots:window.view.island.plots.map(p=>p.officeName),seats:[...window.view.sim.robots.values()].map(r=>({key:r.key,owner:r.plan.act.seat?.owner,seat:r.plan.act.seat?.key}))}));
+ assert.deepEqual(offices.plots.sort(),['Agent Tower','Studio Office']);
+ assert.equal(new Set(offices.seats.map(s=>s.seat)).size,3);
+ assert.ok(offices.seats.every(s=>s.owner===s.key));
+ await page.evaluate(()=>{window.view.camera.position.set(24,28,36);window.view.controls.target.set(0,0,0);window.view.controls.update();});
+ await page.screenshot({path:join(evidence,'shared-offices.png')});
+ await page.evaluate(()=>{
+   const {island,residents}=window.fixture;
+   const moved=residents.map(r=>({...r,agent:{...r.agent,teamId:r.key==='agent:lead'?'studio':undefined,teamName:'Studio'}}));
+   const extra={...residents[1],key:'agent:general',owner:{kind:'agent',id:'general'},name:'General',agent:{...residents[1].agent,id:'general',teamId:undefined}};
+   window.view.setIsland(island,[...moved,extra]);
+ });
+ await page.waitForFunction(()=>[...window.view.sim.robots.values()].every(r=>r.plan.act.kind==='work'&&r.perched&&r.plan.act.seat?.owner===r.key));
+ assert.equal(await page.evaluate(()=>window.view.sim.robots.get('agent:member').resident.plot.id),'office:general');
  assert.deepEqual(errors,[]);
  await page.evaluate(()=>window.view.dispose());
  console.log('PASS '+evidence);

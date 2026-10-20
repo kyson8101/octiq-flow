@@ -80,6 +80,7 @@ export type Plot = {
   /** A home's 波特, in the order they moved in. */
   members?: string[];
   claimedAt: number;
+  officeName?: string;
 };
 
 export type Trait = "cozy" | "curious" | "sporty" | "artsy" | "tinkerer" | "dreamy" | "foodie" | "gardener";
@@ -127,7 +128,7 @@ export type Island = {
 };
 
 /** A registered agent, as much of it as the island needs. */
-export type IslandAgent = { id: string; name: string; agent: Provider; model: string; avatar?: string; leader?: boolean };
+export type IslandAgent = { id: string; name: string; agent: Provider; model: string; avatar?: string; leader?: boolean; teamId?: string; teamName?: string };
 
 /** Everyone who lives on the island, agent or bot, the same way. */
 export type Resident = {
@@ -352,6 +353,7 @@ export function residentsOf(island: Island, roster: readonly IslandAgent[]): Res
 /** The names on a plot's sign: its agent's, or everyone who lives in a
  *  home, "Pip, Bolt & Mochi". */
 export function plotNames(plot: Plot, residents: readonly Resident[]): string {
+  if (plot.officeName) return plot.officeName;
   const names = residents.filter((r) => r.plot?.id === plot.id).map((r) => r.name);
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} & ${names[names.length - 1]}`;

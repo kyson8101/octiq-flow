@@ -400,3 +400,38 @@ describe("a home changing", () => {
     expect(robot.bubble?.text).toBe("🔨");
   });
 });
+
+describe("a little concert", () => {
+  it("gathers idle neighbours, faces the performer and disperses when the show ends", () => {
+    const world = island([resident("agent:star", "Star", null), resident("agent:fan", "Fan", null)]);
+    const star = world.robot("agent:star");
+    const fan = world.robot("agent:fan");
+    standStill(star, { x: 0, z: 0 });
+    standStill(fan, { x: 3, z: 0 });
+    fan.chatAfter = 0;
+    star.plan = { label: "Performing", goal: null, act: { kind: "dance", seconds: 30 }, since: 0 };
+    world.run(5);
+    expect(fan.plan.act.kind).toBe("watch");
+    expect(world.sim.audience(star.key)).toBe(1);
+    expect(Math.cos(fan.heading - Math.atan2(star.x - fan.x, star.z - fan.z))).toBeGreaterThan(.9);
+    standStill(star, { x: 0, z: 0 });
+    world.run(.2);
+    expect(fan.plan.act.kind).not.toBe("watch");
+    expect(world.sim.audience(star.key)).toBe(0);
+  });
+
+  it("leaves sleeping and working neighbours alone", () => {
+    const world = island([resident("agent:star", "Star", null), resident("agent:sleep", "Sleep", null), resident("agent:busy", "Busy", null)]);
+    const star = world.robot("agent:star");
+    const sleepy = world.robot("agent:sleep");
+    const busy = world.robot("agent:busy");
+    [star, sleepy, busy].forEach((r, i) => standStill(r, { x: i, z: 0 }));
+    sleepy.plan = { label: "Sleeping", goal: null, act: { kind: "sleep", seat: null }, since: 0 };
+    world.sim.setModes(modes([[busy.key, { state: "working" }]]), 0);
+    star.plan = { label: "Performing", goal: null, act: { kind: "dance", seconds: 30 }, since: 0 };
+    world.run(.1, 0);
+    expect(sleepy.plan.act.kind).toBe("sleep");
+    expect(busy.plan.act.kind).not.toBe("watch");
+    expect(world.sim.audience(star.key)).toBe(0);
+  });
+});

@@ -436,6 +436,7 @@ fn arrive(island: &mut Island, now: i64, rng: &mut Rng) -> Result<(String, Strin
 /// Someone who makes wishes: every bot, and every registered agent with a
 /// plot. A removed agent keeps its plot and stops wishing.
 struct Resident {
+    lead: bool,
     who: Owner,
     character: Trait,
 }
@@ -452,6 +453,11 @@ fn residents(island: &Island, roster: Option<&[TeamAgent]>) -> Vec<Resident> {
         .iter()
         .filter(|agent| plot_of(island, &Owner::agent(&agent.id)).is_some())
         .map(|agent| Resident {
+            lead: agent.reports_to.is_none()
+                || roster
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|member| member.reports_to.as_deref() == Some(&agent.id)),
             who: Owner::agent(&agent.id),
             character: agent_trait(&agent.id),
         });
@@ -475,7 +481,15 @@ fn has_open_wish(island: &Island, who: &Owner) -> bool {
 
 /// A new open wish for `resident`. Its id.
 fn make_wish(island: &mut Island, resident: &Resident, now: i64, rng: &mut Rng) -> String {
-    let (want, slot, text) = wishes::make(rng, resident.character);
+    let (want, slot, text) = if resident.lead && rng.pick(&[true, false, false]) == &true {
+        (
+            Want::Building,
+            None,
+            rng.pick(&wishes::PUBLIC_PROJECTS).to_string(),
+        )
+    } else {
+        wishes::make(rng, resident.character)
+    };
     let id = new_id("w", rng, &|id| island.wishes.iter().any(|w| w.id == id));
     island.wishes.push(Wish {
         id: id.clone(),
@@ -591,8 +605,9 @@ fn view(island: &Island, roster: Option<&[TeamAgent]>) -> Value {
     let mut visible = island.clone();
     visible.bots.clear();
     visible.plots.retain(|plot| {
-        plot.owner.kind == OwnerKind::Agent
-            && roster.is_none_or(|agents| agents.iter().any(|a| a.id == plot.owner.id))
+        (plot.owner.kind == OwnerKind::Agent
+            && roster.is_none_or(|agents| agents.iter().any(|a| a.id == plot.owner.id)))
+            || (plot.owner.kind == OwnerKind::Home && plot.owner.id.starts_with("public:"))
     });
     visible
         .placed
