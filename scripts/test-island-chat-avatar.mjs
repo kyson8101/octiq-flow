@@ -24,9 +24,9 @@ window.avatarIsland={version:1,rev:1,seed:1,createdAt:0,updatedAt:0,radius:30,se
 ],placed:[],wishes:[],lastRollAt:0};
 window.contexts=0;const original=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(type,...args){if(type==='webgl2')window.contexts++;return original.call(this,type,...args)};
 const root=createRoot(document.getElementById('root'));window.unmountAvatars=()=>root.unmount();
-root.render(<main style={{padding:40,background:'#edf1f8',fontFamily:'sans-serif'}}><h1>Maya</h1><div id='portrait'><AgentAvatar island name='Maya' id='maya' size={180}/></div><p>Chat header <AgentAvatar island name='Maya' id='maya' size={32}/></p><p>Message <AgentAvatar island name='Maya' id='maya' size={20}/></p><p id='editor'>Uploaded photo <AgentAvatar name='Maya' id='maya' avatar='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg"/%3E' size={40}/></p></main>);
+root.render(<main style={{padding:40,background:'#edf1f8',fontFamily:'sans-serif'}}><h1>Maya</h1><div id='portrait'><AgentAvatar island name='Maya' id='maya' size={180}/></div><p>Chat header <AgentAvatar island name='Maya' id='maya' size={48}/></p><p>Message <AgentAvatar island name='Maya' id='maya' size={40}/></p><p id='editor'>Uploaded photo <AgentAvatar name='Maya' id='maya' avatar='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg"/%3E' size={40}/></p></main>);
 `;
-const server=await createServer({root:new URL('../web',import.meta.url).pathname,server:{host:'127.0.0.1',port:0},plugins:[{
+const server=await createServer({root:new URL('../web',import.meta.url).pathname,server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{
 name:'chat-avatar-fixture',enforce:'pre',resolveId(id){if(id==='virtual:chat-avatar')return '\0chat-avatar'},async load(id){if(id==='\0chat-avatar')return(await transformWithEsbuild(entry,'fixture.tsx',{loader:'tsx',jsx:'automatic'})).code;if(id.endsWith('/src/lib/bridge.ts'))return bridgeSource},
 configureServer(server){server.middlewares.use(async(req,res,next)=>{if(req.url!=='/__avatar')return next();res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml(req.url,'<div id="root"></div><script type="module" src="/@vite/client"></script><script type="module" src="/@id/__x00__chat-avatar"></script>'))})}
 }]});
@@ -41,7 +41,13 @@ try{
  assert.equal(await page.evaluate(()=>window.contexts),1);
  assert.equal((await page.locator('#editor img').getAttribute('src')).startsWith('data:image/svg'),true);
  assert.equal(new Set(await page.locator('img[src^="data:image/png"]').evaluateAll(imgs=>imgs.map(i=>i.src))).size,1);
+ const geometry=await page.locator('#portrait img').evaluate(img=>({width:img.getBoundingClientRect().width,frame:img.parentElement.getBoundingClientRect().width,natural:img.naturalWidth,animation:getComputedStyle(img).animationName}));
+ assert.equal(geometry.width/geometry.frame,24);assert.equal(geometry.natural,3072);assert.equal(geometry.animation,'island-portrait-idle');
+ const motionA=await page.locator('#portrait').screenshot();await page.waitForTimeout(450);const motionB=await page.locator('#portrait').screenshot();assert.notDeepEqual(motionA,motionB,'the outfit must really move');
  await page.screenshot({path:join(evidence,'outfit.png')});
+ await page.emulateMedia({reducedMotion:'reduce'});
+ assert.equal(await page.locator('#portrait img').evaluate(img=>getComputedStyle(img).animationName),'none');
+ await page.emulateMedia({reducedMotion:'no-preference'});
  await page.evaluate(()=>{window.avatarIsland.assets[0].parts.forEach(p=>p.color='#51aaff');window.avatarIsland.assets[0].rev++;window.avatarIsland.rev++;window.avatarEvent('island-changed')});
  await page.waitForFunction(first=>document.querySelector('#portrait img')?.src!==first,first);
  const blueHat=await page.locator('#portrait img').getAttribute('src');

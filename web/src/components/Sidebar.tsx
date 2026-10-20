@@ -404,7 +404,7 @@ export function Sidebar({
                   </span> : <ConversationProjects info={projectInfo} projects={knownProjects} taskCount={!run} />}
                   {persona ? (
                     <span className="chat-model chat-persona" title={`${persona.name}${model ? ` · ${model.name} ${model.model}` : ""}`}>
-                      <AgentAvatar island name={persona.name} avatar={persona.avatar} id={persona.id ?? persona.name} size={14} removed={persona.removed} decorative />
+                      <AgentAvatar island name={persona.name} avatar={persona.avatar} id={persona.id ?? persona.name} size={28} removed={persona.removed} decorative />
                       <span>{persona.name}</span>
                     </span>
                   ) : model && (

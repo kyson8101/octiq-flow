@@ -58,7 +58,7 @@ export const TaskChatPane = forwardRef(function TaskChatPane(props: TaskChatPane
   return (
     <section className="beside-pane is-task" aria-label={`Task chat: ${title}`} hidden={hidden} data-chat={chatId}>
       <header className="beside-head">
-        {persona && <AgentAvatar island name={persona.name} avatar={persona.avatar} id={persona.id} size={22} decorative />}
+        {persona && <AgentAvatar island name={persona.name} avatar={persona.avatar} id={persona.id} size={40} decorative />}
         <div className="beside-head-text">
           <div className="beside-title-row">
             <h2 className="beside-title" ref={headingRef} tabIndex={-1} title={title}>{title}</h2>
@@ -122,7 +122,7 @@ export const TaskChatPane = forwardRef(function TaskChatPane(props: TaskChatPane
 export function BesideMainHead({ persona }: { persona: Persona | null }) {
   return (
     <header className="beside-head is-main">
-      {persona && <AgentAvatar island name={persona.name} avatar={persona.avatar} id={persona.id} size={22} decorative />}
+      {persona && <AgentAvatar island name={persona.name} avatar={persona.avatar} id={persona.id} size={40} decorative />}
       <div className="beside-head-text">
         <h2 className="beside-title">Main chat</h2>
         {persona && <span className="beside-sub">{persona.name} · coordinates this run</span>}

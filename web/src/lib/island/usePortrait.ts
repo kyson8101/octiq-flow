@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { residentsOf, SLOTS, type Island, type IslandAgent } from './model';
 
-type Portrait={signature:string;image:string};
+type Portrait={signature:string;image:string;frames:number};
 const portraits=new Map<string,Portrait>();
 const listeners=new Map<string,Set<()=>void>>();
 let cleanup: (()=>void)|undefined;
@@ -27,8 +27,8 @@ async function draw() {
       const signature=JSON.stringify([resident.look,assets.map(a=>[a.id,a.rev])]);
       if(portraits.get(id)?.signature===signature)continue;
       painter??=createPortraitRenderer();
-      const image=painter.render(resident.look,assets);
-      portraits.set(id,{signature,image});notify(id);
+      const rendered=painter.render(resident.look,assets);
+      portraits.set(id,{signature,...rendered});notify(id);
     }
   } catch (reason) {if(import.meta.env.DEV)console.debug("Island portrait unavailable",reason);failed=true;painter?.dispose();painter=undefined;}
   finally {scheduled=false;if(generation!==epoch&&listeners.size)void draw();}
@@ -70,6 +70,6 @@ function subscribe(id:string,fn:()=>void) {
 
 export function useIslandPortrait(id:string|undefined) {
   const listen=useCallback((fn:()=>void)=>id?subscribe(id,fn):()=>{},[id]);
-  const read=useCallback(()=>id?portraits.get(id)?.image:undefined,[id]);
+  const read=useCallback(()=>id?portraits.get(id):undefined,[id]);
   return useSyncExternalStore(listen,read,()=>undefined);
 }

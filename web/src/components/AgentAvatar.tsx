@@ -33,15 +33,17 @@ export function AgentAvatar({
   className?: string;
 }) {
   const portrait = useIslandPortrait(island && !removed ? id : undefined);
-  const picture = portrait ?? avatar;
+  const picture = portrait?.image ?? avatar;
   const style = {
     "--agent-avatar-size": `${size}px`,
     "--agent-avatar-hue": String(personaHue(id ?? name)),
+    "--portrait-frames": portrait?.frames ?? 1,
+    "--portrait-delay": `${-personaHue(id ?? name) / 100}s`,
   } as CSSProperties;
   const spoken = label ?? (removed ? `${name} (no longer registered)` : name);
   return (
     <span
-      className={["agent-avatar", picture ? "has-image" : "", removed ? "is-removed" : "", className].filter(Boolean).join(" ")}
+      className={["agent-avatar", picture ? "has-image" : "", portrait ? "is-island" : "", removed ? "is-removed" : "", className].filter(Boolean).join(" ")}
       style={style}
       {...(decorative ? { "aria-hidden": true } : { role: "img", "aria-label": spoken })}
       title={decorative ? undefined : spoken}
