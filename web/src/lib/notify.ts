@@ -84,6 +84,7 @@ export function owed(consent: Consent, focus: Focus, conversationId: string): bo
  *  the click has to land. A worker whose main chat is not known yet stays
  *  silent rather than naming itself. Mirrors `announced_on` in push.rs. */
 export function announcedOn(kind: NoticeKind, id: string, parents: ReadonlyMap<string, string>): string | null {
+  if (id.startsWith("island-wish-")) return null;
   if (!isWorkerChat(id, parents)) return id;
   if (kind !== "permission") return null;
   return mainChatId(id, parents);

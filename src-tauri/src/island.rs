@@ -19,6 +19,7 @@
 //! No file is the island not made yet; a profile folder that is away is an
 //! error, never an empty island.
 mod agent;
+mod autonomy;
 mod backpack;
 mod guide;
 mod home;
@@ -58,7 +59,6 @@ pub const MAKER_ASSETS_MAX: usize = 300;
 /// The most island bots living there at once, and how many the island
 /// starts with.
 pub const BOTS_MAX: usize = 16;
-const FIRST_BOTS: usize = 6;
 const FIRST_WISHES: usize = 2;
 /// Open wishes at once, closed ones kept, and new ones a look may make.
 pub const OPEN_MAX: usize = 12;
@@ -253,13 +253,12 @@ fn create(roster: Option<&[TeamAgent]>, now: i64, seed: u64) -> Result<Island, S
         placed: Vec::new(),
         wishes: Vec::new(),
         last_roll_at: now,
+        last_build_at: now,
+        developments: BTreeMap::new(),
     };
     let mut rng = Rng::for_change(seed, 0, now, SALT_CREATE);
     if let Some(roster) = roster {
         claim_agents(&mut island, roster, now, &mut rng)?;
-    }
-    for _ in 0..FIRST_BOTS {
-        arrive(&mut island, now, &mut rng)?;
     }
     for _ in 0..FIRST_WISHES {
         roll_one(&mut island, roster, now, &mut rng);
@@ -448,10 +447,6 @@ fn agent_trait(agent_id: &str) -> Trait {
 }
 
 fn residents(island: &Island, roster: Option<&[TeamAgent]>) -> Vec<Resident> {
-    let bots = island.bots.iter().map(|bot| Resident {
-        who: Owner::bot(&bot.id),
-        character: bot.r#trait,
-    });
     let agents = roster
         .unwrap_or_default()
         .iter()
@@ -460,14 +455,14 @@ fn residents(island: &Island, roster: Option<&[TeamAgent]>) -> Vec<Resident> {
             who: Owner::agent(&agent.id),
             character: agent_trait(&agent.id),
         });
-    bots.chain(agents).collect()
+    agents.collect()
 }
 
 fn open_wishes(island: &Island) -> usize {
     island
         .wishes
         .iter()
-        .filter(|wish| wish.state == WishState::Open)
+        .filter(|wish| wish.state == WishState::Open && wish.who.kind == OwnerKind::Agent)
         .count()
 }
 
@@ -590,9 +585,25 @@ fn resident_name(
 /// The island as the page reads it: the file, with `brief` on each open wish
 /// whose robot still lives there.
 fn view(island: &Island, roster: Option<&[TeamAgent]>) -> Value {
-    let mut value = serde_json::to_value(island).unwrap_or(Value::Null);
+    // 波特 are the person's registered agents, never a second NPC roster.
+    // Old NPC data stays on disk for recovery, but has no visible plots,
+    // characters or wishes and never consumes the agent wish allowance.
+    let mut visible = island.clone();
+    visible.bots.clear();
+    visible.plots.retain(|plot| {
+        plot.owner.kind == OwnerKind::Agent
+            && roster.is_none_or(|agents| agents.iter().any(|a| a.id == plot.owner.id))
+    });
+    visible
+        .placed
+        .retain(|placed| visible.plots.iter().any(|plot| plot.id == placed.plot));
+    visible.wishes.retain(|wish| {
+        wish.who.kind == OwnerKind::Agent
+            && roster.is_none_or(|agents| agents.iter().any(|a| a.id == wish.who.id))
+    });
+    let mut value = serde_json::to_value(&visible).unwrap_or(Value::Null);
     if let Some(shown) = value.get_mut("wishes").and_then(Value::as_array_mut) {
-        for (wish, shown) in island.wishes.iter().zip(shown.iter_mut()) {
+        for (wish, shown) in visible.wishes.iter().zip(shown.iter_mut()) {
             if wish.state != WishState::Open {
                 continue;
             }
@@ -741,6 +752,20 @@ pub fn set_settings(
     Ok(answer(&island, roster, None))
 }
 
+pub fn set_build_pace(
+    path: &Path,
+    roster: Option<&[TeamAgent]>,
+    pace: &str,
+    now: i64,
+) -> Result<Value, String> {
+    let pace = WishPace::parse(pace).ok_or_else(|| invalid("Unknown building pace."))?;
+    let _guard = locked();
+    let mut island = ensure(path, roster, now, random_seed)?;
+    island.settings.build_pace = pace;
+    save(path, &mut island, now, "settings", None)?;
+    Ok(answer(&island, roster, None))
+}
+
 /// One look of the wish thread: each resident with no open wish makes one
 /// with the chance `wishes::roll_probability` gives for the time since the
 /// last look (`since`, else the file's `lastRollAt`), at most two a look and
@@ -797,8 +822,8 @@ const LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// profile folder that is away skips the look. A failure is said once, not
 /// every minute.
 #[cfg(not(test))]
-pub fn start_wishes() {
-    std::thread::spawn(|| {
+pub fn start_wishes(services: crate::dispatch::Services) {
+    std::thread::spawn(move || {
         let mut since: Option<i64> = None;
         let mut said: Option<String> = None;
         loop {
@@ -810,6 +835,26 @@ pub fn start_wishes() {
             // look; it does not mean they are gone.
             let roster = crate::team::list(&crate::team::default_path(), None, true).ok();
             let now = now_ms();
+            if let Some(roster) = &roster {
+                let leads = crate::team::leads(&crate::team::default_path()).unwrap_or_default();
+                let busy: Vec<String> = roster
+                    .iter()
+                    .filter(|agent| {
+                        leads.iter().any(|lead| {
+                            lead.lead_id == agent.id
+                                && services.chats.turn_in_flight(&lead.chat_key)
+                        }) || services
+                            .orchestrations
+                            .agent_work(&agent.id)
+                            .map(|work| !work.running.is_empty())
+                            .unwrap_or(true)
+                    })
+                    .map(|agent| agent.id.clone())
+                    .collect();
+                if let Err(why) = autonomy::develop(&default_path(), roster, now, &busy) {
+                    eprintln!("[island] could not improve a plot: {why}");
+                }
+            }
             match look_for_wishes(&default_path(), roster.as_deref(), now, since) {
                 Ok(_) => {
                     since = Some(now);

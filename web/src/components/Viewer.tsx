@@ -18,6 +18,7 @@ import {
   type Pan,
 } from "../lib/zoom";
 import { RollingText } from "./RollingNumber";
+import { MediaComments } from "./MediaComments";
 
 /** The middle of the screen — what a button press zooms towards, having no
  *  pointer of its own to aim at. */
@@ -52,6 +53,7 @@ export function Viewer({ path, onClose }: { path: string; onClose: () => void })
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>(FIT);
+  const [comments, setComments] = useState(false);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -62,6 +64,7 @@ export function Viewer({ path, onClose }: { path: string; onClose: () => void })
     let alive = true;
     let objectUrl: string | null = null;
     setView(FIT);
+    setUrl(null); setError(null); setComments(false);
     bridge
       .fetchFile(path)
       .then((blob) => {
@@ -216,13 +219,15 @@ export function Viewer({ path, onClose }: { path: string; onClose: () => void })
   // is fixed to something other than the window.
   return createPortal(
     <div
-      className="viewer"
+      className={`viewer${comments && !pdf ? " has-comments" : ""}`}
       // A press that slid was a pan, not a click on the backdrop, and closing
       // the picture someone was busy dragging is the wrong answer.
       onClick={() => (moved.current ? (moved.current = false) : onClose())}
     >
       <div className="viewer-bar" onClick={(e) => e.stopPropagation()}>
         <span className="viewer-name">{baseName(path)}</span>
+        {!pdf && <button type="button" className="viewer-btn" aria-expanded={comments}
+          style={{ width: "auto" }} onClick={() => setComments(value => !value)}>Comments</button>}
         {!pdf && url && (
           <div className="viewer-zoom">
             <button
@@ -291,6 +296,9 @@ export function Viewer({ path, onClose }: { path: string; onClose: () => void })
       ) : (
         <div className="dots" aria-label="loading" />
       )}
+      {comments && !pdf && <div className="viewer-comments" onClick={event => event.stopPropagation()}>
+        <MediaComments key={path} path={path} onQuote={onClose} />
+      </div>}
     </div>,
     document.body,
   );

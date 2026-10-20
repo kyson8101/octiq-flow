@@ -131,3 +131,14 @@ test("island calls go to /hook/island with only their documented fields", async 
   assert.equal((await call(env, "tools/call", { name: "island_demolish", arguments: {} })).isError, true);
   assert.equal(requests.length, count);
 });
+
+test("a background present maker sees only island tools and cannot register an agent or ask a person", async () => {
+  const env = { OCTIQ_CHAT_KEY: "chat:island-wish-w_1" };
+  const listed = await call(env, "tools/list", {});
+  assert.deepEqual(listed.tools.map(tool => tool.name), ["island_look", "island_build", "island_grant"]);
+  for (const name of ["ask_user", "request_access", "agent_register", "orchestration_run_create"]) {
+    const refused = await call(env, "tools/call", { name, arguments: {} });
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /cannot register agents/);
+  }
+});

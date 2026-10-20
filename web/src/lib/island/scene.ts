@@ -18,6 +18,7 @@ import { NavGrid, type Solid } from "./nav";
 import { HIP_HEIGHT, SEATED, createIslandRobot, poseIslandRobot, type RobotRig } from "./robot";
 import { IslandSim, type AgentMode, type Bubble, type Places, type Seat } from "./sim";
 import { buildScenery, groundHeight, onRect, timeOfDay, type Scenery } from "./world";
+import { IslandRain, carriesUmbrella, robotAtmosphere, weatherAt, type WeatherChoice } from "./weather";
 
 const DEG = Math.PI / 180;
 
@@ -29,6 +30,7 @@ export type ViewEvents = {
 };
 
 type RobotView = {
+  atmosphere: ReturnType<typeof robotAtmosphere>;
   rig: RobotRig;
   look: string;
   worn: string;
@@ -106,6 +108,9 @@ function token(name: string, fallback: string): string {
 }
 
 export class IslandView {
+  private weatherChoice: WeatherChoice = "auto";
+  private rain = new IslandRain();
+  setWeather(choice: WeatherChoice) { this.weatherChoice = choice; this.hourAt = -1; }
   private renderer: WebGLRenderer;
   private scene = new Scene();
   private camera = new PerspectiveCamera(38, 1, 0.1, 1400);
@@ -179,7 +184,7 @@ export class IslandView {
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.02;
     this.scene.fog = new Fog("#e8f3fb", 90, 420);
-    this.scene.add(this.hemi, this.sun, this.sun.target, this.proxies);
+    this.scene.add(this.hemi, this.sun, this.sun.target, this.proxies, this.rain.object);
     this.proxies.visible = false;
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
@@ -395,6 +400,7 @@ export class IslandView {
         view = undefined;
       }
       if (!view) view = this.addRobot(resident.key, resident, look);
+      view.atmosphere.aura.visible = !!resident.agent?.leader;
       if (view.worn !== wornAssets) {
         for (const slot of SLOTS) {
           const id = resident.look.worn[slot];
@@ -429,7 +435,9 @@ export class IslandView {
     bubble.visible = false;
     this.scene.add(rig.root, shadow, bubble);
     this.proxies.add(proxy);
-    const view: RobotView = { rig, look, worn: "", shadow, proxy, bubble, bubbleKey: "" };
+    const atmosphere = robotAtmosphere(resident.look.trim);
+    rig.root.add(atmosphere.umbrella, atmosphere.aura);
+    const view: RobotView = { rig, atmosphere, look, worn: "", shadow, proxy, bubble, bubbleKey: "" };
     this.robots.set(key, view);
     return view;
   }
@@ -440,6 +448,7 @@ export class IslandView {
     this.scene.remove(view.rig.root, view.shadow, view.bubble);
     this.proxies.remove(view.proxy);
     view.rig.dispose();
+    view.atmosphere.dispose();
     this.robots.delete(key);
   }
 
@@ -570,7 +579,8 @@ export class IslandView {
       this.sky = timeOfDay(this.hour);
       this.sun.position.copy(this.sky.sun);
       this.sun.color.copy(this.sky.sunColor);
-      this.sun.intensity = this.sky.sunIntensity;
+      const weather = weatherAt(this.island?.seed ?? 1, Date.now(), this.weatherChoice);
+      this.sun.intensity = this.sky.sunIntensity * (weather === "rain" ? .35 : weather === "cloudy" ? .65 : 1);
       this.hemi.intensity = this.sky.hemi;
       this.hemi.color.copy(new Color("#eef6ff").lerp(new Color("#7f93c9"), this.sky.night));
       (this.scene.fog as Fog).color.copy(this.sky.horizon);
@@ -579,6 +589,8 @@ export class IslandView {
     this.sim.update(dt, t, this.hour);
     const calm = this.reducedMotion;
     const radius = this.island?.radius ?? 40;
+    const weather = weatherAt(this.island?.seed ?? 1, Date.now(), this.weatherChoice);
+    this.rain.update(dt, weather, this.controls.target.x, this.controls.target.z, calm);
     this.scenery?.playground.setMotion(this.sim.motion);
     for (const [key, view] of this.robots) {
       const robot = this.sim.robots.get(key);
@@ -595,6 +607,15 @@ export class IslandView {
       poseIslandRobot(view.rig, robot.pose, t + (hashOf(key) % 97) * 0.13, {
         stride: robot.stride, calm, console: !atDesk, lean: robot.lean, bored: robot.boredom > 0.72,
       });
+      const umbrella = carriesUmbrella(weather, robot.pose);
+      view.atmosphere.umbrella.visible = umbrella;
+      view.atmosphere.umbrella.position.y = sitting ? -HIP_HEIGHT : 0;
+      if (umbrella) {
+        view.rig.arms[1].shoulder.rotation.set(-.5, 0, -.35);
+        view.rig.arms[1].elbow.rotation.x = -.7;
+      }
+      view.atmosphere.aura.scale.setScalar(calm ? 1 : 1 + Math.sin(t * 1.6) * .06);
+      view.atmosphere.aura.position.y = ground - y + .035;
       view.shadow.position.set(robot.x, ground + 0.025, robot.z);
       view.shadow.scale.setScalar(robot.perched && y - ground > 0.15 ? 0.7 : 1);
       view.proxy.position.set(robot.x, y + (sitting ? 0.45 : 0.6), robot.z);
@@ -806,6 +827,7 @@ export class IslandView {
     this.cache.dispose();
     this.scenery?.dispose();
     this.bubbles.dispose();
+    this.rain.dispose();
     this.fadedMaterials.forEach((m) => m.dispose());
     this.shadowGeometry.dispose();
     this.shadowMaterial.dispose();

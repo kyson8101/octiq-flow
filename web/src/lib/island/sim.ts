@@ -136,8 +136,9 @@ const TURN = 7;
 const STEP = 0.9;
 /** How near two robots pass before they say hi, and how long before the
  *  same two say it again. */
-const HELLO_REACH = 2.4;
-const HELLO_AGAIN = 90;
+const HELLO_REACH = 1.8;
+const HELLO_AGAIN = 300;
+const HELLO_PAUSE = 60;
 const CHAT_LINES = [
   "how are you?", "nice day!", "🌊", "☕?", "haha", "look!", "🎵", "same!", "really?", "😄", "✨", "🍩", "ok!",
   "me too!", "🌸", "so sunny", "🐚", "hmm…", "💡", "yay!",
@@ -219,6 +220,7 @@ export class IslandSim {
   private slideRide: { key: string; phase: "approach" | "climb" | "perch" | "ride" | "hop"; since: number; from: Point } | null = null;
   private tags = new Map<string, TagGame>();
   private greeted = new Map<string, number>();
+  private helloAfter = new Map<string, number>();
   private greetAt = 0;
   private games = 0;
   private clockNow = 0;
@@ -942,7 +944,7 @@ export class IslandSim {
    *  is standing about. Once for the same two in a while. */
   private greetings(now: number) {
     if (now < this.greetAt) return;
-    this.greetAt = now + 0.3;
+    this.greetAt = now + 1.2;
     const awake = [...this.robots.values()].filter((robot) =>
       robot.plan.act.kind !== "sleep" && !robot.perched && robot.plan.act.kind !== "work"
       && robot.plan.act.kind !== "tag" && robot.plan.act.kind !== "sob" && this.slideRide?.key !== robot.key);
@@ -950,10 +952,14 @@ export class IslandSim {
       for (let j = i + 1; j < awake.length; j++) {
         const a = awake[i];
         const b = awake[j];
+        if (now < (this.helloAfter.get(a.key) ?? 0) || now < (this.helloAfter.get(b.key) ?? 0)) continue;
+        if (a.bubble || b.bubble || a.plan.seek || b.plan.seek || a.plan.act.kind === "chat" || b.plan.act.kind === "chat") continue;
         if (Math.hypot(a.x - b.x, a.z - b.z) > HELLO_REACH) continue;
         const pair = a.key < b.key ? `${a.key}|${b.key}` : `${b.key}|${a.key}`;
         if (now - (this.greeted.get(pair) ?? -Infinity) < HELLO_AGAIN) continue;
         this.greeted.set(pair, now);
+        this.helloAfter.set(a.key, now + HELLO_PAUSE);
+        this.helloAfter.set(b.key, now + HELLO_PAUSE);
         for (const [one, two] of [[a, b], [b, a]] as const) {
           if (one.plan.act.kind === "chat") continue;
           if (!one.bubble || one.bubble.tone === "plain") one.bubble = { text: one.rng() < 0.75 ? "hi!" : "👋", tone: "plain", until: now + 1.5 };

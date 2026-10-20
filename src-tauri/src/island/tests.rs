@@ -52,7 +52,20 @@ impl Fixture {
             _dir: dir,
         };
         let _guard = super::locked();
-        super::ensure(&fixture.path, Some(&fixture.roster), NOW, || SEED).unwrap();
+        // Legacy snapshots had six unregistered NPCs. Keep one explicit
+        // fixture for backwards-compatible storage and gift/house validation;
+        // production creation is tested separately and creates none.
+        let mut legacy = super::ensure(&fixture.path, Some(&fixture.roster), NOW, || SEED).unwrap();
+        let mut rng = layout::Rng::for_change(SEED, 0, NOW, super::SALT_CREATE);
+        for _ in 0..6 {
+            super::arrive(&mut legacy, NOW, &mut rng).unwrap();
+        }
+        legacy.radius = layout::radius(&legacy.plots);
+        super::write(
+            &fixture.path,
+            &super::encode(&legacy, super::MAX_BYTES).unwrap(),
+        )
+        .unwrap();
         fixture
     }
 
@@ -194,7 +207,7 @@ fn furniture_boxes(island: &Island, plot: &str) -> Vec<(String, Vec<[f64; 2]>)> 
 }
 
 #[test]
-fn the_first_look_makes_the_island_with_plots_bots_starters_and_two_wishes() {
+fn a_legacy_snapshot_keeps_its_npc_data_and_validates_its_plots_and_assets() {
     let f = Fixture::new();
     let island = f.island();
     assert_eq!((island.version, island.rev, island.seed), (1, 1, SEED));
@@ -329,7 +342,11 @@ fn get_answers_the_island_with_a_brief_on_each_open_wish_and_claims_new_agents()
     let answer = super::get(&f.path, None, NOW + 4).unwrap();
     assert_eq!(
         answer["island"]["plots"].as_array().unwrap().len(),
-        island.plots.len()
+        island
+            .plots
+            .iter()
+            .filter(|plot| plot.owner.kind == OwnerKind::Agent)
+            .count()
     );
 }
 
@@ -481,7 +498,7 @@ fn wishes_come_at_the_pace_set_two_a_look_and_twelve_open_at_most() {
     }
     // Five hours at one look a minute, often: every resident has asked.
     let island = f.island();
-    assert_eq!(open(&island), (island.bots.len() + 2).min(super::OPEN_MAX));
+    assert_eq!(open(&island), f.roster.len().min(super::OPEN_MAX));
     // An agent no longer registered stops wishing.
     assert!(island
         .wishes
@@ -503,7 +520,7 @@ fn a_roll_is_one_wish_now_and_refused_when_there_is_nobody_to_wish() {
         }
     }
     // Eight residents, two of whom wished when the island was made.
-    assert_eq!(made.len(), 6);
+    assert_eq!(made.len(), 0);
     // Twelve open is the most, whoever is left.
     f.edit(|island| {
         for at in 0..10 {
@@ -517,9 +534,9 @@ fn a_roll_is_one_wish_now_and_refused_when_there_is_nobody_to_wish() {
             });
         }
     });
-    while super::roll_wish(&f.path, Some(&f.roster), NOW).is_ok() {}
     let why = super::roll_wish(&f.path, Some(&f.roster), NOW).unwrap_err();
-    assert!(why.contains("12 wishes are open already"), "{why}");
+    assert!(why.contains("has a wish open already"), "{why}");
+    assert_eq!(super::open_wishes(&f.island()), f.roster.len());
 }
 
 #[test]
@@ -839,7 +856,10 @@ fn a_look_answers_the_guide_the_wish_its_robot_and_the_caller() {
         .unwrap()
         .iter()
         .any(|w| w["id"] == json!(id)));
-    assert_eq!(answer["residents"].as_array().unwrap().len(), 8);
+    assert_eq!(
+        answer["residents"].as_array().unwrap().len(),
+        f.roster.len()
+    );
     // A chat with no registered agent is "Chat", with what it made.
     let answer = f.call(&chat("chat:plain"), "look", json!({})).unwrap();
     assert_eq!(
@@ -1596,10 +1616,7 @@ fn a_hook_answer_and_the_page_answer_keep_to_their_shapes() {
         assert!(plot.get(key).is_some(), "plot {key}");
     }
     assert!(plot.get("size").is_none());
-    let bot = &island["bots"][0];
-    for key in ["id", "name", "trait", "look", "arrivedAt"] {
-        assert!(bot.get(key).is_some(), "bot {key}");
-    }
+    assert!(island["bots"].as_array().unwrap().is_empty());
     let asset = &island["assets"][0];
     for key in [
         "id",
@@ -1620,4 +1637,70 @@ fn a_hook_answer_and_the_page_answer_keep_to_their_shapes() {
     }
     let path: &Path = &f.path;
     assert!(path.exists());
+}
+
+#[test]
+fn new_islands_contain_only_registered_agents_and_old_npcs_stay_hidden_without_deleting_data() {
+    let dir = TestDir::new("registered-island");
+    let path = dir.join("island.json");
+    let agents = roster();
+    let shown = super::get(&path, Some(&agents), NOW).unwrap();
+    assert!(shown["island"]["bots"].as_array().unwrap().is_empty());
+    assert_eq!(
+        shown["island"]["plots"].as_array().unwrap().len(),
+        agents.len()
+    );
+    assert!(super::read(&path).unwrap().unwrap().bots.is_empty());
+    let legacy = Fixture::new();
+    let before = std::fs::read(&legacy.path).unwrap();
+    let shown = super::get(&legacy.path, Some(&legacy.roster), NOW).unwrap();
+    assert!(shown["island"]["bots"].as_array().unwrap().is_empty());
+    assert!(shown["island"]["plots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["owner"]["kind"] == "agent"));
+    assert_eq!(std::fs::read(&legacy.path).unwrap(), before);
+}
+
+#[test]
+fn autonomous_improvements_stay_on_a_registered_agents_plot_and_leave_gifts_and_other_assets_alone()
+{
+    let f = Fixture::new();
+    let before = f.island();
+    assert_eq!(
+        super::autonomy::develop(&f.path, &f.roster, NOW + 1000, &[]).unwrap(),
+        None
+    );
+    let later = NOW + 9 * 3_600_000;
+    let changed = super::autonomy::develop(&f.path, &f.roster, later, &["ag_ada".into()]).unwrap();
+    assert!(changed.is_some());
+    let built = f.island();
+    assert_eq!(built.developments.len(), 1);
+    assert!(built.developments.contains_key("ag_nova"));
+    for old in &before.assets {
+        assert_eq!(built.assets.iter().find(|a| a.id == old.id), Some(old));
+    }
+    assert_eq!(built.bots, before.bots);
+    assert_eq!(
+        super::autonomy::develop(&f.path, &f.roster, later + 1000, &[]).unwrap(),
+        None
+    );
+    let ours = built.developments["ag_nova"].clone();
+    super::autonomy::develop(
+        &f.path,
+        &f.roster,
+        later + 9 * 3_600_000,
+        &["ag_ada".into()],
+    )
+    .unwrap();
+    let after = f.island();
+    assert_eq!(after.developments["ag_nova"], ours);
+    assert_eq!(after.assets.len(), built.assets.len());
+    assert_eq!(after.assets.iter().find(|a| a.id == ours).unwrap().rev, 2);
+    super::set_build_pace(&f.path, Some(&f.roster), "never", later).unwrap();
+    assert_eq!(
+        super::autonomy::develop(&f.path, &f.roster, later + 99 * 3_600_000, &[]).unwrap(),
+        None
+    );
 }

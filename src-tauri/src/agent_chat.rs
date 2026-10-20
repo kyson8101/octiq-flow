@@ -7976,6 +7976,10 @@ pub fn chat_index_list() -> Vec<crate::chat_index::ChatMeta> {
 pub(crate) fn visible_chats(
     chats: Vec<crate::chat_index::ChatMeta>,
 ) -> Vec<crate::chat_index::ChatMeta> {
+    let chats: Vec<_> = chats
+        .into_iter()
+        .filter(|chat| !chat.id.starts_with("island-wish-"))
+        .collect();
     let hidden: std::collections::HashSet<String> =
         crate::team::front_desk_chats(&crate::team::default_path())
             .into_iter()

@@ -8,6 +8,11 @@ use std::sync::Mutex;
 // and launch; the chat manager owns the turn once this is released.
 static START: Mutex<()> = Mutex::new(());
 
+fn preferred(mut providers: Vec<AgentKind>) -> Vec<AgentKind> {
+    providers.sort_by_key(|kind| *kind != AgentKind::Codex);
+    providers
+}
+
 fn chat_id(id: &str) -> String {
     format!("island-wish-{id}")
 }
@@ -42,11 +47,13 @@ pub(super) fn get(svc: &Services) -> Result<Value, String> {
 pub(super) fn start(svc: &Services, id: &str) -> Result<Value, String> {
     // Resolve installed providers on the host, independently of the chat
     // composer's selected model or whether the wisher is a registered agent.
-    let providers: Vec<_> = crate::agents::agent_installs(None)
-        .into_iter()
-        .filter(|row| row.installed)
-        .filter_map(|row| AgentKind::ALL.into_iter().find(|kind| kind.id() == row.id))
-        .collect();
+    let providers = preferred(
+        crate::agents::agent_installs(None)
+            .into_iter()
+            .filter(|row| row.installed)
+            .filter_map(|row| AgentKind::ALL.into_iter().find(|kind| kind.id() == row.id))
+            .collect(),
+    );
     begin(svc, id, &providers, |key, args, prompt| {
         super::start_chat(
             svc,
@@ -139,7 +146,24 @@ fn begin(
 mod tests {
     use super::*;
 
+    #[test]
+    fn codex_is_the_default_and_other_installed_providers_remain_fallbacks() {
+        assert_eq!(
+            preferred(vec![AgentKind::Claude, AgentKind::Codex, AgentKind::Pi]),
+            vec![AgentKind::Codex, AgentKind::Claude, AgentKind::Pi]
+        );
+        assert_eq!(preferred(vec![AgentKind::Pi]), vec![AgentKind::Pi]);
+    }
+
     fn wish(svc: &Services) -> String {
+        crate::team::save(
+            &svc.handovers.team,
+            serde_json::from_value(json!({
+                "name":"Maya", "agent":"codex", "model":"gpt-6.1-sol"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         get(svc).unwrap()["island"]["wishes"][0]["id"]
             .as_str()
             .unwrap()

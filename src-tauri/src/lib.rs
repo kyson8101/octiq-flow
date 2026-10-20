@@ -42,6 +42,7 @@ mod island;
 mod job_progress;
 mod job_spool;
 pub mod job_wrapper;
+mod media_comments;
 mod memory;
 mod memory_activity;
 mod memory_lessons;

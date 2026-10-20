@@ -1265,6 +1265,11 @@ async fn ask_handler(
         Ok(caller) => caller,
         Err(refused) => return hook_refusal(refused),
     };
+    if caller.chat_key.starts_with("chat:island-wish-") {
+        return (StatusCode::FORBIDDEN, axum::Json(json!({
+            "error": "Island presents run in the background. Use the island tools without asking the person; report a failure if the present cannot be made."
+        }))).into_response();
+    }
     for question in &mut batch.questions {
         question.chat_key = Some(caller.chat_key.clone());
     }

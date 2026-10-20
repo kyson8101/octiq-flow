@@ -259,6 +259,10 @@ pub struct Island {
     /// from here, at most an hour back.
     #[serde(default)]
     pub last_roll_at: i64,
+    #[serde(default)]
+    pub last_build_at: i64,
+    #[serde(default)]
+    pub developments: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +270,8 @@ pub struct Island {
 pub struct Settings {
     #[serde(default)]
     pub wish_pace: WishPace,
+    #[serde(default)]
+    pub build_pace: WishPace,
 }
 
 /// Who a plot or a wish belongs to.

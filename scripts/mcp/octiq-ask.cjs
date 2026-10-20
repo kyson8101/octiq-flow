@@ -61,6 +61,7 @@ const { CREATE_ARTIFACT, createArtifact } = require("./artifact.cjs");
 const { PREVIEW_IMAGE, PREVIEW_HTML, previewImage, previewHtml } = require("./preview.cjs");
 
 const CHAT_KEY = process.env.OCTIQ_CHAT_KEY || "";
+const IS_ISLAND_BUILD = CHAT_KEY.startsWith("chat:island-wish-");
 // Codex cannot suspend a one-shot `exec` turn cleanly while this tool waits for
 // a person, so OctiqFlow starts its MCP process with this switch. Keep the
 // server shared with Claude, but make the question tool absent at discovery
@@ -2716,6 +2717,7 @@ async function handle(msg) {
       });
 
     case "tools/list":
+      if (IS_ISLAND_BUILD) return reply(msg.id, { tools: ISLAND_TOOLS.filter(tool => ["island_look", "island_build", "island_grant"].includes(tool.name)) });
       // Inert outside OctiqFlow: with no chat to answer into, offering the
       // chat-bound tools would only give the agent something that always
       // fails. Reading a supplied conversation reference is deliberately still
@@ -2747,6 +2749,9 @@ async function handle(msg) {
       });
 
     case "tools/call": {
+      if (IS_ISLAND_BUILD && !["island_look", "island_build", "island_grant"].includes(msg.params?.name)) {
+        return reply(msg.id, { isError: true, content: [{ type: "text", text: "A background island maker only looks, builds and grants the requested present. It cannot register agents, ask questions or request access." }] });
+      }
       if (IS_FRONT_DESK && msg.params?.name !== "route_chat") {
         return reply(msg.id, {
           isError: true,

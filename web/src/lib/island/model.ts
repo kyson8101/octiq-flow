@@ -116,7 +116,7 @@ export type Island = {
   createdAt: number;
   updatedAt: number;
   radius: number;
-  settings: { wishPace: WishPace };
+  settings: { wishPace: WishPace; buildPace?: WishPace };
   plots: Plot[];
   bots: Bot[];
   looks: Record<string, LookPatch>;
@@ -127,7 +127,7 @@ export type Island = {
 };
 
 /** A registered agent, as much of it as the island needs. */
-export type IslandAgent = { id: string; name: string; agent: Provider; model: string; avatar?: string };
+export type IslandAgent = { id: string; name: string; agent: Provider; model: string; avatar?: string; leader?: boolean };
 
 /** Everyone who lives on the island, agent or bot, the same way. */
 export type Resident = {
@@ -327,14 +327,8 @@ export const ANTENNAS: readonly Antenna[] = [
   "ball", "halo", "crown", "star", "leaf", "moon", "twin", "sun", "spark", "bar", "sprout", "none",
 ];
 
-/** A bot's look as the host keeps it, made safe to draw. */
-function botLook(look: Look): Look {
-  return withPatch({ frame: "round", shell: "#f2efe8", trim: "#8fb7e0", glow: "#a8f0ff", eyes: "pill", antenna: "ball", worn: {} }, look);
-}
-
-/** Everyone on the island: the registered agents the roster still has, then
- *  the bots. An agent with no plot yet is left out until the host gives it
- *  one (every `island_get` does). */
+/** 波特 are exactly the registered agents which still have a plot. Legacy
+ * NPC records remain in storage but never add characters to the roster. */
 export function residentsOf(island: Island, roster: readonly IslandAgent[]): Resident[] {
   const plotOf = (owner: Owner) =>
     island.plots.find((plot) => plot.owner.kind === owner.kind && plot.owner.id === owner.id) ?? null;
@@ -352,16 +346,7 @@ export function residentsOf(island: Island, roster: readonly IslandAgent[]): Res
       agent,
     });
   }
-  const bots: Resident[] = island.bots.map((bot) => {
-    const owner: Owner = { kind: "bot", id: bot.id };
-    // Its home: the plot that lists it, or the one it names, or (from a host
-    // before homes) a plot of its own.
-    const home = island.plots.find((plot) => plot.owner.kind === "home" && plot.members?.includes(bot.id))
-      ?? island.plots.find((plot) => plot.id === bot.home)
-      ?? plotOf(owner);
-    return { key: `bot:${bot.id}`, owner, name: bot.name, look: botLook(bot.look), plot: home, trait: bot.trait };
-  });
-  return [...agents, ...bots];
+  return agents;
 }
 
 /** The names on a plot's sign: its agent's, or everyone who lives in a

@@ -115,7 +115,7 @@ impl Services {
         // The island's slow clock: residents make wishes once the person has
         // opened the island (`island::start_wishes`).
         #[cfg(not(test))]
-        crate::island::start_wishes();
+        crate::island::start_wishes(services.clone());
         services
     }
 }
@@ -968,9 +968,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             island_roster(svc).as_deref(),
             crate::island::now_ms(),
         ),
-        "island_bot_invite" => crate::island::invite_bot(
+        "island_bot_invite" => Err(
+            "波特 are your registered agents. Register an agent to add one to the island.".into(),
+        ),
+        "island_build_pace" => crate::island::set_build_pace(
             &crate::island::default_path(),
             island_roster(svc).as_deref(),
+            &arg::<String>(&args, "pace")?,
             crate::island::now_ms(),
         ),
         "island_bot_farewell" => crate::island::farewell_bot(
@@ -1672,6 +1676,21 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             Ok(Value::Null)
         }
         "image_preview_list" => to_value(crate::image_preview::list(&arg::<String>(&args, "key")?)),
+        "media_comments_list" => {
+            to_value(crate::media_comments::list(&arg::<String>(&args, "path")?))
+        }
+        "media_comment_add" => to_value(crate::media_comments::add(
+            &arg::<String>(&args, "path")?,
+            &arg::<String>(&args, "revision")?,
+            &arg::<String>(&args, "id")?,
+            &arg::<String>(&args, "text")?,
+            arg(&args, "timeMs")?,
+        )),
+        "media_comment_remove" => to_value(crate::media_comments::remove(
+            &arg::<String>(&args, "path")?,
+            &arg::<String>(&args, "revision")?,
+            &arg::<String>(&args, "id")?,
+        )),
         "save_attachment" => to_value(crate::agent_chat::save_attachment(
             arg(&args, "dataBase64")?,
             arg(&args, "extension")?,

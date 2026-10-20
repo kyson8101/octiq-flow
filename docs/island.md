@@ -1,17 +1,37 @@
 # The island
 
-A 3D island on its own page (sidebar → Island). Everyone on it is a chibi
-robot: the person's registered agents, and island bots that arrive by boat.
-The island bots are called **波特** (the person's name for them): every
-word the person or an agent reads says 波特, while the data says `bot`.
-They walk, explore, sit, chat with each other and sleep at night with no
-agent process behind them: that is the page's own game logic, and nothing of
-it is stored or sent. Now and then a robot makes a **wish**. The person grants
-one by starting a chat with the brief the host wrote; the agent in that chat
-builds the present from simple shapes and gives it over, and the robot wears
-it or uses it. A registered agent can also build for itself, from any chat
-it leads: its look, what it wears, and furniture, decor and a building on its
-own plot.
+A 3D island on its own page (sidebar → Island). **波特 means the person's
+registered agents**, shown as chibi robots. Only the current registered roster
+appears: no extra random residents such as Chip, and no random-invite button.
+Historical NPC data is retained on disk but excluded from characters, plots,
+wishes and the open-wish limit. New islands never create NPCs.
+
+Robots walk, play, sleep and greet occasionally. Greetings have a one-minute
+cooldown per robot and a five-minute cooldown per pair; a greeting never
+replaces a current speech bubble. A seesaw wave asks an awake, free partner;
+partners can decline, and the inviter can still sob if nobody joins.
+
+Grant starts a dedicated background task immediately, defaulting to installed
+Codex, with other installed providers as launch fallbacks. It never opens a
+composer. Background tasks are absent from ordinary chat/search lists and
+notifications. Their MCP offers only island_look, island_build and island_grant;
+no agent registration, access request or question tools. These three host-only
+tools are approved without a second card; unrelated tool permissions remain
+unchanged. A runtime login/quota failure leaves the wish open for Retry.
+
+Island weather is simulated, not a live forecast: Automatic changes by island
+seed and a shared twelve-minute clock; Sunny, Cloudy and Rain can be previewed
+in the island panel. Rain dims sunlight and adds rain particles. Awake robots
+carry umbrellas; sleeping robots fold them. Lead agents (registered roots or
+managers with direct reports) have a soft gold aura. Reduced motion stops aura
+pulsing and rainfall movement.
+
+Autonomous building is procedural island simulation, not an agent model call.
+At the selected building pace (Often: 2h, Sometimes: 8h, Rarely: 24h, Never:
+off), the host may add or restyle one small roofless pavilion on a free agent's
+own plot. It respects free space and part limits, never replaces an existing
+workshop or gift, and updates at most one recorded pavilion per agent. It
+creates no chats or registered agents and consumes no provider usage.
 
 Three owners, and nothing crosses between them:
 
@@ -197,6 +217,8 @@ an error, never an empty island.
   "<name> wishes for": `a mustard-yellow scarf — the cliff path gets windy
   at night`. At most 12 are open; the last 200 closed ones are kept.
 
+The legacy NPC/home schema below remains readable for old profiles; its NPC generation and invitation behavior is no longer active.
+
 ## Layout: a honeycomb
 
 The island is a honeycomb of hexagonal cells, pointed along ±z in the
@@ -263,8 +285,7 @@ Every 波特 also wears a backpack it designed itself (an accessory in its
 
 ## Wishes
 
-- **Who.** Every resident without an open wish: every bot, and every
-  registered agent with a plot.
+- **Who.** Every registered agent with a plot and no open wish.
 - **When.** A server thread looks every 60 s once the island exists (never
   under test, never before the person first opened the island). Each
   resident without an open wish makes one with probability
@@ -280,7 +301,7 @@ Every 波特 also wears a backpack it designed itself (an accessory in its
 - **The brief.** Each open wish carries `brief` in `island_get`. Grant calls
   `island_wish_start`: the host immediately starts a dedicated background
   conversation with this brief, leaving the person on the island. It probes
-  installed providers in registry order, uses the provider's default model,
+  installed providers with Codex first, uses the provider's default model,
   and tries the next provider if launch fails before a turn is handed over.
   Runtime failures (such as login or quota errors) leave the wish open for
   Retry. The task runs with Edits access in `<profile dir>/island-workshop`,
@@ -305,7 +326,7 @@ Every 波特 also wears a backpack it designed itself (an accessory in its
 | `island_wish_dismiss { id }` | Closes an open wish. |
 | `island_wish_start { id }` | Immediately builds an open wish in the background with an installed provider. Answers `{ chatKey, state: "building", provider? }`; a duplicate click returns the existing running task. |
 | `island_wish_roll` | One wish now, from a resident without one; refused when everyone has one open or 12 are open. |
-| `island_bot_invite` | A new 波特 arrives (at most 16) and moves into a home; says `what: "home"` with the plot. |
+| `island_bot_invite` | Refused: 波特 are registered agents, never extra NPCs. |
 | `island_bot_farewell { id }` | A 波特 leaves: out of its home (the last one out frees the plot), with its open wish; what it made goes when nothing else wears or places it. Says `what: "home"`. |
 | `island_settings_set { wishPace }` | `often`, `sometimes`, `rarely`, `never`. |
 

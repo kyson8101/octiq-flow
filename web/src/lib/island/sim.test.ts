@@ -158,6 +158,19 @@ describe("a 波特's day", () => {
     expect(world.robot("bot:b1").bubble).toBeNull();
   });
 
+  it("does not greet a whole crowd at once or repeat a greeting while standing nearby", () => {
+    const world = island([resident("bot:b1", "Pip", "h1"), resident("bot:b2", "Bolt", "h2"), resident("bot:b3", "Olive", "h3")]);
+    for (const [i, robot] of [...world.sim.robots.values()].entries()) {
+      standStill(robot, { x: i * .4, z: 10 });
+      robot.plan.act = { kind: "look", seconds: 1000 };
+    }
+    world.run(.5);
+    expect([...world.sim.robots.values()].filter(robot => robot.bubble?.text === "hi!" || robot.bubble?.text === "👋")).toHaveLength(2);
+    for (const robot of world.sim.robots.values()) robot.bubble = null;
+    world.run(40);
+    expect([...world.sim.robots.values()].every(robot => !robot.bubble || !["hi!", "👋"].includes(robot.bubble.text))).toBe(true);
+  });
+
   it("gets bored with nothing to do", () => {
     const world = island([resident("bot:b1", "Pip", "h1")]);
     const robot = world.robot("bot:b1");

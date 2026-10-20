@@ -13,6 +13,7 @@ import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { HTML_SANDBOX } from "../lib/htmlSandbox";
 import { useOpenFile } from "./OpenFile";
+import { ReviewVideo } from "./ReviewVideo";
 
 const NEAR = "600px";
 
@@ -53,7 +54,7 @@ export function ProsePlayer({ path, kind }: { path: string; kind: "video" | "aud
     <span className={`prose-media is-${kind}`} ref={holder}>
       {!near ? <span className="prose-media-wait" aria-hidden="true" />
         : kind === "video"
-          ? <video src={bridge.fileUrl(path)} controls playsInline preload="metadata" aria-label={name} onError={() => setFailed(true)} />
+          ? <ReviewVideo key={path} path={path} onError={() => setFailed(true)} />
           : <audio src={bridge.fileUrl(path)} controls preload="metadata" aria-label={name} onError={() => setFailed(true)} />}
     </span>
   );

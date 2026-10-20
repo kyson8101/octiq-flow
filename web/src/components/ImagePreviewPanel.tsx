@@ -5,6 +5,7 @@ import { HTML_SANDBOX } from "../lib/htmlSandbox";
 import { previewBlob, previewObjectUrl, previewSlots, readyObjectUrl, type ImagePreview } from "../lib/imagePreview";
 import { recall, remember } from "../lib/remember";
 import { Viewer } from "./Viewer";
+import { MediaComments } from "./MediaComments";
 import "./ImagePreviewPanel.css";
 
 const SIZES = { initial: 440, min: 300, max: 780 };
@@ -58,6 +59,7 @@ export function ImagePreviewPanel({ conversationKey, images, error, onClose }: {
   const [selected, setSelected] = useState(() => recall(selectionKey) || "");
   const [scale, setScale] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
+  const [comments, setComments] = useState(false);
   const { width, startDrag } = useDockWidth("octiq.preview.width", SIZES);
   const slots = useMemo(() => previewSlots(images), [images]);
   const image = images.find(item => item.id === selected) ?? images.at(-1);
@@ -69,7 +71,7 @@ export function ImagePreviewPanel({ conversationKey, images, error, onClose }: {
   useEffect(() => {
     if (image && image.id !== selected) { setSelected(image.id); remember(selectionKey, image.id); }
   }, [image, selected, selectionKey]);
-  useEffect(() => { setScale(1); setFullscreen(false); }, [image?.id]);
+  useEffect(() => { setScale(1); setFullscreen(false); setComments(false); }, [image?.id]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) { if (event.key === "Escape" && !fullscreen) onClose(); }
     window.addEventListener("keydown", keydown);
@@ -95,7 +97,9 @@ export function ImagePreviewPanel({ conversationKey, images, error, onClose }: {
           <button type="button" aria-label="Zoom in" disabled={scale >= 4} onClick={() => setScale(value => Math.min(4, value + 0.5))}>+</button>
           <span>v{version + 1} / {versions.length}</span>
           <button type="button" onClick={() => setFullscreen(true)}>Full screen</button>
+          <button type="button" aria-expanded={comments} onClick={() => setComments(value => !value)}>Comments</button>
         </div>
+        {comments && <div className="image-preview-comments"><MediaComments key={image.path} path={image.path} /></div>}
         </>}
         <div className="image-preview-strip" aria-label="Preview items">{slots.map(slot => {
           const latest = slot.versions.at(-1)!;

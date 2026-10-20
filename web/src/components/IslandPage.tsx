@@ -18,6 +18,7 @@ import {
 } from "../lib/island/model";
 import { agentModes, ago } from "../lib/island/reading";
 import { IslandView } from "../lib/island/scene";
+import type { WeatherChoice } from "../lib/island/weather";
 
 const PACES: { id: WishPace; label: string }[] = [
   { id: "often", label: "Often" },
@@ -59,7 +60,8 @@ export default function IslandPage({
   const { rows, team } = useAgentRows({ connected, snapshot, projects, running, busy, waitingOn, held, chatTitle, chatExists });
   const confirm = useConfirm();
   const roster = useMemo<IslandAgent[]>(
-    () => (team ?? []).map((agent) => ({ id: agent.id, name: agent.name, agent: agent.agent, model: agent.model, avatar: agent.avatar })),
+    () => (team ?? []).map((agent) => ({ id: agent.id, name: agent.name, agent: agent.agent, model: agent.model, avatar: agent.avatar,
+      leader: !agent.reportsTo || (team ?? []).some(member => member.reportsTo === agent.id) })),
     [team],
   );
   const residents = useMemo(() => (feed.island ? residentsOf(feed.island, roster) : []), [feed.island, roster]);
@@ -80,6 +82,8 @@ export default function IslandPage({
   const [actionError, setActionError] = useState<string | null>(null);
   const [showGranted, setShowGranted] = useState(false);
   const [restart, setRestart] = useState(0);
+  const [weather, setWeather] = useState<WeatherChoice>("auto");
+  useEffect(() => { view.current?.setWeather(weather); }, [weather, drawn]);
   const wishWork = JSON.stringify([...busy].filter((key) => key.startsWith("chat:island-wish-")).sort());
   useEffect(() => { if (connected) feed.reload(); }, [connected, wishWork, feed.reload]);
 
@@ -186,7 +190,6 @@ export default function IslandPage({
     .sort((a, b) => (b.closedAt ?? b.madeAt) - (a.closedAt ?? a.madeAt))
     .slice(0, 20), [feed.island]);
   const nameOf = (wish: Wish) => wisher(wish, residents)?.name ?? "A robot who left";
-  const bots = feed.island?.bots.length ?? 0;
 
   const grant = (wish: Wish) => {
     void act(`grant:${wish.id}`, () => feed.grantWish(wish.id));
@@ -202,11 +205,6 @@ export default function IslandPage({
       aria-controls="island-panel" onClick={() => setPanel((open) => !open)}
       title={wishes.length ? `${wishes.length} open ${wishes.length === 1 ? "wish" : "wishes"}` : "Wishes and residents"}>
       <GiftIcon /><span>Wishes</span>{wishes.length > 0 && <span className="island-count">{wishes.length}</span>}
-    </button>
-    <button type="button" className="projects-page-secondary island-compact" disabled={!feed.island || bots >= 16 || !!busyAction}
-      onClick={() => void act("invite", feed.inviteBot)} aria-label="Invite a 波特"
-      title={bots >= 16 ? "The island is full: 16 波特 at most" : "A new 波特 arrives by boat"}>
-      <BoatIcon /><span>Invite a 波特</span>
     </button>
     <button type="button" className="projects-page-secondary island-compact" onClick={() => { setSelected(null); view.current?.recenter(); }}
       disabled={drawn !== "yes"} aria-label="See the whole island" title="See the whole island">
@@ -297,6 +295,15 @@ export default function IslandPage({
             </ul>
           )}
           <div className="island-pace">
+            <label htmlFor="island-weather">Island weather</label>
+            <select id="island-weather" value={weather} onChange={event => setWeather(event.target.value as WeatherChoice)}>
+              <option value="auto">Automatic</option><option value="sunny">Sunny</option><option value="cloudy">Cloudy</option><option value="rain">Rain</option>
+            </select>
+            <label htmlFor="island-building">Autonomous building</label>
+            <select id="island-building" value={feed.island?.settings.buildPace ?? "sometimes"} disabled={!feed.island || !!busyAction}
+              onChange={event => void act("building", () => feed.setBuildPace(event.target.value as WishPace))}>
+              {PACES.map(pace => <option key={pace.id} value={pace.id}>{pace.label}</option>)}
+            </select>
             <label htmlFor="island-pace">New wishes</label>
             <select id="island-pace" value={feed.island?.settings.wishPace ?? "sometimes"} disabled={!feed.island || !!busyAction}
               onChange={(event) => void act("pace", () => feed.setPace(event.target.value as WishPace))}>
@@ -434,12 +441,6 @@ function GiftIcon() {
   return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <rect x="3" y="8" width="18" height="4" rx="1" /><path d="M12 8v13M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7" />
     <path d="M7.5 8a2.5 2.5 0 0 1 0-5C9 3 12 8 12 8s3-5 4.5-5a2.5 2.5 0 0 1 0 5" />
-  </svg>;
-}
-
-function BoatIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M3 17h18l-2.5 3.5H5.5z" /><path d="M12 3v14M12 4l6 9h-6" />
   </svg>;
 }
 

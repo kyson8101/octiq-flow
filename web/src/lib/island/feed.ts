@@ -23,6 +23,7 @@ export type IslandFeed = {
   inviteBot(): Promise<void>;
   farewell(id: string): Promise<void>;
   setPace(pace: WishPace): Promise<void>;
+  setBuildPace(pace: WishPace): Promise<void>;
 };
 
 const message = (reason: unknown) => String((reason as Error)?.message ?? reason);
@@ -81,5 +82,6 @@ export function useIsland(connected: boolean): IslandFeed {
     inviteBot: () => run("island_bot_invite"),
     farewell: (id) => run("island_bot_farewell", { id }),
     setPace: (pace) => run("island_settings_set", { wishPace: pace }),
+    setBuildPace: (pace) => run("island_build_pace", { pace }),
   };
 }

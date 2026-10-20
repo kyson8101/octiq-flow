@@ -137,21 +137,21 @@ describe("who lives here", () => {
     expect(residents[0].key).toBe("agent:a1");
   });
 
-  it("puts 波特 in the home that lists them, together, and names them all on its sign", () => {
+  it("does not add legacy NPCs or their names to the registered island population", () => {
     const home = plotOn("p2", 2, 0, { kind: "home", id: "h1" }, ["b1", "b2", "b3"]);
     const data = island({
       plots: [home],
       bots: ["Pip", "Bolt", "Mochi"].map((name, i) => ({ id: `b${i + 1}`, name, trait: "cozy" as const, look, arrivedAt: 0 })),
     });
     const residents = residentsOf(data, []);
-    expect(residents.map((r) => r.plot?.id)).toEqual(["p2", "p2", "p2"]);
-    expect(plotNames(home, residents)).toBe("Pip, Bolt & Mochi");
+    expect(residents).toEqual([]);
+    expect(plotNames(home, residents)).toBe("");
   });
 
-  it("still finds a 波特's plot of its own from a host before homes", () => {
+  it("keeps a legacy NPC plot from inventing an unregistered resident", () => {
     const own = plotOn("p3", 2, 1, { kind: "bot", id: "b9" });
     const residents = residentsOf(island({ plots: [own], bots: [{ id: "b9", name: "Nib", trait: "curious", look, arrivedAt: 0 }] }), []);
-    expect(residents[0].plot?.id).toBe("p3");
-    expect(plotNames(own, residents)).toBe("Nib");
+    expect(residents).toEqual([]);
+    expect(plotNames(own, residents)).toBe("");
   });
 });
