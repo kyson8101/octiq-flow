@@ -1,0 +1,166 @@
+/* The floating player (components/NowPlaying).
+
+   Top right, under the chrome: the composer is at the foot of the chat and
+   the action bar is the row above, so this sits below both bars and clear of
+   the prompt box. Opaque, framed, and lifted with the mode's own `--shadow`
+   (Manga's is its white gutter). Nothing here is the accent: the accent is a
+   turn in flight, and this is not one. */
+.now-playing {
+  /* Top bar 48, action bar 36, usage row 26, then a gap. */
+  --np-top: 122px;
+  position: fixed;
+  top: calc(var(--np-top) + env(safe-area-inset-top, 0px));
+  right: 16px;
+  z-index: 30;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, calc(100vw - 32px));
+  overflow: hidden;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  box-shadow: var(--shadow);
+  transition:
+    opacity 180ms ease-out,
+    transform 180ms ease-out;
+}
+
+/* Out of sight, and still on the page: the element plays from here while the
+   browser's own window shows it. */
+.now-playing[data-shown="false"] {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 130ms ease-out,
+    transform 130ms ease-out,
+    visibility 0s linear 130ms;
+}
+
+.now-playing-stage {
+  display: block;
+  background: #000;
+}
+
+.now-playing.is-audio .now-playing-stage,
+.now-playing.is-none .now-playing-stage {
+  display: none;
+}
+
+.now-playing-stage video {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #000;
+}
+
+.now-playing-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 2px;
+}
+
+.now-playing-btn,
+.now-playing-back {
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.now-playing-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.now-playing-back {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 8px;
+  text-align: left;
+}
+
+.now-playing-name,
+.now-playing-chat {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.now-playing-name {
+  color: var(--fg-0);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.now-playing-chat {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.now-playing-btn:hover,
+.now-playing-back:hover {
+  background: color-mix(in srgb, var(--fg-0) 7%, transparent);
+}
+
+.now-playing-btn:focus-visible,
+.now-playing-back:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* A phone: the top bar and a taller action bar, no usage row. The video is a
+   thumbnail at the start of the row, so the transcript keeps its room. */
+@media (max-width: 860px) {
+  .now-playing {
+    --np-top: 101px;
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .now-playing-stage {
+    flex: 0 0 auto;
+    width: 96px;
+    align-self: stretch;
+  }
+
+  .now-playing-stage video {
+    width: 96px;
+    height: 100%;
+    max-height: none;
+    aspect-ratio: auto;
+  }
+
+  .now-playing-bar {
+    flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .now-playing,
+  .now-playing[data-shown="false"] {
+    transform: none;
+    transition: none;
+  }
+}

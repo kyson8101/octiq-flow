@@ -1079,6 +1079,40 @@ row, title 60 characters, note 120. Icons are a fixed set of 24 names
   plugin's rules file. `codex exec` takes its instructions as an argument
   and Pi has no host rules, so neither is told. A front desk is not told.
 
+### A playing video or recording follows the person to another chat
+
+A reply's player (`ProsePlayer`, `ReviewVideo`) does not own its `<video>`
+or `<audio>`. `lib/nowPlaying` makes it and puts it into the reply's slot
+(`components/MediaSlot`), so it can move: into the one floating host
+(`components/NowPlaying`, mounted once in `App`) when its chat leaves the
+screen, and back into the reply when the chat returns. A move is one
+`appendChild` in one task, which the browser does not pause for, so nothing
+is re-fetched or re-buffered and a picture-in-picture window survives it.
+
+- **What "on screen" means is `App`'s**: `nowPlaying.show` is told the open
+  chat while `chatShown`, and the task chat beside it while `besideShown`,
+  in a layout effect, so the switch and the hand-off are one commit. Only a
+  PLAYING element leaves (or one already in picture-in-picture); a paused
+  one stays in its reply. A player outside a chat (the file dock) never
+  leaves.
+- **At most one element is detached.** Starting any other player, or another
+  one leaving, stops it and lets its file go. Close does the same, and the
+  reply starts again from nothing.
+- **A video asks for the browser's picture-in-picture as it leaves**, while
+  the press that changed chats still counts as the person's; refused or not
+  offered, it is the mini-player (top right, under the bars; 44px targets;
+  no accent). Audio is the mini-player only. The browser's window closed
+  (the video paused) parks the element out of sight for its chat; "back to
+  tab" (still playing) opens its chat.
+- **The position is never lost.** A reply that comes back is drawn at once,
+  near the screen or not (`useHeldMedia`, latched like `useNear`), and takes
+  the same element. Opening a chat draws its rows twice, in either order, so
+  an element whose slot unmounts is kept for that commit and a new slot for
+  the same file takes it back (`orphans`, `settle` on unmount).
+- `scripts/test-media-pip.mjs` drives the real App in Chrome (native
+  picture-in-picture is granted headless) and in Playwright's WebKit (it is
+  refused there, so the mini-player carries every scene).
+
 ### A card that waits on the person arrives folded
 
 Folded, a decision card is the ask, its short facts and the buttons. What is

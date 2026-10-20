@@ -23,6 +23,7 @@ import type { Persona } from "../lib/agentPersona";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
+import { MediaChatContext } from "./MediaSlot";
 import { ReopenedChatContext, ReopenedNote } from "./ReopenedNote";
 import { AnswerBubble, AnsweredInline, AnsweredPlacesContext, AskInline, AskPlacesContext, ChatQuestionsContext, LooseQuestions, type AskPlaces } from "./InlineQuestions";
 import { askAnswer, isAskTool } from "../lib/askAnswer";
@@ -1928,6 +1929,9 @@ const MessageListBody = function MessageList({
       {/* Which chat this transcript is: a reopened task's line offers its
           Stop only in the chat that coordinates its run. */}
       <ReopenedChatContext.Provider value={conversationId ? `chat:${conversationId}` : null}>
+      {/* And whose players these are: one that is playing goes with the
+          person when this chat leaves the screen (lib/nowPlaying). */}
+      <MediaChatContext.Provider value={conversationId ?? null}>
       <AskPlacesContext.Provider value={places}>
       <AnsweredPlacesContext.Provider value={answered}>
       <div className="msgs-inner" ref={innerRef}>
@@ -1988,6 +1992,7 @@ const MessageListBody = function MessageList({
       </div>
       </AnsweredPlacesContext.Provider>
       </AskPlacesContext.Provider>
+      </MediaChatContext.Provider>
       </ReopenedChatContext.Provider>
       </LiveArrivals.Provider>
       {/* Outside `.msgs-inner` and after it: it takes no height and must not
