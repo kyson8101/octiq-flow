@@ -1075,7 +1075,7 @@ export function Composer({
           return (
             <>
               {face === "avatar" && identity
-                ? <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={18} removed={identity.removed} className="composer-hint-avatar" />
+                ? <AgentAvatar island name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={18} removed={identity.removed} className="composer-hint-avatar" />
                 : face === "mascot" ? <Mascot robot={choice.composerStyle} mood="idle" /> : null}
               {text}
             </>
@@ -1706,7 +1706,7 @@ export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initia
   ].filter(Boolean).join("\n");
   return (
     <div className="composer-identity" title={open ? undefined : tip} data-removed={identity.removed || undefined} data-chat={chat || undefined}>
-      <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={22} removed={identity.removed} decorative />
+      <AgentAvatar island name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={22} removed={identity.removed} decorative />
       {/* What a confirmed route's name lands on (`identityTravel`): it stays
           the name alone, and it is the last thing here to be cut short. */}
       <span className="composer-identity-name">{identity.name}</span>
@@ -2705,7 +2705,7 @@ function Working({
     <>
       {/* A turn switches the same companion from dancing to thinking or typing. */}
       {persona
-        ? <AgentAvatar name={persona.name} label={asksPerson(waiting) ? `${persona.name} is waiting for you` : waiting ? persona.name : `${persona.name} is working`} avatar={persona.avatar} id={persona.id ?? persona.name} size={18}
+        ? <AgentAvatar island name={persona.name} label={asksPerson(waiting) ? `${persona.name} is waiting for you` : waiting ? persona.name : `${persona.name} is working`} avatar={persona.avatar} id={persona.id ?? persona.name} size={18}
             className={`composer-hint-avatar${waiting ? "" : " is-working"}`} />
         : <Mascot robot={robot} alert={background} mood={waiting ? "still" : thinking ? "think" : "work"} />}
       {since !== undefined && (

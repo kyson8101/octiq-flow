@@ -406,3 +406,19 @@ public grant gets a new public plot and preserves every existing office and
 present. The host verifies lead identity; a background maker cannot propose,
 register agents or ask for extra permissions. Existing live chats learn the new
 MCP tool on their next launch.
+
+### Island portraits in chat
+
+Registered agents use their island robot as the avatar in conversation headers,
+replies, the composer, task chats and the chat list. The portrait renders the same
+rig, look and equipped accessory assets as the island, including hats, scarves,
+backpacks and hand props. An island or roster change refreshes the snapshot;
+accessory revisions invalidate the cache even when the worn asset id stays the
+same. All displayed avatars share one renderer and one read of the island and
+roster per refresh, without a continuous animation loop. The renderer and images
+are released when the final chat avatar unmounts.
+
+The avatar editor continues to show the uploaded picture or generated candidate.
+The original picture or initials remain the fallback while the island is loading,
+when WebGL is unavailable, or for an agent absent from the current roster. No
+avatar image is uploaded or written to the profile by this feature.
