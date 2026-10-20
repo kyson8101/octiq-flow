@@ -3512,11 +3512,14 @@ mod tests {
         };
 
         // The capability is the caller: none, or another chat's, keeps nothing.
+        // Sent with no body: the host answers 401 before it reads one, and
+        // Windows aborts a connection closed with bytes unread (10053), so
+        // the client could not read the answer.
         let (status, _) = post_media(
             &base,
             "",
             &query(&key, "a.png", png.len(), false),
-            png.clone(),
+            Vec::new(),
         )
         .await;
         assert_eq!(status, 401);
@@ -3524,7 +3527,7 @@ mod tests {
             &base,
             &other_cap,
             &query(&key, "a.png", png.len(), false),
-            png.clone(),
+            Vec::new(),
         )
         .await;
         assert_eq!(status, 401, "another chat's capability");

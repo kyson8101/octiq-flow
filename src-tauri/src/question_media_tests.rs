@@ -468,6 +468,63 @@ impl World {
     }
 }
 
+/// Review of 0b767b3: with `<chats>/question-media` a link, purging a chat
+/// removed `<where it led>/<chat id>`, outside the profile. A link anywhere
+/// from `chats` down keeps everything, there and here.
+#[cfg(unix)]
+#[test]
+fn purging_never_follows_a_folder_above_the_chats_that_is_a_link() {
+    for linked in ["chats", "chats/question-media"] {
+        let _world = World::new();
+        let chat = Chat::new();
+        let kept = chat.upload("a.png", &png(), Purpose::Question).unwrap();
+        let profile = crate::profile::profile_dir();
+        let elsewhere = crate::test_dir::TestDir::new("media-redirected");
+        let moved = elsewhere.join("moved");
+        std::fs::rename(profile.join(linked), &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, profile.join(linked)).unwrap();
+        let outside = everything_in(&elsewhere);
+        assert!(
+            outside.iter().any(|(path, _)| path.ends_with(".png")),
+            "{linked}: the snapshot is out there now"
+        );
+
+        forget(&chat.id);
+        assert_eq!(
+            everything_in(&elsewhere),
+            outside,
+            "{linked}: nothing removed"
+        );
+        assert!(
+            chat.folder()
+                .join(PathBuf::from(&kept.path).file_name().unwrap())
+                .is_file(),
+            "{linked}"
+        );
+        // Upload and resolve refuse the same ancestry.
+        assert_eq!(
+            chat.upload("b.png", &png(), Purpose::Question).unwrap_err(),
+            "The question media folder must not be a link.",
+            "{linked}"
+        );
+        let mut questions = vec![asking(vec![named(&kept.id, "a.png", None)], vec![])];
+        assert_eq!(
+            resolve(&chat.key, &mut questions).unwrap_err(),
+            "The question media folder must not be a link.",
+            "{linked}"
+        );
+
+        // Put back, the same purge removes the chat's folder.
+        std::fs::remove_file(profile.join(linked)).unwrap();
+        std::fs::rename(&moved, profile.join(linked)).unwrap();
+        forget(&chat.id);
+        assert!(
+            std::fs::symlink_metadata(chat.folder()).is_err(),
+            "{linked}"
+        );
+    }
+}
+
 #[test]
 fn a_profile_folder_that_is_gone_or_replaced_gets_no_snapshot_and_shows_none() {
     for how in ["moved", "replaced", "unplugged"] {

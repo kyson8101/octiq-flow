@@ -747,16 +747,53 @@ pub fn forget(chat_id: &str) {
     let Ok(dir) = folder_in(&profile, &format!("chat:{chat_id}")) else {
         return;
     };
+    match ancestry_is_real(&profile, &dir) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(why) => {
+            eprintln!(
+                "[question-media] kept {} for chat {chat_id}: {why}",
+                dir.display()
+            );
+            return;
+        }
+    }
     // The folder itself, never what a link in its place leads to.
     match std::fs::symlink_metadata(&dir) {
         Ok(meta) if meta.is_dir() => {
             let _ = std::fs::remove_dir_all(&dir);
         }
+        // A link or a junction: the link goes, never what it leads to.
         Ok(_) => {
-            let _ = std::fs::remove_file(&dir);
+            let _ = std::fs::remove_file(&dir).or_else(|_| std::fs::remove_dir(&dir));
         }
         Err(_) => {}
     }
+}
+
+/// Every folder from the profile's `chats` down to the chat's own parent is
+/// a folder in the profile, not a link or a junction to somewhere else.
+/// `false` when a part is not there: nothing to remove.
+fn ancestry_is_real(profile: &Path, dir: &Path) -> Result<bool, String> {
+    let parent = dir.parent().ok_or("no parent folder")?;
+    let below = parent.strip_prefix(profile).map_err(|e| e.to_string())?;
+    let mut at = profile.to_path_buf();
+    for part in below.components() {
+        at.push(part);
+        let meta = match std::fs::symlink_metadata(&at) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(format!("{}: {e}", at.display())),
+        };
+        // `is_symlink` is true of a Windows junction too.
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(format!(
+                "{} is not a folder of the profile's own (a link, a junction or a file), so nothing under it was removed",
+                at.display()
+            ));
+        }
+    }
+    not_redirected(profile, parent).map(|()| true)
 }
 
 #[cfg(test)]
