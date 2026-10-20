@@ -38,6 +38,7 @@ mod git_ops;
 mod git_watch;
 mod handover;
 mod image_preview;
+mod island;
 mod job_progress;
 mod job_spool;
 pub mod job_wrapper;

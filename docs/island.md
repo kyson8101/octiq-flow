@@ -98,9 +98,10 @@ coordinates are from its anchor.
 
 The person must always be able to watch inside. A building is refused when:
 
-1. a part whose top is above **1.2 m** is more than **0.5 m** thick both
-   ways (along x AND along z). Walls, posts and door frames are thin one
-   way; a slab, a solid block or a sloped roof is not.
+1. a part whose top is above **1.2 m** is more than **0.5 m** thick seen
+   from above, at its narrowest once turned. Walls, posts and door frames
+   are thin one way, at any angle (a round house's slanted panels too); a
+   slab, a solid block or a sloped roof is not.
 2. the parts that sit wholly above **1.5 m** (beams, lintels, signs, lamps)
    cover more than **15 %** of the building's own floor (the x·z area of its
    bounding box), adding up each part's box.
@@ -235,9 +236,10 @@ when every home is full is a new home made, on the lowest free cell from
 ring 2 (ring 1 only when rings 2 and 3 are full). The playground's cell is
 never free. An agent's plot stays its own while it lives on the island; a
 registered agent that is removed keeps it, and the page draws no robot on
-it. A 波特 that leaves moves out of its home; the last one out frees it. `radius` (the land) is `7·√3·K + 13`, `K` the outermost ring in
-use, and never under 30. The page draws every cell of every ring up to `K`,
-the empty ones as bare tiles.
+it. A 波特 that leaves moves out of its home; the last one out frees it.
+`radius` (the land) is `7·√3·K + 13`, `K` the outermost ring in use, and
+never under 30. The page draws every cell of every ring up to `K`, the
+empty ones as bare tiles.
 
 **Starter assets.** A plot is not handed over empty. A new agent's plot gets
 a roofless *Workshop* (5 × 4 m, walls 1.8 m, a 1.2 m doorway in the front
@@ -294,8 +296,8 @@ Every 波特 also wears a backpack it designed itself (an accessory in its
 | `island_get` | The island. The first call makes it: a seed, six bots, plots for every registered agent and the bots, starter assets, and two wishes. Every call claims plots for registered agents that have none. Answers `{ island }` with `brief` on each open wish. |
 | `island_wish_dismiss { id }` | Closes an open wish. |
 | `island_wish_roll` | One wish now, from a resident without one; refused when everyone has one open or 12 are open. |
-| `island_bot_invite` | A new bot arrives (at most 16). |
-| `island_bot_farewell { id }` | A bot leaves: its plot, its placements and its open wish go; its assets go when nothing else wears or places them. |
+| `island_bot_invite` | A new 波特 arrives (at most 16) and moves into a home; says `what: "home"` with the plot. |
+| `island_bot_farewell { id }` | A 波特 leaves: out of its home (the last one out frees the plot), with its open wish; what it made goes when nothing else wears or places it. Says `what: "home"`. |
 | `island_settings_set { wishPace }` | `often`, `sometimes`, `rarely`, `never`. |
 
 Each change saves first, then says `island-changed { rev, what, id? }` on
@@ -324,9 +326,16 @@ which the socket refuses (`CHAT_ONLY_COMMANDS`). Actions:
   names a registered agent; any other chat builds as `{ name: "Chat",
   chatKey }`.
 - An asset is rebuilt only by its maker (the same agent, else the same
-  chat). A present is given only from an asset the same maker made.
+  chat), keeping its kind and slot and still fitting wherever it is placed.
+  An agent may rebuild an island starter on its own plot, which then becomes
+  its own. What a 波特 made (its house, bed, touch, backpack) is the 波特's:
+  nobody rebuilds, gives or places it. A present is given only from an asset
+  the same maker made.
 - `place` uses the caller's own plot and its own assets, or the island's
-  starter assets already on that plot.
+  starter assets already on that plot; with no `x`, `z` the island finds
+  room.
+- `style` may wear only accessories the agent made, was given or already
+  wears.
 
 The MCP tools are `island_look`, `island_build`, `island_grant`,
 `island_style` and `island_place` (`scripts/mcp/octiq-ask.cjs`), offered to

@@ -560,6 +560,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/feedback", post(feedback_handler))
         .route("/hook/agents", post(agents_handler))
         .route("/hook/vault", post(vault_handler))
+        .route("/hook/island", post(island_handler))
         .route("/hook/handover", post(handover_handler))
         .route("/hook/route", post(route_handler))
         .route("/hook/handover/ask", post(handover_ask_handler))
@@ -2002,6 +2003,57 @@ async fn feedback_handler(
     }
 }
 
+/// An agent at the island (`island.rs`): it looks, builds assets, gives a
+/// wish its present, and as a registered agent in its own chat styles its
+/// robot and arranges its plot. Who is building is the chat its capability
+/// proves; the command names the registered agent from that chat's own
+/// record.
+async fn island_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<TaskHook>,
+) -> Response {
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: None,
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim)
+        .and_then(|caller| not_front_desk(&ctx, caller))
+    {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    if let Some(refused) = island_seat_refusal(&request.action, &caller) {
+        return hook_failed(StatusCode::BAD_REQUEST, refused);
+    }
+    match run_hook_command(
+        &ctx,
+        "island_agent".into(),
+        json!({
+            "chatKey": caller.chat_key, "sessionKey": caller.session_key,
+            "action": request.action, "args": request.args,
+        }),
+    )
+    .await
+    {
+        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
+    }
+}
+
+/// What is built on the island is made as the chat's registered agent, or
+/// the chat. A room seat's capability proves the chat, not that identity, so
+/// everything but a look is refused it before its arguments are read.
+fn island_seat_refusal(action: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
+    (action != "look" && caller.session_key != caller.chat_key).then(|| {
+        crate::outcome::Refusal::new(
+            crate::outcome::ReasonClass::ScopeRefused,
+            "Only the chat's own agent can build on the island. An additional agent in a room is one voice in the chat, not its registered agent.",
+        )
+    })
+}
+
 /// An agent reading the person's registered agents, or proposing to add or
 /// change one (`team_tools`). A change is put to the person on the permission
 /// card in the chat its capability proves, and saved only on their Allow; the
@@ -2531,6 +2583,10 @@ const CHAT_ONLY_COMMANDS: &[&str] = &[
     // agent's capability, on /hook/plan, says so. The person reads the plan
     // and starts it; they change it by saying so in the chat.
     "chat_plan_update",
+    // Builds on the island as the chat's registered agent, or the chat: who
+    // made an asset, who granted a wish. Only the chat's capability, on
+    // /hook/island, says which.
+    "island_agent",
 ];
 
 /// Why the person's socket will not run `cmd`, if it will not.
@@ -3308,6 +3364,10 @@ mod tests {
                 ),
                 (
                     "agents",
+                    json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
+                ),
+                (
+                    "island",
                     json!({ "chatKey": chat, "action": "not-an-action", "args": {} }),
                 ),
                 (
@@ -4720,6 +4780,11 @@ mod tests {
                 "agents",
                 json!({ "chatKey": "chat:desk", "action": "register", "args": {} }),
             ),
+            // Not even a look at the island.
+            (
+                "island",
+                json!({ "chatKey": "chat:desk", "action": "look", "args": {} }),
+            ),
             (
                 "access",
                 json!({ "chatKey": "chat:desk", "action": "request", "args": {
@@ -5642,6 +5707,7 @@ mod tests {
             "orchestration_gate_resolve_in_chat",
             "orchestration_task_reopen_in_chat",
             "memory_vault_agent",
+            "island_agent",
         ] {
             assert!(socket_refusal(command).is_some(), "{command}");
         }
@@ -5656,8 +5722,243 @@ mod tests {
             "orchestration_worker_start",
             "orchestration_gate_resolve",
             "orchestration_task_reopen",
+            "island_get",
+            "island_wish_dismiss",
         ] {
             assert!(socket_refusal(command).is_none(), "{command}");
+        }
+    }
+
+    /// The island's door (`/hook/island`, docs/island.md): who builds is the
+    /// chat its capability proves, as its registered agent or else as the
+    /// chat. A room seat and a worker may only look; a front desk not even
+    /// that (`a_front_desk_chat_may_only_route_and_only_a_front_desk_may`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_island_door_builds_as_the_chat_and_lets_seats_and_workers_only_look() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let mut chats = crate::agent_chat::ChatManager::default();
+        chats.orchestrations = store.clone();
+        let chats = Arc::new(chats);
+        let wiring = crate::handover::Wiring::scratch();
+        let team = wiring.team.clone();
+        let island = crate::test_dir::TestDir::new("island-hook");
+        let island_file = island.join("island.json");
+        let _island = crate::island::use_test_path(island_file.clone());
+        let nova = crate::team::save(
+            &team,
+            crate::team::TeamDraft {
+                id: None,
+                name: "Nova".into(),
+                role: "Builds.".into(),
+                agent: crate::agent_chat::ChatAgent::Claude,
+                model: "opus".into(),
+                effort: None,
+                access: None,
+                project_id: None,
+                reports_to: None,
+                avatar: None,
+                team_id: None,
+                persistent_prompt: None,
+            },
+        )
+        .unwrap();
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let lead_key = format!("chat:island-lead-{tag}");
+        let plain_key = format!("chat:island-plain-{tag}");
+        let worker_key = format!("chat:orch-island-{tag}");
+        let seat_key = format!("{lead_key}#2");
+        crate::team::record_lead(&team, &lead_key, &nova, "project", false).unwrap();
+        // Building is for a chat the person can open.
+        for key in [&lead_key, &plain_key] {
+            crate::chat_index::upsert(
+                serde_json::from_value(json!({
+                    "id": key.strip_prefix("chat:").unwrap(), "projectId": "project",
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let cfg = WebConfig {
+            token: "hook-token".into(),
+            ..WebConfig::default()
+        };
+        let (_ctx, base) = test_server_handing_over(cfg, chats.clone(), store, wiring).await;
+        let lead = chats.test_launch(&lead_key);
+        let plain = chats.test_launch(&plain_key);
+        let worker = chats.test_launch(&worker_key);
+        let seat = chats.test_launch_in(&seat_key, &lead_key);
+        let call = |chat: &str, session: Option<&str>, action: &str, args: Value| {
+            let mut body = json!({ "chatKey": chat, "action": action, "args": args });
+            if let Some(session) = session {
+                body["sessionKey"] = json!(session);
+            }
+            body
+        };
+        let island = |base: String, cap: String, body: Value| async move {
+            post_hook(&base, "island", None, Some(&cap), body).await
+        };
+        let scarf = json!({ "name": "Scarf", "kind": "accessory", "slot": "neck", "parts": [
+            { "shape": "round", "size": [0.7, 0.12, 0.5], "at": [0, 0, 0], "color": "#E9C46A" },
+        ] });
+        let stool = json!({ "name": "Stool", "kind": "furniture", "parts": [
+            { "shape": "cylinder", "size": [0.4, 0.35, 0.4], "at": [0, 0.175, 0], "color": "#c8956b" },
+        ] });
+
+        // The first call makes the island; a plain chat looks, and builds as
+        // "Chat", and has no robot of its own to style.
+        let (status, answer) = island(
+            base.clone(),
+            plain.clone(),
+            call(&plain_key, None, "look", json!({})),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert!(answer["result"]["guide"]
+            .as_str()
+            .unwrap()
+            .contains("Buildings have no roof"));
+        let (status, answer) = island(
+            base.clone(),
+            plain.clone(),
+            call(&plain_key, None, "build", scarf.clone()),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        let theirs = answer["result"]["assetId"].as_str().unwrap().to_string();
+        let (status, answer) = island(
+            base.clone(),
+            plain.clone(),
+            call(&plain_key, None, "style", json!({ "eyes": "star" })),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(answer["outcome"]["reasonClass"], "scope-refused");
+        assert!(answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("no registered agent"));
+
+        // A registered agent builds as itself, wears what it made, and
+        // places on its own plot; it may not wear what another chat made.
+        let (status, answer) = island(
+            base.clone(),
+            lead.clone(),
+            call(&lead_key, None, "build", scarf.clone()),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        let mine = answer["result"]["assetId"].as_str().unwrap().to_string();
+        let (status, answer) = island(
+            base.clone(),
+            lead.clone(),
+            call(
+                &lead_key,
+                None,
+                "style",
+                json!({ "frame": "slim", "worn": { "neck": mine } }),
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["result"]["look"]["frame"], "slim");
+        let (_, answer) = island(
+            base.clone(),
+            lead.clone(),
+            call(&lead_key, None, "build", stool),
+        )
+        .await;
+        let stool = answer["result"]["assetId"].as_str().unwrap().to_string();
+        let (status, answer) = island(
+            base.clone(),
+            lead.clone(),
+            call(
+                &lead_key,
+                None,
+                "place",
+                json!({ "assetId": stool, "x": 2, "z": 3 }),
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert!(answer["result"]["placementId"].is_string());
+        let (status, answer) = island(
+            base.clone(),
+            lead.clone(),
+            call(
+                &lead_key,
+                None,
+                "style",
+                json!({ "worn": { "neck": theirs } }),
+            ),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("not yours to wear"));
+        let saved: Value = serde_json::from_slice(&std::fs::read(&island_file).unwrap()).unwrap();
+        let by = |id: &str| {
+            saved["assets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == id)
+                .unwrap()["by"]
+                .clone()
+        };
+        assert_eq!(by(&theirs), json!({ "name": "Chat", "chatKey": plain_key }));
+        assert_eq!(by(&mine), json!({ "name": "Nova", "agentId": nova.id }));
+
+        // A room seat in the lead's chat may look, and nothing else: it is
+        // refused before its arguments are read.
+        let (status, answer) = island(
+            base.clone(),
+            seat.clone(),
+            call(
+                &lead_key,
+                Some(&seat_key),
+                "build",
+                json!({ "nonsense": true }),
+            ),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(answer["outcome"]["reasonClass"], "scope-refused");
+        assert_eq!(
+            answer["error"],
+            "Only the chat's own agent can build on the island. An additional agent in a room is one voice in the chat, not its registered agent."
+        );
+        let (status, answer) = island(
+            base.clone(),
+            seat.clone(),
+            call(&lead_key, Some(&seat_key), "look", json!({})),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+
+        // A worker looks, and builds nothing, settled or not.
+        let (status, answer) = island(
+            base.clone(),
+            worker.clone(),
+            call(&worker_key, None, "look", json!({})),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        let (status, answer) = island(
+            base.clone(),
+            worker.clone(),
+            call(&worker_key, None, "build", scarf),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(answer["outcome"]["reasonClass"], "scope-refused");
+        assert!(answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("worker can look at the island but not build on it"));
+        for key in [&lead_key, &plain_key, &worker_key, &seat_key] {
+            chats.test_end(key);
         }
     }
 

@@ -111,6 +111,10 @@ impl Services {
         // profile folder is back (`settle_owed`).
         #[cfg(not(test))]
         start_owed_saves(services.clone());
+        // The island's slow clock: residents make wishes once the person has
+        // opened the island (`island::start_wishes`).
+        #[cfg(not(test))]
+        crate::island::start_wishes();
         services
     }
 }
@@ -177,6 +181,53 @@ fn refresh_lead_turn(svc: &Services, key: &str, text: String) -> Result<String, 
         .map(|project| (project.id, project.name))
         .collect::<Vec<_>>();
     crate::team::refresh_turn_brief(&crate::team::default_path(), key, text, &projects)
+}
+
+/// The roster the island gives plots to and names its wishers from, or
+/// `None` when it cannot be read: not an empty roster, so nobody is given a
+/// plot or loses one on it, and the island still answers.
+fn island_roster(svc: &Services) -> Option<Vec<crate::team::TeamAgent>> {
+    crate::team::list(&svc.handovers.team, None, true).ok()
+}
+
+/// `island_agent`: an agent at the island's door (`island::agent_call`).
+/// Which registered agent is building is the chat's own record
+/// (`team::lead_for_chat`); a worker and a room seat may only look; a
+/// front desk may not even do that.
+fn island_agent(svc: &Services, args: &Value) -> Result<Value, String> {
+    let team = &svc.handovers.team;
+    let chat_key: String = arg(args, "chatKey")?;
+    if crate::team::is_front_desk_chat(team, &chat_key) {
+        return Err(crate::outcome::refuse(
+            crate::outcome::ReasonClass::ScopeRefused,
+            "This is a front-desk chat: it only routes the person, and the island's tools are refused.",
+        ));
+    }
+    let session_key = arg::<Option<String>>(args, "sessionKey")?.filter(|key| !key.is_empty());
+    let action: String = arg(args, "action")?;
+    let roster = crate::team::list(team, None, true)?;
+    let agent = crate::team::lead_for_chat(team, &chat_key)?
+        .and_then(|record| roster.iter().find(|agent| agent.id == record.lead_id))
+        .map(|agent| (agent.id.clone(), agent.name.clone()));
+    let caller = crate::island::Caller {
+        worker: svc.orchestrations.is_worker_chat(&chat_key)?,
+        seat: session_key.is_some_and(|key| key != chat_key),
+        chat_key: chat_key.clone(),
+        agent,
+    };
+    let chat_id = chat_key
+        .strip_prefix("chat:")
+        .unwrap_or(&chat_key)
+        .to_owned();
+    crate::island::agent_call(
+        &crate::island::default_path(),
+        &roster,
+        &caller,
+        &action,
+        arg(args, "args")?,
+        crate::island::now_ms(),
+        &|| crate::chat_index::listed(&chat_id),
+    )
 }
 
 /// Who calls a peer tool, when it is not a worker: the registered lead whose
@@ -900,6 +951,46 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             }
             result
         }
+        // ---- the island (`island.rs`, docs/island.md) -----------------------
+        // The page's own commands. Each answers `{ island }`, with the id of
+        // what it made or changed where there is one.
+        "island_get" => crate::island::get(
+            &crate::island::default_path(),
+            island_roster(svc).as_deref(),
+            crate::island::now_ms(),
+        ),
+        "island_wish_dismiss" => crate::island::dismiss_wish(
+            &crate::island::default_path(),
+            island_roster(svc).as_deref(),
+            &arg::<String>(&args, "id")?,
+            crate::island::now_ms(),
+        ),
+        "island_wish_roll" => crate::island::roll_wish(
+            &crate::island::default_path(),
+            island_roster(svc).as_deref(),
+            crate::island::now_ms(),
+        ),
+        "island_bot_invite" => crate::island::invite_bot(
+            &crate::island::default_path(),
+            island_roster(svc).as_deref(),
+            crate::island::now_ms(),
+        ),
+        "island_bot_farewell" => crate::island::farewell_bot(
+            &crate::island::default_path(),
+            island_roster(svc).as_deref(),
+            &arg::<String>(&args, "id")?,
+            crate::island::now_ms(),
+        ),
+        "island_settings_set" => crate::island::set_settings(
+            &crate::island::default_path(),
+            island_roster(svc).as_deref(),
+            &arg::<String>(&args, "wishPace")?,
+            crate::island::now_ms(),
+        ),
+        // An agent at the island's door, from /hook/island only
+        // (`CHAT_ONLY_COMMANDS`): who is calling is the chat its capability
+        // proves, never the arguments.
+        "island_agent" => island_agent(svc, &args),
         "list_workspaces" => to_value(crate::workspaces::list_workspaces_impl(&svc.workspaces)),
         "add_workspace" => to_value(crate::workspaces::add_workspace_impl(
             &svc.workspaces,

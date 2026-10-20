@@ -198,9 +198,9 @@ export class IslandView {
     this.controls.zoomSpeed = 0.8;
     this.controls.rotateSpeed = 0.6;
     this.controls.addEventListener("start", () => { this.flight = null; });
-    // Close enough to the plaza and the agents' ring that a robot reads as
-    // one; scrolling out shows the whole island.
-    this.camera.position.set(17, 22, 24);
+    // The plaza, the agents' ring and the 波特's homes on the next one, all
+    // in view; scrolling in finds a robot, scrolling out the whole island.
+    this.camera.position.set(22, 31, 33);
     this.controls.target.set(0, 0, 0);
 
     this.nav = new NavGrid(40);
@@ -374,6 +374,8 @@ export class IslandView {
         if (before.has(resident.key) || resident.owner.kind !== "bot") continue;
         this.sim.landAt(resident.key, scenery.dock, now);
       }
+    } else {
+      this.frameEveryone(island.plots);
     }
     this.firstLoad = false;
 
@@ -477,6 +479,24 @@ export class IslandView {
     }
     const robot = this.sim.robots.get(key);
     if (robot && fly) this.flyTo(new Vector3(robot.x, 0.6, robot.z), 13);
+  }
+
+  /** The first view of an island: everyone's plot and the plaza in the
+   *  frame, seen from the usual corner. Only before the person has moved the
+   *  camera, which is the first time the island is drawn. */
+  private frameEveryone(plots: readonly Plot[]) {
+    const points = [{ x: 0, z: 0 }, ...plots.map((plot) => ({ x: plot.x, z: plot.z }))];
+    const center = {
+      x: points.reduce((sum, p) => sum + p.x, 0) / points.length,
+      z: points.reduce((sum, p) => sum + p.z, 0) / points.length,
+    };
+    // As far out as the furthest plot's far edge, plus a little.
+    const reach = Math.max(14, ...points.map((p) => Math.hypot(p.x - center.x, p.z - center.z) + 7));
+    const distance = Math.min(this.controls.maxDistance, reach * 1.85);
+    const offset = new Vector3(22, 31, 33).setLength(distance);
+    this.controls.target.set(center.x, 0, center.z);
+    this.camera.position.copy(this.controls.target).add(offset);
+    this.controls.update();
   }
 
   /** Back to the whole island. */

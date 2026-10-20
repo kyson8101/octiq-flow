@@ -2466,6 +2466,91 @@ const FEEDBACK_TOOLS = [
   }, ["id", "status"]),
 ];
 
+// The island (docs/island.md): robots make wishes, and an agent builds the
+// present from simple shapes and gives it. island_look carries the whole
+// building guide, so an agent pays for it only when it builds; the other
+// descriptions stay short. Who builds is the chat, never an argument: the
+// host checks every asset (the roofless rule above all) and refuses a
+// worker or a room seat anything but a look.
+const ISLAND_VEC3 = (description) => ({ type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description });
+const ISLAND_COLOR = { type: "string", pattern: "^#[0-9a-fA-F]{6}$" };
+const ISLAND_SLOTS = ["head", "face", "neck", "back", "hand"];
+const ISLAND_PART = {
+  type: "object",
+  properties: {
+    shape: { type: "string", enum: ["box", "round", "cylinder", "cone", "sphere", "torus", "wedge"] },
+    size: ISLAND_VEC3("[x, y, z] in metres, each at least 0.02."),
+    at: ISLAND_VEC3("[x, y, z]: the centre of the part's box."),
+    turn: ISLAND_VEC3("[x, y, z] degrees about the part's centre, applied x, then y, then z."),
+    color: ISLAND_COLOR,
+    finish: { type: "string", enum: ["matte", "soft", "shiny", "metal", "glass", "glow"] },
+  },
+  required: ["shape", "size", "at", "color"],
+  additionalProperties: false,
+};
+const ISLAND_LOOK_FIELDS = {
+  frame: { type: "string", enum: ["round", "boxy", "slim", "stout"] },
+  shell: ISLAND_COLOR,
+  trim: ISLAND_COLOR,
+  glow: ISLAND_COLOR,
+  eyes: { type: "string", enum: ["pill", "round", "happy", "sleepy", "star", "heart", "visor", "chevron"] },
+  antenna: { type: "string", enum: ["ball", "halo", "crown", "star", "leaf", "moon", "twin", "sun", "spark", "bar", "sprout", "none"] },
+};
+const ISLAND_NUMBER = (description) => ({ type: "number", description });
+function islandTool(name, description, properties, required = [], readOnly = false) {
+  return {
+    name: `island_${name}`, description,
+    inputSchema: { type: "object", properties, required, additionalProperties: false },
+    annotations: { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: readOnly, openWorldHint: false },
+  };
+}
+const ISLAND_TOOLS = [
+  islandTool("look", "Read the island before you build: returns the full building guide (units, robot sizes, shapes, kind limits, the roofless rule, hexagonal plots, 波特 homes, an example) and, with wishId, that wish and its robot (look, plot, what stands there), plus your own robot, plot and assets, the open wishes and who lives there. Call it first, once per build.", {
+    wishId: { type: "string", description: "The wish you are granting, from its brief." },
+  }, [], true),
+  islandTool("build", "Build an island asset from simple shapes, as the guide from island_look describes; the host checks every rule and refuses a building with a roof. Pass assetId to rebuild an asset you made. Returns the asset's assetId, for island_grant or island_place.", {
+    assetId: { type: "string", description: "An asset you made, to rebuild in place. Omit to make a new one." },
+    name: { type: "string", minLength: 1, maxLength: 60 },
+    kind: { type: "string", enum: ["accessory", "furniture", "decor", "building"] },
+    slot: { type: "string", enum: ISLAND_SLOTS, description: "Accessories only, and required for them." },
+    use: { type: "string", enum: ["seat", "desk", "bed", "none"], description: "Furniture and decor only." },
+    spot: {
+      type: "object",
+      properties: { at: ISLAND_VEC3("Where a robot sits (its hips) or stands (its feet), in the asset's coordinates."), face: { type: "number", description: "Degrees; 0 faces +z, 90 faces +x." } },
+      required: ["at"],
+      additionalProperties: false,
+      description: "With a use: where the robot is when it uses it.",
+    },
+    parts: { type: "array", minItems: 1, maxItems: 200, items: ISLAND_PART },
+  }, ["name", "kind", "parts"]),
+  islandTool("grant", "Give an open wish its present: the assetId of an asset you built of the wished kind (and slot), or a look for a look wish. An accessory is worn, furniture and decor are placed where there is room or at x, z (plot coordinates), and a building replaces the robot's house.", {
+    wishId: { type: "string" },
+    assetId: { type: "string", description: "The present: an asset you built." },
+    look: { type: "object", properties: ISLAND_LOOK_FIELDS, additionalProperties: false, description: "For a look wish only: the new frame, colours, eyes or antenna." },
+    x: ISLAND_NUMBER("Plot x for furniture, decor or a building; give z too, or neither."),
+    z: ISLAND_NUMBER("Plot z (+z faces the plaza)."),
+    turn: ISLAND_NUMBER("Degrees about y."),
+  }, ["wishId"]),
+  islandTool("style", "Change your own robot's look (a registered agent's own chat only): frame, colours, eyes, antenna, and per slot the assetId of an accessory to wear, one you made or were given (null takes it off). Fields you leave out stay as they are.", {
+    ...ISLAND_LOOK_FIELDS,
+    worn: {
+      type: "object",
+      properties: Object.fromEntries(ISLAND_SLOTS.map((slot) => [slot, { type: ["string", "null"] }])),
+      additionalProperties: false,
+      description: "Per slot, an accessory's assetId; null takes it off.",
+    },
+  }),
+  islandTool("place", "Arrange your own plot (a registered agent's own chat only): place an asset you made, or a starter already on your plot, at x, z on your hexagonal tile (+z faces the plaza), y 0 to 1.2, turn in degrees; leave x and z out and the island finds room. Pass placementId to move one, or placementId with remove: true to take it away.", {
+    assetId: { type: "string" },
+    placementId: { type: "string" },
+    x: ISLAND_NUMBER("Plot x."),
+    z: ISLAND_NUMBER("Plot z."),
+    y: ISLAND_NUMBER("0 to 1.2, to stand on a table."),
+    turn: ISLAND_NUMBER("Degrees about y."),
+    remove: { type: "boolean" },
+  }),
+];
+
 // The person's registered agents (agents mode). Reading is free; a change is
 // only proposed here. The host checks it against every rule of Settings →
 // Agents, puts it on a one-off permission card in this chat, and saves it only
@@ -2654,6 +2739,7 @@ async function handle(msg) {
               ...(IS_WORKER ? [] : [PLAN_READ, PLAN_UPDATE, HANDOVER, HANDOVER_ASK, HANDOVER_OUTCOME, REQUEST_ACCESS]),
               ...AGENT_TOOLS(IS_WORKER),
               ...FEEDBACK_TOOLS,
+              ...(IS_WORKER ? [] : ISLAND_TOOLS),
               ...vaultTools(IS_WORKER),
               ...ORCHESTRATION_TOOLS,
             ]
@@ -2710,6 +2796,35 @@ async function handle(msg) {
           return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
         } catch (error) {
           return reply(msg.id, { outcome: error?.outcome, isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "The feedback operation failed." }] });
+        }
+      }
+      if (String(msg.params?.name || "").startsWith("island_")) {
+        const tool = ISLAND_TOOLS.find((candidate) => candidate.name === msg.params.name);
+        // Not offered to a worker, which only ever looks; the host refuses
+        // one too.
+        if (!CHAT_KEY || IS_WORKER || !tool) {
+          return reply(msg.id, { isError: true, outcome: hostOutcome(IS_WORKER ? "scope-refused" : "validation"), content: [{ type: "text", text: IS_WORKER
+            ? "An orchestration worker does not build on the island."
+            : "This island tool requires an OctiqFlow chat and a supported action." }] });
+        }
+        try {
+          const supplied = msg.params.arguments || {};
+          // Only documented fields cross the hook: who is building comes
+          // from this process, never from the arguments.
+          let args = Object.fromEntries(Object.keys(tool.inputSchema.properties)
+            .filter((key) => Object.hasOwn(supplied, key)).map((key) => [key, supplied[key]]));
+          const action = msg.params.name.slice("island_".length);
+          // Taking a placement away names it and nothing else.
+          if (action === "place" && args.remove === true) args = { placementId: args.placementId, remove: true };
+          const result = await callHook("island", action, args, 30 * 1000, "island call");
+          if (action === "look" && result && typeof result.guide === "string") {
+            // The guide is prose: it is read as text, not as a JSON string.
+            const { guide, ...rest } = result;
+            return reply(msg.id, { content: [{ type: "text", text: guide }, { type: "text", text: JSON.stringify(rest) }] });
+          }
+          return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
+        } catch (error) {
+          return reply(msg.id, { outcome: error?.outcome, isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "The island call failed." }] });
         }
       }
       if (String(msg.params?.name || "").startsWith("vault_")) {
