@@ -191,6 +191,63 @@ function friends(withPlayground = true) {
 }
 
 describe("playing together", () => {
+  it("answers a wave from the seesaw without waiting for a random play choice", () => {
+    const world = friends();
+    const friend = world.robot("bot:b2");
+    friend.rng = () => 0;
+    expect(world.sim.waitOnSeesaw("bot:b1", world.now())).toBe(true);
+    let answered = false;
+    let together = false;
+    const tilts: number[] = [];
+    world.run(45, 12, () => {
+      if (friend.bubble?.text === "coming!") answered = true;
+      const a = world.robot("bot:b1");
+      if (a.plan.act.kind === "seesaw" && friend.plan.act.kind === "seesaw" && a.perched && friend.perched) {
+        together = true;
+        tilts.push(world.sim.motion.seesaw);
+      }
+    });
+    expect(answered).toBe(true);
+    expect(together).toBe(true);
+    expect(Math.max(...tilts)).toBeGreaterThan(0.15);
+    expect(Math.min(...tilts)).toBeLessThan(-0.15);
+  });
+
+  it("tries another friend after a refusal instead of repeatedly asking the same robot", () => {
+    const world = island([
+      resident("bot:b1", "Pip", "h1"), resident("bot:b2", "Bolt", "h2"), resident("bot:b3", "Olive", "h3"),
+    ], [], true);
+    const no = world.robot("bot:b2");
+    const yes = world.robot("bot:b3");
+    standStill(no, { x: -12, z: 5 });
+    standStill(yes, { x: -12, z: 8 });
+    no.rng = () => 0.999;
+    yes.rng = () => 0;
+    world.robot("bot:b1").rng = () => 0;
+    world.sim.waitOnSeesaw("bot:b1", world.now());
+    let declined = false;
+    let joined = false;
+    world.run(30, 12, () => {
+      if (no.bubble?.text === "maybe later") declined = true;
+      if (yes.plan.act.kind === "seesaw" && yes.perched) joined = true;
+    });
+    expect(declined).toBe(true);
+    expect(joined).toBe(true);
+  });
+
+  it("leaves a working agent and a sleeping 波特 alone when asking for a seesaw partner", () => {
+    const world = island([
+      resident("bot:b1", "Pip", "h1"), resident("agent:a1", "Maya", "h2"), resident("bot:b2", "Bolt", "h3"),
+    ], [], true);
+    world.sim.setModes(modes([["agent:a1", { state: "working" }]]), world.now());
+    const asleep = world.robot("bot:b2");
+    asleep.plan = { label: "Asleep", goal: null, act: { kind: "sleep", seat: null }, since: 0 };
+    world.sim.waitOnSeesaw("bot:b1", world.now());
+    world.run(15, 23.5);
+    expect(world.robot("agent:a1").plan.act.kind).toBe("work");
+    expect(asleep.plan.act.kind).toBe("sleep");
+  });
+
   it("rocks the seesaw only when both ends are taken", () => {
     const world = friends();
     world.sim.invite("bot:b1", "bot:b2", "seesaw", world.now());
@@ -218,6 +275,21 @@ describe("playing together", () => {
       if (robot.pose === "sob") cried = true;
     });
     expect(waved).toBe(true);
+    expect(cried).toBe(true);
+  });
+
+  it("can still be refused by every awake friend and sob when nobody joins", () => {
+    const world = friends();
+    const friend = world.robot("bot:b2");
+    friend.rng = () => 0.999;
+    world.sim.waitOnSeesaw("bot:b1", world.now());
+    let refused = false;
+    let cried = false;
+    world.run(40, 12, () => {
+      if (friend.bubble?.text === "maybe later") refused = true;
+      if (world.robot("bot:b1").pose === "sob") cried = true;
+    });
+    expect(refused).toBe(true);
     expect(cried).toBe(true);
   });
 

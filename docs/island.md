@@ -277,10 +277,18 @@ Every 波特 also wears a backpack it designed itself (an accessory in its
   a scarf, a backpack, something to hold, a seat, a desk, a lamp, a flower
   bed, a telescope, a little roofless building, a fresh coat of paint. One
   colour or material and one reason each.
-- **The brief.** Each open wish carries `brief` in `island_get`: the
-  message the page puts in a new chat's composer when the person presses
-  Grant. It names the wish id, the robot, the wish and the three tools. It is
-  derived, never stored.
+- **The brief.** Each open wish carries `brief` in `island_get`. Grant calls
+  `island_wish_start`: the host immediately starts a dedicated background
+  conversation with this brief, leaving the person on the island. It probes
+  installed providers in registry order, uses the provider's default model,
+  and tries the next provider if launch fails before a turn is handed over.
+  Runtime failures (such as login or quota errors) leave the wish open for
+  Retry. The task runs with Edits access in `<profile dir>/island-workshop`,
+  and uses the normal island tools and chat lifecycle. A stable chat id per
+  wish and a host claim prevent concurrent clicks from launching duplicate
+  turns. `execution` on an open wish reports `building` or `unfinished`,
+  derived from the chat manager and saved chat index; only `island_grant`
+  makes it granted. The brief names the wish, robot and tools, and is derived.
 - **Granting** (`island_grant`): the wish is open; an asset is the wished
   kind (and slot); a `look` wish takes a look. The host gives it over: an
   accessory is worn in its slot, furniture and decor are placed on the
@@ -295,6 +303,7 @@ Every 波特 also wears a backpack it designed itself (an accessory in its
 | --- | --- |
 | `island_get` | The island. The first call makes it: a seed, six bots, plots for every registered agent and the bots, starter assets, and two wishes. Every call claims plots for registered agents that have none. Answers `{ island }` with `brief` on each open wish. |
 | `island_wish_dismiss { id }` | Closes an open wish. |
+| `island_wish_start { id }` | Immediately builds an open wish in the background with an installed provider. Answers `{ chatKey, state: "building", provider? }`; a duplicate click returns the existing running task. |
 | `island_wish_roll` | One wish now, from a resident without one; refused when everyone has one open or 12 are open. |
 | `island_bot_invite` | A new 波特 arrives (at most 16) and moves into a home; says `what: "home"` with the plot. |
 | `island_bot_farewell { id }` | A 波特 leaves: out of its home (the last one out frees the plot), with its open wish; what it made goes when nothing else wears or places it. Says `what: "home"`. |

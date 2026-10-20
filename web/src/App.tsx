@@ -140,7 +140,6 @@ import { importSession, isUnder, replaySession, type HistorySession } from "./li
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { ChatSearchPage } from "./components/ChatSearchPage";
-import type { Wish } from "./lib/island/model";
 // The island draws in 3D: three.js and the island come with the page, the
 // first time it is opened, and with no other page.
 const IslandPage = lazy(() => import("./components/IslandPage"));
@@ -2714,19 +2713,14 @@ export default function App() {
     setFocusBox((n) => n + 1);
   }, []);
 
-  /** The island hands a new chat its first words: the brief for a wish to
-   *  grant, or a nudge for an agent to build for itself. With the agent it is
-   *  about, when that agent is one the person can talk to directly. Nothing
-   *  is sent: the words wait in the box for the person. */
+  /** Ask to build opens a conversation with the selected agent. The words
+   *  wait in the box; granting a wish is handled by the island's backend. */
   const seedNewChat = useCallback((text: string, agentId: string | null) => {
     newChat();
     const agent = agentsMode && agentId ? recipients.find((candidate) => candidate.id === agentId) : undefined;
     if (agent) pickRecipient(agent);
     setSeeded([{ text, attachments: [] }]);
   }, [newChat, agentsMode, recipients, pickRecipient]);
-  const grantWish = useCallback((_wish: Wish, brief: string, agentId: string | null) => {
-    seedNewChat(brief, agentId);
-  }, [seedNewChat]);
 
   /** Carry on a session the AGENT remembers — one from ~/.claude or ~/.codex,
    *  found through the search on the empty-chat page (components/SessionSearch).
@@ -5715,7 +5709,6 @@ export default function App() {
                 }}
                 chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
                 chatExists={(chatKey) => conversations.some((c) => keyFor(c.id) === chatKey)}
-                onGrant={grantWish}
                 onAsk={(agentId, text) => seedNewChat(text, agentId)}
                 onOpenChat={(chatKey) => {
                   openWorkflowChat(chatKey);

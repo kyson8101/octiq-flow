@@ -68,7 +68,7 @@ type Act =
   | { kind: "invite"; game: Game; with: string; answer?: "yes" | "no" }
   | { kind: "sob"; seconds: number; then: "ask" | "leave"; from?: string }
   | { kind: "swing"; swing: number; seconds: number; with?: string }
-  | { kind: "seesaw"; end: 0 | 1; seconds: number; with?: string }
+  | { kind: "seesaw"; end: 0 | 1; seconds: number; with?: string; askAt?: number; asked?: string[] }
   | { kind: "slide"; runs: number; with?: string }
   | { kind: "tag"; game: string }
   | { kind: "work"; seat: Seat | null }
@@ -506,7 +506,13 @@ export class IslandSim {
       robot.y = seat.y;
       robot.heading = seat.face;
     } else if (plan.goal?.face !== undefined) robot.heading = plan.goal.face;
-    if (act.kind === "seesaw") this.seesawSeated[act.end] = true;
+    if (act.kind === "seesaw") {
+      this.seesawSeated[act.end] = true;
+      // The second rider may arrive late in the island's day. Start the
+      // ride before its first act, rather than timing it from zero until
+      // the next playground frame and immediately ending it as overdue.
+      if (this.seesawSeated[0] && this.seesawSeated[1] && this.seesawSince === 0) this.seesawSince = now;
+    }
     if (act.kind === "slide" && !this.slideQueue.includes(robot.key)) this.slideQueue.push(robot.key);
     if (act.kind === "chat" && act.first) robot.bubble = { text: "hi!", tone: "plain", until: now + 1.6 };
   }
@@ -612,9 +618,29 @@ export class IslandSim {
         const other = this.seesawRider[act.end === 0 ? 1 : 0];
         const both = this.seesawSeated[0] && this.seesawSeated[1];
         if (!both) {
-          // Alone on the seesaw: wave someone over, and when nobody comes,
-          // cry a little and go.
+          // A wave is an invitation, not just a bubble: ask an awake, free
+          // friend without waiting for its next random choice of activity.
           if (!robot.bubble) robot.bubble = { text: "🙋", tone: "plain", until: now + 2.2 };
+          if (!other && elapsed > 2 && now >= (act.askAt ?? 0)) {
+            act.askAt = now + 3;
+            const friend = nearest(this.partners(robot, 40).filter((r) => !act.asked?.includes(r.key)), robot, robot.rng);
+            if (friend) {
+              (act.asked ??= []).push(friend.key);
+              if (this.accepts(friend)) {
+                this.release(friend, now);
+                friend.perched = false;
+                friend.plan = this.seesawPlan(friend, act.end === 0 ? 1 : 0, robot.resident.name);
+                this.route(friend);
+                if (friend.plan.act.kind === "seesaw") {
+                  friend.bubble = { text: "coming!", tone: "plain", until: now + 2.2 };
+                  robot.plan.label = `On the seesaw with ${friend.resident.name}`;
+                  return;
+                }
+              } else {
+                friend.bubble = { text: "maybe later", tone: "plain", until: now + 2.2 };
+              }
+            }
+          }
           if (!other && elapsed > 16) this.sob(robot, now, "nobody came to play", "leave");
           return;
         }

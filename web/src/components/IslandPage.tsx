@@ -16,7 +16,7 @@ import { useIsland } from "../lib/island/feed";
 import {
   openWishes, residentsOf, wisher, type IslandAgent, type Resident, type Wish, type WishPace,
 } from "../lib/island/model";
-import { agentModes, ago, grantBrief } from "../lib/island/reading";
+import { agentModes, ago } from "../lib/island/reading";
 import { IslandView } from "../lib/island/scene";
 
 const PACES: { id: WishPace; label: string }[] = [
@@ -37,7 +37,7 @@ const TRAITS: Record<string, string> = {
 
 export default function IslandPage({
   connected, snapshot, projects, running, busy, waitingOn, held, chatTitle, chatExists,
-  onGrant, onAsk, onOpenChat, onClose,
+  onAsk, onOpenChat, onClose,
 }: {
   connected: boolean;
   snapshot: OrchestrationSnapshot | null;
@@ -50,8 +50,6 @@ export default function IslandPage({
   held: Waiting;
   chatTitle: (chatKey: string) => string | undefined;
   chatExists: (chatKey: string) => boolean;
-  /** Start a chat that grants this wish, with its brief in the box. */
-  onGrant: (wish: Wish, brief: string, agentId: string | null) => void;
   /** Start a chat with this agent about its island, with words in the box. */
   onAsk: (agentId: string, text: string) => void;
   onOpenChat: (chatKey: string) => void;
@@ -82,6 +80,8 @@ export default function IslandPage({
   const [actionError, setActionError] = useState<string | null>(null);
   const [showGranted, setShowGranted] = useState(false);
   const [restart, setRestart] = useState(0);
+  const wishWork = JSON.stringify([...busy].filter((key) => key.startsWith("chat:island-wish-")).sort());
+  useEffect(() => { if (connected) feed.reload(); }, [connected, wishWork, feed.reload]);
 
   // The world, made once its stage is on the page and let go with it. The
   // view puts its own canvas in the stage (and takes it out again).
@@ -189,9 +189,10 @@ export default function IslandPage({
   const bots = feed.island?.bots.length ?? 0;
 
   const grant = (wish: Wish) => {
-    const who = wisher(wish, residents);
-    onGrant(wish, grantBrief(wish, who?.name ?? "a robot"), who?.agent?.id ?? null);
+    void act(`grant:${wish.id}`, () => feed.grantWish(wish.id));
   };
+  const building = (wish: Wish) => busyAction === `grant:${wish.id}`
+    || busy.has(`chat:island-wish-${wish.id}`) || wish.execution?.state === "building";
 
   const chatOf = (agentRow: AgentRow | undefined) =>
     agentRow?.activities.find((a) => a.chatKey)?.chatKey ?? agentRow?.recent?.chatKey ?? null;
@@ -217,6 +218,7 @@ export default function IslandPage({
     <section className="projects-page island-page" aria-label="Island">
       <WorkspaceHeader root back={{ label: "Chat", ariaLabel: "Back to chat", onClick: onClose }}
         title={<h1>Island</h1>} actions={actions} />
+      {actionError && <p className="island-error" role="alert">{actionError}</p>}
       <div className={`island-body${panel ? " has-panel" : ""}`}>
         <div className="island-stage" ref={stage} role="img"
           aria-label={`The island in 3D, with ${residents.length} robots. Use the panel's list to find someone.`}>
@@ -241,8 +243,9 @@ export default function IslandPage({
               ? residents.filter((r) => r.plot?.id === resident.plot?.id && r.key !== resident.key).map((r) => r.name)
               : []}
             wish={wishOf(resident)}
-            busy={!!busyAction}
+            busy={!!busyAction || !connected}
             onGrant={grant}
+            building={!!wishOf(resident) && building(wishOf(resident)!)}
             onOpenChat={(key) => onOpenChat(key)}
             chatKey={chatOf(row)}
             onAsk={resident.agent ? () => onAsk(resident.agent!.id, `On the OctiqFlow island, build yourself `) : undefined}
@@ -267,7 +270,6 @@ export default function IslandPage({
               <CloseIcon />
             </button>
           </div>
-          {actionError && <p className="island-error" role="alert">{actionError}</p>}
           {wishes.length === 0 ? (
             <p className="island-empty">No wishes right now. Robots make one now and then.</p>
           ) : (
@@ -282,9 +284,11 @@ export default function IslandPage({
                     <span className="island-meta">{ago(wish.madeAt)}</span>
                   </button>
                   <p className="island-wish-text">wishes for <bdi>{wish.text}</bdi></p>
+                  {wish.execution?.state === "unfinished" && !building(wish) && <p className="island-meta" role="status">The present is not finished. Retry to continue.</p>}
                   <div className="island-wish-actions">
                     <button type="button" className="projects-page-primary island-grant" onClick={() => grant(wish)}
-                      title="Start a chat that builds this present">Grant</button>
+                      disabled={!!busyAction || building(wish) || !connected}
+                      title="Build this present in the background">{building(wish) ? "Building…" : wish.execution ? "Retry" : "Grant"}</button>
                     <button type="button" className="projects-page-secondary" disabled={!!busyAction}
                       onClick={() => void act(`dismiss:${wish.id}`, () => feed.dismissWish(wish.id))}>Dismiss</button>
                   </div>
@@ -352,7 +356,7 @@ function agentWord(row: AgentRow | undefined): string {
   }
 }
 
-function RobotCard({ resident, row, status, mood, housemates, wish, busy, chatKey, onGrant, onOpenChat, onAsk, onFarewell, onClose }: {
+function RobotCard({ resident, row, status, mood, housemates, wish, busy, building, chatKey, onGrant, onOpenChat, onAsk, onFarewell, onClose }: {
   resident: Resident;
   row: AgentRow | undefined;
   status: string | null;
@@ -361,6 +365,7 @@ function RobotCard({ resident, row, status, mood, housemates, wish, busy, chatKe
   /** The 波特 it shares its home with. */
   housemates: string[];
   wish: Wish | undefined;
+  building: boolean;
   busy: boolean;
   chatKey: string | null;
   onGrant: (wish: Wish) => void;
@@ -391,7 +396,8 @@ function RobotCard({ resident, row, status, mood, housemates, wish, busy, chatKe
       {mood && <BoredomMeter boredom={mood.boredom} excited={mood.excited} />}
       {wish && <div className="island-card-wish">
         <p>Wishes for <bdi>{wish.text}</bdi></p>
-        <button type="button" className="projects-page-primary island-grant" onClick={() => onGrant(wish)}>Grant</button>
+        {wish.execution?.state === "unfinished" && !building && <p className="island-meta" role="status">The present is not finished. Retry to continue.</p>}
+        <button type="button" className="projects-page-primary island-grant" disabled={busy || building} onClick={() => onGrant(wish)}>{building ? "Building…" : wish.execution ? "Retry" : "Grant"}</button>
       </div>}
       <div className="island-card-actions">
         {chatKey && <button type="button" className="projects-page-secondary" onClick={() => onOpenChat(chatKey)}>Open chat</button>}

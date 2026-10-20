@@ -25,6 +25,7 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
+mod island;
 #[cfg(test)]
 mod plan_tests;
 mod pull_requests;
@@ -954,11 +955,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // ---- the island (`island.rs`, docs/island.md) -----------------------
         // The page's own commands. Each answers `{ island }`, with the id of
         // what it made or changed where there is one.
-        "island_get" => crate::island::get(
-            &crate::island::default_path(),
-            island_roster(svc).as_deref(),
-            crate::island::now_ms(),
-        ),
+        "island_get" => island::get(svc),
+        "island_wish_start" => island::start(svc, &arg::<String>(&args, "id")?),
         "island_wish_dismiss" => crate::island::dismiss_wish(
             &crate::island::default_path(),
             island_roster(svc).as_deref(),

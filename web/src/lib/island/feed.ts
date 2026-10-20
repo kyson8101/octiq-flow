@@ -18,6 +18,7 @@ export type IslandFeed = {
   change: IslandChange | null;
   reload(): void;
   dismissWish(id: string): Promise<void>;
+  grantWish(id: string): Promise<void>;
   rollWish(): Promise<void>;
   inviteBot(): Promise<void>;
   farewell(id: string): Promise<void>;
@@ -53,12 +54,16 @@ export function useIsland(connected: boolean): IslandFeed {
   useEffect(() => {
     if (!connected) return;
     reload();
-    return bridge.on<IslandChange>("island-changed", (payload) => {
+    const offIsland = bridge.on<IslandChange>("island-changed", (payload) => {
       if (!payload) return;
       if (held.current && payload.rev <= held.current.rev) return;
       setChange(payload);
       reload();
     });
+    const offStatus = bridge.on<{ key: string }>("chat-status", (payload) => {
+      if (payload?.key.startsWith("chat:island-wish-")) reload();
+    });
+    return () => { offIsland(); offStatus(); };
   }, [connected, reload]);
 
   // A command answers when it is saved; the event that follows brings the
@@ -71,6 +76,7 @@ export function useIsland(connected: boolean): IslandFeed {
   return {
     island, error, change, reload,
     dismissWish: (id) => run("island_wish_dismiss", { id }),
+    grantWish: (id) => run("island_wish_start", { id }),
     rollWish: () => run("island_wish_roll"),
     inviteBot: () => run("island_bot_invite"),
     farewell: (id) => run("island_bot_farewell", { id }),

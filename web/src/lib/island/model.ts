@@ -103,6 +103,8 @@ export type Wish = {
   closedAt?: number;
   /** Open wishes only: what a new chat is handed when the person grants it. */
   brief?: string;
+  /** A host-started background task; the wish stays open until the gift exists. */
+  execution?: { chatKey: string; state: "building" | "unfinished"; provider?: string };
 };
 
 export type WishPace = "often" | "sometimes" | "rarely" | "never";

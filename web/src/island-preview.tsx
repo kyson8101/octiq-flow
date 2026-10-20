@@ -280,7 +280,6 @@ function PagePreview() {
         held={new Map()}
         chatTitle={() => undefined}
         chatExists={() => false}
-        onGrant={(wish, brief) => console.log("grant", wish.id, brief)}
         onAsk={(agentId, text) => console.log("ask", agentId, text)}
         onOpenChat={(chatKey) => console.log("open", chatKey)}
         onClose={() => console.log("close")}
