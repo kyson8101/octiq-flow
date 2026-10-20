@@ -1636,17 +1636,36 @@ impl OrchestrationStore {
             .iter()
             .enumerate()
             .map(|(index, question)| {
+                // A snapshot the worker attached is named with its path, so
+                // the coordinator can look at it before answering.
+                let shown = |media: &crate::question_media::Media| {
+                    format!("{} ({}, {})", media.name, media.kind.label(), media.path)
+                };
                 let options = question
                     .options
                     .iter()
-                    .map(|choice| match &choice.description {
-                        Some(description) => format!("- {}: {}", choice.label, description),
-                        None => format!("- {}", choice.label),
+                    .map(|choice| {
+                        let line = match &choice.description {
+                            Some(description) => format!("- {}: {}", choice.label, description),
+                            None => format!("- {}", choice.label),
+                        };
+                        match &choice.image {
+                            Some(image) => format!("{line} [image: {}]", shown(image)),
+                            None => line,
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                let media = question
+                    .media
+                    .iter()
+                    .map(|media| match &media.caption {
+                        Some(caption) => format!("\nAttached: {} — {caption}", shown(media)),
+                        None => format!("\nAttached: {}", shown(media)),
+                    })
+                    .collect::<String>();
                 format!(
-                    "{}. {}{}",
+                    "{}. {}{media}{}",
                     index + 1,
                     question.question,
                     if options.is_empty() {
@@ -9568,6 +9587,38 @@ pub(crate) mod tests {
             )
             .is_err());
         assert_eq!(store.snapshot(None).unwrap().messages.len(), 2);
+    }
+
+    /// A worker's media cannot be drawn on a gate, so the gate names each
+    /// file with its kind and path for the coordinator to look at.
+    #[test]
+    fn a_workers_question_media_is_named_on_its_gate() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        let media = |name: &str, kind: &str, path: &str| {
+            json!({ "id": "a".repeat(32), "kind": kind, "mime": "x", "path": path,
+                    "name": name, "bytes": 1 })
+        };
+        let mut shot = media("home.png", "image", "/p/home.png");
+        shot["caption"] = json!("Today");
+        let question: crate::question::Question = serde_json::from_value(json!({
+            "question": "Which layout?",
+            "media": [shot, media("take.mp4", "video", "/p/take.mp4")],
+            "options": [{ "label": "Keep", "image": media("face.png", "image", "/p/face.png") }, "Change"],
+        }))
+        .unwrap();
+        let gate = store
+            .route_worker_questions(&worker.worker_chat_key, &[question])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gate.question,
+            "1. Which layout?\nAttached: home.png (image, /p/home.png) — Today\n\
+             Attached: take.mp4 (video, /p/take.mp4)\n\
+             - Keep [image: face.png (image, /p/face.png)]\n- Change"
+        );
+        assert_eq!(gate.options, vec!["Keep", "Change"]);
     }
 
     #[test]

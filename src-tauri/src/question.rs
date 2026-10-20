@@ -32,6 +32,10 @@ pub struct Choice {
     /// A line under the label, for when the label alone does not say enough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// A picture to choose by look (`question_media`): an image only, and
+    /// never part of what is answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<crate::question_media::Media>,
 }
 
 /// A choice as it arrives, before we know whether it is usable.
@@ -43,6 +47,8 @@ enum RawChoice {
         label: String,
         #[serde(default)]
         description: Option<String>,
+        #[serde(default)]
+        image: Option<crate::question_media::Media>,
     },
     /// Anything else at all — a number, a null, an object with no label.
     Unusable(serde::de::IgnoredAny),
@@ -63,12 +69,18 @@ where
             RawChoice::Text(label) => Some(Choice {
                 label,
                 description: None,
+                image: None,
             }),
-            RawChoice::Labelled { label, description } => Some(Choice {
+            RawChoice::Labelled {
+                label,
+                description,
+                image,
+            } => Some(Choice {
                 label,
                 // A blank line under the label is a gap in the card, not a
                 // description.
                 description: description.filter(|d| !d.trim().is_empty()),
+                image,
             }),
             // Dropped rather than drawn. A button with no words on it is not a
             // choice, and `[object Object]` is worse than one button fewer.
@@ -116,6 +128,12 @@ pub struct Question {
     /// as a one-of card, with no ticks, no error, and nothing to notice.
     #[serde(default, alias = "multiSelect")]
     pub multiple: bool,
+    /// Pictures, recordings or sounds shown under the question, at most
+    /// four (`question_media`). What an agent sends is rebuilt from the
+    /// host's own snapshots before anything is asked (`question_media::
+    /// resolve`); absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<crate::question_media::Media>,
 }
 
 /// The question, once it has an id to answer against.
@@ -298,14 +316,17 @@ mod tests {
                 Choice {
                     label: "Postgres".into(),
                     description: None,
+                    image: None,
                 },
                 Choice {
                     label: "SQLite".into(),
                     description: Some("One file, no server".into()),
+                    image: None,
                 },
             ],
             recommended: Some(0),
             multiple: false,
+            media: Vec::new(),
         }
     }
 
@@ -317,6 +338,7 @@ mod tests {
             options: vec![],
             recommended: None,
             multiple: false,
+            media: Vec::new(),
         }
     }
 
@@ -374,6 +396,7 @@ mod tests {
             recommended: None,
             // And nothing to pick several of either.
             multiple: false,
+            media: Vec::new(),
         };
         assert!(free.options.is_empty());
         assert!(!free.question.is_empty());

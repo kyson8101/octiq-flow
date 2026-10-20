@@ -6300,6 +6300,7 @@ fn answer_codex_user_input(
                             .and_then(Value::as_str)
                             .filter(|text| !text.trim().is_empty())
                             .map(str::to_string),
+                        image: None,
                     })
                 })
                 .collect();
@@ -6313,6 +6314,7 @@ fn answer_codex_user_input(
                 options,
                 recommended: None,
                 multiple: false,
+                media: Vec::new(),
             }
         })
         .collect::<Vec<_>>();
@@ -8103,6 +8105,8 @@ fn purge_deleted_chats() -> Result<usize, String> {
         crate::chat_task::forget(id);
         // And so does its plan, kept through the same window.
         crate::chat_plan::forget(id);
+        // And the pictures, recordings and sounds its questions showed.
+        crate::question_media::forget(id);
         announce_index_change(id, true);
     }
     if !expired.is_empty() {

@@ -827,6 +827,11 @@ fn may_delete_orphans(known: usize, transcripts: usize) -> bool {
 pub fn reconcile() -> usize {
     match purge_expired() {
         Ok(expired) if !expired.is_empty() => {
+            // The pictures its questions showed go with it: they are the one
+            // thing of a chat that can run to hundreds of megabytes.
+            for id in &expired {
+                crate::question_media::forget(id);
+            }
             println!(
                 "[chats] permanently removed {} expired chat(s)",
                 expired.len()

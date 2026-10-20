@@ -1,0 +1,44 @@
+{
+  "chatKey": "chat:media-cb27598bfead4f7f9d1e19f15d2d4566",
+  "id": "cfa91d0f-d01a-4e4e-9c5a-04bea50aad81",
+  "media": [
+    {
+      "bytes": 316,
+      "caption": "The home screen today",
+      "id": "eb828a29e1a244689fc939642c4d31c6",
+      "kind": "image",
+      "mime": "image/png",
+      "name": "home.png",
+      "path": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-test-profile-2a7ef5b3144e4f81999982508e3424a0/chats/question-media/media-cb27598bfead4f7f9d1e19f15d2d4566/eb828a29e1a244689fc939642c4d31c6.png"
+    },
+    {
+      "bytes": 4012,
+      "id": "a8ed0cc846c1437482e0b38d0b317acb",
+      "kind": "video",
+      "mime": "video/mp4",
+      "name": "take.mp4",
+      "path": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-test-profile-2a7ef5b3144e4f81999982508e3424a0/chats/question-media/media-cb27598bfead4f7f9d1e19f15d2d4566/a8ed0cc846c1437482e0b38d0b317acb.mp4"
+    }
+  ],
+  "multiple": false,
+  "options": [
+    {
+      "image": {
+        "bytes": 316,
+        "id": "84c3df51b9a542619448edc7d3827125",
+        "kind": "image",
+        "mime": "image/png",
+        "name": "face.png",
+        "path": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-test-profile-2a7ef5b3144e4f81999982508e3424a0/chats/question-media/media-cb27598bfead4f7f9d1e19f15d2d4566/84c3df51b9a542619448edc7d3827125.png"
+      },
+      "label": "Keep"
+    },
+    {
+      "label": "Change"
+    }
+  ],
+  "question": "Which layout should the home screen keep?",
+  "recommended": 0,
+  "retryable": false,
+  "status": "pending"
+}

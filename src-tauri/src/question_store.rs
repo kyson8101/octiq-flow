@@ -171,6 +171,10 @@ impl Record {
                 if let Some(recommended) = q.recommended {
                     asked["recommended"] = serde_json::json!(recommended);
                 }
+                // The snapshots it showed, as it was asked: absent when none.
+                if !q.media.is_empty() {
+                    asked["media"] = serde_json::json!(q.media);
+                }
                 asked
             })
             .collect::<Vec<_>>();

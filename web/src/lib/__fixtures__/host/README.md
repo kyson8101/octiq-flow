@@ -112,6 +112,27 @@ Write each `FACT <name> {…}` to `<name>.json`, indented by two spaces and
 otherwise unchanged. The keys come out sorted: that is how the host writes
 them.
 
+## A question's media
+
+Recorded at the commit that added `question_media.rs`
+(`docs/question-delivery.md`, Media). Both from
+`src-tauri/src/web.rs`'s `tests::an_ask_user_call_shows_the_snapshots_its_chat_uploaded_and_nothing_else`,
+which uploads through `/hook/question-media` and asks through `/hook/ask` on
+a real server. The paths are the test's scratch profile; nothing depends on
+them.
+
+| File | What is printed |
+| --- | --- |
+| `question_media_pending.json` | the call's one entry of `question_pending` (the same shape a `user-question` event carries): `media` with an image (with a caption) and an MP4 video (without), the first option with an `image`, the second a plain label |
+| `question_answered_media.json` | the `octiq_question_answered` line (`via: "tool"`) after the person answered `Keep`: the question's `media` and the option's `image` as listed |
+
+```bash
+cd src-tauri
+OCTIQ_RECORD_FACTS=1 cargo test --lib -- --nocapture --test-threads=1 an_ask_user_call_shows
+```
+
+Write each `FACT <name> {…}` to `<name>.json` as above.
+
 ## Recording them again
 
 The tests assert on these values and do not print them. To record, in a

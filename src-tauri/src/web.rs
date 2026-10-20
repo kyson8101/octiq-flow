@@ -552,6 +552,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/file", get(file_handler).post(file_post_handler))
         .route("/hook/permission", post(permission_handler))
         .route("/hook/ask", post(ask_handler))
+        .route("/hook/question-media", post(question_media_handler))
         .route("/hook/access", post(access_handler))
         .route("/hook/orchestration", post(orchestration_handler))
         .route("/hook/task", post(task_handler))
@@ -1267,12 +1268,81 @@ async fn ask_handler(
     for question in &mut batch.questions {
         question.chat_key = Some(caller.chat_key.clone());
     }
+    // Every picture, recording and sound is rebuilt from the chat's own
+    // snapshots, and a call that names one it cannot show asks nothing.
+    if let Err(why) = crate::question_media::resolve(&caller.chat_key, &mut batch.questions) {
+        return hook_failed(
+            StatusCode::BAD_REQUEST,
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::Validation, why),
+        );
+    }
     batch.chat_key = Some(caller.chat_key);
     batch.session_key = Some(caller.session_key);
     batch.launch_id = Some(caller.launch_id);
     let request = crate::question::Request::Many(batch);
     let answer = crate::question::ask_request(ctx.services.chats.clone(), request).await;
     axum::Json(json!({ "answer": answer })).into_response()
+}
+
+/// Who is uploading one file an `ask_user` call shows, and what it is
+/// called. In the query: the body is the file's bytes.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaQuery {
+    #[serde(default)]
+    chat_key: Option<String>,
+    #[serde(default)]
+    session_key: Option<String>,
+    #[serde(default)]
+    launch_id: Option<String>,
+    /// The source file's own name.
+    name: String,
+    /// Its size as the agent's MCP server found it; the body must be that.
+    bytes: u64,
+    /// For an option's image, which must be an image.
+    #[serde(default)]
+    option: bool,
+}
+
+/// One file an `ask_user` call shows, read by the agent's own MCP server and
+/// kept here as an immutable snapshot of the chat its capability proves
+/// (`question_media`). The answer is the snapshot as the page will be sent
+/// it; the question then names it by `id`. Nothing is asked here.
+async fn question_media_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<MediaQuery>,
+    body: Body,
+) -> Response {
+    let claim = HookClaim {
+        chat_key: q.chat_key.as_deref(),
+        session_key: q.session_key.as_deref(),
+        launch_id: q.launch_id.as_deref(),
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let purpose = if q.option {
+        crate::question_media::Purpose::Option
+    } else {
+        crate::question_media::Purpose::Question
+    };
+    let refused = |why: String| {
+        hook_failed(
+            StatusCode::BAD_REQUEST,
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::Validation, why),
+        )
+    };
+    let upload =
+        match crate::question_media::Upload::begin(&caller.chat_key, &q.name, q.bytes, purpose) {
+            Ok(upload) => upload,
+            Err(why) => return refused(why),
+        };
+    match crate::question_media::receive(upload, body).await {
+        Ok(media) => axum::Json(json!({ "result": media })).into_response(),
+        Err(why) => refused(why),
+    }
 }
 
 /// A `handover` call: the agent asking to pass its task on.
@@ -3381,6 +3451,255 @@ mod tests {
             "{answer}"
         );
         chats.test_end("chat:worker");
+    }
+
+    // ---- /hook/question-media: what an ask_user call shows ----------------
+
+    /// POST one file's bytes to `/hook/question-media` as the MCP does.
+    async fn post_media(base: &str, capability: &str, query: &str, bytes: Vec<u8>) -> (u16, Value) {
+        let url = format!("{base}/hook/question-media?{query}");
+        let capability = capability.to_string();
+        tokio::task::spawn_blocking(move || {
+            let request = ureq::post(&url)
+                .set(CHAT_CAPABILITY_HEADER, &capability)
+                .set("content-type", "application/octet-stream");
+            match request.send_bytes(&bytes) {
+                Ok(response) => (
+                    response.status(),
+                    response.into_json().unwrap_or(Value::Null),
+                ),
+                Err(ureq::Error::Status(code, response)) => {
+                    (code, response.into_json().unwrap_or(Value::Null))
+                }
+                Err(error) => panic!("the hook could not be reached: {error}"),
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    /// The whole road of a picture and a video an agent shows with a
+    /// question: uploaded as the chat its capability proves, rebuilt from
+    /// the snapshots when asked, listed for the page and carried on the
+    /// answered line, played from `/file` in ranges. The agent's answer is
+    /// the labels alone. Two of these answer the page's fixtures
+    /// (`web/src/lib/__fixtures__/host`): run with `OCTIQ_RECORD_FACTS=1`
+    /// and `--nocapture`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ask_user_call_shows_the_snapshots_its_chat_uploaded_and_nothing_else() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let id = format!("media-{}", uuid::Uuid::new_v4().simple());
+        let key = format!("chat:{id}");
+        let other = format!("chat:media-other-{}", uuid::Uuid::new_v4().simple());
+        let cap = chats.test_launch(&key);
+        let other_cap = chats.test_launch(&other);
+        chats.test_busy(&key, true);
+        chats.test_remember_start(&key, "/tmp");
+        let (ctx, base) = test_server(chats.clone(), store).await;
+        let fact = |name: &str, value: &Value| {
+            if std::env::var_os("OCTIQ_RECORD_FACTS").is_some() {
+                println!("FACT {name} {value}");
+            }
+        };
+        let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &[3u8; 300][..]].concat();
+        let mp4 = [&b"\0\0\0\x18ftypisom"[..], &[5u8; 4000][..]].concat();
+        let query = |chat: &str, name: &str, bytes: usize, option: bool| {
+            format!(
+                "chatKey={chat}&name={name}&bytes={bytes}{}",
+                if option { "&option=true" } else { "" }
+            )
+        };
+
+        // The capability is the caller: none, or another chat's, keeps nothing.
+        let (status, _) = post_media(
+            &base,
+            "",
+            &query(&key, "a.png", png.len(), false),
+            png.clone(),
+        )
+        .await;
+        assert_eq!(status, 401);
+        let (status, _) = post_media(
+            &base,
+            &other_cap,
+            &query(&key, "a.png", png.len(), false),
+            png.clone(),
+        )
+        .await;
+        assert_eq!(status, 401, "another chat's capability");
+        // Bytes that are not what the name says, and a video for an option.
+        let (status, answer) = post_media(
+            &base,
+            &cap,
+            &query(&key, "shot.png", mp4.len(), false),
+            mp4.clone(),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert_eq!(
+            answer["error"],
+            "shot.png is named .png but holds an MP4 video. Name it for what it is."
+        );
+        assert_eq!(answer["outcome"]["reasonClass"], "validation");
+        let (status, answer) = post_media(
+            &base,
+            &cap,
+            &query(&key, "take.mp4", mp4.len(), true),
+            mp4.clone(),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("an option shows an image only"));
+
+        // Kept, each under a name of the host's.
+        let (status, shot) = post_media(
+            &base,
+            &cap,
+            &query(&key, "home.png", png.len(), false),
+            png.clone(),
+        )
+        .await;
+        assert_eq!(status, 200, "{shot}");
+        let (_, take) = post_media(
+            &base,
+            &cap,
+            &query(&key, "take.mp4", mp4.len(), false),
+            mp4.clone(),
+        )
+        .await;
+        let (_, face) = post_media(
+            &base,
+            &cap,
+            &query(&key, "face.png", png.len(), true),
+            png.clone(),
+        )
+        .await;
+        let (_, theirs) = post_media(
+            &base,
+            &other_cap,
+            &query(&other, "theirs.png", png.len(), false),
+            png.clone(),
+        )
+        .await;
+        let (shot, take, face) = (&shot["result"], &take["result"], &face["result"]);
+        assert_eq!(shot["kind"], "image");
+        assert_eq!(take["kind"], "video");
+        assert_eq!(take["mime"], "video/mp4");
+        assert_eq!(std::fs::read(take["path"].as_str().unwrap()).unwrap(), mp4);
+
+        // A video is played from /file in ranges, on the person's token.
+        let path = take["path"].as_str().unwrap();
+        assert_eq!(
+            get_status(
+                format!("{base}/file?token=hook-token&path={path}"),
+                vec![("Range", "bytes=0-9".into())]
+            )
+            .await,
+            206
+        );
+
+        // Naming another chat's snapshot, or a path, asks nothing.
+        for media in [
+            json!([{ "id": theirs["result"]["id"], "name": "theirs.png" }]),
+            json!(["/etc/hosts"]),
+        ] {
+            let (status, answer) = post_hook(
+                &base,
+                "ask",
+                None,
+                Some(&cap),
+                json!({ "chatKey": key, "questions": [{ "question": "Q?", "media": media }] }),
+            )
+            .await;
+            assert_eq!(status, 400, "{answer}");
+            assert!(answer["error"].as_str().is_some(), "{answer}");
+        }
+        assert!(chats
+            .questions
+            .pending()
+            .unwrap()
+            .iter()
+            .all(|q| q.question.chat_key.as_deref() != Some(key.as_str())));
+
+        // Asked with what the MCP sends: ids, names, a caption, and fields
+        // the host does not take from an agent.
+        let body = json!({ "chatKey": key, "questions": [{
+            "question": "Which layout should the home screen keep?",
+            "media": [
+                { "id": shot["id"], "name": "home.png", "caption": "The home screen today" },
+                { "id": take["id"], "name": "take.mp4", "path": "/etc/passwd", "kind": "audio" },
+            ],
+            "options": [
+                { "label": "Keep", "image": { "id": face["id"], "name": "face.png" } },
+                "Change",
+            ],
+            "recommended": 0,
+        }] });
+        let asking = {
+            let base = base.clone();
+            let cap = cap.clone();
+            tokio::spawn(async move { post_hook(&base, "ask", None, Some(&cap), body).await })
+        };
+        let mut listed = Vec::new();
+        for _ in 0..500 {
+            listed = crate::dispatch::dispatch(&ctx.services, "question_pending", json!({}))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|asked| asked["chatKey"] == key.as_str())
+                .cloned()
+                .collect();
+            if !listed.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(listed.len(), 1, "the question is listed for the page");
+        let pending = &listed[0];
+        fact("question_media_pending", pending);
+        assert_eq!(
+            pending["media"],
+            json!([
+                { "id": shot["id"], "kind": "image", "mime": "image/png", "path": shot["path"],
+                  "name": "home.png", "caption": "The home screen today", "bytes": png.len() },
+                { "id": take["id"], "kind": "video", "mime": "video/mp4", "path": take["path"],
+                  "name": "take.mp4", "bytes": mp4.len() },
+            ])
+        );
+        assert_eq!(pending["options"][0]["image"], *face);
+        assert_eq!(pending["options"][1], json!({ "label": "Change" }));
+
+        crate::dispatch::dispatch(
+            &ctx.services,
+            "question_answer_batch",
+            json!({ "answers": [{ "id": pending["id"], "answer": "Keep" }] }),
+        )
+        .unwrap();
+        let (status, answer) = asking.await.unwrap();
+        assert_eq!(
+            (status, answer),
+            (200, json!({ "answer": "Keep" })),
+            "labels only"
+        );
+
+        let lines = crate::transcript::of_type(&key, crate::question_store::ANSWERED);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        fact("question_answered_media", &lines[0]);
+        let asked = &lines[0]["questions"][0];
+        assert_eq!(asked["media"], pending["media"]);
+        assert_eq!(asked["options"][0]["image"], *face);
+        assert_eq!(asked["answer"], "Keep");
+
+        crate::transcript::forget(&key);
+        crate::question_media::forget(&id);
+        crate::question_media::forget(other.strip_prefix("chat:").unwrap());
+        chats.test_end(&key);
+        chats.test_end(&other);
     }
 
     #[tokio::test]

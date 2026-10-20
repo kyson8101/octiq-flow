@@ -59,6 +59,7 @@ const readline = require("readline");
 const { CREATE_ARTIFACT, createArtifact } = require("./artifact.cjs");
 
 const { PREVIEW_IMAGE, PREVIEW_HTML, previewImage, previewHtml } = require("./preview.cjs");
+const { MediaRefusal, attachMedia } = require("./question-media.cjs");
 
 const CHAT_KEY = process.env.OCTIQ_CHAT_KEY || "";
 // Codex cannot suspend a one-shot `exec` turn cleanly while this tool waits for
@@ -779,7 +780,7 @@ function askOctiq(questions) {
     try {
       port = hookPort();
     } catch {
-      return resolve("OctiqFlow is not reachable, so the user could not be asked.");
+      return resolve({ answer: "OctiqFlow is not reachable, so the user could not be asked." });
     }
     const body = JSON.stringify({ chatKey: CHAT_KEY, sessionKey: process.env.OCTIQ_SESSION_KEY || CHAT_KEY, launchId: process.env.OCTIQ_LAUNCH_ID || undefined, questions });
     const req = http.request(
@@ -795,19 +796,22 @@ function askOctiq(questions) {
         res.on("data", (d) => (out += d));
         res.on("end", () => {
           try {
-            resolve(JSON.parse(out).answer ?? "");
+            const said = JSON.parse(out);
+            // A refusal (a file the host would not show) asked nothing.
+            if (said.error) resolve({ error: said.error, outcome: said.outcome });
+            else resolve({ answer: said.answer ?? "" });
           } catch {
-            resolve("OctiqFlow gave no answer.");
+            resolve({ answer: "OctiqFlow gave no answer." });
           }
         });
       },
     );
-    req.on("error", () => resolve("OctiqFlow could not be reached."));
+    req.on("error", () => resolve({ answer: "OctiqFlow could not be reached." }));
     // The server has its own, shorter deadline; this only stops a wedged
     // socket holding the turn open indefinitely.
     req.setTimeout(30 * 60 * 1000, () => {
       req.destroy();
-      resolve("The question timed out.");
+      resolve({ answer: "The question timed out." });
     });
     req.write(body);
     req.end();
@@ -927,6 +931,12 @@ const QUESTION_PROPS = {
               type: "string",
               description: "One short line under the label, saying what picking it means.",
             },
+            image: {
+              type: "string",
+              description:
+                "Absolute path of a local image (PNG, JPEG, GIF, WebP, up to 20 MB) shown on this " +
+                "option, for choosing by look. Only when the picture is the difference.",
+            },
           },
           required: ["label"],
         },
@@ -943,6 +953,23 @@ const QUESTION_PROPS = {
       "Shown as a hint next to that choice; it is not selected for them " +
       "and does not become the answer if they say nothing. Omit when you " +
       "genuinely have no preference — marking one anyway is noise.",
+  },
+  media: {
+    type: "array",
+    maxItems: 4,
+    items: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute path of a local file on this machine." },
+        caption: { type: "string", maxLength: 160, description: "One short line under it." },
+      },
+      required: ["path"],
+    },
+    description:
+      "Up to 4 local files shown under the question when the person must see or hear " +
+      "something to answer: images (PNG, JPEG, GIF, WebP, 20 MB), video (MP4, MOV, WebM) " +
+      "or audio (MP3, WAV, M4A, OGG), 200 MB each, 300 MB a call. Absolute paths only, " +
+      "never URLs. A file that cannot be shown refuses the whole call.",
   },
   multiple: {
     type: "boolean",
@@ -2989,7 +3016,9 @@ async function handle(msg) {
         // card has no room for one, and refusing the call over it would fail
         // the very question it was decorating.
         const multiple = (item.multiple === true || item.multiSelect === true) && options.length > 0;
-        list.push({ question, options, recommended, multiple });
+        // Carried as given: question-media.cjs checks and uploads it below.
+        const media = item.media === undefined ? {} : { media: item.media };
+        list.push({ question, options, recommended, multiple, ...media });
       }
       if (!list.length) {
         return reply(msg.id, {
@@ -2998,8 +3027,28 @@ async function handle(msg) {
           outcome: hostOutcome("validation"),
         });
       }
-      const answer = await askOctiq(list);
-      return reply(msg.id, { content: [{ type: "text", text: answer }] });
+      // Every file is read here, as the agent, and kept by the host before
+      // anything is asked; one that cannot be shown asks nothing at all.
+      let asked;
+      try {
+        asked = await attachMedia(list);
+      } catch (error) {
+        if (!(error instanceof MediaRefusal)) throw error;
+        return reply(msg.id, {
+          content: [{ type: "text", text: `Nothing was asked: ${error.message}` }],
+          isError: true,
+          outcome: hostOutcome("validation"),
+        });
+      }
+      const answer = await askOctiq(asked);
+      if (answer.error) {
+        return reply(msg.id, {
+          content: [{ type: "text", text: `Nothing was asked: ${answer.error}` }],
+          isError: true,
+          outcome: hostError(answer.error, answer.outcome).outcome,
+        });
+      }
+      return reply(msg.id, { content: [{ type: "text", text: answer.answer }] });
     }
 
     default:

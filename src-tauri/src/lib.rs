@@ -58,6 +58,7 @@ mod profile_lock;
 mod pty;
 mod push;
 mod question;
+mod question_media;
 mod question_store;
 mod record_trim;
 mod safety_block;
