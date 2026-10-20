@@ -7,6 +7,8 @@
 // still looks like an answer, and a component is where the test runner cannot
 // go.
 
+import { optionImage, type Media } from "./questionMedia";
+
 /** Tick an option, or take the tick back. */
 export function togglePick(picks: string[], option: string): string[] {
   return picks.includes(option) ? picks.filter((p) => p !== option) : [...picks, option];
@@ -26,9 +28,9 @@ export function composeAnswer(options: string[], picks: string[], text: string):
   return chosen.join(", ");
 }
 
-/** One thing you can pick: the words on the button, and optionally a line
- *  under them. */
-export type Choice = { label: string; description?: string };
+/** One thing you can pick: the words on the button, optionally a line
+ *  under them, and optionally a picture to choose it by. */
+export type Choice = { label: string; description?: string; image?: Media };
 
 /** Read the choices off a question, whichever shape they arrive in.
  *
@@ -55,7 +57,8 @@ export function choicesOf(options: unknown): Choice[] {
     const label = typeof bag.label === "string" ? bag.label : "";
     if (!label.trim()) continue;
     const description = typeof bag.description === "string" ? bag.description.trim() : "";
-    out.push(description ? { label, description } : { label });
+    const image = optionImage(bag.image);
+    out.push({ label, ...(description ? { description } : {}), ...(image ? { image } : {}) });
   }
   return out;
 }

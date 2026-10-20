@@ -19,6 +19,7 @@ import { askAnswer, readOne, type AskItem } from "./askAnswer";
 import type { Message } from "./chat";
 import type { Question, QuestionAnswered } from "./question";
 import { choicesOf, composeAnswer } from "./questionAnswer";
+import { shownMedia, type Shown } from "./questionMedia";
 
 /* ---- Batches ------------------------------------------------------------ */
 
@@ -468,10 +469,34 @@ export type AnsweredPlacement = {
   ids: ReadonlySet<string>;
 };
 
-/** A line's questions as the bubble reads them. */
+/** A line's questions as the bubble reads them, with what each showed. */
 export function answeredItems(line: QuestionAnswered): AskItem[] {
-  return line.questions.map((q) => ({ question: q.question, answer: q.answer }));
+  return line.questions.map((q) => withShown({ question: q.question, answer: q.answer }, shownMedia(q, q.answer)));
 }
+
+/** Listed questions as the answered line reads them: what each asked, the
+ *  answer the host holds (or `answers`, by index, when it holds none yet)
+ *  and what each showed. */
+export function recordItems(questions: readonly Question[], answers: readonly string[] = []): AskItem[] {
+  return questions.map((q, index) => {
+    const answer = q.answer ?? answers[index] ?? "";
+    return withShown({ question: q.question, answer }, shownMedia({ ...q, options: choicesOf(q.options) }, answer));
+  });
+}
+
+/** A call's items with the media the host's record of the same questions
+ *  showed: by place, and only where the words asked are the same. The
+ *  call's own result says what was answered; the record says what was
+ *  shown. */
+export function withMediaOf(items: AskItem[], record: readonly AskItem[] | null | undefined): AskItem[] {
+  if (!record?.some((item) => item.media?.length)) return items;
+  return items.map((item, index) => {
+    const from = record[index];
+    return from?.media?.length && from.question === item.question ? { ...item, media: from.media } : item;
+  });
+}
+
+const withShown = (item: AskItem, media: Shown[]): AskItem => (media.length ? { ...item, media } : item);
 
 /** An `ask_user` call a `via: "tool"` line can be attached to, with what
  *  the call itself says was answered: nothing yet, or its own answers. */

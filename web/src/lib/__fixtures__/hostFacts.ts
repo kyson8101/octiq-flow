@@ -8,7 +8,7 @@
 // says what it changed.
 import type { ChatPlan } from "../chatPlan";
 import type { OrchestrationSnapshot, OrchestrationTask } from "../orchestration";
-import type { QuestionAnswered } from "../question";
+import type { Question, QuestionAnswered } from "../question";
 import cardOnGateBlocked from "./host/card_on_gate_blocked.json?raw";
 import cardPending from "./host/card_pending.json?raw";
 import chatPlanDecided from "./host/chat_plan_decided.json?raw";
@@ -35,8 +35,10 @@ import planAfterBlocked from "./host/plan_after_blocked.json?raw";
 import planAfterCheckFailed from "./host/plan_after_check_failed.json?raw";
 import planAfterFailed from "./host/plan_after_failed.json?raw";
 import planAfterStopped from "./host/plan_after_stopped.json?raw";
+import questionAnsweredMedia from "./host/question_answered_media.json?raw";
 import questionAnsweredNative from "./host/question_answered_native.json?raw";
 import questionAnsweredTool from "./host/question_answered_tool.json?raw";
+import questionMediaPending from "./host/question_media_pending.json?raw";
 import reopenNoticeDelivered from "./host/reopen_notice_delivered.json?raw";
 import retryExecuting from "./host/retry_executing.json?raw";
 import taskStopped from "./host/task_stopped.json?raw";
@@ -165,4 +167,11 @@ export const hostFacts = {
    *  "tool"`, a question with `recommended: 1` and one with `multiple:
    *  true`, whose answer is the picked labels joined as the page sent them. */
   questionAnsweredTool: answered(questionAnsweredTool),
+  /** A question the host lists (`question_pending`) that shows an image
+   *  with a caption and a video, and offers `Keep` with a picture and
+   *  `Change` without one; `recommended: 0`. */
+  questionMediaPending: (): Question => JSON.parse(questionMediaPending) as Question,
+  /** The line for that question answered `Keep` through `ask_user`:
+   *  `media` on the question and `image` on the option. */
+  questionAnsweredMedia: answered(questionAnsweredMedia),
 };

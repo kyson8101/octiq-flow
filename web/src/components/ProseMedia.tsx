@@ -17,7 +17,7 @@ import { useOpenFile } from "./OpenFile";
 const NEAR = "600px";
 
 /** True once the element is within a screen of the viewport. Latches. */
-function useNear<T extends Element>() {
+export function useNear<T extends Element>() {
   const holder = useRef<T>(null);
   const [near, setNear] = useState(false);
   useEffect(() => {

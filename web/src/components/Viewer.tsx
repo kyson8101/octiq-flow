@@ -217,6 +217,9 @@ export function Viewer({ path, onClose }: { path: string; onClose: () => void })
   return createPortal(
     <div
       className="viewer"
+      role="dialog"
+      aria-modal="true"
+      aria-label={baseName(path)}
       // A press that slid was a pan, not a click on the backdrop, and closing
       // the picture someone was busy dragging is the wrong answer.
       onClick={() => (moved.current ? (moved.current = false) : onClose())}

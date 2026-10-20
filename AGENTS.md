@@ -841,6 +841,26 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   through the record, `user-question`, `question_pending` and the answered
   line; `path` is served by `/file`. The answer is labels only. Snapshots
   go with the chat at purge, never at the trash or `/clear`.
+- **The page draws that media where the question is** (`lib/questionMedia`,
+  `components/QuestionMedia`). Every reader is tolerant: an entry that does
+  not read is dropped and the question still draws. Under the heading, a
+  strip: a picture in a fixed 168 by 112 box that opens the shared viewer
+  (Escape shuts it), a video in a 16:9 box and a sound in a 40px one, both
+  the browser's own players (`preload="metadata"`, from `/file`), each with
+  its caption and name in words. An option's picture is a 64px square
+  inside its row, between the mark and the words (a press on it selects
+  the row); the control that opens it full size is beside the label, never
+  in it, so it selects nothing. **Every box has its size before anything
+  arrives, and keeps it when a file will not load**: the place stays,
+  unframed, and says `Could not be shown`, so nothing under it, the Send
+  button included, moves as files arrive or fail. Nothing is fetched until
+  it is near what the transcript's scroller shows. On the answered line
+  the media is folded: 28px thumbnails of the pictures (the question's and
+  the chosen option's), a player's kind and name, the count, on the line's
+  one disclosure (`CardFold`); opened, each file whole. A call's own result
+  carries no media, so the call borrows it from the host's line for the
+  same words (`questionBlock.withMediaOf`). `scripts/test-question-media.mjs`
+  draws it in the real App at 1280 and 390.
 - **Where a block goes is worked out from the words** (`placeQuestions`).
   The host's record carries no tool-use id, so a pending batch finds its
   call by the questions it asked, in order, among the calls that carry no

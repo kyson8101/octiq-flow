@@ -187,6 +187,258 @@
   outline-offset: 1px;
 }
 
+/* ---- What a question shows (`components/QuestionMedia`) -------------------- */
+
+/* Every box has its size before anything arrives, so nothing under the
+   block moves when a picture lands: a picture is fitted into a fixed box, a
+   player has a fixed shape. No colour of its own: the border and the card
+   background, as a reply's pictures. */
+.qa-media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+  margin: 2px 0 4px;
+}
+
+.qa-media-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+
+.qa-media-item.is-image { width: 168px; }
+.qa-media-item.is-video,
+.qa-media-item.is-audio { width: min(100%, 320px); }
+
+.qa-media-box {
+  display: block;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  line-height: 0;
+}
+
+.qa-media-box.is-image {
+  width: 168px;
+  height: 112px;
+  cursor: zoom-in;
+}
+
+.qa-media-box.is-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--bg-0);
+}
+
+.qa-media-box.is-audio {
+  width: 100%;
+  height: 40px;
+  border: 0;
+  background: none;
+}
+
+.qa-media-box img,
+.qa-media-box video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.qa-media-box audio {
+  display: block;
+  width: 100%;
+  height: 40px;
+}
+
+@media (hover: hover) {
+  .qa-media-box.is-image:hover { border-color: var(--fg-3); }
+}
+
+/* A file that will not load keeps its place, unframed, and says so. */
+.qa-media-box.is-failed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-color: transparent;
+  background: none;
+  color: var(--fg-3);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: default;
+}
+
+.qa-media-box:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.qa-media-cap {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.qa-media-caption,
+.qa-media-option {
+  color: var(--fg-1);
+  overflow-wrap: anywhere;
+}
+
+.qa-media-option { font-weight: 600; }
+
+.qa-media-name {
+  color: var(--fg-3);
+  overflow-wrap: anywhere;
+}
+
+.qa-kind {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+/* An option's picture: inside the row, between the mark and the words, a
+   fixed square. */
+.qa-row-wrap { position: relative; min-width: 0; }
+.qa-row-wrap.has-shot > .qa-row { min-height: 78px; }
+
+.qa-row-shot {
+  flex: 0 0 64px;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+}
+
+.qa-row-shot.is-failed { border-color: transparent; background: none; }
+
+.qa-row-shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Beside the label, over the picture's corner: it opens the picture and
+   selects nothing. */
+/* The mark (20px) and the row's gap (12px) put the picture at 32px; this
+   sits over its top-right corner. */
+.qa-row-zoom {
+  position: absolute;
+  top: 9px;
+  left: 70px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
+  color: var(--fg-1);
+  cursor: zoom-in;
+}
+
+@media (hover: hover) {
+  .qa-row-zoom:hover { color: var(--fg-0); }
+}
+
+.qa-row-zoom:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* A finger's row is padded 11px (below), and its control is bigger. */
+@media (pointer: coarse) {
+  .qa-row-wrap.has-shot > .qa-row { min-height: 86px; }
+  .qa-row-zoom { top: 13px; left: 62px; width: 32px; height: 32px; }
+}
+
+/* The answered line, folded: small thumbnails and the count on the line's
+   one disclosure. Nothing is clipped: on a narrow screen the count and the
+   control go under the thumbnails. */
+.qa-media-line {
+  flex-wrap: wrap;
+  row-gap: 4px;
+  margin-top: 4px;
+}
+
+.qa-thumbs {
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.qa-thumb {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  box-sizing: border-box;
+  height: 28px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.qa-thumb.is-image {
+  width: 28px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.qa-thumb.is-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.qa-thumb.is-named {
+  min-width: 0;
+  max-width: 150px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  color: var(--fg-2);
+  font-size: 11.5px;
+}
+
+.qa-thumb-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qa-media-count { flex: 1 1 auto; white-space: nowrap; }
+
+.qa-media-opened {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 0 2px;
+}
+
+.qa-media-of-q {
+  margin: 0 0 4px;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 /* ---- The one button -------------------------------------------------------- */
 
 /* The decision colour as a tint under its own outline, like every answer a

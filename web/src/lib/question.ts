@@ -1,6 +1,7 @@
 // One question the agent put to the person, as the host lists it
 // (`question_pending`, `user-question`, `question-updated`).
 import type { Choice } from "./questionAnswer";
+import { mediaList, optionImage, type Media } from "./questionMedia";
 
 export type Question = {
   id: string;
@@ -17,6 +18,10 @@ export type Question = {
   /** Whether several of options may be picked at once. The agent asks for it
    *  per question: it is the only one that knows whether it can act on a set. */
   multiple?: boolean;
+  /** What the question shows: the host's snapshots, at most four. Read
+   *  through `questionMedia.mediaList`, never straight: an entry the page
+   *  cannot read is dropped and the question still draws. */
+  media?: Media[];
   /** A uuid shared by every question of the same `ask_user` call, present only
    *  when that call carried more than one. It is what makes them one block,
    *  and what lets App.tsx announce the call once rather than once per
@@ -51,6 +56,9 @@ export type AnsweredQuestion = {
   recommended?: number;
   multiple: boolean;
   answer: string;
+  /** What the question showed, read as `Question.media` is; absent when
+   *  none of it reads. */
+  media?: Media[];
 };
 
 /** A delivered question as the chat's record keeps it: one host event for
@@ -90,9 +98,11 @@ export function readQuestionAnswered(event: unknown): QuestionAnswered | null {
       ? q.options.flatMap((option): Choice[] => {
           const o = option && typeof option === "object" ? option as Record<string, unknown> : null;
           if (!o || !text(o.label)) return [];
-          return [text(o.description) ? { label: o.label, description: o.description } : { label: o.label }];
+          const image = optionImage(o.image);
+          return [{ label: o.label, ...(text(o.description) ? { description: o.description } : {}), ...(image ? { image } : {}) }];
         })
       : [];
+    const media = mediaList(q.media);
     questions.push({
       id: text(q.id) ? q.id : "",
       question: q.question,
@@ -100,6 +110,7 @@ export function readQuestionAnswered(event: unknown): QuestionAnswered | null {
       ...(typeof q.recommended === "number" ? { recommended: q.recommended } : {}),
       multiple: q.multiple === true,
       answer: q.answer,
+      ...(media.length ? { media } : {}),
     });
   }
   return { type: QUESTION_ANSWERED, id: bag.id, via: bag.via === "native" ? "native" : "tool", at: typeof bag.at === "number" ? bag.at : 0, questions };

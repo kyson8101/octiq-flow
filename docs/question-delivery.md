@@ -169,6 +169,27 @@ Fixtures: `web/src/lib/__fixtures__/host/question_media_pending.json` and
 `question_answered_media.json`, from `web::tests::
 an_ask_user_call_shows_the_snapshots_its_chat_uploaded_and_nothing_else`.
 
+**How the page draws it** (`web/src/lib/questionMedia.ts`,
+`web/src/components/QuestionMedia.tsx`). The page reads `media` and `image`
+tolerantly: an entry with no `id`, no `path` or an unknown `kind` is
+dropped, an option `image` that is not an image is dropped, and the
+question and the option still draw. Under the question's heading each file
+has a box of a fixed size before anything is fetched (a picture 168 by 112,
+fitted inside it; a video 16:9; a sound 40px high), with its caption and
+`name · size` under it. A picture is fetched as a blob through `/file` and
+opens the shared viewer; a video or a sound is the browser's player pointed
+at `/file` with `preload="metadata"`. Nothing is fetched until it is near
+what the transcript shows. A file that will not load keeps its box,
+unframed, with `Could not be shown` in it, so the button under the block
+does not move. An option's picture is a 64px square inside its row; the
+control that opens it full size is beside the label and selects nothing.
+On the answered line the media is folded on the line's one disclosure:
+28px thumbnails of the question's pictures and of the chosen option's,
+a video's or a sound's kind and name, and the count; opened, every file as
+under the question, the option's picture marked `Chosen · <label>`. Which
+option was chosen is read back from the answer the way the page wrote it
+(one label, or the labels in the order offered joined by `, `).
+
 ## The answered line
 
 `question-expired` takes a delivered question off every page, and the store

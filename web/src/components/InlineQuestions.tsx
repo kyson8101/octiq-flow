@@ -40,15 +40,17 @@ import { dropHeld, lastPointerPress, strayAnswer } from "../lib/pressGuard";
 import type { Question, QuestionAnswered } from "../lib/question";
 import { choicesOf, togglePick } from "../lib/questionAnswer";
 import {
-  answeredItems, answeredNote, asks, batchParts, partNote, pickAnswer, saidLines, startPick, stillMissing, submitReason, waitingLabel,
-  type AnsweredPlacement, type Batch, type Picked, type Placement, type Said,
+  answeredItems, answeredNote, asks, batchParts, partNote, pickAnswer, recordItems, saidLines, startPick, stillMissing, submitReason,
+  waitingLabel, withMediaOf, type AnsweredPlacement, type Batch, type Picked, type Placement, type Said,
 } from "../lib/questionBlock";
+import { mediaList } from "../lib/questionMedia";
 import { hiddenNow, revealWaiting, subscribeSight, watchBlock } from "../lib/questionSight";
 import {
   missingQuestionCommand, PartialQuestionSubmission, submitLegacyQuestionAnswers, submitQuestionAnswers,
   type QuestionReceipt,
 } from "../lib/submitQuestionAnswers";
 import { useLiveEntry } from "./Arrive";
+import { FoldedMedia, MediaStrip, PictureRow } from "./QuestionMedia";
 import "./InlineQuestions.css";
 
 /** What an older host is sent for a question dismissed without an answer; a
@@ -149,7 +151,7 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
     const answers = questions.map((q) => ({ id: q.id, answer: pickAnswer(q, pickOf(q)) }));
     try {
       const receipt = await submitQuestionAnswers((command, args) => bridge.invoke(command, args), answers);
-      onSent({ ids: answers.map((a) => a.id), items: questions.map((q, i) => ({ question: q.question, answer: answers[i].answer })), receipt });
+      onSent({ ids: answers.map((a) => a.id), items: recordItems(questions, answers.map((a) => a.answer)), receipt });
       // An older host keeps no record: its answers are gone from the list now.
       if (receipt === "delivered") onDone(answers.map((a) => a.id));
     } catch (failure) {
@@ -219,11 +221,12 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
         return (
           <div className="qa-q" key={question.id}>
             <p className="qa-q-title" id={titleId}>{question.question}</p>
+            <MediaStrip media={mediaList(question.media)} />
             {options.length === 0 ? typed : (
               <div className="qa-rows" role={many ? "group" : "radiogroup"} aria-labelledby={titleId}>
                 {options.map((choice, at) => {
                   const on = many ? pick.ticks.includes(choice.label) : !pick.other && pick.chosen === choice.label;
-                  return (
+                  const row = (shot: React.ReactNode) => (
                     <label className="qa-row" key={at}>
                       <input
                         type={many ? "checkbox" : "radio"}
@@ -235,6 +238,7 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
                           : { ...p, chosen: choice.label, other: false })}
                       />
                       <span className="qa-mark" aria-hidden="true" />
+                      {shot}
                       <span className="qa-row-copy">
                         <span className="qa-row-label">
                           {choice.label}
@@ -248,6 +252,9 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
                       </span>
                     </label>
                   );
+                  // A picture to choose by is inside the row; what opens it
+                  // full size is beside the label, so it selects nothing.
+                  return choice.image ? <PictureRow key={at} image={choice.image} row={row} /> : row(null);
                 })}
                 {/* Always the last row: "neither" is a real answer, and a
                     question that can only be answered one of two ways is a trap. */}
@@ -344,7 +351,7 @@ type Note = { title: string; tone: "quiet" | "warn"; why?: string };
 /** The questions once they ask nothing: a quiet line each, and what became
  *  of the answers when that is not simply "answered". */
 function Asked({ items, note, children }: {
-  items: readonly Pick<AskItem, "question">[];
+  items: readonly Pick<AskItem, "question" | "media">[];
   note?: Note | null;
   children?: React.ReactNode;
 }) {
@@ -352,6 +359,9 @@ function Asked({ items, note, children }: {
     <div className="qa-asked">
       <span className="qa-asked-label">{items.length === 1 ? "Asked" : `Asked ${items.length} questions`}</span>
       {items.map((item, index) => <p className="qa-asked-q" key={index}>{item.question}</p>)}
+      {/* What the questions showed: folded thumbnails, on the line's one
+          disclosure. */}
+      <FoldedMedia items={items} />
       {note && (
         <div className="qa-note" data-tone={note.tone} role={note.tone === "warn" ? "status" : undefined}>
           <span>{note.title}</span>
@@ -391,7 +401,7 @@ function Recorded({ batch, onDone }: { batch: Batch; onDone: (ids: string[]) => 
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally { setWorking(false); }
   };
-  const items = batch.questions.map((q) => ({ question: q.question, answer: q.answer ?? "" }));
+  const items = recordItems(batch.questions);
   return (
     <>
       <Asked items={items} note={note}>
@@ -438,10 +448,10 @@ function BatchView({ batch, onDone, sent, onSent }: {
   const { said, open } = batchParts(batch, sent?.ids);
   // What is answered so far, in the order asked: the host's answer when it
   // holds one, else what this page sent and has not heard back about.
-  const items = said.map((q) => {
+  const items = recordItems(said, said.map((q) => {
     const mine = sent ? sent.ids.indexOf(q.id) : -1;
-    return { question: q.question, answer: q.answer ?? (mine >= 0 ? sent!.items[mine]?.answer ?? "" : "") };
-  });
+    return mine >= 0 ? sent!.items[mine]?.answer ?? "" : "";
+  }));
   const heard = said.every((q) => q.answer !== undefined);
   // Sent from here, all of it, and the host's own word has not arrived yet.
   if (!open.length) return <><Asked items={items} note={sent ? receiptNote(sent.receipt) : null} /><AnswerBubble lines={saidLines(items)} /></>;
@@ -503,8 +513,9 @@ export function AskInline({ toolId, asked, late }: {
   } else if (!asked) {
     body = <p className={`qa-asking ${entry}`}>Asking a question…</p>;
   } else if (asked.some((item) => item.answer)) {
-    // What the person said, from the call's own result.
-    body = <><Asked items={asked} /><AnswerBubble lines={saidLines(asked)} /></>;
+    // What the person said, from the call's own result; what it showed,
+    // from the host's line for the call when the record holds one.
+    body = <><Asked items={withMediaOf(asked, recorded)} /><AnswerBubble lines={saidLines(asked)} /></>;
   } else if (recorded) {
     // Handed over while the call waited: the host's line says what, before
     // the call's result does and in every tab.

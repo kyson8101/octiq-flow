@@ -16,6 +16,8 @@
 // as one list either way; this file is what turns the call's arguments and its
 // (possibly multi-part) result into that list.
 
+import type { Shown } from "./questionMedia";
+
 /** The tool. Print mode is never offered `AskUserQuestion`, so questions only
  *  ever arrive through our own MCP server — one name, not a family. */
 const ASK_TOOL = "mcp__octiq__ask_user";
@@ -71,6 +73,10 @@ export type AskItem = {
   /** The call ended with the question still open, so an answer may have come
    *  later, as a turn of the host's (`lib/questionBlock.answerTurn`). */
   later?: true;
+  /** What the question showed, when the host's record of it says
+   *  (`questionMedia.shownMedia`). A call's own arguments and result never
+   *  carry it: the agent sent paths, the host keeps snapshots. */
+  media?: Shown[];
 };
 
 /** One item, read for a whole-result string that already belongs to it alone —
