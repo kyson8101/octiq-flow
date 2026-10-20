@@ -66,23 +66,59 @@ export function optionImage(raw: unknown): Media | undefined {
   return media?.kind === "image" ? media : undefined;
 }
 
+/** The most readings of a set's answer looked at before it is called
+ *  ambiguous. A handful of options gives a handful; this only bounds a
+ *  pathological list of labels that are prefixes of one another. */
+const READINGS_MAX = 256;
+
 /** The labels an answer chose, of the labels on offer, read the way
  *  `questionAnswer.composeAnswer` writes them: one label, or the chosen
- *  labels in the order offered joined by ", ", then any typed words. */
+ *  labels in the order offered joined by ", ", then any typed words.
+ *
+ *  Labels may hold ", " and one may start another (`A` and `A, B`), so the
+ *  text can have several readings. Every reading is worked out, and the
+ *  answer names a set only when there is one:
+ *  - a reading made of offered labels alone, each once, that covers the
+ *    whole answer; several such readings are ambiguous;
+ *  - else a reading that ends in typed words that do not begin with a
+ *    label it could still have taken; several such readings are ambiguous.
+ *  Ambiguous is `[]`: no option is shown as chosen rather than a wrong one. */
 export function chosenLabels(answer: string, labels: readonly string[], many: boolean): string[] {
   const said = answer.trim();
   if (!said) return [];
   if (!many) return labels.includes(said) ? [said] : [];
-  const chosen: string[] = [];
-  let rest = said;
-  for (const label of labels) {
-    if (rest === label) return [...chosen, label];
-    if (rest.startsWith(`${label}, `)) {
-      chosen.push(label);
-      rest = rest.slice(label.length + 2);
+  const whole: number[][] = [];
+  const typed: number[][] = [];
+  let readings = 0;
+  const walk = (rest: string, from: number, chosen: number[]) => {
+    if (readings > READINGS_MAX) return;
+    let longer = false;
+    for (let i = from; i < labels.length; i++) {
+      const label = labels[i];
+      if (!label) continue;
+      if (rest === label) {
+        readings++;
+        whole.push([...chosen, i]);
+        longer = true;
+      } else if (rest.startsWith(`${label}, `)) {
+        longer = true;
+        walk(rest.slice(label.length + 2), i + 1, [...chosen, i]);
+      }
     }
-  }
-  return chosen;
+    // What is left is typed words, unless a label still on offer begins it.
+    if (!longer) {
+      readings++;
+      typed.push(chosen);
+    }
+  };
+  walk(said, 0, []);
+  if (readings > READINGS_MAX) return [];
+  const one = (found: number[][]) => {
+    const sets = new Set(found.map((chosen) => chosen.map((i) => labels[i]).join("\u0000")));
+    return sets.size === 1 ? found[0].map((i) => labels[i]) : null;
+  };
+  if (whole.length) return one(whole) ?? [];
+  return one(typed) ?? [];
 }
 
 /** What the answered line shows of one question: its media, then the

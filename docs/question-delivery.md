@@ -188,7 +188,13 @@ On the answered line the media is folded on the line's one disclosure:
 a video's or a sound's kind and name, and the count; opened, every file as
 under the question, the option's picture marked `Chosen · <label>`. Which
 option was chosen is read back from the answer the way the page wrote it
-(one label, or the labels in the order offered joined by `, `).
+(one label, or the labels in the order offered joined by `, `). Labels may
+hold `, ` or start one another (`A` and `A, B`), so every reading is worked
+out: one that is whole labels alone wins, then one that ends in typed words;
+an answer that still reads two ways shows no option's picture as chosen
+(`questionMedia.chosenLabels`). On a finger's screen the enlarge control
+hangs off the picture's top-right corner, clear of its middle, so a tap on
+the picture chooses the row.
 
 ## The answered line
 

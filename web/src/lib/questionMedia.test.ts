@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { hostFacts } from "./__fixtures__/hostFacts";
 import { readQuestionAnswered } from "./question";
-import { choicesOf } from "./questionAnswer";
+import { choicesOf, composeAnswer } from "./questionAnswer";
 import { answeredItems, recordItems, withMediaOf } from "./questionBlock";
 import { bytesLabel, chosenLabels, MEDIA_MAX, mediaCount, mediaList, optionImage, readMedia, shownMedia } from "./questionMedia";
 
@@ -106,6 +106,27 @@ describe("which options an answer chose", () => {
     expect(chosenLabels("Keep, Change, then ship", labels, true)).toEqual(["Keep", "Change, then ship"]);
     expect(chosenLabels("Keep, Drop, and a note", labels, true)).toEqual(["Keep", "Drop"]);
     expect(chosenLabels("", labels, true)).toEqual([]);
+  });
+  it("prefers a reading of whole labels, so one label that starts another is not taken for it", () => {
+    const prefix = ["A", "A, B"];
+    expect(chosenLabels("A, B", prefix, true)).toEqual(["A, B"]);
+    expect(chosenLabels("A", prefix, true)).toEqual(["A"]);
+    expect(chosenLabels("A, A, B", prefix, true)).toEqual(["A", "A, B"]);
+    const comma = ["Red, green", "Blue", "Red"];
+    expect(chosenLabels("Red, green, Red", comma, true)).toEqual(["Red, green", "Red"]);
+    expect(chosenLabels("Blue, Red, and teal", comma, true)).toEqual(["Blue", "Red"]);
+  });
+  it("names no option when the answer reads two ways", () => {
+    // `A, B, C` is A then the typed `B, C`, or `A, B` then the typed `C`.
+    expect(chosenLabels("A, B, C", ["A", "A, B"], true)).toEqual([]);
+    // Two whole readings: `X, Y` alone, or `X` then `Y`.
+    expect(chosenLabels("X, Y", ["X", "X, Y", "Y"], true)).toEqual([]);
+  });
+  it("marks the image of the option that was chosen, not one whose label starts it", () => {
+    const [a, ab] = [{ ...home, id: "a" }, { ...home, id: "ab" }];
+    const question = { multiple: true, options: [{ label: "A", image: a }, { label: "A, B", image: ab }] };
+    expect(shownMedia(question, composeAnswer(["A", "A, B"], ["A, B"], "")).map((m) => [m.id, m.option])).toEqual([["ab", "A, B"]]);
+    expect(shownMedia(question, "A, B, C")).toEqual([]);
   });
   it("takes the media of a question with no options as its own", () => {
     expect(shownMedia({ media: pending.media }, "anything")).toEqual(pending.media);

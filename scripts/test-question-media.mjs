@@ -211,7 +211,20 @@ async function askScene(browser, size) {
   assert.equal(Math.round(out.imageBox.h), 112, `${label}: and 112 high`);
   assert.equal(Math.round(out.rowShot.w), 64, `${label}: an option's picture is a 64px square`);
   out.zoom = await box(page.locator(".qa-row-zoom").first());
-  assert.ok(out.zoom.l >= out.rowShot.l && out.zoom.r <= out.rowShot.r + 0.5 && out.zoom.t >= out.rowShot.t, `${label}: the enlarge control sits on the picture's corner (${JSON.stringify({ zoom: out.zoom, shot: out.rowShot })})`);
+  // The enlarge control is at the picture's top-right corner, never over its
+  // middle, and covers at most a quarter of it: a press on most of the
+  // picture is a press on the row.
+  const [zoom, shot] = [out.zoom, out.rowShot];
+  const shotMid = { x: (shot.l + shot.r) / 2, y: (shot.t + shot.b) / 2 };
+  const covered = Math.max(0, Math.min(zoom.r, shot.r) - Math.max(zoom.l, shot.l)) * Math.max(0, Math.min(zoom.b, shot.b) - Math.max(zoom.t, shot.t));
+  const where = JSON.stringify({ zoom, shot });
+  assert.ok(zoom.l > shotMid.x && zoom.b < shotMid.y && zoom.r >= shot.r - 4 && zoom.t <= shot.t + 4, `${label}: the enlarge control sits at the picture's top-right corner, clear of its middle (${where})`);
+  assert.ok(covered <= shot.w * shot.h / 4, `${label}: and covers at most a quarter of it (${covered} of ${shot.w * shot.h})`);
+  out.coarse = await page.evaluate(() => matchMedia("(pointer: coarse)").matches);
+  if (out.coarse) assert.ok(zoom.w >= 32 && zoom.h >= 32, `${label}: a finger's enlarge control is at least 32px (${where})`);
+  out.zoomCovers = Math.round(100 * covered / (shot.w * shot.h));
+  out.middleHits = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".qa-row-zoom, label.qa-row")?.className ?? null, shotMid);
+  assert.match(out.middleHits ?? "", /qa-row\b/, `${label}: the picture's middle is the row's (${out.middleHits})`);
   await page.screenshot({ path: join(artifacts, `${theme}-ask-waiting-${size.name}.png`) });
 
   await release();
