@@ -341,7 +341,7 @@ function ChatTaskPanel({
 
       {persona && (
         <div className="chat-task-agent" title={[persona.role, context?.runsOn].filter(Boolean).join("\n") || undefined}>
-          <AgentAvatar name={persona.name} avatar={persona.avatar} id={persona.id} size={28} removed={persona.removed} decorative />
+          <AgentAvatar island name={persona.name} avatar={persona.avatar} id={persona.id} size={48} removed={persona.removed} decorative />
           <span className="chat-task-agent-copy">
             <strong>{persona.name}</strong>
             <span>{[persona.removed ? "No longer registered" : "", phase, context?.runsOn].filter(Boolean).join(" · ")}</span>

@@ -16,11 +16,15 @@
 import { describe, expect, it } from "vitest";
 import appRaw from "../App.tsx?raw";
 import agentsPageRaw from "../components/AgentsDashboard.tsx?raw";
+import agentRowsRaw from "./useAgentRows.ts?raw";
+import islandPageRaw from "../components/IslandPage.tsx?raw";
 import { lf } from "./sourceText";
 
 // Read with one kind of line end, so a pattern may name `\n` on a CRLF checkout too.
 const app = lf(appRaw);
 const agentsPage = lf(agentsPageRaw);
+const agentRows = lf(agentRowsRaw);
+const islandPage = lf(islandPageRaw);
 
 /** One hand-off: what it is, and the text that makes it. */
 const SITES: { name: string; has: RegExp }[] = [
@@ -28,6 +32,8 @@ const SITES: { name: string; has: RegExp }[] = [
   { name: "one reading of the cards", has: /const pendingHeld = pendingRead\.held;/ },
   // The Agents page.
   { name: "the Agents page", has: /<AgentsDashboard\b[^>]*?\bheld=\{pendingHeld\}/s },
+  // The island, whose robots raise a hand for what waits on the person.
+  { name: "the island", has: /<IslandPage\b[^>]*?\bheld=\{pendingHeld\}/s },
   // The line above the composer.
   { name: "the strip", has: /chatStrip\(currentWorkflow, Date\.now\(\), pendingHeld\)/ },
   // The top bar's Tasks button.
@@ -49,7 +55,7 @@ describe("the app's hand-off of the cards the page holds", () => {
     expect(missing(app)).toEqual([]);
     // Exactly one reading is made, and nothing else is called `held`.
     expect(app.match(/pendingReading\(/g)).toHaveLength(1);
-    expect(app.match(/\bheld=\{/g)).toEqual(["held={", "held={"]);
+    expect(app.match(/\bheld=\{/g)).toEqual(["held={", "held={", "held={"]);
   });
 
   it("fails for the reviewer's mutation, and for the others like it", () => {
@@ -68,7 +74,16 @@ describe("the app's hand-off of the cards the page holds", () => {
   it("makes the Agents page's cards a required prop, so dropping them does not compile", () => {
     expect(agentsPage).toMatch(/\n  held: Waiting;\n/);
     expect(agentsPage).not.toMatch(/\bheld\?: Waiting/);
-    // And the page passes them on to the one function that reads the roster.
-    expect(agentsPage).toMatch(/const rows = agentRoster\(\{[\s\S]{0,400}?\bwaitingOn, held, now,\n\s*\}\);/);
+    // And the page passes them on to the hook that reads the roster
+    // (shared with the island), which hands them to the one function that
+    // reads it, and requires them too.
+    expect(agentsPage).toMatch(/useAgentRows\(\{[\s\S]{0,300}?\bheld\b[\s\S]{0,100}?\}\)/);
+    expect(agentRows).toMatch(/\n  held: Waiting;\n/);
+    expect(agentRows).not.toMatch(/\bheld\?: Waiting/);
+    expect(agentRows).toMatch(/const rows = agentRoster\(\{[\s\S]{0,400}?\bwaitingOn, held, now,\n\s*\}\);/);
+    // The island reads its agents through the same hook, and requires the
+    // cards the same way.
+    expect(islandPage).toMatch(/\n  held: Waiting;\n/);
+    expect(islandPage).toMatch(/useAgentRows\(\{[^}]*?\bheld\b[^}]*\}\)/);
   });
 });

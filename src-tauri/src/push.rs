@@ -253,6 +253,9 @@ pub fn route_workers_through(store: Arc<crate::orchestration::OrchestrationStore
 /// worker (empty when its run is gone). Mirrors `announcedOn` in
 /// `web/src/lib/notify.ts`.
 pub fn announced_on(chat_key: &str, kind: &str, coordinator: Option<&str>) -> Option<String> {
+    if chat_key.starts_with("chat:island-wish-") {
+        return None;
+    }
     let worker = chat_key.starts_with("chat:orch-") || coordinator.is_some();
     if !worker {
         return Some(chat_key.to_string());

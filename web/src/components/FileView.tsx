@@ -32,6 +32,8 @@ import { CodeEditor } from "./CodeEditor";
 import { ProseLink } from "./ProseLink";
 import { ProseTable } from "./ProseTable";
 import { RollingText } from "./RollingNumber";
+import { ReviewVideo } from "./ReviewVideo";
+import { MediaComments } from "./MediaComments";
 
 /** The same box the transcript puts a table in, for the same reason: a table
  *  is sized by its cells, so a wide one in a README stuck out of the pane and
@@ -235,8 +237,9 @@ function ImageDoc({ path }: { path: string }) {
   if (error) return <div className="panel-error">{error}</div>;
   if (!url) return <div className="dots" aria-label="loading" />;
   return (
-    <div className="ws-image">
+    <div className="ws-image ws-image-review">
       <img src={url} alt={baseName(path)} />
+      <MediaComments key={path} path={path} />
     </div>
   );
 }
@@ -259,15 +262,8 @@ function VideoDoc({ path, size }: { path: string; size: number }) {
   }
 
   return (
-    <div className="ws-video">
-      <video
-        src={bridge.fileUrl(path)}
-        controls
-        playsInline
-        preload="metadata"
-        aria-label={baseName(path)}
-        onError={() => setUnplayable(true)}
-      />
+    <div className="ws-video ws-video-review">
+      <ReviewVideo path={path} onError={() => setUnplayable(true)} />
     </div>
   );
 }

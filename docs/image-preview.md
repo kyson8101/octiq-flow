@@ -97,3 +97,31 @@ node scripts/test-image-preview.mjs
 The browser test uses Vite, Playwright and isolated transport/image fixtures;
 it does not connect to real chats. Set `OCTIQFLOW_PLAYWRIGHT_MODULE` and
 `OCTIQFLOW_CHROME_EXECUTABLE` when Playwright/Chrome are installed elsewhere.
+
+## Image and video review comments
+
+Images in the Preview panel and full-screen viewer have a **Comments** button.
+Videos in replies and the file dock share the same player and comment panel.
+Opening comments pauses a video. Focusing a draft captures the current playback
+time in milliseconds; later playback does not move that draft's anchor.
+**Use current time** explicitly captures a different time. Clicking a saved
+comment's time or timeline marker pauses and seeks the same player.
+
+**Save comment** saves a note without sending a chat message. **Add to chat**
+puts the note, absolute source path, source revision and video timestamp in the
+current composer for the person to send. Images have a creation timestamp but
+no invented playback time. Failed saves retain the draft, and retries reuse a
+comment id to avoid duplicates.
+
+Notes live under `<profile>/media-comments/`, never inside the media file.
+A thread is keyed by canonical path and a digest of file size plus nanosecond
+modification time. This is metadata identity, not a content hash. Immutable
+preview snapshot paths keep image versions independent. Ordinary source
+replacement starts a new thread and never reattaches an old draft silently;
+old threads remain stored. This does not detect edits that deliberately retain
+both size and modification time. Missing/replaced profiles and unreadable note
+files return an error instead of being treated as an empty review.
+
+Browser commands are `media_comments_list {path}`, `media_comment_add {path,
+revision, id, text, timeMs?}`, and `media_comment_remove {path, revision, id}`.
+Writes are serialized and announced after saving (`media-comments-changed`).

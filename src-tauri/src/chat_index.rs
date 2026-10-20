@@ -315,6 +315,15 @@ pub fn listed_ids() -> Result<std::collections::BTreeSet<String>, String> {
         .collect())
 }
 
+/// One active chat, without treating an unreadable index as an empty one.
+pub fn find(id: &str) -> Result<Option<ChatMeta>, String> {
+    let index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    Ok(index
+        .chats
+        .into_iter()
+        .find(|chat| chat.id == id && chat.deleted_at.is_none()))
+}
+
 /// Every chat, pinned ones first and then most recently active — the order the
 /// task-oriented sidebar shows them in.
 pub fn list() -> Vec<ChatMeta> {

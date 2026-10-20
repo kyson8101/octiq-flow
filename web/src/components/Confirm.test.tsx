@@ -103,6 +103,7 @@ describe("who asks through the shared question", () => {
       "App.tsx",                       // Close a mission after its chat was completed
       "components/EditorMode.tsx",     // Discard changes, Reload from disk, Overwrite
       "components/FilePanel.tsx",      // Discard changes
+      "components/IslandPage.tsx",     // Say goodbye to an island bot
       "components/ProjectSettings.tsx", // Delete a project
       "components/ReopenedNote.tsx",   // Stop a task's worker
       "components/TerminalDrawer.tsx", // Delete a saved command
