@@ -8,16 +8,13 @@ import "./AgentsSettings.css";
 import "./AgentsDashboard.css";
 import "./ProjectsPage.css";
 import { WorkspaceHeader, useWorkspaceSlot } from "./WorkspaceHeader";
-import { AGENT_NAME } from "../lib/agentProviders";
-import { loadAgentTeams, loadLeads, loadTeam, onTeamChanged, teamModelLabel, type AgentTeam, type TeamAgent } from "../lib/agentsMode";
 import {
-  AGENT_STATE_LABELS, agentRoster, rosterSummary,
-  type AgentActivity, type AgentRow, type ChatActivity, type LeadRecord,
+  AGENT_STATE_LABELS, rosterSummary,
+  type AgentActivity, type AgentRow,
 } from "../lib/agentsDashboard";
 import type { OrchestrationSnapshot } from "../lib/orchestration";
 import type { Waiting } from "../lib/runWaits";
-import { useHoldClock } from "../lib/useHoldClock";
-import { bridge } from "../lib/bridge";
+import { useAgentRows } from "../lib/useAgentRows";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentRole } from "./AgentRole";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
@@ -26,8 +23,6 @@ import { loadLevels, type LevelSummary } from "../lib/agentLevels";
 
 /** How many of an agent's current items show before "Show all". */
 const SHOWN = 3;
-
-type Activity = { key: string; busy: boolean };
 
 export function AgentsDashboard({
   snapshot, ledgerError, connected, projects, running, busy, waitingOn, held, chatTitle, chatExists,
@@ -58,11 +53,6 @@ export function AgentsDashboard({
   onManage: () => void;
   onClose: () => void;
 }) {
-  const [team, setTeam] = useState<TeamAgent[] | null>(null);
-  const [teams, setTeams] = useState<AgentTeam[]>([]);
-  const [leads, setLeads] = useState<LeadRecord[]>([]);
-  const [error, setError] = useState("");
-  const [serverActivity, setServerActivity] = useState<ReadonlyMap<string, boolean> | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [openError, setOpenError] = useState("");
   const [levels, setLevels] = useState<ReadonlyMap<string, LevelSummary>>(new Map());
@@ -92,61 +82,10 @@ export function AgentsDashboard({
     return () => { alive = false; };
   }, [connected, accepted, levelsRead]);
 
-  // Every registered agent, not the current chat's project's: this page is
-  // the whole roster. Read again on every reconnect, since agents may have
-  // been added or renamed from another device meanwhile.
-  useEffect(() => {
-    if (!connected) return;
-    let alive = true;
-    // An older backend has no teams; its rows simply carry no badge.
-    Promise.all([loadTeam(null, true), loadLeads(), loadAgentTeams().catch(() => [])])
-      .then(([agents, records, groups]) => {
-        if (!alive) return;
-        setTeam(agents);
-        setTeams(groups);
-        setLeads(records);
-        setError("");
-      })
-      .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); });
-    // An agent registered or changed from a chat, once the person approved it.
-    const off = onTeamChanged(() => {
-      loadTeam(null, true).then((agents) => { if (alive) setTeam(agents); }).catch(() => {});
-    });
-    return () => { alive = false; off(); };
-  }, [connected]);
-
-  // Which lead conversations are mid-turn. A page that has just loaded has
-  // seen no events from them, so it asks the host; asked again whenever a
-  // chat starts, stops or changes turn, never on a timer.
-  const liveSignature = useMemo(() => [...running].sort().join(",") + "|" + [...busy].sort().join(","), [running, busy]);
-  useEffect(() => {
-    if (!connected) return;
-    let alive = true;
-    bridge.invoke<Activity[]>("chat_activity")
-      .then((list) => { if (alive) setServerActivity(new Map((list ?? []).map((item) => [item.key, item.busy]))); })
-      // An older backend: this page's own evidence is all there is.
-      .catch(() => { if (alive) setServerActivity(null); });
-    return () => { alive = false; };
-  }, [connected, liveSignature]);
-
-  const leadActivity = (chatKey: string): ChatActivity => {
-    const id = chatKey.replace(/^chat:/, "");
-    if (busy.has(id)) return "busy";
-    const known = serverActivity?.get(chatKey);
-    if (known !== undefined) return known ? "busy" : "idle";
-    if (serverActivity) return "ended";
-    return running.has(id) ? "unknown" : "ended";
-  };
-
-  const projectList = useMemo(() => projects.map(({ id, name }) => ({ id, name })), [projects]);
-  // The one reading here that a clock moves: a reopened task whose notice
-  // has stayed unconfirmed takes the warning colour. It moves once per
-  // hold, when that hold has lasted, and never ticks (`useHoldClock`).
-  const now = useHoldClock(snapshot?.tasks);
-  const rows = agentRoster({
-    team, leads, snapshot, projects: projectList, teams,
-    providerLabel: (agent) => `${AGENT_NAME[agent.agent]} ${teamModelLabel(agent)}`,
-    chatTitle, chatExists, leadActivity, waitingOn, held, now,
+  // The roster and what each agent is doing: the one reading the island
+  // takes too (`lib/useAgentRows`).
+  const { rows, team, error } = useAgentRows({
+    connected, snapshot, projects, running, busy, waitingOn, held, chatTitle, chatExists,
   });
   const summary = rosterSummary(rows);
   const stale = !connected || !!ledgerError;

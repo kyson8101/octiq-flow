@@ -1,0 +1,415 @@
+/* The island page (components/IslandPage): the 3D stage, the card of the
+   robot being watched, and the side panel of wishes and residents. Tokens
+   only; the world itself has its own colours. */
+
+.island-body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.island-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-1);
+}
+
+.island-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The camera takes drags and pinches; the page does not scroll under it. */
+  touch-action: none;
+  outline: none;
+}
+
+.island-name {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--bg-0) 90%, transparent);
+  box-shadow: var(--shadow-sm);
+  color: var(--fg-0);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  will-change: transform;
+}
+.island-name.is-selected { font-size: 12.5px; }
+.island-name[hidden] { display: none; }
+
+.island-note {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  max-width: min(360px, calc(100% - 32px));
+  margin: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-0);
+  box-shadow: var(--shadow);
+  color: var(--fg-1);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+.island-note p { margin: 0; }
+.island-note.is-quiet { border-color: transparent; box-shadow: none; background: transparent; color: var(--fg-2); }
+
+.island-meta {
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+/* The robot being watched. */
+.island-card {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  display: grid;
+  gap: 10px;
+  width: min(320px, calc(100% - 32px));
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-0);
+  box-shadow: var(--shadow);
+  color: var(--fg-1);
+  animation: island-arrive 180ms var(--enter-ease, ease-out) both;
+}
+@keyframes island-arrive {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.island-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.island-card-who {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.island-card-name {
+  overflow: hidden;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.island-card-status {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.island-card-status[data-tone="decide"] { color: var(--decide); }
+.island-card-status[data-tone="danger"] { color: var(--danger); }
+.island-card-home { margin: -6px 0 0; }
+
+.island-card-said {
+  margin: -4px 0 0;
+  color: var(--fg-1);
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.island-boredom {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 3.2em;
+  align-items: center;
+  gap: 8px;
+}
+.island-boredom-bar {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+}
+.island-boredom-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--fg-3);
+  transition: width 400ms var(--enter-ease, ease-out);
+}
+.island-boredom-value { text-align: right; font-variant-numeric: tabular-nums; }
+
+.island-card-wish {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+.island-card-wish p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.island-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.island-card-actions:empty { display: none; }
+
+/* A wish is the person's to grant: the decision colour, as a tint. */
+.island-grant.projects-page-primary {
+  flex: none;
+  border-color: color-mix(in srgb, var(--decide) 40%, transparent);
+  background: var(--decide-tint);
+  color: var(--decide);
+  font-weight: 600;
+}
+.island-grant.projects-page-primary:hover {
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-0));
+}
+
+.island-close {
+  display: inline-grid;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.island-close:hover { background: var(--bg-1); color: var(--fg-0); }
+
+/* A robot, small: its body colour round its trim. */
+.island-dot {
+  display: inline-grid;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  border-radius: 40%;
+  background: var(--robot-trim, var(--fg-3));
+  box-shadow: inset 0 0 0 2px var(--robot-shell, var(--bg-2));
+}
+.island-dot > span {
+  width: 45%;
+  height: 22%;
+  border-radius: var(--r-pill);
+  background: var(--robot-glow, var(--bg-0));
+}
+.island-dot.is-large { width: 30px; height: 30px; border-radius: 34%; box-shadow: inset 0 0 0 3px var(--robot-shell, var(--bg-2)); }
+
+/* The panel: wishes, how often they come, who lives here. */
+.island-panel {
+  flex: 0 0 320px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px 18px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-0);
+  color: var(--fg-1);
+}
+.island-panel h2 {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: 13px;
+  font-weight: 600;
+}
+.island-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.island-panel-sub { margin-top: 18px !important; margin-bottom: 6px !important; }
+.island-empty {
+  margin: 4px 0 8px;
+  color: var(--fg-3);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.island-error {
+  margin: 0 0 8px;
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.island-wishes {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.island-wish {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.island-wish-who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.island-wish-who .island-meta { margin-left: auto; }
+.island-wish-who:disabled { cursor: default; color: var(--fg-2); }
+.island-wish-text {
+  margin: 4px 0 10px;
+  color: var(--fg-1);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.island-wish-actions { display: flex; gap: 8px; }
+
+.island-pace {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 4px;
+  color: var(--fg-2);
+  font-size: 12.5px;
+}
+.island-pace select {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font: inherit;
+}
+
+.island-granted { margin-top: 14px; }
+.island-granted ul {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0 0 0 18px;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.island-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.island-disclosure:hover { color: var(--fg-0); }
+.island-chevron { transition: transform 160ms var(--enter-ease, ease-out); }
+.island-chevron.is-open { transform: rotate(90deg); }
+
+.island-residents {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.island-residents button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.island-residents button:hover { background: var(--bg-1); }
+.island-residents button[aria-pressed="true"] { background: var(--bg-2); color: var(--fg-0); }
+.island-resident-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.island-residents .island-meta { margin-left: auto; white-space: nowrap; }
+.island-has-wish { display: inline-flex; color: var(--fg-2); }
+
+.island-wishes-button { position: relative; }
+.island-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
+@media (max-width: 860px) {
+  .island-panel {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 3;
+    max-height: 62%;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    box-shadow: var(--shadow);
+  }
+  .island-card { right: 12px; bottom: 12px; left: 12px; width: auto; }
+  .island-close { width: 40px; height: 40px; }
+  .island-residents button { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island-card { animation: none; }
+  .island-chevron { transition: none; }
+}
