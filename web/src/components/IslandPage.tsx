@@ -202,12 +202,13 @@ export default function IslandPage({
       title={wishes.length ? `${wishes.length} open ${wishes.length === 1 ? "wish" : "wishes"}` : "Wishes and residents"}>
       <GiftIcon /><span>Wishes</span>{wishes.length > 0 && <span className="island-count">{wishes.length}</span>}
     </button>
-    <button type="button" className="projects-page-secondary" disabled={!feed.island || bots >= 16 || !!busyAction}
-      onClick={() => void act("invite", feed.inviteBot)} title={bots >= 16 ? "The island is full: 16 波特 at most" : "A new 波特 arrives by boat"}>
+    <button type="button" className="projects-page-secondary island-compact" disabled={!feed.island || bots >= 16 || !!busyAction}
+      onClick={() => void act("invite", feed.inviteBot)} aria-label="Invite a 波特"
+      title={bots >= 16 ? "The island is full: 16 波特 at most" : "A new 波特 arrives by boat"}>
       <BoatIcon /><span>Invite a 波特</span>
     </button>
-    <button type="button" className="projects-page-secondary" onClick={() => { setSelected(null); view.current?.recenter(); }}
-      disabled={drawn !== "yes"} title="See the whole island">
+    <button type="button" className="projects-page-secondary island-compact" onClick={() => { setSelected(null); view.current?.recenter(); }}
+      disabled={drawn !== "yes"} aria-label="See the whole island" title="See the whole island">
       <IslandIcon /><span>Whole island</span>
     </button>
   </>;

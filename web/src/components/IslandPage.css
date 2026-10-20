@@ -391,6 +391,12 @@
   text-align: center;
 }
 
+/* Too narrow for three labelled buttons: the two that say what their icon
+   says keep the icon (and their name, for a screen reader and a tooltip). */
+@media (max-width: 600px) {
+  .island-compact > span { display: none; }
+}
+
 @media (max-width: 860px) {
   .island-panel {
     position: absolute;

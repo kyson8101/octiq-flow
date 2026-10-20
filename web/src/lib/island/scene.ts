@@ -249,6 +249,9 @@ export class IslandView {
     const height = Math.max(1, this.host.clientHeight);
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
+    // A tall, narrow screen (a phone) gets a wider lens, so it sees about as
+    // much of the island side to side as a wide one does.
+    this.camera.fov = this.camera.aspect < 1 ? Math.min(62, 38 / Math.sqrt(this.camera.aspect)) : 38;
     this.camera.updateProjectionMatrix();
   }
 
@@ -699,8 +702,10 @@ export class IslandView {
       const robot = key ? this.sim.robots.get(key) : undefined;
       const view = key ? this.robots.get(key) : undefined;
       if (!robot || !view) { element.hidden = true; return; }
+      // Under its feet, where what it says over its head never covers it.
       const sitting = SEATED.has(robot.pose);
-      const point = new Vector3(robot.x, view.rig.root.position.y + (sitting ? 1.0 - HIP_HEIGHT : 1.0) + 0.22, robot.z).project(this.camera);
+      const feet = view.rig.root.position.y - (sitting ? HIP_HEIGHT : 0);
+      const point = new Vector3(robot.x, feet, robot.z).project(this.camera);
       if (point.z > 1) { element.hidden = true; return; }
       const rect = this.canvas.getBoundingClientRect();
       const x = (point.x * 0.5 + 0.5) * rect.width;
@@ -708,7 +713,7 @@ export class IslandView {
       element.hidden = false;
       const name = this.residents.find((r) => r.key === key)?.name ?? "";
       if (element.textContent !== name) element.textContent = name;
-      element.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%, -100%)`;
+      element.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%, 6px)`;
     };
     place(this.labels.selected, this.selected);
     place(this.labels.hover, this.hovered && this.hovered !== this.selected ? this.hovered : null);
