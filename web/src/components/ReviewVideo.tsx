@@ -3,13 +3,33 @@ import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { playbackMs } from "../lib/mediaComments";
 import { MediaComments } from "./MediaComments";
+import { useMediaSlot } from "./MediaSlot";
 
 /** Shared by the file dock and inline video previews, using the SAME player
- *  for playback, comment capture and seeks. Nothing downloads the whole clip. */
-export function ReviewVideo({ path, onError }: { path: string; onError: () => void }) {
-  const video = useRef<HTMLVideoElement>(null);
+ *  for playback, comment capture and seeks. Nothing downloads the whole clip.
+ *
+ *  The `<video>` is made by `lib/nowPlaying` and put into the slot below, so a
+ *  playing one in a chat (`chat` set) goes on playing when the person goes to
+ *  another chat. The file dock passes no chat and keeps its player to itself. */
+export function ReviewVideo({ path, onError, chat = null }: { path: string; onError: () => void; chat?: string | null }) {
+  const video = useRef<HTMLVideoElement | null>(null);
   const [comments, setComments] = useState(false);
   const [duration, setDuration] = useState(0);
+  const failed = useRef(onError);
+  failed.current = onError;
+  const slot = useMediaSlot<HTMLVideoElement>({ chat, path, kind: "video", name: baseName(path) }, bridge.fileUrl(path), (el) => {
+    video.current = el;
+    const meta = () => setDuration(el.duration || 0);
+    const error = () => failed.current();
+    if (el.readyState >= 1) meta();
+    el.addEventListener("loadedmetadata", meta);
+    el.addEventListener("error", error);
+    return () => {
+      el.removeEventListener("loadedmetadata", meta);
+      el.removeEventListener("error", error);
+      if (video.current === el) video.current = null;
+    };
+  });
   const capture = () => { video.current?.pause(); return playbackMs(video.current); };
   const seek = (ms: number) => {
     const player = video.current;
@@ -18,8 +38,7 @@ export function ReviewVideo({ path, onError }: { path: string; onError: () => vo
     player.currentTime = Math.min(Number.isFinite(player.duration) ? player.duration : Infinity, Math.max(0, ms / 1000));
   };
   return <span className="media-review-video">
-    <video ref={video} src={bridge.fileUrl(path)} controls playsInline preload="metadata" aria-label={baseName(path)}
-      onLoadedMetadata={() => setDuration(video.current?.duration ?? 0)} onError={onError} />
+    <span className="media-slot" ref={slot} />
     <button type="button" className="media-comments-toggle" aria-expanded={comments} onClick={() => { if (!comments) video.current?.pause(); setComments(value => !value); }}>{comments ? "Hide comments" : "Comments"}</button>
     {comments && <MediaComments key={path} path={path} captureTime={capture} seekTime={seek} duration={duration} />}
   </span>;

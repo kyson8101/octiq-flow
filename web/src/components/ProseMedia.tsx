@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { HTML_SANDBOX } from "../lib/htmlSandbox";
+import { useHeldMedia, useMediaChat, useMediaSlot } from "./MediaSlot";
 import { useOpenFile } from "./OpenFile";
 import { ReviewVideo } from "./ReviewVideo";
 
@@ -44,20 +45,40 @@ function useNear<T extends Element>() {
  *  Pointed at `/file` directly rather than fetched into a blob, so the player
  *  streams it in ranges and can seek — the same route the file panel's video
  *  uses. `preload="metadata"` asks for the length and the first frame, not the
- *  whole file. */
+ *  whole file.
+ *
+ *  One that is playing goes on playing when the person goes to another chat
+ *  (`lib/nowPlaying`). Coming back, it is drawn at once, near the screen or
+ *  not: nothing new is fetched, it is the same element. */
 export function ProsePlayer({ path, kind }: { path: string; kind: "video" | "audio" }) {
   const [holder, near] = useNear<HTMLSpanElement>();
   const [failed, setFailed] = useState(false);
+  const chat = useMediaChat();
+  const held = useHeldMedia(chat, path);
+  // Latched like `near`: taking its element back ends `held`, and a player
+  // that then fell back to waiting would hand it straight out again.
+  const kept = useRef(false);
+  if (held) kept.current = true;
   if (failed) return null;
-  const name = baseName(path);
   return (
     <span className={`prose-media is-${kind}`} ref={holder}>
-      {!near ? <span className="prose-media-wait" aria-hidden="true" />
+      {!near && !kept.current ? <span className="prose-media-wait" aria-hidden="true" />
         : kind === "video"
-          ? <ReviewVideo key={path} path={path} onError={() => setFailed(true)} />
-          : <audio src={bridge.fileUrl(path)} controls preload="metadata" aria-label={name} onError={() => setFailed(true)} />}
+          ? <ReviewVideo key={path} path={path} chat={chat} onError={() => setFailed(true)} />
+          : <ProseAudio key={path} path={path} chat={chat} onError={() => setFailed(true)} />}
     </span>
   );
+}
+
+function ProseAudio({ path, chat, onError }: { path: string; chat: string | null; onError: () => void }) {
+  const failed = useRef(onError);
+  failed.current = onError;
+  const slot = useMediaSlot<HTMLAudioElement>({ chat, path, kind: "audio", name: baseName(path) }, bridge.fileUrl(path), (el) => {
+    const error = () => failed.current();
+    el.addEventListener("error", error);
+    return () => el.removeEventListener("error", error);
+  });
+  return <span className="media-slot" ref={slot} />;
 }
 
 /** A PDF, its first pages in the browser's own reader. The frame scrolls; the

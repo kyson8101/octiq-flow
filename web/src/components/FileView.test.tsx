@@ -55,10 +55,11 @@ it("plays a video in the panel instead of treating it as an uneditable file", ()
     />,
   );
 
-  expect(html).toContain("<video");
-  expect(html).toContain("controls");
-  expect(html).toContain("playsInline");
-  expect(html).toContain("%2Frepo%2Fwalk-run.mp4");
+  // The `<video>` itself is made on mount by lib/nowPlaying and put into this
+  // slot (MediaSlot.test.ts says what it is made with).
+  expect(html).toContain('class="media-review-video"');
+  expect(html).toContain('class="media-slot"');
+  expect(html).toContain(">Comments<");
   expect(html).not.toContain("nothing here to edit");
 });
 

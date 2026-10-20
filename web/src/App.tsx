@@ -229,6 +229,8 @@ import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests, SafetyLines } from "./components/ChatRequests";
+import { NowPlaying } from "./components/NowPlaying";
+import { nowPlaying } from "./lib/nowPlaying";
 import { SafetyToast } from "./components/SafetyToast";
 import type { Continue } from "./components/SafetyBlock";
 import { splitSafety, useSafetyToast } from "./lib/safetyToast";
@@ -2129,6 +2131,15 @@ export default function App() {
    *  only while the chat is on screen asks this. */
   const chatShown = !showingProjects && !mainPage && !planInPlace && !runInPlace && mainShown;
   const besideChat = (besideId && chats[besideId]) || EMPTY;
+  // The chats whose players may go on playing in place. A playing one in any
+  // other chat goes to the floating player (lib/nowPlaying), in the same
+  // commit as the switch, while the press that made it still counts as the
+  // person's for picture-in-picture.
+  const mediaMain = chatShown ? conversationId : null;
+  const mediaBeside = besideShown && !showingProjects ? besideId : null;
+  useLayoutEffect(() => {
+    nowPlaying.show([mediaMain, mediaBeside]);
+  }, [mediaMain, mediaBeside]);
 
   useEffect(() => {
     if (!agentsMode) { setLeadRecordsState("ready"); return; }
@@ -3254,6 +3265,18 @@ export default function App() {
       closeFile();
     },
     [openConversation, dismissGit, showFiles, closeFile],
+  );
+
+  /** The floating player's way back: its chat, in front of whatever is over
+   *  it. One not loaded yet is found the way a notification's is. */
+  const backToMedia = useCallback((id: string) => {
+    const found = conversationsRef.current.find((c) => c.id === id);
+    if (found) showConversation(found);
+    else setPendingNotification({ conversationId: id, projectId: null });
+  }, [showConversation]);
+  const mediaChatTitle = useCallback(
+    (id: string) => conversationsRef.current.find((c) => c.id === id)?.title || null,
+    [],
   );
 
   // Tapping a notification brings the window forward — this is what then puts
@@ -6410,6 +6433,9 @@ export default function App() {
         />
       )}
 
+      {/* A chat's video or recording that went on playing when the person
+          left its chat: once, outside every transcript. */}
+      <NowPlaying onBack={backToMedia} chatTitle={mediaChatTitle} />
     </div>
     </TaskStopContext.Provider>
     </PendingActionsContext.Provider>

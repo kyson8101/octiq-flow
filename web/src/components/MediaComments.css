@@ -1,5 +1,7 @@
 .media-review-video { display: block; width: 100%; }
-.media-review-video > video { display: block; max-width: 100%; }
+/* The player's element is put into this span by lib/nowPlaying; the span draws nothing of its own. */
+.media-slot { display: contents; }
+.media-review-video video { display: block; max-width: 100%; }
 .media-comments-toggle { margin: 6px 0; }
 .media-comments { display: flex; flex-direction: column; gap: 10px; padding: 12px; min-width: 0; background: var(--bg-1); color: var(--fg-1); border: 1px solid var(--border); border-radius: var(--r-md); font-size: 13px; text-align: left; }
 .media-comments-heading { display: flex; align-items: center; gap: 8px; }
@@ -33,5 +35,5 @@
 .ws-image-review > img { flex: 0 0 auto; max-height: 55vh; }
 .ws-image-review > .media-comments { align-self: stretch; flex: 0 0 auto; }
 .ws-video.ws-video-review { align-items: flex-start; overflow: auto; }
-.ws-video-review .media-review-video > video { height: auto; max-height: 55vh; }
+.ws-video-review .media-review-video video { height: auto; max-height: 55vh; }
 .media-comments button:focus-visible, .media-comments textarea:focus-visible, .media-comments-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
