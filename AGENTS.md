@@ -826,6 +826,21 @@ with one button. The host's contract is what it was: `question_pending`,
 the `user-question` events, `question_answer_batch`, `question_cancel`,
 `question_retry`.
 
+- **A question can show media, and the host keeps it** (`question_media.rs`,
+  `scripts/mcp/question-media.cjs`, `docs/question-delivery.md`, Media). Up
+  to four local images, videos or sounds under a question, an image on each
+  option; local absolute paths only. The agent's MCP server reads each file,
+  as the agent, and streams it to `/hook/question-media`; the host decides
+  what it is by its first bytes, caps it (image 20 MB, video or sound
+  200 MB, 300 MB a call) and keeps an immutable snapshot under
+  `<chats dir>/question-media/<chat id>/`. The ask names snapshots by id
+  and `question_media::resolve` rebuilds every field from the chat's own
+  folder before anything is asked: a file that cannot be shown refuses the
+  whole call in words and is never dropped. `Media { id, kind, mime, path,
+  name, caption?, bytes }` rides `question.media` and an option's `image`
+  through the record, `user-question`, `question_pending` and the answered
+  line; `path` is served by `/file`. The answer is labels only. Snapshots
+  go with the chat at purge, never at the trash or `/clear`.
 - **Where a block goes is worked out from the words** (`placeQuestions`).
   The host's record carries no tool-use id, so a pending batch finds its
   call by the questions it asked, in order, among the calls that carry no

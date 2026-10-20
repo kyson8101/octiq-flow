@@ -71,6 +71,104 @@ command remains available. A new browser also falls back to that command when
 an older backend explicitly reports that the batch command is unavailable; it
 still requires a positive delivery receipt.
 
+## Media
+
+An `ask_user` question can show the person what they must see or hear to
+answer: up to four local files under the question, and an image on each
+option. Images (PNG, JPEG, GIF, WebP), video (MP4, MOV, WebM) and audio (MP3,
+WAV, M4A, OGG); no PDF, no URL, nothing fetched off this machine. Codex's
+native questions carry none (Codex has no MCP `ask_user`).
+
+**What the agent sends** (`scripts/mcp/octiq-ask.cjs`, `QUESTION_PROPS`):
+
+```json
+{
+  "question": "Which layout should the home screen keep?",
+  "media": [{ "path": "/abs/home.png", "caption": "The home screen today" }],
+  "options": [{ "label": "Keep", "image": "/abs/face.png" }, "Change"]
+}
+```
+
+`media` is at most 4 `{ path, caption? }` (a caption is one line of at most
+160 characters); `image` is an absolute path, images only. String options are
+unchanged.
+
+**Where the copy happens, and why there.** The agent's own MCP server
+(`scripts/mcp/question-media.cjs`) opens each file, non-blocking so a FIFO
+cannot hang the call, and streams its bytes to `POST /hook/question-media`
+(the launch's capability, `chatKey`/`sessionKey`/`launchId`, `name` and
+`bytes` in the query, the file as the body). The file is read there, by the
+agent's process with the agent's rights, and never by the server: an agent
+cannot show the person a file it could not open itself. This is
+`preview_image`'s precedent: an MCP server is outside Claude's Bash sandbox
+and Codex's seatbelt, as `preview.cjs` is, so the rights are those of the
+agent's process. What differs from `preview_image` is who writes the
+snapshot: the host (`src-tauri/src/question_media.rs`), so the folder is made
+only through `profile::make_dir` and nothing is written into a profile folder
+that is gone or replaced.
+
+**The host decides what a file is by its first bytes**, never by its name.
+The upload answers the snapshot, or `400 { error, outcome }` with a sentence
+that names the file:
+
+- not a kind it can show; a name whose extension promises another kind
+  (`shot.png is named .png but holds a JPEG image`); a video or sound for an
+  option; empty; a size that is not the one the MCP measured (the file
+  changed while it was read);
+- over its cap: an image 20 MB, a video or a sound 200 MB. The MCP checks the
+  caps and 300 MB for the whole call before it uploads anything.
+
+Each snapshot is `<chats dir>/question-media/<chat id>/<id>.<ext>`: `id` is 32
+hex characters, new for every upload, the file is made with `create_new`
+(mode 0600) and never written over, and one that does not arrive whole is
+removed.
+
+**The ask names snapshots by id.** The MCP replaces each path with
+`{ id, name, caption? }` and sends the call to `/hook/ask`. Before anything is
+asked, `question_media::resolve` rebuilds every entry from the chat's own
+folder: kind, mime, path and size are read from the snapshot the host wrote;
+only `name` and `caption` are the agent's. A call is refused whole (`400`,
+nothing asked, nothing listed) for an id that is not this chat's snapshot, a
+path sent without uploading, more than 4 under a question, a caption over 160
+characters, an option image that is not an image, or more than 300 MB in all.
+Media is never dropped: a question that says "pick by the picture" with the
+picture gone would mislead. The MCP tool result is then `Nothing was asked:
+<the sentence>`, an error with outcome `validation`.
+
+**What is stored and sent to the page** (camelCase), on a question as
+`media` (absent when none) and on an option as `image` (absent when none):
+
+```json
+{
+  "id": "ac13aa5f2b934dae9f571394be2285f1",
+  "kind": "image",
+  "mime": "image/png",
+  "path": "<profile>/chats/question-media/<chat id>/ac13aa5f2b934dae9f571394be2285f1.png",
+  "name": "home.png",
+  "caption": "The home screen today",
+  "bytes": 316
+}
+```
+
+`kind` is `image`, `video` or `audio`; `caption` is absent when there is none.
+It rides the question record (`questions.json`), every `user-question` event,
+`question_pending`, and the answered line below, so a reload draws the same
+media. `path` is served by `/file` on the person's token, with byte ranges for
+video and audio; the snapshot's extension is the one `/file` takes its type
+from. The answer the agent gets is unchanged: labels and text only.
+
+A worker's questions become a gate (`route_worker_questions`): its text names
+each file with its kind and path, so the coordinator can look before
+answering.
+
+**Lifecycle**: like the chat's plan, kept through the trash window and
+`/clear`, removed when the chat is purged (`question_media::forget`, from
+the purge sweep and from startup's `chat_index::reconcile`).
+
+Fixtures: `web/src/lib/__fixtures__/host/question_media_pending.json` and
+`question_answered_media.json`, from `web::tests::
+an_ask_user_call_shows_the_snapshots_its_chat_uploaded_and_nothing_else`.
+
 ## The answered line
 
 `question-expired` takes a delivered question off every page, and the store
@@ -98,8 +196,9 @@ event into the chat's record, at that moment:
 ```
 
 - **One line for one call**, with every question of the call in the order
-  asked. `options` are always `{ label, description? }` and `[]` for a
-  free-text question; `recommended` is the index the agent named and is
+  asked. `options` are always `{ label, description?, image? }` and `[]`
+  for a free-text question; `media` is the question's snapshots as listed
+  (see Media) and absent when it showed none; `recommended` is the index the agent named and is
   absent when it named none (Codex's own request never names one);
   `multiple` is always said; `answer` is the string the page sent. `at` is
   the host's clock, in milliseconds, when the answer was handed over.
