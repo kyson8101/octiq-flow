@@ -48,6 +48,10 @@ pub(crate) struct ScheduledResume {
     pub start: StartContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<crate::provider_failover::Settings>,
+    #[serde(default)]
+    pub awaiting_choice: bool,
+    #[serde(default)]
+    pub user_selected: bool,
     delivery: Delivery,
 }
 
@@ -168,6 +172,8 @@ impl Store {
             created_at: now,
             start,
             fallback: None,
+            awaiting_choice: false,
+            user_selected: false,
             delivery: Delivery::Scheduled,
         };
         let mut next = state.entries.clone();
@@ -184,6 +190,18 @@ impl Store {
         start: StartContext,
         fallback: crate::provider_failover::Settings,
         now: i64,
+    ) -> Result<Option<ScheduledResume>, String> {
+        self.schedule_switch_choice(key, start, fallback, now, false, false)
+    }
+
+    pub(crate) fn schedule_switch_choice(
+        &self,
+        key: &str,
+        start: StartContext,
+        fallback: crate::provider_failover::Settings,
+        now: i64,
+        awaiting_choice: bool,
+        user_selected: bool,
     ) -> Result<Option<ScheduledResume>, String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         Self::check(&state)?;
@@ -202,12 +220,61 @@ impl Store {
             created_at: now,
             start,
             fallback: Some(fallback),
+            awaiting_choice,
+            user_selected,
             delivery: Delivery::Scheduled,
         };
         let mut next = state.entries.clone();
         next.insert(key.into(), entry.clone());
         self.save(&mut state, next)?;
         Ok(Some(entry))
+    }
+
+    pub(crate) fn choose_switch(
+        &self,
+        key: &str,
+        id: &str,
+        target: crate::provider_failover::Settings,
+    ) -> Result<ScheduledResume, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        Self::check(&state)?;
+        let mut next = state.entries.clone();
+        let entry = next
+            .get_mut(key)
+            .filter(|e| e.id == id && e.awaiting_choice && e.delivery == Delivery::Scheduled)
+            .ok_or("This provider choice is no longer pending.")?;
+        if target.access != entry.start.settings().access {
+            return Err("Provider switching cannot change access.".into());
+        }
+        entry.fallback = Some(target);
+        entry.awaiting_choice = false;
+        entry.user_selected = true;
+        entry.run_at = unix_now();
+        let saved = entry.clone();
+        self.save(&mut state, next)?;
+        Ok(saved)
+    }
+
+    pub(crate) fn reopen_switch(
+        &self,
+        entry: &ScheduledResume,
+    ) -> Result<Option<ScheduledResume>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        Self::check(&state)?;
+        let mut next = state.entries.clone();
+        let Some(saved) = next
+            .get_mut(&entry.chat_key)
+            .filter(|e| e.id == entry.id && e.delivery == Delivery::Dispatching)
+        else {
+            return Ok(None);
+        };
+        saved.id = uuid::Uuid::new_v4().to_string();
+        saved.delivery = Delivery::Scheduled;
+        saved.awaiting_choice = true;
+        saved.user_selected = false;
+        let saved = saved.clone();
+        self.save(&mut state, next)?;
+        Ok(Some(saved))
     }
 
     pub(crate) fn waits(&self, key: &str) -> bool {
@@ -371,7 +438,11 @@ impl Store {
         let due_keys: Vec<String> = state
             .entries
             .iter()
-            .filter(|(_, entry)| entry.delivery == Delivery::Scheduled && entry.run_at <= now)
+            .filter(|(_, entry)| {
+                entry.delivery == Delivery::Scheduled
+                    && !entry.awaiting_choice
+                    && entry.run_at <= now
+            })
             .map(|(key, _)| key.clone())
             .collect();
         if due_keys.is_empty() {
@@ -625,6 +696,7 @@ pub(crate) fn announce_scheduled(entry: &ScheduledResume) {
             "id": entry.id,
             "agent": entry.agent().id(),
             "fallback_agent": entry.fallback.as_ref().map(|target| target.agent),
+            "awaiting_choice": entry.awaiting_choice,
             "reset_at": entry.reset_at,
             "run_at": entry.run_at,
         }),
@@ -688,6 +760,74 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manual_switch_survives_reload_waits_and_accepts_one_custom_choice() {
+        let dir = crate::test_dir::TestDir::new("manual-provider-choice");
+        let path = dir.join("resumes.json");
+        let store = Store::load(path.clone());
+        let source = StartContext::for_test(AgentKind::Claude, Some("original"));
+        let target =
+            crate::provider_failover::equivalent(&source.settings(), AgentKind::Codex).unwrap();
+        let entry = store
+            .schedule_switch_choice(
+                "chat:manual",
+                source.clone(),
+                target.clone(),
+                100,
+                true,
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(store.claim_due(999999).unwrap().is_empty());
+        let store = Store::load(path);
+        assert!(store.claim_due(999999).unwrap().is_empty());
+        let custom = crate::provider_failover::Settings {
+            model: Some("gpt-5.6-terra".into()),
+            effort: Some("low".into()),
+            ..target
+        };
+        let mut elevated = custom.clone();
+        elevated.access = crate::agent_provider::Access::Full;
+        assert!(store
+            .choose_switch("chat:manual", &entry.id, elevated)
+            .is_err());
+        let selected = store
+            .choose_switch("chat:manual", &entry.id, custom.clone())
+            .unwrap();
+        assert!(selected.user_selected);
+        assert_eq!(selected.fallback, Some(custom.clone()));
+        assert!(store
+            .choose_switch("chat:manual", &entry.id, custom)
+            .is_err());
+        assert_eq!(store.claim_due(i64::MAX).unwrap().len(), 1);
+        assert_eq!(source.settings().agent, AgentKind::Claude);
+    }
+
+    #[test]
+    fn cancelling_a_waiting_choice_prevents_selection_and_dispatch() {
+        let store = Store::default();
+        let source = StartContext::for_test(AgentKind::Claude, Some("original"));
+        let target =
+            crate::provider_failover::equivalent(&source.settings(), AgentKind::Codex).unwrap();
+        let entry = store
+            .schedule_switch_choice(
+                "chat:manual-cancel",
+                source,
+                target.clone(),
+                100,
+                true,
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(store.cancel("chat:manual-cancel").unwrap().is_some());
+        assert!(store
+            .choose_switch("chat:manual-cancel", &entry.id, target)
+            .is_err());
+        assert!(store.claim_due(i64::MAX).unwrap().is_empty());
+    }
+
     #[test]
     fn pi_message_errors_and_antigravity_limits_share_quota_detection() {
         let pi = json!({ "type": "message_end", "message": { "role": "assistant", "stopReason": "error", "errorMessage": "usage limit reached" } });

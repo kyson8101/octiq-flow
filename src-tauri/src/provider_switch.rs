@@ -92,23 +92,50 @@ pub(super) fn run_provider_switch(
 ) -> Result<(), String> {
     crate::profile::available()?;
     let key = &entry.chat_key;
-    if crate::provider_failover::equivalent_using(
-        &entry.start.settings(),
-        &entry.start.default_settings(),
-        requested.agent,
-    )
-    .as_ref()
-        != Some(requested)
+    if !entry.user_selected
+        && crate::provider_failover::equivalent_using(
+            &entry.start.settings(),
+            &entry.start.default_settings(),
+            requested.agent,
+        )
+        .as_ref()
+            != Some(requested)
     {
         return Err("The saved provider handoff does not preserve the original settings.".into());
     }
     if !manager.running_background(key).is_empty() {
         return Err("Provider switching is held while background work is running. Inspect its output before continuing.".into());
     }
+    if requested.access != entry.start.settings().access {
+        return Err("Provider switching cannot change access.".into());
+    }
+    if entry.user_selected {
+        crate::failover_policy::Selection {
+            agent: requested.agent,
+            model: requested.model.clone().unwrap_or_default(),
+            effort: requested.effort.clone(),
+        }
+        .settings(&entry.start.settings())?;
+        crate::failover_policy::available(
+            &manager.failover,
+            &crate::failover_policy::Selection {
+                agent: requested.agent,
+                model: requested.model.clone().unwrap_or_default(),
+                effort: requested.effort.clone(),
+            },
+            &entry.start.settings(),
+        )?;
+    }
     let target = if manager
         .failover
         .blocked(requested.agent, crate::auto_resume::unix_now())
     {
+        if entry.user_selected {
+            return Err(
+                "The selected provider is now at its limit. Choose another provider to continue."
+                    .into(),
+            );
+        }
         manager
             .failover
             .alternative_using(

@@ -1,3 +1,4 @@
+import { ProviderFallbackChoices } from "./components/ProviderFallback";
 // OctiqFlow v2 — the chat client.
 //
 // Web-first by design: this is the same app whether it runs in a browser on a
@@ -6032,6 +6033,7 @@ export default function App() {
             </div>
           )}
 
+          {conversationId && <ProviderFallbackChoices key={conversationId} chatKey={keyFor(conversationId)} />}
           {conversationId && <Arrive when={!!(failure || autoResume)} scope={conversationId}>{(failure || autoResume) && (
             <div className={`failure ${failure?.outOfCredit || autoResume ? "is-quota" : ""}`} role="alert">
               {/* Read, and now done with. Speaking again clears it too, but the
@@ -6058,7 +6060,7 @@ export default function App() {
               {autoResume && (
                 <div className="auto-resume-row">
                   <span>
-                    {autoResume.fallbackAgent ? <>Switching to {AGENT_NAME[autoResume.fallbackAgent]} with equivalent settings.</> : <>
+                    {autoResume.awaitingChoice ? <>Waiting for your provider, model and effort selection.</> : autoResume.fallbackAgent ? <>Switching to {AGENT_NAME[autoResume.fallbackAgent]} with equivalent settings.</> : <>
                     OctiqFlow will resume this {autoResume.agent === "pi" ? "Pi" : AGENT_NAME[autoResume.agent]} session around{" "}
                     {new Date(autoResume.runAt * 1000).toLocaleString([], {
                       dateStyle: "medium",

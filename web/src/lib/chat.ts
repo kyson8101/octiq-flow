@@ -455,6 +455,7 @@ export type ChatState = {
 export type AutoResume = {
   id: string;
   fallbackAgent?: "claude" | "codex" | "antigravity";
+  awaitingChoice?: boolean;
   agent: "claude" | "codex" | "pi" | "antigravity";
   resetAt: number;
   runAt: number;
@@ -1095,7 +1096,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       return state;
     return {
       ...state,
-      autoResume: { id, agent: agent as AutoResume["agent"], resetAt, runAt, ...(["claude", "codex", "antigravity"].includes(asStr(e.fallback_agent)) ? { fallbackAgent: asStr(e.fallback_agent) as AutoResume["fallbackAgent"] } : {}) },
+      autoResume: { id, agent: agent as AutoResume["agent"], resetAt, runAt, ...(e.awaiting_choice === true ? { awaitingChoice: true } : {}), ...(["claude", "codex", "antigravity"].includes(asStr(e.fallback_agent)) ? { fallbackAgent: asStr(e.fallback_agent) as AutoResume["fallbackAgent"] } : {}) },
     };
   }
 

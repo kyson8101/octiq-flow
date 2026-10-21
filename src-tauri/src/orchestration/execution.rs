@@ -1023,6 +1023,9 @@ impl OrchestrationStore {
                 launch,
                 StartedBy::Recovery(&attempt.id),
             ) {
+                if error.starts_with("Provider choice pending:") {
+                    continue;
+                }
                 // A vanished project or invalid settings can fail before a
                 // new reservation exists. Do not retry that forever either.
                 let stopped = self.mutate(|data| {

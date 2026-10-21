@@ -25,10 +25,12 @@ export function createPortraitRenderer() {
         }
         scene.add(rig.root);
         rig.root.updateMatrixWorld(true);
-        const bounds=new Box3().setFromObject(rig.root);
+        // Avatar portraits show only the head; the island keeps the full rig.
+        for(const child of rig.body.children) if(child!==rig.head) child.visible=false;
+        const bounds=new Box3().setFromObject(rig.head);
         const center=bounds.getCenter(new Vector3());
         const camera=new OrthographicCamera(-1,1,1,-1,.01,100);
-        camera.position.copy(center).add(new Vector3(1.6,.7,4).normalize().multiplyScalar(8));
+        camera.position.copy(center).add(new Vector3(.65,.25,4).normalize().multiplyScalar(8));
         camera.lookAt(center);
         camera.updateMatrixWorld(true);
         const projected=new Box3();
@@ -38,7 +40,7 @@ export function createPortraitRenderer() {
           corner&4?bounds.max.z:bounds.min.z,
         ).applyMatrix4(camera.matrixWorldInverse));
         const size=projected.getSize(new Vector3());
-        const half=Math.max(size.x,size.y)/2*1.08;
+        const half=Math.max(size.x,size.y)/2*1.16;
         camera.left=-half;camera.right=half;camera.top=half;camera.bottom=-half;
         camera.updateProjectionMatrix();
         const frames=24;

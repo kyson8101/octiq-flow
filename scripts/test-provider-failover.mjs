@@ -12,7 +12,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourceProvider = process.argv[4] || "claude";
 const targetProvider = sourceProvider === "claude" ? "codex" : "claude";
 const sourceModel = sourceProvider === "claude" ? "opus" : "gpt-5.6-sol";
-const targetModel = targetProvider === "claude" ? "opus" : "gpt-5.6-sol";
+const manual = process.argv[5] === "ask";
+const targetModel = manual ? (targetProvider === "claude" ? "sonnet" : "gpt-5.6-terra") : (targetProvider === "claude" ? "opus" : "gpt-5.6-sol");
+const targetEffort = manual ? "low" : "xhigh";
 const marker = sourceProvider === "claude" ? "TRIGGER_LIMIT" : "TRIGGER_CODEX_LIMIT";
 const binary = process.argv[2] || path.join(root, "src-tauri/target/debug/octiq-server");
 const evidence = process.argv[3] || fs.mkdtempSync(path.join(os.tmpdir(), "octiq-failover-evidence-"));
@@ -75,7 +77,7 @@ const shell = path.join(bin, "fixture-shell");
 fs.writeFileSync(shell, "#!/bin/sh\nif [ \"$1\" = '-lc' ]; then shift; exec /bin/sh -c \"$@\"; fi\nif [ \"$1\" = '-l' ]; then shift; fi\nexec /bin/sh \"$@\"\n", { mode: 0o755 });
 const env = { ...process.env, HOME: taskHome, SHELL: shell, PATH: `${bin}:${process.env.PATH}`, FAILOVER_TEST_LOG: log,
   OCTIQ_WEB_PORT: String(port), OCTIQ_WEB_TOKEN: token, OCTIQ_CHAT_IDLE_MINS: "0" };
-const server = spawn(binary, [], { env, stdio: ["ignore", "pipe", "pipe"] });
+let server = spawn(binary, [], { env, stdio: ["ignore", "pipe", "pipe"] });
 let serverLog = "", ws, sequence = 0;
 server.stdout.on("data", (data) => { serverLog += data; }); server.stderr.on("data", (data) => { serverLog += data; });
 const events = [], replies = new Map(), results = {};
@@ -93,17 +95,51 @@ try {
   ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
   ws.onmessage = ({ data }) => { const frame = JSON.parse(data); if (frame.t === "event") events.push(frame); else if (frame.t === "reply") { const pending = replies.get(frame.id); if (pending) { replies.delete(frame.id); frame.ok ? pending.resolve(frame.result) : pending.reject(new Error(frame.error)); } } };
+  if (manual) await invoke("provider_fallback_policy_set", { owner: null, rule: { mode: "ask", backup: null } });
   const project = await invoke("add_workspace", { name: "Failover fixture", primaryPath: repo });
   const coordinator = "chat:quota-coordinator";
   const run = await invoke("orchestration_run_create", { actorChatKey: coordinator, objective: "Preserve the current worker", workspaceId: project.id, rootPath: repo, maxConcurrent: 1, workspaceMode: "direct" });
   const task = await invoke("orchestration_task_create", { actorChatKey: coordinator, runId: run.id, title: "Keep the checkout", spec: "Wait for an instruction.", dependsOn: [], worker: { agent: sourceProvider, model: sourceModel, effort: "xhigh", access: "manual" } });
   const worker = await invoke("orchestration_worker_start", { actorChatKey: coordinator, taskId: task.id, agent: sourceProvider, model: sourceModel, effort: "xhigh", access: "manual", newWorktree: false });
   await wait("first worker turn", () => events.some((e) => e.event === "chat-event" && e.payload.key === worker.workerChatKey && ["result", "turn.completed"].includes(e.payload.event.type)));
+  // The browser creates its durable index row before the first turn. A
+  // transcript without one is intentionally removed as an orphan on startup.
+  await invoke("chat_index_save", { meta: { id: "quota-main", projectId: project.id, title: "Quota fixture", cwd: mainRepo, modelId: `${sourceProvider}:${sourceProvider === "claude" ? "opus" : "sol"}`, access: "auto", effort: "xhigh" } });
   await invoke("chat_start", { key: "chat:quota-main", cwd: mainRepo, agent: sourceProvider, model: sourceModel, effort: "xhigh", access: "auto", prompt: `${marker}: preserve this original request.`, turnId: "main-original" });
   await wait("durable switch scheduled", () => events.some((e) => e.payload?.event?.type === "octiq_auto_resume_scheduled"));
   await invoke("orchestration_message_send", { actorChatKey: coordinator, runId: run.id, to: worker.id, kind: "instruction", subject: "Continue", body: `${marker}: continue this same task.` });
+  if (manual) {
+    const mainChoice = await wait("ordinary manual choice", async () => (await invoke("provider_fallback_choices", { key: "chat:quota-main" }))[0]);
+    const workerChoice = await wait("worker manual choice", async () => (await invoke("provider_fallback_choices", { key: coordinator }))[0]);
+    ws.close();
+    server.kill("SIGTERM");
+    await new Promise(resolve => server.once("exit", resolve));
+    server = spawn(binary, [], { env, stdio: ["ignore", "pipe", "pipe"] });
+    server.stdout.on("data", data => { serverLog += data; });
+    server.stderr.on("data", data => { serverLog += data; });
+    await wait("restarted server", async () => { try { return (await fetch(`http://127.0.0.1:${port}/`)).status === 200; } catch { return false; } });
+    ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
+    await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+    ws.onmessage = ({ data }) => { const frame = JSON.parse(data); if (frame.t === "event") events.push(frame); else if (frame.t === "reply") { const pending = replies.get(frame.id); if (pending) { replies.delete(frame.id); frame.ok ? pending.resolve(frame.result) : pending.reject(new Error(frame.error)); } } };
+    assert.equal((await invoke("provider_fallback_choices", { key: "chat:quota-main" }))[0].id, mainChoice.id);
+    assert.equal((await invoke("provider_fallback_choices", { key: coordinator }))[0].id, workerChoice.id);
+    // More than one ordinary scheduler sweep: no target process or new worker
+    // attempt may start before the person's explicit answer.
+    await new Promise(resolve => setTimeout(resolve, 16_000));
+    assert(!calls().some(c => c.provider === targetProvider && c.argv));
+    const held = await invoke("orchestration_snapshot", { runId: run.id });
+    assert.equal(held.attempts.length, 1);
+    const selection = { agent: targetProvider, model: targetModel, effort: targetEffort };
+    await assert.rejects(invoke("provider_fallback_choose", { key: mainChoice.key, id: "stale", selection, remember: false }));
+    await invoke("provider_fallback_choose", { key: mainChoice.key, id: mainChoice.id, selection, remember: false });
+    await assert.rejects(invoke("provider_fallback_choose", { key: mainChoice.key, id: mainChoice.id, selection, remember: false }));
+    await invoke("provider_fallback_choose", { key: workerChoice.key, id: workerChoice.id, selection, remember: true });
+    const saved = await invoke("provider_fallback_policy");
+    assert.equal(saved.global.backup.model, targetModel);
+    results.manual = { mainChoice, workerChoice, heldAttempts: held.attempts.length, savedBackup: saved.global.backup };
+  }
   const next = await wait("worker switched after quota", async () => (await invoke("orchestration_snapshot", { runId: run.id })).attempts.find((a) => a.number === 2 && a.agent === targetProvider));
-  assert.equal(next.access, "manual"); assert.equal(next.model, targetModel); assert.equal(next.effort, "xhigh");
+  assert.equal(next.access, "manual"); assert.equal(next.model, targetModel); assert.equal(next.effort, targetEffort);
   assert.equal(next.execution.providerOrigin.agent, sourceProvider);
   await wait("worker uses retained checkout", async () => { const snapshot = await invoke("orchestration_snapshot", { runId: run.id }); return snapshot.attempts.find((a) => a.id === next.id && a.cwd === worker.cwd); });
   await wait("ordinary conversation switched", () => events.some((e) => e.event === "chat-provider-switch" && e.payload.key === "chat:quota-main"));
@@ -115,12 +151,22 @@ try {
   assert.equal(starts.length, 2);
   if (targetProvider === "codex") {
     assert(!calls().some((c) => c.method === "thread/resume"));
-    for (const start of starts) { assert.equal(start.params.sandbox, "workspace-write"); assert.equal(start.params.approvalPolicy, "on-request"); assert.equal(start.params.config.model_reasoning_effort, "xhigh"); }
+    for (const start of starts) { assert.equal(start.params.sandbox, "workspace-write"); assert.equal(start.params.approvalPolicy, "on-request"); assert.equal(start.params.config.model_reasoning_effort, targetEffort); }
   } else {
     assert(starts.some((start) => start.argv[start.argv.indexOf("--permission-mode") + 1] === "manual"));
-    for (const start of starts) { assert.equal(start.argv[start.argv.indexOf("--model") + 1], "opus"); assert.equal(start.argv[start.argv.indexOf("--effort") + 1], "xhigh"); assert(!start.argv.includes("--resume")); }
+    for (const start of starts) { assert.equal(start.argv[start.argv.indexOf("--model") + 1], targetModel); assert.equal(start.argv[start.argv.indexOf("--effort") + 1], targetEffort); assert(!start.argv.includes("--resume")); }
   }
   await wait("original context reaches the replacement", () => calls().some((c) => c.provider === targetProvider && JSON.stringify(c.params ?? c.text ?? "").includes("preserve this original request")));
+  if (manual) {
+    const beforeCancel = calls().filter(c => c.provider === targetProvider && c.argv).length;
+    await invoke("chat_start", { key: "chat:quota-cancel", cwd: mainRepo, agent: sourceProvider, model: sourceModel, effort: "high", access: "read", prompt: marker, turnId: "cancel-original" });
+    const pending = await wait("cancellable provider choice", async () => (await invoke("provider_fallback_choices", { key: "chat:quota-cancel" }))[0]);
+    await invoke("provider_fallback_choose", { key: pending.key, id: pending.id, selection: null, remember: false });
+    await assert.rejects(invoke("provider_fallback_choose", { key: pending.key, id: pending.id, selection: { agent: targetProvider, model: targetModel, effort: targetEffort }, remember: false }));
+    await new Promise(resolve => setTimeout(resolve, 16_000));
+    assert.equal(calls().filter(c => c.provider === targetProvider && c.argv).length, beforeCancel);
+    results.cancelPreventedStart = true;
+  }
   results.pass = true; results.worker = { before: worker, after: next }; results.replacementStarts = starts;
 } catch (error) { results.pass = false; results.error = String(error.stack ?? error); if (ws?.readyState === WebSocket.OPEN) results.snapshot = await invoke("orchestration_snapshot", {}); }
 finally {

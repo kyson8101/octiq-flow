@@ -3277,11 +3277,21 @@ impl OrchestrationStore {
     }
 
     /// Host-only, after reservation validated the complete canonical approval.
-    /// No hook or socket accepts an alternate provider as a quota override.
+    /// Only browser-owned choices can customize the mapped model and effort;
+    /// no agent hook accepts a quota override.
     fn redirect_limited_attempt(
         &self,
         id: &str,
         target: &crate::provider_failover::Settings,
+    ) -> Result<Attempt, String> {
+        self.redirect_limited_attempt_selected(id, target, false)
+    }
+
+    fn redirect_limited_attempt_selected(
+        &self,
+        id: &str,
+        target: &crate::provider_failover::Settings,
+        selected: bool,
     ) -> Result<Attempt, String> {
         self.mutate(|data| {
             let before = data
@@ -3311,7 +3321,21 @@ impl OrchestrationStore {
                 effort: origin.effort.clone(),
                 access: origin.access,
             };
-            if crate::provider_failover::equivalent(&source, target.agent).as_ref() != Some(target)
+            if target.access != source.access {
+                return Err("Provider switching cannot change approved access.".into());
+            }
+            if selected {
+                crate::failover_policy::Selection {
+                    agent: target.agent,
+                    model: target.model.clone().unwrap_or_default(),
+                    effort: target.effort.clone(),
+                }
+                .settings(&source)?;
+                automation::worker_model(target.agent, target.model.as_deref())?;
+            }
+            if !selected
+                && crate::provider_failover::equivalent(&source, target.agent).as_ref()
+                    != Some(target)
             {
                 return Err("The provider handoff does not preserve the approved settings.".into());
             }
@@ -3343,19 +3367,110 @@ impl OrchestrationStore {
             None => Some(workspace(workspaces, &owning_run.workspace_id)?),
             Some(_) => None,
         };
+        let canonical = automation::settings_for_task(&owning_run, &owned)?;
+        let source = crate::provider_failover::Settings {
+            agent: canonical.as_ref().map_or(launch.agent, |w| w.agent),
+            model: canonical
+                .as_ref()
+                .and_then(|w| w.model.clone())
+                .or(launch.model.clone()),
+            effort: canonical
+                .as_ref()
+                .and_then(|w| w.effort.clone())
+                .or(launch.effort.clone()),
+            access: launch.access,
+        };
+        let mut chosen = None;
+        let mut selected = false;
+        let worker_key = owned
+            .active_attempt_id
+            .as_ref()
+            .and_then(|id| {
+                self.snapshot(None)
+                    .ok()?
+                    .attempts
+                    .into_iter()
+                    .find(|a| &a.id == id)
+                    .map(|a| a.worker_chat_key)
+            })
+            .unwrap_or_else(|| format!("task:{}", owned.id));
+        let waiting = crate::failover_policy::worker_waits(
+            &owned.id,
+            &worker_key,
+            &source,
+            owned.assignee.as_ref().map(|a| a.id.as_str()),
+        )?;
+        if waiting
+            && matches!(by, StartedBy::Page { .. })
+            && crate::failover_policy::load()?
+                .workers
+                .get(&owned.id)
+                .is_some_and(|c| c.cancelled)
+        {
+            crate::failover_policy::reopen_worker(&owned.id)?;
+        }
+        if waiting
+            || chats
+                .failover
+                .blocked(source.agent, crate::auto_resume::unix_now())
+        {
+            let owner = owned.assignee.as_ref().map(|a| a.id.clone());
+            let (rule, target) =
+                crate::failover_policy::route(&chats.failover, &source, &source, owner.as_deref())?;
+            if waiting || rule.mode == crate::failover_policy::Mode::Ask {
+                let selection = crate::failover_policy::worker_choice(
+                    &owned.id,
+                    &worker_key,
+                    actor_chat_key,
+                    owner,
+                    &owned.title,
+                    &source,
+                )?;
+                let Some(selection) = selection else {
+                    return Err(
+                        "Provider choice pending: choose a replacement in the coordinator chat."
+                            .into(),
+                    );
+                };
+                match crate::failover_policy::available(&chats.failover, &selection, &source) {
+                    Ok(target) => chosen = Some(target),
+                    Err(_) => {
+                        crate::failover_policy::reopen_worker(&owned.id)?;
+                        return Err("Provider choice pending: the selected provider became unavailable. Choose again.".into());
+                    }
+                }
+                selected = true;
+            } else {
+                chosen = target
+                    .filter(|t| automation::worker_model(t.agent, t.model.as_deref()).is_ok())
+                    .or_else(|| {
+                        chats
+                            .failover
+                            .alternative(&source, crate::auto_resume::unix_now())
+                    });
+                selected = chosen.as_ref().is_some_and(|target| {
+                    rule.backup
+                        .as_ref()
+                        .and_then(|b| b.settings(&source).ok())
+                        .as_ref()
+                        == Some(target)
+                });
+            }
+            if let Some(target) = &chosen {
+                automation::worker_model(target.agent, target.model.as_deref())?;
+            }
+        }
         let (run, task, mut reserved, previous) =
             self.reserve_attempt_for(actor_chat_key, &launch, by)?;
-        let source = crate::provider_failover::Settings {
-            agent: reserved.agent,
-            model: reserved.model.clone(),
-            effort: reserved.effort.clone(),
-            access: reserved.access,
-        };
-        if let Some(target) = chats
-            .failover
-            .alternative(&source, crate::auto_resume::unix_now())
-        {
-            reserved = self.redirect_limited_attempt(&reserved.id, &target)?;
+        if let Some(target) = chosen {
+            reserved = self.redirect_limited_attempt_selected(&reserved.id, &target, selected)?;
+            if selected {
+                // Cleanup must not strand an already reserved attempt. The old
+                // receipt is scoped to its previous worker key and cannot be reused.
+                if let Err(error) = crate::failover_policy::finish_worker(&owned.id) {
+                    eprintln!("[orchestration] provider choice cleanup is pending: {error}");
+                }
+            }
         }
         // What the ledger records is what the actual process uses.
         launch.agent = reserved.agent;
@@ -10204,4 +10319,8 @@ pub(crate) mod tests {
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Blocked);
         assert_eq!(snapshot.runs[0].status, RunStatus::Waiting);
     }
+}
+
+pub(crate) fn validate_fallback_worker(agent: ChatAgent, model: &str) -> Result<(), String> {
+    automation::worker_model(agent, Some(model)).map(|_| ())
 }

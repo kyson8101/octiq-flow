@@ -897,6 +897,27 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "personal_preferences" => to_value(crate::personal_preferences::load(
             &crate::personal_preferences::default_path(),
         )),
+        "provider_fallback_policy" => to_value(crate::failover_policy::load().map(|mut policy| {
+            policy.workers.clear();
+            policy
+        })),
+        "provider_fallback_policy_set" => to_value(crate::failover_policy::save_rule(
+            arg(&args, "owner")?,
+            arg(&args, "rule")?,
+        )),
+        "provider_fallback_choices" => to_value(crate::failover_policy::choices(
+            &svc.chats,
+            &svc.orchestrations,
+            &arg::<String>(&args, "key")?,
+        )),
+        "provider_fallback_choose" => to_value(crate::failover_policy::choose(
+            &svc.chats,
+            &svc.orchestrations,
+            &arg::<String>(&args, "key")?,
+            &arg::<String>(&args, "id")?,
+            arg(&args, "selection")?,
+            arg::<Option<bool>>(&args, "remember")?.unwrap_or(false),
+        )),
         "personal_preferences_set" => to_value(crate::personal_preferences::save(
             &crate::personal_preferences::default_path(),
             &arg::<Option<String>>(&args, "text")?.unwrap_or_default(),

@@ -282,9 +282,23 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
 - `octiq_provider_switched` is durable evidence; `chat-provider-switch` updates
   the live picker and index. All providers exhausted means waiting for reset
   (where known), not cycling endlessly or escalating permissions.
+- Settings → Personal preferences contains the browser-owned quota policy
+  (`failover_policy.rs`, `provider-failover.json`): global Auto/Ask, per-agent
+  overrides and an optional provider/model/effort backup. Ask persists an
+  unanswered choice instead of dispatching. Ordinary chat choices live in the
+  durable resume queue; worker choices live beside the policy and hold BEFORE
+  reservation, including after restart when account cooldowns are empty.
+  The browser can choose once or remember a backup. Neither changes Access;
+  worker model restrictions and every normal reservation gate still apply.
+  A cancelled worker choice stays held; a new attempt/assignee cannot inherit
+  its old one-time answer. These commands have no agent-hook route.
+- Chat portraits render only the island rig's head and head/face accessories
+  (`island/portrait.ts`), with the same cached blink/idle strip.
 - Validate with Rust approval/schedule tests and
   `node scripts/test-provider-failover.mjs`: real server/socket and stub CLIs,
-  isolated home and profile, no paid model calls.
+  isolated home and profile, no paid model calls. Add `claude ask` or
+  `codex ask` after the binary/evidence paths to verify manual selections
+  across a real server restart.
 
 ### Persistence locations
 

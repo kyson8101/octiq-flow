@@ -30,6 +30,7 @@ mod claude_allow;
 mod codex_app_server;
 mod diagnostics;
 mod dispatch;
+mod failover_policy;
 mod feedback;
 mod file_watch;
 mod fsbrowse;

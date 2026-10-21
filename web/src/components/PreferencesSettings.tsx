@@ -1,3 +1,4 @@
+import { ProviderFallbackSettings } from "./ProviderFallback";
 import { useEffect, useState } from "react";
 import { charCount } from "../lib/agentsMode";
 import {
@@ -37,7 +38,7 @@ export function PreferencesSettings() {
     finally { setBusy(false); }
   }
 
-  return <section className="settings-section" aria-labelledby="preferences-title">
+  return <><ProviderFallbackSettings /><section className="settings-section" aria-labelledby="preferences-title">
     <header className="settings-section-head"><div>
       <h2 id="preferences-title">Personal preferences</h2>
       <p>How you like every agent to work with you, in your own words.</p>
@@ -46,7 +47,7 @@ export function PreferencesSettings() {
       onChange={(next) => { setText(next); setDone(false); }}
       onSave={() => void save(text)} onClear={() => void save("")} />
     {error && <p className="set-warn" role="alert">{error}</p>}
-  </section>;
+  </section></>;
 }
 
 export function PreferencesBlock({ saved, text, loading, busy, done, unread = false, onChange, onSave, onClear }: {

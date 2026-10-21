@@ -816,7 +816,7 @@ impl StartContext {
         defaults
     }
 
-    fn settings(&self) -> crate::provider_failover::Settings {
+    pub(crate) fn settings(&self) -> crate::provider_failover::Settings {
         crate::provider_failover::Settings {
             agent: self.agent,
             model: self.model.clone(),
@@ -2464,15 +2464,51 @@ fn schedule_quota_resume(
     if start.agent() != agent {
         return;
     }
-    if let Some(fallback) =
-        manager
-            .failover
-            .alternative_using(&start.settings(), &start.default_settings(), now)
-    {
-        match manager
-            .auto_resumes
-            .schedule_switch(chat_key, start.clone(), fallback, now)
-        {
+    let route = crate::failover_policy::owner(chat_key).and_then(|owner| {
+        crate::failover_policy::route(
+            &manager.failover,
+            &start.settings(),
+            &start.default_settings(),
+            owner.as_deref(),
+        )
+    });
+    let (rule, target) = match route {
+        Ok(route) => route,
+        Err(why) => {
+            eprintln!("[chat] provider fallback held: {why}");
+            return;
+        }
+    };
+    let asking = rule.mode == crate::failover_policy::Mode::Ask;
+    let target = target.or_else(|| {
+        asking
+            .then(|| {
+                [ChatAgent::Claude, ChatAgent::Codex, ChatAgent::Antigravity]
+                    .into_iter()
+                    .find_map(|agent| {
+                        crate::provider_failover::equivalent_using(
+                            &start.settings(),
+                            &start.default_settings(),
+                            agent,
+                        )
+                    })
+            })
+            .flatten()
+    });
+    if let Some(fallback) = target {
+        let selected = !asking
+            && rule
+                .backup
+                .as_ref()
+                .is_some_and(|b| b.settings(&start.settings()).ok().as_ref() == Some(&fallback));
+        match manager.auto_resumes.schedule_switch_choice(
+            chat_key,
+            start.clone(),
+            fallback,
+            now,
+            asking,
+            selected,
+        ) {
             Ok(Some(entry)) => crate::auto_resume::announce_scheduled(&entry),
             Ok(None) => {}
             Err(why) => eprintln!("[chat] could not schedule provider switch: {why}"),
@@ -3045,12 +3081,20 @@ fn chat_start_with_user_turn(
         })
         .unwrap_or_else(|| source.clone());
     let mut switched = None;
-    if !key.starts_with("chat:orch-") {
-        if let Some(target) =
-            manager
-                .failover
-                .alternative_using(&source, &defaults, crate::auto_resume::unix_now())
-        {
+    if !key.starts_with("chat:orch-")
+        && manager
+            .failover
+            .blocked(source.agent, crate::auto_resume::unix_now())
+    {
+        let owner = crate::failover_policy::owner(&key)?;
+        let (rule, target) =
+            crate::failover_policy::route(&manager.failover, &source, &defaults, owner.as_deref())?;
+        if let Some(target) = target.filter(|_| {
+            rule.mode == crate::failover_policy::Mode::Auto
+                && manager
+                    .failover
+                    .blocked(source.agent, crate::auto_resume::unix_now())
+        }) {
             handoff = Some(provider_history(&key)?);
             agent = target.agent;
             model = target.model.clone();
@@ -7971,6 +8015,19 @@ pub fn start_auto_resume_scheduler(manager: Arc<ChatManager>) {
                 let result = run_scheduled_resume(manager.clone(), &entry);
                 if let Err(why) = &result {
                     crate::auto_resume::announce_failed(&entry, why);
+                    if entry.user_selected
+                        && manager
+                            .start_context(&entry.chat_key)
+                            .is_none_or(|start| start == entry.start)
+                    {
+                        match manager.auto_resumes.reopen_switch(&entry) {
+                            Ok(Some(pending)) => crate::auto_resume::announce_scheduled(&pending),
+                            Ok(None) => {}
+                            Err(error) => {
+                                eprintln!("[chat] could not restore provider choice: {error}")
+                            }
+                        }
+                    }
                 }
                 if let Err(why) = manager.auto_resumes.finish(&entry) {
                     eprintln!(
