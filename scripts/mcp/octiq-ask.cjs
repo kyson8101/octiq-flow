@@ -2541,7 +2541,7 @@ const ISLAND_TOOLS = [
     name: { type: "string", minLength: 1, maxLength: 60 },
     kind: { type: "string", enum: ["accessory", "furniture", "decor", "building"] },
     slot: { type: "string", enum: ISLAND_SLOTS, description: "Accessories only, and required for them." },
-    use: { type: "string", enum: ["seat", "desk", "bed", "none"], description: "Furniture and decor only." },
+    use: { type: "string", enum: ["seat", "desk", "bed", "read", "paint", "garden", "perform", "play", "observe", "none"], description: "seat/desk/bed for furniture and decor; read/paint/garden/perform/play/observe also work on buildings." },
     spot: {
       type: "object",
       properties: { at: ISLAND_VEC3("Where a robot sits (its hips) or stands (its feet), in the asset's coordinates."), face: { type: "number", description: "Degrees; 0 faces +z, 90 faces +x." } },

@@ -1,3 +1,5 @@
+import { likesActivity, type ActivitySite } from "./interactions";
+import { SOCIETY_COUNTER, societyQueueSpot } from "./society";
 // What every robot on the island is doing, frame by frame, with no agent
 // process behind any of it: the page's own game logic. A free robot picks
 // something to do by its trait and the hour (wander, sit on a seat, watch the
@@ -33,6 +35,7 @@ export type Seat = {
 /** What the scene knows about the island that behaviour needs. */
 export type Places = {
   seats: readonly Seat[];
+  activities?: readonly ActivitySite[];
   /** Each resident's own plot: its centre, and where to stand at its front. */
   plots: ReadonlyMap<string, { id: string; center: Point; front: Point & { face: number }; door: Point }>;
   tree: Point;
@@ -59,6 +62,9 @@ type Goal = { x: number; z: number; face?: number };
 export type Game = "seesaw" | "swings" | "slide" | "tag";
 
 type Act =
+  | { kind: "interact"; site: ActivitySite; seconds: number }
+  | { kind: "wish-queue"; ticket: string; index: number }
+  | { kind: "wish-register"; ticket: string; triedAt?: number }
   | { kind: "look"; seconds: number; face?: number }
   | { kind: "sit"; seat: Seat; seconds: number }
   | { kind: "sleep"; seat: Seat | null }
@@ -205,6 +211,10 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const PLAY_KINDS = new Set<Act["kind"]>(["invite", "swing", "seesaw", "slide", "tag"]);
 
 export class IslandSim {
+  private wishTickets: { id:string; key:string }[] = [];
+  onWishRegister?: (id:string)=>void;
+  onWishGiveUp?: (id:string)=>void;
+  private wishPatience = new Map<string,{since:number;next:number;gaveUp:boolean}>();
   readonly robots = new Map<string, SimRobot>();
   /** How the playground moves, for the scene: the swings' angles and the
    *  seesaw's tilt. */
@@ -241,7 +251,7 @@ export class IslandSim {
     for (const key of [...this.robots.keys()]) {
       if (!keep.has(key)) this.remove(key, now);
     }
-    const seatKeys = new Set(places.seats.map((s) => s.key));
+    const seatKeys = new Set([...places.seats.map((s) => s.key), ...(places.activities??[]).map(s=>s.key)]);
     for (const [seat, holder] of [...this.taken]) {
       if (!seatKeys.has(seat)) {
         this.taken.delete(seat);
@@ -395,10 +405,64 @@ export class IslandSim {
     this.route(robot);
   }
 
+  setWishQueue(tickets: readonly {id:string;key:string}[]) {
+    this.wishTickets=[...tickets];
+    for(const id of this.wishPatience.keys())if(!tickets.some(t=>t.id===id))this.wishPatience.delete(id);
+    for(const robot of this.robots.values()) {
+      const act=robot.plan.act;
+      if((act.kind==='wish-queue'||act.kind==='wish-register')&&!tickets.some(t=>t.id===act.ticket)){this.release(robot,this.clockNow);robot.plan={label:'Wish registered',goal:null,act:{kind:'cheer',seconds:2},since:this.clockNow};robot.bubble={text:'✨',tone:'plain',until:this.clockNow+2};}
+    }
+  }
+  private wishQueue(now:number) {
+    for(const ticket of this.wishTickets) {
+      const robot=this.robots.get(ticket.key);
+      if(robot && (robot.mode.state!=='free'||isNight(this.hour,robot.bedtimeShift)) && ['wish-queue','wish-register'].includes(robot.plan.act.kind)) {
+        this.wishPatience.delete(ticket.id);this.replan(robot,now);
+      }
+    }
+    for(const ticket of this.wishTickets) {
+      const patience=this.wishPatience.get(ticket.id);
+      if(patience?.gaveUp&&now>=patience.next){patience.next=now+8;this.onWishGiveUp?.(ticket.id);}
+    }
+    const present=this.wishTickets.filter(t=>{if(this.wishPatience.get(t.id)?.gaveUp)return false;const r=this.robots.get(t.key);return r&&r.mode.state==='free'&&!isNight(this.hour,r.bedtimeShift)});
+    for(const [index,ticket] of present.entries()) {
+      const robot=this.robots.get(ticket.key)!;const act=robot.plan.act;
+      if(act.kind==='wish-register'&&act.ticket===ticket.id)continue;
+      if(act.kind==='wish-queue'&&act.ticket===ticket.id&&act.index===index)continue;
+      this.release(robot,now);robot.perched=false;
+      robot.plan={label:'Queuing at BOT Society',goal:societyQueueSpot(index),act:{kind:'wish-queue',ticket:ticket.id,index}};
+      this.route(robot);
+    }
+  }
+  useAsset(siteKey:string,robotKey?:string):string|null {
+    const site=this.places.activities?.find(s=>s.key===siteKey);
+    if(!site) {
+      const seat=this.places.seats.find(s=>s.kind==='seat'&&s.key.startsWith(siteKey+':'));
+      if(!seat)return null;
+      const holder=this.taken.get(seat.key);if(holder)return holder;
+      const candidates=[...this.robots.values()].filter(r=>(!robotKey||r.key===robotKey)&&r.mode.state==='free'&&!isNight(this.hour,r.bedtimeShift)&&!this.busyPlaying(r)&&r.plan.act.kind!=='sleep');
+      candidates.sort((a,b)=>Math.hypot(a.x-seat.x,a.z-seat.z)-Math.hypot(b.x-seat.x,b.z-seat.z));
+      for(const robot of candidates){const path=this.nav.path(robot,seat);if(!path)continue;this.release(robot,this.clockNow);this.takeSeat(robot,seat);robot.plan={label:`Sitting on ${seat.name}`,goal:seat,act:{kind:'sit',seat,seconds:25}};robot.path=path;return robot.key;}
+      return null;
+    }
+    const holder=this.taken.get(siteKey);if(holder)return !robotKey||robotKey===holder?holder:null;
+    const candidates=[...this.robots.values()].filter(r=>(!robotKey||r.key===robotKey)&&r.mode.state==='free'&&!isNight(this.hour,r.bedtimeShift)
+      &&!['sleep','wish-queue','wish-register','interact'].includes(r.plan.act.kind)&&likesActivity(r.resident.hobbies,site.activity));
+    candidates.sort((a,b)=>Math.hypot(a.x-site.x,a.z-site.z)-Math.hypot(b.x-site.x,b.z-site.z));
+    for(const robot of candidates) {
+      const path=this.nav.path(robot,site);if(!path)continue;
+      this.release(robot,this.clockNow);this.taken.set(site.key,robot.key);robot.perched=false;
+      robot.plan={label:`${({read:'Reading at',paint:'Painting at',garden:'Planting and watering at',perform:'Performing at',play:'Playing at',observe:'Enjoying'})[site.activity]} ${site.name}`,goal:site,act:{kind:'interact',site,seconds:site.activity==='perform'?25:14}};
+      robot.path=path;return robot.key;
+    }
+    return null;
+  }
+
   update(dt: number, now: number, hour: number) {
     this.hour = hour;
     this.clockNow = now;
     const step = Math.min(dt, 0.1);
+    this.wishQueue(now);
     this.playground(step, now);
     for (const robot of this.robots.values()) {
       this.tick(robot, step, now);
@@ -411,7 +475,7 @@ export class IslandSim {
   /** A performance gathers only nearby, unoccupied residents. */
   private concerts(now: number) {
     for (const performer of this.robots.values()) {
-      if (performer.mode.state !== "free" || performer.plan.act.kind !== "dance" || performer.path.length) continue;
+      if (performer.mode.state !== "free" || !this.performing(performer) || performer.path.length) continue;
       const watching = [...this.robots.values()].filter(r => r.plan.act.kind === "watch" && r.plan.act.performer === performer.key);
       if (watching.length >= 5) continue;
       for (const guest of this.robots.values()) {
@@ -431,6 +495,8 @@ export class IslandSim {
       }
     }
   }
+
+  private performing(robot:SimRobot):boolean {return robot.plan.act.kind==='dance'||(robot.plan.act.kind==='interact'&&robot.plan.act.site.activity==='perform')}
 
   audience(key: string): number {
     return [...this.robots.values()].filter(r => r.mode.state === "free" && !r.path.length
@@ -459,11 +525,16 @@ export class IslandSim {
     const plan = robot.plan;
     if (plan.act.kind === "watch") {
       const performer = this.robots.get(plan.act.performer);
-      if (!performer || performer.mode.state !== "free" || performer.plan.act.kind !== "dance" || performer.path.length) {
+      if (!performer || performer.mode.state !== "free" || !this.performing(performer) || performer.path.length) {
         robot.chatAfter = now + 30;
         this.replan(robot, now);
         return;
       }
+    }
+    if(plan.act.kind==='interact') {
+      const site=plan.act.site;
+      const live=(this.places.activities??[]).find(s=>s.key===site.key);
+      if(!live||live.activity!==site.activity||Math.hypot(live.x-site.x,live.z-site.z)>0.01||Math.abs(live.y-site.y)>.01){this.replan(robot,now);return;}
     }
     if (plan.act.kind === "tag" && plan.since !== undefined) {
       this.tagTick(robot, plan.act.game, dt, now);
@@ -548,6 +619,7 @@ export class IslandSim {
       robot.y = seat.y;
       robot.heading = seat.face;
     } else if (plan.goal?.face !== undefined) robot.heading = plan.goal.face;
+    if(act.kind==='interact'){robot.heading=act.site.face;robot.y=act.site.y;robot.perched=act.site.y>.1;}
     if (act.kind === "seesaw") {
       this.seesawSeated[act.end] = true;
       // The second rider may arrive late in the island's day. Start the
@@ -566,6 +638,38 @@ export class IslandSim {
     const ended = (seconds: number) => elapsed >= seconds;
     const pg = this.places.playground;
     switch (act.kind) {
+      case "wish-queue": {
+        robot.y=.15;robot.perched=true;
+        robot.pose='stand';this.turn(robot,Math.PI,dt);
+        let patience=this.wishPatience.get(act.ticket);
+        if(!patience){patience={since:now,next:now+45+robot.rng()*35,gaveUp:false};this.wishPatience.set(act.ticket,patience);}
+        if(act.index>0&&now>=patience.next){
+          patience.next=now+10;
+          if(robot.rng()<.35){
+            patience.gaveUp=true;patience.next=now+8;
+            this.release(robot,now);robot.plan={label:'Maybe another time',goal:null,act:{kind:'look',seconds:4},since:now};
+            robot.bubble={text:'maybe later…',tone:'plain',until:now+4};
+            robot.chatAfter=now+30;this.onWishGiveUp?.(act.ticket);return;
+          }
+        }
+        if(act.index===0 && elapsed>.5){robot.plan={label:'Registering a wish at BOT Society',goal:{...SOCIETY_COUNTER,face:Math.PI},act:{kind:'wish-register',ticket:act.ticket}};this.route(robot);}
+        return;
+      }
+      case "wish-register":
+        robot.y=.15;robot.perched=true;
+        robot.pose='register';this.turn(robot,Math.PI,dt);
+        robot.bubble={text:'📝 ✨',tone:'plain',until:now+1};
+        if(elapsed>=4 && (act.triedAt===undefined || now-act.triedAt>5)){act.triedAt=now;this.onWishRegister?.(act.ticket);}
+        return;
+      case "interact": {
+        const activity=act.site.activity;
+        robot.pose=activity==='perform'?'dance':activity==='observe'?'think':activity==='play'?'cheer':activity==='read'?'think':'work';
+        robot.heading=act.site.face;
+        robot.bubble={text:({read:'📖',paint:'🎨',garden:elapsed<5?'🌱':'💧',perform:'🎵',play:'🎮',observe:'✨'})[activity],tone:'plain',until:now+1};
+        robot.boredom=Math.max(0,robot.boredom-dt/30);
+        if(ended(act.seconds))this.replan(robot,now);
+        return;
+      }
       case "look":
         robot.pose = "stand";
         if (act.face !== undefined) this.turn(robot, act.face, dt);
@@ -591,7 +695,7 @@ export class IslandSim {
         return;
       case "watch": {
         const performer = this.robots.get(act.performer);
-        if (!performer || performer.mode.state !== "free" || performer.plan.act.kind !== "dance" || performer.path.length) {
+        if (!performer || performer.mode.state !== "free" || !this.performing(performer) || performer.path.length) {
           robot.chatAfter = now + 30;
           this.replan(robot, now);
           return;
@@ -808,7 +912,7 @@ export class IslandSim {
     }
     // Nowhere to walk to. A seat it cannot reach is let go, or it would sit
     // in the air where it stands; anything else it does where it is.
-    if (("seat" in plan.act && plan.act.seat) || PLAY_KINDS.has(plan.act.kind)) {
+    if (("seat" in plan.act && plan.act.seat) || PLAY_KINDS.has(plan.act.kind) || plan.act.kind==='wish-queue' || plan.act.kind==='wish-register') {
       this.release(robot, 0);
       robot.plan = { label: "Looking around", goal: null, act: { kind: "look", seconds: 2 + robot.rng() * 3 } };
       return;
@@ -870,6 +974,14 @@ export class IslandSim {
       return { label: "Asleep", goal: goal && { x: goal.x, z: goal.z }, act: { kind: "sleep", seat: bed } };
     }
 
+    const activities=(this.places.activities??[]).filter(site=>!this.taken.has(site.key)&&likesActivity(robot.resident.hobbies,site.activity));
+    if(activities.length && rng()<.4) {
+      const site=nearest(activities,robot,rng);
+      if(site && this.nav.path(robot,site)) {
+        this.taken.set(site.key,robot.key);
+        return {label:`${site.activity==='garden'?'Planting and watering':'Enjoying'} ${site.name}`,goal:site,act:{kind:'interact',site,seconds:site.activity==='perform'?25:14}};
+      }
+    }
     const lean = { ...LEANS[robot.resident.trait ?? "agent"] };
     // The more bored, the more it goes looking for fun and company.
     const bored = robot.boredom;
@@ -880,6 +992,7 @@ export class IslandSim {
       lean.sit *= 0.5;
       lean.gaze *= 0.6;
     }
+    if(!robot.resident.hobbies?.includes('gardening') && robot.resident.trait!=='gardener' && robot.resident.trait!=='tinkerer')lean.tend=0;
     const free = this.freeSeats();
     if (!free.length) lean.sit = 0;
     if (now < robot.chatAfter || this.partners(robot).length === 0) lean.chat = 0;
@@ -963,7 +1076,7 @@ export class IslandSim {
   }
 
   private busyPlaying(robot: SimRobot): boolean {
-    return PLAY_KINDS.has(robot.plan.act.kind) || this.slideQueue.includes(robot.key);
+    return PLAY_KINDS.has(robot.plan.act.kind) || ['interact','wish-queue','wish-register'].includes(robot.plan.act.kind) || this.slideQueue.includes(robot.key);
   }
 
   /** Who it could go and talk to, or ask to play: free, awake, not already

@@ -30,7 +30,7 @@ const FRAMES: Record<Frame, { width: number; roundness: number; bodyWidth: numbe
 };
 
 export type Pose =
-  | "stand" | "walk" | "sit" | "work" | "think" | "wave" | "raise" | "sleep" | "dance" | "cheer" | "talk"
+  | "register" | "stand" | "walk" | "sit" | "work" | "think" | "wave" | "raise" | "sleep" | "dance" | "cheer" | "talk"
   // On the playground: sitting on a swing holding its ropes, riding the
   // seesaw or the slide holding on in front, going up the ladder.
   | "swing" | "ride" | "climb"
@@ -578,6 +578,14 @@ export function poseIslandRobot(rig: RobotRig, pose: Pose, t: number,
       head.rotation.x = -0.15;
       break;
     }
+    case "register":
+      body.position.y = ROBOT_LIFT + breathe;
+      head.rotation.x = .15;
+      arms[0].shoulder.rotation.x=-.65;
+      arms[0].elbow.rotation.x=-.9;
+      arms[1].shoulder.rotation.x=-.8;
+      arms[1].elbow.rotation.x=-.9+(calm?0:Math.sin(t*8)*.12);
+      break;
     case "talk":
       head.rotation.x = calm ? 0 : Math.sin(t * 6) * 0.05;
       head.rotation.y = calm ? 0 : Math.sin(t * 1.3) * 0.1;

@@ -120,7 +120,7 @@ fn names_kinds_slots_and_uses_are_checked() {
         ),
         (
             json!({ "name": "Chair", "kind": "furniture", "use": "throne", "parts": one() }),
-            "use \"throne\" is not one of: seat, desk, bed, none.",
+            "use \"throne\" is not one of: seat, desk, bed, read, paint, garden, perform, play, observe, none.",
         ),
         (
             json!({ "name": "Chair", "kind": "furniture", "spot": { "at": [0, 0, 0] }, "parts": one() }),

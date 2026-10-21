@@ -164,10 +164,18 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        get(svc).unwrap()["island"]["wishes"][0]["id"]
+        let id = get(svc).unwrap()["island"]["wishes"][0]["id"]
             .as_str()
             .unwrap()
-            .into()
+            .to_owned();
+        crate::island::register_wish(
+            &crate::island::default_path(),
+            Some(&crate::team::list(&svc.handovers.team, None, true).unwrap()),
+            &id,
+            crate::island::now_ms(),
+        )
+        .unwrap();
+        id
     }
 
     #[test]

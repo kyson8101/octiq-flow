@@ -429,8 +429,11 @@ pub fn check_asset(input: Value) -> Result<(Draft, Option<String>), String> {
     };
     let r#use = match input.r#use.as_deref().map(str::trim) {
         None => None,
-        Some(_) if !matches!(kind, Kind::Furniture | Kind::Decor) => {
-            return Err(invalid("use is for furniture and decor only."))
+        Some(_) if !matches!(kind, Kind::Furniture | Kind::Decor | Kind::Building) => {
+            return Err(invalid("use is for furniture, decor and buildings only."))
+        }
+        Some(word) if kind == Kind::Building && matches!(word, "seat" | "desk" | "bed") => {
+            return Err(invalid("use is for furniture and decor only when it is seat, desk or bed; buildings can use read, paint, garden, perform, play or observe."));
         }
         Some(word) if word.eq_ignore_ascii_case("none") => None,
         Some(word) => Some(Use::parse(word).ok_or_else(|| {
@@ -575,7 +578,7 @@ fn check_part(kind: Kind, number: usize, part: Value) -> Result<Part, String> {
 fn check_spot(kind: Kind, r#use: Option<Use>, spot: Value) -> Result<Spot, String> {
     if r#use.is_none() {
         return Err(invalid(
-            "A spot is where a robot sits, sleeps or works, so it needs a use: seat, bed or desk.",
+            "A spot needs a use such as seat, desk, read, paint, garden, perform, play or observe.",
         ));
     }
     let spot: SpotInput =

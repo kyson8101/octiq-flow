@@ -82,6 +82,12 @@ words!(
         Seat = "seat",
         Desk = "desk",
         Bed = "bed",
+        Read = "read",
+        Paint = "paint",
+        Garden = "garden",
+        Perform = "perform",
+        Play = "play",
+        Observe = "observe",
     }
 );
 
@@ -187,7 +193,8 @@ words!(
 
 words!(
     WishState {
-        Open = "open",
+        Queued = "queued",
+        Withdrawn = "withdrawn",        Open = "open",
         Granted = "granted",
         Dismissed = "dismissed",
     }

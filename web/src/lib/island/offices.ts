@@ -13,7 +13,7 @@ export function officeLayout(source: Island, people: readonly Resident[]) {
   const deskOwners = new Map<string,string>();
   const publicPlots=source.plots.filter(p=>(p.owner.kind==='home' && p.owner.id.startsWith('public:')) || source.placed.some(item=>item.plot===p.id && source.assets.some(a=>a.id===item.asset && a.kind==='building' && a.name!=='Workshop')));
   const cells: [number,number][] = [];
-  for(let ring=1;cells.length<groups.size+publicPlots.length;ring++) cells.push(...ringCells(ring).filter(([q,r])=>q!==-1||r!==0));
+  for(let ring=1;cells.length<groups.size+publicPlots.length;ring++) cells.push(...ringCells(ring).filter(([q,r])=>(q!==-1||r!==0)&&(q!==0||r!==-1)));
   const part = (size: [number,number,number], at: [number,number,number], color: string): Part => ({shape:'box',size,at,color});
   for(const [index,[key,members]] of [...groups].sort(([a],[b])=>a.localeCompare(b)).entries()) {
     const [q,r]=cells[index];

@@ -956,6 +956,18 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // The page's own commands. Each answers `{ island }`, with the id of
         // what it made or changed where there is one.
         "island_get" => island::get(svc),
+        "island_wish_withdraw" => crate::island::withdraw_wish(
+            &crate::island::default_path(),
+            island_roster(svc).as_deref(),
+            &arg::<String>(&args, "id")?,
+            crate::island::now_ms(),
+        ),
+        "island_wish_register" => crate::island::register_wish(
+            &crate::island::default_path(),
+            island_roster(svc).as_deref(),
+            &arg::<String>(&args, "id")?,
+            crate::island::now_ms(),
+        ),
         "island_wish_start" => island::start(svc, &arg::<String>(&args, "id")?),
         "island_wish_dismiss" => crate::island::dismiss_wish(
             &crate::island::default_path(),

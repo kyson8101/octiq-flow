@@ -471,7 +471,7 @@ fn parts_on(island: &Island, plot: &str, except: Option<&str>) -> usize {
 
 /// Whether a plot has room for one more placement of `parts` parts, the
 /// placement `except` (one being moved) left out.
-fn plot_room(
+pub(super) fn plot_room(
     island: &Island,
     plot: &str,
     parts: usize,
@@ -721,6 +721,10 @@ fn grant(
                 let turn = number(args.turn, "turn")?
                     .map(rules::degrees)
                     .unwrap_or(0.0);
+                if wish.who.kind == OwnerKind::Agent {
+                    answer["replaced"] =
+                        json!(super::inventory::replace(island, &wish.who, &asset));
+                }
                 plot_room(island, &plot, asset.parts.len(), None)?;
                 let at = spot_on_plot(island, &plot, &asset, (args.x, args.z), turn, &name)?;
                 let placed =
@@ -728,6 +732,7 @@ fn grant(
                 answer["placed"] = placement_line(&placed);
             }
         }
+        answer["retired"] = json!(super::inventory::limit(island, &wish.who, Some(&asset.id)));
         given.asset = Some(asset.id.clone());
     }
     let wish = &mut island.wishes[at];
@@ -1054,6 +1059,7 @@ fn place(
         }
     };
     let id = placed.id.clone();
+    super::inventory::limit(island, &Owner::agent(&agent), Some(&placed.asset));
     Ok((placement_line(&placed), id))
 }
 
@@ -1097,12 +1103,15 @@ fn propose(
     }
     let who = Owner::agent(agent_id);
     let text = format!("a public island project: {text}");
-    if let Some(wish) = island
-        .wishes
-        .iter()
-        .find(|wish| wish.who == who && wish.state == WishState::Open && wish.text == text)
-    {
-        return Ok((json!({"wishId":wish.id,"state":"open"}), wish.id.clone()));
+    if let Some(wish) = island.wishes.iter().find(|wish| {
+        wish.who == who
+            && matches!(wish.state, WishState::Open | WishState::Queued)
+            && wish.text == text
+    }) {
+        return Ok((
+            json!({"wishId":wish.id,"state":wish.state.word()}),
+            wish.id.clone(),
+        ));
     }
     if super::has_open_wish(island, &who) || super::open_wishes(island) >= super::OPEN_MAX {
         return Err(invalid(
@@ -1120,9 +1129,9 @@ fn propose(
         slot: None,
         text,
         made_at: now,
-        state: WishState::Open,
+        state: WishState::Queued,
         grant: None,
         closed_at: None,
     });
-    Ok((json!({"wishId":id,"state":"open"}), id))
+    Ok((json!({"wishId":id,"state":"queued"}), id))
 }

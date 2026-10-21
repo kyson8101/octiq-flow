@@ -24,6 +24,7 @@ mod backpack;
 mod guide;
 mod home;
 mod homes;
+mod inventory;
 mod layout;
 mod model;
 mod room;
@@ -228,7 +229,8 @@ fn ensure(
     };
     let mut rng = Rng::for_change(island.seed, island.rev, now, SALT_PLOTS);
     let claimed = claim_agents(&mut island, roster, now, &mut rng)?;
-    if !claimed.is_empty() {
+    let tidied = inventory::normalize(&mut island, roster);
+    if !claimed.is_empty() || tidied {
         let id = (claimed.len() == 1).then(|| claimed[0].clone());
         save(path, &mut island, now, "plots", id.as_deref())?;
     }
@@ -468,7 +470,10 @@ fn open_wishes(island: &Island) -> usize {
     island
         .wishes
         .iter()
-        .filter(|wish| wish.state == WishState::Open && wish.who.kind == OwnerKind::Agent)
+        .filter(|wish| {
+            matches!(wish.state, WishState::Open | WishState::Queued)
+                && wish.who.kind == OwnerKind::Agent
+        })
         .count()
 }
 
@@ -476,7 +481,15 @@ fn has_open_wish(island: &Island, who: &Owner) -> bool {
     island
         .wishes
         .iter()
-        .any(|wish| wish.state == WishState::Open && &wish.who == who)
+        .any(|wish| matches!(wish.state, WishState::Open | WishState::Queued) && &wish.who == who)
+}
+
+fn recently_withdrew(island: &Island, who: &Owner, now: i64) -> bool {
+    island.wishes.iter().any(|wish| {
+        &wish.who == who
+            && wish.state == WishState::Withdrawn
+            && now - wish.closed_at.unwrap_or(now) < 15 * 60_000
+    })
 }
 
 /// A new open wish for `resident`. Its id.
@@ -498,7 +511,7 @@ fn make_wish(island: &mut Island, resident: &Resident, now: i64, rng: &mut Rng) 
         slot,
         text,
         made_at: now,
-        state: WishState::Open,
+        state: WishState::Queued,
         grant: None,
         closed_at: None,
     });
@@ -518,7 +531,9 @@ fn roll_one(
     }
     let free: Vec<Resident> = residents(island, roster)
         .into_iter()
-        .filter(|resident| !has_open_wish(island, &resident.who))
+        .filter(|resident| {
+            !has_open_wish(island, &resident.who) && !recently_withdrew(island, &resident.who, now)
+        })
         .collect();
     if free.is_empty() {
         return None;
@@ -532,7 +547,12 @@ fn prune_closed(island: &mut Island) {
     let mut closed: Vec<(i64, String)> = island
         .wishes
         .iter()
-        .filter(|wish| wish.state != WishState::Open)
+        .filter(|wish| {
+            matches!(
+                wish.state,
+                WishState::Granted | WishState::Dismissed | WishState::Withdrawn
+            )
+        })
         .map(|wish| (wish.closed_at.unwrap_or(wish.made_at), wish.id.clone()))
         .collect();
     let over = closed.len().saturating_sub(CLOSED_KEPT);
@@ -660,7 +680,7 @@ pub fn dismiss_wish(
         .iter_mut()
         .find(|wish| wish.id == id)
         .ok_or_else(|| invalid(format!("There is no wish {id} on the island.")))?;
-    if wish.state != WishState::Open {
+    if !matches!(wish.state, WishState::Open | WishState::Queued) {
         return Err(invalid(format!(
             "Wish {id} is {} already.",
             wish.state.word()
@@ -806,7 +826,10 @@ pub fn look_for_wishes(
     let mut rng = Rng::for_change(island.seed, island.rev, now, SALT_LOOK);
     let mut free: Vec<Resident> = residents(&island, roster)
         .into_iter()
-        .filter(|resident| !has_open_wish(&island, &resident.who))
+        .filter(|resident| {
+            !has_open_wish(&island, &resident.who)
+                && !recently_withdrew(&island, &resident.who, now)
+        })
         .collect();
     rng.shuffle(&mut free);
     let mut made = Vec::new();
@@ -886,4 +909,61 @@ pub fn start_wishes(services: crate::dispatch::Services) {
             }
         }
     });
+}
+
+/// The page calls this only after the physical queue and registration pose.
+/// Repeated tabs acknowledge one durable transition; no agent hook exposes it.
+pub fn register_wish(
+    path: &Path,
+    roster: Option<&[TeamAgent]>,
+    id: &str,
+    now: i64,
+) -> Result<Value, String> {
+    let _guard = locked();
+    let mut island = ensure(path, roster, now, random_seed)?;
+    let wish = island
+        .wishes
+        .iter_mut()
+        .find(|wish| wish.id == id)
+        .ok_or("There is no wish to register.")?;
+    if wish.state == WishState::Open {
+        return Ok(answer(&island, roster, Some(id)));
+    }
+    if wish.state != WishState::Queued {
+        return Err("Only a queued wish can be registered.".into());
+    }
+    if !roster
+        .ok_or("The agent roster is unavailable.")?
+        .iter()
+        .any(|agent| wish.who.kind == OwnerKind::Agent && agent.id == wish.who.id)
+    {
+        return Err("The robot must still be registered.".into());
+    }
+    wish.state = WishState::Open;
+    save(path, &mut island, now, "registered", Some(id))?;
+    Ok(answer(&island, roster, Some(id)))
+}
+
+/// Abandoning the physical queue cannot dismiss a wish another tab registered.
+pub fn withdraw_wish(
+    path: &Path,
+    roster: Option<&[TeamAgent]>,
+    id: &str,
+    now: i64,
+) -> Result<Value, String> {
+    let _guard = locked();
+    let mut island = ensure(path, roster, now, random_seed)?;
+    let wish = island
+        .wishes
+        .iter_mut()
+        .find(|wish| wish.id == id)
+        .ok_or("There is no wish to withdraw.")?;
+    if wish.state != WishState::Queued {
+        return Ok(answer(&island, roster, Some(id)));
+    }
+    wish.state = WishState::Withdrawn;
+    wish.closed_at = Some(now);
+    prune_closed(&mut island);
+    save(path, &mut island, now, "withdrawn", Some(id))?;
+    Ok(answer(&island, roster, Some(id)))
 }

@@ -12,6 +12,7 @@ import type { AgentRow } from "../lib/agentsDashboard";
 import type { OrchestrationSnapshot } from "../lib/orchestration";
 import type { Waiting } from "../lib/runWaits";
 import { useAgentRows } from "../lib/useAgentRows";
+import { bridge } from "../lib/bridge";
 import { useIsland } from "../lib/island/feed";
 import {
   openWishes, residentsOf, wisher, type IslandAgent, type Resident, type Wish, type WishPace,
@@ -67,6 +68,7 @@ export default function IslandPage({
   );
   const residents = useMemo(() => (feed.island ? residentsOf(feed.island, roster) : []), [feed.island, roster]);
   const officeResidents = useMemo(() => feed.island ? officeLayout(feed.island, residents).residents : [], [feed.island, residents]);
+  const queuedWishes = feed.island?.wishes.filter(w=>w.state==='queued').length ?? 0;
   const wishes = useMemo(() => (feed.island ? openWishes(feed.island) : []), [feed.island]);
   const modes = useMemo(() => agentModes(rows), [rows]);
   const modesKey = useMemo(() => JSON.stringify([...modes]), [modes]);
@@ -100,6 +102,8 @@ export default function IslandPage({
       made = new IslandView(element, {
         onPick: (key) => setSelected(key),
         onLost: () => setDrawn("lost"),
+        onWishGiveUp: id => {void bridge.invoke("island_wish_withdraw",{id}).catch(()=>{});},
+        onWishRegister: id => {void bridge.invoke("island_wish_register",{id}).catch(()=>{});},
       }, !!reduced?.matches);
     } catch {
       setDrawn("no");
@@ -136,10 +140,10 @@ export default function IslandPage({
     const island = feed.island;
     if (!change || !island || island.rev < change.rev || played.current >= change.rev) return;
     played.current = change.rev;
-    if ((change.what === "wish" || change.what === "grant") && change.id) {
+    if ((change.what === "grant") && change.id) {
       const wish = island.wishes.find((w) => w.id === change.id);
       const who = wish && wisher(wish, residents);
-      if (who) view.current?.event(change.what === "wish" ? "wish" : "gift", who.key);
+      if (who) view.current?.event("gift", who.key);
     }
     // Someone moved in or out: the 波特 who live there build on it together.
     if (change.what === "home" && change.id) view.current?.homeChanged(change.id);
@@ -270,6 +274,7 @@ export default function IslandPage({
               <CloseIcon />
             </button>
           </div>
+          {queuedWishes>0 && <p className="island-meta">{queuedWishes} waiting to register at BOT Society</p>}
           {wishes.length === 0 ? (
             <p className="island-empty">No wishes right now. Robots make one now and then.</p>
           ) : (
@@ -400,6 +405,7 @@ function RobotCard({ resident, row, status, mood, housemates, wish, busy, buildi
         </button>
       </div>
       {status && <p className="island-card-status" data-tone={tone}>{status}</p>}
+      {!!resident.hobbies?.length && <p className="island-meta">Interests: {resident.hobbies.join(", ")}</p>}
       {resident.plot?.officeName && <p className="island-meta">{resident.plot.officeName} · Personal desk</p>}
       {housemates.length > 0 && <p className="island-meta island-card-home">Office with <bdi>{listNames(housemates)}</bdi></p>}
       {mood?.said && <p className="island-card-said">“<bdi>{mood.said}</bdi>”</p>}

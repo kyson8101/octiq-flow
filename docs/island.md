@@ -424,3 +424,49 @@ The avatar editor continues to show the uploaded picture or generated candidate.
 The original picture or initials remain the fallback while the island is loading,
 when WebGL is unavailable, or for an agent absent from the current roster. No
 avatar image is uploaded or written to the profile by this feature.
+
+### BOT Society, usable gifts and hobbies
+
+BOT Society reserves cell `(0,-1)`: an open temple-like hall, registration
+counter, queue area and a giant crowned robot statue on a stone plinth. Office
+and public-project layout never consumes this cell or the playground.
+
+New wishes begin `queued`, not grantable. Free, awake registered robots walk
+inside, queue and approach the counter one at a time. The `register` pose holds
+a form and writes on it; after four seconds the page calls
+`island_wish_register`. The host durably opens the wish once, including when
+multiple tabs send the receipt. Existing open wishes remain compatible. Work
+interrupts the journey; sleeping robots wait until daytime. With no island view
+open, queued wishes remain queued until their robot can visit the hall.
+
+After 45–80 seconds of waiting, each ten seconds has a 35% abandonment chance.
+A robot at the counter finishes rather than abandons. A withdrawal changes only
+a queued wish to `withdrawn`; a late withdrawal cannot dismiss a wish registered
+by another tab. The host gives that robot a fifteen-minute wish cooldown.
+
+Assets can declare `use: read | paint | garden | perform | play | observe` and
+a reachable `spot`, including public buildings. Existing shelves, easels,
+planters, cafés, music pavilions, lamps and similar gifts infer a suitable action
+from their name without rewriting their design. Generic placed gifts can be
+examined; `use: none` explicitly opts out. Robots autonomously use suitable
+assets, or a click sends a nearby available resident to one. Shared activities
+have exclusive occupancy and release on work, removal, timeout or replanning.
+Reading, painting and gardening have held props and activity-specific gestures;
+a music pavilion uses the existing concert audience and stage effects.
+
+Each registered robot has a stable primary hobby selected from gardening,
+reading, painting, music and games. Only gardening enthusiasts autonomously
+plant and water; their seedlings visibly grow during tending. Planting progress is
+local to the scene, while the saved gift design remains unchanged. Other
+residents prefer their own activities. Interests appear
+on the resident card. These are local simulation activities, without new agent
+processes, provider calls or newly registered NPCs.
+
+Each registered robot keeps up to eight personal items, counting equipped
+accessories. A new table, seat, lamp, planter, shelf or easel unplaces the old
+item in its category before finding room for the new one. The oldest excess
+personal placements retire first. Starter office furniture and public buildings
+are excluded; retiring a placement never deletes its asset from the library or
+another resident's copy. Existing over-cap personal plots normalize on the next
+successful island read/change. The host enforces this for grants and direct
+placement, not just the browser view.

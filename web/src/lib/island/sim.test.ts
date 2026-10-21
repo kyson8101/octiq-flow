@@ -435,3 +435,37 @@ describe("a little concert", () => {
     expect(world.sim.audience(star.key)).toBe(0);
   });
 });
+
+describe('BOT Society registration',()=>{
+ it('walks inside, queues and finishes one wish at a time with a registration pose',()=>{
+  const world=island([resident('agent:first','First',null),resident('agent:second','Second',null)]);
+  for(const robot of world.sim.robots.values())standStill(robot,{x:0,z:0});
+  const tickets=[{id:'w1',key:'agent:first'},{id:'w2',key:'agent:second'}];
+  const receipts:string[]=[];let posed=false;
+  world.sim.onWishRegister=id=>{expect([...world.sim.robots.values()].filter(r=>r.plan.act.kind==='wish-register')).toHaveLength(1);receipts.push(id);world.sim.setWishQueue(tickets.filter(t=>!receipts.includes(t.id)))};
+  world.sim.setWishQueue(tickets);
+  world.run(1);expect(receipts).toEqual([]);
+  world.run(45,12,()=>{posed ||= [...world.sim.robots.values()].some(r=>r.pose==='register')});
+  expect(receipts).toEqual(['w1','w2']);expect(posed).toBe(true);
+ });
+ it('does not drag a working or sleeping robot into the queue',()=>{
+  const world=island([resident('agent:busy','Busy',null),resident('agent:sleep','Sleep',null)]);
+  world.sim.setModes(modes([['agent:busy',{state:'working'}]]),0);
+  world.sim.setWishQueue([{id:'w1',key:'agent:busy'},{id:'w2',key:'agent:sleep'}]);
+  const receipts:string[]=[];world.sim.onWishRegister=id=>receipts.push(id);
+  world.run(15,0);
+  expect(receipts).toEqual([]);expect(world.robot('agent:busy').plan.act.kind).toBe('work');
+  expect(world.robot('agent:sleep').plan.act.kind).toBe('sleep');
+ });
+});
+
+it('patient bots can abandon a stalled queue, leave and do not instantly join again',()=>{
+ const world=island([resident('agent:clerk','Clerk',null),resident('agent:guest','Guest',null)]);
+ const guest=world.robot('agent:guest');guest.rng=()=>0;
+ world.sim.setWishQueue([{id:'first',key:'agent:clerk'},{id:'second',key:'agent:guest'}]);
+ const abandoned:string[]=[];world.sim.onWishGiveUp=id=>abandoned.push(id);
+ world.run(90);
+ expect(abandoned).toContain('second');
+ expect(['wish-queue','wish-register']).not.toContain(guest.plan.act.kind);
+ expect(world.robot('agent:clerk').plan.act.kind).toBe('wish-register');
+});

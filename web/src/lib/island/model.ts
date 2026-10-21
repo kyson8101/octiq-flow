@@ -1,3 +1,4 @@
+import { hobbiesFor, type Hobby } from "./hobbies";
 // The island as the host keeps it (island.rs, docs/island.md), and the few
 // facts the page works out from it: where a plot's corner of the island is,
 // and what a robot looks like when nobody has chosen.
@@ -43,7 +44,7 @@ export type Part = {
 };
 
 export type AssetKind = "accessory" | "furniture" | "decor" | "building";
-export type Use = "seat" | "desk" | "bed" | "none";
+export type Use = "seat" | "desk" | "bed" | "read" | "paint" | "garden" | "perform" | "play" | "observe" | "none";
 export type Spot = { at: Vec3; face: number };
 export type Maker = { name: string; agentId?: string; chatKey?: string };
 
@@ -99,7 +100,7 @@ export type Wish = {
   /** Reads after "<name> wishes for". The host's words. */
   text: string;
   madeAt: number;
-  state: "open" | "granted" | "dismissed";
+  state: "queued" | "open" | "granted" | "dismissed" | "withdrawn";
   grant?: { asset?: string; look?: boolean; by: Maker; at: number };
   closedAt?: number;
   /** Open wishes only: what a new chat is handed when the person grants it. */
@@ -138,6 +139,7 @@ export type Resident = {
   look: Look;
   plot: Plot | null;
   trait?: Trait;
+  hobbies?: Hobby[];
   /** For an agent: who it is in the roster. */
   agent?: IslandAgent;
 };
@@ -339,6 +341,7 @@ export function residentsOf(island: Island, roster: readonly IslandAgent[]): Res
     const plot = plotOf(owner);
     if (!plot) continue;
     agents.push({
+      hobbies: hobbiesFor(agent.id),
       key: `agent:${agent.id}`,
       owner,
       name: agent.name,

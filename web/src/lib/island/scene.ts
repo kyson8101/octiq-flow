@@ -1,3 +1,7 @@
+import { gardenPatch } from "./gardenPatch";
+import { buildSociety } from "./society";
+import { activitySite, type ActivitySite } from "./interactions";
+import { activityProps } from "./activityProps";
 import { officeLayout } from "./offices";
 import { concertStage } from "./concert";
 // The island drawn and running: one WebGL canvas, the scenery, every placed
@@ -29,9 +33,12 @@ export type ViewEvents = {
   onPick(key: string | null): void;
   /** The WebGL context went and did not come back; the page draws again. */
   onLost?(): void;
+  onWishRegister?(id:string): void;
+  onWishGiveUp?(id:string): void;
 };
 
 type RobotView = {
+  activity: ReturnType<typeof activityProps>;
   concert: ReturnType<typeof concertStage>;
   atmosphere: ReturnType<typeof robotAtmosphere>;
   rig: RobotRig;
@@ -120,6 +127,8 @@ export class IslandView {
   private controls: OrbitControls;
   private hemi = new HemisphereLight("#eef6ff", "#c8b58a", 1.4);
   private sun = new DirectionalLight("#fff4e2", 2.6);
+  private gardenBeds = new Map<string,ReturnType<typeof gardenPatch>>();
+  private society = buildSociety();
   private scenery: Scenery | null = null;
   private sceneryKey = "";
   private cache = new AssetCache();
@@ -187,6 +196,7 @@ export class IslandView {
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.02;
     this.scene.fog = new Fog("#e8f3fb", 90, 420);
+    this.scene.add(this.society.root);
     this.scene.add(this.hemi, this.sun, this.sun.target, this.proxies, this.rain.object);
     this.proxies.visible = false;
     this.sun.castShadow = true;
@@ -213,6 +223,8 @@ export class IslandView {
 
     this.nav = new NavGrid(40);
     this.sim = new IslandSim(this.nav, { seats: [], plots: new Map(), tree: { x: 0, z: 0 }, plaza: PLAZA_RADIUS, radius: 40 });
+    this.sim.onWishRegister = id => this.events.onWishRegister?.(id);
+    this.sim.onWishGiveUp = id => this.events.onWishGiveUp?.(id);
     this.bubbles = new Bubbles(() => ({ decide: token("--decide", "#3d7bd9"), danger: token("--danger", "#d6544b") }));
     this.shadowMaterial = new MeshBasicMaterial({ color: "#1e2a24", transparent: true, opacity: 0.22, depthWrite: false });
     this.ring = new Mesh(new RingGeometry(0.55, 0.68, 40), new MeshBasicMaterial({ color: "#ffffff", transparent: true, opacity: 0.85, depthWrite: false }));
@@ -326,7 +338,8 @@ export class IslandView {
 
     // Placements: made again only when what they show, or where, changed.
     const keep = new Set<string>();
-    const solids: Solid[] = [...scenery.solids];
+    const solids: Solid[] = [...scenery.solids,...this.society.solids];
+    const activities: ActivitySite[] = [];
     const seats: Seat[] = [...scenery.seats];
     for (const placement of island.placed) {
       const plot = plots.get(placement.plot);
@@ -349,6 +362,8 @@ export class IslandView {
         this.placed.set(placement.id, view);
       }
       solids.push(...placementSolids(asset, plot, placement));
+      const activity = activitySite(asset,plot,placement);
+      if(activity) activities.push(activity);
       const seat = placementSeat(asset, plot, placement);
       if (seat) { seat.owner = offices.deskOwners.get(placement.id); seat.key += `:${seat.x}:${seat.z}:${seat.y}:${seat.face}`; seats.push(seat); }
     }
@@ -359,8 +374,25 @@ export class IslandView {
     }
 
     this.nav = new NavGrid(island.radius, solids, 1.5, scenery.walkways);
+    // Shift an implicit approach outside collision padding; never teleport to a blocked prop.
+    for(const site of activities) {
+      if(this.nav.isFree(site)&&this.nav.path({x:0,z:0},site))continue;
+      for(let distance=.5;distance<=7;distance+=.5) {
+        let found=false;
+        for(let turn=0;turn<8;turn++) {
+          const angle=turn*Math.PI/4;const candidate={x:site.x+Math.sin(angle)*distance,z:site.z+Math.cos(angle)*distance};
+          if(this.nav.isFree(candidate)&&this.nav.path({x:0,z:0},candidate)){site.face=Math.atan2(site.x-candidate.x,site.z-candidate.z);Object.assign(site,candidate);found=true;break;}
+        }
+        if(found)break;
+      }
+    }
+    for(const [key,bed] of this.gardenBeds) {
+      const site=activities.find(s=>s.key===key&&s.activity==='garden');
+      if(!site){this.scene.remove(bed.root);bed.dispose();this.gardenBeds.delete(key);}
+      else bed.root.position.set(site.x+Math.sin(site.face)*.65,TILE_TOP+.02,site.z+Math.cos(site.face)*.65);
+    }
     const places: Places = {
-      seats,
+      seats, activities,
       plots: new Map(residents.filter((r) => r.plot).map((r) => {
         const plot = r.plot!;
         const center = plotToWorld(plot, 0, 0);
@@ -378,6 +410,7 @@ export class IslandView {
     };
     const now = this.clock;
     this.sim.reset(this.nav, places, residents, now);
+    this.sim.setWishQueue(island.wishes.filter(w=>w.state==='queued').sort((a,b)=>a.madeAt-b.madeAt||a.id.localeCompare(b.id)).map(w=>({id:w.id,key:`agent:${w.who.id}`})));
 
     // Bots that came after the island was first drawn step off the boat.
     if (!this.firstLoad) {
@@ -445,7 +478,8 @@ export class IslandView {
     rig.root.add(atmosphere.umbrella, atmosphere.aura);
     const concert = concertStage();
     this.scene.add(concert.root);
-    const view: RobotView = { concert, rig, atmosphere, look, worn: "", shadow, proxy, bubble, bubbleKey: "" };
+    const activity = activityProps();rig.anchors.hand.add(activity.root);
+    const view: RobotView = { activity, concert, rig, atmosphere, look, worn: "", shadow, proxy, bubble, bubbleKey: "" };
     this.robots.set(key, view);
     return view;
   }
@@ -457,6 +491,7 @@ export class IslandView {
     this.proxies.remove(view.proxy);
     view.rig.dispose();
     view.atmosphere.dispose();
+    view.activity.dispose();
     this.scene.remove(view.concert.root);
     view.concert.dispose();
     this.robots.delete(key);
@@ -547,6 +582,15 @@ export class IslandView {
     return (hit?.object.userData.robot as string | undefined) ?? null;
   }
 
+  private assetAt(clientX:number,clientY:number):string|null {
+    const rect=this.canvas.getBoundingClientRect();
+    this.pointer.set(((clientX-rect.left)/rect.width)*2-1,-((clientY-rect.top)/rect.height)*2+1);
+    this.raycaster.setFromCamera(this.pointer,this.camera);
+    for(const hit of this.raycaster.intersectObjects([...this.placed.values()].map(v=>v.object),true)) {
+      for(const [id,view] of this.placed) {let object:Object3D|null=hit.object;while(object){if(object===view.object)return id;object=object.parent;}}
+    }
+    return null;
+  }
   private onDown = (event: PointerEvent) => {
     this.pointerAt = { x: event.clientX, y: event.clientY, time: performance.now() };
   };
@@ -557,14 +601,18 @@ export class IslandView {
     if (!down) return;
     const moved = Math.hypot(event.clientX - down.x, event.clientY - down.y);
     if (moved > 6 || performance.now() - down.time > 500) return;
-    this.events.onPick(this.robotAt(event.clientX, event.clientY));
+    const robot=this.robotAt(event.clientX,event.clientY);
+    if(robot){this.events.onPick(robot);return;}
+    const asset=this.assetAt(event.clientX,event.clientY);
+    if(asset){const actor=this.sim.useAsset(asset);if(actor)this.events.onPick(actor);return;}
+    this.events.onPick(null);
   };
 
   private onMove = (event: PointerEvent) => {
     if (event.pointerType !== "mouse" || event.buttons) return;
     const key = this.robotAt(event.clientX, event.clientY);
     this.hovered = key;
-    this.canvas.style.cursor = key ? "pointer" : "";
+    this.canvas.style.cursor = key || this.assetAt(event.clientX,event.clientY) ? "pointer" : "";
   };
 
   private onLeave = () => {
@@ -602,6 +650,7 @@ export class IslandView {
     const weather = weatherAt(this.island?.seed ?? 1, Date.now(), this.weatherChoice);
     this.rain.update(dt, weather, this.controls.target.x, this.controls.target.z, calm);
     this.scenery?.playground.setMotion(this.sim.motion);
+    const tended = new Set<string>();
     for (const [key, view] of this.robots) {
       const robot = this.sim.robots.get(key);
       if (!robot) continue;
@@ -616,10 +665,25 @@ export class IslandView {
       view.concert.root.rotation.y = robot.heading;
       view.concert.update(robot.pose === "dance" && this.sim.audience(key) > 0, dt, t, calm);
       const act = robot.plan.act;
+      view.activity.show(act.kind==='wish-register'?'register':act.kind==='interact'&&!robot.path.length?act.site.activity:null);
       const atDesk = act.kind === "work" && act.seat?.kind === "desk" && !robot.path.length;
       poseIslandRobot(view.rig, robot.pose, t + (hashOf(key) % 97) * 0.13, {
-        stride: robot.stride, calm, console: !atDesk, lean: robot.lean, bored: robot.boredom > 0.72,
+        stride: robot.stride, calm, console: !atDesk && act.kind!=='interact', lean: robot.lean, bored: robot.boredom > 0.72,
       });
+      if(act.kind==='interact'&&!robot.path.length) {
+        if(act.site.activity==='read') {
+          view.rig.head.rotation.x=.18;
+          view.rig.arms.forEach(arm=>{arm.shoulder.rotation.x=-.65;arm.elbow.rotation.x=-.85;});
+        } else if(act.site.activity==='garden'||act.site.activity==='paint') {
+          if(act.site.activity==='garden') {
+            tended.add(act.site.key);let bed=this.gardenBeds.get(act.site.key);
+            if(!bed){bed=gardenPatch();bed.root.position.set(act.site.x+Math.sin(act.site.face)*.65,TILE_TOP+.02,act.site.z+Math.cos(act.site.face)*.65);this.scene.add(bed.root);this.gardenBeds.set(act.site.key,bed);}
+          }
+          view.rig.arms[0].shoulder.rotation.x=-.7;
+          view.rig.arms[0].elbow.rotation.x=-.5+(calm?0:Math.sin(t*3)*.16);
+          view.activity.root.rotation.z=act.site.activity==='garden'?-.35:0;
+        }
+      } else view.activity.root.rotation.z=0;
       const umbrella = carriesUmbrella(weather, robot.pose);
       view.atmosphere.umbrella.visible = umbrella;
       view.atmosphere.umbrella.position.y = sitting ? -HIP_HEIGHT : 0;
@@ -653,6 +717,7 @@ export class IslandView {
       }
     }
 
+    for(const [key,bed] of this.gardenBeds)bed.update(dt,tended.has(key));
     this.scenery?.update(calm ? 0 : t, this.sky.night, this.sky, this.sky.sea);
 
     // Following: the camera's target goes with the robot.
@@ -841,6 +906,8 @@ export class IslandView {
     this.scenery?.dispose();
     this.bubbles.dispose();
     this.rain.dispose();
+    this.society.dispose();
+    for(const bed of this.gardenBeds.values()){this.scene.remove(bed.root);bed.dispose();}this.gardenBeds.clear();
     this.fadedMaterials.forEach((m) => m.dispose());
     this.shadowGeometry.dispose();
     this.shadowMaterial.dispose();
@@ -895,14 +962,15 @@ export function placementSolids(asset: Asset, plot: Plot, placement: { x: number
 /** Where a robot sits, sleeps or works on a placed asset: its spot, or the
  *  island's guess for an asset that gave none. */
 export function placementSeat(asset: Asset, plot: Plot, placement: { id: string; x: number; z: number; y: number; turn: number }): Seat | null {
-  const use = asset.use;
-  if (!use || use === "none") return null;
+  const name=asset.name.toLowerCase();
+  const use = asset.use ?? (/\b(chair|bench|stool)\b|椅|凳/.test(name)?'seat':/\bbed\b|床/.test(name)?'bed':/\b(table|desk|workbench)\b|桌|工作台/.test(name)?'desk':undefined);
+  if (!use || !["seat","desk","bed"].includes(use)) return null;
   if (asset.kind !== "furniture" && asset.kind !== "decor") return null;
   let spot = asset.spot;
   if (!spot) {
     const parts = asset.parts.map(partBox);
     const maxZ = Math.max(...parts.map((b) => b.max[2]));
-    const low = parts.filter((b) => b.max[1] < 0.9);
+    const low = parts.filter((b) => b.max[1] < (use==='seat'?.65:.9));
     const seatTop = low.length ? Math.max(...low.map((b) => b.max[1])) : 0.3;
     spot = use === "desk"
       ? { at: [0, 0, maxZ + 0.45], face: 180 }

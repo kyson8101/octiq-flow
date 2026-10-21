@@ -60,6 +60,11 @@ impl Fixture {
         for _ in 0..6 {
             super::arrive(&mut legacy, NOW, &mut rng).unwrap();
         }
+        for wish in &mut legacy.wishes {
+            if wish.state == WishState::Queued {
+                wish.state = WishState::Open;
+            }
+        }
         legacy.radius = layout::radius(&legacy.plots);
         super::write(
             &fixture.path,
@@ -1422,36 +1427,28 @@ fn a_registered_agent_places_moves_and_removes_on_its_own_plot() {
 }
 
 #[test]
-fn a_plot_holds_forty_placements_and_fifteen_hundred_parts() {
+fn public_plot_capacity_is_still_forty_placements_and_fifteen_hundred_parts() {
     let f = Fixture::new();
-    let me = nova();
-    let pebble = built(
-        &f.call(&me, "build", json!({ "name": "Pebble", "kind": "decor", "parts": [part([0.1, 0.05, 0.1], [0.0, 0.025, 0.0])] }))
-            .unwrap(),
-    );
-    // Two starters, then 38 pebbles.
-    for at in 0..38 {
-        let x = -4.0 + f64::from(at % 9);
-        let z = 1.5 + f64::from(at / 9) * 0.5;
-        f.call(&me, "place", json!({ "assetId": pebble, "x": x, "z": z }))
-            .unwrap();
+    let mut island = f.island();
+    let plot = plot_of(&island, &Owner::agent("ag_nova")).id.clone();
+    let mut rng = layout::Rng::for_change(SEED, 1, NOW, 8);
+    let (draft, _) = rules::check_asset(
+        json!({"name":"Pebble","kind":"decor","parts":[part([0.1,0.05,0.1],[0.,0.025,0.])]}),
+    )
+    .unwrap();
+    let asset = super::add_asset(&mut island, draft, Maker::island(), NOW, &mut rng);
+    for _ in 0..38 {
+        super::new_placement(&mut island, &plot, &asset, (0., 0.), 0., 0., &mut rng);
     }
-    let why = f
-        .call(&me, "place", json!({ "assetId": pebble, "x": 0, "z": 0 }))
-        .unwrap_err();
-    assert!(why.contains("at most 40 placements"), "{why}");
-    // Parts: a rebuild that would bring the plot past 1,500 is refused.
-    let many: Vec<Value> = (0..80)
-        .map(|_| part([0.1, 0.05, 0.1], [0.0, 0.025, 0.0]))
-        .collect();
-    let why = f
-        .call(
-            &me,
-            "build",
-            json!({ "assetId": pebble, "name": "Pebbles", "kind": "decor", "parts": many }),
-        )
-        .unwrap_err();
-    assert!(why.contains("parts"), "{why}");
+    assert!(super::agent::plot_room(&island, &plot, 1, None)
+        .unwrap_err()
+        .contains("at most 40 placements"));
+    island.placed.pop();
+    let a = island.assets.iter_mut().find(|a| a.id == asset).unwrap();
+    a.parts = vec![a.parts[0].clone(); 80];
+    assert!(super::agent::plot_room(&island, &plot, 1, None)
+        .unwrap_err()
+        .contains("parts"));
 }
 
 #[test]
@@ -1787,4 +1784,129 @@ fn a_lead_can_propose_one_custom_public_wish_and_retries_do_not_duplicate_it() {
     f.roster[0].reports_to = Some("ag_ada".into());
     assert!(f.call(&nova(), "propose", request).is_err());
     assert_eq!(f.island(), island);
+}
+
+#[test]
+fn new_wishes_wait_for_society_registration_and_repeated_registration_is_one_save() {
+    let f = Fixture::new();
+    let id = f.wish(&Owner::agent("ag_nova"), Want::Furniture, None);
+    f.edit(|island| {
+        island.wishes.iter_mut().find(|w| w.id == id).unwrap().state = WishState::Queued
+    });
+    let giver = chat("chat:society-giver");
+    let asset = built(&f.call(&giver, "build", armchair()).unwrap());
+    assert!(f
+        .call(&giver, "grant", json!({"wishId":id,"assetId":asset}))
+        .is_err());
+    let first = super::register_wish(&f.path, Some(&f.roster), &id, NOW + 1).unwrap();
+    assert!(first["island"]["wishes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["id"] == id && w["state"] == "open"));
+    let after = f.island();
+    super::register_wish(&f.path, Some(&f.roster), &id, NOW + 2).unwrap();
+    assert_eq!(f.island(), after);
+    f.call(&giver, "grant", json!({"wishId":id,"assetId":asset}))
+        .unwrap();
+    let fresh = super::create(Some(&f.roster), NOW, SEED).unwrap();
+    assert!(fresh.wishes.iter().all(|w| w.state == WishState::Queued));
+    let missing = f.wish(&Owner::agent("ag_ada"), Want::Decor, None);
+    f.edit(|island| {
+        island
+            .wishes
+            .iter_mut()
+            .find(|w| w.id == missing)
+            .unwrap()
+            .state = WishState::Queued
+    });
+    assert!(super::register_wish(&f.path, Some(&[]), &missing, NOW).is_err());
+}
+
+#[test]
+fn a_new_personal_table_retires_the_old_table_but_keeps_the_fixed_workstation() {
+    let f = Fixture::new();
+    let giver = chat("chat:table-maker");
+    let owner = Owner::agent("ag_nova");
+    let initial = f.island();
+    let plot = plot_of(&initial, &owner).id.clone();
+    let fixed: Vec<String> = initial
+        .placed
+        .iter()
+        .filter(|p| p.plot == plot)
+        .map(|p| p.id.clone())
+        .collect();
+    let mut tables = vec![];
+    for name in ["Oak coffee table", "Pine coffee table"] {
+        let mut raw = starter::desk("#88aaff");
+        raw["name"] = name.into();
+        let asset = built(&f.call(&giver, "build", raw).unwrap());
+        let wish = f.wish(&owner, Want::Furniture, None);
+        f.call(&giver, "grant", json!({"wishId":wish,"assetId":asset}))
+            .unwrap();
+        tables.push(asset);
+    }
+    let after = f.island();
+    assert!(!after
+        .placed
+        .iter()
+        .any(|p| p.plot == plot && p.asset == tables[0]));
+    assert!(after
+        .placed
+        .iter()
+        .any(|p| p.plot == plot && p.asset == tables[1]));
+    assert!(fixed
+        .iter()
+        .all(|id| after.placed.iter().any(|p| &p.id == id)));
+    assert!(after.assets.iter().any(|a| a.id == tables[0]));
+}
+
+#[test]
+fn personal_inventory_caps_old_gifts_without_touching_public_or_other_residents() {
+    let f = Fixture::new();
+    let owner = Owner::agent("ag_nova");
+    f.edit(|island|{
+        let plot=super::plot_of(island,&owner).unwrap().id.clone();
+        let mut rng=layout::Rng::for_change(SEED,1,NOW,7);
+        for i in 0..11 {
+            let (draft,_)=rules::check_asset(json!({"name":format!("Keepsake {i}"),"kind":"decor","parts":[part([0.1,0.1,0.1],[0.,0.05,0.])]})).unwrap();
+            let asset=super::add_asset(island,draft,Maker { name:"Maker".into(), agent_id:None, chat_key:Some("chat:inventory".into()) },NOW+i,&mut rng);
+            super::new_placement(island,&plot,&asset,(0.,0.),0.,0.,&mut rng);
+        }
+        let before_other:Vec<_>=island.placed.iter().filter(|p|p.plot!=plot).cloned().collect();
+        assert_eq!(super::inventory::limit(island,&owner,None).len(),3);
+        assert!(before_other.iter().all(|p|island.placed.contains(p)));
+    });
+    let island = f.island();
+    let plot = plot_of(&island, &owner);
+    assert_eq!(
+        island.placed.iter().filter(|p| p.plot == plot.id).count(),
+        10
+    ); // 8 gifts + the fixed building and desk.
+}
+
+#[test]
+fn leaving_the_queue_has_a_cooldown_and_a_stale_withdrawal_cannot_cancel_registration() {
+    let f = Fixture::new();
+    let owner = Owner::agent("ag_nova");
+    let id = f.wish(&owner, Want::Decor, None);
+    f.edit(|island| {
+        island.wishes.iter_mut().find(|w| w.id == id).unwrap().state = WishState::Queued
+    });
+    super::withdraw_wish(&f.path, Some(&f.roster), &id, NOW).unwrap();
+    let island = f.island();
+    assert!(island
+        .wishes
+        .iter()
+        .any(|w| w.id == id && w.state == WishState::Withdrawn));
+    assert!(super::recently_withdrew(&island, &owner, NOW + 1));
+    assert!(!super::recently_withdrew(
+        &island,
+        &owner,
+        NOW + 16 * 60_000
+    ));
+    let another = f.wish(&owner, Want::Decor, None);
+    let before = f.island();
+    super::withdraw_wish(&f.path, Some(&f.roster), &another, NOW).unwrap();
+    assert_eq!(f.island(), before);
 }
