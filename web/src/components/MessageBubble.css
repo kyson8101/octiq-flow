@@ -148,3 +148,27 @@
   .msg-user .msg-body { transition: none; }
   .message-delivery-actions :is(button, .msg-copy) { transition: none; }
 }
+
+/* A confirmed front-desk brief is a handoff, rather than the person's speech. */
+.msg-user.msg-desk-route .msg-body {
+  width: min(100%, 760px);
+  max-width: 100%;
+  padding: 18px 22px;
+  border-radius: 12px;
+  background: var(--bg-1);
+  border-color: var(--border);
+}
+.desk-route-head { display: flex; align-items: center; gap: 10px; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
+.desk-route-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; border-radius: 8px; background: var(--bg-2); color: var(--fg-2); }
+.desk-route-head > div { display: grid; gap: 3px; min-width: 0; }
+.desk-route-label { color: var(--fg-3); font-size: 11px; }
+.desk-route-head strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.desk-route-confirmed { margin-left: auto; color: var(--fg-2); font-size: 11px; text-align: right; }
+.desk-route-source { margin-top: 16px; color: var(--fg-3); font-size: 11px; }
+.msg-desk-route .message-delivery { padding-inline: 4px; }
+.msg-desk-route .message-delivery::after { display: none; }
+@media (max-width: 540px) {
+  .msg-user.msg-desk-route .msg-body { padding: 14px; }
+  .desk-route-head { flex-wrap: wrap; }
+  .desk-route-confirmed { margin-left: 42px; }
+}

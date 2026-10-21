@@ -331,6 +331,18 @@ fn grant_key(request: &Request) -> Option<(String, String)> {
     request.chat_key.clone().zip(signature(request))
 }
 
+/// A cancelled provider request drops its pending permission card as well.
+/// The normal answer path removes it first; Drop then has nothing to do.
+struct PendingCard(String);
+
+impl Drop for PendingCard {
+    fn drop(&mut self) {
+        if with_pending(|p| p.remove(&self.0)).is_some() {
+            crate::bus::emit("permission-expired", serde_json::json!({ "id": self.0 }));
+        }
+    }
+}
+
 /// Ask, and wait for an answer.
 pub async fn ask(request: Request) -> Answer {
     // A Grant authorized these host-only tools. A background island maker
@@ -405,6 +417,8 @@ pub async fn ask(request: Request) -> Answer {
             },
         )
     });
+
+    let _card = PendingCard(id.clone());
 
     // To the browsers that are attached…
     crate::bus::emit("permission-ask", asked.clone());

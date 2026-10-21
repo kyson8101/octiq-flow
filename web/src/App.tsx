@@ -5872,6 +5872,10 @@ export default function App() {
                   chats={deskChatsToContinue}
                   now={Date.now()}
                   onContinue={(desk) => void continueDeskChat(desk)}
+                  onCancel={async (desk) => {
+                    await bridge.invoke("front_desk_dismiss", { chatKey: desk.chatKey });
+                    setUnfinishedDesk((chats) => chats.filter((chat) => chat.chatKey !== desk.chatKey));
+                  }}
                 />
               )}
               {/* With a front desk, the full picker is one tap away rather than

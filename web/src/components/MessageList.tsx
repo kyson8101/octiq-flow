@@ -11,7 +11,7 @@
 // are lifted out of the conversation here and kept by that call's id. The
 // alternative is a reply where a subagent's thinking, tool calls and prose all
 // read as the main agent's own.
-import { readTaskBrief } from "../lib/taskBrief";
+import { readDeskRoute, readTaskBrief } from "../lib/taskBrief";
 import { Fragment, createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Markdown, { type Components } from "react-markdown";
@@ -894,6 +894,7 @@ function TurnView({
   const handedTo = role === "user"
     ? blocks.map((b) => b.kind === "text" ? readTaskBrief(b.text)?.lead : undefined).find(Boolean)
     : undefined;
+  const deskRoute = role === "user" ? blocks.flatMap((b) => b.kind === "text" ? [readDeskRoute(shown(b.text))] : []).find(Boolean) : undefined;
   const answer = blocks
     .filter((b) => b.kind === "text")
     .map((b) => shown((b as { text: string }).text))
@@ -974,7 +975,7 @@ function TurnView({
 
   return (
     <article
-      className={`msg msg-${role} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""} ${
+      className={`msg msg-${role} ${deskRoute ? "msg-desk-route" : ""} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""} ${
         fresh ? "is-new" : ""
       }`}
       data-tint={tint}
@@ -983,7 +984,7 @@ function TurnView({
       {/* Above your own words, because it changes how they read: "check this"
           means something different said to the room than said to one agent. */}
       {role === "user" && to && <div className="msg-to">to {to.name}</div>}
-      {handedTo && <div className="msg-to">task for {handedTo}</div>}
+      {handedTo && !deskRoute && <div className="msg-to">task for {handedTo}</div>}
       {role === "user" && ranSkill && (
         <div className="msg-ran" title="The skill this command resolved to">
           {ranSkill}
@@ -1029,6 +1030,12 @@ function TurnView({
         {/* Above the words, the way they sit above the box while you attach
             them — and because a message whose words are "look at this" makes no
             sense until you have seen the picture it came with. */}
+        {deskRoute && <header className="desk-route-head">
+          <span className="desk-route-icon" aria-hidden="true">↗</span>
+          <div><span className="desk-route-label">Front desk handoff</span>
+            <strong>{handedTo ? `To ${handedTo}` : "Agent conversation"}</strong></div>
+          <span className="desk-route-confirmed">Confirmed by you</span>
+        </header>}
         <SentFiles files={files} />
         {role === "assistant" && (
           <ProgressLog updates={progress} candidate={codexCandidate} streaming={streaming} />
@@ -1040,7 +1047,7 @@ function TurnView({
         {wrapUp ? (
           <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark={planStart ? "start" : jobEnd ? "job" : "complete"} />
         ) : role === "user" && blocks.every((b) => b.kind === "text") ? (
-          blocks.map((b, i) => <UserText key={i} text={shown((b as { text: string }).text)} />)
+          blocks.map((b, i) => <UserText key={i} text={deskRoute ? readDeskRoute(shown((b as { text: string }).text))?.text ?? shown((b as { text: string }).text) : shown((b as { text: string }).text)} />)
         ) : (
           <Blocks
             blocks={blocks}
@@ -1050,6 +1057,7 @@ function TurnView({
             onOpenAgent={onOpenAgent}
           />
         )}
+        {deskRoute && <div className="desk-route-source">Handed over by {deskRoute.desk}</div>}
         {streaming && blocks.length === 0 && (
           <div className="dots" aria-label={hostPersona ? `${hostPersona.name} is working` : "working"} />
         )}

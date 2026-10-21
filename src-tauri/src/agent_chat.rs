@@ -656,6 +656,8 @@ struct CodexAppSession {
     active_turn_id: Option<String>,
     interrupt_when_started: bool,
     next_request: u64,
+    /// Pending MCP confirmations, cancelled with this process/turn.
+    elicitations: HashMap<String, tokio::sync::oneshot::Sender<()>>,
     model: Option<String>,
     effort: Option<String>,
     access: Option<Access>,
@@ -681,6 +683,9 @@ impl ChatSession {
 
     /// The agent reached its own full stop. The clock starts now.
     fn turn_ended(&mut self) {
+        if let Some(codex) = self.codex.as_mut() {
+            codex.elicitations.clear();
+        }
         self.busy = false;
         self.last_active = Instant::now();
     }
@@ -3994,6 +3999,7 @@ pub(crate) fn start_session(
             active_turn_id: None,
             interrupt_when_started: false,
             next_request: 0,
+            elicitations: HashMap::new(),
             model: selected_model,
             effort: selected_effort,
             access,
@@ -4121,6 +4127,11 @@ pub(crate) fn start_session(
                                     event,
                                 );
                                 continue;
+                            }
+                            if event.get("method").and_then(Value::as_str)
+                                == Some("serverRequest/resolved")
+                            {
+                                codex_elicitation::resolved(&asking, &event["params"]["requestId"]);
                             }
                             let native_thread = if let Ok(session) = asking.lock() {
                                 session.codex.as_ref().map(|codex| codex.thread_id.clone())
@@ -4525,6 +4536,9 @@ pub(crate) fn start_session(
             // receipt. A killed/replaced launch must not stay "dispatched"
             // forever, nor imply its words reached the provider's history.
             if let Ok(mut session) = asking.lock() {
+                if let Some(codex) = session.codex.as_mut() {
+                    codex.elicitations.clear();
+                }
                 reading.questions.detach_launch(&session.launch_id);
                 record_delivery(&key, session.user_turn_id.take().as_deref(), "unknown");
                 // Every line this process wrote has been read. A wrap-up it
@@ -6173,6 +6187,7 @@ fn answer_codex_server_request(
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
             answer_codex_approval(session, key, rt, id, method, params)
         }
+        "mcpServer/elicitation/request" => codex_elicitation::answer(session, key, rt, id, params),
         "item/tool/requestUserInput" => {
             answer_codex_user_input(manager, session, key, rt, id, params)
         }
@@ -7388,6 +7403,7 @@ impl ChatManager {
             active_turn_id: None,
             interrupt_when_started: false,
             next_request: 0,
+            elicitations: HashMap::new(),
             model: None,
             effort: None,
             access: Some(access),
@@ -7605,6 +7621,9 @@ fn end_process_when(
 /// End the process of a session that has been taken out of the session
 /// table. Called with the session held.
 fn stop_process(manager: &ChatManager, key: &str, session: &mut ChatSession) {
+    if let Some(codex) = session.codex.as_mut() {
+        codex.elicitations.clear();
+    }
     if let Err(error) = manager.background.interrupt(key, &session.launch_id,
         "The provider session was ended or switched. Background work is no longer attached; inspect retained output before retrying.") {
         eprintln!("chat: cannot record interrupted background work: {error}");
@@ -7914,6 +7933,9 @@ mod ending_tests;
 #[cfg(test)]
 #[path = "reach_tests.rs"]
 mod reach_tests;
+
+#[path = "codex_elicitation.rs"]
+mod codex_elicitation;
 
 #[cfg(test)]
 #[path = "answered_tests.rs"]
@@ -10790,6 +10812,7 @@ mod tests {
                 active_turn_id: Some("turn-1".into()),
                 interrupt_when_started: false,
                 next_request: 0,
+                elicitations: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),
@@ -11000,6 +11023,7 @@ mod tests {
                 active_turn_id: Some("turn-1".into()),
                 interrupt_when_started: false,
                 next_request: 0,
+                elicitations: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),
@@ -13251,6 +13275,7 @@ mod completion_tests {
                 active_turn_id: Some("turn-1".into()),
                 interrupt_when_started: false,
                 next_request: 0,
+                elicitations: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),

@@ -2380,6 +2380,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
         // Front-desk chats the person left before they routed anywhere, for
         // the way back on the new-chat screen. No list shows them otherwise.
+        "front_desk_dismiss" => to_value(crate::team::dismiss_desk_chat(
+            &svc.handovers.team,
+            &arg::<String>(&args, "chatKey")?,
+        )),
         "front_desk_unfinished" => to_value(crate::handover::route::unfinished_desks(
             &svc.handovers.store,
             &svc.handovers.team,

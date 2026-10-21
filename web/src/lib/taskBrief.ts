@@ -14,3 +14,9 @@ export function readTaskBrief(text: string): { task: string; lead: string } | un
   const lead = /^Lead: (.+)$/m.exec(rest)?.[1]?.trim() ?? "";
   return { task: text.slice(0, at), lead };
 }
+
+/** The host's exact route receipt, separated for display only. */
+export function readDeskRoute(text: string): { text: string; desk: string } | undefined {
+  const match = /\n\n\(Opened by (.+), the person's front desk, once the person confirmed it\.\)$/.exec(text);
+  return match ? { text: text.slice(0, match.index).trimEnd(), desk: match[1] } : undefined;
+}

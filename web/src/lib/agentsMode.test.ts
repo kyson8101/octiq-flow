@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import { readTaskBrief } from "./taskBrief";
+import { readDeskRoute, readTaskBrief } from "./taskBrief";
 import {
   conversationRecipient, conversationRecipients, headConversation, leadOnly, leadSettings, teamModelLabel, teamModels,
   type TeamAgent,
@@ -20,6 +20,12 @@ const ada: TeamAgent = {
 };
 
 describe("agents mode", () => {
+  it("separates only the host route receipt at the end of the brief", () => {
+    const receipt = "\n\n(Opened by Front desk, the person's front desk, once the person confirmed it.)";
+    expect(readDeskRoute("Resume roadmap" + receipt)).toEqual({ text: "Resume roadmap", desk: "Front desk" });
+    expect(readDeskRoute("Resume roadmap")).toBeUndefined();
+    expect(readDeskRoute("Quoted" + receipt + " extra words")).toBeUndefined();
+  });
   it("splits a task message into the words and the lead", () => {
     expect(readTaskBrief(BRIEFED)).toEqual({ task: "Fix the login bug", lead: "Ada" });
     expect(readTaskBrief("an ordinary message")).toBeUndefined();

@@ -679,7 +679,7 @@ pub fn unfinished(
 
 /// `unfinished`, read from the stores.
 pub fn unfinished_desks(store: &Path, team_path: &Path) -> Result<Vec<Unfinished>, String> {
-    let chats = team::front_desk_chats(team_path);
+    let chats = team::continuable_front_desk_chats(team_path)?;
     let records: Vec<Handover> = {
         let _guard = LOCK.lock().map_err(|e| e.to_string())?;
         read(store)?.handovers.into_values().collect()

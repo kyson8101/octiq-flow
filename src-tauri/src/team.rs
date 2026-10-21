@@ -190,6 +190,8 @@ struct Stored {
     /// front-desk chats hidden.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     front_desk_chats: Vec<FrontDeskChat>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dismissed_desk_chats: Vec<String>,
     /// The person's shared rules for every registered agent, put ahead of
     /// each one's own instructions in every brief (`standing_brief`). Empty:
     /// none. Absent in files written before it existed.
@@ -1625,6 +1627,38 @@ pub fn front_desk_chat(path: &Path, chat_key: &str) -> Option<FrontDeskChat> {
         .front_desk_chats
         .into_iter()
         .find(|c| c.chat_key == chat_key)
+}
+
+/// Hide a continuation offer while retaining its transcript and session identity.
+pub fn dismiss_desk_chat(path: &Path, chat_key: &str) -> Result<(), String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    if !stored
+        .front_desk_chats
+        .iter()
+        .any(|chat| chat.chat_key == chat_key)
+    {
+        return Err("That front-desk conversation no longer exists.".into());
+    }
+    if !stored
+        .dismissed_desk_chats
+        .iter()
+        .any(|key| key == chat_key)
+    {
+        stored.dismissed_desk_chats.push(chat_key.to_owned());
+        write(path, &stored)?;
+    }
+    Ok(())
+}
+
+pub fn continuable_front_desk_chats(path: &Path) -> Result<Vec<FrontDeskChat>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let stored = read(path)?;
+    Ok(stored
+        .front_desk_chats
+        .into_iter()
+        .filter(|chat| !stored.dismissed_desk_chats.contains(&chat.chat_key))
+        .collect())
 }
 
 /// Every front-desk chat, for the listings that leave them out.
@@ -3102,6 +3136,21 @@ mod tests {
             .into_iter()
             .find(|a| a.name == name)
             .unwrap()
+    }
+
+    #[test]
+    fn dismissing_a_desk_offer_persists_and_keeps_its_identity() {
+        let dir = crate::test_dir::TestDir::new("desk-dismiss");
+        let path = dir.join("team.json");
+        let mut stored = Stored::default();
+        record_front_desk_chat(&mut stored, "chat:desk", "desk", "Resume roadmap");
+        write(&path, &stored).unwrap();
+        assert_eq!(continuable_front_desk_chats(&path).unwrap().len(), 1);
+        dismiss_desk_chat(&path, "chat:desk").unwrap();
+        dismiss_desk_chat(&path, "chat:desk").unwrap();
+        assert!(continuable_front_desk_chats(&path).unwrap().is_empty());
+        assert_eq!(front_desk_chats(&path).len(), 1);
+        assert!(dismiss_desk_chat(&path, "chat:other").is_err());
     }
 
     #[test]
