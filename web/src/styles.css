@@ -1016,13 +1016,14 @@ body {
 .task-chat-list .chat:focus-within .chat-snippet,
 .task-chat-list .chat.is-pinned .chat-snippet { padding-right: 0; }
 .task-chat-list .chat-workflow-status { margin-top: 1px; line-height: 17px; }
-/* 18px: a project chip is 16px of text inside a 1px border, and at 17 the
-   line cut its bottom edge off. */
+/* Let the metadata line contain the 28px island portrait and project chips.
+   A fixed text-line height clips the avatar and undercounts the card's room. */
 .chat-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 18px;
+  min-height: 28px;
+  height: auto;
   margin-top: 2px;
   overflow: hidden;
   color: var(--fg-3);
