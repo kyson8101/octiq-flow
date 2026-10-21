@@ -73,6 +73,9 @@ pub fn host_bookkeeping(tool: &str) -> bool {
         Some(
             "vault_agent_memory_append"
                 | "task_status"
+                // Settlement is host bookkeeping; the hook/ledger still
+                // validate the worker and its exact current attempt.
+                | "orchestration_worker_report"
                 | "plan_read"
                 | "plan_update"
                 | "set_chat_title"
@@ -708,6 +711,9 @@ mod tests {
     fn only_the_hosts_own_bookkeeping_skips_the_card() {
         assert!(host_bookkeeping("mcp__octiq__vault_agent_memory_append"));
         assert!(host_bookkeeping("mcp__octiq__task_status"));
+        assert!(host_bookkeeping("mcp__octiq__orchestration_worker_report"));
+        assert!(!host_bookkeeping("mcp__other__orchestration_worker_report"));
+        assert!(!host_bookkeeping("mcp__octiq__orchestration_worker_start"));
         // The chat's plan is the host's own record too, read by the person
         // beside the chat: the person's decision. Nothing that would start
         // one is a tool, whatever it were called.

@@ -21,6 +21,16 @@ fn response(action: &str) -> Value {
     json!({ "action": action, "content": if action == "accept" { json!({}) } else { Value::Null } })
 }
 
+// Only Codex's native approval for our settlement tool is bookkeeping.
+// A server-authored form, another server, or a message mentioning the tool
+// must still go through the ordinary confirmation/data-form path.
+fn worker_report_confirmation(params: &Value) -> bool {
+    confirmation(params)
+        && params["serverName"] == "octiq"
+        && params["_meta"]["codex_approval_kind"] == "mcp_tool_call"
+        && params["_meta"]["tool_name"] == "orchestration_worker_report"
+}
+
 pub(super) fn resolved(session: &Arc<Mutex<ChatSession>>, request_id: &Value) {
     if let Ok(mut session) = session.lock() {
         if let Some(codex) = session.codex.as_mut() {
@@ -44,6 +54,32 @@ pub(super) fn answer(
             text: "This MCP request needs a form or URL flow that OctiqFlow cannot display yet. It was cancelled; no approval was given.".into(),
         });
         write_codex_response(session, &request_id, response("cancel"));
+        return;
+    }
+    if worker_report_confirmation(&params) {
+        // This permits the MCP call, not its contents. The hook still proves
+        // the caller and the ledger validates the exact current attempt,
+        // unread instructions, open gates and settlement state.
+        let Ok(mut guard) = session.lock() else {
+            return;
+        };
+        let current = guard.codex.as_ref().is_some_and(|codex| {
+            params["threadId"].as_str() == Some(codex.thread_id.as_str())
+                && params["turnId"]
+                    .as_str()
+                    .is_none_or(|id| Some(id) == codex.active_turn_id.as_deref())
+                && codex.active_turn_id.is_some()
+        });
+        let allowed = current && guard.cut_off == CutOff::No;
+        if let Some(stdin) = guard.stdin.as_mut() {
+            let _ = write_json_line(
+                stdin,
+                &crate::codex_app_server::response(
+                    &request_id,
+                    response(if allowed { "accept" } else { "cancel" }),
+                ),
+            );
+        }
         return;
     }
     let Some(rt) = rt else {
@@ -234,6 +270,58 @@ mod tests {
             "_meta": { "codex_approval_kind": "mcp_tool_call", "tool_name": "orchestration_run_create",
                 "tool_params": { "objective": "Resume the roadmap", "worker_defaults": { "access": "auto" } } },
         })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_settlement_confirmation_returns_accept_without_a_card() {
+        let mut chat = Chat::new();
+        let mut params = approval();
+        params["_meta"]["tool_name"] = json!("orchestration_worker_report");
+        params["_meta"]["tool_params"] =
+            json!({"attempt_id": "attempt-current", "outcome": "completed"});
+        params["message"] =
+            json!("Allow the octiq MCP server to run tool orchestration_worker_report?");
+        chat.ask(json!(30), params.clone(), false);
+        assert_eq!(
+            chat.written().await,
+            json!({"id":30,"result":response("accept")})
+        );
+        assert!(chat.cards().is_empty());
+        // The app-server schema permits an uncorrelated (null) turn id.
+        params["turnId"] = Value::Null;
+        chat.ask(json!(32), params.clone(), true);
+        assert_eq!(
+            chat.written().await,
+            json!({"id":32,"result":response("accept")})
+        );
+        // An old turn cannot receive a late approval.
+        params["turnId"] = json!("old-turn");
+        chat.ask(json!(31), params, true);
+        assert_eq!(
+            chat.written().await,
+            json!({"id":31,"result":response("cancel")})
+        );
+        assert!(chat.cards().is_empty());
+    }
+
+    #[test]
+    fn settlement_exception_does_not_match_unrelated_or_data_requests() {
+        let mut params = approval();
+        assert!(!worker_report_confirmation(&params));
+        params["_meta"]["tool_name"] = json!("orchestration_worker_report");
+        assert!(worker_report_confirmation(&params));
+        for (field, value) in [
+            ("serverName", json!("other")),
+            ("_meta", json!({})),
+            (
+                "requestedSchema",
+                json!({"type":"object","properties":{"answer":{"type":"string"}}}),
+            ),
+        ] {
+            let mut different = params.clone();
+            different[field] = value;
+            assert!(!worker_report_confirmation(&different));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
