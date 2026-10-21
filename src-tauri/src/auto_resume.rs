@@ -478,6 +478,15 @@ pub(crate) fn is_quota_failure(agent: AgentKind, event: &Value) -> bool {
             _ => None,
         },
         AgentKind::Pi => match event.get("type").and_then(Value::as_str) {
+            Some("message_end")
+                if event.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
+                    && event.pointer("/message/stopReason").and_then(Value::as_str)
+                        == Some("error") =>
+            {
+                event
+                    .pointer("/message/errorMessage")
+                    .and_then(Value::as_str)
+            }
             Some("agent_end") | Some("agent_settled") => event
                 .get("error")
                 .and_then(Value::as_str)
@@ -509,6 +518,10 @@ pub(crate) fn is_quota_message(message: &str) -> bool {
         "session limit",
         "weekly limit",
         "out of credits",
+        "insufficient credits",
+        "credit balance",
+        "resource exhausted",
+        "too many requests",
         "quota",
         "rate limit",
         "purchase more credits",
@@ -675,6 +688,24 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pi_message_errors_and_antigravity_limits_share_quota_detection() {
+        let pi = json!({ "type": "message_end", "message": { "role": "assistant", "stopReason": "error", "errorMessage": "usage limit reached" } });
+        assert!(is_quota_failure(AgentKind::Pi, &pi));
+        assert!(!is_quota_failure(
+            AgentKind::Pi,
+            &json!({ "type": "message_end", "message": { "role": "assistant", "stopReason": "stop", "content": [{ "text": "usage limit reached" }] } })
+        ));
+        assert!(is_quota_failure(
+            AgentKind::Antigravity,
+            &json!({ "event": "result", "result": { "status": "ERROR", "error": "RESOURCE_EXHAUSTED" } })
+        ));
+        assert!(!is_quota_failure(
+            AgentKind::Antigravity,
+            &json!({ "event": "result", "result": { "status": "ERROR", "error": "interrupted" } })
+        ));
+    }
+
     #[test]
     fn provider_switch_is_durable_deduplicated_and_cancellable_before_spawn() {
         let dir = crate::test_dir::TestDir::new("provider-switch-schedule");

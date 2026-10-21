@@ -135,7 +135,19 @@ pub(crate) fn equivalent(source: &Settings, target: AgentKind) -> Option<Setting
     } else {
         2
     };
-    let effort = match source.effort.as_deref() {
+    let native_effort = if source.agent == AgentKind::Antigravity {
+        ["low", "medium", "high"]
+            .into_iter()
+            .find(|level| model.ends_with(&format!("-{level}")))
+    } else {
+        None
+    };
+    let requested_effort = source
+        .effort
+        .as_deref()
+        .filter(|effort| *effort != "auto")
+        .or(native_effort);
+    let effort = match requested_effort {
         Some("minimal") => Some("low"),
         Some("ultracode" | "ultra") => Some("max"),
         Some("auto") | None => None,
@@ -180,6 +192,25 @@ pub(crate) fn equivalent(source: &Settings, target: AgentKind) -> Option<Setting
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_effort_encoded_in_the_model_is_mapped_to_the_next_provider() {
+        for level in ["low", "medium", "high"] {
+            let source = Settings {
+                agent: AgentKind::Antigravity,
+                model: Some(format!("gemini-3.8-flash-{level}")),
+                effort: None,
+                access: Access::Read,
+            };
+            assert_eq!(
+                equivalent(&source, AgentKind::Claude)
+                    .unwrap()
+                    .effort
+                    .as_deref(),
+                Some(level)
+            );
+        }
+    }
 
     #[test]
     fn returning_to_the_default_preserves_its_exact_model_and_current_permission() {
