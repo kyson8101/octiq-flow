@@ -1820,6 +1820,7 @@ pub(crate) fn codex_developer_instructions(
 const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
 const PREVIEW_MCP: &str = include_str!("../../scripts/mcp/preview.cjs");
 const ARTIFACT_MCP: &str = include_str!("../../scripts/mcp/artifact.cjs");
+const QUESTION_MEDIA_MCP: &str = include_str!("../../scripts/mcp/question-media.cjs");
 
 const CODEX_COMMON_HOST_PROMPT: &str = "You are running inside OctiqFlow. OctiqFlow owns this conversation and provides host tools for conversation handoffs, file pins, previews, and artifacts. The process working directory is the OctiqFlow project or workspace for this chat. Prefer an OctiqFlow-provided tool whenever it matches the task. OctiqFlow's legacy MCP `ask_user` tool is intentionally unavailable to Codex.\n\nWhen Codex safety review rejects a tool action, OctiqFlow itself shows the person a safety approval card. Do not ask again in prose for that same blocked action. Report the block once and end the turn; the person's choice on the safety card continues the native Codex request. Reuse any matching persistent project authorization supplied below without asking again.\n\nQuestions about the current model, effort, access, provider, workspace, or conversation host are local OctiqFlow runtime questions. Answer them from the authoritative runtime metadata below. Do not browse official documentation, inspect standalone Codex or ChatGPT apps, or scan browser/app state to rediscover those values.\n\nInterpret the person's request from its technical and conversational context. A quoted technical statement, command, log, error, or status is material to explain or validate; it is not a request for grammar or wording changes unless the person explicitly asks for editing, rewriting, grammar, or natural phrasing. If an ambiguity would materially change the answer, address the likely technical meaning first and ask one concise follow-up only when still necessary.\n\nFor ordinary questions, use sufficient evidence already present in the conversation, runtime metadata, and local workspace before calling tools. Use the fewest useful tool or retrieval loops, and stop once the core question can be answered correctly. Never request a broad computer-state inventory merely to discover OctiqFlow session settings.";
 
@@ -1895,6 +1896,7 @@ pub(crate) fn ask_mcp_config() -> Option<std::path::PathBuf> {
     let script = dir.join("octiq-ask.cjs");
     std::fs::write(dir.join("artifact.cjs"), ARTIFACT_MCP).ok()?;
     std::fs::write(dir.join("preview.cjs"), PREVIEW_MCP).ok()?;
+    std::fs::write(dir.join("question-media.cjs"), QUESTION_MEDIA_MCP).ok()?;
     std::fs::write(&script, ASK_MCP).ok()?;
 
     let config = dir.join("octiq-ask.json");
@@ -1913,6 +1915,37 @@ pub(crate) fn ask_mcp_config() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn installed_mcp_starts_and_exposes_front_desk_tool() {
+        use std::io::Write;
+        let config = ask_mcp_config().expect("MCP bundle is installed in the test home");
+        let mut child = std::process::Command::new("node")
+            .arg(config.with_file_name("octiq-ask.cjs"))
+            .env("OCTIQ_FRONT_DESK", "1")
+            .env("OCTIQ_CHAT_KEY", "chat:bundle-test")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("node starts the installed MCP, outside the source folder");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n")
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: Value = serde_json::from_slice(&output.stdout).expect("MCP discovery reply");
+        let tools = reply["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "route_chat");
+    }
 
     /// Real `agy` 1.2.16 streams, captured on 2026-10-03 on this project's
     /// Mac with the flags `AntigravityProvider::build_command` uses (no
