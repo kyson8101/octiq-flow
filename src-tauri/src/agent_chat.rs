@@ -752,6 +752,9 @@ fn idle_timeout() -> Option<Duration> {
 /// project environment variables so pending notifications can resume after restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StartContext {
+    /// The original selection, retained across automatic runtime switches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    defaults: Option<crate::provider_failover::Settings>,
     cwd: String,
     agent: ChatAgent,
     model: Option<String>,
@@ -807,6 +810,21 @@ impl StartContext {
         self.agent
     }
 
+    fn default_settings(&self) -> crate::provider_failover::Settings {
+        let mut defaults = self.defaults.clone().unwrap_or_else(|| self.settings());
+        defaults.access = self.access.unwrap_or(Access::Read);
+        defaults
+    }
+
+    fn settings(&self) -> crate::provider_failover::Settings {
+        crate::provider_failover::Settings {
+            agent: self.agent,
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+            access: self.access.unwrap_or(Access::Read),
+        }
+    }
+
     pub(crate) fn model(&self) -> Option<&str> {
         self.model.as_deref()
     }
@@ -831,6 +849,7 @@ impl StartContext {
     #[cfg(test)]
     pub(crate) fn for_test(agent: ChatAgent, session_id: Option<&str>) -> Self {
         Self {
+            defaults: None,
             cwd: "/tmp/project".into(),
             agent,
             model: None,
@@ -1005,6 +1024,7 @@ enum QueueTurnResult {
 
 #[derive(Default)]
 pub struct ChatManager {
+    pub(crate) failover: crate::provider_failover::State,
     background: crate::background_tasks::Store,
     /// Long-running jobs this chat's agent started (`chat_jobs.rs`). A job
     /// that is running holds the chat off the idle reaper, like background
@@ -2441,7 +2461,25 @@ fn schedule_quota_resume(
     let Some(start) = manager.start_context(session_key) else {
         return;
     };
-    if start.agent() != agent || !start.resumable() {
+    if start.agent() != agent {
+        return;
+    }
+    if let Some(fallback) =
+        manager
+            .failover
+            .alternative_using(&start.settings(), &start.default_settings(), now)
+    {
+        match manager
+            .auto_resumes
+            .schedule_switch(chat_key, start.clone(), fallback, now)
+        {
+            Ok(Some(entry)) => crate::auto_resume::announce_scheduled(&entry),
+            Ok(None) => {}
+            Err(why) => eprintln!("[chat] could not schedule provider switch: {why}"),
+        }
+        return;
+    }
+    if !start.resumable() {
         return;
     }
     let reset_at = reset_hint
@@ -2976,6 +3014,51 @@ fn chat_start_with_user_turn(
     lite: Option<bool>,
     user_turn_id: Option<String>,
 ) -> Result<(), String> {
+    let mut agent = agent;
+    let mut model = model;
+    let mut effort = effort;
+    let mut resume = resume;
+    let mut handoff = handoff;
+    let source = crate::provider_failover::Settings {
+        agent,
+        model: model.clone(),
+        effort: effort.clone(),
+        access: access.unwrap_or(Access::Read),
+    };
+    let registered = if !key.starts_with("chat:orch-") {
+        crate::team::defaults_for_chat(&crate::team::default_path(), &key)?
+    } else {
+        None
+    };
+    let defaults = registered
+        .map(|preset| crate::provider_failover::Settings {
+            agent: preset.agent,
+            model: Some(preset.model),
+            effort: preset.effort,
+            access: source.access,
+        })
+        .or_else(|| {
+            manager
+                .start_context(&key)
+                .filter(|start| start.settings() == source)
+                .map(|start| start.default_settings())
+        })
+        .unwrap_or_else(|| source.clone());
+    let mut switched = None;
+    if !key.starts_with("chat:orch-") {
+        if let Some(target) =
+            manager
+                .failover
+                .alternative_using(&source, &defaults, crate::auto_resume::unix_now())
+        {
+            handoff = Some(provider_history(&key)?);
+            agent = target.agent;
+            model = target.model.clone();
+            effort = target.effort.clone();
+            resume = None;
+            switched = Some((source, target));
+        }
+    }
     let visible_prompt = prompt.clone();
     let prompt = match (prompt, handoff.filter(|history| !history.trim().is_empty())) {
         (Some(prompt), Some(history)) => Some(model_handoff_prompt(&history, &prompt)),
@@ -2988,6 +3071,7 @@ fn chat_start_with_user_turn(
     manager.remember_start(
         &key,
         StartContext {
+            defaults: Some(defaults),
             cwd: cwd.clone(),
             agent,
             model: model.clone(),
@@ -2999,9 +3083,9 @@ fn chat_start_with_user_turn(
             session_id: resume.clone(),
         },
     );
-    start_session(
-        manager,
-        Voice::host(key),
+    let result = start_session(
+        manager.clone(),
+        Voice::host(key.clone()),
         cwd,
         agent,
         model,
@@ -3016,7 +3100,13 @@ fn chat_start_with_user_turn(
         user_turn_id,
         true,
         visible_prompt,
-    )
+    );
+    if result.is_ok() {
+        if let Some((source, target)) = switched {
+            announce_provider_switch(&manager, &key, &source, &target)?;
+        }
+    }
+    result
 }
 
 /// A provider switch starts a fresh native session, but not a fresh user chat.
@@ -3667,6 +3757,14 @@ pub(crate) fn start_session(
     let session_key_for_exit = session_key.clone();
     // Keep creation and insertion atomic with other starts and sends.
     let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(id) = user_turn_id
+        .as_deref()
+        .and_then(|id| id.strip_prefix("octiq-provider-switch-"))
+    {
+        if !manager.auto_resumes.active_switch(&key, id) {
+            return Err("The provider switch was cancelled.".into());
+        }
+    }
     let notification_start = user_turn_id
         .as_deref()
         .is_some_and(|id| id.starts_with(crate::orchestration::inbox::RECEIPT_PREFIX));
@@ -4262,6 +4360,20 @@ pub(crate) fn start_session(
                             .then(|| crate::auto_resume::reset_at_in(&event))
                             .flatten()
                             .or(blocked_quota_reset);
+                        if quota_failure {
+                            reading.failover.limited(
+                                stream_provider.kind(),
+                                quota_reset_hint,
+                                crate::auto_resume::unix_now(),
+                            );
+                            schedule_quota_resume(
+                                &reading,
+                                &key,
+                                &session_key,
+                                stream_provider.kind(),
+                                quota_reset_hint,
+                            );
+                        }
                         let observed = stream_provider.observe_event(&event);
                         if let Ok(mut session) = asking.lock() {
                             if let Err(error) =
@@ -4494,15 +4606,6 @@ pub(crate) fn start_session(
                                 event,
                             },
                         );
-                        if quota_failure {
-                            schedule_quota_resume(
-                                &reading,
-                                &key,
-                                &session_key,
-                                stream_provider.kind(),
-                                quota_reset_hint,
-                            );
-                        }
                         // After the full stop is in the transcript and on the
                         // bus: the tick is the last thing said about the turn.
                         if let Some(ended) = wrap_up {
@@ -4627,7 +4730,12 @@ pub(crate) fn start_session(
                         // to ride: its stdin died with it, so anything still
                         // waiting is dropped here rather than left to surface
                         // in whatever is started under this key later.
-                        let queued_turn = if relaunches_to_continue(agent) {
+                        let queued_turn = if manager_for_exit
+                            .auto_resumes
+                            .switch_waits(&session_key_for_exit)
+                        {
+                            None // The provider handoff owns the queue, not the old reaper.
+                        } else if relaunches_to_continue(agent) {
                             manager_for_exit.take_queued_turn(&session_key_for_exit)
                         } else {
                             manager_for_exit.forget_queued_turns(&session_key_for_exit);
@@ -4852,7 +4960,11 @@ fn end_turn_locked(
     session.cut_off = CutOff::No;
     session.turn_ended();
     let wrap_up = manager.completion_at_full_stop(session_key, session, clean);
-    let refused = dispatch_next_persistent_turn(manager, session_key, stream_key, session);
+    let refused = if manager.auto_resumes.waits(session_key) {
+        None
+    } else {
+        dispatch_next_persistent_turn(manager, session_key, stream_key, session)
+    };
     (wrap_up, refused)
 }
 
@@ -7290,6 +7402,7 @@ impl ChatManager {
         self.starts.lock().unwrap().insert(
             key.to_string(),
             StartContext {
+                defaults: None,
                 cwd: cwd.into(),
                 agent: ChatAgent::Claude,
                 model: Some("sonnet".into()),
@@ -7708,6 +7821,9 @@ fn run_scheduled_resume(
     entry: &crate::auto_resume::ScheduledResume,
 ) -> Result<(), String> {
     let key = entry.chat_key.clone();
+    if let Some(target) = &entry.fallback {
+        return run_provider_switch(manager, entry, target);
+    }
     let turn_id = Some(format!("octiq-auto-resume-{}", entry.id));
     let send = |manager: Arc<ChatManager>| {
         chat_send_with_user_turn(
@@ -7830,6 +7946,27 @@ pub fn start_auto_resume_scheduler(manager: Arc<ChatManager>) {
                 }
             };
             for entry in due {
+                if entry.fallback.is_some() {
+                    let busy = manager.sessions.lock().map_or(true, |sessions| {
+                        sessions.get(&entry.chat_key).is_some_and(|session| {
+                            session.lock().map_or(true, |session| {
+                                session.busy || session.cut_off != CutOff::No
+                            })
+                        })
+                    });
+                    if busy
+                        || !manager.running_background(&entry.chat_key).is_empty()
+                        || crate::profile::available().is_err()
+                    {
+                        if let Err(why) = manager
+                            .auto_resumes
+                            .defer_switch(&entry, crate::auto_resume::unix_now())
+                        {
+                            eprintln!("[chat] could not defer provider switching: {why}");
+                        }
+                        continue;
+                    }
+                }
                 crate::auto_resume::announce_started(&entry);
                 let result = run_scheduled_resume(manager.clone(), &entry);
                 if let Err(why) = &result {
@@ -7933,6 +8070,10 @@ mod ending_tests;
 #[cfg(test)]
 #[path = "reach_tests.rs"]
 mod reach_tests;
+
+#[path = "provider_switch.rs"]
+mod provider_switch;
+use provider_switch::{announce_provider_switch, provider_history, run_provider_switch};
 
 #[path = "codex_elicitation.rs"]
 mod codex_elicitation;
@@ -10995,6 +11136,7 @@ mod tests {
         manager.remember_start(
             key,
             StartContext {
+                defaults: None,
                 cwd: "/tmp".into(),
                 agent: ChatAgent::Codex,
                 model: None,
@@ -11448,6 +11590,7 @@ mod idle_tests {
         m.remember_start(
             "retarget-chat",
             StartContext {
+                defaults: None,
                 cwd: "/tmp".into(),
                 agent: ChatAgent::Claude,
                 model: Some("claude-opus-4-6".into()),

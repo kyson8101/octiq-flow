@@ -57,6 +57,7 @@ mod pr_workflow;
 mod proc;
 mod profile;
 mod profile_lock;
+mod provider_failover;
 mod pty;
 mod push;
 mod question;

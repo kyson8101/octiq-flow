@@ -253,6 +253,39 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   progress parsers in `job_progress.rs`). Agents reach the same code as
   `octiq-server job` through `OCTIQ_JOB`; see **Jobs** below.
 
+### Automatic provider failover
+
+`provider_failover.rs` keeps account-limit cooldowns for this server run. A
+structured quota failure marks the account (Pi shares Codex's allowance);
+missing CLIs and accounts already blocked are skipped. The original preset is
+kept across switches (and reread for registered chats after restart), so returning
+to a recovered provider keeps its exact model and effort. Unknown reset times
+use a 15-minute cooldown. Registered agent defaults and identity do not change.
+
+- Runtime model tiers map Fable ↔ Astra, Opus ↔ Sol, Sonnet ↔ Terra,
+  Haiku ↔ Luna. Effort and the semantic `Access` level are preserved; minimal
+  maps to low, ultracode to max. Gemini effort is encoded in its model id.
+  A guarded Auto or Manual launch never falls back to Antigravity, whose
+  headless Auto bypasses permission checks. Pi is not an independent fallback.
+- Ordinary chats use the durable auto-resume queue for an immediate provider
+  handoff (`provider_switch.rs`), carrying bounded transcript context into a
+  fresh native session. Never pass one provider's session id to another.
+  Stop/new messages can cancel a handoff before its final spawn; the receipt
+  is checked under the session lock. Background work and a turn still ending
+  defer the handoff. Queued user turns retain their ids and FIFO order.
+- Workers use the normal recovery/reservation door, checkout and retry budget.
+  All original approval/identity/destination gates run first; only the host
+  then maps the runtime. `execution.provider_origin` records the canonical
+  settings, while `attempt.agent/model/effort` record what actually runs.
+  A retry may normalize only that exact recorded runtime back to its origin.
+  No MCP argument can request a provider override or lift a plan/permission gate.
+- `octiq_provider_switched` is durable evidence; `chat-provider-switch` updates
+  the live picker and index. All providers exhausted means waiting for reset
+  (where known), not cycling endlessly or escalating permissions.
+- Validate with Rust approval/schedule tests and
+  `node scripts/test-provider-failover.mjs`: real server/socket and stub CLIs,
+  isolated home and profile, no paid model calls.
+
 ### Persistence locations
 
 | Store | Path | Owner |

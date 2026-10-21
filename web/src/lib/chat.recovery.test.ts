@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { addUserTurn, emptyChat, reduceChat } from "./chat";
 
 describe("recovery exit evidence", () => {
+  it("records a provider handoff without keeping the old native session or quota failure", () => {
+    const event = { type: "octiq_provider_switched", agent: "codex", model: "gpt-5.6-sol", session_id: "new-codex", message: "Continuing with Codex" };
+    const before = { ...emptyChat(), sessionId: "old-claude" };
+    const after = reduceChat(before, event);
+    expect(after.sessionId).toBe("new-codex");
+    expect(after.model).toBe("gpt-5.6-sol");
+    expect(after.failure).toBeUndefined();
+    expect(reduceChat(after, event).notices).toEqual(["Continuing with Codex"]);
+  });
   const crashed = () => ({ ...emptyChat(), exited: { code: 1 } });
   it("clears the prior exit when the user resumes the host", () => {
     expect(addUserTurn(crashed(), "Continue").exited).toBeUndefined();

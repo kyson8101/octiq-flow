@@ -2892,6 +2892,17 @@ impl OrchestrationStore {
                 .cloned()
                 .ok_or("The task does not exist.")?;
             let run = coordinator(data, &task.run_id, actor_chat_key)?.clone();
+            // A page/coordinator retry may name the last runtime it saw.
+            // Only the exact host-recorded mapping can stand for its original
+            // settings; arbitrary providers/models still fail every gate.
+            if let Some(previous) = task.active_attempt_id.as_ref().and_then(|id| data.attempts.get(id)) {
+                if let Some(origin) = &previous.execution.provider_origin {
+                    if worker.agent == previous.agent && worker.model == previous.model
+                        && worker.effort == previous.effort && worker.access == previous.access {
+                        worker = origin.clone();
+                    }
+                }
+            }
             // The one door every start goes through: a first dispatch, a
             // reopened task, a retry, the page's Start and the host's own
             // recovery. A pending revision holds only what it has not
@@ -3135,9 +3146,9 @@ impl OrchestrationStore {
                 task_id: task.id.clone(),
                 number,
                 worker_chat_key: format!("chat:orch-{}", compact_id()),
-                agent: launch.agent,
+                agent: worker.agent,
                 model: worker.model.clone(),
-                effort: launch.effort.clone(),
+                effort: worker.effort.clone(),
                 access: launch.access,
                 status: AttemptStatus::Preparing,
                 execution,
@@ -3265,6 +3276,54 @@ impl OrchestrationStore {
         )
     }
 
+    /// Host-only, after reservation validated the complete canonical approval.
+    /// No hook or socket accepts an alternate provider as a quota override.
+    fn redirect_limited_attempt(
+        &self,
+        id: &str,
+        target: &crate::provider_failover::Settings,
+    ) -> Result<Attempt, String> {
+        self.mutate(|data| {
+            let before = data
+                .attempts
+                .get(id)
+                .cloned()
+                .ok_or("The attempt no longer exists.")?;
+            let task = data
+                .tasks
+                .get(&before.task_id)
+                .ok_or("The task no longer exists.")?;
+            if before.status != AttemptStatus::Preparing
+                || task.active_attempt_id.as_deref() != Some(id)
+            {
+                return Err("The provider handoff was superseded.".into());
+            }
+            let origin = automation::WorkerSettings {
+                agent: before.agent,
+                model: before.model.clone(),
+                effort: before.effort.clone(),
+                access: before.access,
+                recovery: task.worker.as_ref().and_then(|w| w.recovery.clone()),
+            };
+            let source = crate::provider_failover::Settings {
+                agent: origin.agent,
+                model: origin.model.clone(),
+                effort: origin.effort.clone(),
+                access: origin.access,
+            };
+            if crate::provider_failover::equivalent(&source, target.agent).as_ref() != Some(target)
+            {
+                return Err("The provider handoff does not preserve the approved settings.".into());
+            }
+            let attempt = data.attempts.get_mut(id).unwrap();
+            attempt.execution.provider_origin = Some(origin);
+            attempt.agent = target.agent;
+            attempt.model = target.model.clone();
+            attempt.effort = target.effort.clone();
+            Ok(attempt.clone())
+        })
+    }
+
     pub(crate) fn start_worker_for(
         &self,
         chats: Arc<ChatManager>,
@@ -3284,8 +3343,24 @@ impl OrchestrationStore {
             None => Some(workspace(workspaces, &owning_run.workspace_id)?),
             Some(_) => None,
         };
-        let (run, task, reserved, previous) =
+        let (run, task, mut reserved, previous) =
             self.reserve_attempt_for(actor_chat_key, &launch, by)?;
+        let source = crate::provider_failover::Settings {
+            agent: reserved.agent,
+            model: reserved.model.clone(),
+            effort: reserved.effort.clone(),
+            access: reserved.access,
+        };
+        if let Some(target) = chats
+            .failover
+            .alternative(&source, crate::auto_resume::unix_now())
+        {
+            reserved = self.redirect_limited_attempt(&reserved.id, &target)?;
+        }
+        // What the ledger records is what the actual process uses.
+        launch.agent = reserved.agent;
+        launch.model = reserved.model.clone();
+        launch.effort = reserved.effort.clone();
         announce(&run.id, "worker_preparing");
         // A routed task runs in its destination project, which must still be
         // registered with that repository on it. Checked after reserving, so

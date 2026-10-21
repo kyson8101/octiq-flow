@@ -1862,6 +1862,16 @@ export default function App() {
     [patch],
   );
 
+  useEffect(() => bridge.on<{ key: string; agent: Provider; model: string; effort?: Effort; access: AccessLevel; sessionId?: string }>("chat-provider-switch", (payload) => {
+    const id = convOf(payload.key);
+    if (!id) return;
+    const next = modelFromReported(payload.agent, payload.model);
+    if (!next) return;
+    if (meta.current[id]) meta.current[id] = { ...meta.current[id], modelId: next.id, effort: payload.effort ?? "auto", access: payload.access };
+    setConversations((list) => list.map((chat) => chat.id === id ? { ...chat, modelId: next.id, effort: payload.effort ?? "auto", permission: payload.access, sessionId: payload.sessionId } : chat));
+    if (visibleRef.current === id) { setChoice(next); setEffort(payload.effort ?? "auto"); setAccess(payload.access); }
+  }), []);
+
   // The commands a session reports at startup, kept per PROJECT AND PROVIDER.
   // A provider owns its command syntax: Claude's `/compact` must not show up
   // after the same project is switched to Codex (or a future provider).
@@ -6048,11 +6058,12 @@ export default function App() {
               {autoResume && (
                 <div className="auto-resume-row">
                   <span>
+                    {autoResume.fallbackAgent ? <>Switching to {AGENT_NAME[autoResume.fallbackAgent]} with equivalent settings.</> : <>
                     OctiqFlow will resume this {autoResume.agent === "pi" ? "Pi" : AGENT_NAME[autoResume.agent]} session around{" "}
                     {new Date(autoResume.runAt * 1000).toLocaleString([], {
                       dateStyle: "medium",
                       timeStyle: "short",
-                    })}.
+                    })}.</>}
                   </span>
                   {!workerChat && <button
                     className="auto-resume-cancel"
@@ -6071,7 +6082,7 @@ export default function App() {
                         });
                     }}
                   >
-                    Cancel auto-resume
+                    {autoResume.fallbackAgent ? "Cancel switch" : "Cancel auto-resume"}
                   </button>}
                 </div>
               )}

@@ -1745,6 +1745,27 @@ pub fn leads(path: &Path) -> Result<Vec<LeadRecord>, String> {
 }
 
 /// The lead record for a chat, when that chat is an agents-mode task.
+/// The preset a main/front-desk chat belongs to, read without changing it.
+pub(crate) fn defaults_for_chat(path: &Path, chat_key: &str) -> Result<Option<TeamAgent>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let stored = read(path)?;
+    let id = stored
+        .leads
+        .iter()
+        .find(|lead| lead.chat_key == chat_key)
+        .map(|lead| lead.lead_id.as_str())
+        .or_else(|| {
+            stored
+                .front_desk_chats
+                .iter()
+                .find(|chat| chat.chat_key == chat_key)
+                .map(|chat| chat.agent_id.as_str())
+        });
+    Ok(id
+        .and_then(|id| stored.agents.iter().find(|agent| agent.id == id))
+        .cloned())
+}
+
 pub fn lead_for_chat(path: &Path, chat_key: &str) -> Result<Option<LeadRecord>, String> {
     Ok(leads(path)?
         .into_iter()

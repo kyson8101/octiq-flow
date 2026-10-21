@@ -454,6 +454,7 @@ export type ChatState = {
 
 export type AutoResume = {
   id: string;
+  fallbackAgent?: "claude" | "codex" | "antigravity";
   agent: "claude" | "codex" | "pi" | "antigravity";
   resetAt: number;
   runAt: number;
@@ -1079,6 +1080,12 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     };
   }
 
+  if (type === "octiq_provider_switched") {
+    const message = asStr(e.message);
+    return { ...state, model: asStr(e.model) || state.model, sessionId: asStr(e.session_id) || undefined, failure: undefined, autoResume: undefined,
+      notices: message && !state.notices.includes(message) ? [...state.notices, message].slice(-8) : state.notices };
+  }
+
   if (type === "octiq_auto_resume_scheduled") {
     const id = asStr(e.id);
     const agent = asStr(e.agent);
@@ -1088,7 +1095,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       return state;
     return {
       ...state,
-      autoResume: { id, agent: agent as AutoResume["agent"], resetAt, runAt },
+      autoResume: { id, agent: agent as AutoResume["agent"], resetAt, runAt, ...(["claude", "codex", "antigravity"].includes(asStr(e.fallback_agent)) ? { fallbackAgent: asStr(e.fallback_agent) as AutoResume["fallbackAgent"] } : {}) },
     };
   }
 

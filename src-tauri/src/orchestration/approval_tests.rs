@@ -95,6 +95,72 @@ fn fail_for_capacity(store: &OrchestrationStore, attempt: &Attempt) {
         .unwrap();
 }
 
+#[test]
+fn host_provider_handoff_keeps_approval_identity_and_blocks_wider_settings() {
+    let store = OrchestrationStore::default();
+    let (_run, task) = approved(&store, Some(settings(Access::Manual)));
+    let canonical = host_launch(&store, &task.id);
+    let (_, _, reserved, _) = store.reserve_attempt("chat:master", &canonical).unwrap();
+    let source = crate::provider_failover::Settings {
+        agent: reserved.agent,
+        model: reserved.model.clone(),
+        effort: reserved.effort.clone(),
+        access: reserved.access,
+    };
+    let target = crate::provider_failover::equivalent(&source, ChatAgent::Claude).unwrap();
+    let mut wider = target.clone();
+    wider.access = Access::Full;
+    assert!(store
+        .redirect_limited_attempt(&reserved.id, &wider)
+        .is_err());
+    let actual = store
+        .redirect_limited_attempt(&reserved.id, &target)
+        .unwrap();
+    assert_eq!(actual.agent, ChatAgent::Claude);
+    assert_eq!(actual.access, Access::Manual);
+    assert_eq!(actual.assignee, task.assignee);
+    assert_eq!(task_now(&store, &task.id).approved, task.approved);
+    assert_eq!(task_now(&store, &task.id).worker, task.worker);
+    assert_eq!(
+        actual.execution.provider_origin.as_ref().unwrap().agent,
+        ChatAgent::Codex
+    );
+    let actual = store
+        .activate_attempt(&actual.id, "/tmp".into(), "".into(), false)
+        .unwrap();
+    store
+        .observe_worker_event(
+            &actual.worker_chat_key,
+            &json!({ "type": "result", "is_error": true, "result": "Usage limit reached" }),
+        )
+        .unwrap();
+    let runtime_retry = WorkerLaunch {
+        agent: actual.agent,
+        model: actual.model.clone(),
+        effort: actual.effort.clone(),
+        ..canonical.clone()
+    };
+    let (_, _, retry, _) = store
+        .reserve_attempt("chat:master", &runtime_retry)
+        .unwrap();
+    assert_eq!(
+        retry.agent,
+        ChatAgent::Codex,
+        "the exact recorded runtime normalizes back to canonical approval"
+    );
+    assert_eq!(retry.access, Access::Manual);
+    // The normal gates continue to hold changed settings, even after a handoff.
+    assert!(store
+        .reserve_attempt(
+            "chat:master",
+            &WorkerLaunch {
+                access: Access::Full,
+                ..canonical
+            }
+        )
+        .is_err());
+}
+
 /// Review H1, probes 1 and 7: a task approved at Manual on one model is not
 /// started at Full on another, by the coordinator or from the page, with a
 /// revision pending or not. The refusal names both differences, and nothing

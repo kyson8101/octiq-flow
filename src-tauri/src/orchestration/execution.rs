@@ -42,6 +42,9 @@ pub struct Execution {
     pub retry_count: u32,
     pub next_retry_at: Option<i64>,
     pub retry_model: Option<String>,
+    /// Canonical settings checked against approval before a host quota handoff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_origin: Option<automation::WorkerSettings>,
     pub stalled_at: Option<i64>,
     pub provider_retry_started_at: Option<i64>,
     /// Track concurrent tools so one result cannot hide another pending tool.
@@ -189,6 +192,17 @@ fn classify(message: &str, now: i64) -> ExecutionError {
     }
 }
 
+fn classify_provider(message: &str, now: i64) -> ExecutionError {
+    let mut error = classify(message, now);
+    if crate::auto_resume::is_quota_message(message) {
+        if error.kind == "provider" {
+            error.kind = "quota".into();
+        }
+        error.retryable = true;
+    }
+    error
+}
+
 /// What observing a worker changed: nothing, only its attempt's execution,
 /// or the ledger beyond it (a settlement, a queued notification).
 enum Touched {
@@ -297,12 +311,18 @@ fn observe(event: &Value, now: i64, interrupted: bool) -> Vec<Observation> {
                     .is_some_and(|s| s.starts_with("error"))))
         || (kind == "assistant" && event.get("error").is_some_and(|e| !e.is_null()))
     {
-        return vec![Observation::Error(classify(&error_text(event), now), false)];
+        return vec![Observation::Error(
+            classify_provider(&error_text(event), now),
+            false,
+        )];
     }
     if (kind == "warning" && event["will_retry"] == true)
         || (kind == "system" && event["subtype"] == "api_retry")
     {
-        return vec![Observation::Error(classify(&error_text(event), now), true)];
+        return vec![Observation::Error(
+            classify_provider(&error_text(event), now),
+            true,
+        )];
     }
     if matches!(kind, "turn.completed" | "result") {
         return vec![Observation::TurnEnded];
@@ -402,7 +422,7 @@ fn observe_antigravity(kind: &str, event: &Value, now: i64) -> Vec<Observation> 
             }
         }
         "result" => match crate::auto_resume::antigravity_failure(event) {
-            Some(error) => vec![Observation::Error(classify(error, now), false)],
+            Some(error) => vec![Observation::Error(classify_provider(error, now), false)],
             None => vec![Observation::TurnEnded],
         },
         _ => vec![Observation::Activity],
@@ -448,7 +468,7 @@ pub(super) fn fail(data: &mut Stored, id: &str, error: ExecutionError, now: i64)
     attempt.summary = Some(error.message.clone());
     let execution = &mut attempt.execution;
     execution.state = match error.kind.as_str() {
-        "capacity" => ExecutionState::CapacityBlocked,
+        "capacity" | "quota" => ExecutionState::CapacityBlocked,
         "disconnected" => ExecutionState::Disconnected,
         _ => ExecutionState::Failed,
     };
@@ -958,15 +978,40 @@ impl OrchestrationStore {
             {
                 continue;
             }
+            // Return through the approved/default settings; start_worker_for
+            // alone chooses an available equivalent runtime after its gates.
+            let canonical = snapshot
+                .tasks
+                .iter()
+                .find(|t| t.id == attempt.task_id)
+                .and_then(|task| automation::settings_for_task(run, task).ok().flatten());
+            let quota = attempt
+                .execution
+                .latest_error
+                .as_ref()
+                .is_some_and(|e| crate::auto_resume::is_quota_message(&e.message))
+                || attempt.execution.provider_origin.is_some();
             let launch = WorkerLaunch {
                 task_id: attempt.task_id.clone(),
-                agent: attempt.agent,
-                model: attempt
-                    .execution
-                    .retry_model
-                    .clone()
-                    .or(attempt.model.clone()),
-                effort: attempt.effort.clone(),
+                agent: if quota {
+                    canonical.as_ref().map_or(attempt.agent, |w| w.agent)
+                } else {
+                    attempt.agent
+                },
+                model: if quota {
+                    canonical.as_ref().and_then(|w| w.model.clone())
+                } else {
+                    attempt
+                        .execution
+                        .retry_model
+                        .clone()
+                        .or(attempt.model.clone())
+                },
+                effort: if quota {
+                    canonical.as_ref().and_then(|w| w.effort.clone())
+                } else {
+                    attempt.effort.clone()
+                },
                 access: attempt.access,
                 new_worktree: Some(false),
                 base_branch: String::new(),

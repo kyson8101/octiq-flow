@@ -46,6 +46,8 @@ pub(crate) struct ScheduledResume {
     pub run_at: i64,
     pub created_at: i64,
     pub start: StartContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<crate::provider_failover::Settings>,
     delivery: Delivery,
 }
 
@@ -98,7 +100,7 @@ impl Store {
                                 && !entry.id.trim().is_empty()
                                 && entry.reset_at > 0
                                 && entry.run_at >= entry.reset_at
-                                && entry.start.resumable()
+                                && (entry.start.resumable() || entry.fallback.is_some())
                         }) =>
                     {
                         state.entries = entries;
@@ -165,12 +167,87 @@ impl Store {
             run_at: reset_at.saturating_add(RESET_GRACE_SECONDS),
             created_at: now,
             start,
+            fallback: None,
             delivery: Delivery::Scheduled,
         };
         let mut next = state.entries.clone();
         next.insert(chat_key.to_string(), entry.clone());
         self.save(&mut state, next)?;
         Ok(Some(entry))
+    }
+
+    /// An immediate, durable provider handoff, sharing Stop/cancel/crash semantics
+    /// with reset continuations. Native session ids belong only to `start`.
+    pub(crate) fn schedule_switch(
+        &self,
+        key: &str,
+        start: StartContext,
+        fallback: crate::provider_failover::Settings,
+        now: i64,
+    ) -> Result<Option<ScheduledResume>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        Self::check(&state)?;
+        if state
+            .entries
+            .get(key)
+            .is_some_and(|e| e.delivery != Delivery::Cancelled && e.start.agent() == start.agent())
+        {
+            return Ok(None);
+        }
+        let entry = ScheduledResume {
+            id: uuid::Uuid::new_v4().to_string(),
+            chat_key: key.into(),
+            reset_at: now,
+            run_at: now,
+            created_at: now,
+            start,
+            fallback: Some(fallback),
+            delivery: Delivery::Scheduled,
+        };
+        let mut next = state.entries.clone();
+        next.insert(key.into(), entry.clone());
+        self.save(&mut state, next)?;
+        Ok(Some(entry))
+    }
+
+    pub(crate) fn waits(&self, key: &str) -> bool {
+        self.state.lock().is_ok_and(|s| {
+            s.entries
+                .get(key)
+                .is_some_and(|e| e.delivery != Delivery::Cancelled)
+        })
+    }
+
+    pub(crate) fn defer_switch(&self, entry: &ScheduledResume, now: i64) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        Self::check(&state)?;
+        let mut next = state.entries.clone();
+        if let Some(saved) = next.get_mut(&entry.chat_key).filter(|saved| {
+            saved.id == entry.id
+                && saved.delivery == Delivery::Dispatching
+                && saved.fallback.is_some()
+        }) {
+            saved.delivery = Delivery::Scheduled;
+            saved.run_at = now + 2;
+            self.save(&mut state, next)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn active_switch(&self, key: &str, id: &str) -> bool {
+        self.state.lock().is_ok_and(|s| {
+            s.entries.get(key).is_some_and(|e| {
+                e.id == id && e.fallback.is_some() && e.delivery == Delivery::Dispatching
+            })
+        })
+    }
+
+    pub(crate) fn switch_waits(&self, key: &str) -> bool {
+        self.state.lock().is_ok_and(|s| {
+            s.entries
+                .get(key)
+                .is_some_and(|e| e.fallback.is_some() && e.delivery != Delivery::Cancelled)
+        })
     }
 
     /// Write `next` and then keep it: every change but a cancel is refused
@@ -206,6 +283,8 @@ impl Store {
 
     /// Cancel only work which has not begun dispatching. Once a due entry is
     /// marked `Dispatching`, telling the UI it was cancelled would be a lie.
+    /// A provider handoff is different: its final spawn checks this receipt
+    /// under the session lock, so Stop may cancel it until the process starts.
     ///
     /// **A cancel never waits on its save.** It is what Stop, interrupt and
     /// every new message do first, and a schedule that could not be written
@@ -224,7 +303,9 @@ impl Store {
         let Some(entry) = state.entries.get(chat_key) else {
             return Ok(None);
         };
-        if entry.delivery != Delivery::Scheduled {
+        if entry.delivery != Delivery::Scheduled
+            && !(entry.fallback.is_some() && entry.delivery == Delivery::Dispatching)
+        {
             return Ok(None);
         }
         let mut next = state.entries.clone();
@@ -409,6 +490,10 @@ pub(crate) fn is_quota_failure(agent: AgentKind, event: &Value) -> bool {
     let Some(message) = message else {
         return false;
     };
+    is_quota_message(message)
+}
+
+pub(crate) fn is_quota_message(message: &str) -> bool {
     let normalized: String = message
         .chars()
         .map(|ch| {
@@ -526,6 +611,7 @@ pub(crate) fn announce_scheduled(entry: &ScheduledResume) {
             "type": "octiq_auto_resume_scheduled",
             "id": entry.id,
             "agent": entry.agent().id(),
+            "fallback_agent": entry.fallback.as_ref().map(|target| target.agent),
             "reset_at": entry.reset_at,
             "run_at": entry.run_at,
         }),
@@ -589,6 +675,35 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_switch_is_durable_deduplicated_and_cancellable_before_spawn() {
+        let dir = crate::test_dir::TestDir::new("provider-switch-schedule");
+        let path = dir.join("resumes.json");
+        let store = super::Store::load(path.clone());
+        let source = super::StartContext::for_test(super::AgentKind::Claude, None);
+        let target = crate::provider_failover::Settings {
+            agent: super::AgentKind::Codex,
+            model: Some("gpt-5.6-sol".into()),
+            effort: Some("high".into()),
+            access: crate::agent_provider::Access::Read,
+        };
+        let entry = store
+            .schedule_switch("chat:switch", source.clone(), target.clone(), 100)
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .schedule_switch("chat:switch", source, target, 100)
+            .unwrap()
+            .is_none());
+        let reloaded = super::Store::load(path);
+        assert_eq!(reloaded.scheduled().unwrap().len(), 1);
+        assert!(reloaded.claim_due(100).unwrap()[0].fallback.is_some());
+        assert!(reloaded.active_switch("chat:switch", &entry.id));
+        reloaded.cancel("chat:switch").unwrap().unwrap();
+        assert!(!reloaded.active_switch("chat:switch", &entry.id));
+        assert!(!reloaded.switch_waits("chat:switch"));
+        assert!(reloaded.claim_due(101).unwrap().is_empty());
+    }
     use super::*;
 
     fn start(agent: AgentKind) -> StartContext {
