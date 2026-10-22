@@ -381,7 +381,7 @@ fn carry(
 pub const DISCUSSION_NOTE: &str = "This chat is a discussion, not a task: the person wants to talk it through first. Read whatever helps the conversation, and change nothing unless they ask you to.";
 
 fn path_start(previous: Option<char>) -> bool {
-    previous.is_none_or(|ch| !ch.is_alphanumeric() && !matches!(ch, '/' | '\\' | '.' | '-' | '_'))
+    previous.is_none_or(|ch| !path_character(ch))
 }
 
 fn path_character(ch: char) -> bool {
@@ -835,6 +835,9 @@ mod tests {
                     format!(".{path}"),
                     format!("-{path}"),
                     format!("_{path}"),
+                    format!("~{path}"),
+                    format!("%{path}"),
+                    format!("+{path}"),
                     format!("a{path}"),
                     format!("字{path}"),
                 ] {
