@@ -5673,7 +5673,9 @@ pub(crate) enum HostTurn {
 ///   being carried into the next process, **gone** otherwise. The queue is
 ///   in memory, so that is a turn a server queued and did not live to hand
 ///   over.
-/// - Anything else: **handed**. That includes `unknown`, a process that
+/// - An envelope alone, with no queue or host-memory evidence: **uncertain**;
+///   the read fails in words, never marks it told and never resends it.
+/// - Other delivery evidence: **handed**. That includes `unknown`, a process that
 ///   ended before it said it had the turn: the words may have reached the
 ///   agent, so they are never sent a second time for the host.
 ///
@@ -5759,7 +5761,14 @@ pub(crate) fn host_turns(
     }
     Ok(seen
         .into_iter()
-        .map(|(id, turn)| {
+        .map(|(id, turn)| -> Result<_, String> {
+            // An envelope precedes the write. It is not a transport receipt:
+            // the failed-write line may itself have failed to append.
+            if !turn.taken_back && !turn.received && turn.delivery.is_none()
+                && !waits(&id)
+            {
+                return Err(format!("Host turn {id} has only an envelope; its handover is uncertain. It has not been marked told or sent again. Check the conversation before retrying."));
+            }
             let gone = turn.taken_back
                 || (!turn.received
                     && match turn.delivery.as_deref() {
@@ -5772,9 +5781,9 @@ pub(crate) fn host_turns(
             } else {
                 HostTurn::Handed
             };
-            (id, fate)
+            Ok((id, fate))
         })
-        .collect())
+        .collect::<Result<_, _>>()?)
 }
 
 fn send_turn(

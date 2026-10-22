@@ -89,8 +89,10 @@ fn a_turns_lines_say_what_became_of_it() {
     let unknown = record.accepted("unknown");
     record_delivery(&record.key, Some(&unknown), "dispatched");
     record_delivery(&record.key, Some(&unknown), "unknown");
-    // The first message of a process: the line and no word of a delivery.
-    record.accepted("first");
+    // A process start needs delivery evidence; an envelope alone is covered
+    // by the uncertain-envelope regression.
+    let first = record.accepted("first");
+    record_delivery(&record.key, Some(&first), "starting");
     // Waiting in the queue.
     record.queued("queued");
     // Queued, then handed over at the turn boundary.

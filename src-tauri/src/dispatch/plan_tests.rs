@@ -1491,3 +1491,30 @@ fn no_hook_and_no_mcp_tool_can_start_a_plan() {
     .unwrap_err();
     assert_eq!(routed, "This chat has no plan to start.");
 }
+
+/// Feedback 78a0dc8b: an envelope survives while a failed-send line does not.
+#[test]
+fn a_start_envelope_alone_is_uncertain_never_a_handover_receipt() {
+    let svc = Services::load();
+    let chat = Chat::new();
+    let turn = crate::chat_plan::start_turn_id();
+    crate::agent_chat::record_chat_event(
+        &chat.key,
+        json!({"type":"user", "uuid":turn, "octiq_user_turn":true}),
+    );
+    let err = crate::agent_chat::host_turns(&svc.chats, &chat.key, &turn, None).unwrap_err();
+    assert!(err.contains("uncertain"), "{err}");
+    // The same server's positive memory is evidence even if both logs failed.
+    assert_eq!(
+        crate::agent_chat::host_turns(&svc.chats, &chat.key, &turn, Some(&turn)).unwrap()[&turn],
+        crate::agent_chat::HostTurn::Handed
+    );
+    crate::agent_chat::record_chat_event(
+        &chat.key,
+        json!({"type":"octiq_user_turn_delivery", "uuid":turn, "state":"failed"}),
+    );
+    assert_eq!(
+        crate::agent_chat::host_turns(&svc.chats, &chat.key, &turn, None).unwrap()[&turn],
+        crate::agent_chat::HostTurn::Gone
+    );
+}
