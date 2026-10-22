@@ -147,6 +147,25 @@ fn a_name_that_promises_another_kind_of_file_is_refused_in_words() {
 }
 
 #[test]
+fn failed_calls_discard_only_their_own_unclaimed_snapshots() {
+    let chat = Chat::new();
+    let other = Chat::new();
+    let pending = chat.upload("one.png", &png(), Purpose::Question).unwrap();
+    let claimed = chat.upload("kept.png", &png(), Purpose::Question).unwrap();
+    resolve(&chat.key, &mut [asking(vec![claimed.clone()], vec![])]).unwrap();
+    discard(&other.key, &[pending.id.clone()]).unwrap();
+    assert!(Path::new(&pending.path).exists());
+    discard(
+        &chat.key,
+        &[pending.id.clone(), claimed.id.clone(), "../outside".into()],
+    )
+    .unwrap();
+    assert!(!Path::new(&pending.path).exists());
+    assert!(Path::new(&claimed.path).exists());
+    discard(&chat.key, &[pending.id]).unwrap(); // Idempotent.
+}
+
+#[test]
 fn an_upload_is_kept_under_a_new_name_every_time_and_never_written_over() {
     let chat = Chat::new();
     let first = chat.upload("home.png", &png(), Purpose::Question).unwrap();

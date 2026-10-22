@@ -3458,6 +3458,27 @@ impl OrchestrationStore {
             }
             if let Some(target) = &chosen {
                 automation::worker_model(target.agent, target.model.as_deref())?;
+            } else {
+                // Nothing can run: do not reserve the limited source and spend
+                // another retry. Keep the failed attempt's recovery scheduled.
+                let reset = chats
+                    .failover
+                    .next_reset(&source, crate::auto_resume::unix_now());
+                if let Some(id) = &owned.active_attempt_id {
+                    self.mutate(|data| {
+                        if let Some(attempt) = data.attempts.get_mut(id) {
+                            if attempt.status == AttemptStatus::Failed
+                                && attempt.execution.next_retry_at.is_some()
+                            {
+                                attempt.execution.next_retry_at = Some(reset.saturating_mul(1000));
+                                attempt.execution.current_operation =
+                                    Some(format!("Waiting for provider quota reset at {reset}"));
+                            }
+                        }
+                        Ok(())
+                    })?;
+                }
+                return Err(format!("Provider quota pending: all compatible providers are limited; waiting until {reset}. No retry was consumed."));
             }
         }
         let (run, task, mut reserved, previous) =

@@ -97,10 +97,11 @@ function wanted(list) {
 /** Check, upload and name every file of a call; the list comes back with
  *  each one replaced by the snapshot the host keeps (`{id, name, caption}`).
  *  A call with no media is returned as it was, and nothing is sent. */
-async function attachMedia(list, upload = uploadToHost) {
+async function attachMedia(list, upload = uploadToHost, discard = discardMedia) {
   const files = wanted(list);
   if (!files.length) return list;
   const opened = [];
+  const uploaded = [];
   try {
     let total = 0;
     for (const file of files) {
@@ -124,16 +125,45 @@ async function attachMedia(list, upload = uploadToHost) {
     for (const file of files) {
       const name = path.basename(file.source);
       const media = await upload({ fd: file.fd, size: file.size, name, option: file.option !== undefined });
+      uploaded.push(media.id);
       const ref = { id: media.id, name: media.name || name };
       if (file.option === undefined) out[file.question].media.push(file.caption ? { ...ref, caption: file.caption } : ref);
       else out[file.question].options[file.option].image = ref;
     }
     return out;
+  } catch (error) {
+    await discard(uploaded).catch(() => {}); // Keep the original refusal.
+    throw error;
   } finally {
     for (const fd of opened) {
       try { fs.closeSync(fd); } catch { /* already closed */ }
     }
   }
+}
+
+/** Roll back only snapshots the host has never adopted for a question.
+ *  A missing response may mean an ask was accepted, so the host owns that check. */
+function discardMedia(ids) {
+  if (!ids.length) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const chatKey = process.env.OCTIQ_CHAT_KEY || "";
+    const body = JSON.stringify({ chatKey, sessionKey: process.env.OCTIQ_SESSION_KEY || chatKey,
+      launchId: process.env.OCTIQ_LAUNCH_ID || undefined, ids });
+    const req = http.request({ host: "127.0.0.1", port: Number(process.env.OCTIQ_HOOK_PORT),
+      path: "/hook/question-media/discard", method: "POST",
+      headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body),
+        "x-octiq-chat-capability": process.env.OCTIQ_CHAT_CAPABILITY || "" } }, (res) => {
+      res.resume();
+      res.on("end", () => res.statusCode === 200 ? resolve() : reject(new Error("Media rollback refused")));
+    });
+    req.on("error", reject);
+    req.setTimeout(10000, () => req.destroy(new Error("Media rollback timed out")));
+    req.end(body);
+  });
+}
+
+function mediaIds(list) {
+  return list.flatMap((q) => [ ...(q.media || []), ...(q.options || []).flatMap((o) => o?.image ? [o.image] : []) ]).map((m) => m.id);
 }
 
 /** Stream one open file to the host as this chat. Answers the snapshot, or
@@ -191,4 +221,4 @@ function uploadToHost({ fd, size, name, option }) {
   });
 }
 
-module.exports = { MediaRefusal, attachMedia, wanted, MAX_PER_QUESTION, IMAGE_MAX, PLAYED_MAX, CALL_MAX, CAPTION_MAX };
+module.exports = { MediaRefusal, attachMedia, discardMedia, mediaIds, wanted, MAX_PER_QUESTION, IMAGE_MAX, PLAYED_MAX, CALL_MAX, CAPTION_MAX };

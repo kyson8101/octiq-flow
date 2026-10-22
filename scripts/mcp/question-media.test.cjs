@@ -146,6 +146,21 @@ test("the host's refusal is the call's, in the host's words", async (t) => {
   });
 });
 
+test("a later upload refusal rolls back earlier snapshots without asking", async (t) => {
+  const { file } = scratch(t);
+  const id = "a".repeat(32);
+  const { port, heard } = await host(t, [
+    { result: { id, name: "one.png" } },
+    { status: 400, error: "two.png was refused" },
+    { result: true },
+  ]);
+  asHost(t, port);
+  await assert.rejects(attachMedia([{ question: "Q", media: [file("one.png"), file("two.png")] }]), /two.png was refused/);
+  assert.deepEqual(heard.map((h) => h.path), ["/hook/question-media", "/hook/question-media", "/hook/question-media/discard"]);
+  assert.deepEqual(JSON.parse(heard[2].body), { chatKey: "chat:media", sessionKey: "chat:media", launchId: "launch-1", ids: [id] });
+  assert.equal(heard[2].headers["x-octiq-chat-capability"], "cap-1");
+});
+
 /** One tools/call through the real MCP server, against the stand-in host. */
 function call(port, args) {
   return new Promise((resolve, reject) => {
@@ -187,9 +202,11 @@ test("ask_user asks nothing when a file cannot be shown, and says which", async 
   assert.equal(missing._meta["octiq/outcome"].reasonClass, "validation");
   assert.equal(heard.length, 0, "nothing reached the host");
   // A refusal of the ask itself, too.
-  const { port: askPort } = await host(t, [{ result: { id: "b".repeat(32), name: "x.png" } }, { status: 400, error: "x.png is not among this conversation's question media: attach it again." }]);
+  const { port: askPort, heard: refusedHeard } = await host(t, [{ result: { id: "b".repeat(32), name: "x.png" } }, { status: 400, error: "x.png is not among this conversation's question media: attach it again." }, { result: true }]);
   const { file } = scratch(t);
   const refusedAsk = await call(askPort, { question: "Q", media: [file("x.png")] });
   assert.equal(refusedAsk.isError, true);
   assert.match(refusedAsk.content[0].text, /^Nothing was asked: x\.png is not among/);
+  assert.equal(refusedHeard[2].path, "/hook/question-media/discard");
+  assert.deepEqual(JSON.parse(refusedHeard[2].body).ids, ["b".repeat(32)]);
 });

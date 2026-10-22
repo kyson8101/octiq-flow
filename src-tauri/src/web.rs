@@ -553,6 +553,10 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/permission", post(permission_handler))
         .route("/hook/ask", post(ask_handler))
         .route("/hook/question-media", post(question_media_handler))
+        .route(
+            "/hook/question-media/discard",
+            post(question_media_discard_handler),
+        )
         .route("/hook/access", post(access_handler))
         .route("/hook/orchestration", post(orchestration_handler))
         .route("/hook/task", post(task_handler))
@@ -1308,6 +1312,38 @@ struct MediaQuery {
     /// For an option's image, which must be an image.
     #[serde(default)]
     option: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaDiscard {
+    chat_key: Option<String>,
+    session_key: Option<String>,
+    launch_id: Option<String>,
+    ids: Vec<String>,
+}
+
+async fn question_media_discard_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<MediaDiscard>,
+) -> Response {
+    let claim = HookClaim {
+        chat_key: request.chat_key.as_deref(),
+        session_key: request.session_key.as_deref(),
+        launch_id: request.launch_id.as_deref(),
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    match crate::question_media::discard(&caller.chat_key, &request.ids) {
+        Ok(()) => axum::Json(json!({ "result": true })).into_response(),
+        Err(why) => hook_failed(
+            StatusCode::BAD_REQUEST,
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::Validation, why),
+        ),
+    }
 }
 
 /// One file an `ask_user` call shows, read by the agent's own MCP server and

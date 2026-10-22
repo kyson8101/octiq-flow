@@ -633,7 +633,14 @@ pub fn roofless(parts: &[Part]) -> Result<(), String> {
     let high: Vec<(usize, f64)> = parts
         .iter()
         .enumerate()
-        .filter(|(_, part)| part_bounds(part).min[1] >= HIGH_ABOVE - EPS)
+        .filter(|(_, part)| {
+            let bounds = part_bounds(part);
+            // Grounded walls and posts stay legal. Overhead pieces count
+            // together even when their bottoms straddle the 1.5 m plane:
+            // splitting a roof into narrow strips cannot hide its area.
+            bounds.min[1] >= HIGH_ABOVE - EPS
+                || (bounds.min[1] > THICK_ABOVE + EPS && bounds.max[1] > HIGH_ABOVE + EPS)
+        })
         .map(|(index, part)| (index, area(&footprint(part))))
         .collect();
     let covered: f64 = high.iter().map(|(_, area)| area).sum();
@@ -646,7 +653,7 @@ pub fn roofless(parts: &[Part]) -> Result<(), String> {
         let part = &parts[largest];
         let bounds = part_bounds(part);
         return Err(invalid(format!(
-            "{ROOFLESS}: the parts wholly above {} m cover {:.1}% of the building's floor ({} of {} m²), and at most {}% may be covered. The largest is part {} ({}, {} m, from {} to {} m up). Use fewer or thinner beams, or bring signs and lamps lower.",
+            "{ROOFLESS}: the overhead parts reaching above {} m cover {:.1}% of the building's floor ({} of {} m²), and at most {}% may be covered. The largest is part {} ({}, {} m, from {} to {} m up). Use fewer or thinner beams, or bring signs and lamps lower.",
             show(HIGH_ABOVE),
             covered / floor * 100.0,
             show(covered),

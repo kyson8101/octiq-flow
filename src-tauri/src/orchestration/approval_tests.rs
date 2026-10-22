@@ -96,6 +96,82 @@ fn fail_for_capacity(store: &OrchestrationStore, attempt: &Attempt) {
 }
 
 #[test]
+fn all_limited_providers_hold_before_reservation_without_spending_retries() {
+    let home = crate::test_dir::TestDir::new("quota-hold");
+    let _profile = crate::profile::started_in(&home);
+    let store = OrchestrationStore::default();
+    let (_run, task) = approved(&store, Some(settings(Access::Edits)));
+    let launch = host_launch(&store, &task.id);
+    let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+    let first = store
+        // If the hold regresses, workspace preparation must fail before any
+        // real CLI can start, including when running this test against base.
+        .activate_attempt(
+            &first.id,
+            home.join("must-not-launch").to_string_lossy().into_owned(),
+            "".into(),
+            false,
+        )
+        .unwrap();
+    store
+        .observe_worker_event(
+            &first.worker_chat_key,
+            &json!({"type":"turn.failed", "error":{"message":"Usage limit reached"}}),
+        )
+        .unwrap();
+    let workspaces =
+        crate::workspaces::WorkspaceState::with_projects(vec![serde_json::from_value(json!({
+            "id":"workspace", "name":"Project", "primary_path":"/tmp", "paths":[]
+        }))
+        .unwrap()]);
+    let chats = Arc::new(ChatManager::default());
+    let now = crate::auto_resume::unix_now();
+    for agent in [ChatAgent::Codex, ChatAgent::Claude, ChatAgent::Antigravity] {
+        chats.failover.limited(agent, Some(now + 600), now);
+    }
+    let before = task_now(&store, &task.id);
+    let count = attempts_of(&store, &task.id)[0].execution.retry_count;
+    for by in [StartedBy::Coordinator, StartedBy::Recovery(&first.id)] {
+        let error = store
+            .start_worker_for(
+                chats.clone(),
+                &workspaces,
+                "chat:master",
+                launch.clone(),
+                by,
+            )
+            .unwrap_err();
+        assert!(error.starts_with("Provider quota pending:"), "{error}");
+        assert_eq!(attempts_of(&store, &task.id).len(), 1);
+        let attempt = &attempts_of(&store, &task.id)[0];
+        assert_eq!(attempt.execution.next_retry_at, Some((now + 600) * 1000));
+        assert_eq!(attempt.execution.retry_count, count);
+        assert_eq!(attempt.access, Access::Edits);
+        assert_eq!(task_now(&store, &task.id).retries_used, before.retries_used);
+    }
+    // A due host recovery follows the same door and retains the scheduled hold.
+    store
+        .mutate(|data| {
+            data.attempts
+                .get_mut(&first.id)
+                .unwrap()
+                .execution
+                .next_retry_at = Some(now_ms() - 1);
+            Ok(())
+        })
+        .unwrap();
+    store
+        .recover_due_workers(chats, &workspaces, now_ms())
+        .unwrap();
+    assert_eq!(attempts_of(&store, &task.id).len(), 1);
+    assert_eq!(
+        attempts_of(&store, &task.id)[0].execution.next_retry_at,
+        Some((now + 600) * 1000)
+    );
+    assert_eq!(task_now(&store, &task.id).retries_used, before.retries_used);
+}
+
+#[test]
 fn host_provider_handoff_keeps_approval_identity_and_blocks_wider_settings() {
     let store = OrchestrationStore::default();
     let (_run, task) = approved(&store, Some(settings(Access::Manual)));

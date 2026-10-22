@@ -59,7 +59,7 @@ const readline = require("readline");
 const { CREATE_ARTIFACT, createArtifact } = require("./artifact.cjs");
 
 const { PREVIEW_IMAGE, PREVIEW_HTML, previewImage, previewHtml } = require("./preview.cjs");
-const { MediaRefusal, attachMedia } = require("./question-media.cjs");
+const { MediaRefusal, attachMedia, discardMedia, mediaIds } = require("./question-media.cjs");
 
 const CHAT_KEY = process.env.OCTIQ_CHAT_KEY || "";
 const IS_ISLAND_BUILD = CHAT_KEY.startsWith("chat:island-wish-");
@@ -3163,6 +3163,7 @@ async function handle(msg) {
       }
       const answer = await askOctiq(asked);
       if (answer.error) {
+        await discardMedia(mediaIds(asked)).catch(() => {});
         return reply(msg.id, {
           content: [{ type: "text", text: `Nothing was asked: ${answer.error}` }],
           isError: true,

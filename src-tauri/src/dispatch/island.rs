@@ -9,6 +9,17 @@ use std::sync::Mutex;
 static START: Mutex<()> = Mutex::new(());
 
 fn preferred(mut providers: Vec<AgentKind>) -> Vec<AgentKind> {
+    // Pi neither carries Octiq MCP nor guards Edits. Antigravity does both:
+    // accept-edits refuses shell/out-of-project actions; its plugin carries MCP.
+    providers.retain(|kind| {
+        crate::agent_provider::provider_for(*kind)
+            .capabilities()
+            .uses_octiq_mcp
+            && matches!(
+                kind,
+                AgentKind::Claude | AgentKind::Codex | AgentKind::Antigravity
+            )
+    });
     providers.sort_by_key(|kind| *kind != AgentKind::Codex);
     providers
 }
@@ -96,8 +107,9 @@ fn begin(
     if svc.chats.turn_in_flight(&key) {
         return Ok(json!({ "chatKey": key, "state": "building" }));
     }
+    let providers = preferred(providers.to_vec());
     if providers.is_empty() {
-        return Err("No agent provider is installed. Install and sign in to Claude, Codex, pi or Antigravity to grant wishes.".into());
+        return Err("No eligible agent provider is installed. Install and sign in to Claude, Codex or Antigravity to grant wishes with Octiq MCP and guarded Edits access.".into());
     }
     // Check the index before saving, so an unreadable store is never reset.
     let previous = crate::chat_index::find(&id)?;
@@ -108,7 +120,7 @@ fn begin(
     crate::profile::make_dir(&cwd)?;
     let prompt = format!("{brief}\n\nThe person pressed Grant on the island. Execute this request now using the island tools, without asking them to send another message or returning them to a chat. This is only an island present: do not modify project files or run unrelated work. If the wish is already closed when you look, stop. If building is refused, correct the design using the guide and try again. Only report success after island_grant succeeds.");
     let mut errors = Vec::new();
-    for provider in providers {
+    for provider in &providers {
         let now = crate::island::now_ms();
         let meta = serde_json::from_value(json!({
             "id": id, "projectId": "island", "title": format!("Island · {}", wish["text"].as_str().unwrap_or("Grant a wish")),
@@ -150,9 +162,13 @@ mod tests {
     fn codex_is_the_default_and_other_installed_providers_remain_fallbacks() {
         assert_eq!(
             preferred(vec![AgentKind::Claude, AgentKind::Codex, AgentKind::Pi]),
-            vec![AgentKind::Codex, AgentKind::Claude, AgentKind::Pi]
+            vec![AgentKind::Codex, AgentKind::Claude]
         );
-        assert_eq!(preferred(vec![AgentKind::Pi]), vec![AgentKind::Pi]);
+        assert!(preferred(vec![AgentKind::Pi]).is_empty());
+        assert_eq!(
+            preferred(vec![AgentKind::Antigravity]),
+            vec![AgentKind::Antigravity]
+        );
     }
 
     fn wish(svc: &Services) -> String {
@@ -188,7 +204,7 @@ mod tests {
         let answer = begin(
             &svc,
             &id,
-            &[AgentKind::Claude, AgentKind::Codex],
+            &[AgentKind::Pi, AgentKind::Claude, AgentKind::Antigravity],
             |key, args, prompt| {
                 attempts.push(args["agent"].clone());
                 assert!(prompt.contains(&id));
@@ -205,8 +221,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(attempts, vec![json!("claude"), json!("codex")]);
-        assert_eq!(answer["provider"], "codex");
+        assert_eq!(attempts, vec![json!("claude"), json!("antigravity")]);
+        assert_eq!(answer["provider"], "antigravity");
         let key = answer["chatKey"].as_str().unwrap();
         let duplicate = begin(&svc, &id, &[], |_, _, _| panic!("duplicate launch")).unwrap();
         assert_eq!(duplicate["chatKey"], key);
@@ -230,9 +246,12 @@ mod tests {
         let svc = Services::load();
         let id = wish(&svc);
         let before = std::fs::read(crate::island::default_path()).unwrap();
-        assert!(begin(&svc, &id, &[], |_, _, _| panic!("no provider"))
-            .unwrap_err()
-            .contains("No agent provider"));
+        let error = begin(&svc, &id, &[AgentKind::Pi], |_, _, _| {
+            panic!("ineligible provider")
+        })
+        .unwrap_err();
+        assert!(error.contains("Claude, Codex or Antigravity"), "{error}");
+        assert!(!error.contains("pi or"), "{error}");
         assert_eq!(
             std::fs::read(crate::island::default_path()).unwrap(),
             before

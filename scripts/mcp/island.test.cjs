@@ -8,6 +8,15 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+
+test("the agent guide describes Grant as an immediate background task", () => {
+  const guide = fs.readFileSync(path.join(__dirname, "../../AGENTS.md"), "utf8");
+  const island = guide.split("### The island\n")[1].split("### Attention alerts")[0];
+  assert.match(island, /Grant starts a background island task/);
+  assert.match(island, /island_wish_start/);
+  assert.doesNotMatch(island, /with the host's brief in the box|nothing is sent for them|share homes of up to four/);
+});
 
 function call(env, method, params, flags = []) {
   return new Promise((resolve, reject) => {

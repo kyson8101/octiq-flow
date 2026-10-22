@@ -122,9 +122,11 @@ The person must always be able to watch inside. A building is refused when:
    from above, at its narrowest once turned. Walls, posts and door frames
    are thin one way, at any angle (a round house's slanted panels too); a
    slab, a solid block or a sloped roof is not.
-2. the parts that sit wholly above **1.5 m** (beams, lintels, signs, lamps)
+2. the overhead parts that reach above **1.5 m** (beams, lintels, signs, lamps)
    cover more than **15 %** of the building's own floor (the x·z area of its
-   bounding box), adding up each part's box.
+   bounding box), adding up each part's box. Parts starting above **1.2 m**
+   count even if they straddle 1.5 m; tiling narrow strips cannot make a roof
+   legal. Grounded walls and posts remain allowed.
 
 The refusal names the part, its shape, size and height, and says why, so an
 agent can fix it. Furniture and decor are not buildings; the page fades

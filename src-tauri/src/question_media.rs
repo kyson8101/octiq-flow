@@ -19,6 +19,36 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::{collections::BTreeMap, sync::Mutex};
+
+// Only uploads never adopted by a question can be rolled back. Keeping this
+// claim on the host prevents an agent from deleting media already in a record.
+static UNCLAIMED: Mutex<BTreeMap<(String, String), PathBuf>> = Mutex::new(BTreeMap::new());
+
+pub fn discard(chat_key: &str, ids: &[String]) -> Result<(), String> {
+    let profile = crate::profile::available()?;
+    let dir = folder_in(&profile, chat_key)?;
+    if !ancestry_is_real(&profile, &dir)? {
+        return Ok(());
+    }
+    if !dir.exists() {
+        return Ok(());
+    }
+    not_redirected(&profile, &dir)?;
+    let mut pending = UNCLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+    for id in ids {
+        let key = (chat_key.to_owned(), id.clone());
+        if let Some(path) = pending.get(&key) {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(crate::profile::write_error(path, e)),
+            }
+            pending.remove(&key);
+        }
+    }
+    Ok(())
+}
 
 /// At most this many media files under one question.
 pub const MAX_PER_QUESTION: usize = 4;
@@ -545,6 +575,10 @@ impl Upload {
             .sync_all()
             .map_err(|e| crate::profile::write_error(&open.path, e))?;
         crate::profile::available()?;
+        UNCLAIMED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((self.chat_key.clone(), open.id.clone()), open.path.clone());
         open.done = true;
         Ok(Media {
             id: open.id.clone(),
@@ -638,6 +672,8 @@ pub async fn receive(upload: Upload, body: axum::body::Body) -> Result<Media, St
 /// folder, or say why the call cannot be asked. Run on what an agent sent,
 /// before anything is asked.
 pub fn resolve(chat_key: &str, questions: &mut [Question]) -> Result<(), String> {
+    // Adoption and rollback exclude each other, including while files are read.
+    let mut pending = UNCLAIMED.lock().unwrap_or_else(|e| e.into_inner());
     let shows = |q: &Question| !q.media.is_empty() || q.options.iter().any(|c| c.image.is_some());
     if !questions.iter().any(shows) {
         return Ok(());
@@ -675,6 +711,15 @@ pub fn resolve(chat_key: &str, questions: &mut [Question]) -> Result<(), String>
     // Asked after the reads too: a folder that went, or was swapped, while
     // they ran is caught.
     crate::profile::available()?;
+    for question in questions {
+        for media in question
+            .media
+            .iter()
+            .chain(question.options.iter().filter_map(|o| o.image.as_ref()))
+        {
+            pending.remove(&(chat_key.to_owned(), media.id.clone()));
+        }
+    }
     Ok(())
 }
 
@@ -741,6 +786,10 @@ fn settle(profile: &Path, dir: &Path, given: &Media, purpose: Purpose) -> Result
 /// Remove a chat's snapshots, when the chat itself is purged. Never on
 /// `/clear` and never on the move to the trash.
 pub fn forget(chat_id: &str) {
+    UNCLAIMED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(key, _), _| key != &format!("chat:{chat_id}"));
     let Ok(profile) = crate::profile::available() else {
         return;
     };
