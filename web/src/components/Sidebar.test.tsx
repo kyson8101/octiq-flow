@@ -92,6 +92,21 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain("pinned");
   });
 
+  it("uses the run project for tasks without destinations, including its colour and row label", () => {
+    const ledger = coordinatorLedger([null, null]);
+    ledger.runs[0].workspaceId = "p1";
+    const out = html({
+      conversations: [chat("cto", "p2")], orchestration: ledger,
+      coordinatorChatKeys: new Set(["chat:cto"]),
+    });
+    expect(out).toContain('aria-label="Work projects: octiq-flow, 2 tasks"');
+    expect(out).toContain('aria-label="Task cto, octiq-flow, 2 tasks');
+    expect(out).toContain('--chat-project-color:#12ab34');
+    expect(out).toContain('project-avatar-text">OF</span>');
+    expect(out).not.toContain("Project unknown");
+    expect(out).not.toContain("conversation-project-unknown");
+  });
+
   it("tells the run on show apart from every task the chat has had", () => {
     const ledger = coordinatorLedger(["p1", "p1"]);
     const out = html({
@@ -149,11 +164,11 @@ describe("task-oriented Sidebar", () => {
 
   describe("a coordinator row's colour follows where its work is, not its General home", () => {
     const withGeneral: Project[] = [...projects, { id: "general", name: "General", initial: "G", color: "#aa00ff" }];
-    const coordinatorRow = (destinations: (string | null)[] | null, runs = true) => {
+    const coordinatorRow = (destinations: (string | null)[] | null, runs = true, knownProjects = withGeneral) => {
       const ledger = destinations === null ? null
         : runs ? coordinatorLedger(destinations) : { ...coordinatorLedger([]), runs: [] };
       return html({
-        projects: withGeneral,
+        projects: knownProjects,
         conversations: [{ ...chat("cto", "general"), pinned: true }],
         orchestration: ledger ?? undefined, ledgerSnapshot: ledger,
         coordinatorChatKeys: new Set(["chat:cto"]),
@@ -180,13 +195,13 @@ describe("task-oriented Sidebar", () => {
     });
 
     it("stays neutral while loading, in discussion, unknown or pointing at a removed project", () => {
-      for (const out of [coordinatorRow(null), coordinatorRow([], false), coordinatorRow([null]), coordinatorRow(["gone"])]) {
+      for (const out of [coordinatorRow(null), coordinatorRow([], false), coordinatorRow([null], true, projects), coordinatorRow(["gone"])]) {
         expect(rowStyle(out)).toBe("");
         expect(out).toContain("project-avatar is-medium is-neutral");
         expect(out).not.toContain("#aa00ff");
         expect(out).not.toContain('project-avatar-text">G</span>');
       }
-      expect(coordinatorRow([null])).toContain('is-neutral" aria-hidden="true">?</span>');
+      expect(coordinatorRow([null], true, projects)).toContain('is-neutral" aria-hidden="true">?</span>');
       expect(coordinatorRow(["gone"])).toContain('class="conversation-project-chip">Project gone</span>');
     });
 

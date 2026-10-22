@@ -112,6 +112,20 @@ describe("ProjectsPage", () => {
     expect(html({ ...shared, selectedProjectId: "p1" }).match(/Coordinate launch/g)).toHaveLength(2);
   });
 
+  it("discovers and counts destination-free run tasks in the run's shelved project", () => {
+    const coordinator = chat("cto", "p1", 500, { title: "Coordinate archive" });
+    const ledger: OrchestrationSnapshot = {
+      runs: [{ id: "run", coordinatorChatKey: "chat:cto", objective: "Archive", workspaceId: "p3", rootPath: "/old-site", status: "completed", maxConcurrent: 2, createdAt: 1, updatedAt: 2 }],
+      tasks: [{ id: "local", runId: "run", title: "Local", spec: "Local", dependsOn: [], status: "completed", createdAt: 1, updatedAt: 1 }],
+      attempts: [], gates: [], messages: [],
+    };
+    const shared = { conversations: [...conversations, coordinator], ledgerSnapshot: ledger, coordinatorChatKeys: new Set(["chat:cto"]) };
+    expect(html(shared)).toContain('aria-label="old-site, 1 task"');
+    expect(html(shared)).toContain('aria-label="octiq-flow, 3 tasks"');
+    expect(html({ ...shared, selectedProjectId: "p3" })).toContain("Coordinate archive");
+    expect(html({ ...shared, selectedProjectId: "p1" })).not.toContain("Coordinate archive");
+  });
+
   it("removes project-level task creation in agents mode", () => {
     const out = html({ selectedProjectId: "p2", conversations: [], allowNewTask: false });
     expect(out).toContain("No tasks in starfall-social yet.");
