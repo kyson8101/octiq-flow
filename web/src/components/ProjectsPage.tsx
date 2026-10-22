@@ -65,7 +65,7 @@ export function ProjectsPage({
   const selected = selectedProjectId === null ? null : known.find((project) => project.id === selectedProjectId) ?? null;
 
   if (selectedProjectId !== null) {
-    const tasks = selected ? projectTasks(conversations, selected.id, ledgerSnapshot, coordinatorChatKeys ?? new Set()) : [];
+    const tasks = selected ? projectTasks(conversations, selected.id, ledgerSnapshot, coordinatorChatKeys ?? new Set(), known) : [];
     const isShelved = !!selected && shelved.some((project) => project.id === selected.id);
     return (
       <section className="projects-page" aria-label={selected ? `${selected.name} tasks` : "Project"}>
@@ -142,7 +142,7 @@ export function ProjectsPage({
     );
   }
 
-  const counts = projectTaskCounts(conversations, ledgerSnapshot, coordinatorChatKeys ?? new Set());
+  const counts = projectTaskCounts(conversations, ledgerSnapshot, coordinatorChatKeys ?? new Set(), known);
   const row = (project: Project) => {
     const count = counts.get(project.id) ?? 0;
     return (

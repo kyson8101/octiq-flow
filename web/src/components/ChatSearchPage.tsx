@@ -100,7 +100,7 @@ export function ChatSearchPage({
     const pending = pendingView.forRow(chat.id);
     const project = projectById.get(chat.projectId);
     const projectName = project?.name ?? "Unknown project";
-    const projectInfo = conversationProjectInfo(chat, ledgerSnapshot, coordinatorChatKeys, ledgerUnavailable);
+    const projectInfo = conversationProjectInfo(chat, ledgerSnapshot, coordinatorChatKeys, ledgerUnavailable, projects);
     const projectSummary = conversationProjectSummary(
       projectInfo,
       (id, fallback) => projectById.get(id)?.name ?? fallback ?? "Unknown project",

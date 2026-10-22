@@ -5,7 +5,7 @@
 // question — "what has ever been done here" — so a ticked-off or pinned chat
 // is listed exactly like any other. Only the project decides membership.
 import type { Conversation } from "./store";
-import { projectConversationCounts, projectConversations } from "./conversationProjects";
+import { projectConversationCounts, projectConversations, type ConversationProject } from "./conversationProjects";
 import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "./orchestration";
 
 const NO_COORDINATORS: ReadonlySet<string> = new Set();
@@ -16,8 +16,9 @@ export function projectTasks(
   projectId: string,
   snapshot: OrchestrationSnapshot | null = EMPTY_ORCHESTRATION,
   coordinatorChatKeys: ReadonlySet<string> = NO_COORDINATORS,
+  projects: readonly ConversationProject[] = [],
 ): Conversation[] {
-  return projectConversations(chats, projectId, snapshot, coordinatorChatKeys);
+  return projectConversations(chats, projectId, snapshot, coordinatorChatKeys, projects);
 }
 
 /** How many chats each project holds, for the project list's counts. */
@@ -25,6 +26,7 @@ export function projectTaskCounts(
   chats: readonly Conversation[],
   snapshot: OrchestrationSnapshot | null = EMPTY_ORCHESTRATION,
   coordinatorChatKeys: ReadonlySet<string> = NO_COORDINATORS,
+  projects: readonly ConversationProject[] = [],
 ): Map<string, number> {
-  return projectConversationCounts(chats, snapshot, coordinatorChatKeys);
+  return projectConversationCounts(chats, snapshot, coordinatorChatKeys, projects);
 }
