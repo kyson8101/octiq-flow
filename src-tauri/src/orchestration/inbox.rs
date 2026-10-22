@@ -1,7 +1,30 @@
 //! Durable notifications. Acknowledgement means provider receipt, not task completion.
 use super::*;
+use serde_json::Value;
 
 pub const RECEIPT_PREFIX: &str = "octiq-notification-";
+/// One turn can carry many notifications. Keep the legacy scalar receipt
+/// for its first id; the array names every member for crash reconciliation.
+pub(crate) fn receipt_ids(event: &Value) -> Vec<&str> {
+    let mut ids = Vec::new();
+    for id in event["octiq_orchestration_notification_id"]
+        .as_str()
+        .into_iter()
+        .chain(
+            event["octiq_orchestration_notification_ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str),
+        )
+    {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryState {
@@ -284,12 +307,12 @@ impl OrchestrationStore {
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
         }
-        let in_flight: BTreeMap<_, _> = inner
+        let waiting_receipt: BTreeSet<_> = inner
             .data
             .notifications
             .values()
-            .filter(|n| n.state == DeliveryState::Delivering)
-            .map(|n| (n.target_chat_key.as_str(), n.id.as_str()))
+            .filter(|n| n.state == DeliveryState::Delivering && n.next_attempt_at > now)
+            .map(|n| n.target_chat_key.as_str())
             .collect();
         let mut due: Vec<_> = inner
             .data
@@ -298,46 +321,58 @@ impl OrchestrationStore {
             .filter(|n| {
                 matches!(n.state, DeliveryState::Pending | DeliveryState::Delivering)
                     && n.next_attempt_at <= now
-                    && in_flight
-                        .get(n.target_chat_key.as_str())
-                        .is_none_or(|id| *id == n.id)
+                    && !waiting_receipt.contains(n.target_chat_key.as_str())
             })
             .cloned()
             .collect();
-        due.sort_by_key(|n| (n.kind == "progress", n.created_at, n.id.clone()));
+        due.sort_by_key(|n| (n.created_at, n.id.clone()));
+        // Bound chats per pass, never split one chat's due backlog into turns.
         let mut targets = BTreeSet::new();
-        due.retain(|n| targets.insert(n.target_chat_key.clone()));
-        due.truncate(32);
+        due.retain(|n| {
+            targets.contains(&n.target_chat_key)
+                || (targets.len() < 32 && targets.insert(n.target_chat_key.clone()))
+        });
         Ok(due)
     }
+    #[cfg(test)]
     pub(crate) fn claim_notification(
         &self,
         id: &str,
         now: i64,
     ) -> Result<Option<Notification>, String> {
+        Ok(self.claim_notifications(&[id.to_string()], now)?.pop())
+    }
+
+    fn claim_notifications(&self, ids: &[String], now: i64) -> Result<Vec<Notification>, String> {
         self.mutate(|data| {
-            let Some(before) = data.notifications.get(id).cloned() else {
-                return Ok(None);
-            };
-            if !matches!(
-                before.state,
-                DeliveryState::Pending | DeliveryState::Delivering
-            ) || before.next_attempt_at > now
-            {
-                return Ok(None);
-            }
-            let still_valid = valid(data, &before);
-            let n = data.notifications.get_mut(id).unwrap();
-            if !still_valid {
-                n.state = DeliveryState::Cancelled;
+            let mut claimed = Vec::new();
+            for id in ids {
+                let Some(before) = data.notifications.get(id).cloned() else {
+                    continue;
+                };
+                if !matches!(
+                    before.state,
+                    DeliveryState::Pending | DeliveryState::Delivering
+                ) || before.next_attempt_at > now
+                {
+                    continue;
+                }
+                let still_valid = valid(data, &before);
+                let n = data.notifications.get_mut(id).unwrap();
+                if !still_valid {
+                    n.state = DeliveryState::Cancelled;
+                    n.updated_at = now;
+                    n.last_error =
+                        Some("Notification no longer applies to its run or recipient.".into());
+                    continue;
+                }
+                n.state = DeliveryState::Delivering;
+                n.attempts = n.attempts.saturating_add(1);
                 n.updated_at = now;
-                return Ok(None);
+                n.next_attempt_at = now + 60_000;
+                claimed.push(n.clone());
             }
-            n.state = DeliveryState::Delivering;
-            n.attempts = n.attempts.saturating_add(1);
-            n.updated_at = now;
-            n.next_attempt_at = now + 60_000;
-            Ok(Some(n.clone()))
+            Ok(claimed)
         })
     }
     /// Everything waiting for a worker, handed over in the answer to its own
@@ -414,24 +449,43 @@ impl OrchestrationStore {
         })
     }
     pub(crate) fn acknowledge_notification(&self, key: &str, id: &str) -> Result<(), String> {
-        let run_id = self.mutate(|data| {
-            let n = data
-                .notifications
-                .get_mut(id)
-                .ok_or("Notification does not exist.")?;
-            if n.target_chat_key != key {
-                return Err("Notification receipt belongs to another chat.".into());
+        self.acknowledge_notifications(key, &[id.to_string()])
+    }
+
+    pub(crate) fn acknowledge_notifications(
+        &self,
+        key: &str,
+        ids: &[String],
+    ) -> Result<(), String> {
+        // Receipt already happened. Keep it even when the ledger cannot be
+        // saved; never let a save failure turn the answer into another turn.
+        let runs = self.mutate_regardless("notification receipts", |data| {
+            for id in ids {
+                let n = data
+                    .notifications
+                    .get(id)
+                    .ok_or("Notification does not exist.")?;
+                if n.target_chat_key != key {
+                    return Err("Notification receipt belongs to another chat.".into());
+                }
             }
-            if matches!(n.state, DeliveryState::Delivering | DeliveryState::Pending)
-                && n.attempts > 0
-            {
-                n.state = DeliveryState::Acknowledged;
-                n.last_error = None;
-                n.updated_at = now_ms();
+            let mut runs = BTreeSet::new();
+            for id in ids {
+                let n = data.notifications.get_mut(id).unwrap();
+                if matches!(n.state, DeliveryState::Delivering | DeliveryState::Pending)
+                    && n.attempts > 0
+                {
+                    n.state = DeliveryState::Acknowledged;
+                    n.last_error = None;
+                    n.updated_at = now_ms();
+                    runs.insert(n.run_id.clone());
+                }
             }
-            Ok(n.run_id.clone())
+            Ok(runs)
         })?;
-        announce(&run_id, "notification_acknowledged");
+        for run in runs {
+            announce(&run, "notification_acknowledged");
+        }
         Ok(())
     }
     pub(crate) fn retry_notification(
@@ -467,45 +521,63 @@ pub fn deliver_pending(
     workspaces: &WorkspaceState,
 ) -> Result<(), String> {
     let store = &chats.orchestrations;
-    for candidate in store.due_notifications(now_ms())? {
-        // Serialize with stop/lease transfer, but never hold this lock while
-        // waiting for a provider turn to finish.
+    let mut batches: BTreeMap<String, Vec<Notification>> = BTreeMap::new();
+    for n in store.due_notifications(now_ms())? {
+        batches
+            .entry(n.target_chat_key.clone())
+            .or_default()
+            .push(n);
+    }
+    for (key, candidates) in batches {
+        // Serialize with stop/lease transfer, never with a provider's turn.
         let _guard = store.workspace_ops.lock().map_err(|e| e.to_string())?;
-        if candidate.attempts > 0
-            && crate::transcript::since(&candidate.target_chat_key, 0)
-                .iter()
-                .any(|frame| {
-                    frame.event["octiq_orchestration_notification_id"].as_str()
-                        == Some(&candidate.id)
-                })
-        {
-            store.acknowledge_notification(&candidate.target_chat_key, &candidate.id)?;
+        let frames = crate::transcript::every_line(&key)?;
+        let receipts: BTreeSet<_> = frames
+            .iter()
+            .flat_map(|frame| receipt_ids(&frame.event))
+            .collect();
+        let mut waiting = Vec::new();
+        let mut received = Vec::new();
+        for candidate in candidates {
+            if candidate.attempts > 0 && receipts.contains(candidate.id.as_str()) {
+                received.push(candidate.id);
+            } else {
+                waiting.push(candidate.id);
+            }
+        }
+        if !received.is_empty() {
+            store.acknowledge_notifications(&key, &received)?;
+        }
+        if waiting.is_empty() || !chats.notification_ready(&key) {
             continue;
         }
-        if !chats.notification_ready(&candidate.target_chat_key) {
+        let batch = store.claim_notifications(&waiting, now_ms())?;
+        if batch.is_empty() {
             continue;
         }
-        let Some(notification) = store.claim_notification(&candidate.id, now_ms())? else {
-            announce(&candidate.run_id, "notification_cancelled");
-            continue;
-        };
-        announce(&notification.run_id, "notification_delivering");
         let run = store
-            .snapshot(Some(&notification.run_id))?
+            .snapshot(Some(&batch[0].run_id))?
             .runs
             .into_iter()
             .next()
             .ok_or("Run no longer exists.")?;
-        let env = workspace(workspaces, &run.workspace_id).map(|project| project.env);
-        let result = env.and_then(|env| {
-            crate::agent_chat::deliver_orchestration_notification(chats.clone(), &notification, env)
+        let result = workspace(workspaces, &run.workspace_id).and_then(|project| {
+            crate::agent_chat::deliver_orchestration_notifications(
+                chats.clone(),
+                &batch,
+                project.env,
+            )
         });
-        match result {
-            Ok(true) => {}
-            Ok(false) => store.retry_notification(&notification.id, None, now_ms())?,
-            Err(error) => store.retry_notification(&notification.id, Some(error), now_ms())?,
+        for notification in &batch {
+            match &result {
+                Ok(true) => {}
+                Ok(false) => store.retry_notification(&notification.id, None, now_ms())?,
+                Err(error) => {
+                    store.retry_notification(&notification.id, Some(error.clone()), now_ms())?
+                }
+            }
+            announce(&notification.run_id, "notification_delivery_updated");
         }
-        announce(&notification.run_id, "notification_delivery_updated");
     }
     Ok(())
 }
@@ -539,8 +611,8 @@ mod tests {
         assert!(pending[0].body.contains("latest"));
         ping(&store, &run, &worker, "question", "Need help");
         let due = store.due_notifications(now_ms() + 20_000).unwrap();
-        assert_eq!(due.len(), 1);
-        assert_ne!(due[0].kind, "progress");
+        assert_eq!(due.len(), 2);
+        assert!(due.iter().any(|n| n.kind != "progress"));
         store
             .report_worker(
                 &worker.worker_chat_key,
