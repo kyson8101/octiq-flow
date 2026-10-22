@@ -3082,14 +3082,17 @@ Merged/Released steps come from git only, and a Close/Abandon that only the
 person can trigger (`orchestration/mission.rs`). A worker settling, code being pushed, a PR being merged, and
 a workspace being eligible for cleanup are separate states. Retry and review
 fixes reuse the task's persisted workspace with a new attempt ID. Current
-checkout mode never deletes a directory. The main chat coordinates while a
+checkout mode never deletes a directory. The plan card may override the run's advice
+per task with New worktree or Current checkout; approval fixes that mode, and
+writers sharing a checkout take turns (a mission's worktree choice shares its
+mission worktree). The main chat coordinates while a
 worker owns the write lease; it must not also edit that checkout.
 
 **An approval fixes what a task runs as, and a time stamp or a parent id is
 not that approval.** `approved_at` says a task was approved. `Task::approved`
 (`orchestration/approval.rs`) says as what: the worker in effect when the
 person approved (provider, model, effort, access, recovery policy with its
-fallback model), the assignee, the destination and the base branch. Every
+fallback model), the assignee, the destination, the base branch and the workspace mode. Every
 start is compared with it in `reserve_attempt_for`, the one door, before an
 attempt is reserved: the coordinator's, the host's dispatch and recovery, the
 page's. Nothing but an approval writes it. So:
@@ -3308,7 +3311,7 @@ desk is removed.
   is let go.
 
 **Facts the page reads that are derived for the answer are never stored and
-never taken from an agent**: `heldByPlan`, `heldByReopen`, `failure`,
+never taken from an agent**: `workspaceChoice`, `heldByPlan`, `heldByReopen`, `failure`,
 `retrying` and `retryLimit` on a task, `awaits` on an open gate and a pending
 native decision, `usage` and `context` on an attempt, `coordinatesRun` on a
 chat's index entry, `awaitsStart` on a chat's plan and `progress` and

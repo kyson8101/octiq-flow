@@ -21,9 +21,26 @@ LLM whether a change feels small. A non-Git folder requires Current checkout.
 Direct mode warns about primary checkouts and existing changes. It does not
 switch branches, reset the index, stash changes, or remove the folder. Existing
 Git status is included in the worker brief so the worker can preserve that work.
-The run policy takes precedence over the legacy `newWorktree` argument.
-`newWorktree:false` cannot turn a first Auto writing task into Direct mode;
-choose Current checkout on the run explicitly.
+The plan card may override this advice per task with New worktree or Current
+checkout (`orchestration_plan_approve.workspaceChoices`, keyed by task ID);
+approval fixes the mode, retries reuse it, and writers sharing a checkout take
+turns. In missions, worktree means the shared mission worktree and checkout
+means the task's root/destination. Non-Git folders offer checkout only.
+The legacy `newWorktree` argument cannot change an approved mode.
+
+The browser-only approval command accepts optional
+`workspaceChoices: { [taskId]: "worktree" | "checkout" }` alongside `runId`,
+`actorChatKey`, `taskIds`, `revision` and the existing card view fields. Missing
+entries keep the run's advice. Unknown/out-of-revision, approved/started tasks,
+and worktree choices for non-Git folders refuse the whole approval. No hook
+or MCP tool can supply this field, including conversation-based consent.
+
+For runs with a plan, the snapshot derives `task.workspaceChoice: { advised, chosen?, options,
+onlyCheckoutBecause? }`; modes use `"worktree" | "checkout"`, `options` lists
+the available modes and `onlyCheckoutBecause` explains a non-Git folder.
+`chosen` appears after approval. This field is never stored or read back;
+`task.approved.workspaceMode` stores the workflow mode (`direct`, `worktree`,
+or `mission`) that every start must obey.
 
 The product uses Git directly; it does not depend on a person's installed `wt`
 script. Local development of OctiqFlow still follows the repository's `wt`

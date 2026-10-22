@@ -2450,17 +2450,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         // Browser-only: the person approves an agents-mode lead's plan. Not in
         // the agent hook's whitelist, so no agent can approve its own plan.
-        "orchestration_plan_approve" => to_value(svc.orchestrations.approve_plan_from_card(
-            &arg::<String>(&args, "actorChatKey")?,
-            &arg::<String>(&args, "runId")?,
-            arg::<Option<Vec<String>>>(&args, "taskIds")?.as_deref(),
-            arg::<Option<u32>>(&args, "revision")?,
-            crate::orchestration::CardView {
-                surface: arg::<Option<String>>(&args, "surface")?.unwrap_or_default(),
-                shown_ms: arg(&args, "shownMs")?,
-                updated_ms: arg(&args, "updatedMs")?,
-            },
-        )),
+        "orchestration_plan_approve" => to_value(
+            svc.orchestrations.approve_plan_from_card_with_choices(
+                &arg::<String>(&args, "actorChatKey")?,
+                &arg::<String>(&args, "runId")?,
+                arg::<Option<Vec<String>>>(&args, "taskIds")?.as_deref(),
+                arg::<Option<u32>>(&args, "revision")?,
+                crate::orchestration::CardView {
+                    surface: arg::<Option<String>>(&args, "surface")?.unwrap_or_default(),
+                    shown_ms: arg(&args, "shownMs")?,
+                    updated_ms: arg(&args, "updatedMs")?,
+                },
+                arg::<
+                    Option<
+                        std::collections::BTreeMap<String, crate::orchestration::WorkspaceChoice>,
+                    >,
+                >(&args, "workspaceChoices")?
+                .as_ref(),
+            ),
+        ),
         // Browser-only: the person rejects exactly the revision shown on a
         // plan card. Deliberately absent from the hook/MCP action whitelist.
         "orchestration_plan_reject" => to_value(svc.orchestrations.reject_plan_from_card(
@@ -2480,6 +2488,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // browser sent, and the lead supplies only which plan and revision.
         // No gate, safety card, deploy or restart is decided here.
         "orchestration_plan_approve_in_chat" => {
+            if args.get("workspaceChoices").is_some() {
+                return Err("Workspace choices belong only to the person's plan card.".into());
+            }
             let actor: String = arg(&args, "actorChatKey")?;
             let turn = svc.chats.person_turn(&actor).ok_or_else(|| {
                 crate::outcome::refuse(

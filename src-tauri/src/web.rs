@@ -1827,6 +1827,9 @@ async fn orchestration_handler(
         Value::Object(args) => args,
         _ => return invalid("Orchestration arguments must be an object."),
     };
+    if args.contains_key("workspaceChoices") {
+        return invalid("Workspace choices belong only to the person's plan card.");
+    }
     args.insert("actorChatKey".into(), Value::String(actor.clone()));
     if command == "orchestration_run_create" {
         args.insert("withBrief".into(), Value::Bool(true));
@@ -5994,6 +5997,20 @@ mod tests {
             orchestration_hook_command("task_accept"),
             Some("orchestration_task_accept_in_chat")
         );
+        assert_eq!(orchestration_hook_command("workspaceChoices"), None);
+        assert_eq!(
+            orchestration_hook_command("plan_approve"),
+            Some("orchestration_plan_approve_in_chat")
+        );
+        let mcp = include_str!("../../scripts/mcp/octiq-ask.cjs");
+        let approval = mcp
+            .split("const ORCHESTRATION_PLAN_APPROVE =")
+            .nth(1)
+            .unwrap()
+            .split("const ORCHESTRATION_DESTINATIONS")
+            .next()
+            .unwrap();
+        assert!(!approval.contains("workspaceChoices"));
         // The coordinator's start is never mistaken for the page's retry,
         // nor its answer to a gate for the person's.
         assert_eq!(
@@ -6009,6 +6026,35 @@ mod tests {
             orchestration_hook_command("task_reopen"),
             Some("orchestration_task_reopen_in_chat")
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hook_cannot_send_workspace_choices_even_with_conversation_consent() {
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let (_ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let cap = chats.test_launch("chat:workspace-choice-lead");
+        let (status, answer) = post_hook(
+            &base,
+            "orchestration",
+            None,
+            Some(&cap),
+            json!({
+                "chatKey": "chat:workspace-choice-lead", "sessionKey": "chat:workspace-choice-lead",
+                "action": "plan_approve", "args": { "runId": "any", "revision": 1,
+                    "workspaceChoices": { "task_any": "checkout" } }
+            }),
+        )
+        .await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("person's plan card"),
+            "{answer}"
+        );
+        assert!(store.snapshot(None).unwrap().runs.is_empty());
     }
 
     /// A failed check whose automatic retries are used is reopened by the

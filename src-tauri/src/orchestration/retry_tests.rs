@@ -61,13 +61,15 @@ impl Lead {
 
     fn with(id: String, dir: crate::test_dir::TestDir, store: OrchestrationStore) -> Self {
         let key = format!("chat:{id}");
+        // Ledger-only fixture: its simulated workers own separate worktrees.
         let run = store
-            .create_run(
+            .create_run_with_mode(
                 key.clone(),
                 "Ship the feature".into(),
                 "workspace".into(),
                 dir.0.to_string_lossy().into_owned(),
                 Some(4),
+                WorkspaceMode::Worktree,
             )
             .unwrap();
         Self {
@@ -1223,12 +1225,13 @@ fn who_reads_what_a_failure_is_shown_as() {
 // ---- derived facts are not stored (review of 16e4188, H3) ----------------
 
 /// What a read derives for a task, a gate and an attempt, by its key.
-const DERIVED_ON_A_TASK: [&str; 5] = [
+const DERIVED_ON_A_TASK: [&str; 6] = [
     "retryLimit",
     "failure",
     "retrying",
     "heldByPlan",
     "heldByReopen",
+    "workspaceChoice",
 ];
 
 /// None of what a read derives is in the ledger's file, after real writes
@@ -1258,6 +1261,7 @@ fn the_ledger_on_file_holds_nothing_a_read_derives() {
     let of = |id: &str| tasks.iter().find(|task| task["id"] == id).unwrap().clone();
     assert_eq!(of(&failed.id)["failure"]["because"], "escalated");
     assert_eq!(of(&retried.id)["retrying"], true);
+    assert!(tasks.iter().all(|task| task["workspaceChoice"].is_object()));
     assert_eq!(said["gates"][0]["awaits"], "person");
 
     // And a write after that read puts none of them in the file.
@@ -1305,6 +1309,8 @@ fn a_ledger_written_with_a_retry_limit_reads_as_any_other_and_loses_it_at_the_ne
     earlier["tasks"][&task.id]["retryLimit"] = json!(0);
     earlier["tasks"][&other.id]["retryLimit"] = json!(99);
     earlier["tasks"][&other.id]["retrying"] = json!(true);
+    earlier["tasks"][&other.id]["workspaceChoice"] =
+        json!({"advised":"worktree","chosen":"worktree","options":["worktree"]});
     earlier["tasks"][&other.id]["failure"] = json!({ "kind": "failed", "awaits": "nobody" });
     std::fs::write(&path, serde_json::to_vec_pretty(&earlier).unwrap()).unwrap();
 

@@ -348,7 +348,7 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
                     }))
         })
         .count();
-    let mut writing = mission_writers(snapshot, run);
+    let mut writing = shared_writers(snapshot, run);
     snapshot
         .tasks
         .iter()
@@ -373,21 +373,18 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
                     .as_ref()
                     .is_none_or(|d| d.agent.is_some())
         })
-        .filter(|t| mission_writer_free(run, t, &mut writing))
+        .filter(|t| shared_writer_free(run, t, &mut writing))
         .take(usize::from(run.max_concurrent).saturating_sub(active))
         .cloned()
         .collect()
 }
 
-/// A mission shares one worktree per repository, so at most one writer works
-/// in each at a time. A second writer started anyway would only be refused at
+/// Tasks sharing a mission worktree or a current checkout take turns writing.
+/// A second writer started anyway would only be refused at
 /// launch, and that refusal settles its attempt as failed; it waits here
 /// instead. Readers share the checkout freely. `writing` carries the roots a
 /// writer holds, including one this wave just picked.
-fn mission_writer_free(run: &Run, task: &Task, writing: &mut BTreeSet<String>) -> bool {
-    if run.workspace_mode != crate::git_ops::workflow::WorkspaceMode::Mission {
-        return true;
-    }
+fn shared_writer_free(run: &Run, task: &Task, writing: &mut BTreeSet<String>) -> bool {
     let access = approval::worker_of(task)
         .or(task.worker.as_ref())
         .map(|w| w.access)
@@ -395,12 +392,11 @@ fn mission_writer_free(run: &Run, task: &Task, writing: &mut BTreeSet<String>) -
     if access == Some(Access::Read) {
         return true;
     }
-    let root = super::workspaces::task_root(run, task.destination.as_ref()).to_string();
-    writing.insert(root)
+    super::workspaces::writer_key(run, task).is_none_or(|key| writing.insert(key))
 }
 
-/// The repositories a mission's unsettled writers are working in.
-fn mission_writers(snapshot: &Snapshot, run: &Run) -> BTreeSet<String> {
+/// Shared allocations held by unsettled writers of this run.
+fn shared_writers(snapshot: &Snapshot, run: &Run) -> BTreeSet<String> {
     snapshot
         .attempts
         .iter()
@@ -413,7 +409,8 @@ fn mission_writers(snapshot: &Snapshot, run: &Run) -> BTreeSet<String> {
                     }))
         })
         .filter_map(|a| snapshot.tasks.iter().find(|t| t.id == a.task_id))
-        .map(|t| super::workspaces::task_root(run, t.destination.as_ref()).to_string())
+        .filter(|t| t.run_id == run.id)
+        .filter_map(|t| super::workspaces::writer_key(run, t))
         .collect()
 }
 
