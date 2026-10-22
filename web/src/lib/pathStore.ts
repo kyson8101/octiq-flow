@@ -42,6 +42,18 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 /** The two joined by a NUL, which neither of them can contain. */
 const keyOf = (raw: string, cwd: string) => `${cwd}\u0000${raw}`;
 
+/** An explicit playback request needs a fresh host answer, even for a path
+ *  already resolved in an earlier reply. stat_paths supplies the host's mtime
+ *  revision; neither lookup polls or downloads the media. */
+export async function mediaRevision(path: string): Promise<string | null> {
+  const resolved = await bridge.invoke<(string | null)[]>("resolve_paths", { paths: [path], cwd: "" });
+  const real = resolved?.[0];
+  if (!real) return null;
+  const stamps = await bridge.invoke<(number | null)[]>("stat_paths", { paths: [real] });
+  const stamp = stamps?.[0];
+  return typeof stamp === "number" ? `${real}\u0000${stamp}` : null;
+}
+
 /** What is known about one path: the file it turned out to be, `null` for a
  *  path that does not exist, or `undefined` for one nothing has asked about
  *  yet. */
