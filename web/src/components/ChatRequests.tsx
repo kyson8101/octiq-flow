@@ -14,7 +14,7 @@ import "./PendingActionBadge.css";
  *  asked (`components/InlineQuestions`). */
 export function ChatRequests({
   asks, safetyBlocks, onPermissionAnswered, onSafetyAnswered,
-  onContinue, accessRequests = [], onAccessAnswer, scope = "",
+  onContinue, accessRequests = [], onAccessAnswer, scope = "", agent,
 }: {
   asks: Ask[];
   safetyBlocks: SafetyBlockNotice[];
@@ -29,6 +29,7 @@ export function ChatRequests({
    *  comes in (`components/Arrive`); one already waiting when the chat opens,
    *  or when you come back to it, is drawn in place. */
   scope?: string;
+  agent?: string;
 }) {
   const shownAccess = onAccessAnswer ? accessRequests : [];
   const late = useLateKeys(scope, [
@@ -41,7 +42,7 @@ export function ChatRequests({
       {asks.map((ask) => (
         <Arrive key={ask.id} late={late.has(`permission:${ask.id}`)}>
           <div className="pending-target" data-pending-keys={`permission:${ask.id}`}>
-            <PermissionAsk ask={ask} onAnswered={onPermissionAnswered} />
+            <PermissionAsk ask={ask} agent={agent} onAnswered={onPermissionAnswered} />
           </div>
         </Arrive>
       ))}
